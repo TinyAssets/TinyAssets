@@ -23,8 +23,9 @@ const args = [vitest, "run", "--project", "runner", ...process.argv.slice(2)];
 
 /**
  * What a test sandbox needs of the host, tried in a box of the preflight's own: mount, pid
- * and uts namespaces, a tmpfs, a read-only bind, a /proc of the namespace's own, `nsenter`
- * into them, `pivot_root`, and perl (each box's init). Why it cannot, or null.
+ * and uts namespaces, a tmpfs, a read-only bind, an overlay of /etc whose writes stay above
+ * it, a /proc of the namespace's own, `nsenter` into them, `pivot_root`, and perl (each box's
+ * init). Why it cannot, or null.
  */
 function preflight() {
   for (const [tool, probe] of [["unshare", ["--version"]], ["nsenter", ["--version"]],
@@ -39,11 +40,15 @@ function preflight() {
   try {
     const box = [
       'mount -t tmpfs -o size=1m,mode=0755 tmpfs "$1"',
-      'mkdir "$1/proc" "$1/usr" "$1/old"',
+      'mkdir "$1/proc" "$1/usr" "$1/old" "$1/upper" "$1/work" "$1/etc"',
       'mount --bind /usr "$1/usr"',
       'mount -o remount,bind,ro "$1/usr"',
       '{ ! touch "$1/usr/.ta-preflight" 2>/dev/null || ' +
         '{ echo "a read-only bind of /usr took a write" >&2; false; }; }',
+      'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/upper,workdir=$1/work" "$1/etc"',
+      'touch "$1/etc/.ta-preflight"',
+      '{ [ ! -e /etc/.ta-preflight ] || ' +
+        '{ echo "an overlay of /etc wrote to /etc" >&2; false; }; }',
       'mount -t proc proc "$1/proc"',
       // This shell, by the host's pid (the host's /proc is still at /proc), entered.
       "read -r self _ < /proc/self/stat",
@@ -57,7 +62,8 @@ function preflight() {
                            { encoding: "utf8" });
     if (done.status !== 0 || done.stdout.trim() !== "ready") {
       return "a box of the preflight's own (`unshare --mount --pid --fork --uts`, a tmpfs, a " +
-        "read-only bind of /usr, its own /proc, `nsenter`, `pivot_root`) failed " +
+        "read-only bind of /usr, an overlay of /etc, its own /proc, `nsenter`, `pivot_root`) " +
+        "failed " +
         `(${done.error?.message ?? `exit ${done.status}`}): ${done.stdout}${done.stderr}`.trim();
     }
   } finally {
@@ -84,7 +90,7 @@ if (process.getuid() === 0) {
     process.stderr.write(
       "root-tests: the runner's test sandboxes cannot be made on this host: " +
       `${refused}. They need root's mount, pid and uts namespaces, tmpfs, read-only binds, ` +
-      "nsenter and pivot_root (util-linux) and perl. They are not skipped: a skip is not a " +
+      "overlayfs, nsenter and pivot_root (util-linux) and perl. They are not skipped: a skip is not a " +
       "pass.\n");
     process.exit(2);
   }

@@ -27,8 +27,9 @@ describe("a test sandbox", () => {
      () => {
     box = new Box();
     const root = mountsOf("self").find((mount) => mount.target === box!.root)!;
-    // The host's mounts, as the suite sees them (the box's root, its own, aside).
-    const host = new Set(mountsOf("self").filter((mount) => mount.target !== box!.root)
+    // The host's mounts, as the suite sees them (the box's own aside: its root, its /etc).
+    const own = (target: string) => target === box!.base || target.startsWith(`${box!.base}/`);
+    const host = new Set(mountsOf("self").filter((mount) => !own(mount.target))
       .map((mount) => mount.device));
     const mounts = box.mounts();
     const hosts = mounts.filter((mount) => host.has(mount.device));
@@ -36,12 +37,22 @@ describe("a test sandbox", () => {
       ["/usr", "/usr/local/bin/node"]));
     expect(hosts.filter((mount) => !mount.options.includes("ro"))
       .map((mount) => mount.target)).toEqual([]);
-    // What is not the host's is the box's own: its root (and so its /etc, /tmp, /var/tmp),
-    // its /usr/local, /dev, /dev/pts, /dev/shm and /proc.
+    // What is not the host's is the box's own: its root (and so its /tmp, /var/tmp), its
+    // /etc, /usr/local, /dev, /dev/pts, /dev/shm and /proc.
     expect(mounts.filter((mount) => !host.has(mount.device)).map((mount) => mount.target)
       .filter((target) => target !== "/proc/sysrq-trigger")
-      .sort()).toEqual(["/", "/dev", "/dev/pts", "/dev/shm", "/proc", "/proc/sys", "/usr/local"]);
+      .sort()).toEqual(["/", "/dev", "/dev/pts", "/dev/shm", "/etc", "/proc", "/proc/sys",
+                        "/usr/local"]);
     expect(mounts.find((mount) => mount.target === "/")!.device).toBe(root.device);
+    // Its /etc is an overlay: the host's read-only beneath, its writes on a disk of the box's
+    // own above, outside its root. A write there lands above, never in the host's.
+    const etc = mounts.find((mount) => mount.target === "/etc")!;
+    expect(etc.type).toBe("overlay");
+    expect(etc.super).toContain("lowerdir=/etc");
+    expect(etc.super).toContain(`upperdir=${join(box.etcWrites, "upper")}`);
+    expect(box.exec(["touch", "/etc/.ta-guard"]).status).toBe(0);
+    expect(existsSync(join(box.etcWrites, "upper", ".ta-guard"))).toBe(true);
+    expect(existsSync("/etc/.ta-guard")).toBe(false);
     // Its /etc's files are its own: regular files, never a link out of the copy.
     for (const file of ["passwd", "group", "gshadow", "resolv.conf"]) {
       expect(box.exec(["/bin/sh", "-c", '[ -f "$0" ] && [ ! -L "$0" ]', `/etc/${file}`]).status,
@@ -85,9 +96,10 @@ describe("the suite", () => {
   // A host whose tools run but refuse one step of a box: the tool answers its probe, then
   // refuses its real use (or, for the read-only bind, does nothing and answers 0).
   it.each([
-    ["pivot_root", "true", "exit 1"],
-    ["mount", 'echo " $* " | grep -q -- "remount,bind,ro"', "exit 0"],
-  ])("refuses loudly, exit 2, where %s refuses its step", (tool, when, then) => {
+    ["pivot_root", "the pivot", "true", "exit 1"],
+    ["mount", "a read-only bind", 'echo " $* " | grep -q -- "remount,bind,ro"', "exit 0"],
+    ["mount", "an overlay", 'echo " $* " | grep -q -- " overlay "', "exit 32"],
+  ])("refuses loudly, exit 2, where %s refuses %s", (tool, _step, when, then) => {
     const shims = mkdtempSync(join(tmpdir(), "ta-shims-"));
     try {
       const real = spawnSync("/bin/sh", ["-c", `command -v ${tool}`], { encoding: "utf8" })
@@ -140,35 +152,59 @@ describe("a test sandbox's /etc", () => {
   const VITEST = join(dirname(createRequire(import.meta.url).resolve("vitest/package.json")),
                       "vitest.mjs");
 
+  /**
+   * A host's /etc simulated in a mount namespace of its own: an overlay of the real one (so
+   * the simulation copies nothing, and writes nothing to it), `shape` making it the host's to
+   * simulate, bound over /etc there alone. The guard's test, run in it (a vitest of its own),
+   * makes a box: its run, and the namespace's.
+   */
+  function simulated(shape: string, ...args: string[]) {
+    const scratch = mkdtempSync(join(tmpdir(), "ta-etc-"));
+    try {
+      const script = [
+        'mount -t tmpfs -o size=1g tmpfs "$1"',
+        'mkdir "$1/upper" "$1/work" "$1/etc"',
+        'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/upper,workdir=$1/work" "$1/etc"',
+        shape,
+        'mount --bind "$1/etc" /etc',
+        'exec "$2" "$3" run --project runner runner/test/box.test.ts -t "sees no host path"',
+      ].join(" && ");
+      mkdirSync(join(scratch, "sim"));
+      return spawnSync("unshare", ["--mount", "--propagation", "private", "--", "/bin/sh", "-c",
+                                   script, "etc", join(scratch, "sim"), process.execPath, VITEST,
+                                   ...args], { cwd: SANDBOX, encoding: "utf8" });
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }
+
   // A host whose /etc/resolv.conf is a link (systemd-resolved's relative one, as GitHub's
-  // runner has, or an absolute one), simulated in a mount namespace of its own: the host's
-  // /etc there is a copy with that link, the real one untouched. The guard's test, run in it,
-  // makes a box: it must work, and write nothing through the link.
+  // runner has, or an absolute one): the box must work, and write nothing through the link.
   it.each(["relative", "absolute"])("is the box's own where the host's resolv.conf is a %s link: " +
                                     "no write reaches the host, and the box works", (kind) => {
-    const scratch = mkdtempSync(join(tmpdir(), "ta-etc-"));
+    const scratch = mkdtempSync(join(tmpdir(), "ta-victim-"));
     try {
       const victim = join(scratch, "victim");
       writeFileSync(victim, "nameserver 192.0.2.1\n");
-      mkdirSync(join(scratch, "etc"));
       const target = kind === "relative" ? "../run/systemd/resolve/stub-resolv.conf" : victim;
-      const simulated = [
-        'mount -t tmpfs -o size=64m tmpfs "$1"',
-        'cp -a /etc "$1/etc"',
-        'ln -sfn "$2" "$1/etc/resolv.conf"',
-        'mount --bind "$1/etc" /etc',
-        '[ -L /etc/resolv.conf ]',
-        'exec "$3" "$4" run --project runner runner/test/box.test.ts -t "sees no host path"',
-      ].join(" && ");
-      const done = spawnSync("unshare", ["--mount", "--propagation", "private", "--", "/bin/sh",
-                                         "-c", simulated, "etc", join(scratch, "etc"), target,
-                                         process.execPath, VITEST],
-                             { cwd: SANDBOX, encoding: "utf8" });
+      const done = simulated('ln -sfn "$4" "$1/etc/resolv.conf" && [ -L "$1/etc/resolv.conf" ]',
+                             target);
       expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
       expect(done.stdout).toMatch(/1 passed/);
       expect(readFileSync(victim, "utf8")).toBe("nameserver 192.0.2.1\n");
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
+  });
+
+  // A host whose /etc is larger than a box's whole disk, as GitHub's runner's is (its
+  // /etc/skel holds a Rust and a .NET toolchain, gigabytes): the box takes none of it.
+  it("is the box's own where the host's /etc is larger than the box's disk, and the box works",
+     () => {
+    // 480 MiB of real (not sparse) bytes, past a box's 384 MiB.
+    const done = simulated('mkdir -p "$1/etc/skel/.toolchain" && for n in 1 2 3; do ' +
+                           'head -c 160M /dev/zero > "$1/etc/skel/.toolchain/$n" || exit 1; done');
+    expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
+    expect(done.stdout).toMatch(/1 passed/);
   });
 });

@@ -42,6 +42,8 @@ export const BOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin
  * disk with no room for it and takes its real "no room" path, as a full sandbox would.
  */
 const BOX_BYTES = "384m";
+/** The room for a box's own writes to its `/etc` (the template's users, sudoers, runs). */
+const ETC_BYTES = "64m";
 /** How long a box may take to come up before its making fails loudly. */
 const READY_MS = 15_000;
 const UNSHARE = ["--mount", "--pid", "--fork", "--kill-child", "--uts", "--propagation",
@@ -84,12 +86,13 @@ function must(argv: readonly string[]): void {
 
 /** The mounts `/proc/<pid>/mountinfo` lists: each one's device, its target, its options. */
 export function mountsOf(pid: number | "self"):
-    { device: string; target: string; options: string[]; type: string }[] {
+    { device: string; target: string; options: string[]; type: string; super: string[] }[] {
   return readFileSync(`/proc/${pid}/mountinfo`, "utf8").trim().split("\n").map((line) => {
     const [fields, after] = line.split(" - ");
     const parts = fields!.split(" ");
+    const [type, , superOptions] = after!.split(" ");
     return { device: parts[2]!, target: parts[4]!, options: parts[5]!.split(","),
-             type: after!.split(" ")[0]! };
+             type: type!, super: (superOptions ?? "").split(",") };
   });
 }
 
@@ -132,6 +135,8 @@ export class Box {
   readonly base = mkdtempSync(join(tmpdir(), "ta-box-"));
   /** The box's `/`, as the test (outside the box) sees it. */
   readonly root = join(this.base, "root");
+  /** Where its `/etc`'s own writes go (an overlay's upper and work), outside its root. */
+  readonly etcWrites = join(this.base, "etc");
   /** The host's pid of the box's init: killing it ends every process in the box. */
   readonly init: number;
   /** The harness's end of the init's stdin: the box ends when it closes. */
@@ -152,10 +157,19 @@ export class Box {
 
   /** The template's users, groups and directories (`layout.ts`), and `/etc` (a copy). */
   #layout(): void {
-    // The host's `/etc`, copied (a trimmed one breaks `sudo -l`), with the template's users.
-    must(["cp", "-a", "/etc", this.path("/etc")]);
-    // Each made anew, never written through: the host's may be a link out of the copy (a
-    // systemd-resolved host's resolv.conf), which a write would follow onto the host.
+    // The host's `/etc` (a trimmed one breaks `sudo -l`), as an overlay: the host's read-only
+    // beneath, every write the box's own, above, on a disk of the box's (outside its root).
+    // So nothing of it is copied (a CI host's holds gigabytes of toolchains, in /etc/skel),
+    // and no write reaches the host's.
+    mkdirSync(this.etcWrites);
+    must(["mount", "-t", "tmpfs", "-o", `size=${ETC_BYTES},mode=0700`, "tmpfs", this.etcWrites]);
+    mkdirSync(join(this.etcWrites, "upper"));
+    mkdirSync(join(this.etcWrites, "work"));
+    mkdirSync(this.path("/etc"));
+    must(["mount", "-t", "overlay", "overlay", "-o", `lowerdir=/etc,upperdir=${
+      join(this.etcWrites, "upper")},workdir=${join(this.etcWrites, "work")}`, this.path("/etc")]);
+    // The template's users, each file made anew, never written through: the host's may be a
+    // link (a systemd-resolved host's resolv.conf), which a write would follow onto the host.
     const own = (path: string, text: string, mode = 0o644) => {
       rmSync(this.path(path), { force: true });
       writeFileSync(this.path(path), text, { mode, flag: "wx" });
@@ -304,9 +318,14 @@ export class Box {
     if (process.env["TA_KEEP_ROOT"] !== undefined) {
       return;
     }
-    spawnSync("umount", ["-l", this.root], { stdio: "ignore" });
-    if (mountsOf("self").some((mount) => mount.target === this.root)) {
-      throw new Error(`a test sandbox's root is still mounted: ${this.root}`);
+    for (const mount of [this.path("/etc"), this.root, this.etcWrites]) {
+      spawnSync("umount", ["-l", mount], { stdio: "ignore" });
+    }
+    const left = mountsOf("self").filter((mount) => mount.target === this.base
+      || mount.target.startsWith(`${this.base}/`));
+    if (left.length > 0) {
+      throw new Error(`a test sandbox's mounts are still there: ${left.map((mount) =>
+        mount.target).join(" ")}`);
     }
     rmSync(this.base, { recursive: true, force: true });
   }
