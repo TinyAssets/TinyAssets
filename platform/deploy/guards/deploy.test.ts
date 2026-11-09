@@ -745,7 +745,8 @@ describe("a dark run", () => {
     const made = (w: ReturnType<typeof world>) => w.events
       .filter((event) => /^wrangler (r2 bucket|queues) create /.test(event))
       .map((event) => event.slice("wrangler ".length));
-    expect(BUCKETS).toEqual(["tinyassets-files", "tinyassets-import-staging"]);
+    expect(BUCKETS).toEqual(["tinyassets-files", "tinyassets-import-staging",
+                             "tinyassets-final-backup"]);
     expect(QUEUES).toEqual(["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
                             "tinyassets-import-dlq"]);
     const fresh = world();
@@ -757,7 +758,7 @@ describe("a dark run", () => {
     expect(made(held)).toEqual([]);
     // The queue made but not its dead-letter queue nor the bucket: only those two are made.
     const partial = world({ held: true, listed: {
-      buckets: ["tinyassets-files"],
+      buckets: ["tinyassets-files", "tinyassets-final-backup"],
       queues: ["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import"] } });
     const work = await runMode(partial, "dark", ["--yes"]);
     expect(made(partial)).toEqual(["r2 bucket create tinyassets-import-staging",
@@ -765,6 +766,37 @@ describe("a dark run", () => {
     expect(work.plan).toEqual(expect.arrayContaining([
       "create the R2 bucket tinyassets-import-staging", "create the queue tinyassets-import-dlq"]));
     expect(work.plan).not.toContain("create the queue tinyassets-import");
+  });
+
+  it("makes the off-site copy's bucket, which no Worker binds, only when its listing lacks it",
+     async () => {
+    const made = (w: ReturnType<typeof world>) => w.events
+      .filter((event) => /^wrangler r2 bucket create /.test(event))
+      .map((event) => event.slice("wrangler ".length));
+    expect([...CONFIGS.values()].flatMap((config) =>
+      ((config["r2_buckets"] ?? []) as { bucket_name: string }[]).map((each) => each.bucket_name)))
+      .not.toContain("tinyassets-final-backup");
+    const fresh = world();
+    await runMode(fresh, "dark", ["--yes"]);
+    expect(made(fresh)).toContain("r2 bucket create tinyassets-final-backup");
+    const held = world({ held: true });
+    await runMode(held, "dark", ["--yes"]);
+    expect(made(held)).toEqual([]);
+    const lacking = world({ held: true, listed: {
+      buckets: ["tinyassets-files", "tinyassets-import-staging"],
+      queues: ["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
+               "tinyassets-import-dlq"] } });
+    const work = await runMode(lacking, "dark", ["--yes"]);
+    expect(made(lacking)).toEqual(["r2 bucket create tinyassets-final-backup"]);
+    expect(work.plan).toContain("create the R2 bucket tinyassets-final-backup");
+    // The plan job lists it and makes nothing.
+    const plan = world({ held: true, listed: {
+      buckets: ["tinyassets-files", "tinyassets-import-staging"],
+      queues: ["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
+               "tinyassets-import-dlq"] } });
+    const planned = await runMode(plan, "dark", []);
+    expect(made(plan)).toEqual([]);
+    expect(planned.plan).toContain("create the R2 bucket tinyassets-final-backup");
   });
 
   it("stops on a failed wrangler listing, never reading it as absent", async () => {
@@ -2352,6 +2384,7 @@ const DARK_FRESH = [
     `create the KV namespace ${title} (${binding})`),
   "create the R2 bucket tinyassets-files",
   "create the R2 bucket tinyassets-import-staging",
+  "create the R2 bucket tinyassets-final-backup",
   "create the queue tinyassets-sandbox-ring",
   "create the queue tinyassets-erasure",
   "create the queue tinyassets-import",

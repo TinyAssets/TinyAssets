@@ -1,8 +1,8 @@
 /**
  * The backup copy's own checks (`import_research.md` §1, the census commands; tasks.md §9
  * item 7), the job's side of the copy that the window's host script (`window.sh`) makes on the
- * droplet. The host has no Node (`deploy/hetzner-bootstrap.sh` installs Python, rclone, the
- * util-linux tools and Docker), so the host script does what needs the host: the backup
+ * run's import host. The host has no Node (the import host's cloud-init installs Docker,
+ * rclone and xfsprogs; no Node), so the host script does what needs the host: the backup
  * remote's `rclone`, the free-disk refusal (`df`), the decompression and the read-only loop
  * mounts. It runs these in the job's `node:22` container, the copy bind-mounted read-only:
  *
@@ -10,7 +10,8 @@
  *   (`manifestOf`) and to its own name's stamp, as `platform_backup.validate_manifest` holds
  *   it: what the host fetches, a line an object (`archive <name>`, `image <uid> <snapshot>`);
  * - `copy digests <work>`: the archive's SHA-256 against the manifest's, and each image's,
- *   uncompressed, against its pin (`dr-owner-restore.py`'s rule), each refused by its ordinal;
+ *   uncompressed, against its pin (`dr-owner-restore.py`'s rule), each refused by its ordinal
+ *   (the copy's, and the off-site copy's read-back, `offsite`);
  * - `copy stores <work>`: every SQLite store of the copy (the shared layer's, and each image's
  *   where the kernel says it is mounted read-only from its own image) through SQLite's own
  *   `integrity_check`, opened read-only and immutable, a link never followed;

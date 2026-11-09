@@ -365,18 +365,34 @@ It never counts as "absent".
 ## The import window's credentials
 
 The importer's runner, **Import window (manual)** (`.github/workflows/import-window.yml`,
-tasks.md §9 item 7), reads these `production` secrets. `census` and `clean` need none,
-`bundle` needs the exclusion list alone, and `stage`, `verify`, `wipe`, `admit` and `dlq`
-need the other four and the repository secret `CLOUDFLARE_ACCOUNT_ID`. A mode that lacks one
-stops before any step and names it. **Mint them before the rehearsal, keep them through the
-window, and revoke them after it.**
+tasks.md §9 item 7), runs each mode on the run's own **import host**: a Droplet,
+`tinyassets-import-<run>` in `sfo3` (`s-4vcpu-8gb`, about $0.07 an hour, $1.71 a day), that
+`census` makes and `clean` destroys, one at a time. It never reaches the production droplet.
+The host reads the backup from the primary store with a read-only key, and leaves for
+Cloudflare through one **reserved IP**, which both Cloudflare tokens are pinned to. Before any
+copy, and before any mode hands it a credential, the workflow checks from a container on the
+host that Cloudflare sees that address, and that no container on the host reaches the
+metadata service (it serves the host's `user_data`, which holds its private SSH key; the
+host's boot script drops it for Docker's containers).
+
+It reads these `production` secrets. Every mode needs `DO_SSH_KEY` (already set),
+`IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` needs the Spaces pair too, `bundle` the
+exclusion list, `stage`, `verify`, `wipe`, `admit` and `dlq` the R2 pair, the API token and
+`IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one stops
+before any step and names it. The account id is no secret: the six Cloudflare modes read it
+from the repository **variable** `CLOUDFLARE_ACCOUNT_ID` (step 0), held to 32 hex digits, and
+no token of the deploy kit's is read by this workflow. **Make them before the rehearsal, keep
+them through the window, and revoke them after it.**
 
 | `production` secret | What it is | Scope |
 |---|---|---|
+| `IMPORT_RESERVED_IP` | One reserved IPv4 in `sfo3` (step 1). | Every run's import host is given it in turn. Free while assigned, $0.01 an hour while not. |
+| `IMPORT_DO_TOKEN` | A custom-scope DigitalOcean token (step 2). | Droplet create, read and delete; image read; SSH key read; tag create; reserved IP read and update. An expiry just after the window. It is not the DR drill's `DIGITALOCEAN_TOKEN`. |
+| `IMPORT_SPACES_ACCESS_KEY_ID` and `IMPORT_SPACES_SECRET_ACCESS_KEY` | A limited-access Spaces key (step 3). | **Read** on `workflow-backups-jonnyton-sfo3` alone, the bucket the nightly backup writes. |
 | `IMPORT_EXCLUSION_LIST` | Your principal and every canary owner's, one a line (`#` starts a comment). They start fresh: backed up, never imported. | none |
-| `IMPORT_R2_ACCESS_KEY_ID` and `IMPORT_R2_SECRET_ACCESS_KEY` | The S3 key pair of one Cloudflare API token, made through the API (step 2). | Workers R2 Storage Bucket Item Write on `tinyassets-import-staging`, Workers R2 Storage Bucket Item Read on `tinyassets-files`: it can never write the live files bucket. The droplet's address only; an end date. |
-| `IMPORT_CLOUDFLARE_API_TOKEN` | One account API token. | Account · Queues · Edit (send to `tinyassets-import`, add and use the HTTP pull consumer of `tinyassets-import-dlq`), Account · Workers KV Storage · Edit (list `tinyassets-directory` and delete a rehearsal's records). The droplet's address only; an end date. |
-| `IMPORT_KEY` | 32 random bytes, base64url. | The same value as the doors' Worker secret `IMPORT_KEY` |
+| `IMPORT_R2_ACCESS_KEY_ID` and `IMPORT_R2_SECRET_ACCESS_KEY` | The S3 key pair of one Cloudflare API token, made through the API (step 4). | Workers R2 Storage Bucket Item Write on `tinyassets-import-staging` and on `tinyassets-final-backup` (the off-site copy), Workers R2 Storage Bucket Item Read on `tinyassets-files`: it can never write the live files bucket. The reserved IP only; an end date. |
+| `IMPORT_CLOUDFLARE_API_TOKEN` | One account API token (step 5). | Account · Queues · Edit (send to `tinyassets-import`, add and use the HTTP pull consumer of `tinyassets-import-dlq`), Account · Workers KV Storage · Edit (list `tinyassets-directory` and delete a rehearsal's records). The reserved IP only; an end date. |
+| `IMPORT_KEY` | 32 random bytes, base64url (step 6). | The same value as the doors' Worker secret `IMPORT_KEY` |
 
 **Never give one of them a name another job reads.** An environment secret hides the
 repository secret of the same name in every `production` job, so a `production` secret named
@@ -384,28 +400,52 @@ repository secret of the same name in every `production` job, so a `production` 
 
 The steps, on your own computer, with your own `gh` login. `gh secret set <name> --env
 production` asks for the value and does not show it, so no value enters the chat or a
-command line:
+command line. **Reserve the IP first:** both Cloudflare tokens are minted against it.
 
-1. **The exclusion list.** Read the principals from the old stack's records and
+0. **The account id, a repository variable (not a secret).** Cloudflare dashboard → Workers &
+   Pages → Account details → Account ID, then `gh variable set CLOUDFLARE_ACCOUNT_ID` with its
+   32 hex digits. A variable is shown in logs; the id is not a secret (the deploy logs print
+   it). It stays after the window, for `cloud-only-preflight.yml` reads it too.
+1. **The reserved IP.** DigitalOcean → Networking → Reserved IPs → Reserve an IPv4 in
+   `sfo3`, assigned to nothing. Then `gh secret set IMPORT_RESERVED_IP --env production`
+   with its address.
+2. **`IMPORT_DO_TOKEN`.** DigitalOcean → API → Tokens → Generate New Token → Custom Scopes,
+   named `tinyassets-import-window`, with the scopes above and an expiry just after the
+   window. Then `gh secret set IMPORT_DO_TOKEN --env production`. The deploy key
+   (`DO_SSH_KEY`'s public half) must be registered under Settings → Security → SSH Keys;
+   `census` refuses, naming it, when it is not.
+   - *Optional, not built:* `DO_SSH_KEY` is also the production droplet's login key. The
+     workflow cannot reach that droplet (it holds no address for it, the pin would not
+     match, and the host guard refuses), but a separate `IMPORT_SSH_KEY`, registered in
+     DigitalOcean for the import hosts alone, would keep that key off this job. It costs one
+     more step here and a one-line change in the workflow.
+3. **The Spaces read key.** Spaces Object Storage → Access Keys → Create Access Key →
+   Limited Access → `workflow-backups-jonnyton-sfo3` → **Read**. Spaces keys take no IP
+   condition and no end date, so it is revoked by hand after the window. Then
+   `gh secret set IMPORT_SPACES_ACCESS_KEY_ID --env production` and
+   `gh secret set IMPORT_SPACES_SECRET_ACCESS_KEY --env production`.
+4. **The exclusion list.** Read the principals from the old stack's records and
    `docs/host-actions.md`, then `gh secret set IMPORT_EXCLUSION_LIST --env production`. An
    empty list stops `bundle`.
-2. **The R2 key, through Cloudflare's API.** The dashboard's R2 token form gives one
+5. **The R2 key, through Cloudflare's API.** The dashboard's R2 token form gives one
    permission to every bucket it names, which would let the key write `tinyassets-files`, every
-   user's file chunks. One API token with two bucket-level policies cannot. You need:
+   user's file chunks. One API token with bucket-level policies cannot. You need:
    - **A short-lived token that may make tokens.** My Profile → API Tokens → Create Token →
      the "Create Additional Tokens" template (User · API Tokens · Edit), with a TTL ending
      today. Delete it after this step.
    - **Three values:**
-     - the account id (`CLOUDFLARE_ACCOUNT_ID`);
-     - the droplet's public IPv4. A job's container leaves through Docker's default bridge,
-       which has no IPv6, so Cloudflare sees that address;
+     - the account id (Cloudflare dashboard → Workers & Pages → Account details);
+     - the reserved IP from step 1. A job's container leaves through Docker's default bridge,
+       which has no IPv6, and the import host routes through the reserved IP's anchor
+       gateway, so Cloudflare sees that address. Never the droplet's: that puts the window
+       back on the live host;
      - an end date just after the window, for example `2026-12-31T00:00:00Z`.
 
    In Git Bash, `read -rs` takes the bootstrap token without showing it, and curl reads its
    header from a file descriptor, so the token is in no command line:
    ```sh
    read -rs BOOT
-   acct='<account id>'; ip='<droplet IPv4>'; until='<end date>'
+   acct='<account id>'; ip='<reserved IPv4>'; until='<end date>'
    api=https://api.cloudflare.com/client/v4
    auth() { printf 'Authorization: Bearer %s\n' "$BOOT"; }
    groups="$(curl -sS -H @<(auth) "$api/user/tokens/permission_groups")"
@@ -419,7 +459,8 @@ command line:
                      "condition": {"request_ip": {"in": [ip + "/32"]}},
                      "policies": [
                        {"effect": "allow", "permission_groups": [{"id": w}],
-                        "resources": {b + "tinyassets-import-staging": "*"}},
+                        "resources": {b + "tinyassets-import-staging": "*",
+                                      b + "tinyassets-final-backup": "*"}},
                        {"effect": "allow", "permission_groups": [{"id": r}],
                         "resources": {b + "tinyassets-files": "*"}}]}))' \
      "$write" "$rd" "$acct" "$ip" "$until" \
@@ -435,19 +476,19 @@ command line:
    Access Key ID to be the token's `id`, and the Secret Access Key the SHA-256 (hex) of its
    `value`, from R2's authentication docs as recalled. No session here could reach
    developers.cloudflare.com to read them again. Check also that Bucket Item Write lists and
-   deletes as well as writes: `stage` puts, `verify` reads answers, and `wipe` lists and
-   deletes `<run>/`. If either is not so, stop and say so before the rehearsal. A wrong key
-   fails loudly at its first request, with nothing written.
-3. **The API token.** My Profile → API Tokens → Create Token → Custom token, named
+   deletes as well as writes: `stage` puts, `verify` reads answers, `wipe` lists and deletes
+   `<run>/`, and `offsite` puts and reads back. If either is not so, stop and say so before
+   the rehearsal. A wrong key fails loudly at its first request, with nothing written.
+6. **The API token.** My Profile → API Tokens → Create Token → Custom token, named
    `tinyassets-import-window`. Account resources: this account only; the two permissions
    above. Cloudflare scopes them to the account, not to one queue or namespace, so the job's
    own filters are the guard (`wipe` deletes only the run's `o:rehearsal-<run>-` records). Narrow
    it where the form allows:
-   - **Client IP Address Filtering:** Is in, the droplet's public IPv4;
+   - **Client IP Address Filtering:** Is in, the reserved IP from step 1;
    - **TTL:** an end date just after the window.
 
    Then `gh secret set IMPORT_CLOUDFLARE_API_TOKEN --env production`.
-4. **`IMPORT_KEY`, in both places from one value,** in Git Bash from `platform/`, with
+7. **`IMPORT_KEY`, in both places from one value,** in Git Bash from `platform/`, with
    wrangler's own Cloudflare login:
    ```sh
    k="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
@@ -457,11 +498,31 @@ command line:
    ```
    Without the doors' copy, the consumer drops every import message.
 
+The R2 bucket `tinyassets-final-backup` is made by the deploy kit's `dark`, with the other
+buckets. **In the window, after its census,** run `offsite`: it copies the final backup the
+window's copy was made from (its manifest, archive and every pinned snapshot) there, and reads
+each back against the manifest. Keep that bucket through the 14-day hold. **Run it before the
+next nightly backup (03:00 UTC), or with the backup timer stopped:** `offsite` refuses once a
+newer manifest than the copy's is on the store, and that run's final backup is then copied by
+no one (census a new run first).
+
+**A host that fails is still cleaned.** `clean` destroys the run's Droplet once it is held to
+its name and tags, even when its set-up never finished, its key tag is not one, or it lost the
+reserved IP: that host is never reached, and its disk (the copy) goes with it. It destroys
+nothing when the host's own clean refuses, nor any Droplet not so held: delete such a one by
+hand (DigitalOcean → Droplets → the `import-window` tag), as the summary names it.
+
 **After the admit, before `routes`,** delete the doors' copy
 (`npx wrangler secret delete IMPORT_KEY --name tinyassets-doors`), since a replayed admit is
-accepted by design. **After the window,** delete the five `production` secrets
-(`gh secret delete <name> --env production`) and revoke both tokens in the dashboard (My
-Profile → API Tokens), even though each also ends on its own date.
+accepted by design. **After the window,** revoke everything and leave nothing billing:
+- run `clean` for every run, which destroys its import host, and confirm in DigitalOcean that
+  no Droplet tagged `import-window` remains (every dispatch's summary names each one and its
+  age, and warns past 7 days);
+- release the reserved IP (Networking → Reserved IPs → Release);
+- revoke `IMPORT_DO_TOKEN` (API → Tokens), the Spaces read key (Spaces → Access Keys), and
+  both Cloudflare tokens (My Profile → API Tokens), even those that also end on their own date;
+- delete the `production` secrets above (`gh secret delete <name> --env production`). The
+  `CLOUDFLARE_ACCOUNT_ID` variable stays: it is no credential, and other workflows read it.
 
 ## Registrations you make by hand at the providers
 
