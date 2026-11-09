@@ -1,7 +1,7 @@
 """The handles canary across the cutover (Fact 11): which side serves ``/mcp``, and its handles.
 
     python scripts/cutover_handles_canary.py --side auto|old|new [--unkeyed] [--url URL]
-        [--verbose]
+        [--timeout SECONDS] [--verbose]
 
 Each side's handle set is data (``canary_handles.json``):
 
@@ -36,6 +36,11 @@ other, which is its own failure (exit 10), never read as either side. ``auto`` t
 side both name; an explicit side must be it (exit 8 otherwise). Nothing is ever changed,
 and no credential is printed.
 
+Each request has ``--timeout`` (``DEFAULT_TIMEOUT``, 30 s). One that times out before the
+new side is held (reading the side, and the old stack's own canary, run with this
+``--timeout``) is sent once more; a refusal or a wrong answer never is. A request that
+times out names itself and how long it took; ``--verbose`` times every request.
+
 Exit codes: 0 healthy; 2 unreachable; 4 handle drift; 6 an authentication boundary or a
 gate refused the probe; 7 the new side's handle set unchecked (no ``TA_PROBE_KEY``); 8
 the side asked for is not the one serving; 9 neither side's answer or authorization
@@ -51,10 +56,13 @@ import json
 import os
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
 _SCRIPTS = Path(__file__).resolve().parent
@@ -69,6 +77,74 @@ PROBE_KEY_ENV = "TA_PROBE_KEY"
 SIDES = ("old", "new")
 #: A name no side serves: the 404 a profile answers for a tool outside it.
 _UNKNOWN = "no_such_tool"
+#: Each request's timeout, the canary's own (``mcp_public_canary.py``'s 10 s is the old
+#: daemon's healthcheck's). From GitHub's runners the old stack's anonymous answers take
+#: close to 10 s, and crossed it inside platform-deploy.yml's probe three times (run
+#: 42583772556), while from another host they take under 1 s.
+DEFAULT_TIMEOUT = 30.0
+_T = TypeVar("_T")
+
+
+def _timed_out(exc: CanaryError) -> bool:
+    """The failure was the request's timeout, not an answer."""
+    cause = exc.__cause__
+    if isinstance(cause, urllib.error.URLError) and not isinstance(cause,
+                                                                    urllib.error.HTTPError):
+        cause = cause.reason
+    return isinstance(cause, TimeoutError)
+
+
+def _send(what: str, call: Callable[[], _T], verbose: bool, retry: bool) -> _T:
+    """One request, ``what``, timed. A timeout names it and how long it took; with
+    ``retry`` it is sent once more. A refusal or a wrong answer is never sent again."""
+    for attempt in (1, 2):
+        started = time.monotonic()
+        try:
+            answer = call()
+        except CanaryError as exc:
+            took = time.monotonic() - started
+            if verbose:
+                print(f"[handles-canary] {what}: {took:.1f}s, {exc.msg}", file=sys.stderr)
+            if not _timed_out(exc):
+                raise
+            if retry and attempt == 1:
+                print(f"[handles-canary] {what} timed out after {took:.1f}s; sending it once "
+                      "more", file=sys.stderr)
+                continue
+            again = " on its one retry" if attempt == 2 else ""
+            raise CanaryError(exc.code, f"{what} timed out after {took:.1f}s{again}: "
+                                        f"{exc.msg}") from exc
+        if verbose:
+            print(f"[handles-canary] {what}: {time.monotonic() - started:.1f}s",
+                  file=sys.stderr)
+        return answer
+    raise AssertionError("unreachable")
+
+
+@contextmanager
+def _timing(verbose: bool, retry: bool) -> Iterator[None]:
+    """Every request ``mcp_public_canary.py``'s two senders make in the block, this
+    canary's and the old stack's own canary's, through ``_send``."""
+    post, get_json = public._post, public._get_json
+
+    def timed_post(url, payload, timeout, session_id=None,
+                   accepted_http_statuses=frozenset(), bearer=None):
+        method = payload.get("method")
+        if method == "tools/call":
+            method = f"tools/call {payload.get('params', {}).get('name')}"
+        who = "anonymous" if not bearer else "as the canary"
+        return _send(f"POST {url} {method} ({who})", lambda: post(
+            url, payload, timeout, session_id=session_id,
+            accepted_http_statuses=accepted_http_statuses, bearer=bearer), verbose, retry)
+
+    def timed_get_json(url, timeout):
+        return _send(f"GET {url}", lambda: get_json(url, timeout), verbose, retry)
+
+    public._post, public._get_json = timed_post, timed_get_json
+    try:
+        yield
+    finally:
+        public._post, public._get_json = post, get_json
 
 
 def handles() -> dict[str, Any]:
@@ -164,7 +240,7 @@ def assert_new_challenge(url: str, timeout: float) -> None:
                              f"naming {expected}")
 
 
-def assert_new_handles(url: str, key: str, timeout: float) -> None:
+def assert_new_handles(url: str, key: str, timeout: float, verbose: bool = False) -> None:
     """Every new handle served (``405``), every old-only one and an unknown name not
     (``404``), on ``/api/tools/<name>``, read-only."""
     record = handles()
@@ -174,7 +250,8 @@ def assert_new_handles(url: str, key: str, timeout: float) -> None:
     missing: list[str] = []
     extra: list[str] = []
     for name in sorted(new | absent):
-        status = _get_status(base + name, key, timeout)
+        status = _send(f"GET {base + name}", lambda: _get_status(base + name, key, timeout),
+                       verbose, retry=False)
         if status == 401:
             raise CanaryError(6, f"the doors refused {PROBE_KEY_ENV} (HTTP 401): it is not a "
                                  "live API key")
@@ -193,18 +270,21 @@ def run(side: str, url: str, timeout: float, verbose: bool, unkeyed: bool = Fals
     """The canary for ``side`` (``auto``: the one serving). Its exit code. ``unkeyed``: the
     new side's unkeyed checks alone, its handle set owed."""
     try:
-        serving = serving_side(url, timeout)
-        if side != "auto" and side != serving:
-            raise CanaryError(8, f"asked for the {side} side, but the {serving} side serves "
-                                 f"{url}")
-        if serving == "old":
-            # The old stack's own canary, whole; it exits with its own codes.
-            try:
-                return public.main(["--url", url, "--assert-handles",
-                                    *(["--verbose"] if verbose else [])])
-            except SystemExit as exit_:
-                return exit_.code if isinstance(exit_.code, int) else 1
-        assert_new_challenge(url, timeout)
+        with _timing(verbose, retry=True):
+            serving = serving_side(url, timeout)
+            if side != "auto" and side != serving:
+                raise CanaryError(8, f"asked for the {side} side, but the {serving} side "
+                                     f"serves {url}")
+            if serving == "old":
+                # The old stack's own canary, whole; it exits with its own codes.
+                try:
+                    return public.main(["--url", url, "--timeout", str(timeout),
+                                        "--assert-handles",
+                                        *(["--verbose"] if verbose else [])])
+                except SystemExit as exit_:
+                    return exit_.code if isinstance(exit_.code, int) else 1
+        with _timing(verbose, retry=False):
+            assert_new_challenge(url, timeout)
         if unkeyed:
             print("[handles-canary] the new side serves: anonymous initialize challenged, the "
                   "doors' resource document. Its handle set is owed after verify: dispatch "
@@ -215,7 +295,7 @@ def run(side: str, url: str, timeout: float, verbose: bool, unkeyed: bool = Fals
         if not key:
             raise CanaryError(7, f"the new side's handle set is unchecked: {PROBE_KEY_ENV} (a "
                                  "probe owner's API key) is not set")
-        assert_new_handles(url, key, timeout)
+        assert_new_handles(url, key, timeout, verbose)
     except CanaryError as exc:
         print(f"[handles-canary] {exc.msg}", file=sys.stderr)
         return exc.code
@@ -233,8 +313,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--unkeyed", action="store_true",
                         help="the new side's unkeyed checks alone, its handle set owed")
     parser.add_argument("--url", default=public.DEFAULT_URL)
-    parser.add_argument("--timeout", type=float, default=public.DEFAULT_TIMEOUT)
-    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                        help=f"each request's timeout, in seconds (default {DEFAULT_TIMEOUT})")
+    parser.add_argument("--verbose", action="store_true", help="time every request")
     args = parser.parse_args(argv)
     if args.unkeyed and args.side != "new":
         parser.error("--unkeyed is the new side's")

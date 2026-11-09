@@ -208,9 +208,112 @@ def test_the_old_side_is_the_old_stacks_full_canary(monkeypatch):
 
     monkeypatch.setattr(public, "main", old_main)
     assert canary.run("old", URL, 1.0, True) == 4
-    assert calls == [["--url", URL, "--assert-handles", "--verbose"]]
+    assert calls == [["--url", URL, "--timeout", "1.0", "--assert-handles", "--verbose"]]
     monkeypatch.setattr(public, "main", lambda argv: 0)
     assert canary.run("auto", URL, 1.0, False) == 0
+
+
+# --- timeouts: the canary's own, one retry for a timeout, never for an answer --------
+
+
+def test_the_canary_has_its_own_timeout_and_hands_it_to_the_old_canary(monkeypatch):
+    # The old stack's anonymous answers took close to 10 s from GitHub's runners and
+    # crossed mcp_public_canary.py's own 10 s inside the deploy kit's probe.
+    assert canary.DEFAULT_TIMEOUT == 30.0 > public.DEFAULT_TIMEOUT
+    asked: list[tuple] = []
+    monkeypatch.setattr(canary, "run", lambda *args: asked.append(args) or 0)
+    assert canary.main(["--side", "auto"]) == 0
+    assert asked == [("auto", public.DEFAULT_URL, 30.0, False, False)]
+
+
+def _timeout(url):
+    try:
+        raise TimeoutError("The read operation timed out")
+    except TimeoutError as exc:
+        raise public.CanaryError(2, f"timeout after 30.0s: {url}") from exc
+
+
+class Slow:
+    """The old side, whose anonymous initialize times out its first ``slow`` times."""
+
+    def __init__(self, monkeypatch, slow):
+        Doors(monkeypatch, side="old")
+        self.posts = 0
+        answer = public._post
+
+        def post(url, payload, timeout, **kwargs):
+            self.posts += 1
+            if self.posts <= slow:
+                _timeout(url)
+            return answer(url, payload, timeout, **kwargs)
+
+        monkeypatch.setattr(public, "_post", post)
+        # The old stack's own canary, sending through the same sender.
+        monkeypatch.setattr(public, "main", lambda argv: public._post(
+            URL, public._INIT_PAYLOAD, 30.0, accepted_http_statuses=frozenset({401}))[0] - 401)
+
+
+def test_a_slow_first_answer_is_sent_once_more_and_passes(monkeypatch, capsys):
+    slow = Slow(monkeypatch, slow=1)
+    assert canary.run("auto", URL, 30.0, True) == 0
+    # The side's read once, retried once, then the old canary's own request.
+    assert slow.posts == 3
+    err = capsys.readouterr().err
+    assert f"POST {URL} initialize (anonymous) timed out after" in err
+    assert "sending it once more" in err
+    assert f"POST {URL} initialize (anonymous): " in err
+
+
+def test_the_old_canarys_own_slow_request_is_sent_once_more(monkeypatch):
+    slow = Slow(monkeypatch, slow=0)
+    answer = public._post
+    timed_out = []
+
+    def post(url, payload, timeout, **kwargs):
+        if slow.posts == 1 and not timed_out:
+            timed_out.append(url)
+            _timeout(url)
+        return answer(url, payload, timeout, **kwargs)
+
+    monkeypatch.setattr(public, "_post", post)
+    assert canary.run("old", URL, 30.0, False) == 0
+    assert (timed_out, slow.posts) == ([URL], 2)
+
+
+def test_two_timeouts_fail_naming_the_request(monkeypatch, capsys):
+    slow = Slow(monkeypatch, slow=2)
+    assert canary.run("auto", URL, 30.0, False) == 2
+    assert slow.posts == 2
+    err = capsys.readouterr().err
+    assert f"POST {URL} initialize (anonymous) timed out after " in err
+    assert f"s on its one retry: timeout after 30.0s: {URL}" in err
+
+
+def _refused(url):
+    raise public.CanaryError(2, f"HTTP 502 from {url}: Bad Gateway")
+
+
+@pytest.mark.parametrize("answer, code", [
+    (_refused, 2),                          # a refusal
+    (lambda url: (200, {}, b"{}"), 9),      # a wrong status
+])
+def test_a_wrong_answer_is_never_sent_again(monkeypatch, capsys, answer, code):
+    Doors(monkeypatch, side="old")
+    posts: list[str] = []
+    monkeypatch.setattr(public, "_post", lambda url, *a, **k: posts.append(url) or answer(url))
+    assert canary.run("auto", URL, 30.0, False) == code
+    assert posts == [URL]
+    assert "once more" not in capsys.readouterr().err
+
+
+def test_a_doors_timeout_is_not_sent_again(monkeypatch, capsys):
+    monkeypatch.setenv(canary.PROBE_KEY_ENV, KEY)
+    doors = Doors(monkeypatch)
+    monkeypatch.setattr(canary, "_get_status", lambda url, key, timeout: (
+        doors.gets.append((url, key)), _timeout(url)))
+    assert canary.run("new", URL, 30.0, False) == 2
+    assert len(doors.gets) == 1
+    assert "timed out after" in capsys.readouterr().err
 
 
 # --- handles-canary.yml: by hand, read-only, in production ---------------------------
@@ -237,3 +340,93 @@ def test_the_workflow_runs_the_canary_by_hand_and_nothing_else():
         "TINYASSETS_WIKI_CANARY_TOKEN": "${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}",
         "TA_PROBE_KEY": "${{ secrets.TA_PROBE_KEY }}",
     }
+
+
+# --- the real senders under the timed wrappers ----------------------------------------
+
+import inspect  # noqa: E402
+import urllib.error  # noqa: E402
+
+
+@pytest.mark.parametrize("fault, sends", [
+    (TimeoutError("The read operation timed out"), 2),             # a read timeout
+    (urllib.error.URLError(TimeoutError("timed out")), 2),          # a connect timeout
+    (urllib.error.URLError(ConnectionRefusedError(111, "refused")), 1),
+    (urllib.error.HTTPError(URL, 502, "Bad Gateway", {}, None), 1),
+])
+@pytest.mark.parametrize("send", ["_post", "_get_json"])
+def test_only_a_timeout_of_the_real_senders_is_sent_again(monkeypatch, fault, sends, send):
+    timeouts: list[float] = []
+
+    def urlopen(request, timeout=None, context=None):
+        timeouts.append(timeout)
+        raise fault
+
+    monkeypatch.setattr(public.urllib.request, "urlopen", urlopen)
+    args = ((URL, public._INIT_PAYLOAD, 30.0) if send == "_post" else (METADATA, 30.0))
+    with canary._timing(False, retry=True), pytest.raises(public.CanaryError):
+        getattr(public, send)(*args)
+    assert timeouts == [30.0] * sends
+
+
+def _bound(fn, args, kwargs):
+    bound = inspect.signature(fn).bind(*args, **kwargs)
+    bound.apply_defaults()
+    return dict(bound.arguments)
+
+
+def test_the_timed_senders_change_nothing_about_the_call(monkeypatch):
+    post, get_json = public._post, public._get_json
+    seen: list[dict] = []
+    monkeypatch.setattr(public, "_post", lambda *a, **k: seen.append(_bound(post, a, k))
+                        or (200, {}, b"body"))
+    monkeypatch.setattr(public, "_get_json", lambda *a, **k: seen.append(_bound(get_json, a, k))
+                        or {"doc": 1})
+    calls = [(post, "_post", (URL, {"method": "tools/list"}, 30.0, "s1"),
+              {"accepted_http_statuses": frozenset({403}), "bearer": "b"}),
+             (post, "_post", (URL, public._INIT_PAYLOAD, 30.0), {}),
+             (get_json, "_get_json", (METADATA, 30.0), {})]
+    with canary._timing(False, retry=True):
+        answers = [getattr(public, name)(*a, **k) for _, name, a, k in calls]
+    assert seen == [_bound(fn, a, k) for fn, _, a, k in calls]
+    assert answers == [(200, {}, b"body"), (200, {}, b"body"), {"doc": 1}]
+
+
+@pytest.mark.parametrize("side", ["old", "new"])
+def test_the_senders_are_put_back_even_on_a_failure(monkeypatch, side):
+    Doors(monkeypatch, side=side)
+    senders = (public._post, public._get_json)
+    inside: list[bool] = []
+
+    def boom(*_):
+        inside.append((public._post, public._get_json) != senders)
+        raise RuntimeError("an uncaught failure inside the block")
+
+    monkeypatch.setattr(public, "main", boom)
+    monkeypatch.setattr(canary, "assert_new_challenge", boom)
+    with pytest.raises(RuntimeError):
+        canary.run(side, URL, 30.0, False, unkeyed=side == "new")
+    assert inside == [True]
+    assert (public._post, public._get_json) == senders
+
+
+@pytest.mark.parametrize("kind", ["post", "get"])
+def test_the_doors_challenge_is_never_sent_again(monkeypatch, kind):
+    # The side is read (an initialize, the document), then the doors' own challenge (an
+    # initialize, the document): the second of ``kind`` times out, and is sent once.
+    Doors(monkeypatch)
+    senders = {"post": public._post, "get": public._get_json}
+    sent: list[str] = []
+
+    def slow(name):
+        def send(url, *args, **kwargs):
+            sent.append(name)
+            if name == kind and sent.count(name) == 2:
+                _timeout(url)
+            return senders[name](url, *args, **kwargs)
+        return send
+
+    monkeypatch.setattr(public, "_post", slow("post"))
+    monkeypatch.setattr(public, "_get_json", slow("get"))
+    assert canary.run("new", URL, 30.0, False, unkeyed=True) == 2
+    assert sent.count(kind) == 2
