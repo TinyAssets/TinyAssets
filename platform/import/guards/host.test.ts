@@ -4,12 +4,14 @@
  * (`fake-host.sh`): census makes the run's Droplet as the design says (and no second one while
  * another import host is up), every other mode finds it or refuses, its host key is pinned
  * from its tag and never trusted from `ssh-keyscan`, the egress check refuses an address that
- * is not the reserved IP, clean destroys only a Droplet held to the run's name and tags, the
+ * is not the reserved IP, clean destroys only a Droplet held to the run's name, tags and kind, the
  * orphan guard names each host and warns past 7 days, and the account is resolved from the
  * zone. The workflow's own steps are held to that order.
  */
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
@@ -49,11 +51,11 @@ interface State {
   made?: Record<string, unknown>[];
 }
 
-/** A tagged import host, as census makes it, `days` old. */
-function droplet(run: string, id: number, days = 0, tags?: string[]): Droplet {
+/** A tagged import host, as census makes it for `kind`, `days` old. */
+function droplet(run: string, id: number, days = 0, tags?: string[], kind = "rehearsal"): Droplet {
   return { id, name: `tinyassets-import-${run}`, status: "active",
            created_at: new Date(Date.parse(NOW) - days * 86_400_000).toISOString(),
-           tags: tags ?? ["tinyassets", "import-window", `ta-import-${run}`,
+           tags: tags ?? ["tinyassets", "import-window", `ta-import-${run}`, `ta-kind-${kind}`,
                           `ta-hostkey-${HOSTKEY_HEX}`] };
 }
 
@@ -91,10 +93,12 @@ function world(start: Partial<State> = {}) {
   const tools = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
   const outputs = () => Object.fromEntries(readFileSync(files.output, "utf8").split("\n")
     .filter(Boolean).map((line) => line.split("=") as [string, string]));
-  const ensure = (mode: string, run = "r1") =>
-    host(["ensure", "--run", run, "--mode", mode, "--deploy-key", deployKey,
+  const ensure = (mode: string, run = "r1", kind = "rehearsal") =>
+    host(["ensure", "--run", run, "--mode", mode, "--kind", kind, "--deploy-key", deployKey,
           "--output", files.output]);
-  return { host, now, calls, tools, outputs, ensure, files };
+  const destroy = (id: string, kind = "rehearsal") =>
+    host(["destroy", "--run", "r1", "--kind", kind, "--id", id]);
+  return { host, now, calls, tools, outputs, ensure, destroy, files };
 }
 
 describe("census makes the run's import host", () => {
@@ -109,7 +113,8 @@ describe("census makes the run's import host", () => {
     expect(body).toMatchObject({
       name: "tinyassets-import-r1", region: "sfo3", size: "s-4vcpu-8gb", image: "debian-13-x64",
       ipv6: false, ssh_keys: [41],
-      tags: ["tinyassets", "import-window", "ta-import-r1", `ta-hostkey-${HOSTKEY_HEX}`] });
+      tags: ["tinyassets", "import-window", "ta-import-r1", "ta-kind-rehearsal",
+             `ta-hostkey-${HOSTKEY_HEX}`] });
     // The cloud-init: the three packages, the anchor route kept across boots, then the marker.
     const userData = String(body["user_data"]);
     expect(userData.startsWith("#cloud-config\n")).toBe(true);
@@ -204,7 +209,8 @@ describe("every other mode finds the run's host", () => {
   it("gives clean a held host to destroy, unreached, when it lost the reserved IP or its key", () => {
     // Lost the reserved IP, or never set up (two host-key tags, or none): found by its name and
     // tags, with no address, so it is never reached; and destroy takes it.
-    for (const tags of [undefined, ["tinyassets", "import-window", "ta-import-r1"],
+    for (const tags of [undefined, ["tinyassets", "import-window", "ta-import-r1",
+                                    "ta-kind-rehearsal"],
                         [...droplet("r1", 5).tags, `ta-hostkey-${"0".repeat(64)}`]]) {
       const w = world({ droplets: [droplet("r1", 5, 0, tags)],
                         reserved_ips: { [RESERVED]: { region: "sfo3", droplet: tags ? 5 : 8 } } });
@@ -212,7 +218,7 @@ describe("every other mode finds the run's host", () => {
       expect(run.status).toBe(0);
       expect(run.out).toContain("the host is not reached, and its copy goes with it");
       expect(w.outputs()).toMatchObject({ id: "5", address: "" });
-      expect(w.host(["destroy", "--run", "r1", "--id", "5"]).status).toBe(0);
+      expect(w.destroy("5").status).toBe(0);
       expect(w.calls().filter((call) => call.startsWith("DELETE"))).toEqual(["DELETE /droplets/5"]);
       expect(w.calls()).not.toContain(`POST /reserved_ips/${RESERVED}/actions`);
     }
@@ -235,13 +241,79 @@ describe("every other mode finds the run's host", () => {
       expect(run.status).toBe(2);
       expect(run.out).toContain("is not its import host by name and tags");
       expect(existsSync(w.files.output)).toBe(false);
-      expect(w.host(["destroy", "--run", "r1", "--id", "5"]).status).toBe(2);
+      expect(w.destroy("5").status).toBe(2);
       expect(w.calls().filter((call) => call.startsWith("DELETE"))).toEqual([]);
     }
     // Two Droplets in the run's tag: neither.
     const two = world({ droplets: [droplet("r1", 5), droplet("r1", 6)] });
     expect(two.ensure("clean").status).toBe(2);
     expect(existsSync(two.files.output)).toBe(false);
+  });
+});
+
+describe("the dispatch's kind", () => {
+  const MODES = ["census", "bundle", "stage", "verify", "wipe", "admit", "dlq", "offsite", "clean"];
+  const OTHER: Record<string, string> = { rehearsal: "window", window: "rehearsal" };
+
+  it("census tags the host with it", () => {
+    for (const kind of ["rehearsal", "window"]) {
+      const w = world();
+      expect(w.ensure("census", "r1", kind).status).toBe(0);
+      const tags = w.now().made![0]!["tags"] as string[];
+      expect(tags.filter((tag) => tag.startsWith("ta-kind-"))).toEqual([`ta-kind-${kind}`]);
+    }
+    expect(world().ensure("census", "r1", "drill").status).not.toBe(0);
+  });
+
+  it("a host of the other kind is never adopted, reached or destroyed, in any mode", () => {
+    for (const kind of ["rehearsal", "window"]) {
+      // Reached (the reserved IP on it) or not (lost it): a mistaken dispatch of the other
+      // kind, against this run's own id.
+      for (const on of [5, 8]) {
+        for (const mode of MODES) {
+          const w = world({ droplets: [droplet("r1", 5, 0, undefined, kind)],
+                            reserved_ips: { [RESERVED]: { region: "sfo3", droplet: on } } });
+          const run = w.ensure(mode, "r1", OTHER[kind]);
+          expect(run.status).toBe(2);
+          expect(run.out).toContain(`refused: Droplet 5 is this run's import host but not a ` +
+                                    `${OTHER[kind]}'s (its kind tags: ta-kind-${kind})`);
+          // No id, no address: the pin, the run and the destroy never start.
+          expect(existsSync(w.files.output)).toBe(false);
+          expect(w.calls()).not.toContain("POST /droplets");
+          expect(w.calls()).not.toContain(`POST /reserved_ips/${RESERVED}/actions`);
+          expect(w.tools()).toEqual([]);
+          // And destroy, given the id by hand, refuses it too.
+          expect(w.destroy("5", OTHER[kind]).status).toBe(2);
+          expect(w.calls().filter((call) => call.startsWith("DELETE"))).toEqual([]);
+          expect(w.now().droplets.map((each) => each.id)).toEqual([5]);
+        }
+        // Its own kind takes it.
+        const own = world({ droplets: [droplet("r1", 5, 0, undefined, kind)],
+                            reserved_ips: { [RESERVED]: { region: "sfo3", droplet: on } } });
+        expect(own.ensure("clean", "r1", kind).status).toBe(0);
+        expect(own.outputs()["id"]).toBe("5");
+        expect(own.destroy("5", kind).status).toBe(0);
+        expect(own.calls().filter((call) => call.startsWith("DELETE"))).toEqual(["DELETE /droplets/5"]);
+      }
+    }
+  });
+
+  it("a host with no kind tag, or both, is no kind's", () => {
+    const base = ["tinyassets", "import-window", "ta-import-r1", `ta-hostkey-${HOSTKEY_HEX}`];
+    for (const tags of [base, [...base, "ta-kind-rehearsal", "ta-kind-window"]]) {
+      for (const kind of ["rehearsal", "window"]) {
+        const w = world({ droplets: [droplet("r1", 5, 0, tags)],
+                          reserved_ips: { [RESERVED]: { region: "sfo3", droplet: 5 } } });
+        for (const mode of ["verify", "clean"]) {
+          const run = w.ensure(mode, "r1", kind);
+          expect(run.status).toBe(2);
+          expect(run.out).toContain("is this run's import host but not a");
+          expect(existsSync(w.files.output)).toBe(false);
+        }
+        expect(w.destroy("5", kind).status).toBe(2);
+        expect(w.calls().filter((call) => call.startsWith("DELETE"))).toEqual([]);
+      }
+    }
   });
 });
 
@@ -272,6 +344,47 @@ describe("the host key", () => {
     const unset = pin({ FAKE_MARKER: "r2" });
     expect(unset.status).toBe(2);
     expect(unset.out).toContain("refused: the import host's set-up did not finish");
+  });
+});
+
+describe("the egress check's own JavaScript, run in Node", () => {
+  it("prints the trace, and metadata=blocked only when the metadata service never answers", async () => {
+    const consts = JSON.parse(spawnSync("python3", ["-c",
+      "import importlib.util,json,sys; sys.path.insert(0, sys.argv[2]);" +
+      "s=importlib.util.spec_from_file_location('h', sys.argv[1]);" +
+      "h=importlib.util.module_from_spec(s); s.loader.exec_module(h);" +
+      "print(json.dumps([h.TRACE_JS, h.TRACE, h.METADATA]))",
+      join(HERE, "..", "host.py"), join(REPO, "scripts")],
+      { encoding: "utf8", env: { PATH: "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" } }).stdout) as
+      [string, string, string];
+    const [js, trace, metadata] = consts;
+    const server = createServer((req, res) => {
+      res.statusCode = req.url === "/trace" ? 200 : 404;
+      res.end(req.url === "/trace" ? "fl=1\nip=203.0.113.7\n" : "9000");
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const port = (server.address() as AddressInfo).port;
+    const closed = createServer();
+    await new Promise<void>((done) => closed.listen(0, "127.0.0.1", done));
+    const shut = (closed.address() as AddressInfo).port;
+    await new Promise<void>((done) => closed.close(() => done()));
+    const run = (meta: string) => new Promise<string>((done) => {
+      const child = spawn(process.execPath, ["-e", js.replace(trace, `http://127.0.0.1:${port}/trace`)
+        .replace(metadata, meta)]);
+      let out = "";
+      child.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+      child.on("close", () => done(out));
+    });
+    try {
+      // Any answer, even a 404, is reachable; a refused connection is blocked.
+      const answered = await run(`http://127.0.0.1:${port}/metadata/v1/id`);
+      expect(answered.split("\n")).toContain("metadata=reachable");
+      expect(answered).toContain("ip=203.0.113.7");
+      const refused = await run(`http://127.0.0.1:${shut}/metadata/v1/id`);
+      expect(refused.split("\n")).toContain("metadata=blocked");
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
+    }
   });
 });
 
@@ -365,22 +478,22 @@ describe("clean destroys the run's host", () => {
                                  { ...droplet("r1", 7), name: "tinyassets-dr-drill" },
                                  droplet("r1", 8, 0, ["tinyassets", "ta-import-r1"])] });
     for (const id of ["6", "7", "8"]) {
-      const run = w.host(["destroy", "--run", "r1", "--id", id]);
+      const run = w.destroy(id);
       expect(run.status).toBe(2);
       expect(run.out).toContain(`Droplet ${id} is tagged for this run but is not its import host`);
     }
     expect(w.calls().filter((call) => call.startsWith("DELETE"))).toEqual([]);
-    const run = w.host(["destroy", "--run", "r1", "--id", "5"]);
+    const run = w.destroy("5");
     expect(run.status).toBe(0);
     expect(run.out).toContain("the run's import host (Droplet 5) is destroyed");
     expect(w.calls().filter((call) => call.startsWith("DELETE"))).toEqual(["DELETE /droplets/5"]);
     expect(w.now().droplets.map((each) => each.id)).toEqual([6, 7, 8]);
-    expect(w.host(["destroy", "--run", "r1", "--id", "05"]).status).toBe(2);
+    expect(w.destroy("05").status).toBe(2);
   });
 
   it("names the Droplet when its deletion fails", () => {
     const w = world({ droplets: [droplet("r1", 5)], fail: ["DELETE /droplets/5"] });
-    const run = w.host(["destroy", "--run", "r1", "--id", "5"]);
+    const run = w.destroy("5");
     expect(run.status).toBe(1);
     expect(run.out).toContain("::error::the import host's deletion failed: Droplet 5 may still " +
                               "be billing; delete it by hand");
@@ -453,10 +566,37 @@ describe("the workflow's host steps", () => {
     expect(destroys({ address: "", pin: "skipped", run: "skipped" })).toBe(true);
     // An earlier step failed with the host reached and pinned: kept, its clean never ran.
     expect(destroys({ address: RESERVED, pin: "success", run: "skipped" })).toBe(false);
+    // The pin or the run cancelled (the dispatch was): never shown unreachable, so kept.
+    expect(destroys({ address: RESERVED, pin: "cancelled", run: "skipped" })).toBe(false);
+    expect(destroys({ address: RESERVED, pin: "success", run: "cancelled" })).toBe(false);
     // No held host (ensure refused or found none), or another mode: nothing.
     expect(destroys({ address: "", pin: "skipped", run: "skipped", id: "" })).toBe(false);
     expect(destroys({ address: RESERVED, pin: "success", run: "success", mode: "verify" }))
       .toBe(false);
+    // ensure and destroy are held to the kind the dispatch's rehearsal input says.
+    const argsOf = (name: string, rehearsal: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "ta-import-step-"));
+      temps.push(dir);
+      mkdirSync(join(dir, "bin"));
+      const log = join(dir, "args");
+      writeFileSync(join(dir, "bin", "python3"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\n`);
+      chmodSync(join(dir, "bin", "python3"), 0o755);
+      const result = spawnSync("bash", ["-c", step(name).run!], {
+        encoding: "utf8",
+        env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin`, RUNNER_TEMP: dir, GITHUB_OUTPUT: join(dir, "o"),
+               GITHUB_STEP_SUMMARY: join(dir, "s"), MODE: "clean", RUN_ID: "r1", DROPLET_ID: "5",
+               REHEARSAL: rehearsal } });
+      expect(result.status).toBe(0);
+      return readFileSync(log, "utf8");
+    };
+    for (const [name, command] of [["Find or make the run's import host", "ensure"],
+                                   ["Destroy the run's import host", "destroy"]] as const) {
+      expect(step(name).env!["REHEARSAL"]).toBe("${{ inputs.rehearsal }}");
+      expect(argsOf(name, "true")).toMatch(
+        new RegExp(`^platform/import/host\\.py ${command} --run r1 .*--kind rehearsal `));
+      expect(argsOf(name, "false")).toMatch(
+        new RegExp(`^platform/import/host\\.py ${command} --run r1 .*--kind window `));
+    }
     expect(steps.find((each) => each.name === "Pin its host key")!.id).toBe("pin");
     expect(steps.find((each) => each.name === "Run the step on the import host")!.id).toBe("run");
     // Nothing of the production droplet, and no host key taken from a scan.

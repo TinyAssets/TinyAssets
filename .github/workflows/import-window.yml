@@ -40,9 +40,11 @@ name: Import window (manual)
 # in that one process's environment (window.sh): never an argument, an exported variable, a
 # container's environment or config (`docker inspect`), a file or a log.
 #
-# clean destroys the run's host once it is held to its name and tags, even when the host was
-# never set up or lost the reserved IP (then it is not reached at all: its disk, and the copy
-# on it, go with it); a clean that the host itself refuses destroys nothing.
+# clean destroys the run's host once it is held to its name, tags and kind (census tags it
+# ta-kind-<rehearsal|window>, and every dispatch of the other kind is refused before the host
+# is reached or destroyed), even when the host was never set up or lost the reserved IP (then
+# it is not reached at all: its disk, and the copy on it, go with it); a clean that the host
+# itself refuses destroys nothing.
 
 on:
   workflow_dispatch:
@@ -189,9 +191,14 @@ jobs:
           IMPORT_RESERVED_IP: ${{ secrets.IMPORT_RESERVED_IP }}
           MODE: ${{ inputs.mode }}
           RUN_ID: ${{ inputs.run }}
+          REHEARSAL: ${{ inputs.rehearsal }}
         run: |
+          set -euo pipefail
+          # The kind census tags the host with, and every later dispatch is held to.
+          kind=rehearsal
+          [ "${REHEARSAL}" = true ] || kind=window
           python3 platform/import/host.py ensure --run "${RUN_ID}" --mode "${MODE}" \
-            --deploy-key "${RUNNER_TEMP}/do_deploy.pub" --output "${GITHUB_OUTPUT}"
+            --kind "${kind}" --deploy-key "${RUNNER_TEMP}/do_deploy.pub" --output "${GITHUB_OUTPUT}"
 
       - name: Pin its host key
         id: pin
@@ -303,8 +310,11 @@ jobs:
         env:
           DO_TOKEN: ${{ secrets.IMPORT_DO_TOKEN }}
           RUN_ID: ${{ inputs.run }}
+          REHEARSAL: ${{ inputs.rehearsal }}
           DROPLET_ID: ${{ steps.host.outputs.id }}
         run: |
           set -euo pipefail
-          python3 platform/import/host.py destroy --run "${RUN_ID}" --id "${DROPLET_ID}" \
-            | tee -a "${GITHUB_STEP_SUMMARY}"
+          kind=rehearsal
+          [ "${REHEARSAL}" = true ] || kind=window
+          python3 platform/import/host.py destroy --run "${RUN_ID}" --kind "${kind}" \
+            --id "${DROPLET_ID}" | tee -a "${GITHUB_STEP_SUMMARY}"
