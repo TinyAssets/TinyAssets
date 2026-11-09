@@ -246,9 +246,11 @@ describe("alarm guard", () => {
   it("lets only the object's erasure wiring call the gate's wipe", () => {
     const callers = [...workerSources()].flatMap(([path, source]) =>
       [...source.matchAll(/\.wipe\(/g)].map(() => path));
-    expect(callers).toEqual(["owner/src/owner-do.ts"]);
+    // The erasure's, and the cutover's discard's (`Erasure.discard`), which leaves no tombstone.
+    expect(callers).toEqual(["owner/src/owner-do.ts", "owner/src/owner-do.ts"]);
     expect(workerSources().get("owner/src/owner-do.ts"))
-      .toContain("wipe: () => this.#gate.wipe(writeTombstone),");
+      .toContain("      wipe: () => this.#gate.wipe(writeTombstone),\n" +
+                 "      bare: () => this.#gate.wipe(() => undefined),\n");
   });
 
   it("finds the object's one hand-off", () => {

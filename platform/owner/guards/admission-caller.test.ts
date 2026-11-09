@@ -171,9 +171,13 @@ describe("admission caller guard", () => {
       rows.filter(test).map((row) => row.door).sort();
     expect(by((row) => row.class === "admission"))
       .toEqual(by((row) => row.caller === "reserved" || row.caller === "erasure"));
-    expect(by((row) => row.class === "import")).toEqual(by((row) => row.caller === "import"));
-    expect(by((row) => row.class === "import")).toEqual(["importFileBegin", "importFileCommit",
-      "importFileStored", "importFiles", "importNotice", "importRows"]);
+    expect(by((row) => row.class === "import"))
+      .toEqual(by((row) => row.caller === "import" || row.caller === "discard"));
+    expect(by((row) => row.class === "import")).toEqual(["importCheck", "importDiscard",
+      "importFileBegin", "importFileCommit", "importFileStored", "importFiles", "importNotice",
+      "importRows"]);
+    // The discard alone takes a rehearsal's name past pending.
+    expect(by((row) => row.caller === "discard")).toEqual(["importDiscard"]);
     expect(rows.filter((row) => row.class === "import").every((row) => row.handler === "import"))
       .toBe(true);
     // The caller's constant is the binding check's, and its sender the binder's import too.

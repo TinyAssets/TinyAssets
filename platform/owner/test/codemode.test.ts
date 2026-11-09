@@ -15,7 +15,8 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { CODEMODE_TIMEOUT_MS, codemodeSandbox, type HooksService } from "../src/codemode";
-import { HOOK_DEFAULTS, hookSettings, validate } from "../src/policy";
+import { HOOK_DEFAULTS, validate } from "../../contract/src/policy-document";
+import { hookSettings } from "../src/policy";
 
 /** The hooks Worker, each execution's name recorded on `names`. */
 function named(names: string[]): HooksService {

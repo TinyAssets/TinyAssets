@@ -339,6 +339,17 @@ try {
   check("window: peak(8 MiB body), worst of two runs", window[8].most,
         costs.WINDOW_UNITS * UNIT, "WINDOW_UNITS");
 
+  // The cutover's check (`importCheck`): every chunk read back through the store as a verified
+  // range, so the owner isolate holds none of a chunk's bytes, whatever the file's size.
+  const checked = { 8: await twice("check", 8), 32: await twice("check", 32) };
+  check("check: peak(32 MiB) - peak(8 MiB), least of two runs",
+        checked[32].least - checked[8].least, QUARTER, "a quarter chunk");
+  check("check: peak(32 MiB), worst of two runs", checked[32].most, QUARTER,
+        "a quarter chunk: no chunk's bytes in hand");
+  if (peak.answer?.[0] !== 8) {
+    problems.push(`check: proved ${JSON.stringify(peak.answer)} chunks of 8`);
+  }
+
   check("fetch: peak(4 MiB body)", await peak("fetch", 4), costs.body_units[0] * UNIT,
         "bodyUnits(1)");
   check("fetch: peak(8 MiB body)", await peak("fetch", 8), costs.body_units[1] * UNIT,

@@ -1179,7 +1179,7 @@
       "handler": "import", "gate": "filing",
       "args": {
         "refused": "invalid import request",
-        "required": { "intent_id": {}, "path": {}, "mode": {}, "content_id": {} }, "optional": {}
+        "required": { "intent_id": {}, "path": {}, "mode": {}, "content_id": {}, "mtime_ms": {} }, "optional": {}
       }
     },
     {
@@ -1189,6 +1189,18 @@
         "refused": "invalid import request",
         "required": { "detail": {} }, "optional": {}
       }
+    },
+    {
+      "door": "importCheck", "class": "import", "caller": "import", "capability": null,
+      "handler": "import", "gate": "units",
+      "args": {
+        "refused": "invalid import request",
+        "required": { "part": {}, "page": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "importDiscard", "class": "import", "caller": "discard", "capability": null,
+      "handler": "import", "gate": "units", "args": "none"
     }
   ]
 }

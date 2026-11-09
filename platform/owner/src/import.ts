@@ -25,7 +25,22 @@
  *   `commit`): its bytes go from the staging bucket through the doors to `FILES`
  *   (`doors/src/file-bytes.ts`), never through this object; at most `IMPORT_INTENTS` uploads
  *   open at once, under `MAX_OPEN_INTENTS`;
- * - `importNotice`: one notice, that the old files are in `/workspace/imported`.
+ * - `importNotice`: one notice, that the old files are in `/workspace/imported`;
+ * - `importCheck` (slice 5): the owner read back through the object's own read paths, a page
+ *   at a time, for the job to hold to the bundle (`import/window.ts`, `verify`): every entry
+ *   as the files plane lists it (its path, kind, size, mode, content id and mtime); every
+ *   chunk its contents name read back through `FILES` under the owner's data key (all of
+ *   them: the old stack's owners are small, `import_research.md` §1, so none is sampled), the
+ *   files Worker opening each and rechecking it against its hash, this object holding none of
+ *   its bytes; the rows' count and order-free digest (`rowLeaf`); and the policy's digest,
+ *   the tier, the admission and the storage used. It is the record of what failed: a step
+ *   the consumer dropped (acknowledged, so no dead-letter queue holds it) shows as a
+ *   difference;
+ * - `importDiscard` (slice 5): the erasure's own deletion of every R2 object by the
+ *   namespace's prefix and its `deleteAll()`, with no tombstone, no erased record and no
+ *   issuer's deletion (those are the erasure's alone, `erase.ts`): taken while the owner is
+ *   `pending`, or for a rehearsal's name (`rehearsalRun`) in any state (the `discard`
+ *   caller, `owner-do.ts`).
  *
  * The import keeps no state of its own (no table, no migration). Each step is idempotent
  * from the owner's state: a file already at its path with the same content id, size and
@@ -33,12 +48,15 @@
  * and body is skipped, any other refused; the policy is set only while it is the default,
  * and skipped once it is the imported one; the notice is added once; an upload of the same
  * file still open is resumed, never begun again. So a delivery killed at any step converges
- * when it runs again. Everything it writes is the owner's own (`IMPORT_WRITER`).
+ * when it runs again. Everything it writes is the owner's own (`IMPORT_WRITER`), and each
+ * file keeps its mtime from the old stack (`mtime_ms`, the files plane's own column).
  */
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
 import { HEX32, HEX64 } from "../../contract/src/ids";
 import {
-  IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_INTENTS, IMPORT_ROWS,
+  bodyId, CHECK_CHUNKS, CHECK_FILES, CHECK_PARTS, CHECK_ROWS, type CheckChunk, type CheckEntry,
+  type CheckPart, type CheckState, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_INTENTS, IMPORT_ROWS,
+  NO_ROWS, rowLeaf, rowsSum,
 } from "../../contract/src/import-message";
 import { INLINE_BYTES, MAX_INTENT_CHUNKS, NOTICE_DETAIL } from "../../contract/src/limits";
 import { IMPORTED, storedPath, within } from "../../contract/src/paths";
@@ -68,7 +86,7 @@ export type ImportRow =
 export type ImportEntry =
   | { readonly kind: "dir"; readonly path: string }
   | { readonly kind: "file"; readonly path: string; readonly size: number; readonly mode: 0 | 1;
-      readonly content_id: string; readonly bytes: Uint8Array };
+      readonly content_id: string; readonly mtime_ms: number; readonly bytes: Uint8Array };
 
 export interface ImportRowsRequest {
   readonly rows: readonly ImportRow[];
@@ -97,7 +115,22 @@ export interface ImportFileCommitRequest {
   readonly path: string;
   readonly mode: 0 | 1;
   readonly content_id: string;
+  readonly mtime_ms: number;
 }
+
+/** A page of the check: its part (`CHECK_PARTS`) and its number, from 0. */
+export interface ImportCheckRequest {
+  readonly part: CheckPart;
+  readonly page: number;
+}
+
+/** A check's page: what the part read, and whether a page follows. */
+export type ImportCheckAnswer =
+  | { readonly part: "files"; readonly entries: CheckEntry[]; readonly more: boolean }
+  | { readonly part: "chunks"; readonly chunks: CheckChunk[]; readonly more: boolean }
+  | { readonly part: "rows"; readonly count: number; readonly sum: string;
+      readonly more: boolean }
+  | ({ readonly part: "state"; readonly more: false } & CheckState);
 
 export interface ImportNoticeRequest {
   readonly detail: string;
@@ -144,6 +177,24 @@ function modeOf(value: unknown): 0 | 1 {
   return value;
 }
 
+/** A file's mtime from the old stack: a whole number of milliseconds. */
+function mtimeOf(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw invalid("an mtime is a whole number of milliseconds");
+  }
+  return value;
+}
+
+/** A check's page as asked: one of its parts, and a whole page number. */
+function checkOf(r: Record<string, unknown>): ImportCheckRequest {
+  const { part, page } = r;
+  if (!CHECK_PARTS.includes(part as CheckPart) || typeof page !== "number"
+      || !Number.isSafeInteger(page) || page < 0 || (part === "state" && page !== 0)) {
+    throw invalid(`a check asks a page of ${CHECK_PARTS.join(", ")}`);
+  }
+  return { part: part as CheckPart, page };
+}
+
 /** A batch: a list of 1 to `most` items, held to `IMPORT_BATCH_BYTES` by `bytes`. */
 function batch(value: unknown, most: number, bytes: (items: unknown[]) => number): unknown[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > most) {
@@ -181,7 +232,7 @@ function entriesOf(value: unknown): ImportEntry[] {
     if (plain(entry) && keys(entry) === "kind,path" && entry["kind"] === "dir") {
       return { kind: "dir", path: importPath(entry["path"]) };
     }
-    if (!plain(entry) || keys(entry) !== "bytes,content_id,kind,mode,path,size"
+    if (!plain(entry) || keys(entry) !== "bytes,content_id,kind,mode,mtime_ms,path,size"
         || entry["kind"] !== "file" || !(entry["bytes"] instanceof Uint8Array)) {
       throw invalid("an entry is a folder, or an inline file and its bytes");
     }
@@ -193,7 +244,8 @@ function entriesOf(value: unknown): ImportEntry[] {
       throw invalid("an inline file's bytes are not its content id");
     }
     return { kind: "file", path: importPath(entry["path"]), size: bytes.byteLength,
-             mode: modeOf(entry["mode"]), content_id: entry["content_id"], bytes };
+             mode: modeOf(entry["mode"]), content_id: entry["content_id"],
+             mtime_ms: mtimeOf(entry["mtime_ms"]), bytes };
   });
 }
 
@@ -310,8 +362,9 @@ export const importDoors = Object.freeze({
         continue;
       }
       if (!there(o, entry.path, entry)) {
-        o.files.writeSmall(entry.path, entry.bytes,
-                           { expected: "", mode: entry.mode, writer: IMPORT_WRITER });
+        o.files.writeSmall(entry.path, entry.bytes, { expected: "", mode: entry.mode,
+                                                      writer: IMPORT_WRITER,
+                                                      mtime_ms: entry.mtime_ms });
         written += 1;
       }
     }
@@ -356,6 +409,7 @@ export const importDoors = Object.freeze({
   importFileCommit(o: OwnerState, { r }: Call<ImportFileCommitRequest>): Imported {
     const path = importPath(r["path"]);
     const mode = modeOf(r["mode"]);
+    const mtime = mtimeOf(r["mtime_ms"]);
     const intentId = r["intent_id"];
     if (typeof intentId !== "string" || !HEX32.test(intentId)
         || typeof r["content_id"] !== "string" || !HEX64.test(r["content_id"])) {
@@ -375,7 +429,8 @@ export const importDoors = Object.freeze({
     if (there(o, path, { content_id: r["content_id"], size, mode })) {
       return { written: 0, skipped: 1 };
     }
-    o.files.commit(intentId, path, { expected: "", mode, writer: IMPORT_WRITER, parents: true });
+    o.files.commit(intentId, path, { expected: "", mode, writer: IMPORT_WRITER, parents: true,
+                                     mtime_ms: mtime });
     return { written: 1, skipped: 0 };
   },
   /** The owner's one notice of the import, added once. */
@@ -389,5 +444,58 @@ export const importDoors = Object.freeze({
     }
     o.notices.add(IMPORT_NOTICE, detail, clock());
     return { added: true };
+  },
+  /**
+   * A page of the check, read through the object's own paths: the files plane's listing; each
+   * chunk read back through `FILES` (`Files.fetch`) as a verified one-byte range, so the files
+   * Worker opens the whole chunk under the owner's data key and rechecks its hash, and this
+   * object holds none of its bytes (one chunk a call, so that Worker holds one at a time); the
+   * rows' leaves summed; and the rest.
+   */
+  async importCheck(o: OwnerState, door: Door<ImportCheckRequest>): Promise<ImportCheckAnswer> {
+    const { part, page } = await o.door(() => checkOf(door.check().r));
+    if (part === "files") {
+      const entries = await o.door(() => o.files.entriesPage(page * CHECK_FILES, CHECK_FILES + 1));
+      return { part, entries: entries.slice(0, CHECK_FILES), more: entries.length > CHECK_FILES };
+    }
+    if (part === "chunks") {
+      const listed = await o.door(() => o.files.chunksPage(page * CHECK_CHUNKS, CHECK_CHUNKS + 1));
+      const chunks: CheckChunk[] = [];
+      for (const chunk of listed.slice(0, CHECK_CHUNKS)) {
+        let read: string | null = chunk.sha256;
+        try {
+          await o.files.fetch([{ sha256: chunk.sha256, offset: 0, length: 1, verify: true }]);
+        } catch {
+          read = null;  // missing from the bucket, not opened by the key, or not its hash
+        }
+        chunks.push({ sha256: chunk.sha256, size: chunk.size, read });
+      }
+      return { part, chunks, more: listed.length > CHECK_CHUNKS };
+    }
+    if (part === "rows") {
+      const rows = await o.door(() => o.collections.rowsPage(page * CHECK_ROWS, CHECK_ROWS + 1));
+      const sum = rows.slice(0, CHECK_ROWS).reduce((acc, row) => rowsSum(acc, rowLeaf(
+        row.collection, row.row_id, row.private,
+        row.content_id ?? bodyId(row.body))), NO_ROWS);
+      return { part, count: Math.min(rows.length, CHECK_ROWS), sum,
+               more: rows.length > CHECK_ROWS };
+    }
+    return o.door(() => {
+      const { state, reasons } = o.admission();
+      const usage = o.files.usage();
+      return { part: "state" as const, more: false as const,
+               policy_digest: o.policy.read().digest, tier: o.tier(), state, reasons,
+               used_bytes: usage.stored, limit_bytes: usage.limits.max_bytes };
+    });
+  },
+  /**
+   * The discard (`owner-do.ts`, `#discard`): the owner's R2 objects and database deleted, no
+   * tombstone, no erased record, no issuer's deletion; the namespace it deleted, for the job's
+   * proof that the files bucket lists nothing under it.
+   */
+  async importDiscard(o: OwnerState, door: Door<undefined>):
+      Promise<{ discarded: true; namespace: string | null }> {
+    await o.door(() => door.check());
+    return { discarded: true, namespace: await o.discard() };
   },
 });

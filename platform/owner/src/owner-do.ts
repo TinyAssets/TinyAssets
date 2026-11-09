@@ -99,6 +99,7 @@
  * with an import binding while the owner is `pending`, the cutover's import doors (`import.ts`).
  */
 import { HEX64 } from "../../contract/src/ids";
+import { rehearsalRun } from "../../contract/src/import-message";
 import { principal } from "../../contract/src/text";
 
 import { Lifecycle } from "agents/lifecycle";
@@ -108,8 +109,9 @@ import { doorRow, type DoorRow, fields, type ProfileName } from "../../contract/
 import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
-  admission, type Admission, admissionDoors, type DoorClass, doorRefusal, IMPORT_DOORS_ONLY,
-  IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, OWNER_ERASED, ownerTier, PLATFORM_CALLER,
+  admission, type Admission, admissionDoors, DISCARDED, type DoorClass, doorRefusal,
+  IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, OWNER_ERASED, ownerTier,
+  PLATFORM_CALLER,
   PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import {
@@ -151,9 +153,10 @@ import { clock } from "./clock";
 import type { Binding, InboundAnswer, Origin } from "../../contract/src/binding";
 import { type Notice, Notices, noticesDoors } from "./notices";
 import {
-  type Imported, importDoors, type ImportFileBeginRequest, type ImportFileCommitRequest,
-  type ImportFilesRequest, type ImportFileStoredRequest, type ImportNoticeRequest,
-  type ImportRowsRequest, type ImportUpload,
+  type ImportCheckAnswer, type ImportCheckRequest, type Imported, importDoors,
+  type ImportFileBeginRequest, type ImportFileCommitRequest, type ImportFilesRequest,
+  type ImportFileStoredRequest, type ImportNoticeRequest, type ImportRowsRequest,
+  type ImportUpload,
 } from "./import";
 import { Erasure } from "./erase";
 import {
@@ -320,6 +323,21 @@ export interface Bound {
 }
 
 /** A bound call with no account of its own (a sandbox's, the platform's, or none). */
+/**
+ * The import's binding exactly as the binder makes it (`bindImport`): the platform's reserved
+ * caller, no outside client, the bundle's digest and the control record's tiers; else refused.
+ */
+function importBinding(binding: Binding): void {
+  if (typeof binding !== "object" || binding === null || binding.caller !== PLATFORM_CALLER
+      || binding.origin !== null
+      || Object.keys(binding).sort().join() !== "caller,import,origin,owner,tiers"
+      || typeof binding.import !== "object" || binding.import === null
+      || Object.keys(binding.import).join() !== "bundle"
+      || typeof binding.import.bundle !== "string" || !HEX64.test(binding.import.bundle)) {
+    throw new Refusal("refused", IMPORT_PLATFORM_ONLY);
+  }
+}
+
 function bound(owner: string, caller: string): Bound {
   return { account: { owner, caller, origin: null, grant: null, run: null }, readable: null,
            lease: null, route: null, erased: false };
@@ -509,6 +527,13 @@ export interface OwnerState {
   setTier(request: unknown): { tier: TierName };
   /** Whether the owner is erased or being erased: its doors with no binding do nothing. */
   gone(): boolean;
+  /**
+   * The cutover's discard of the owner (`import.ts`'s `importDiscard`): every R2 object and
+   * the whole database deleted, no tombstone; the namespace it deleted.
+   */
+  discard(): Promise<string | null>;
+  /** The owner's admission as its row holds it (`admission.ts`): a read. */
+  admission(): Admission;
   /** The tier numbers a door's binding handed, kept for the runs the lane starts. */
   keepTiers(binding: Binding): void;
   /** `capability` held where `account` acts, as the runner's scope step holds it. */
@@ -595,6 +620,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * door (slice 10) calls; no door reaches it yet.
    */
   readonly #erasure: Erasure;
+  /**
+   * The cutover's discard (`#discard`): null until this instance wiped its owner's database
+   * for the import, then the namespace it deleted; from then on every door answers `busy`.
+   */
+  #discarded: { readonly ns: string | null } | null = null;
   /**
    * The runtime constructs it with `ctx` and `env` alone; the workerd tests take the
    * erasure's and the sandbox lease's internal paths (`internals`), which no door reaches.
@@ -808,6 +838,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       },
       putGraceMs: internals.putGraceMs ?? PUT_GRACE_MS,
       wipe: () => this.#gate.wipe(writeTombstone),
+      bare: () => this.#gate.wipe(() => undefined),
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
     internals.erasure?.(this.#erasure);
@@ -908,6 +939,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       tier: () => ownerTier(storage),
       setTier: (request: unknown) => setTier(storage, request),
       gone: () => object.#tombstone || object.#erasure.erased || erasing(storage),
+      discard: () => object.#discard(),
+      admission: () => admission(storage),
       keepTiers: (binding: Binding) => object.#keepTiers(binding),
       scope: (account: Account, capability: RunCapability, center?: unknown, agent?: string) =>
         object.#scope(account, capability, center, agent),
@@ -1247,6 +1280,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         // carries kept, as an account door keeps them, for the files plane's quota.
         const { owner, caller } = this.#bind(binding, "import");
         keepTiers(this.#storage, binding.tiers, clock());
+        return bound(owner, caller);
+      }
+      case "discard": {
+        // The import's discard: a pending owner, or a rehearsal's in any state; an instance
+        // that discarded already answers it again (its database is gone, and so its state).
+        if (this.#discarded !== null) {
+          importBinding(binding);
+          return bound(principal(binding.owner), PLATFORM_CALLER);
+        }
+        const { owner, caller } = this.#bind(binding, "import", "discard");
         return bound(owner, caller);
       }
       case "none":
@@ -1658,6 +1701,40 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#run("importNotice", binding, request, importDoors.importNotice);
   }
 
+  /** A page of the check: the files, every chunk read back, the rows' digest, or the rest. */
+  importCheck(binding: Binding, request: ImportCheckRequest): Promise<ImportCheckAnswer> {
+    return this.#units("importCheck", binding, request, importDoors.importCheck);
+  }
+
+  /**
+   * The import's discard: every R2 object of the owner deleted and its database wiped, with no
+   * tombstone, no erased record and no issuer's deletion; a pending owner, or a rehearsal's.
+   */
+  importDiscard(binding: Binding): Promise<{ discarded: true; namespace: string | null }> {
+    return this.#units("importDiscard", binding, undefined, importDoors.importDiscard);
+  }
+
+  /**
+   * The discard's wipe (`import.ts`, `Erasure.discard`): the erasure's own deletion of every
+   * R2 object by the namespace's prefix (its files' and placed bodies' chunks and its
+   * generations), Lifecycle's alarm disabled so nothing writes after, then the whole database
+   * deleted, and the prefix deleted once more; no tombstone. A rehearsal's owner is never
+   * signed into (`rehearsalName`), so it has no source connected and no run. From then on this instance answers every door `busy` (`DISCARDED`) and a
+   * discard again with the namespace it deleted; the runtime's next instance of the name is a
+   * fresh, `pending` object. Repeatable; the namespace, read before the wipe.
+   */
+  async #discard(): Promise<string | null> {
+    if (this.#discarded !== null) {
+      if (this.#discarded.ns !== null) {
+        await this.#files.eraseNamespace(this.#discarded.ns);
+      }
+      return this.#discarded.ns;
+    }
+    return this.#erasure.discard((ns) => {
+      this.#discarded = { ns };
+    });
+  }
+
   // -- INBOUND: the owner's event sources (slice L; `inbound.ts`) ----------------------
 
   /** The owner's inbound bindings, never a secret. */
@@ -2006,11 +2083,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * no other door, and no owner is named so.
    */
   #bind(binding: Binding, door: DoorClass | "admission" | "import",
-        sandbox: "none" | "egress" | "sync" | "run" | "inbound" | "erasure" = "none"):
-      { owner: string; caller: string } {
+        sandbox: "none" | "egress" | "sync" | "run" | "inbound" | "erasure" | "discard" =
+          "none"): { owner: string; caller: string } {
     if (this.#tombstone || this.#erasure.erased) {
       throw new Refusal("owner_erased", OWNER_ERASED);
     }
+    if (this.#discarded !== null) {
+      throw new Refusal("busy", DISCARDED);
+    }
+    const discarding = sandbox === "discard";
     const inbound = typeof binding === "object" && binding !== null && "inbound" in binding;
     // The cutover's import binding reaches the import doors alone, and they take no other.
     const importing = typeof binding === "object" && binding !== null && "import" in binding;
@@ -2019,7 +2100,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // only for the platform's reserved caller.
     const erasureDoor = sandbox === "erasure" && door === "admission"
       && typeof binding === "object" && binding !== null && binding.caller === PLATFORM_CALLER;
-    if (inboundDoor || sandbox === "erasure") {
+    if (inboundDoor || sandbox === "erasure" || discarding) {
       sandbox = "none";
     }
     if (erasing(this.#storage) && !erasureDoor) {
@@ -2034,14 +2115,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     const owner = principal(binding.owner);
     const caller = principal(binding.caller);
-    // The import's binding exactly as the binder makes it (`bindImport`): the platform's
-    // reserved caller, no outside client, the bundle's digest and the control record's tiers.
-    if (door === "import" && (caller !== PLATFORM_CALLER || binding.origin !== null
-        || Object.keys(binding).sort().join() !== "caller,import,origin,owner,tiers"
-        || typeof binding.import !== "object" || binding.import === null
-        || Object.keys(binding.import).join() !== "bundle"
-        || typeof binding.import.bundle !== "string" || !HEX64.test(binding.import.bundle))) {
-      throw new Refusal("refused", IMPORT_PLATFORM_ONLY);
+    if (door === "import") {
+      importBinding(binding);
     }
     if (owner === PLATFORM_CALLER
         || (door !== "admission" && door !== "import" && caller === PLATFORM_CALLER)) {
@@ -2058,7 +2133,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     if (door === "import") {
       // Only an owner the platform has not admitted yet is imported into: never a live one.
-      if (admission(this.#storage).state !== "pending") {
+      // The discard takes a rehearsal's name in any state too: no issuer's subject is one.
+      if (admission(this.#storage).state !== "pending"
+          && !(discarding && rehearsalRun(owner) !== null)) {
         throw new Refusal("refused", IMPORT_PENDING_ONLY);
       }
     } else if (door !== "admission") {

@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { displayName, MAX_BODY_BYTES, OWNER } from "../src/ledger";
 import { apiKeyOrigin } from "../../contract/src/binding";
-import { policyDigest } from "../src/policy";
+import { policyDigest } from "../../contract/src/policy-document";
 import { DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
 import { failure } from "./support";
 

@@ -12,17 +12,18 @@ import { describe, expect, it } from "vitest";
 
 import { chunkedId, cut, inlineId } from "../../contract/src/content";
 import {
-  IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_INTENTS, IMPORT_ROWS,
+  bodyId, CHECK_CHUNKS, CHECK_FILES, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_INTENTS,
+  IMPORT_ROWS, NO_ROWS, rehearsalName, rowLeaf, rowsSum,
 } from "../../contract/src/import-message";
 import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import type { Binding } from "../../contract/src/binding";
 import {
-  IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, PLATFORM_CALLER,
+  DISCARDED, IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, PLATFORM_CALLER,
 } from "../src/admission";
 import { MAX_OPEN_INTENTS } from "../src/files";
-import { IMPORT_NOTICE } from "../src/import";
+import { IMPORT_NOTICE, type ImportCheckAnswer } from "../src/import";
 import type { OwnerDO } from "../src/owner-do";
-import { DEFAULT_POLICY_DIGEST, policyDigest } from "../src/policy";
+import { DEFAULT_POLICY_DIGEST, policyDigest } from "../../contract/src/policy-document";
 import { failure, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
@@ -31,10 +32,13 @@ const I = "/workspace/imported";
 const bytesOf = (text: string) => new TextEncoder().encode(text);
 
 /** A fresh object as production makes one: pending (`admitted.ts` leaves `get` alone). */
-function pending(): { stub: Stub; owner: string } {
-  const owner = `owner-${crypto.randomUUID()}`;
-  return { stub: env.OWNER.get(env.OWNER.idFromName(owner)) as unknown as Stub, owner };
+function pending(owner = `owner-${crypto.randomUUID()}`, namespace: DurableObjectNamespace =
+                   env.OWNER as unknown as DurableObjectNamespace): { stub: Stub; owner: string } {
+  return { stub: namespace.get(namespace.idFromName(owner)) as unknown as Stub, owner };
 }
+
+/** The mtime the import's files keep: the old stack's, never the write's own time. */
+const MTIME = Date.UTC(2024, 0, 2, 3, 4, 5);
 
 /** The doors' import binding (`bindImport`): the platform, the bundle, the control's tiers. */
 const importing = (owner: string, tiers: unknown = TIERS): Binding =>
@@ -48,7 +52,7 @@ const POLICY = { entries: [], egress: { mode: "ask", destinations: [] },
 function inline(path: string, text: string, mode: 0 | 1 = 0) {
   const bytes = bytesOf(text);
   return { kind: "file" as const, path, size: bytes.byteLength, mode,
-           content_id: inlineId(bytes), bytes };
+           content_id: inlineId(bytes), mtime_ms: MTIME, bytes };
 }
 
 /** A chunked file's request, its bytes cut as the files plane cuts them. */
@@ -74,7 +78,8 @@ async function upload(stub: Stub, owner: string, path: string, bytes: Uint8Array
   }
   return stub.importFileCommit(importing(owner), { intent_id: begun.intent_id, path,
                                                    mode: request.mode,
-                                                   content_id: request.content_id });
+                                                   content_id: request.content_id,
+                                                   mtime_ms: MTIME });
 }
 
 const big = () => new Uint8Array(CHUNK_BYTES + 99).map((_b, i) => (i * 13 + 1) % 251);
@@ -260,7 +265,7 @@ describe("the import's files", () => {
     // A commit of a chunk never stored is the files plane's refusal.
     expect((await failure(() => stub.importFileCommit(importing(owner), {
       intent_id: a.skipped ? "" : a.intent_id, path: first.path, mode: 0,
-      content_id: first.content_id }))).message).toMatch(/never stored/);
+      content_id: first.content_id, mtime_ms: MTIME }))).message).toMatch(/never stored/);
   });
 
   it("holds the files to the tier numbers the binding carries", async () => {
@@ -303,14 +308,14 @@ describe("the import's bounds", () => {
       bytes[0] = n >> 8;
       bytes[1] = n & 0xff;
       return { kind: "file" as const, path: `${I}/${n}`, size: 4096, mode: 0 as const,
-               content_id: inlineId(bytes), bytes };
+               content_id: inlineId(bytes), mtime_ms: MTIME, bytes };
     });
     expect((await failure(() => stub.importFiles(importing(owner), { entries: full }))).code)
       .toBe("invalid");
     const fat = new Uint8Array(4097);
     expect((await failure(() => stub.importFiles(importing(owner), { entries: [{
       kind: "file", path: `${I}/fat`, size: 4097, mode: 0, content_id: inlineId(fat),
-      bytes: fat }] }))).code).toBe("invalid");
+      mtime_ms: MTIME, bytes: fat }] }))).code).toBe("invalid");
     expect(await stub.importFiles(importing(owner), { entries: many.slice(0, IMPORT_FILES) }))
       .toEqual({ written: IMPORT_FILES, skipped: 0 });
   });
@@ -325,5 +330,207 @@ describe("the import's bounds", () => {
     expect((await stub.noticeList(own(owner))).notices
       .filter((notice) => notice.type === IMPORT_NOTICE).map((notice) => notice.detail))
       .toEqual(["in /workspace/imported"]);
+  });
+});
+
+describe("the import's mtime", () => {
+  it("keeps each file's mtime from the old stack, inline and chunked", async () => {
+    const { stub, owner } = pending();
+    await stub.importFiles(importing(owner), { entries: [{ kind: "dir", path: I },
+                                                         inline(`${I}/a.md`, "alpha")] });
+    await upload(stub, owner, `${I}/big.bin`, big());
+    expect((await failure(() => stub.importFiles(importing(owner), {
+      entries: [{ ...inline(`${I}/b.md`, "beta"), mtime_ms: -1 }] }))).code).toBe("invalid");
+    await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
+    for (const path of [`${I}/a.md`, `${I}/big.bin`]) {
+      const stat = await stub.fileStat(own(owner), { path });
+      expect([path, stat.entry?.mtime_ms]).toEqual([path, MTIME]);
+    }
+  });
+});
+
+/** Every page of a check's part, from page 0 until one says no more follows. */
+async function pages(stub: Stub, owner: string, part: "files" | "chunks" | "rows"):
+    Promise<ImportCheckAnswer[]> {
+  const found: ImportCheckAnswer[] = [];
+  for (let page = 0; ; page += 1) {
+    const read = await stub.importCheck(importing(owner), { part, page });
+    found.push(read);
+    if (!read.more) {
+      return found;
+    }
+  }
+}
+
+describe("the import's check", () => {
+  it("lists the files, reads back every chunk, sums the rows and reads the rest", async () => {
+    const { stub, owner } = pending();
+    const entries = [{ kind: "dir" as const, path: I }, inline(`${I}/a.md`, "alpha", 1)];
+    await stub.importFiles(importing(owner), { entries });
+    const bytes = big();
+    await upload(stub, owner, `${I}/big.bin`, bytes);
+    const large = `{"t":"${"x".repeat(PLACE_BYTES + 10)}"}`;
+    const rows = [
+      { kind: "collection" as const, collection: "board", row_id: "b1", private: 1 as const,
+        body: '{"t":"first"}' },
+      { kind: "collection" as const, collection: "board", row_id: "b2", private: 0 as const,
+        body: large }];
+    await stub.importRows(importing(owner), { rows: [{ kind: "policy", document: POLICY },
+                                                     ...rows] });
+    const files = (await pages(stub, owner, "files")).flatMap((page) =>
+      page.part === "files" ? page.entries : []);
+    expect(files.map((entry) => [entry.path, entry.kind, entry.size, entry.mode,
+                                 entry.content_id, entry.mtime_ms])).toEqual([
+      [I, "dir", 0, 0, null, expect.any(Number)],
+      [`${I}/a.md`, "file", 5, 1, inlineId(bytesOf("alpha")), MTIME],
+      [`${I}/big.bin`, "file", bytes.byteLength, 0, chunked(`${I}/big.bin`, bytes).request.content_id,
+       MTIME]]);
+    // Every chunk, the file's and the placed body's, read back and proved its hash.
+    const chunks = (await pages(stub, owner, "chunks")).flatMap((page) =>
+      page.part === "chunks" ? page.chunks : []);
+    const wanted = [...cut(bytes).map((piece) => piece.sha256),
+                    ...cut(bytesOf(large)).map((piece) => piece.sha256)].sort();
+    expect(chunks.map((chunk) => chunk.sha256)).toEqual(wanted);
+    expect(chunks.every((chunk) => chunk.read === chunk.sha256)).toBe(true);
+    const [summed] = await pages(stub, owner, "rows");
+    expect(summed).toEqual({ part: "rows", count: 2, more: false,
+                             sum: rows.reduce((sum, row) => rowsSum(sum, rowLeaf(
+                               row.collection, row.row_id, row.private, bodyId(row.body))),
+                                             NO_ROWS) });
+    const state = await stub.importCheck(importing(owner), { part: "state", page: 0 });
+    expect(state).toMatchObject({ part: "state", policy_digest: policyDigest(POLICY),
+                                  tier: "free", state: "pending", reasons: [] });
+    expect(state.part === "state" && state.used_bytes).toBeGreaterThan(bytes.byteLength);
+  });
+
+  it("pages its listing and its chunks", async () => {
+    const { stub, owner } = pending();
+    const many = Array.from({ length: CHECK_FILES + 3 }, (_e, n) =>
+      ({ kind: "dir" as const, path: `${I}/d${String(n).padStart(4, "0")}` }));
+    await stub.importFiles(importing(owner), { entries: many.slice(0, IMPORT_FILES) });
+    await stub.importFiles(importing(owner), { entries: many.slice(IMPORT_FILES) });
+    const listed = await pages(stub, owner, "files");
+    expect(listed.length).toBe(2);
+    expect(listed.flatMap((page) => page.part === "files" ? page.entries : []).length)
+      .toBe(CHECK_FILES + 4);
+    for (let n = 0; n <= CHECK_CHUNKS; n += 1) {
+      const bytes = big();
+      bytes[0] = n;
+      bytes[bytes.length - 1] = n;
+      await upload(stub, owner, `${I}/c${n}.bin`, bytes);
+    }
+    const read = await pages(stub, owner, "chunks");
+    expect(read.map((page) => page.part === "chunks" ? page.chunks.length : -1))
+      .toEqual([CHECK_CHUNKS, CHECK_CHUNKS, 2]);
+  });
+
+  it("reads a chunk the bucket lost, or holds other bytes for, as not read back", async () => {
+    const { stub, owner } = pending();
+    const bytes = big();
+    await upload(stub, owner, `${I}/big.bin`, bytes);
+    const [first, second] = cut(bytes);
+    const space = await runInDurableObject(stub, (_i: unknown, state: DurableObjectState) =>
+      state.storage.sql.exec<{ ns: string; data_key: string }>(
+        "SELECT ns, data_key FROM file_space").one());
+    await env.FILES.deleteChunks(space.ns, space.data_key, [first!.sha256]);
+    const chunks = (await pages(stub, owner, "chunks")).flatMap((page) =>
+      page.part === "chunks" ? page.chunks : []);
+    expect(Object.fromEntries(chunks.map((chunk) => [chunk.sha256, chunk.read])))
+      .toEqual({ [first!.sha256]: null, [second!.sha256]: second!.sha256 });
+  });
+
+  it("is the platform's import binding's alone, while the owner is pending", async () => {
+    const { stub, owner } = pending();
+    const request = { part: "files" as const, page: 0 };
+    expect((await failure(() => stub.importCheck({ owner, caller: owner, origin: null },
+                                                 request))).message).toBe(IMPORT_PLATFORM_ONLY);
+    expect((await failure(() => stub.importCheck(importing(owner),
+                                                 { part: "state", page: 1 }))).code)
+      .toBe("invalid");
+    await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
+    expect((await failure(() => stub.importCheck(importing(owner), request))).message)
+      .toBe(IMPORT_PENDING_ONLY);
+  });
+});
+
+/** The owner object's own tables and its files' R2 objects, after a discard. */
+async function left(stub: Stub, ns: string): Promise<{ tables: string[]; objects: number }> {
+  const tables = await runInDurableObject(stub, (_i: unknown, state: DurableObjectState) =>
+    state.storage.sql.exec<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table'").toArray()
+      .map((row) => row.name).filter((name) => !/^(_cf_|sqlite_)/.test(name)));
+  const objects = (await env.BLOBS.list({ prefix: `o/${ns}/` })).objects.length;
+  return { tables, objects };
+}
+
+describe("the import's discard", () => {
+  async function imported(owner?: string, namespace?: DurableObjectNamespace) {
+    const made = pending(owner, namespace);
+    await made.stub.importFiles(importing(made.owner), { entries: [{ kind: "dir", path: I },
+                                                                   inline(`${I}/a.md`, "a")] });
+    await upload(made.stub, made.owner, `${I}/big.bin`, big());
+    const ns = await runInDurableObject(made.stub, (_i: unknown, state: DurableObjectState) =>
+      state.storage.sql.exec<{ ns: string }>("SELECT ns FROM file_space").one().ns);
+    return { ...made, ns };
+  }
+
+  it("deletes a pending owner's R2 objects and database, with no tombstone, and is repeatable",
+     async () => {
+    // The test Worker's object whose erasure queue and sandbox are recording fakes.
+    const { stub, owner, ns } = await imported(undefined,
+                                               env.AGENT as unknown as DurableObjectNamespace);
+    expect((await left(stub, ns)).objects).toBeGreaterThan(0);
+    expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
+    // Nothing of the owner: no table (so no erased admission row), no object under its
+    // namespace; the instance answers busy until the runtime starts the name afresh.
+    expect(await left(stub, ns)).toEqual({ tables: [], objects: 0 });
+    // No erasure: nothing told the doors (whose outside record writes the erased record and
+    // deletes the identity at the issuer), and no sandbox erased.
+    expect(await runInDurableObject(stub, (instance: unknown) => {
+      const { erasures, recorder } = instance as { erasures: { sent: unknown[] };
+                                                   recorder: { erasures: unknown[] } };
+      return [erasures.sent, recorder.erasures];
+    })).toEqual([[], []]);
+    expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
+    // Discarded, it still takes the import's binding alone.
+    expect((await failure(() => stub.importDiscard(own(owner)))).code).toBe("refused");
+    const busy = await failure(() => stub.importFiles(importing(owner), { entries: [{
+      kind: "dir", path: I }] }));
+    expect([busy.code, busy.message]).toEqual(["busy", DISCARDED]);
+    expect((await failure(() => stub.fileStat(own(owner), { path: I }))).code).toBe("busy");
+  });
+
+  it("takes a rehearsal's name in any state, and no admitted real owner", async () => {
+    const real = await imported();
+    await real.stub.admissionSet({ owner: real.owner, caller: PLATFORM_CALLER, origin: null },
+                                 { admit: true });
+    expect((await failure(() => real.stub.importDiscard(importing(real.owner)))).message)
+      .toBe(IMPORT_PENDING_ONLY);
+    expect((await left(real.stub, real.ns)).objects).toBeGreaterThan(0);
+    const rehearsal = await imported(rehearsalName("r1", `user_${crypto.randomUUID()}`));
+    const platform = { owner: rehearsal.owner, caller: PLATFORM_CALLER, origin: null };
+    await rehearsal.stub.admissionSet(platform, { admit: true });
+    await rehearsal.stub.admissionSet(platform, { reason: "billing", suspended: true });
+    // Past pending, the rehearsal's name is the discard's alone: no other import door takes it.
+    for (const door of [
+      () => rehearsal.stub.importFiles(importing(rehearsal.owner), { entries: [{ kind: "dir",
+                                                                                 path: I }] }),
+      () => rehearsal.stub.importCheck(importing(rehearsal.owner), { part: "state", page: 0 }),
+    ]) {
+      expect((await failure(door)).message).toBe(IMPORT_PENDING_ONLY);
+    }
+    expect(await rehearsal.stub.importDiscard(importing(rehearsal.owner)))
+      .toEqual({ discarded: true, namespace: rehearsal.ns });
+    expect(await left(rehearsal.stub, rehearsal.ns)).toEqual({ tables: [], objects: 0 });
+  });
+
+  it("is the platform's import binding's alone", async () => {
+    const { stub, owner, ns } = await imported(rehearsalName("r2", "user_x"));
+    for (const binding of [{ owner, caller: owner, origin: null },
+                           { owner, caller: PLATFORM_CALLER, origin: null },
+                           { ...importing(owner), session: "s" }]) {
+      expect((await failure(() => stub.importDiscard(binding as Binding))).code).toBe("refused");
+    }
+    expect((await left(stub, ns)).objects).toBeGreaterThan(0);
   });
 });

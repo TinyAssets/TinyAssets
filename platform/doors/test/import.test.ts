@@ -13,16 +13,20 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, expect, inject, it } from "vitest";
 
 import { inlineId } from "../../contract/src/content";
-import { canonical } from "../../owner/src/policy";
+import { canonical } from "../../contract/src/policy-document";
 import type { Binding } from "../../contract/src/binding";
-import { importMac, type ImportMessage } from "../../contract/src/import-message";
+import {
+  answerName, doneName, importMac, type ImportMessage, NO_ROWS, rehearsalName, rowsSum,
+} from "../../contract/src/import-message";
+import { ADMIN_CALLER } from "../../admin/src/caller";
+import { type Answers, clean, differences, expectedOf } from "../../import/check";
 import type { DoorsEnv } from "../src/config";
-import { putOwner } from "../src/directory";
+import { putOwner, readOwner } from "../src/directory";
 import { IMPORT_HOLD_BYTES, importQueue, type SliceBounds } from "../src/import";
 import { CHUNK_BYTES } from "../../contract/src/limits";
 import type { OwnerDO } from "./entry";
 import type { ImportBundle } from "./import-setup";
-import { admitOwner, doorsEnv, OPEN, setControl } from "./support";
+import { admitOwner, doorsEnv, OPEN, setControl, TIERS } from "./support";
 
 const KEY = randomBytes(32).toString("base64url");
 const BUNDLE: ImportBundle = inject("importBundle");
@@ -46,6 +50,7 @@ interface Entry {
   readonly kind: "dir" | "file";
   readonly size?: number;
   readonly mode?: number;
+  readonly mtime_ms?: number;
   readonly content_id?: string;
   readonly chunks?: string[];
 }
@@ -57,10 +62,16 @@ function paged<T>(files: Map<string, Uint8Array>, kind: "manifest" | "rows", key
     .flatMap((name) => json(files.get(name)!)[key] as T[]);
 }
 
-/** A bundle made `owner`'s: its index's owner set, so its digest is new. */
+/** A bundle made `owner`'s: its index's and its owner's name set, so its digest is new. */
 function made(owner: string, files = bundleFiles()): { files: Map<string, Uint8Array>; bundle: string } {
   const index = json(files.get("bundle.json")!);
   index["owner"] = owner;
+  const record = json(files.get("owner.json")!);
+  record["owner"] = owner;
+  const recordBytes = new TextEncoder().encode(`${JSON.stringify(record)}\n`);
+  files.set("owner.json", recordBytes);
+  index["parts"] = { ...(index["parts"] as Record<string, string>),
+                     "owner.json": sha256(recordBytes) };
   const bytes = new TextEncoder().encode(`${JSON.stringify(index)}\n`);
   files.set("bundle.json", bytes);
   return { files, bundle: sha256(bytes) };
@@ -72,7 +83,8 @@ async function staged(owner: string, files = made(owner), key = KEY): Promise<Im
   for (const [name, bytes] of files.files) {
     await doorsEnv.IMPORT_STAGING.put(`${prefix}/${name}`, bytes);
   }
-  return { owner, bundle: files.bundle, prefix, mac: importMac(key, owner, files.bundle) };
+  return { op: "import", owner, bundle: files.bundle, prefix,
+           mac: importMac(key, "import", owner, files.bundle) };
 }
 
 /** The doors' env with the window's key, a recording producer and a recording `FILES`. */
@@ -149,8 +161,9 @@ async function readBack(owner: string, files = bundleFiles()): Promise<void> {
     expect([entry.path, stat?.kind]).toEqual([entry.path, entry.kind]);
     if (entry.kind === "file") {
       const read = await stub.fileRead(own(owner), { path: entry.path });
-      expect([entry.path, read.entry.size, read.entry.mode, read.entry.writer])
-        .toEqual([entry.path, entry.size, entry.mode, "owner"]);
+      expect([entry.path, read.entry.size, read.entry.mode, read.entry.writer,
+              read.entry.mtime_ms])
+        .toEqual([entry.path, entry.size, entry.mode, "owner", entry.mtime_ms]);
       if (entry.chunks === undefined) {
         expect(inlineId(read.inline!)).toBe(entry.content_id);
       } else {
@@ -266,7 +279,7 @@ describe("the import consumer", () => {
       const id = inlineId(bytes);
       files.set(`inline/${id}`, bytes);
       entries.push({ path: `/workspace/imported/many/${n}.bin`, kind: "file", size: 4096, mode: 0,
-                     content_id: id });
+                     mtime_ms: 0, content_id: id });
     }
     entries.splice(1, 0, { path: "/workspace/imported/many", kind: "dir" });
     for (const name of [...files.keys()].filter((each) => each.startsWith("manifest/"))) {
@@ -309,11 +322,12 @@ describe("the import consumer's gates, each before anything is written", () => {
     await dropped(owner, w, { ...message, extra: 1 });
     await dropped(owner, w, { owner: message.owner, bundle: message.bundle, prefix: message.prefix });
     await dropped(owner, w, { ...message, mac: importMac(randomBytes(32).toString("base64url"),
-                                                         owner, message.bundle) });
-    // A MAC for another owner, or another bundle, is no MAC of this message.
-    await dropped(owner, w, { ...message, mac: importMac(KEY, fresh(), message.bundle) });
+                                                         "import", owner, message.bundle) });
+    // A MAC for another owner, another bundle or another op is no MAC of this message.
+    await dropped(owner, w, { ...message, mac: importMac(KEY, "import", fresh(), message.bundle) });
     await dropped(owner, w, { ...message, bundle: sha256("another"),
-                              mac: importMac(KEY, owner, sha256("another")) });
+                              mac: importMac(KEY, "import", owner, sha256("another")) });
+    await dropped(owner, w, { ...message, mac: importMac(KEY, "check", owner, message.bundle) });
   });
 
   it("drops a bundle whose index or a part is not what the MAC and the index name", async () => {
@@ -392,5 +406,278 @@ describe("the import consumer's gates, each before anything is written", () => {
     expect((await stub.noticeList(own(owner))).notices.filter((n) => n.type === "imported"))
       .toEqual([]);
     expect((await stub.fileStat(own(owner), { path: "/workspace/imported" })).entry).toBeNull();
+  });
+});
+
+/** `message`'s owner and bundle asked for `op`, MAC'd for it, with a fresh ask. */
+function asking(message: ImportMessage, op: "check" | "discard" | "admit"): ImportMessage {
+  return { op, owner: message.owner, bundle: message.bundle, prefix: message.prefix,
+           mac: importMac(KEY, op, message.owner, message.bundle),
+           ask: randomBytes(8).toString("hex") };
+}
+
+/** An answer the consumer wrote to the staging bucket, or null. */
+async function staging(name: string): Promise<Record<string, unknown> | null> {
+  const found = await doorsEnv.IMPORT_STAGING.get(name);
+  return found === null ? null : JSON.parse(await found.text()) as Record<string, unknown>;
+}
+
+/** A check's answer and pages read back from the staging bucket, joined as the job joins them. */
+async function answersOf(message: ImportMessage): Promise<Answers> {
+  const pages = async (part: string) => {
+    const found: Record<string, unknown>[] = [];
+    for (let n = 0; ; n += 1) {
+      const page = (await staging(answerName(message.prefix, message.ask!, `${part}-${n}`)))!;
+      found.push(page);
+      if (page["more"] !== true) {
+        return found;
+      }
+    }
+  };
+  const state = (await staging(answerName(message.prefix, message.ask!)))!;
+  expect(state["refused"]).toBeUndefined();
+  return {
+    entries: (await pages("files")).flatMap((page) => page["entries"] as Answers["entries"]),
+    chunks: (await pages("chunks")).flatMap((page) => page["chunks"] as Answers["chunks"]),
+    rows: (await pages("rows")).reduce((sum: { count: number; sum: string }, page) => ({
+      count: sum.count + (page["count"] as number),
+      sum: rowsSum(sum.sum, page["sum"] as string) }), { count: 0, sum: NO_ROWS }),
+    state: state as unknown as Answers["state"],
+  };
+}
+
+/** The job's diff of the owner's check against the fixture's bundle (`import/check.ts`). */
+async function checkOf(message: ImportMessage, bounds?: SliceBounds) {
+  const asked = asking(message, "check");
+  expect(await drain(world(), asked, bounds)).toMatchObject({ outcome: "acked" });
+  const files = bundleFiles();
+  return differences(expectedOf(paged(files, "manifest", "entries"), paged(files, "rows", "rows")),
+                     await answersOf(asked), "free");
+}
+
+/** The owner object's file space: its namespace and wrapped data key. */
+function spaceOf(owner: string): Promise<{ ns: string; data_key: string }> {
+  return runInDurableObject(stubOf(owner), (_i: unknown, state: DurableObjectState) =>
+    state.storage.sql.exec<{ ns: string; data_key: string }>(
+      "SELECT ns, data_key FROM file_space").one());
+}
+
+describe("the import's check, through the consumer, held to the bundle by the job's diff", () => {
+  it("finds nothing missing, extra or different after an import, sliced or not, and marks " +
+     "the import done", async () => {
+    const owner = fresh();
+    const message = await staged(owner);
+    await drain(world(), message);
+    expect(await staging(doneName(message.prefix)))
+      .toEqual({ op: "import", bundle: message.bundle, done: true });
+    const found = await checkOf(message);
+    expect(found).toEqual({ missing: [], extra: [], different: [] });
+    expect(clean(found)).toBe(true);
+    // A check killed between its slices goes on from its continuation to the same answer.
+    expect(await checkOf(message, { ms: 0, bytes: 0 })).toEqual(found);
+  });
+
+  it("finds a missing, an extra and a changed file, a changed row and a bad chunk", async () => {
+    const owner = fresh();
+    const message = await staged(owner);
+    await drain(world(), message);
+    const entries = paged<Entry>(bundleFiles(), "manifest", "entries");
+    const files = entries.filter((entry) => entry.kind === "file" && entry.chunks === undefined);
+    const [gone, changed] = [files[0]!, files[1]!];
+    const chunk = entries.find((entry) => entry.chunks !== undefined)!.chunks![0]!;
+    const row = paged<Record<string, unknown>>(bundleFiles(), "rows", "rows")
+      .find((each) => each["kind"] === "collection")!;
+    const split = (path: string) => [path.slice(0, path.lastIndexOf("/")),
+                                     path.slice(path.lastIndexOf("/") + 1)];
+    // The same length, one letter changed: only the body's id tells them apart.
+    const body = (row["body"] as string).replace(/[a-z]/, (c) => c === "x" ? "y" : "x");
+    await runInDurableObject(stubOf(owner), (_i: unknown, state: DurableObjectState) => {
+      const sql = state.storage.sql;
+      sql.exec("DELETE FROM file_entries WHERE parent = ? AND name = ?", ...split(gone.path));
+      sql.exec("UPDATE file_entries SET mtime_ms = mtime_ms + 1 WHERE parent = ? AND name = ?",
+               ...split(changed.path));
+      sql.exec("UPDATE collection_rows SET body = ? WHERE row_id = ?", body,
+               row["row_id"] as string);
+    });
+    const extra = new TextEncoder().encode("extra");
+    const { binding, stub } = bindImportFor(owner, message.bundle);
+    await stub.importFiles(binding, { entries: [{ kind: "file", path: "/workspace/imported/x.md",
+                                                  size: extra.byteLength, mode: 0,
+                                                  content_id: inlineId(extra), mtime_ms: 1,
+                                                  bytes: extra }] });
+    const space = await spaceOf(owner);
+    await (env as unknown as { OWNER_FILES: { deleteChunks(ns: string, key: string,
+                                                       shas: string[]): Promise<unknown> } })
+      .OWNER_FILES.deleteChunks(space.ns, space.data_key, [chunk]);
+    const found = await checkOf(message);
+    expect(found.missing).toEqual([`file ${gone.path}`]);
+    expect(found.extra).toEqual(["file /workspace/imported/x.md"]);
+    expect(found.different).toEqual([`file ${changed.path}: mtime_ms`,
+                                     `chunk ${chunk}: not read back as its hash`,
+                                     "rows: their digest"]);
+    expect(clean(found)).toBe(false);
+  });
+
+  it("answers a check of an owner that is not pending as refused, writing nothing", async () => {
+    const owner = fresh();
+    const message = await staged(owner);
+    await drain(world(), message);
+    await admitOwner(owner);
+    const asked = asking(message, "check");
+    const delivered = batch(asked);
+    await importQueue(delivered.batch, world().env);
+    expect([delivered.acked, delivered.retried]).toEqual([[0], []]);
+    expect((await staging(answerName(asked.prefix, asked.ask!)))?.["refused"])
+      .toMatch(/only a pending owner/);
+  });
+});
+
+/** The import's binding for `owner`, as the consumer makes it. */
+function bindImportFor(owner: string, bundle: string) {
+  return { binding: { owner, caller: ADMIN_CALLER, origin: null, import: { bundle },
+                      tiers: TIERS } as Binding,
+           stub: stubOf(owner) as unknown as DurableObjectStub<OwnerDO> };
+}
+
+describe("the import's discard, through the consumer", () => {
+  it("wipes a pending owner, its namespace answered, writing no record, and again", async () => {
+    const owner = fresh();
+    const message = await staged(owner);
+    await drain(world(), message);
+    const { ns } = await spaceOf(owner);
+    const asked = asking(message, "discard");
+    expect(await drain(world(), asked)).toMatchObject({ outcome: "acked" });
+    expect(await staging(answerName(asked.prefix, asked.ask!)))
+      .toEqual({ op: "discard", bundle: message.bundle, discarded: true, namespace: ns });
+    expect(await readOwner(doorsEnv, owner)).toBeNull();
+    // Killed before its answer, the discard run again answers the same.
+    const again = asking(message, "discard");
+    expect(await drain(world(), again)).toMatchObject({ outcome: "acked" });
+    expect((await staging(answerName(again.prefix, again.ask!)))?.["namespace"]).toBe(ns);
+  });
+
+  it("takes a rehearsal's admitted owner and its record, and never a real admitted one",
+     async () => {
+    const rehearsal = rehearsalName("r1", fresh());
+    const message = await staged(rehearsal);
+    await drain(world(), message);
+    await admitOwner(rehearsal);
+    await putOwner(doorsEnv, rehearsal, { s: "admitted", t: 1 });
+    const asked = asking(message, "discard");
+    await drain(world(), asked);
+    expect((await staging(answerName(asked.prefix, asked.ask!)))?.["discarded"]).toBe(true);
+    const real = fresh();
+    const kept = await staged(real);
+    await drain(world(), kept);
+    await admitOwner(real);
+    const refused = asking(kept, "discard");
+    expect(await drain(world(), refused)).toMatchObject({ outcome: "acked" });
+    expect((await staging(answerName(refused.prefix, refused.ask!)))?.["refused"])
+      .toMatch(/only a pending owner/);
+    await putOwner(doorsEnv, real, { s: "admitted", t: 1 });
+    const recorded = asking(kept, "discard");
+    await drain(world(), recorded);
+    expect((await staging(answerName(recorded.prefix, recorded.ask!)))?.["refused"])
+      .toMatch(/holds a record of this owner/);
+    expect((await stubOf(real).fileStat(own(real), { path: "/workspace/imported" })).entry)
+      .not.toBeNull();
+  });
+});
+
+describe("the import's admit, through the consumer", () => {
+  it("sets the tier, admits, suspends for each old reason, then writes the record, and again",
+     async () => {
+    const owner = fresh();
+    const files = bundleFiles();
+    const record = json(files.get("owner.json")!);
+    record["admission"] = { state: "suspended", reasons: ["billing"] };
+    files.set("owner.json", new TextEncoder().encode(`${JSON.stringify(record)}\n`));
+    const message = await staged(owner, made(owner, files));
+    await drain(world(), message);
+    for (let n = 0; n < 2; n += 1) {
+      const asked = asking(message, "admit");
+      expect(await drain(world(), asked)).toMatchObject({ outcome: "acked" });
+      expect(await staging(answerName(asked.prefix, asked.ask!))).toEqual({
+        op: "admit", bundle: message.bundle, tier: "paid", state: "suspended",
+        reasons: ["billing"] });
+    }
+    expect((await readOwner(doorsEnv, owner))?.s).toBe("admitted");
+    const { binding, stub } = bindImportFor(owner, message.bundle);
+    expect((await stub.importCheck(binding, { part: "state", page: 0 }).catch((e) => e)).message)
+      .toMatch(/only a pending owner/);
+  });
+
+  it("never admits an owner the old stack never admitted", async () => {
+    const owner = fresh();
+    const files = bundleFiles();
+    const record = json(files.get("owner.json")!);
+    record["admission"] = { state: "absent", reasons: [] };
+    files.set("owner.json", new TextEncoder().encode(`${JSON.stringify(record)}\n`));
+    const message = await staged(owner, made(owner, files));
+    await drain(world(), message);
+    const asked = asking(message, "admit");
+    await drain(world(), asked);
+    expect((await staging(answerName(asked.prefix, asked.ask!)))?.["refused"])
+      .toMatch(/never admitted/);
+    expect(await readOwner(doorsEnv, owner)).toBeNull();
+    const { binding, stub } = bindImportFor(owner, message.bundle);
+    expect(await stub.importCheck(binding, { part: "state", page: 0 }))
+      .toMatchObject({ state: "pending", tier: "free" });
+  });
+
+  it("converges when killed between its steps", async () => {
+    const owner = fresh();
+    const message = await staged(owner);
+    await drain(world(), message);
+    // The object's admit fails once, after the tier is set: the queue retries, and the run
+    // again admits and writes the record.
+    let failed = 0;
+    const flaky = world({ OWNER: { getByName: (name: string) => {
+      const stub = doorsEnv.OWNER.getByName(name);
+      return new Proxy(stub, { get: (target, key) => key === "admissionSet" && failed++ === 0
+        ? async () => { throw new Error("the delivery is killed"); }
+        : Reflect.get(target, key) });
+    } } });
+    const asked = asking(message, "admit");
+    expect((await drain(flaky, asked)).outcome).toBe("retried");
+    expect(await readOwner(doorsEnv, owner)).toBeNull();
+    expect(await drain(world(), asked)).toMatchObject({ outcome: "acked" });
+    expect((await readOwner(doorsEnv, owner))?.s).toBe("admitted");
+  });
+});
+
+describe("the import consumer's own bounds", () => {
+  it("converges when two copies of one owner's import run at once", async () => {
+    const owner = fresh();
+    const message = await staged(owner);
+    // The original and its redelivery, each going on from its own continuations, at once:
+    // what a kill between a continuation's send and its ack leaves running.
+    const [a, b] = [world(), world()];
+    const outcomes = await Promise.all([drain(a, message, { ms: 0, bytes: 0 }),
+                                        drain(b, message, { ms: 0, bytes: 0 })]);
+    expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["acked", "acked"]);
+    const whole = fresh();
+    await drain(world(), await staged(whole));
+    const [two, one] = [await held(owner), await held(whole)];
+    expect(two).toEqual(one);
+    expect(await checkOf(message)).toEqual({ missing: [], extra: [], different: [] });
+  });
+
+  it("drops a staged object past the one chunk a delivery holds, before reading it", async () => {
+    expect(IMPORT_HOLD_BYTES).toBe(CHUNK_BYTES);
+    const owner = fresh();
+    const files = bundleFiles();
+    const index = json(made(owner, files).files.get("bundle.json")!);
+    // The index, valid and signed, padded past the hold: never read, so nothing is written.
+    const padded = new TextEncoder().encode(
+      `${JSON.stringify(index)}${" ".repeat(IMPORT_HOLD_BYTES)}\n`);
+    files.set("bundle.json", padded);
+    const message = await staged(owner, { files, bundle: sha256(padded) });
+    const w = world();
+    const delivered = batch(message);
+    await importQueue(delivered.batch, w.env);
+    expect([delivered.acked, delivered.retried]).toEqual([[0], []]);
+    expect(w.puts).toEqual([]);
+    expect((await held(owner)).entries).toBe(0);
   });
 });

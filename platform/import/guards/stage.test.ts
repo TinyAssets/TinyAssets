@@ -31,13 +31,14 @@ const INPUTS: Inputs = Object.freeze({
   apiToken: "api-token-not-real", importKey: Buffer.alloc(32, 7).toString("base64url") });
 const SECRETS = [INPUTS.secretAccessKey, INPUTS.apiToken, INPUTS.importKey];
 
-/** The builder's bundles of the fixture, in a fresh out folder. */
-function bundled(): string {
+/** The builder's bundles of the fixture, in a fresh out folder (a rehearsal's, for its run). */
+function bundled(rehearsal: string | null = null): string {
   const f = fixture();
   const out = mkdtempSync(join(tmpdir(), "ta-stage-out-"));
   const priv = mkdtempSync(join(tmpdir(), "ta-stage-private-"));
   temps.push(f.work, out, priv);
-  buildBundles(f.copy, { out, private: priv, exclude: new Set([FOUNDER]), tiers: TIERS });
+  buildBundles(f.copy, { out, private: priv, exclude: new Set([FOUNDER]), tiers: TIERS,
+                         rehearsal });
   return out;
 }
 
@@ -134,6 +135,27 @@ describe("the staging step", () => {
     expect(lines[3]).toMatch(/^in all: [0-9]+ objects, [0-9]+ bytes, 3 messages$/);
     expect(JSON.parse(lines[4]!)).toMatchObject({ dry_run: true, bundles: 3, messages: 3 });
     expect(lines.join("\n")).not.toContain(keyOf(ALICE));
+  });
+
+  it("stages a rehearsal's names alone for a rehearsal, and none for the window", async () => {
+    const env = Object.fromEntries(Object.entries(STAGE_INPUTS)
+      .map(([input, name]) => [name, INPUTS[input as keyof Inputs]]));
+    const real = bundled();
+    const rehearsal = bundled("r9");
+    const { calls, fetcher } = apis();
+    await expect(stageMain(["stage", real, "--run", "r9", "--rehearsal"], env, () => undefined,
+                           fetcher)).rejects.toThrow(/names a real owner/);
+    await expect(stageMain(["stage", rehearsal, "--run", "r9"], env, () => undefined, fetcher))
+      .rejects.toThrow(/names a rehearsal's owner/);
+    await expect(stageMain(["stage", rehearsal, "--run", "r8", "--rehearsal"], env,
+                           () => undefined, fetcher)).rejects.toThrow(/another run's/);
+    // Another run's rehearsal names are no window's either: its wipe would never find them.
+    await expect(stageMain(["stage", rehearsal, "--run", "r8"], env, () => undefined, fetcher))
+      .rejects.toThrow(/names a rehearsal's owner/);
+    expect(calls).toEqual([]);
+    expect(await stageMain(["stage", rehearsal, "--run", "r9", "--rehearsal"], env,
+                           () => undefined, fetcher)).toBe(0);
+    expect(calls.filter((call) => call.method === "POST").length).toBe(3);
   });
 
   it("takes its credentials from its environment alone, each required", async () => {

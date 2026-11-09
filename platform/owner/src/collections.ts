@@ -452,6 +452,20 @@ export class Collections {
    * The bytes of every collection body the owner stores, its rows' and their history's,
    * inline or placed (once a content). A read.
    */
+  /**
+   * A read for the cutover's check (`import.ts`, `importCheck`): `limit` rows from the
+   * `offset`th, by collection and id: each one's privacy, and its body inline or its placed
+   * content's id.
+   */
+  rowsPage(offset: number, limit: number): { collection: string; row_id: string; private: 0 | 1;
+                                            body: string; content_id: string | null }[] {
+    return this.#sql.exec<{ collection: string; row_id: string; private: number; body: string;
+                            content_id: string | null }>(
+      "SELECT collection, row_id, private, body, content_id FROM collection_rows " +
+        "ORDER BY collection, row_id LIMIT ? OFFSET ?", limit, offset)
+      .toArray().map((row) => ({ ...row, private: row.private === 1 ? 1 : 0 }));
+  }
+
   storedBytes(): number {
     return this.#sql.exec<{ bytes: number }>(
       "SELECT coalesce((SELECT SUM(body_bytes) FROM collection_rows WHERE content_id IS NULL), " +

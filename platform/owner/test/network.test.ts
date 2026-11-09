@@ -12,7 +12,8 @@ import {
 import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { sourceRecord } from "../../sources/src/check";
 import { runEnv } from "../../sources/src/run-env";
-import { ALL_TRAFFIC, BOUNDARY_NOTE, EGRESS_IP_LITERAL, networkDocument } from "../src/network";
+import { EGRESS_IP_LITERAL } from "../../contract/src/policy-document";
+import { ALL_TRAFFIC, BOUNDARY_NOTE, networkDocument } from "../src/network";
 import {
   DNS_SERVERS, EGRESS_HOST, egressBaseUrl, GENERATION_HEADER, SANDBOX_HEADER, sandboxEnv,
 } from "../../contract/src/egress";

@@ -67,6 +67,8 @@ export type DoorClass = (typeof DOOR_CLASSES)[number];
  * - `import`: the platform's reserved caller with an import binding (the doors' import
  *   consumer, `doors/src/import.ts`), while the owner is `pending`: the `import` class's doors
  *   alone, deleted at the cutover;
+ * - `discard`: the same binding, while the owner is `pending` or its name is a rehearsal's
+ *   (`rehearsalRun`, `import-message.ts`), in any state: the import's discard alone;
  * - `egress`; `runner`, with its runner's secret (`closed`: its refusal once the lease is
  *   gone); `run`, with the run its path names;
  * - `sync`: the sync agent's token, at its live lease (the request's, when it names one);
@@ -77,8 +79,8 @@ export type DoorClass = (typeof DOOR_CLASSES)[number];
  *   alone (`UNBOUND_DOORS`), so every other door binds.
  */
 export const CALLER_KINDS = Object.freeze(["account", "visitors", "owner", "session",
-  "reserved", "erasure", "import", "egress", "runner", "run", "sync", "reader", "changes",
-  "lease", "inbound", "none"] as const);
+  "reserved", "erasure", "import", "discard", "egress", "runner", "run", "sync", "reader",
+  "changes", "lease", "inbound", "none"] as const);
 export type CallerKind = (typeof CALLER_KINDS)[number];
 
 /** The doors that take no binding: the sandbox line's ring and E2B's billed events. */
@@ -239,7 +241,7 @@ export function doorProblems(rows: unknown): string[] {
     if ((row["class"] === "admission") !== one(["reserved", "erasure"], row["caller"])) {
       say("only the platform's doors read no admission");
     }
-    if ((row["class"] === "import") !== (row["caller"] === "import")) {
+    if ((row["class"] === "import") !== one(["import", "discard"], row["caller"])) {
       say("only the import's doors take the import class, and they take no other");
     }
     if (!("capability" in row) || (row["capability"] !== null

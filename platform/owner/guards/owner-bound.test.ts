@@ -85,6 +85,8 @@ const NUMERIC = (name: string) =>
 
 /** Where the bounds the guard reads are spelled: the owner's sources and the contract's. */
 const BOUND_SOURCES: readonly string[] = Object.freeze([SRC, join(PLATFORM, "contract", "src")]);
+/** The policy document's definition, its bounds with it: the contract's (`policy-document.ts`). */
+const POLICY_DOCUMENT = "../../contract/src/policy-document";
 
 /**
  * A name a bound is spelled with, read from its source: the module's own constant, else
@@ -173,9 +175,9 @@ const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "openPerRun", "receipt
                                "refusalsKept");
 const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOwnerClients",
                               "maxScopesBytes");
-const POLICY_LIMITS = declared("policy", "POLICY_LIMITS", "maxDocument", "maxChange",
+const POLICY_LIMITS = declared(POLICY_DOCUMENT, "POLICY_LIMITS", "maxDocument", "maxChange",
                                "pendingProposals", "appliedProposals", "receiptsPerBucket");
-const FILE_SETTINGS = declared("policy", "FILE_SETTINGS", "max_manifest_bytes");
+const FILE_SETTINGS = declared(POLICY_DOCUMENT, "FILE_SETTINGS", "max_manifest_bytes");
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");

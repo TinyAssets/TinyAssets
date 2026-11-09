@@ -23,16 +23,18 @@ import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { HEX16 } from "../contract/src/ids";
-import { IMPORT_QUEUE, importMac, type ImportMessage, RUN } from "../contract/src/import-message";
+import {
+  IMPORT_QUEUE, importMac, type ImportMessage, rehearsalRun, RUN,
+} from "../contract/src/import-message";
 
 import { FORMAT } from "./bundle";
 
 /** The staging bucket, as the doors bind it (`IMPORT_STAGING`). */
 export const STAGING_BUCKET = "tinyassets-import-staging";
 /** Cloudflare's API, and R2's S3 endpoint for an account. */
-const API = "https://api.cloudflare.com/client/v4";
+export const API = "https://api.cloudflare.com/client/v4";
 const r2Host = (account: string) => `${account}.r2.cloudflarestorage.com`;
-const ACCOUNT = /^[0-9a-f]{32}$/;
+export const ACCOUNT = /^[0-9a-f]{32}$/;
 /** A part's name in a bundle (`bundle.ts`). */
 const PART = /^(?:bundle\.json|owner\.json|(?:manifest|rows)\/(?:0|[1-9][0-9]{0,8})\.json|inline\/[0-9a-f]{64}|chunks\/[0-9a-f]{64})$/;
 
@@ -40,10 +42,16 @@ const PART = /^(?:bundle\.json|owner\.json|(?:manifest|rows)\/(?:0|[1-9][0-9]{0,
 export interface Inputs {
   /** The Cloudflare account, 32 hex. */
   readonly account: string;
-  /** An R2 API token's S3 access key pair, with write to the staging bucket. */
+  /**
+   * An R2 API token's S3 access key pair, with write to the staging bucket (and, for the
+   * window's wipe, `window.ts`, read of the files bucket).
+   */
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
-  /** An API token that may send to the account's queues. */
+  /**
+   * An API token that may send to the account's queues (and, for the window's steps, read the
+   * dead-letter queue and the directory's KV namespace, and delete its rehearsal records).
+   */
   readonly apiToken: string;
   /** The window's `IMPORT_KEY`, the doors' Worker secret. */
   readonly importKey: string;
@@ -167,33 +175,49 @@ export function sigV4(request: { method: string; path: string; query: string;
     `SignedHeaders=${signed}, Signature=${createHmac("sha256", key).update(toSign).digest("hex")}`;
 }
 
-/** An object's PUT to the staging bucket over R2's S3 API, signed (SigV4) at `now`. */
-export function putObject(inputs: Inputs, name: string, body: Uint8Array, now: Date): Request {
+/**
+ * A request to a bucket over R2's S3 API, signed (SigV4) at `now`: `method` on the object
+ * `name` (or the bucket itself, `name` empty), with its query (each name and value encoded as
+ * S3's canonical query takes them, sorted) and its body, if any.
+ */
+export function s3Request(inputs: Inputs, method: "GET" | "PUT" | "DELETE", bucket: string,
+                          name: string, query: Readonly<Record<string, string>>,
+                          body: Uint8Array | null, now: Date): Request {
   const host = r2Host(inputs.account);
-  const path = `/${STAGING_BUCKET}/${name.split("/").map(segment).join("/")}`;
+  const path = `/${bucket}${name === "" ? "" : `/${name.split("/").map(segment).join("/")}`}`;
+  const search = Object.keys(query).sort()
+    .map((key) => `${segment(key)}=${segment(query[key]!)}`).join("&");
   const amzDate = now.toISOString().replace(/[-:]/g, "").replace(/\.[0-9]{3}/, "");
-  const payload = sha256(body);
+  const payload = sha256(body ?? new Uint8Array(0));
   const headers = { host, "x-amz-content-sha256": payload, "x-amz-date": amzDate };
-  const authorization = sigV4({ method: "PUT", path, query: "", headers, payload,
+  const authorization = sigV4({ method, path, query: search, headers, payload,
                                 region: "auto", service: "s3", amzDate,
                                 accessKeyId: inputs.accessKeyId,
                                 secretAccessKey: inputs.secretAccessKey });
   const { host: _host, ...sent } = headers;
-  return new Request(`https://${host}${path}`, { method: "PUT", body,
-    headers: { ...sent, authorization, "content-type": "application/octet-stream" } });
+  return new Request(`https://${host}${path}${search === "" ? "" : `?${search}`}`, {
+    method, ...(body === null ? {} : { body }),
+    headers: { ...sent, authorization,
+               ...(body === null ? {} : { "content-type": "application/octet-stream" }) } });
 }
 
-/** The import queue's id in the account, by its name, from the Queues API's listing. */
-export async function queueId(inputs: Inputs, fetcher: Fetcher): Promise<string> {
+/** An object's PUT to the staging bucket over R2's S3 API, signed (SigV4) at `now`. */
+export function putObject(inputs: Inputs, name: string, body: Uint8Array, now: Date): Request {
+  return s3Request(inputs, "PUT", STAGING_BUCKET, name, {}, body, now);
+}
+
+/** A queue's id in the account, by its name, from the Queues API's listing. */
+export async function queueId(inputs: Inputs, fetcher: Fetcher, name: string = IMPORT_QUEUE):
+    Promise<string> {
   const answer = await fetcher(new Request(
     `${API}/accounts/${inputs.account}/queues?per_page=100`,
     { headers: { authorization: `Bearer ${inputs.apiToken}` } }));
   const body = await answer.json() as { success?: boolean;
                                         result?: { queue_id?: string; queue_name?: string }[] };
   const found = answer.ok && body.success === true
-    ? (body.result ?? []).filter((queue) => queue.queue_name === IMPORT_QUEUE) : [];
+    ? (body.result ?? []).filter((queue) => queue.queue_name === name) : [];
   if (found.length !== 1 || typeof found[0]!.queue_id !== "string") {
-    throw new Error(`the account lists no queue ${IMPORT_QUEUE} (${answer.status}): ` +
+    throw new Error(`the account lists no queue ${name} (${answer.status}): ` +
                     "nothing is sent; run the deploy kit's dark mode first");
   }
   return found[0]!.queue_id;
@@ -208,8 +232,9 @@ export function pushMessage(inputs: Inputs, queue: string, message: ImportMessag
 
 /** A bundle's message, MAC'd under the window's key. */
 export function messageOf(staged: Staged, run: string, importKey: string): ImportMessage {
-  return { owner: staged.owner, bundle: staged.bundle, prefix: `${run}/${staged.key}`,
-           mac: importMac(importKey, staged.owner, staged.bundle) };
+  return { op: "import", owner: staged.owner, bundle: staged.bundle,
+           prefix: `${run}/${staged.key}`,
+           mac: importMac(importKey, "import", staged.owner, staged.bundle) };
 }
 
 /** What a run would send, a line a bundle by its ordinal, then the totals: no name, no key. */
@@ -229,12 +254,17 @@ export function plannedLines(bundles: readonly Staged[], run: string): string[] 
  * the first answer that is not a success, with nothing more sent.
  */
 export async function stage(out: string, run: string, inputs: Inputs | null, fetcher: Fetcher,
-                            print: (line: string) => void, now: () => Date = () => new Date()):
-    Promise<StageSummary> {
+                            print: (line: string) => void, now: () => Date = () => new Date(),
+                            rehearsal = false): Promise<StageSummary> {
   if (!RUN.test(run)) {
     throw new Error("a run's id is lowercase letters, digits and dashes, at most 64");
   }
   const bundles = bundlesIn(out);
+  // A rehearsal imports under this run's rehearsal names alone, and the window under none.
+  if (bundles.some((staged) => rehearsalRun(staged.owner) !== (rehearsal ? run : null))) {
+    throw new Error(rehearsal ? "a rehearsal's bundle names a real owner, or another run's: " +
+                      "nothing is sent" : "a bundle names a rehearsal's owner: nothing is sent");
+  }
   const totals = { bundles: bundles.length, objects: 0, bytes: 0, messages: 0 };
   for (const staged of bundles) {
     totals.objects += staged.parts.length;

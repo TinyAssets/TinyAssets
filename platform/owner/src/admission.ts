@@ -63,6 +63,10 @@ export const IMPORT_PLATFORM_ONLY =
   "only the platform imports, with an import binding";
 export const IMPORT_DOORS_ONLY = "an import binding reaches the import doors alone";
 export const IMPORT_PENDING_ONLY = "only a pending owner is imported into";
+/** What a discarded instance answers every door: its database is gone (`importDiscard`). */
+export const DISCARDED =
+  "this object's owner was discarded for the import; it starts afresh once the runtime " +
+  "starts it again";
 
 /** The owner's admission as its row holds it. */
 export interface Admission {
