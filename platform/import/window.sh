@@ -40,6 +40,8 @@
 # - Output: the job's stdout and stderr kept 0600 in the work folder, and let out only through
 #   `copy release` (no principal, no owner key, no path of the copy). The host tools' own
 #   messages go to the work folder's host.private.log; this script prints fixed words and counts.
+#   A remote's refusal names the operation, rclone's exit code and an allowlisted S3 code and
+#   HTTP status (`cause`), never rclone's own words, which go to the log alone.
 # - Credentials arrive on stdin, one a line: the source key (census, offsite) in
 #   SOURCE_CREDENTIALS' order, then the off-site key (offsite) in OFFSITE_CREDENTIALS'; the
 #   job's (stage, verify, wipe, admit, dlq) in CREDENTIALS' order, which reach only the job,
@@ -80,6 +82,13 @@ readonly SOURCE_ENDPOINT="sfo3.digitaloceanspaces.com"
 # The off-site copy of the window's final backup: the same layout under the same prefix.
 readonly OFFSITE="taoff:tinyassets-final-backup/workflow-backups"
 readonly MANIFEST_NAME='^tinyassets-platform-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]json$'
+# What a failed rclone call may say of its cause: one of these S3 error codes and one of these
+# HTTP statuses (rclone's `status code: NNN`), each found in its stderr, or "unknown". Nothing
+# else of that stderr is printed (it names the remote's paths and host); it goes to the log.
+readonly S3_CODES=(AccessDenied InvalidAccessKeyId SignatureDoesNotMatch NoSuchBucket NoSuchKey
+                   AuthorizationHeaderMalformed InvalidRequest PermanentRedirect
+                   RequestTimeTooSkewed Forbidden)
+readonly HTTP_STATUSES=(400 403 404)
 
 say() { printf '%s\n' "$*"; }
 refuse() { say "refused: $*"; exit 2; }
@@ -251,19 +260,54 @@ both_rclone() {  # one call that reads the source and writes the off-site bucket
     command rclone "$@"
 }
 
-remote_size() {  # <rclone> <remote object>: its bytes
-  local bytes
-  bytes="$("$1" size --json "$2" 2>> "$log" \
-           | sed -n 's/.*"bytes":[[:space:]]*\([0-9][0-9]*\).*/\1/p')" || true
-  [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
-  printf '%s\n' "$bytes"
+cause() {  # <stderr file>: "code <S3_CODES' or unknown>, status <HTTP_STATUSES' or unknown>"
+  local code=unknown status=unknown each
+  for each in "${S3_CODES[@]}"; do
+    if grep -qE "(^|[^[:alnum:]])${each}([^[:alnum:]]|\$)" "$1"; then
+      code="$each"
+      break
+    fi
+  done
+  for each in "${HTTP_STATUSES[@]}"; do
+    if grep -qiE "status ?code: ?${each}([^0-9]|\$)" "$1"; then
+      status="$each"
+      break
+    fi
+  done
+  printf 'code %s, status %s' "$code" "$status"
 }
 
-# newest: the newest manifest's name on the primary store, or refused.
+# remote <operation> <what> <stdout's file> <rclone> <arguments...>: one rclone call, its stderr
+# to the log alone. A failure is refused with <what>, the operation, rclone's exit code and its
+# `cause`, never a byte of its stderr (Fact 8: loud, and nothing of the remote's names).
+remote() {
+  local op="$1" what="$2" out="$3" status=0 err="$work/rclone.err.private" why
+  shift 3
+  "$@" > "$out" 2> "$err" || status=$?
+  cat "$err" >> "$log"
+  why="$(cause "$err")"
+  rm -f -- "$err"
+  [[ "$status" -eq 0 ]] || refuse "${what} (${op} failed: rclone exit ${status}, ${why})"
+}
+
+size_of() {  # <rclone> <remote object> <what>: its bytes, in `bytes`, or refused
+  remote size "$3" "$work/size.private" "$1" size --json "$2"
+  bytes="$(sed -n 's/.*"bytes":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$work/size.private")"
+  rm -f -- "$work/size.private"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || refuse "$3 (its size answered no byte count)"
+}
+
+# newest: the newest manifest's name on the primary store, or refused: a listing that failed
+# apart from one that holds no manifest.
 newest_manifest() {
-  newest="$(source_rclone lsf --files-only "$SOURCE/platform" 2>> "$log" \
-    | grep -E "$MANIFEST_NAME" | sort | tail -n 1)" || true
-  [[ -n "$newest" ]] || refuse "the backup remote lists no platform manifest"
+  local listed
+  remote list "the backup remote's platform manifests could not be listed" \
+    "$work/listing.private" source_rclone lsf --files-only "$SOURCE/platform"
+  listed="$(wc -l < "$work/listing.private")"
+  newest="$(grep -E "$MANIFEST_NAME" "$work/listing.private" | sort | tail -n 1)" || true
+  rm -f -- "$work/listing.private"
+  [[ -n "$newest" ]] || refuse "the backup remote's platform folder was listed and holds no" \
+                               "platform manifest (objects listed: ${listed})"
 }
 
 # fetch <rclone> <remote> <folder>: plan.private's archive and images from the remote into the
@@ -276,25 +320,25 @@ fetch() {
   mapfile -t images < <(sed -n 's/^image //p' "$work/plan.private")
   total="${#images[@]}"
 
-  need="$(remote_size "$rc" "$from/$archive")" || refuse "the archive's size could not be read"
+  size_of "$rc" "$from/$archive" "the archive's size could not be read"
+  need="$bytes"
   n=0
   for each in "${images[@]}"; do
     read -r uid sid <<< "$each"
     n=$((n + 1))
-    bytes="$(remote_size "$rc" "$from/$uid/$sid.img.gz")" \
-      || refuse "image $n of $total's snapshot is not on the remote"
+    size_of "$rc" "$from/$uid/$sid.img.gz" "image $n of $total's snapshot's size could not be read"
     need=$((need + bytes))
   done
   room "$need" "the download"
 
-  "$rc" copyto "$from/$archive" "$dir/$archive" 2>> "$log" \
-    || refuse "the archive could not be copied"
+  remote copy "the archive could not be copied" /dev/null \
+    "$rc" copyto "$from/$archive" "$dir/$archive"
   n=0
   for each in "${images[@]}"; do
     read -r uid sid <<< "$each"
     n=$((n + 1))
-    "$rc" copyto "$from/$uid/$sid.img.gz" "$dir/$uid.img.gz" 2>> "$log" \
-      || refuse "image $n of $total's snapshot could not be copied"
+    remote copy "image $n of $total's snapshot could not be copied" /dev/null \
+      "$rc" copyto "$from/$uid/$sid.img.gz" "$dir/$uid.img.gz"
   done
 
   # The images' apparent bytes. Each is written sparse below, so this over-counts what the
@@ -327,8 +371,8 @@ fetch() {
 copy_backup() (
   newest_manifest
   manifest="$newest"
-  source_rclone cat "$SOURCE/platform/$manifest" > "$work/manifest.json" 2>> "$log" \
-    || refuse "the newest manifest could not be read"
+  remote read "the newest manifest could not be read" "$work/manifest.json" \
+    source_rclone cat "$SOURCE/platform/$manifest"
   plan "$manifest" || refuse "the newest manifest is no platform manifest of its own name"
   printf '%s\n' "$manifest" > "$work/manifest.name"
   fetch source_rclone "$SOURCE" "$work"
@@ -353,16 +397,16 @@ offsite_copy() (
   mapfile -t images < <(sed -n 's/^image //p' "$work/plan.private")
   total="${#images[@]}"
 
-  both_rclone copyto "$SOURCE/platform/$manifest" "$OFFSITE/platform/$manifest" 2>> "$log" \
-    || refuse "the manifest could not be copied off-site"
-  both_rclone copyto "$SOURCE/$archive" "$OFFSITE/$archive" 2>> "$log" \
-    || refuse "the archive could not be copied off-site"
+  remote copy "the manifest could not be copied off-site" /dev/null \
+    both_rclone copyto "$SOURCE/platform/$manifest" "$OFFSITE/platform/$manifest"
+  remote copy "the archive could not be copied off-site" /dev/null \
+    both_rclone copyto "$SOURCE/$archive" "$OFFSITE/$archive"
   n=0
   for each in "${images[@]}"; do
     read -r uid sid <<< "$each"
     n=$((n + 1))
-    both_rclone copyto "$SOURCE/$uid/$sid.img.gz" "$OFFSITE/$uid/$sid.img.gz" 2>> "$log" \
-      || refuse "image $n of $total's snapshot could not be copied off-site"
+    remote copy "image $n of $total's snapshot could not be copied off-site" /dev/null \
+      both_rclone copyto "$SOURCE/$uid/$sid.img.gz" "$OFFSITE/$uid/$sid.img.gz"
   done
 
   # Read back from the off-site bucket alone, into a folder of its own, and held to the
@@ -370,8 +414,8 @@ offsite_copy() (
   back="$work/offsite"
   rm -rf -- "$back"
   mkdir -m 700 "$back"
-  offsite_rclone cat "$OFFSITE/platform/$manifest" > "$back/manifest.json" 2>> "$log" \
-    || refuse "the off-site manifest could not be read back"
+  remote read "the off-site manifest could not be read back" "$back/manifest.json" \
+    offsite_rclone cat "$OFFSITE/platform/$manifest"
   cmp -s "$back/manifest.json" "$work/manifest.json" \
     || refuse "the off-site manifest read back is not the copy's"
   fetch offsite_rclone "$OFFSITE" "$back"
