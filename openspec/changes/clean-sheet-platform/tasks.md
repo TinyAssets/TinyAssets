@@ -2423,7 +2423,7 @@ R, S, M and W.
     runs on its own import host (`host.py`, `import_host_research.md`; the founder approved
     the spend, 2026-11-09): a Droplet, `tinyassets-import-<run>` in `sfo3`, that `census`
     makes (none while another `import-window` Droplet exists) and `clean` destroys after
-    deleting the copy, held to its name and tags first (a host whose set-up failed, or that
+    deleting the copy, held to its name, tags and kind first (a host whose set-up failed, or that
     lost the reserved IP, is destroyed unreached). Its host key is made on the runner and
     pinned from its tag on every dispatch, never from `ssh-keyscan`, and its boot script drops
     the metadata service (which serves the key in `user_data`) for Docker's containers. Its

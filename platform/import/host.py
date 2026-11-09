@@ -10,10 +10,13 @@ the runner, never on a host, with the DigitalOcean calls of `scripts/do_api_requ
   host.py hosts   --summary <file>
       Every `import-window` Droplet, named with its age, a warning past 7 days (an orphan
       bills about $1.71 a day). Every dispatch runs it.
-  host.py ensure  --run <id> --mode <mode> --deploy-key <public key file> --output <file>
-      This run's host, found by its tag `ta-import-<run>` and held to its name and tags, with
-      the reserved IP (IMPORT_RESERVED_IP) on it. `census` makes one when there is none, and
-      refuses while any other `import-window` Droplet exists: `sfo3`, `s-4vcpu-8gb`, Debian
+  host.py ensure  --run <id> --mode <mode> --kind <rehearsal|window> --deploy-key <public key
+                  file> --output <file>
+      This run's host, found by its tag `ta-import-<run>` and held to its name, its tags and
+      the dispatch's kind (its one tag `ta-kind-<kind>`, which census sets), with the reserved
+      IP (IMPORT_RESERVED_IP) on it. A host of the other kind is refused in every mode, before
+      it is reached or destroyed. `census` makes one when there is none, and refuses while
+      any other `import-window` Droplet exists: `sfo3`, `s-4vcpu-8gb`, Debian
       (`select_do_image.py`), no IPv6, the deploy key, a host key made here (its private half
       in `user_data` alone, its SHA-256 in the tag `ta-hostkey-<hex>`), and a minimal
       cloud-init (`cloud_init`: docker.io, rclone, xfsprogs and curl; the default route
@@ -36,8 +39,8 @@ the runner, never on a host, with the DigitalOcean calls of `scripts/do_api_requ
       unreachable from it. The tokens are pinned to that address, so no credential leaves the
       runner until both hold. census and every mode that hands the host a credential run it
       first, in the run's own Node by the digest census pinned (`egress_command`).
-  host.py destroy --run <id> --id <droplet>
-      The Droplet held to this run's name and tags (as dr-drill.yml holds its retained
+  host.py destroy --run <id> --kind <rehearsal|window> --id <droplet>
+      The Droplet held to this run's name, tags and kind (as dr-drill.yml holds its retained
       Droplet), then destroyed; its reserved IP goes back to unassigned. A failed delete is an
       error that names the Droplet.
 
@@ -72,6 +75,7 @@ SIZE = "s-4vcpu-8gb"
 TAG = "import-window"
 MARKER = "/etc/tinyassets-import-host"
 RUN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+KINDS = ("rehearsal", "window")
 # A Droplet's name is its hostname, one DNS label: 63 characters at most.
 MAX_RUN_IN_NAME = 63 - len("tinyassets-import-")
 HOSTKEY = re.compile(r"^ta-hostkey-([0-9a-f]{64})$")
@@ -188,13 +192,22 @@ def describe(droplet: dict) -> str:
     return f"{droplet.get('name')} (Droplet {droplet.get('id')}), up {up}"
 
 
-def held(droplet: dict, run: str) -> None:
-    """The Droplet is this run's import host by name and tags, or refused."""
+def held(droplet: dict, run: str, kind: str) -> None:
+    """The Droplet is this run's import host by name and tags, for this kind, or refused.
+
+    A host's one kind tag is census's: a dispatch of the other kind (a mistaken rehearsal
+    clean of the window's run) never adopts, reaches or destroys it.
+    """
     tags = set(droplet.get("tags") or [])
     if (droplet.get("name") != name_of(run)
             or not {"tinyassets", TAG, f"ta-import-{run}"}.issubset(tags)):
         raise Refused(f"Droplet {droplet.get('id')} is tagged for this run but is not its "
                       "import host by name and tags")
+    kinds = {tag for tag in tags if tag.startswith("ta-kind-")}
+    if kinds != {f"ta-kind-{kind}"}:
+        raise Refused(f"Droplet {droplet.get('id')} is this run's import host but not a "
+                      f"{kind}'s (its kind tags: {', '.join(sorted(kinds)) or 'none'}): "
+                      "dispatch the kind it was made for")
 
 
 def hostkey_of(droplet: dict) -> str:
@@ -272,7 +285,7 @@ def host_keypair(run: str) -> tuple[str, str]:
             encoding="utf-8").strip()
 
 
-def create(run: str, address: str, deploy_key: str) -> dict:
+def create(run: str, kind: str, address: str, deploy_key: str) -> dict:
     others = import_hosts()
     if others:
         raise Refused("another import host is up, and the window runs one at a time: "
@@ -293,7 +306,8 @@ def create(run: str, address: str, deploy_key: str) -> dict:
         "name": name_of(run), "region": REGION, "size": SIZE, "image": image,
         "ssh_keys": [key_id], "ipv6": False, "monitoring": False, "backups": False,
         "user_data": cloud_init(run, private, public),
-        "tags": ["tinyassets", TAG, f"ta-import-{run}", f"ta-hostkey-{hostkey}"],
+        "tags": ["tinyassets", TAG, f"ta-import-{run}", f"ta-kind-{kind}",
+                 f"ta-hostkey-{hostkey}"],
     })["droplet"]
     print(f"made the run's import host {name_of(run)} (Droplet {made['id']}) in {REGION}")
     return made
@@ -315,15 +329,15 @@ def ensure(args: argparse.Namespace) -> int:
             return 0
         if args.mode != "census":
             raise Refused("this run has no import host: run census first")
-        droplet = create(run, address, args.deploy_key)
+        droplet = create(run, args.kind, address, args.deploy_key)
     else:
         droplet = mine[0]
         print(f"the run's import host is {describe(droplet)}")
-    held(droplet, run)
+    held(droplet, run, args.kind)
     droplet_id = int(droplet["id"])
     if args.mode == "clean":
         # clean destroys the host whatever state it is in (its disk holds the copy, and goes
-        # with it), held to its name and tags alone. One whose key or reserved IP is not as
+        # with it), held to its name, tags and kind alone. One whose key or reserved IP is not as
         # made is never reached: only destroyed.
         try:
             hostkey = hostkey_of(droplet)
@@ -438,7 +452,7 @@ def destroy(args: argparse.Namespace) -> int:
     droplet = call("GET", f"/droplets/{args.id}")["droplet"]
     if int(droplet.get("id", 0)) != int(args.id):
         raise Refused(f"Droplet {args.id} answered as another")
-    held(droplet, args.run)
+    held(droplet, args.run, args.kind)
     try:
         call("DELETE", f"/droplets/{args.id}")
     except DigitalOceanRequestError as exc:
@@ -473,6 +487,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     each = sub.add_parser("ensure")
     each.add_argument("--run", required=True)
     each.add_argument("--mode", required=True)
+    each.add_argument("--kind", required=True, choices=KINDS)
     each.add_argument("--deploy-key", required=True)
     each.add_argument("--output", required=True)
     each = sub.add_parser("pin")
@@ -487,6 +502,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     each.add_argument("--identity", required=True)
     each = sub.add_parser("destroy")
     each.add_argument("--run", required=True)
+    each.add_argument("--kind", required=True, choices=KINDS)
     each.add_argument("--id", required=True)
     args = parser.parse_args(argv)
     if "run" in args and not RUN.match(args.run):
