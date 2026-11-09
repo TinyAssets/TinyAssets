@@ -24,8 +24,9 @@ import {
 import {
   ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_RECORDS, pack,
   recordBytes,
-  SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS, type SegmentRecord, TIER_STORAGE_MAX,
+  SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS, type SegmentRecord,
 } from "../src/segments";
+import { TIER_STORAGE_MAX } from "../../contract/src/control";
 
 const HALF = SHARE * DATABASE_BYTES;
 /**

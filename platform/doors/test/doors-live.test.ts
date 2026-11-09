@@ -28,6 +28,7 @@ import { eraseOutside, erasureQueue } from "../src/erase";
 import { contentDigest } from "../src/file-bytes";
 import { sharedApps } from "../src/inbound";
 import { type OwnerDO, refuseOnce } from "./entry";
+import { writeControl } from "../../ci/fixtures";
 import { slotBusy } from "../../contract/src/slots";
 import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
 import {
@@ -488,7 +489,7 @@ describe("/hooks/inbound, a capability URL", () => {
     expect((await call(event(hookUrl, "c1"))).status).toBe(404);
     await setControl(null);
     expect((await call(event(hookUrl, "c2"))).status).toBe(404);
-    await env.CONTROL.put("c:control", JSON.stringify({ outside: "on" }));
+    await writeControl(env.CONTROL, JSON.stringify({ outside: "on" }));
     expect((await call(event(hookUrl, "c3"))).status).toBe(503);
     await setControl({ ...OPEN, inbound: true, ordinary: "none" });
     expect((await call(event(hookUrl, "c4"))).status).toBe(503);

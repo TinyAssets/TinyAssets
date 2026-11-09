@@ -9,10 +9,9 @@
  * route patterns the doors take at the cutover, each from the origin; the MCP door
  * (`mcp`); where a sign-in starts and where the upstream returns it (`signin`); the doors'
  * own app's client document, redirect and resource (`first_party`); E2B's lifecycle
- * webhook (`hook`); and the control record's key (`control_key`). The contract's `ZONE`
- * and `EGRESS_HOST` (`contract/src/egress.ts`) are held to `host` and `egress` by
- * `guards/identity.test.ts`: the runner the sandbox template ships is built from that file,
- * so it changes only with a new template pair.
+ * webhook (`hook`). The contract's `ZONE` and `EGRESS_HOST` (`contract/src/egress.ts`) are
+ * held to `host` and `egress` by `guards/identity.test.ts`: the runner the sandbox template
+ * ships is built from that file, so it changes only with a new template pair.
  */
 import identity from "../../contract/identity.json" with { type: "json" };
 import type { Source } from "../../contract/src/egress-scope";
@@ -185,7 +184,7 @@ export interface DoorsEnv {
   readonly OAUTH_KV: KVNamespace;
   /** The owner directory: routing hints (`directory.ts`). */
   readonly DIRECTORY: KVNamespace;
-  /** The platform's control record alone (`c:control`), the owner Worker's too. */
+  /** The platform's control record alone (`contract/src/control.ts`), the owner Worker's too. */
   readonly CONTROL: KVNamespace;
   /** The owner app's own files (`app/`), served only through `pages.ts`. */
   readonly ASSETS: Fetcher;

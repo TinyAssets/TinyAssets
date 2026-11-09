@@ -50,8 +50,8 @@ import {
   PUBLIC_HOST, SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
 } from "./config";
 import { APP_RESOURCE } from "../../contract/src/identity";
-import { outsideOpen, ownerOpen } from "./control";
-import { putOwner, readControl, readOwner } from "./directory";
+import { outsideOpen, ownerOpen, readControl } from "../../contract/src/control";
+import { putOwner, readOwner } from "./directory";
 import { refusalOf } from "../../contract/src/refusal";
 import { authorizationServer } from "./oauth";
 import { replaceInstallation } from "./revoke";

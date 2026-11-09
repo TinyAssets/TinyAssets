@@ -18,7 +18,7 @@
  * reads them back from there. The doors answer `storage_full` 507 and `uploads_open` 409.
  */
 import { type Facts, Refusal } from "../../contract/src/refusal";
-import type { TierName, Tiers } from "./tier";
+import type { TierName, Tiers } from "../../contract/src/control";
 
 export const STORAGE_FULL = "storage_full" as const;
 export const UPLOADS_OPEN = "uploads_open" as const;

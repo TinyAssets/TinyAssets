@@ -89,7 +89,8 @@ import type { NetworkPlan } from "./network";
 import { type RunConfig, SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
 import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF, switchedOn } from "./signins";
-import { TIER_RUNS, type TierName, tierNumbers, type Tiers } from "./tier";
+import { TIER_RUNS, tierNumbers } from "./tier";
+import type { TierName, Tiers } from "../../contract/src/control";
 import { utf8Bytes } from "../../contract/src/text";
 import type {
   Account, Call, Door, OwnerState,

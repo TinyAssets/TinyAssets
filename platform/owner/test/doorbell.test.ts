@@ -30,6 +30,7 @@ import { CLOSED, Doorbell, type RingAnswer, retryAfterOf, runWakes } from "../sr
 import raw from "../../contract/wake-kinds.json" with { type: "json" };
 import { DOT, EVENT, ledgerOn, ledgerSubscription, MCP, MUSE, rig, type Rig, WHSEC }
   from "./ledger-support";
+import { writeControl } from "../../ci/fixtures";
 import { failure } from "./support";
 import type { Rang, RungOwnerDO } from "./worker";
 
@@ -58,9 +59,9 @@ async function received(r: Rung): Promise<{ url: string; redirect: string;
 
 /** The control record: the kill switch on for `owners` only, or off. */
 async function control(owners: readonly string[], outside: "on" | "off" = "on"): Promise<void> {
-  await env.CONTROL.put("c:control", JSON.stringify({
+  await writeControl(env.CONTROL, {
     outside, ordinary: "canary", canary: owners, inbound: false,
-  }));
+  });
 }
 
 /**
@@ -267,7 +268,7 @@ describe("the kill switch and admission", () => {
       expect(await r.rang()).toEqual([]);
       expect(await r.wakesAt()).toBeGreaterThan(clock() + 30);  // held, never a busy loop
     }
-    await env.CONTROL.delete("c:control");  // missing: closed too
+    await writeControl(env.CONTROL, null);  // missing: closed too
     await runInDurableObject(r.stub, (i: OwnerDO) => i.alarm());
     expect(await r.rang()).toEqual([]);
     await control([r.owner]);

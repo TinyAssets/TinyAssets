@@ -9,7 +9,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { OPEN_GATES } from "../../ci/fixtures";
+import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
 import type { SandboxSignin, SandboxStart } from "../src/sandbox";
 import { WriteGate } from "../src/gate";
@@ -492,18 +492,16 @@ describe("the runs lane's own read of the switches (review round 2, N1)", () => 
                                                   scopes: [] });
     try {
       // The founder switches Claude Code off in the control record the object reads.
-      await env.CONTROL.put("c:control", JSON.stringify({ ...OPEN,
-                                                         signins: { "claude-code": false } }));
+      await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": false } });
       expect(await laneRuns(r, "main")).toEqual([]);
       expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
         .toContainEqual(expect.stringContaining("signin_off"));
       // Switched on again, the lane's next schedule runs on it.
-      await env.CONTROL.put("c:control", JSON.stringify({ ...OPEN,
-                                                         signins: { "claude-code": true } }));
+      await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": true } });
       expect((await laneRuns(r, "main")).map((start) => [start.engine, start.credential]))
         .toEqual([["claude-code", "vendor_login_in_sandbox"]]);
     } finally {
-      await env.CONTROL.delete("c:control");
+      await writeControl(env.CONTROL, null);
     }
   });
 
@@ -514,12 +512,12 @@ describe("the runs lane's own read of the switches (review round 2, N1)", () => 
                                                   credential: "vendor_login_in_sandbox",
                                                   scopes: [] });
     try {
-      await env.CONTROL.put("c:control", "{not json");
+      await writeControl(env.CONTROL, "{not json");
       expect(await laneRuns(r, "main")).toEqual([]);
       expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
         .toContainEqual(expect.stringContaining("signin_off"));
     } finally {
-      await env.CONTROL.delete("c:control");
+      await writeControl(env.CONTROL, null);
     }
   });
 });
