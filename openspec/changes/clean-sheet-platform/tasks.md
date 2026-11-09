@@ -2423,10 +2423,13 @@ R, S, M and W.
     runs on its own import host (`host.py`, `import_host_research.md`; the founder approved
     the spend, 2026-11-09): a Droplet, `tinyassets-import-<run>` in `sfo3`, that `census`
     makes (none while another `import-window` Droplet exists) and `clean` destroys after
-    deleting the copy, held to its name and tags first. Its host key is made on the runner
-    and pinned from its tag on every dispatch, never from `ssh-keyscan`. Its egress is checked
-    from a bridge container to be the reserved IP both tokens are pinned to, before any copy
-    and before every mode that hands it a credential. Every dispatch names each import host
+    deleting the copy, held to its name and tags first (a host whose set-up failed, or that
+    lost the reserved IP, is destroyed unreached). Its host key is made on the runner and
+    pinned from its tag on every dispatch, never from `ssh-keyscan`, and its boot script drops
+    the metadata service (which serves the key in `user_data`) for Docker's containers. Its
+    egress is checked from a bridge container, in the run's own `node:22` digest once census
+    has pinned it, to be the reserved IP both tokens are pinned to and to reach no metadata,
+    before any copy and before every mode that hands it a credential. Every dispatch names each import host
     and its age, and warns past 7 days. `window.sh` refuses any host whose marker is not the
     run's, or that holds the old stack, and makes the copy from the newest manifest on the
     primary backup store, read with a read-only Spaces key that reaches rclone's environment
@@ -2435,8 +2438,8 @@ R, S, M and W.
     digest a run (the census's, which it prints, so the rehearsal's and the window's
     compare), its credentials on its stdin in `CREDENTIALS`' order, a networked job seeing
     the bundles alone, its output let out through `copy release` alone, which fails closed.
-    The Cloudflare account id is resolved from the repository's token, as the deploy kit
-    resolves it. A rehearsal is the default; a real run takes `rehearsal: false` and
+    The Cloudflare account id is the repository variable `CLOUDFLARE_ACCOUNT_ID` (no secret);
+    no token of the deploy kit's is read. A rehearsal is the default; a real run takes `rehearsal: false` and
     `confirm: window-<run>`. It also owes (`rvimport5_report.md`):
     - the time a discarded object takes to be evicted, measured, with that wait written into
       the window's steps, since a re-import before then answers `busy`;

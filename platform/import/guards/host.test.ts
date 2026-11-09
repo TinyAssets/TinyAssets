@@ -33,7 +33,6 @@ const DEPLOY_MD5 = createHash("md5").update(Buffer.from(DEPLOY_BLOB, "base64")).
 const IMAGES = ["debian-12-x64", "debian-13-x64", "ubuntu-24-04-x64"].map((slug) => ({
   slug, public: true, status: "available", regions: ["sfo3"],
   distribution: slug.startsWith("debian") ? "Debian" : "Ubuntu" }));
-const ACCOUNT = "c".repeat(32);
 
 const temps: string[] = [];
 afterAll(() => {
@@ -47,7 +46,7 @@ interface State {
   droplets: Droplet[]; reserved_ips: Record<string, { region: string; droplet: number | null }>;
   keys: { id: number; fingerprint: string }[]; images: typeof IMAGES; now: string;
   fail?: string[]; calls?: { call: string; query: Record<string, string>; body: unknown }[];
-  made?: Record<string, unknown>[]; cf_token?: string; zones?: unknown;
+  made?: Record<string, unknown>[];
 }
 
 /** A tagged import host, as census makes it, `days` old. */
@@ -78,7 +77,7 @@ function world(start: Partial<State> = {}) {
   const log = join(dir, "calls.log");
   writeFileSync(log, "");
   const files = { output: join(dir, "output"), known: join(dir, "known_hosts"),
-                  env: join(dir, "env"), summary: join(dir, "summary") };
+                  summary: join(dir, "summary") };
   const host = (args: string[], env: Record<string, string> = {}) => {
     const result = spawnSync("python3", [join(HERE, "fake_do.py"), stateFile, ...args], {
       encoding: "utf8",
@@ -118,7 +117,7 @@ describe("census makes the run's import host", () => {
       packages: string[]; ssh_keys: Record<string, string>; ssh_genkeytypes: string[];
       ssh_deletekeys: boolean; write_files: { path: string; content: string }[];
       runcmd: string[][] };
-    expect(config.packages).toEqual(["docker.io", "rclone", "xfsprogs"]);
+    expect(config.packages).toEqual(["docker.io", "rclone", "xfsprogs", "curl"]);
     expect(config.ssh_keys).toEqual({ ed25519_private: "fake private key\n",
                                       ed25519_public: `${HOSTKEY} fake` });
     expect(config).toMatchObject({ ssh_deletekeys: true, ssh_genkeytypes: [] });
@@ -185,6 +184,11 @@ describe("every other mode finds the run's host", () => {
     expect(clean.out).toContain("the run has no import host: nothing to clean");
     expect(none.outputs()["id"]).toBe("");
     expect(none.calls()).not.toContain("POST /droplets");
+    // Two host-key tags: neither is trusted.
+    const keys = world({ droplets: [droplet("r1", 5, 0, [...droplet("r1", 5).tags,
+                                                          `ta-hostkey-${"0".repeat(64)}`])],
+                         reserved_ips: { [RESERVED]: { region: "sfo3", droplet: 5 } } });
+    expect(keys.ensure("verify").out).toContain("refused: Droplet 5 records no one host key");
     // Tagged for the run but not its host by name, or two of them.
     const named = world({ droplets: [{ ...droplet("r1", 5), name: "tinyassets-dr-drill" }] });
     expect(named.ensure("verify").out).toContain("is not its import host by name and tags");
@@ -195,6 +199,49 @@ describe("every other mode finds the run's host", () => {
                          reserved_ips: { [RESERVED]: { region: "sfo3", droplet: 8 } } });
     expect(away.ensure("verify").out)
       .toContain("refused: the reserved IP is not on this run's import host");
+  });
+
+  it("gives clean a held host to destroy, unreached, when it lost the reserved IP or its key", () => {
+    // Lost the reserved IP, or never set up (two host-key tags, or none): found by its name and
+    // tags, with no address, so it is never reached; and destroy takes it.
+    for (const tags of [undefined, ["tinyassets", "import-window", "ta-import-r1"],
+                        [...droplet("r1", 5).tags, `ta-hostkey-${"0".repeat(64)}`]]) {
+      const w = world({ droplets: [droplet("r1", 5, 0, tags)],
+                        reserved_ips: { [RESERVED]: { region: "sfo3", droplet: tags ? 5 : 8 } } });
+      const run = w.ensure("clean");
+      expect(run.status).toBe(0);
+      expect(run.out).toContain("the host is not reached, and its copy goes with it");
+      expect(w.outputs()).toMatchObject({ id: "5", address: "" });
+      expect(w.host(["destroy", "--run", "r1", "--id", "5"]).status).toBe(0);
+      expect(w.calls().filter((call) => call.startsWith("DELETE"))).toEqual(["DELETE /droplets/5"]);
+      expect(w.calls()).not.toContain(`POST /reserved_ips/${RESERVED}/actions`);
+    }
+    // Held, set up and with the reserved IP: reached, for its own clean first.
+    const whole = world({ droplets: [droplet("r1", 5)],
+                          reserved_ips: { [RESERVED]: { region: "sfo3", droplet: 5 } } });
+    expect(whole.ensure("clean").status).toBe(0);
+    expect(whole.outputs()).toEqual({ id: "5", address: RESERVED, hostkey: HOSTKEY_HEX });
+  });
+
+  it("gives clean nothing to destroy that is not held to the run's name and tags", () => {
+    const cases = [
+      { ...droplet("r1", 5), name: "tinyassets-dr-drill" },
+      droplet("r1", 5, 0, ["tinyassets", "ta-import-r1", `ta-hostkey-${HOSTKEY_HEX}`]),
+      droplet("r1", 5, 0, ["import-window", "ta-import-r1", `ta-hostkey-${HOSTKEY_HEX}`]),
+    ];
+    for (const each of cases) {
+      const w = world({ droplets: [each], reserved_ips: { [RESERVED]: { region: "sfo3", droplet: 5 } } });
+      const run = w.ensure("clean");
+      expect(run.status).toBe(2);
+      expect(run.out).toContain("is not its import host by name and tags");
+      expect(existsSync(w.files.output)).toBe(false);
+      expect(w.host(["destroy", "--run", "r1", "--id", "5"]).status).toBe(2);
+      expect(w.calls().filter((call) => call.startsWith("DELETE"))).toEqual([]);
+    }
+    // Two Droplets in the run's tag: neither.
+    const two = world({ droplets: [droplet("r1", 5), droplet("r1", 6)] });
+    expect(two.ensure("clean").status).toBe(2);
+    expect(existsSync(two.files.output)).toBe(false);
   });
 });
 
@@ -232,7 +279,8 @@ describe("the egress check", () => {
   const egress = (seen: string) => {
     const w = world();
     writeFileSync(w.files.known, `${RESERVED} ${HOSTKEY}\n`);
-    const run = w.host(["egress", "--known-hosts", w.files.known, "--identity", "/dev/null"],
+    const run = w.host(["egress", "--run", "r1", "--mode", "verify", "--known-hosts", w.files.known,
+                        "--identity", "/dev/null"],
                        { FAKE_EGRESS: seen });
     return { ...run, tools: w.tools() };
   };
@@ -242,9 +290,35 @@ describe("the egress check", () => {
     expect(run.status).toBe(0);
     expect(run.out).toContain("Cloudflare sees the import host's containers from the reserved IP");
     const session = run.tools.find((line) => line.startsWith("ssh "))!;
-    expect(session).toContain("docker run --rm --network bridge node:22 node -e");
     expect(session).toContain("https://www.cloudflare.com/cdn-cgi/trace");
     expect(session).toContain("-o StrictHostKeyChecking=yes");
+  });
+
+  it("runs in the run's own Node, by the digest census pinned; census's first check alone " +
+     "by the tag", () => {
+    const command = (mode: string, env: Record<string, string> = {}) => {
+      const w = world();
+      writeFileSync(w.files.known, `${RESERVED} ${HOSTKEY}\n`);
+      const run = w.host(["egress", "--run", "r1", "--mode", mode, "--known-hosts", w.files.known,
+                          "--identity", "/dev/null"], env);
+      return { ...run, session: w.tools().find((line) => line.startsWith("ssh "))! };
+    };
+    for (const mode of ["census", "stage", "verify", "wipe", "admit", "dlq", "offsite"]) {
+      const { session } = command(mode);
+      expect(session).toContain(`image="$(cat /var/tmp/ta-import-r1/image 2>/dev/null || true)"`);
+      expect(session).toContain("grep -Eqx 'node@sha256:[0-9a-f]{64}'");
+      expect(session).toContain('docker run --rm --network bridge "$image" node -e');
+      if (mode === "census") {
+        expect(session).toContain("|| { image=node:22; }");
+      } else {
+        expect(session).not.toContain("node:22");
+        expect(session).toContain("|| { echo image=none; exit 3; }");
+      }
+    }
+    // A later mode on a copy that names no digest: refused, never the tag.
+    const none = command("verify", { FAKE_NO_IMAGE: "1" });
+    expect(none.status).toBe(2);
+    expect(none.out).toContain("refused: this run's copy names no Node image: run clean, then census");
   });
 
   it("refuses any other address, and a trace it cannot read", () => {
@@ -253,6 +327,35 @@ describe("the egress check", () => {
       expect(run.status).toBe(2);
       expect(run.out).toMatch(/refused: (Cloudflare sees the import host's containers from another address than the reserved IP|the egress check could not read)/);
     }
+    // A container that failed, even after the right line.
+    const w = world();
+    writeFileSync(w.files.known, `${RESERVED} ${HOSTKEY}\n`);
+    const failed = w.host(["egress", "--run", "r1", "--mode", "verify", "--known-hosts", w.files.known,
+                        "--identity", "/dev/null"],
+                          { FAKE_EGRESS_STATUS: "1" });
+    expect(failed.status).toBe(2);
+    expect(failed.out).toContain("refused: the egress check could not read what Cloudflare sees");
+  });
+
+  it("refuses a host whose containers reach the metadata service (the host key's user_data)", () => {
+    const w = world();
+    writeFileSync(w.files.known, `${RESERVED} ${HOSTKEY}\n`);
+    for (const metadata of ["reachable", ""]) {
+      const run = w.host(["egress", "--run", "r1", "--mode", "verify", "--known-hosts", w.files.known,
+                        "--identity", "/dev/null"],
+                         { FAKE_METADATA: metadata });
+      expect(run.status).toBe(2);
+      expect(run.out).toContain("refused: a container on the import host reaches the metadata " +
+                                "service");
+    }
+    // The boot script drops it for Docker's containers, every boot, before the marker.
+    const run = w.ensure("census");
+    expect(run.status).toBe(0);
+    const config = JSON.parse(String(w.now().made![0]!["user_data"]).slice("#cloud-config\n".length)) as
+      { write_files: { path: string; content: string }[] };
+    const route = config.write_files.find((each) => each.path.endsWith("tinyassets-anchor-route"))!;
+    expect(route.content).toContain(
+      "|| iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP");
   });
 });
 
@@ -299,32 +402,11 @@ describe("the orphan guard", () => {
   });
 });
 
-describe("the Cloudflare account", () => {
-  it("is resolved from the zone with the repository's token, masked in Actions", () => {
-    const zones = { result: [{ name: "tinyassets.io", account: { id: ACCOUNT } }] };
-    const w = world({ cf_token: "cf-token-value", zones });
-    const run = w.host(["account", "--env-file", w.files.env],
-                       { CLOUDFLARE_API_TOKEN: "cf-token-value", GITHUB_ACTIONS: "true" });
-    expect(run.status).toBe(0);
-    expect(run.out.indexOf(`::add-mask::${ACCOUNT}`)).toBe(0);
-    expect(readFileSync(w.files.env, "utf8")).toBe(`CLOUDFLARE_ACCOUNT_ID=${ACCOUNT}\n`);
-    expect(w.calls()).toEqual(["CF GET https://api.cloudflare.com/client/v4/zones?name=tinyassets.io"]);
-    // Another token, or a zone without an account: refused, the token never shown.
-    const refused = w.host(["account", "--env-file", w.files.env],
-                           { CLOUDFLARE_API_TOKEN: "another-token" });
-    expect(refused.status).toBe(2);
-    expect(refused.out).not.toContain("another-token");
-    const empty = world({ cf_token: "t", zones: { result: [] } });
-    expect(empty.host(["account", "--env-file", w.files.env], { CLOUDFLARE_API_TOKEN: "t" }).out)
-      .toContain("refused: the token resolves no account for tinyassets.io");
-  });
-});
-
 describe("the workflow's host steps", () => {
   const workflow = parse(readFileSync(join(REPO, ".github", "workflows", "import-window.yml"),
                                       "utf8")) as {
     env?: Record<string, string>;
-    jobs: { window: { steps: { name?: string; if?: string; run?: string;
+    jobs: { window: { steps: { name?: string; id?: string; if?: string; run?: string;
                                env?: Record<string, string> }[] } } };
   const steps = workflow.jobs.window.steps;
   const at = (name: string) => steps.findIndex((each) => each.name === name);
@@ -332,7 +414,7 @@ describe("the workflow's host steps", () => {
   it("find, pin and check the host before the step, and destroy it after a clean", () => {
     const order = ["Refuse a run this dispatch may not make", "Name every import host and its age",
                    "Find or make the run's import host", "Pin its host key",
-                   "Check its egress is the reserved IP", "Resolve the Cloudflare account",
+                   "Check its egress is the reserved IP",
                    "Run the step on the import host", "Destroy the run's import host"];
     const found = order.map(at);
     expect(found.every((index) => index >= 0)).toBe(true);
@@ -343,10 +425,40 @@ describe("the workflow's host steps", () => {
     // The egress check before census and every mode that hands the host a credential.
     expect(step("Check its egress is the reserved IP").if).toContain(
       '["census","stage","verify","wipe","admit","dlq","offsite"]');
-    expect(step("Resolve the Cloudflare account").env!["CLOUDFLARE_API_TOKEN"])
-      .toBe("${{ secrets.CLOUDFLARE_API_TOKEN }}");
-    expect(step("Destroy the run's import host").if).toBe(
-      "inputs.mode == 'clean' && steps.host.outputs.id != ''");
+    expect(step("Check its egress is the reserved IP").run).toContain(
+      'host.py egress --run "${RUN_ID}" --mode "${MODE}"');
+    // Reached only with an address; destroyed after the host's own clean, or with none.
+    for (const name of ["Pin its host key", "Run the step on the import host"]) {
+      expect(step(name).if).toBe("steps.host.outputs.address != ''");
+    }
+    const destroys = (outcomes: { address: string; pin: string; run: string; mode?: string;
+                                  id?: string }) => {
+      const context: Record<string, string> = {
+        "inputs.mode": outcomes.mode ?? "clean", "steps.host.outputs.id": outcomes.id ?? "5",
+        "steps.host.outputs.address": outcomes.address, "steps.pin.outcome": outcomes.pin,
+        "steps.run.outcome": outcomes.run };
+      const js = step("Destroy the run's import host").if!
+        .replace(/always\(\)/g, "true")
+        .replace(/[a-z]+(\.[a-z_]+)+/g, (name) => JSON.stringify(context[name] ?? `?${name}`))
+        .replace(/'([^']*)'/g, (_all, text: string) => JSON.stringify(text))
+        .replace(/==/g, "===").replace(/!=/g, "!==");
+      expect(js).not.toContain("?");
+      return Function(`return (${js});`)() as boolean;
+    };
+    // The host's own clean ran: destroyed. Never when that clean refused.
+    expect(destroys({ address: RESERVED, pin: "success", run: "success" })).toBe(true);
+    expect(destroys({ address: RESERVED, pin: "success", run: "failure" })).toBe(false);
+    // Set-up never finished (the pin refused), or no address (lost IP, no one key): destroyed.
+    expect(destroys({ address: RESERVED, pin: "failure", run: "skipped" })).toBe(true);
+    expect(destroys({ address: "", pin: "skipped", run: "skipped" })).toBe(true);
+    // An earlier step failed with the host reached and pinned: kept, its clean never ran.
+    expect(destroys({ address: RESERVED, pin: "success", run: "skipped" })).toBe(false);
+    // No held host (ensure refused or found none), or another mode: nothing.
+    expect(destroys({ address: "", pin: "skipped", run: "skipped", id: "" })).toBe(false);
+    expect(destroys({ address: RESERVED, pin: "success", run: "success", mode: "verify" }))
+      .toBe(false);
+    expect(steps.find((each) => each.name === "Pin its host key")!.id).toBe("pin");
+    expect(steps.find((each) => each.name === "Run the step on the import host")!.id).toBe("run");
     // Nothing of the production droplet, and no host key taken from a scan.
     const text = readFileSync(join(REPO, ".github", "workflows", "import-window.yml"), "utf8");
     expect(text).not.toMatch(/DO_DROPLET_HOST|DO_SSH_USER|ssh-keyscan|StrictHostKeyChecking=no/);

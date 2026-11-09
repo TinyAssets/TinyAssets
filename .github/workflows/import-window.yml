@@ -33,10 +33,16 @@ name: Import window (manual)
 # IMPORT_SPACES_ACCESS_KEY_ID and IMPORT_SPACES_SECRET_ACCESS_KEY for census and offsite;
 # IMPORT_EXCLUSION_LIST for bundle; IMPORT_R2_ACCESS_KEY_ID and IMPORT_R2_SECRET_ACCESS_KEY for
 # stage, verify, wipe, admit, dlq and offsite, with IMPORT_CLOUDFLARE_API_TOKEN and IMPORT_KEY
-# for the first five. The Cloudflare account id is resolved from the repository's
-# CLOUDFLARE_API_TOKEN (the zone's account) for those six, on the runner. Each credential
-# reaches the host on the SSH session's stdin and the job on its own stdin (`docker run -i`):
-# never an argument, an environment, a container's config (`docker inspect`), a file or a log.
+# for the first five. The Cloudflare account id, which is no secret, is the repository
+# variable CLOUDFLARE_ACCOUNT_ID, for those six; no token of the deploy kit's is read here.
+# Each credential reaches the host on the SSH session's stdin. There, the job's reach the job
+# on its own stdin (`docker run -i`), and the Spaces and off-site R2 keys reach rclone alone,
+# in that one process's environment (window.sh): never an argument, an exported variable, a
+# container's environment or config (`docker inspect`), a file or a log.
+#
+# clean destroys the run's host once it is held to its name and tags, even when the host was
+# never set up or lost the reserved IP (then it is not reached at all: its disk, and the copy
+# on it, go with it); a clean that the host itself refuses destroys nothing.
 
 on:
   workflow_dispatch:
@@ -97,7 +103,7 @@ jobs:
           IMPORT_SPACES_ACCESS_KEY_ID: ${{ secrets.IMPORT_SPACES_ACCESS_KEY_ID }}
           IMPORT_SPACES_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_SPACES_SECRET_ACCESS_KEY }}
           IMPORT_EXCLUSION_LIST: ${{ secrets.IMPORT_EXCLUSION_LIST }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           IMPORT_R2_ACCESS_KEY_ID: ${{ secrets.IMPORT_R2_ACCESS_KEY_ID }}
           IMPORT_R2_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_R2_SECRET_ACCESS_KEY }}
           IMPORT_CLOUDFLARE_API_TOKEN: ${{ secrets.IMPORT_CLOUDFLARE_API_TOKEN }}
@@ -127,11 +133,11 @@ jobs:
             census) needed+=(IMPORT_SPACES_ACCESS_KEY_ID IMPORT_SPACES_SECRET_ACCESS_KEY) ;;
             bundle) needed+=(IMPORT_EXCLUSION_LIST) ;;
             stage|verify|wipe|admit|dlq)
-              needed+=(CLOUDFLARE_API_TOKEN IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY
+              needed+=(CLOUDFLARE_ACCOUNT_ID IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY
                        IMPORT_CLOUDFLARE_API_TOKEN IMPORT_KEY) ;;
             offsite)
               needed+=(IMPORT_SPACES_ACCESS_KEY_ID IMPORT_SPACES_SECRET_ACCESS_KEY
-                       CLOUDFLARE_API_TOKEN IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY) ;;
+                       CLOUDFLARE_ACCOUNT_ID IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY) ;;
           esac
           missing=()
           for name in "${needed[@]}"; do
@@ -139,6 +145,8 @@ jobs:
           done
           [ "${#missing[@]}" -eq 0 ] \
             || refuse "mode ${MODE} needs the secret(s) ${missing[*]}, which the environment does not hold"
+          [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ] || [[ "${CLOUDFLARE_ACCOUNT_ID}" =~ ^[0-9a-f]{32}$ ]] \
+            || refuse "the repository variable CLOUDFLARE_ACCOUNT_ID is no 32-hex account id"
           echo "mode ${MODE}, run ${RUN_ID}, $([ "${REHEARSAL}" = true ] && echo rehearsal || echo 'the real window')"
 
       - uses: actions/checkout@v4
@@ -186,7 +194,8 @@ jobs:
             --deploy-key "${RUNNER_TEMP}/do_deploy.pub" --output "${GITHUB_OUTPUT}"
 
       - name: Pin its host key
-        if: steps.host.outputs.id != ''
+        id: pin
+        if: steps.host.outputs.address != ''
         env:
           IMPORT_RESERVED_IP: ${{ secrets.IMPORT_RESERVED_IP }}
           RUN_ID: ${{ inputs.run }}
@@ -197,28 +206,26 @@ jobs:
 
       - name: Check its egress is the reserved IP
         if: >-
-          steps.host.outputs.id != '' &&
+          steps.host.outputs.address != '' &&
           contains(fromJSON('["census","stage","verify","wipe","admit","dlq","offsite"]'), inputs.mode)
         env:
           IMPORT_RESERVED_IP: ${{ secrets.IMPORT_RESERVED_IP }}
+          MODE: ${{ inputs.mode }}
+          RUN_ID: ${{ inputs.run }}
         run: |
-          python3 platform/import/host.py egress \
+          python3 platform/import/host.py egress --run "${RUN_ID}" --mode "${MODE}" \
             --known-hosts "${RUNNER_TEMP}/import_known_hosts" --identity ~/.ssh/do_deploy
 
-      - name: Resolve the Cloudflare account
-        if: contains(fromJSON('["stage","verify","wipe","admit","dlq","offsite"]'), inputs.mode)
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: python3 platform/import/host.py account --env-file "${GITHUB_ENV}"
-
       - name: Run the step on the import host
-        if: steps.host.outputs.id != ''
+        id: run
+        if: steps.host.outputs.address != ''
         env:
           MODE: ${{ inputs.mode }}
           RUN_ID: ${{ inputs.run }}
           REHEARSAL: ${{ inputs.rehearsal }}
           DELETE_DEAD_LETTERS: ${{ inputs.delete_dead_letters }}
           ADDRESS: ${{ steps.host.outputs.address }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           IMPORT_SPACES_ACCESS_KEY_ID: ${{ secrets.IMPORT_SPACES_ACCESS_KEY_ID }}
           IMPORT_SPACES_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_SPACES_SECRET_ACCESS_KEY }}
           IMPORT_EXCLUSION_LIST: ${{ secrets.IMPORT_EXCLUSION_LIST }}
@@ -286,7 +293,13 @@ jobs:
           fi
 
       - name: Destroy the run's import host
-        if: inputs.mode == 'clean' && steps.host.outputs.id != ''
+        # After the host's own clean; or, with no clean, when the host is not to be reached (no
+        # address: it lost the reserved IP or records no one key) or its pin or set-up failed.
+        # Never after a clean the host refused, nor for a host not held to its name and tags.
+        if: >-
+          always() && inputs.mode == 'clean' && steps.host.outputs.id != '' &&
+          (steps.run.outcome == 'success' || steps.host.outputs.address == '' ||
+           steps.pin.outcome == 'failure')
         env:
           DO_TOKEN: ${{ secrets.IMPORT_DO_TOKEN }}
           RUN_ID: ${{ inputs.run }}

@@ -371,15 +371,18 @@ tasks.md §9 item 7), runs each mode on the run's own **import host**: a Droplet
 The host reads the backup from the primary store with a read-only key, and leaves for
 Cloudflare through one **reserved IP**, which both Cloudflare tokens are pinned to. Before any
 copy, and before any mode hands it a credential, the workflow checks from a container on the
-host that Cloudflare sees that address.
+host that Cloudflare sees that address, and that no container on the host reaches the
+metadata service (it serves the host's `user_data`, which holds its private SSH key; the
+host's boot script drops it for Docker's containers).
 
 It reads these `production` secrets. Every mode needs `DO_SSH_KEY` (already set),
 `IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` needs the Spaces pair too, `bundle` the
 exclusion list, `stage`, `verify`, `wipe`, `admit` and `dlq` the R2 pair, the API token and
 `IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one stops
-before any step and names it. The account id is no secret: the workflow resolves it from the
-repository's `CLOUDFLARE_API_TOKEN` (the zone's account), as the deploy kit does. **Make them
-before the rehearsal, keep them through the window, and revoke them after it.**
+before any step and names it. The account id is no secret: the six Cloudflare modes read it
+from the repository **variable** `CLOUDFLARE_ACCOUNT_ID` (step 0), held to 32 hex digits, and
+no token of the deploy kit's is read by this workflow. **Make them before the rehearsal, keep
+them through the window, and revoke them after it.**
 
 | `production` secret | What it is | Scope |
 |---|---|---|
@@ -399,6 +402,10 @@ The steps, on your own computer, with your own `gh` login. `gh secret set <name>
 production` asks for the value and does not show it, so no value enters the chat or a
 command line. **Reserve the IP first:** both Cloudflare tokens are minted against it.
 
+0. **The account id, a repository variable (not a secret).** Cloudflare dashboard → Workers &
+   Pages → Account details → Account ID, then `gh variable set CLOUDFLARE_ACCOUNT_ID` with its
+   32 hex digits. A variable is shown in logs; the id is not a secret (the deploy logs print
+   it). It stays after the window, for `cloud-only-preflight.yml` reads it too.
 1. **The reserved IP.** DigitalOcean → Networking → Reserved IPs → Reserve an IPv4 in
    `sfo3`, assigned to nothing. Then `gh secret set IMPORT_RESERVED_IP --env production`
    with its address.
@@ -407,6 +414,11 @@ command line. **Reserve the IP first:** both Cloudflare tokens are minted agains
    window. Then `gh secret set IMPORT_DO_TOKEN --env production`. The deploy key
    (`DO_SSH_KEY`'s public half) must be registered under Settings → Security → SSH Keys;
    `census` refuses, naming it, when it is not.
+   - *Optional, not built:* `DO_SSH_KEY` is also the production droplet's login key. The
+     workflow cannot reach that droplet (it holds no address for it, the pin would not
+     match, and the host guard refuses), but a separate `IMPORT_SSH_KEY`, registered in
+     DigitalOcean for the import hosts alone, would keep that key off this job. It costs one
+     more step here and a one-line change in the workflow.
 3. **The Spaces read key.** Spaces Object Storage → Access Keys → Create Access Key →
    Limited Access → `workflow-backups-jonnyton-sfo3` → **Read**. Spaces keys take no IP
    condition and no end date, so it is revoked by hand after the window. Then
@@ -489,7 +501,16 @@ command line. **Reserve the IP first:** both Cloudflare tokens are minted agains
 The R2 bucket `tinyassets-final-backup` is made by the deploy kit's `dark`, with the other
 buckets. **In the window, after its census,** run `offsite`: it copies the final backup the
 window's copy was made from (its manifest, archive and every pinned snapshot) there, and reads
-each back against the manifest. Keep that bucket through the 14-day hold.
+each back against the manifest. Keep that bucket through the 14-day hold. **Run it before the
+next nightly backup (03:00 UTC), or with the backup timer stopped:** `offsite` refuses once a
+newer manifest than the copy's is on the store, and that run's final backup is then copied by
+no one (census a new run first).
+
+**A host that fails is still cleaned.** `clean` destroys the run's Droplet once it is held to
+its name and tags, even when its set-up never finished, its key tag is not one, or it lost the
+reserved IP: that host is never reached, and its disk (the copy) goes with it. It destroys
+nothing when the host's own clean refuses, nor any Droplet not so held: delete such a one by
+hand (DigitalOcean → Droplets → the `import-window` tag), as the summary names it.
 
 **After the admit, before `routes`,** delete the doors' copy
 (`npx wrangler secret delete IMPORT_KEY --name tinyassets-doors`), since a replayed admit is
@@ -500,7 +521,8 @@ accepted by design. **After the window,** revoke everything and leave nothing bi
 - release the reserved IP (Networking → Reserved IPs → Release);
 - revoke `IMPORT_DO_TOKEN` (API → Tokens), the Spaces read key (Spaces → Access Keys), and
   both Cloudflare tokens (My Profile → API Tokens), even those that also end on their own date;
-- delete the `production` secrets above (`gh secret delete <name> --env production`).
+- delete the `production` secrets above (`gh secret delete <name> --env production`). The
+  `CLOUDFLARE_ACCOUNT_ID` variable stays: it is no credential, and other workflows read it.
 
 ## Registrations you make by hand at the providers
 

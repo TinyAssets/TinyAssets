@@ -6,7 +6,8 @@
 # running the job's command in plain Node, its stdin passed on, and pulling and naming one
 # image (FAKE_DIGEST) without a registry, refusing any rclone key in its environment; mount,
 # umount and losetup that only record; df saying FAKE_DF_SIZE and FAKE_DF_AVAIL; ssh answering
-# the stage's mktemp, the marker (FAKE_MARKER) and the egress trace (FAKE_EGRESS), and
+# the stage's mktemp, the marker (FAKE_MARKER) and the egress trace (FAKE_EGRESS,
+# FAKE_METADATA, FAKE_EGRESS_STATUS; FAKE_NO_IMAGE for a copy that names no Node), and
 # recording each other call's stdin; ssh-keyscan offering FAKE_HOSTKEY; ssh-keygen making
 # that key; scp doing nothing. Every call is recorded in FAKE_LOG. FAKE_FLIP names an object
 # whose off-site copy (remote taoff) gets a changed byte.
@@ -71,8 +72,8 @@ case "$tool" in
     esac
     ;;
   docker)
-    if env | grep -q '^RCLONE_CONFIG_'; then
-      echo "an rclone key reached docker's environment" >&2
+    if env | grep -qE '^(RCLONE_CONFIG_|SPACES_|R2_|CLOUDFLARE_|IMPORT_KEY=)'; then
+      echo "a key reached docker's environment" >&2
       exit 8
     fi
     case "$1" in
@@ -109,7 +110,15 @@ case "$tool" in
     fi
     case "$last" in
       "cat /etc/tinyassets-import-host") printf '%s\n' "${FAKE_MARKER:-}"; exit 0 ;;
-      *cdn-cgi/trace*) printf 'fl=1\nh=www.cloudflare.com\nip=%s\nts=1\n' "${FAKE_EGRESS:-}"; exit 0 ;;
+      *cdn-cgi/trace*)
+        if [[ -n "${FAKE_NO_IMAGE:-}" ]]; then
+          echo image=none
+          exit 3
+        fi
+        printf 'fl=1\nh=www.cloudflare.com\nip=%s\nts=1\n\nmetadata=%s\n' "${FAKE_EGRESS:-}" \
+          "${FAKE_METADATA-blocked}"
+        exit "${FAKE_EGRESS_STATUS:-0}"
+        ;;
     esac
     printf 'STDIN %s\n' "$(cat)" >> "$FAKE_LOG"
     echo "the step ran"

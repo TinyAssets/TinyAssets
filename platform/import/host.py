@@ -16,25 +16,26 @@ the runner, never on a host, with the DigitalOcean calls of `scripts/do_api_requ
       refuses while any other `import-window` Droplet exists: `sfo3`, `s-4vcpu-8gb`, Debian
       (`select_do_image.py`), no IPv6, the deploy key, a host key made here (its private half
       in `user_data` alone, its SHA-256 in the tag `ta-hostkey-<hex>`), and a minimal
-      cloud-init (CLOUD_INIT: docker.io, rclone and xfsprogs; the default route through the
-      reserved IP's anchor gateway, kept across boots; then the marker
-      /etc/tinyassets-import-host, holding the run's id). Then the reserved IP is assigned to
-      it. Every other mode refuses when the run has none, and `clean` has nothing to do.
-      Writes `id`, `address` (the reserved IP, which the host is reached by) and `hostkey`.
+      cloud-init (`cloud_init`: docker.io, rclone, xfsprogs and curl; the default route
+      through the reserved IP's anchor gateway and the metadata service dropped for Docker's
+      containers, each kept across boots; then the marker /etc/tinyassets-import-host,
+      holding the run's id). Then the reserved IP is assigned to it. Every other mode refuses
+      when the run has none (`clean` has nothing to do), or when the reserved IP is not on it;
+      `clean` alone takes such a host, unreached, to destroy it. Writes `id`, `address` (the
+      reserved IP, which the host is reached by; empty for a host not to be reached) and
+      `hostkey`.
   host.py pin     --run <id> --hostkey <hex> --known-hosts <file> --identity <key>
       The host's key, pinned: `ssh-keyscan` is only a transport, and the one key it offers
       whose SHA-256 is the tag's is written to the known-hosts file, so every SSH session
       after it checks that key strictly. Then the host's set-up is awaited: its marker
       naming the run.
-  host.py egress  --known-hosts <file> --identity <key>
+  host.py egress  --run <id> --mode <mode> --known-hosts <file> --identity <key>
       What Cloudflare sees: `https://www.cloudflare.com/cdn-cgi/trace` fetched from a
       container on the host's Docker bridge, as every job leaves, whose `ip=` must be the
-      reserved IP. The tokens are pinned to that address, so no credential leaves the runner
-      until it holds. census and every mode that hands the host a credential run it first.
-  host.py account --env-file <file>
-      The zone's Cloudflare account id (not a secret), from the repository's Cloudflare token
-      (CLOUDFLARE_API_TOKEN), as deploy.ts and deploy-worker.yml resolve it: masked in an
-      Actions log, then written as CLOUDFLARE_ACCOUNT_ID to the step's environment file.
+      reserved IP; and the metadata service (which serves user_data, the host's private key)
+      unreachable from it. The tokens are pinned to that address, so no credential leaves the
+      runner until both hold. census and every mode that hands the host a credential run it
+      first, in the run's own Node by the digest census pinned (`egress_command`).
   host.py destroy --run <id> --id <droplet>
       The Droplet held to this run's name and tags (as dr-drill.yml holds its retained
       Droplet), then destroyed; its reserved IP goes back to unassigned. A failed delete is an
@@ -59,7 +60,6 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib import request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
@@ -77,11 +77,17 @@ MAX_RUN_IN_NAME = 63 - len("tinyassets-import-")
 HOSTKEY = re.compile(r"^ta-hostkey-([0-9a-f]{64})$")
 IPV4 = re.compile(r"^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$")
 ORPHAN_DAYS = 7
-ZONE = "tinyassets.io"
 TRACE = "https://www.cloudflare.com/cdn-cgi/trace"
-# The egress check's container: on Docker's default bridge, as every networked job.
+# The metadata service serves user_data, which holds the host's private key and cannot be
+# changed after creation: no container may reach it (the boot script drops it for Docker).
+METADATA = "http://169.254.169.254/metadata/v1/id"
+# The egress check's container: on Docker's default bridge, as every networked job. It
+# prints the trace, then `metadata=blocked` only when the metadata service never answers.
 TRACE_JS = (f"fetch({json.dumps(TRACE)}).then((r) => r.text())"
             ".then((t) => process.stdout.write(t))"
+            f".then(() => fetch({json.dumps(METADATA)}, {{ signal: AbortSignal.timeout(5000) }})"
+            ".then(() => 'reachable', () => 'blocked'))"
+            ".then((m) => process.stdout.write(`\\nmetadata=${m}\\n`))"
             ".catch((e) => { console.error(String(e)); process.exit(1); })")
 
 # The host's set-up. The route moves to the anchor gateway after the packages are installed
@@ -94,6 +100,11 @@ set -eu
 gw="$(curl -fsS http://169.254.169.254/metadata/v1/interfaces/public/0/anchor_ipv4/gateway)"
 case "$gw" in ''|*[!0-9.]*) echo "no anchor gateway" >&2; exit 1 ;; esac
 ip route replace default via "$gw" dev eth0
+# No container reaches the metadata service: it serves user_data, the host's private key.
+# DOCKER-USER is Docker's own chain for this, which it makes if absent and never flushes.
+iptables -N DOCKER-USER 2>/dev/null || true
+iptables -C DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null \\
+  || iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP
 """
 ROUTE_UNIT = """[Unit]
 Description=The import host's default route through the reserved IP's anchor gateway
@@ -108,7 +119,7 @@ ExecStart=/usr/local/sbin/tinyassets-anchor-route
 [Install]
 WantedBy=multi-user.target
 """
-FINISH = ("command -v docker && command -v rclone && command -v mkfs.xfs"
+FINISH = ("command -v docker && command -v rclone && command -v mkfs.xfs && command -v curl"
           " && systemctl daemon-reload"
           " && systemctl enable --now tinyassets-anchor-route.service"
           f" && printf '%s\\n' \"$1\" > {MARKER}")
@@ -121,7 +132,7 @@ def cloud_init(run: str, private_key: str, public_key: str) -> str:
         "ssh_genkeytypes": [],
         "ssh_keys": {"ed25519_private": private_key, "ed25519_public": public_key},
         "package_update": True,
-        "packages": ["docker.io", "rclone", "xfsprogs"],
+        "packages": ["docker.io", "rclone", "xfsprogs", "curl"],
         "write_files": [
             {"path": "/usr/local/sbin/tinyassets-anchor-route", "permissions": "0755",
              "content": ROUTE_SCRIPT},
@@ -136,16 +147,9 @@ class Refused(Exception):
     """A refusal: one line, never a credential."""
 
 
-# The seams the test replaces (guards/fake_do.py): the API, Cloudflare, the clock and sleep.
+# The seams the test replaces (guards/fake_do.py): the API, the clock and sleep.
 def transport(method: str, url: str, data: bytes | None) -> bytes:
     return api_request(method=method, url=url, token=os.environ.get("DO_TOKEN", ""), data=data)
-
-
-def cloudflare_get(url: str, token: str) -> bytes:
-    req = request.Request(url, headers={"Authorization": f"Bearer {token}",
-                                        "Accept": "application/json"})
-    with request.urlopen(req, timeout=30) as response:  # noqa: S310 - a fixed https URL
-        return response.read()
 
 
 def now() -> datetime:
@@ -316,8 +320,24 @@ def ensure(args: argparse.Namespace) -> int:
         droplet = mine[0]
         print(f"the run's import host is {describe(droplet)}")
     held(droplet, run)
-    hostkey = hostkey_of(droplet)
     droplet_id = int(droplet["id"])
+    if args.mode == "clean":
+        # clean destroys the host whatever state it is in (its disk holds the copy, and goes
+        # with it), held to its name and tags alone. One whose key or reserved IP is not as
+        # made is never reached: only destroyed.
+        try:
+            hostkey = hostkey_of(droplet)
+        except Refused as exc:
+            print(f"{exc}: the host is not reached, and its copy goes with it")
+            hostkey = ""
+        if hostkey and reserved_on(address) != droplet_id:
+            print("the reserved IP is not on this run's import host: the host is not reached, "
+                  "and its copy goes with it")
+            hostkey = ""
+        write_outputs(args.output, {"id": str(droplet_id), "address": address if hostkey else "",
+                                    "hostkey": hostkey})
+        return 0
+    hostkey = hostkey_of(droplet)
     if args.mode == "census":
         wait_active(droplet_id)
         assign(address, droplet_id)
@@ -377,38 +397,38 @@ def pin(args: argparse.Namespace) -> int:
     raise Refused("the import host's set-up did not finish (its marker never named the run)")
 
 
+def egress_command(run: str, mode: str) -> str:
+    """The host's shell line: the trace in the run's own Node, by the digest census pinned.
+
+    Only census falls back to the tag, node:22: its first check runs before window.sh has
+    pulled it and kept the run's digest (a census of a run that has a copy uses the copy's).
+    Every later mode refuses a run whose copy names no digest, as window.sh's `use_image`.
+    """
+    fallback = "image=node:22" if mode == "census" else "echo image=none; exit 3"
+    kept = shlex.quote(f"/var/tmp/ta-import-{run}/image")
+    return (f"image=\"$(cat {kept} 2>/dev/null || true)\"; "
+            "printf '%s\\n' \"$image\" | grep -Eqx 'node@sha256:[0-9a-f]{64}' "
+            f"|| {{ {fallback}; }}; "
+            + shlex.join(["docker", "run", "--rm", "--network", "bridge"]) + ' "$image" '
+            + shlex.join(["node", "-e", TRACE_JS]))
+
+
 def egress(args: argparse.Namespace) -> int:
     address = reserved_ip()
-    command = shlex.join(["docker", "run", "--rm", "--network", "bridge", "node:22",
-                          "node", "-e", TRACE_JS])
-    trace = ssh(args.known_hosts, args.identity, address, command, timeout=600)
+    trace = ssh(args.known_hosts, args.identity, address, egress_command(args.run, args.mode),
+                timeout=600)
+    if "image=none" in trace.stdout.splitlines():
+        raise Refused("this run's copy names no Node image: run clean, then census")
     seen = [line[3:].strip() for line in trace.stdout.splitlines() if line.startswith("ip=")]
     if trace.returncode != 0 or len(seen) != 1:
         raise Refused("the egress check could not read what Cloudflare sees")
     if seen[0] != address:
         raise Refused("Cloudflare sees the import host's containers from another address than "
                       "the reserved IP: no credential is handed to it")
+    if "metadata=blocked" not in trace.stdout.splitlines():
+        raise Refused("a container on the import host reaches the metadata service, which "
+                      "serves its host key: no credential is handed to it")
     print("Cloudflare sees the import host's containers from the reserved IP")
-    return 0
-
-
-def account(args: argparse.Namespace) -> int:
-    token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
-    if not token:
-        raise Refused("CLOUDFLARE_API_TOKEN is not set")
-    try:
-        zones = json.loads(cloudflare_get(
-            f"https://api.cloudflare.com/client/v4/zones?name={ZONE}", token))
-    except Exception as exc:  # noqa: BLE001 - one bounded line, never the token
-        raise Refused(f"Cloudflare's zone lookup failed ({type(exc).__name__})") from None
-    result = zones.get("result") or []
-    found = str(((result[0].get("account") or {}).get("id") or "")) if result else ""
-    if not re.fullmatch(r"[0-9a-f]{32}", found):
-        raise Refused(f"the token resolves no account for {ZONE}")
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        print(f"::add-mask::{found}")
-    write_outputs(args.env_file, {"CLOUDFLARE_ACCOUNT_ID": found})
-    print(f"the Cloudflare account is {ZONE}'s")
     return 0
 
 
@@ -461,10 +481,10 @@ def parse(argv: list[str]) -> argparse.Namespace:
     each.add_argument("--known-hosts", required=True)
     each.add_argument("--identity", required=True)
     each = sub.add_parser("egress")
+    each.add_argument("--run", required=True)
+    each.add_argument("--mode", required=True)
     each.add_argument("--known-hosts", required=True)
     each.add_argument("--identity", required=True)
-    each = sub.add_parser("account")
-    each.add_argument("--env-file", required=True)
     each = sub.add_parser("destroy")
     each.add_argument("--run", required=True)
     each.add_argument("--id", required=True)
@@ -475,7 +495,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
 
 
 COMMANDS = {"hosts": hosts, "ensure": ensure, "pin": pin, "egress": egress,
-            "account": account, "destroy": destroy}
+            "destroy": destroy}
 
 
 def main(argv: list[str] | None = None) -> int:

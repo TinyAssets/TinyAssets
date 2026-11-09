@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""host.py against a fake DigitalOcean and a fake Cloudflare, for host.test.ts.
+"""host.py against a fake DigitalOcean, for host.test.ts.
 
   fake_do.py <state.json> <host.py arguments...>
 
 The state file is the fake account: `droplets`, `reserved_ips` (address -> region and
-droplet id), `keys`, `images`, `zones`, `now` (ISO), `fail` (a list of "METHOD path" calls
+droplet id), `keys`, `images`, `now` (ISO), `fail` (a list of "METHOD path" calls
 that answer 500), and `calls`, every request made ("METHOD path" and its JSON body). A made
 Droplet answers `new` once, then `active`. Nothing here reaches a network; ssh, ssh-keyscan
 and ssh-keygen are the fake host's (`fake-host.sh`), by PATH.
@@ -91,15 +91,7 @@ def fake(method: str, url: str, data: bytes | None) -> bytes:
     return answer(404, None)
 
 
-def cloudflare(url: str, token: str) -> bytes:
-    state["calls"].append({"call": f"CF GET {url}", "token": token == state.get("cf_token")})
-    if token != state.get("cf_token"):
-        raise OSError("refused")
-    return json.dumps(state.get("zones", {"result": []})).encode()
-
-
 host.transport = fake
-host.cloudflare_get = cloudflare
 host.sleep = lambda _seconds: None
 host.now = lambda: datetime.fromisoformat(state["now"].replace("Z", "+00:00"))
 try:

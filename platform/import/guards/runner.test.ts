@@ -52,7 +52,7 @@ const WORKFLOW = parse(readFileSync(join(REPO, ".github", "workflows", "import-w
                                     "utf8")) as {
   on: { workflow_dispatch: { inputs: Record<string, { default?: unknown }> } };
   concurrency: { group: string };
-  jobs: { window: { environment: string; steps: { name?: string; run?: string }[] } };
+  jobs: { window: { environment: string; steps: { name?: string; run?: string; env?: Record<string, string> }[] } };
 };
 
 const temps: string[] = [];
@@ -144,7 +144,7 @@ function host() {
     return { status: result.status, out: result.stdout + result.stderr };
   };
   const calls = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
-  return { f, remote, remotes, hostRoot, manifest, publish, disk, work, window, calls, lock };
+  return { f, dir, remote, remotes, hostRoot, manifest, publish, disk, work, window, calls, lock };
 }
 
 /** Text that names no owner of the fixture, by principal or key, and no path of `work`. */
@@ -164,7 +164,7 @@ describe("the dispatch's gate, the workflow's first step", () => {
                     IMPORT_SPACES_ACCESS_KEY_ID: "spaces-id-value-9",
                     IMPORT_SPACES_SECRET_ACCESS_KEY: "spaces-secret-value-10",
                     IMPORT_EXCLUSION_LIST: "exclusion-value-2",
-                    CLOUDFLARE_API_TOKEN: "cf-deploy-token-value-3",
+                    CLOUDFLARE_ACCOUNT_ID: "3c".repeat(16),
                     IMPORT_R2_ACCESS_KEY_ID: "r2-id-value-4",
                     IMPORT_R2_SECRET_ACCESS_KEY: "r2-secret-value-5",
                     IMPORT_CLOUDFLARE_API_TOKEN: "token-value-6", IMPORT_KEY: "key-value-7" };
@@ -217,22 +217,25 @@ describe("the dispatch's gate, the workflow's first step", () => {
     const census = gate({ MODE: "census" }, without("IMPORT_SPACES_SECRET_ACCESS_KEY"));
     expect(census.out).toContain("needs the secret(s) IMPORT_SPACES_SECRET_ACCESS_KEY,");
     expect(gate({ MODE: "census" }, without("IMPORT_KEY", "IMPORT_EXCLUSION_LIST",
-                                            "CLOUDFLARE_API_TOKEN", "IMPORT_R2_ACCESS_KEY_ID"))
+                                            "CLOUDFLARE_ACCOUNT_ID", "IMPORT_R2_ACCESS_KEY_ID"))
       .status).toBe(0);
     expect(gate({ MODE: "clean" }, without("IMPORT_KEY", "IMPORT_EXCLUSION_LIST",
                                            "IMPORT_SPACES_ACCESS_KEY_ID",
                                            "IMPORT_SPACES_SECRET_ACCESS_KEY",
-                                           "CLOUDFLARE_API_TOKEN")).status).toBe(0);
+                                           "CLOUDFLARE_ACCOUNT_ID")).status).toBe(0);
     expect(gate({ MODE: "bundle" }, without("IMPORT_KEY")).status).toBe(0);
     for (const name of ["DO_SSH_KEY", "IMPORT_DO_TOKEN", "IMPORT_RESERVED_IP"]) {
       for (const mode of ["census", "bundle", "verify", "clean"]) {
         expect(gate({ MODE: mode }, without(name)).out).toContain(`needs the secret(s) ${name},`);
       }
     }
-    // The account is resolved from the repository's token, never a secret of its own.
-    expect(gate({ MODE: "verify" }, without("CLOUDFLARE_API_TOKEN")).out)
-      .toContain("needs the secret(s) CLOUDFLARE_API_TOKEN,");
-    expect(steps[0]!.run).not.toContain("CLOUDFLARE_ACCOUNT_ID");
+    // The account is the repository variable, held to its shape; no deploy-kit token is read.
+    expect(gate({ MODE: "verify" }, without("CLOUDFLARE_ACCOUNT_ID")).out)
+      .toContain("needs the secret(s) CLOUDFLARE_ACCOUNT_ID,");
+    expect(gate({ MODE: "verify" }, { ...SECRETS, CLOUDFLARE_ACCOUNT_ID: "not-an-account" }).out)
+      .toContain("refused: the repository variable CLOUDFLARE_ACCOUNT_ID is no 32-hex account id");
+    expect(steps[0]!.env!["CLOUDFLARE_ACCOUNT_ID"]).toBe("${{ vars.CLOUDFLARE_ACCOUNT_ID }}");
+    expect(JSON.stringify(WORKFLOW)).not.toContain("secrets.CLOUDFLARE_API_TOKEN");
     const offsite = gate({ MODE: "offsite", REHEARSAL: "false", CONFIRM: "window-r1" },
                          without("IMPORT_SPACES_ACCESS_KEY_ID", "IMPORT_R2_SECRET_ACCESS_KEY"));
     expect(offsite.out).toContain(
@@ -712,6 +715,13 @@ describe("the off-site copy of the window's final backup, on a fake import host"
     expect(calls.filter((call) => call.startsWith("rclone cat taoff:"))).toEqual(
       [`rclone cat taoff:tinyassets-final-backup/workflow-backups/platform/${MANIFEST}`]);
     expect(calls.join("\n")).not.toMatch(/r2-secret-value|spaces-secret-value/);
+    // No key in any file the run leaves, anywhere on the fake host (its work root, its own
+    // root, the remotes, the call log) or in the stage.
+    for (const dir of [h.dir, stage]) {
+      const found = spawnSync("grep", ["-rlE", "r2-secret-value|spaces-secret-value", dir],
+                              { encoding: "utf8" });
+      expect(found.stdout).toBe("");
+    }
     // No job of it is networked.
     expect(calls.filter((call) => call.startsWith("docker run") && call.includes("bridge")))
       .toEqual([]);
