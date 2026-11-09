@@ -98,7 +98,8 @@ import {
 import { jsonObject } from "./body";
 import { APP_BODY_MAX, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
 import { APP_RESOURCE } from "../../contract/src/identity";
-import { type Gated, ownerGate, ownerRead } from "./control";
+import type { ControlRead } from "../../contract/src/control";
+import { ownerGate, ownerRead } from "./control";
 import {
   deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
@@ -110,6 +111,7 @@ import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "../../sources/src/schema";
+import { signinsRead } from "../../sources/src/signin";
 import { refusalResponse } from "./refused";
 import { toolTable } from "../../contract/src/doors";
 import { callDoor, type DoorName, toolDoor } from "./tools";
@@ -162,7 +164,8 @@ export function bearer(request: Request): string | null {
 /**
  * What a route serves a call with: the Worker's env, the owner bound with the control
  * record's tiers, the call's JSON body, its presented token (raw and validated), the request,
- * the source records and the control record's read, and a prefix route's rest of the path.
+ * the source records and the control record as the gate read it, and a prefix route's rest of
+ * the path.
  */
 interface Served {
   readonly env: DoorsEnv;
@@ -172,7 +175,7 @@ interface Served {
   readonly token: ValidatedAccessToken<unknown>;
   readonly request: Request;
   readonly sources: Sources;
-  readonly gate: Gated;
+  readonly gate: ControlRead;
   readonly rest: string;
 }
 
@@ -473,7 +476,8 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "outside-agents": { serve: registering },
     "agent/socket-ticket": { serve: socketTicket },
     "sources": { body: "empty",
-                 serve: async ({ sources, gate }) => json(200, sourceList(sources, gate.signins)) },
+                 serve: async ({ sources, gate }) =>
+                   json(200, sourceList(sources, signinsRead(sources, gate))) },
     "export": { serve: exportStream },
     "export/chunks": { door: "exportChunks" },
     "export/end": { door: "exportEnd" },
@@ -600,7 +604,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   if (gated instanceof Response) {
     return gated;
   }
-  const owner = withTiers(unread, gated);
+  const owner = withTiers(unread, gated, sources);
   try {
     if (route.body === "empty" && !shaped(parsed, [])) {
       return failure(400, NO_FIELDS);

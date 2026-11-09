@@ -21,14 +21,13 @@ import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import type { ArchivingOwnerDO } from "./worker";
-import { parseTiers } from "../src/tier";
+import { parseTiers, TIER_STORAGE_MAX } from "../../contract/src/control";
 import {
   type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable,
   orderedId,
   parseRecord,
   parseTrailer, planSegment, recordBytes, recordParts, recordRows, type SegmentRecord,
   type Source,
-  TIER_STORAGE_MAX,
 } from "../src/segments";
 import { exported } from "../src/export";
 import type { ChunkStore } from "../src/files";

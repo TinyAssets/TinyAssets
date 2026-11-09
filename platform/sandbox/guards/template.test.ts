@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { readWrangler } from "../../ci/workers";
+import { RUNS_CEILING } from "../../contract/src/control";
 import { DNS_SERVERS, EGRESS_HOST } from "../../contract/src/egress";
 import { STEP_NS } from "../../owner/src/sync-ignore";
 
@@ -142,7 +143,8 @@ describe("the template", () => {
     }
   });
 
-  it("reads the platform's egress host and resolvers where build.py reads them", () => {
+  it("reads the platform's egress host, resolvers and run ceiling where build.py reads them",
+     () => {
     // `build.py`'s `network_constants`, by its own patterns, over the text it reads; the
     // contract's are the platform's one definition (fix A6 moves the build's reads).
     const text = readFileSync(join(PLATFORM, "owner", "src", "network.ts"), "utf8");
@@ -154,6 +156,10 @@ describe("the template", () => {
       .toEqual([...DNS_SERVERS]);
     expect(readFileSync(join(PLATFORM, "owner", "src", "sync-ignore.ts"), "utf8"))
       .toMatch(/export const STEP_NS = ([0-9.]+);/);
+    // The run pool's size, `runs_ceiling`, by its text in `tier.ts`: the contract's bound.
+    const ceiling = /export const RUNS_CEILING = ([0-9_]+);/.exec(
+      readFileSync(join(PLATFORM, "owner", "src", "tier.ts"), "utf8"));
+    expect(Number(ceiling?.[1]?.replaceAll("_", ""))).toBe(RUNS_CEILING);
   });
 
   it("is given the runner the Worker ships, the same bytes every build", () => {

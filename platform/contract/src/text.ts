@@ -1,5 +1,5 @@
 /** Text and byte rules every Worker reads, matching the Python trusted side's. */
-import { Refusal } from "./refusal";
+import { Refusal } from "./refusal.ts";
 
 /** Characters Python's `str.isprintable()` refuses: other, and separators but the space. */
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]|[^\P{Zs} ]/u;

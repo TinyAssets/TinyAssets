@@ -1,8 +1,9 @@
 /**
  * The platform's gates, as code mode's calls read them in the object (slice M review M1).
  *
- * The doors read the control record (`c:control`, its own `CONTROL` namespace) once per
- * request (`doors/src/control.ts`). A `code` call then runs its script's tool calls in the
+ * The doors read the control record (`contract/src/control.ts`, its own `CONTROL` namespace)
+ * once per request (`doors/src/control.ts`), and hand its tier numbers and switched-on
+ * sign-ins in the binding (`doors/src/binder.ts`, `withTiers`). A `code` call then runs its script's tool calls in the
  * object for up to `CODEMODE_TIMEOUT_MS`, so the object reads the same record again at
  * each of them, with the doors' own rules: an outside client's calls need outside access
  * on and the maintenance gate to admit its owner (`outsideOpen`, fail-closed), a run's or
@@ -12,10 +13,12 @@
  * One read serves a script's calls for `CONTROL_FRESH_MS`, far within KV's own 60 s for a
  * flip to reach every location, so a script of many calls does not cost a KV read each.
  */
-import { MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen } from "../../doors/src/control";
-import { type ControlRead, readControl } from "../../doors/src/directory";
+import {
+  type ControlRead, type ControlStore, MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen,
+  readControl,
+} from "../../contract/src/control";
 import { bundledSources } from "../../sources/src/catalog";
-import { signinsOn } from "../../sources/src/signin";
+import { signinsRead } from "../../sources/src/signin";
 
 /** How long one read of the control record serves a script's calls, in ms. */
 export const CONTROL_FRESH_MS = 1_000;
@@ -25,11 +28,11 @@ export type Gate = "outside" | "owner";
 
 /** One script's view of the control record, read at most once a `freshMs`. */
 export class ControlGate {
-  readonly #store: KVNamespace;
+  readonly #store: ControlStore;
   readonly #freshMs: number;
   #last: { readonly at: number; readonly read: ControlRead } | null = null;
 
-  constructor(store: KVNamespace, freshMs: number = CONTROL_FRESH_MS) {
+  constructor(store: ControlStore, freshMs: number = CONTROL_FRESH_MS) {
     this.#store = store;
     this.#freshMs = freshMs;
   }
@@ -52,14 +55,12 @@ export class ControlGate {
   }
 
   /**
-   * The served records whose vendor sign-in is switched on, by the doors' own rule, for the
-   * runs lane (slice SIGNIN review N1): a record that reads well formed gives its `signins`
-   * (else each record's cited verdict); none at all, the verdicts, as the doors hand them; a
-   * record that is malformed or unreadable, none (fail-closed).
+   * The served records whose vendor sign-in is switched on, by the doors' own rule
+   * (`signinsRead`), for the runs lane (slice SIGNIN review N1): a record that reads well
+   * formed gives its `signins` (else each record's cited verdict); none at all, the verdicts,
+   * as the doors hand them; a record that is malformed or unreadable, none (fail-closed).
    */
   async signins(): Promise<string[]> {
-    const read = await this.#read();
-    return read.kind === "read" ? signinsOn(bundledSources(), read.control.signins)
-      : read.kind === "missing" ? signinsOn(bundledSources(), null) : [];
+    return signinsRead(bundledSources(), await this.#read());
   }
 }

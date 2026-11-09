@@ -36,7 +36,7 @@ import {
 import type { Migration } from "../src/migrate";
 import { MIGRATIONS } from "../src/schema";
 import { SEGMENT_LEAST_BYTES } from "../src/segments";
-import { RUNS_CEILING } from "../src/tier";
+import { RUNS_CEILING } from "../../contract/src/control";
 
 /** The bounds by name, each its value. */
 type Values = Readonly<Record<string, number>>;
@@ -47,8 +47,9 @@ type Values = Readonly<Record<string, number>>;
 const LIMITS: Values = Object.freeze({ ...CONTRACT, RUNS_CEILING, SEGMENT_LEAST_BYTES,
                                        SHARE_BYTES });
 /**
- * The bounds kept outside the contract's frozen section: `RUNS_CEILING`, which the sandbox
- * template's tag reads from `tier.ts`; `SEGMENT_LEAST_BYTES`, which the segments' seal
+ * The bounds kept outside the contract's frozen section: `RUNS_CEILING`, the control
+ * record's own bound on a tier (`contract/src/control.ts`); `SEGMENT_LEAST_BYTES`, which the
+ * segments' seal
  * derives; `SHARE_BYTES`, a share row's own charge in the manifest's layout.
  */
 const ELSEWHERE: readonly string[] = Object.freeze(["RUNS_CEILING", "SEGMENT_LEAST_BYTES",

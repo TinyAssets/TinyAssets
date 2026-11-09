@@ -63,16 +63,10 @@ export const MIN_RECORD_BYTES = 336;
 export const SEGMENT_LEAST_BYTES = 8 * 1024 * 1024;
 /**
  * The fence's rows at most: the owner-bound guard's term for `archive_segments`, a lone
- * small segment among them. A technical ceiling on what a tier may offer
- * (`TIER_STORAGE_MAX`), never on what a user stores.
+ * small segment among them. A technical ceiling on what a tier may offer (the contract's
+ * `TIER_STORAGE_MAX`, this less one times `SEGMENT_LEAST_BYTES`), never on what a user stores.
  */
 export const ARCHIVE_SEGMENTS_MAX = 59_606;
-/**
- * The most storage a tier record may give (`tier.ts`): the fence's rows, each a sealed
- * segment's least bytes, about 0.5 TB. A larger tier needs larger segments (compaction)
- * first: a redesign, recorded in `limits-audit.md`.
- */
-export const TIER_STORAGE_MAX = (ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES;
 /**
  * The most records' bytes one merge rewrites in a pass: its segment and its stragglers (it
  * takes stragglers while the two fit, and always one). Work, not memory: a move is streamed

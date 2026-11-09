@@ -16,7 +16,7 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { OPEN_GATES } from "../../ci/fixtures";
+import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import type { SandboxStart } from "../../owner/src/sandbox";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../owner/src/migrate";
@@ -34,9 +34,9 @@ const NUMBERS = { sandbox_runtime_ceiling_s: CEILING, sandbox_concurrency_ceilin
 
 async function control(value: unknown): Promise<void> {
   if (value === null) {
-    await env.CONTROL.delete("c:control");
+    await writeControl(env.CONTROL, null);
   } else {
-    await env.CONTROL.put("c:control", JSON.stringify(value));
+    await writeControl(env.CONTROL, JSON.stringify(value));
   }
 }
 
@@ -234,7 +234,7 @@ describe("a start", () => {
     const who = owner();
     expect(await stub(who).start(who, start({ credential: "api_key" })))
       .toEqual({ started: true });
-    await env.CONTROL.put("c:control", "not json");
+    await writeControl(env.CONTROL, "not json");
     const second = `run_${hex(32, "2")}`;
     expect(await stub(who).start(who, start({ run: second, credential: "api_key",
                                              tokens: null, network: null })))
@@ -243,6 +243,37 @@ describe("a start", () => {
     const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${second}.json`]!;
     expect(JSON.parse(doc).scratch_retention_days).toBe(30);
   });
+
+  // The kept retention is the one a start last handed to a runner: a read that hands none
+  // (a start refused before its upload, a renewal look) keeps nothing.
+  for (const [what, between] of [
+    ["a start refused at its sign-in", async (who: string) => {
+      expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, tokens: null,
+                                               network: null })))
+        .toEqual({ started: false, code: CODES.signin });
+    }],
+    ["a renewal look", async (who: string) => {
+      await e2b("/age", { id: (await seen()).sandboxes[0]!.id, s: CEILING - WINDOW + 5 });
+      await runDurableObjectAlarm(stub(who));
+    }],
+  ] as const) {
+    it(`keeps the retention the last start handed, not one ${what} read`, async () => {
+      await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
+      const who = owner();
+      expect(await stub(who).start(who, start({ credential: "api_key" })))
+        .toEqual({ started: true });
+      await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 7 });
+      await between(who);
+      await writeControl(env.CONTROL, "not json");
+      const third = `run_${hex(32, "3")}`;
+      expect(await stub(who).start(who, start({ run: third, credential: "api_key",
+                                               tokens: null, network: null })))
+        .toEqual({ started: true });
+      const state = await seen();
+      const doc = state.files[`${state.sandboxes.at(-1)!.id}:/var/lib/ta/inbox/${third}.json`]!;
+      expect(JSON.parse(doc).scratch_retention_days).toBe(30);
+    });
+  }
 
   it("joins the live sandbox with no create and no lease secrets; another engine's hosts added",
      async () => {
@@ -280,11 +311,22 @@ describe("a start", () => {
     expect((await seen()).calls).toEqual([]);
   });
 
+  it("starts nothing new once the founder takes the numbers out, kept numbers or not",
+     async () => {
+    const who = owner();
+    expect(await stub(who).start(who, start({ credential: "api_key" })))
+      .toEqual({ started: true });
+    await control(OPEN);
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "4")}`, credential: "api_key",
+                                             tokens: null, network: null })))
+      .toEqual({ started: false, code: CODES.unconfigured });
+  });
+
   it("starts on the last numbers read when the record cannot be read", async () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const who = owner();
     await stub(who).start(who, start());
-    await env.CONTROL.put("c:control", "not json");
+    await writeControl(env.CONTROL, "not json");
     expect(await stub(who).start(who, start({ run: `run_${hex(32, "5")}`, tokens: null,
                                              network: null }))).toEqual({ started: true });
   });
@@ -578,7 +620,7 @@ describe("the look before the runtime ceiling", () => {
     await stub(who).start(who, start());
     const id = (await seen()).sandboxes[0]!.id;
     await e2b("/age", { id, s: CEILING - WINDOW + 5 });
-    await env.CONTROL.put("c:control", "not json");
+    await writeControl(env.CONTROL, "not json");
     await runDurableObjectAlarm(stub(who));
     expect((await seen()).calls.filter((call) => call.path.endsWith("/connect")))
       .toHaveLength(1);

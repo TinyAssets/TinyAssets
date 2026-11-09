@@ -37,6 +37,9 @@ import {
   type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE, ownerIssuer,
 } from "./config";
 import { APP_RESOURCE } from "../../contract/src/identity";
+import { type ControlRead, tiersOf } from "../../contract/src/control";
+import type { Sources } from "../../sources/src/schema";
+import { signinsRead } from "../../sources/src/signin";
 import type { KeyEntry, RouteEntry } from "./directory";
 import type { SignIn } from "./upstream";
 
@@ -291,14 +294,16 @@ export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generat
 
 /**
  * The binding with what the platform control record holds for this call, as the doors read
- * it (`control.ts`): its tier numbers, which the run doors' admission reads, and the served
- * records whose vendor sign-in is switched on, which the object's sign-in doors and its
- * runs' admission hold to. No request names either.
+ * it to gate the call (`control.ts`): its tier numbers (`tiersOf`; null for none, and the
+ * object then forgets the numbers it kept and refuses, `tier.ts`), which the run doors'
+ * admission reads, and the served records whose vendor sign-in is switched on
+ * (`signinsRead`, of the catalog the doors serve, the `sources` route's own), which the object's sign-in doors and its runs' admission hold to. No
+ * request names either.
  */
-export function withTiers({ binding, stub }: Bound,
-                          gated: { readonly tiers: unknown; readonly signins: readonly string[] }):
+export function withTiers({ binding, stub }: Bound, read: ControlRead, sources: Sources):
     Bound {
-  return { binding: { ...binding, tiers: gated.tiers, signins: gated.signins }, stub };
+  return { binding: { ...binding, tiers: tiersOf(read),
+                      signins: signinsRead(sources, read) }, stub };
 }
 
 /**

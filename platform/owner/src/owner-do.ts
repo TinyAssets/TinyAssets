@@ -125,9 +125,8 @@ import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
 import { type ApiKey, Keys, keysDoors } from "./keys";
 import { bindingId, Inbound, type InboundBinding, inboundDoors, type InboundRow } from "./inbound";
-import {
-  keepTiers, keptTiers, PLATFORM_TIER_ONLY, tierDoors, type TierName, tierNumbers,
-} from "./tier";
+import { keepTiers, keptTiers, PLATFORM_TIER_ONLY, tierDoors } from "./tier";
+import type { TierName } from "../../contract/src/control";
 import { Bodies, type Located, type Placed, type Placing, type Window } from "./bodies";
 import { type Heads, PAGE_BYTES, type Shown, type Wants } from "./pages";
 import { Collections, collectionsDoors, type History, type Page, type Row } from "./collections";
@@ -1893,16 +1892,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * none handed (`null`) forgets the kept ones, and that run is refused then, not this call.
    */
   #keepTiers(binding: Binding): void {
-    if (binding.tiers === undefined) {
-      return;
-    }
-    try {
-      tierNumbers(this.#storage, binding.tiers, clock());
-    } catch (error) {
-      if (!(error instanceof Refusal && !error.invalid)) {
-        throw error;
-      }
-    }
+    keepTiers(this.#storage, binding.tiers, clock());
   }
 
   // -- MODEL CONNECTIONS: sealed credentials, flows and spend (tasks 4 G2) ------------

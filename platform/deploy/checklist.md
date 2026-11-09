@@ -219,7 +219,7 @@ It never counts as "absent".
   (`deploy.ts`, one line), a change of its own, then
   `dark` and the probe again. `routes`
   later finds both paths already the doors'. Until `routes`, never delete the control
-  record (`control_key` in `identity.json`): the doors read a missing record as open and would admit owners on
+  record (`CONTROL_KEY` in `contract/src/control.ts`): the doors read a missing record as open and would admit owners on
   these two paths.
 - **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
   the doors' routes over (`routes` in `platform/contract/identity.json`) one route at a

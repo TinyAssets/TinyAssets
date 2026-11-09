@@ -6,9 +6,11 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { outsideOpen, ownerOpen } from "../src/control";
+import { writeControl } from "../../ci/fixtures";
+import {
+  CONTROL_KEY, type Control, outsideOpen, ownerOpen, parseControl,
+} from "../../contract/src/control";
 import type { DoorsEnv } from "../src/config";
-import { type Control, parseControl } from "../src/directory";
 import { mintKeyFor } from "./keys";
 import {
   appCallback, appPost, authorizeMcp, call, connect, doorsEnv, legacyPost, OPEN, reached,
@@ -34,7 +36,7 @@ function api(key: string, environment: DoorsEnv = doorsEnv): Promise<Response> {
 function unreadable(): DoorsEnv {
   const real = env.CONTROL;
   const failing = {
-    get: (name: string, options: never) => name === "c:control"
+    get: (name: string, options: never) => name === CONTROL_KEY
       ? Promise.reject(new Error("KV down")) : real.get(name, options),
     put: real.put.bind(real), delete: real.delete.bind(real), list: real.list.bind(real),
   } as unknown as KVNamespace;
@@ -52,7 +54,7 @@ const record = (value: unknown): (() => Promise<DoorsEnv>) => async () => {
 const MALFORMED: State = ["malformed", record({ ...OPEN, outside: true })];
 const UNREADABLE: State = ["unreadable", async () => unreadable()];
 const NOT_JSON: State = ["not JSON", async () => {
-  await env.CONTROL.put("c:control", "{outside");
+  await writeControl(env.CONTROL, "{outside");
   return doorsEnv;
 }];
 const MISSING: State = ["missing", record(null)];

@@ -14,10 +14,9 @@ import type { Upstream } from "../src/upstream";
 import { TEST_SOURCES } from "./entry";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 import {
-  appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar,
-  legacyPost, legacyTool, NAVIGATE, OPEN, pkce, refresh, registerClient,
-  serveFirstPartyDocument, setControl, signInApp, sqlIn, TIERS, type ToolResult, upstreamReturns,
-  url,
+  appPost, authorizeMcp, authorizeUrl, call, connect, consent, DARK, decide, doorsEnv, handleOf,
+  Jar, legacyPost, legacyTool, NAVIGATE, OPEN, pkce, refresh, registerClient,
+  serveFirstPartyDocument, setControl, signInApp, sqlIn, type ToolResult, upstreamReturns, url,
 } from "./support";
 
 function owner(): string {
@@ -65,8 +64,7 @@ describe("authorization server metadata", () => {
     // scripts/cutover_handles_canary.py tells the sides apart by this empty body (the old
     // daemon's carries `authentication_required`), and the deploy kit's routes runs it
     // while the dark control record admits no one.
-    await setControl({ outside: "off", ordinary: "canary", canary: [], inbound: false,
-                       tiers: TIERS });
+    await setControl(DARK);
     const challenge = await call(new Request(url("/mcp"), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) }));

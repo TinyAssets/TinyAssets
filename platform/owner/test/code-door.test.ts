@@ -13,8 +13,8 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { OPEN_GATES } from "../../ci/fixtures";
-import { OUTSIDE_OFF } from "../../doors/src/control";
+import { OPEN_GATES, writeControl } from "../../ci/fixtures";
+import { MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
 
 import { profileNames } from "../../contract/src/doors";
 import type { Origin } from "../../contract/src/binding";
@@ -52,7 +52,7 @@ const lines = (...script: string[]): string => script.join("\n");
 const OPEN = OPEN_GATES;
 
 beforeEach(async () => {
-  await env.CONTROL.put("c:control", JSON.stringify(OPEN));
+  await writeControl(env.CONTROL, OPEN);
 });
 
 describe("the code door", () => {
@@ -215,6 +215,25 @@ describe("the code door", () => {
     // The record off at the start refuses the call itself.
     expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(OUTSIDE_OFF);
+  });
+
+  it("holds the owner's own script to the maintenance gate alone, never to outside access",
+     async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(MUSE));
+    await writeControl(env.CONTROL, JSON.stringify({ ...OPEN, outside: "off" }));
+    const script = lines(
+      "await tools.collection_write({ collection: 'board', row_id: 'own', body: 'b',",
+      "  expected_etag: '', private: false });",
+      "return 1;");
+    expect(await r.stub.codeRun(r.bind(null), { script })).toMatchObject({ ok: true, value: 1,
+      landed: [{ name: "collection_write", status: "ok", count: 1 }] });
+    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+      .message).toBe(OUTSIDE_OFF);
+    // The maintenance gate closed refuses the owner's own.
+    await writeControl(env.CONTROL, JSON.stringify({ ...OPEN, ordinary: "none" }));
+    expect((await failure(() => r.stub.codeRun(r.bind(null), { script }))).message)
+      .toBe(MAINTENANCE);
   });
 
   it("serves a script's calls from one read of the control record within a second",

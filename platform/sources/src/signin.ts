@@ -4,6 +4,7 @@
  * must have, and whether it is switched on. Checked in the sandbox's VM before a prompt
  * leaves it, and again on the trusted side.
  */
+import type { ControlRead } from "../../contract/src/control";
 import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/limits";
 
 import type { SourceRecord, Sources } from "./schema";
@@ -150,8 +151,19 @@ export function signinOn(rec: SourceRecord,
     && (switches?.[rec.id] ?? login.hosted_use.verdict === "allowed");
 }
 
-/** The served records whose sign-in is switched on, sorted: what the binder hands the object. */
+/** The served records whose sign-in is switched on, sorted. */
 export function signinsOn(sources: Sources,
                           switches: Readonly<Record<string, boolean>> | null): string[] {
   return sources.ids().filter((id) => signinOn(sources.get(id)!, switches)).sort();
+}
+
+/**
+ * The served records whose sign-in the control record, as read, switches on: its `signins`
+ * when it reads well formed, each record's verdict when there is none, and none at all when it
+ * is malformed or unreadable (fail-closed: a switch is never taken as on unless the record
+ * says so).
+ */
+export function signinsRead(sources: Sources, read: ControlRead): string[] {
+  return read.kind === "read" ? signinsOn(sources, read.control.signins)
+    : read.kind === "missing" ? signinsOn(sources, null) : [];
 }

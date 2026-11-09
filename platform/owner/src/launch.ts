@@ -47,7 +47,8 @@ import {
 } from "./runs";
 import { SANDBOX_ABSENT, SANDBOX_WAITING, started } from "./sandbox";
 import { switchedOn } from "./signins";
-import { type TierName, tierNumbers } from "./tier";
+import { tierNumbers } from "./tier";
+import type { TierName } from "../../contract/src/control";
 
 /** The agent's file changed between its read and the admission: the caller tries again. */
 export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was admitted";

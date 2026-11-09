@@ -39,7 +39,8 @@ import { wiped } from "./erasure";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { ADMISSION_TABLE } from "./schema";
-import { type TierName, tierName } from "./tier";
+import type { TierName } from "../../contract/src/control";
+import { tierName } from "./tier";
 import type {
   Door, OwnerState,
 } from "./owner-do";
