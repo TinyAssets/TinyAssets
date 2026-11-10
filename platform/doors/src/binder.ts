@@ -112,7 +112,7 @@ export function installationOf(redirectUri: string): string {
 }
 
 /** Where a namespaced issuer's owners start: never an owner issuer's subject. */
-const FOREIGN = "iss-";
+export const FOREIGN = "iss-";
 
 /**
  * The owner a verified upstream sign-in names, from its issuer and subject, against an
@@ -248,20 +248,12 @@ export function bindSync(env: DoorsEnv, owner: string, tokenHash: string,
 }
 
 /**
- * The platform's sandbox line rang `owner` (slice S, the ring queue's consumer,
- * `ring.ts`): that owner's object, to start its runs waiting for a sandbox again. It
- * carries no binding: the ring grants nothing.
+ * The owner's object for a call that carries no binding, since it grants nothing: the
+ * sandbox line's ring (`ring.ts`), whose `sandboxRung` starts its waiting runs again, and a
+ * verified E2B lifecycle event (`e2b-hooks.ts`), whose `sandboxBilled` records the sandbox
+ * time E2B billed.
  */
-export function ringOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDoors> {
-  return env.OWNER.getByName(principal(owner));
-}
-
-/**
- * A verified E2B lifecycle event's owner (`e2b-hooks.ts`, slice P), by the route E2B echoed
- * and the doors opened: that owner's object, whose one door here (`sandboxBilled`) records
- * the sandbox time E2B billed. It carries no binding: the event grants nothing.
- */
-export function sandboxHookOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDoors> {
+export function ownerObject(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDoors> {
   return env.OWNER.getByName(principal(owner));
 }
 

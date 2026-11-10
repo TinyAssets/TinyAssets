@@ -1,38 +1,20 @@
 /**
  * The doors' router: every path the doors Worker serves on `tinyassets.io`, and the egress
- * door on `egress.tinyassets.io`.
+ * door on `egress.tinyassets.io` (`route`). Any other origin or path is `404`.
  *
- * - `egress.tinyassets.io/r/<run>/...`: a run's model calls (`c/<connection>/*`), its MCP
- *   door (`mcp`) and its event door (`events`), by the egress token (`egress.ts`), the
- *   `Cookie` header removed. Nothing else is served on that
- *   origin, and the egress door is served on no other, so a sandbox token reaches no other
- *   door. No route is deployed for it until the routes slice.
- *
- * - `/mcp`: the `Cookie` header removed, a present `Origin` held to `MCP_ORIGINS`
- *   (`403` otherwise), then the resource host (the token), the kill switch, the binder
- *   and the MCP handler.
- * - `/api/*`: the `Cookie` header removed, then the key (`api.ts`).
- * - `/hooks/inbound/<token>`: the inbound door (`inbound.ts`), the `Cookie` header removed;
- *   any other `/hooks/` path is `404`, its request never read.
+ * The egress origin serves the egress doors alone, and they are served on no other, so a
+ * sandbox token reaches no other door. `/mcp`, `/api/*`, the E2B hook and `/hooks/*` never
+ * see the `Cookie` header, which only the owner's own surfaces read.
  *
  * No caller is counted or capped by the doors (the founder's rule: no invented limits;
  * slice L's review). An owner object the runtime reports overloaded (Cloudflare's soft
  * limit of 1,000 requests a second an object) is answered `429` with `Retry-After`, never
  * retried: a technical ceiling, not ours. Abuse at volume meets Cloudflare's own DDoS
  * protection, in front of every Worker.
- * - `/app/api/*`: the owner surface (`app.ts`).
- * - `/app` and its named pages and files: the owner app itself (`pages.ts`).
- * - `/authorize`, `/oauth/upstream/callback`: the sign-in (`authorize.ts`).
- * - `/oauth/connect/callback/<source>[/<state>]`: a model source's OAuth redirect
- *   (`connect.ts`).
- * - `/oauth/clients/web.json`: the first-party app's Client ID Metadata Document.
- * - `/.well-known/oauth-protected-resource/mcp`: the resource's metadata.
- * - `/.well-known/oauth-authorization-server`, `/oauth/token`, `/oauth/register` (only
- *   with `DCR_ENABLED`): the provider's own endpoints.
  *
- * Any other origin or path is `404`. The upstream sign-in and the source records are the
- * caller's: `index.ts` passes `UNWIRED` until the AuthKit slice and the bundled records,
- * and the tests a fake sign-in and the records with a test source beside them.
+ * The upstream sign-in and the source records are the caller's: `index.ts` passes the
+ * configured sign-in and the bundled records, and the tests a fake sign-in and the records
+ * with a test source beside them.
  */
 import { e2bLifecycle } from "./e2b-hooks";
 import { serveApi } from "./api";
@@ -42,7 +24,7 @@ import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
 import { bindMcp, withTiers } from "./binder";
 import {
-  AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, type DoorsEnv, E2B_HOOK_PATH, INBOUND_PATH, MCP_ORIGINS,
+  AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, type DoorsEnv, E2B_HOOK_PATH, INBOUND_PATH,
   MCP_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK_PATH, WEB_CLIENT, WEB_REDIRECT,
 } from "./config";
 import { EGRESS_ORIGIN } from "../../contract/src/egress";
@@ -70,8 +52,9 @@ function webClient(): Response {
 
 async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
                        sources: Sources): Promise<Response> {
-  const origin = request.headers.get("Origin");
-  if (origin !== null && !MCP_ORIGINS.includes(origin)) {
+  // No browser origin may send to `/mcp`: a present `Origin` is refused (MCP 2026-07-28
+  // Streamable HTTP), an absent one is allowed.
+  if (request.headers.get("Origin") !== null) {
     return new Response("origin not allowed", { status: 403 });
   }
   return mcpResource(async (req, environment, token) => {
@@ -93,7 +76,7 @@ export function overloaded(error: unknown): boolean {
 
 /** Serve one request through the doors, with `upstream` as the owner's sign-in. */
 export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                            upstream: Upstream | (() => Upstream), sources: Sources):
+                            upstream: () => Upstream, sources: Sources):
     Promise<Response> {
   try {
     return await route(request, env, ctx, upstream, sources);
@@ -107,7 +90,7 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
 }
 
 async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                     upstream: Upstream | (() => Upstream), sources: Sources):
+                     upstream: () => Upstream, sources: Sources):
     Promise<Response> {
   const url = new URL(request.url);
   if (url.origin === EGRESS_ORIGIN) {

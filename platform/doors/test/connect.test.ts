@@ -830,7 +830,7 @@ describe("a flow's finish", () => {
       headers: { "Content-Type": "application/json", Origin: ORIGIN,
                  "Sec-Fetch-Site": "same-origin", Authorization: `Bearer ${app.token}`,
                  Cookie: `__Host-ta-owner=${app.session}; ${started.binding}` },
-      body: JSON.stringify(body) }), doorsEnv, ctx, FAKE_UPSTREAM, paused);
+      body: JSON.stringify(body) }), doorsEnv, ctx, () => FAKE_UPSTREAM, paused);
     expect(answer.status).toBe(501);
     expect(await received()).toEqual([]);
     expect(await connectionRows(app.owner)).toEqual([{ status: "revoked", revoke_due: null }]);

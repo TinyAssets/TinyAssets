@@ -529,7 +529,8 @@ accepted by design. **After the window,** revoke everything and leave nothing bi
 
 ## Registrations you make by hand at the providers
 
-The registrations are data in `platform/doors/redirect-registrations.json`, one per source.
+Each source's redirect URI is its own callback, as the doors derive it (`connect.ts`,
+`redirectFor`); a key exchange's provider takes any callback.
 
 | Source | Redirect URI to register | How the provider matches it |
 |---|---|---|

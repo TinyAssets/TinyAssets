@@ -2,7 +2,7 @@
 // `/api` keys, `/hooks/inbound` and the owner surface (ADR-032 Decision 2). Not deployable
 // as checked in: no routes, no workers.dev or preview URL, its KV namespaces placeholders
 // and its sign-in unconfigured, so a deploy cannot succeed; the deploy kit
-// (platform/deploy/deploy.mjs) writes the deployed config from this one, filling only the
+// (platform/deploy/deploy.ts) writes the deployed config from this one, filling only the
 // namespace ids, the routes and the upstream's values. It binds exactly what
 // guards/config.test.ts allows:
 // - OWNER: the owner Worker's namespace, by script_name. Only src/binder.ts reaches it.
@@ -40,9 +40,9 @@
 //   bytes, base64url, generated at deploy and set in the owner Worker too); the egress
 //   door verifies a token by it before any stub call (src/routing-mac.ts).
 //   WORKOS_API_KEY: the upstream's client secret (the code exchange, the identity's deletion
-//   at an erasure), copied by the deploy from the production host's /etc/tinyassets/env.
+//   at an erasure), set by the deploy kit from the production environment's secrets.
 //   E2B_WEBHOOK_SECRET: the signature secret of E2B's sandbox lifecycle webhook
-//   (src/e2b-hooks.ts, `/hooks/e2b/lifecycle`), set and registered with E2B by slice L's kit.
+//   (src/e2b-hooks.ts, `/hooks/e2b/lifecycle`), set and registered with E2B by the deploy kit.
 //   `secrets.required` makes a deploy without any of the three fail. A shared inbound app's
 //   signing secret (shared-apps.json names it, INBOUND_SLACK_SIGNING_SECRET) is set when the
 //   app is; without it that app's door refuses loudly.

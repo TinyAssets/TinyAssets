@@ -107,7 +107,7 @@ function firstParty(request: AuthRequest): boolean {
 }
 
 /** The consent page: every client-supplied string escaped, framing refused by its headers. */
-export function consentPage(details: ConsentDescription, handle: string): string {
+function consentPage(details: ConsentDescription, handle: string): string {
   const name = escape(details.clientName);
   const origin = details.clientDomain !== undefined
     ? `Published by <strong>${escape(details.clientDomain)}</strong>.`
@@ -172,16 +172,11 @@ function failed(error: unknown): Response {
 }
 
 /**
- * The owner's sign-in, built only where a sign-in needs it: a bad `UPSTREAM` breaks
- * sign-in alone, never another door.
+ * `GET` and `POST /authorize`. The owner's sign-in (`upstream`) is built only where a
+ * sign-in needs it: a bad `UPSTREAM` breaks sign-in alone, never another door.
  */
-function upstreamOf(source: Upstream | (() => Upstream)): Upstream {
-  return typeof source === "function" ? source() : source;
-}
-
-/** `GET` and `POST /authorize`. */
 export async function authorize(request: Request, env: DoorsEnv,
-                                upstream: Upstream | (() => Upstream)): Promise<Response> {
+                                upstream: () => Upstream): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
   try {
     if (request.method === "GET") {
@@ -202,7 +197,7 @@ export async function authorize(request: Request, env: DoorsEnv,
         return text(400, "This app may not send access to TinyAssets itself.");
       }
       if (forApp) {
-        return await signIn(oauth, upstreamOf(upstream), parsed);
+        return await signIn(oauth, upstream(), parsed);
       }
       const details = await oauth.describeConsent(parsed);
       const consent = await oauth.beginConsent(parsed);
@@ -228,7 +223,7 @@ export async function authorize(request: Request, env: DoorsEnv,
       // No `remember`: the approval is this authorization's alone. The grant's scopes
       // are cut to the catalogue when it is made.
       const approved = await oauth.approveConsent(request, handle);
-      return await signIn(oauth, upstreamOf(upstream), approved.request, approved.headers);
+      return await signIn(oauth, upstream(), approved.request, approved.headers);
     }
     return text(405, "method not allowed");
   } catch (error) {
@@ -309,7 +304,7 @@ async function signedInVendor(oauth: OAuthHelpers, clientId: string, redirectUri
 
 /** `GET /oauth/upstream/callback`: the verified sign-in becomes the grant. */
 export async function callback(request: Request, env: DoorsEnv,
-                               source: Upstream | (() => Upstream)): Promise<Response> {
+                               source: () => Upstream): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
   let resumed: Awaited<ReturnType<typeof oauth.finishUpstream<Verifier>>>;
   try {
@@ -317,7 +312,7 @@ export async function callback(request: Request, env: DoorsEnv,
   } catch (error) {
     return failed(error);
   }
-  const upstream = upstreamOf(source);
+  const upstream = source();
   const { request: original, data, headers } = resumed;
   const params = new URL(request.url).searchParams;
   const code = params.get("code");

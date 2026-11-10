@@ -43,6 +43,7 @@ import {
 import { inboundGate, ordinaryAdmits, readControl } from "../../contract/src/control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { shownCode } from "./refused";
+import { mediaType } from "./session";
 import type { Sources } from "../../sources/src/schema";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -52,7 +53,7 @@ const HEADERS_MAX = 64;
 const HEADER_VALUE_MAX = 8 * 1024;
 
 /** A shared app, as `shared-apps.json` declares it. */
-export interface SharedApp {
+interface SharedApp {
   readonly id: string;
   readonly endpoint: string;
   readonly secret: string;
@@ -120,7 +121,7 @@ function headersOf(request: Request): Record<string, string> | null {
 
 /** A JSON object from an uncompressed UTF-8 JSON body, or null (`_json_object`). */
 function envelopeOf(request: Request, body: Uint8Array): Record<string, unknown> | null {
-  const type = (request.headers.get("Content-Type") ?? "").split(";")[0]!.trim().toLowerCase();
+  const type = mediaType(request);
   const encoding = (request.headers.get("Content-Encoding") ?? "identity").toLowerCase();
   if (type !== "application/json" || encoding !== "identity") {
     return null;

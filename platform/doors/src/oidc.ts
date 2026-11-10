@@ -300,12 +300,10 @@ export async function verifiedAccessToken(answer: unknown, issuer: string,
 
 /**
  * The live upstream for `issuer` (`OWNER_ISSUER`) and `config` (`UPSTREAM`), with the
- * client secret; `fetcher` reaches the issuer (the global fetch, or a test's fake).
+ * client secret.
  */
-export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: string,
-                             fake?: typeof fetch): Upstream {
-  const fetcher = (url: string, init: RequestInit): Promise<Response> =>
-    fake === undefined ? fetch(url, init) : fake(url, init);
+export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: string):
+    Upstream {
   if (typeof secret !== "string" || secret === "") {
     throw new Error("WORKOS_API_KEY, the upstream's client secret, is not set");
   }
@@ -330,7 +328,7 @@ export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: str
     }): Promise<SignIn> => {
       // The secret goes in this body alone, and never follows a redirect: a 3xx is refused
       // as any other answer than 200 is.
-      const exchanged = await fetcher(config.token_endpoint, {
+      const exchanged = await fetch(config.token_endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ grant_type: "authorization_code", client_id: config.client_id,
@@ -342,8 +340,8 @@ export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: str
           await refusalCode(exchanged)}`);
       }
       const answer = await bounded(exchanged, TOKEN_MAX * 4, "token answer");
-      const keys = await fetcher(config.jwks_uri, { headers: { Accept: "application/json" },
-                                                    redirect: "manual" });
+      const keys = await fetch(config.jwks_uri, { headers: { Accept: "application/json" },
+                                                  redirect: "manual" });
       if (keys.status !== 200) {
         throw new Error(`the issuer's JWKS answered ${keys.status}`);
       }
@@ -351,8 +349,8 @@ export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: str
     },
     forget: async (subject: string): Promise<void> => {
       const url = config.user_delete.replace("{sub}", encodeURIComponent(subject));
-      const done = await fetcher(url, { method: "DELETE", redirect: "manual",
-                                        headers: { Authorization: `Bearer ${secret}` } });
+      const done = await fetch(url, { method: "DELETE", redirect: "manual",
+                                      headers: { Authorization: `Bearer ${secret}` } });
       if (done.status !== 404 && (done.status < 200 || done.status > 299)) {
         throw new Error(`the issuer's identity deletion answered ${done.status}`);
       }

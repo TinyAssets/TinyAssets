@@ -2,7 +2,7 @@
  * The `/api` door (research §5): an API key's call of one external tool,
  * `POST /api/tools/<name>` with the tool's arguments as one JSON object, answered with
  * the door's result. The same table as `/mcp` (`tools.ts`), held to the same profile
- * (`profiled`: the key's grant names it), so the two can never serve different operations;
+ * (`profileOf`: the key's grant names it), so the two can never serve different operations;
  * the object checks every field. A tool outside the key's profile is `404`, as one that
  * does not exist.
  *
@@ -10,7 +10,6 @@
  * fail-closed. The request's `Cookie` header is gone before this sees it (`index.ts`).
  */
 import { answerJson } from "./answers";
-import { bearer } from "./app";
 import { verifyKey } from "./api-keys";
 import { refusalOf } from "../../contract/src/refusal";
 
@@ -18,8 +17,8 @@ import { jsonObject } from "./body";
 import { API_BODY_MAX, type DoorsEnv } from "./config";
 import { outsideRead } from "./control";
 import { withTiers } from "./binder";
-import { mediaType } from "./session";
-import { profiled } from "./mcp";
+import { bearer, mediaType } from "./session";
+import { profileOf } from "./mcp";
 import { refusalResponse } from "./refused";
 import { callDoor, toolDoor } from "./tools";
 import type { Sources } from "../../sources/src/schema";
@@ -43,12 +42,12 @@ export async function serveApi(request: Request, env: DoorsEnv, sources: Sources
     return gated;
   }
   const held = withTiers(bound, gated, sources);
-  const tools = await profiled(held);
-  if (tools instanceof Response) {
-    return tools;
+  const profile = await profileOf(held);
+  if (profile instanceof Response) {
+    return profile;
   }
   const match = TOOL_PATH.exec(new URL(request.url).pathname);
-  const tool = match === null ? undefined : tools.find((row) => row.name === match[1]);
+  const tool = match === null ? undefined : profile.tools.find((row) => row.name === match[1]);
   if (tool === undefined) {
     return failure(404, "no such tool");
   }

@@ -27,13 +27,20 @@ import { codePoints } from "../../contract/src/text";
 
 export const COOKIE = "__Host-ta-owner";
 /** The Python's 28 800 s, the object's session life (`SESSION_LIMITS.ttlS`). */
-export const COOKIE_MAX_AGE_S = 28_800;
+const COOKIE_MAX_AGE_S = 28_800;
 export const OWNER_SURFACE = "/app/api/";
 const SAFE_METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "OPTIONS"]);
 
 /** The media type of `Content-Type`, lowercased, without parameters; "" when absent. */
 export function mediaType(request: Request): string {
   return (request.headers.get("Content-Type") ?? "").split(";")[0]!.trim().toLowerCase();
+}
+
+/** The `Authorization` header's bearer token, or null. */
+export function bearer(request: Request): string | null {
+  const header = request.headers.get("Authorization") ?? "";
+  const match = /^Bearer ([^\s]+)$/.exec(header);
+  return match === null ? null : match[1]!;
 }
 
 /** The request without its `Cookie` header: what `/mcp`, `/api` and `/hooks` see. */
@@ -93,7 +100,7 @@ export function clearedCookie(): string {
  * It vouches for nothing but the browser; the session the flow was begun in is checked by
  * the object (`flowFinish`).
  */
-export const CONNECT_COOKIE = "__Host-ta-connect";
+const CONNECT_COOKIE = "__Host-ta-connect";
 
 async function flowDigest(state: string): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256",

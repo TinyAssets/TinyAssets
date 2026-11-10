@@ -77,7 +77,7 @@ function secretOf(request: Request, inPath: string | undefined): string | undefi
 
 const GENERATION = /^[1-9][0-9]{0,14}$/;
 const LENGTH = /^[0-9]{1,15}$/;
-export const EGRESS_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
+const EGRESS_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
 /** How long a completed answer's metered outcome is waited for before it is `unknown`. */
 const OUTCOME_WAIT_MS = 10_000;
 
@@ -139,7 +139,6 @@ async function settleOnce(env: DoorsEnv, bound: Bound, request: SettleSent):
   }
 }
 
-/** Serve one sandbox call; `deadlineMs` is the door's own bound on its stream. */
 /**
  * The egress token E2B's transform set, verified: its MAC first, so a forged, altered or
  * sync token reaches no object, not even the gate's; then its expiry, the network's
@@ -226,8 +225,6 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
     return refusedBy(answer);
   }
 }
-
-/** A sign-in's event door's path: the sign-in's id. */
 
 /**
  * A sign-in's event door (slice SIGNIN): the runner's `ta.signin` frames of the vendor's own
@@ -328,37 +325,23 @@ function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 }
 
-/** A commit's ops with each `inline` decoded from base64; anything else as sent. */
-function decodedOps(ops: unknown): unknown {
-  if (!Array.isArray(ops)) {
-    return ops;
+/**
+ * A sync body's list (a commit's `ops`, an upload's `chunks`) with each item's `field` decoded
+ * from base64; anything else as sent.
+ */
+function decoded(items: unknown, field: "inline" | "bytes"): unknown {
+  if (!Array.isArray(items)) {
+    return items;
   }
-  return ops.map((op: unknown) => {
-    if (typeof op !== "object" || op === null || !("inline" in op)) {
-      return op;
+  return items.map((item: unknown) => {
+    if (typeof item !== "object" || item === null || !(field in item)) {
+      return item;
     }
-    const inline = (op as { inline: unknown }).inline;
-    if (typeof inline !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(inline)) {
-      return { ...op, inline: null };  // refused by the object's own check
+    const text = (item as Record<string, unknown>)[field];
+    if (typeof text !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(text)) {
+      return { ...item, [field]: null };  // refused by the object's own check
     }
-    return { ...op, inline: new Uint8Array(Buffer.from(inline, "base64")) };
-  });
-}
-
-/** An upload's chunks with each `bytes` decoded from base64; anything else as sent. */
-function decodedChunks(chunks: unknown): unknown {
-  if (!Array.isArray(chunks)) {
-    return chunks;
-  }
-  return chunks.map((chunk: unknown) => {
-    if (typeof chunk !== "object" || chunk === null || !("bytes" in chunk)) {
-      return chunk;
-    }
-    const bytes = (chunk as { bytes: unknown }).bytes;
-    if (typeof bytes !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(bytes)) {
-      return { ...chunk, bytes: null };  // refused by the object's own check
-    }
-    return { ...chunk, bytes: new Uint8Array(Buffer.from(bytes, "base64")) };
+    return { ...item, [field]: new Uint8Array(Buffer.from(text, "base64")) };
   });
 }
 
@@ -414,12 +397,12 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
       }
       case "commit":
         return answer(await stub.fileSyncCommit(binding, {
-          ...body, ops: decodedOps(body["ops"]) }));
+          ...body, ops: decoded(body["ops"], "inline") }));
       case "upload_begin":
         return answer(await stub.fileSyncUploadBegin(binding, body));
       case "upload_chunks":
         return answer(await stub.fileSyncUploadChunks(binding, {
-          ...body, chunks: decodedChunks(body["chunks"]) }));
+          ...body, chunks: decoded(body["chunks"], "bytes") }));
       case "upload_abort":
         return answer(await stub.fileSyncUploadAbort(binding, body));
     }
@@ -439,8 +422,8 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
   }
 }
 
-export async function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                                  deadlineMs: number = EGRESS_DEADLINE_MS): Promise<Response> {
+export async function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext):
+    Promise<Response> {
   const url = new URL(request.url);
   if (url.origin !== EGRESS_ORIGIN) {
     return refused("not_found", 404);
@@ -476,9 +459,9 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (verified instanceof Response) {
     return verified;
   }
+  const secret = secretOf(request, route[2]);
   const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
-                            secretOf(request, route[2]) === undefined ? {}
-                              : { secret: secretOf(request, route[2])! });
+                            secret === undefined ? {} : { secret });
   const { binding, stub } = bound;
   const run = route[1]!;
   const connection = route[3]!;
@@ -563,7 +546,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
     };
   });
   signal.read().then(() => stop("ended"), () => stop("ended"));
-  timer = setTimeout(() => stop("deadline"), deadlineMs);
+  timer = setTimeout(() => stop("deadline"), EGRESS_DEADLINE_MS);
   request.signal?.addEventListener("abort", () => stop("aborted"));
 
   // A model call's reserve, which the gateway calls back (a stub to this function) once its
@@ -647,7 +630,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
       try {
         chunk = await reader.read();
       } catch {
-        const end = stopped ?? (Date.now() - started >= deadlineMs ? "deadline" : "failed");
+        const end = stopped ?? (Date.now() - started >= EGRESS_DEADLINE_MS ? "deadline" : "failed");
         await finish(end);
         controller.error(new Error(`egress_${end}`));
         return;

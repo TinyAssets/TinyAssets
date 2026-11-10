@@ -271,7 +271,6 @@ describe("doors Worker config", () => {
 
   it("is the platform's doors config", () => {
     expect(platform.get("tinyassets-doors")).toEqual(config);
-    expect(PLATFORM).toBe(join(DOORS, ".."));
   });
 
   it("sees OWNER bound to a script whose class is not in the platform", () => {

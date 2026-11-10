@@ -5,6 +5,7 @@
  * is refused there. Either is `413`, never a parse of the rest.
  */
 import type { JsonBody } from "../../contract/src/owner";
+import { principal } from "../../contract/src/text";
 
 export const TOO_LARGE = "the request body is too large";
 
@@ -72,6 +73,21 @@ export async function boundedBytes(request: Request, max: number): Promise<Uint8
     at += part.byteLength;
   }
   return whole;
+}
+
+/**
+ * The owner a queue's `{owner}` message names (the ring's, the erasure's), or null when the
+ * message is out of shape.
+ */
+export function queuedOwner(body: unknown): string | null {
+  if (typeof body !== "object" || body === null || Object.keys(body).join() !== "owner") {
+    return null;
+  }
+  try {
+    return principal((body as { owner: unknown }).owner);
+  } catch {
+    return null;
+  }
 }
 
 /** The body as one JSON object; `413` or `400` as a response when it is not one. */

@@ -59,12 +59,6 @@ export const WEB_REDIRECT = `${PUBLIC_ORIGIN}${identity.first_party.redirect}`;
  * and no config value.
  */
 export const FIRST_PARTY_CLIENTS: readonly string[] = Object.freeze([WEB_CLIENT]);
-/**
- * Origins a browser-based MCP client may send to `/mcp`. Empty: a present `Origin` is
- * refused (MCP 2026-07-28 Streamable HTTP), an absent one is allowed.
- */
-export const MCP_ORIGINS: readonly string[] = Object.freeze([]);
-
 /** Scopes the authorization server grants. Authority is the owner object's grant rows. */
 export const SCOPES: readonly string[] = Object.freeze(["offline_access"]);
 
@@ -79,8 +73,10 @@ export const REFRESH_TOKEN_TTL_S = 30 * 86_400;
 export const SIGN_IN_MAX_AGE_S = 600;
 export const CLOCK_MARGIN_S = 5;
 
-/** The largest body each door reads; past it, `413` before anything is parsed. */
-/** The consent form: its handle and decision, a few short fields. */
+/**
+ * The largest body each door reads; past it, `413` before anything is parsed. The consent
+ * form: its handle and decision, a few short fields.
+ */
 export const AUTHORIZE_BODY_MAX = 4 * 1024;
 /**
  * A tool call's arguments: the request body's one ceiling (`EGRESS_BODY_MAX`, 16 MiB, the
@@ -88,13 +84,13 @@ export const AUTHORIZE_BODY_MAX = 4 * 1024;
  * with room for its JSON escapes; a test holds the three.
  */
 export const API_BODY_MAX = 16 * 1024 * 1024;
-/** The owner surface's requests (a run's input among them): as a tool call's. */
 export const APP_BODY_MAX = API_BODY_MAX;
 
-/** `OWNER_ISSUER` until the AuthKit slice sets AuthKit's production issuer. */
-export const ISSUER_NOT_CONFIGURED = "not-configured";
-/** `UPSTREAM` until the deploy fills it from AuthKit's live discovery (`deploy/`). */
-export const UPSTREAM_NOT_CONFIGURED = "not-configured";
+/**
+ * `OWNER_ISSUER` and `UPSTREAM` until the deploy writes them: AuthKit's production issuer,
+ * and its endpoints from AuthKit's live discovery (`deploy/`).
+ */
+export const NOT_CONFIGURED = "not-configured";
 
 /** The inbound door's path: `/hooks/inbound/<token>`, one segment (`inbound.ts`). */
 export const INBOUND_PATH = "/hooks/inbound/";
@@ -134,8 +130,8 @@ export interface DoorsEnv {
    */
   readonly ROUTING_MAC_KEY: string;
   /**
-   * E2B's lifecycle webhook's signature secret (`e2b-hooks.ts`), a Worker secret slice L's
-   * deploy kit sets and registers with E2B; unset, every delivery is refused `503`.
+   * E2B's lifecycle webhook's signature secret (`e2b-hooks.ts`), a Worker secret the deploy
+   * kit sets and registers with E2B; unset, every delivery is refused `503`.
    */
   readonly E2B_WEBHOOK_SECRET?: string;
   /** The OAuth provider's own store (its schema; never ours). */
@@ -200,8 +196,8 @@ const ISSUER_URL = /^https:\/\/[^\s]+$/;
 /** The owner issuer, an https URL; unset, every sign-in fails loudly. */
 export function ownerIssuer(env: DoorsEnv): string {
   const issuer = env.OWNER_ISSUER;
-  if (issuer === ISSUER_NOT_CONFIGURED) {
-    throw new Error("OWNER_ISSUER is not configured (tasks 2: AuthKit)");
+  if (issuer === NOT_CONFIGURED) {
+    throw new Error("OWNER_ISSUER is not configured");
   }
   if (typeof issuer !== "string" || !ISSUER_URL.test(issuer)) {
     throw new Error("OWNER_ISSUER is an https issuer URL");

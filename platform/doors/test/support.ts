@@ -31,7 +31,7 @@ export async function call(request: Request, environment: DoorsEnv = doorsEnv,
                            sources?: Sources): Promise<Response> {
   const ctx = createExecutionContext();
   const response = sources === undefined ? await worker.fetch(request, environment, ctx)
-    : await serve(request, environment, ctx, FAKE_UPSTREAM, sources);
+    : await serve(request, environment, ctx, () => FAKE_UPSTREAM, sources);
   await waitOnExecutionContext(ctx);
   return response;
 }

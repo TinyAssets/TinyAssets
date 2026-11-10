@@ -16,11 +16,6 @@ import type { Refusal } from "../../contract/src/refusal";
 import { RecordingErasures } from "../../owner/test/erasure-fake";
 import { RecordingSandbox } from "../../owner/test/sandbox-fake";
 
-/**
- * The real owner object, with its sandbox's lease API (owner-internal) in the tests' reach,
- * and a recording fake behind its `SANDBOX` binding (tests only: slice S binds the real
- * sandbox Worker).
- */
 /** The doors a test may have refused once, as the object's own. */
 type Refusable = "outsideAgents" | "toolProfile" | "fileUploadTarget" | "erasureOutside"
   | "runEvents";
@@ -44,6 +39,11 @@ function refusedOnce(door: Refusable, owner: string): Refusal | undefined {
   return refusal;
 }
 
+/**
+ * The real owner object, with its sandbox's lease API (owner-internal) in the tests' reach,
+ * and a recording fake behind its `SANDBOX` binding (tests only: slice S binds the real
+ * sandbox Worker).
+ */
 export class OwnerDO extends RealOwnerDO {
   override outsideAgents(...args: Parameters<RealOwnerDO["outsideAgents"]>):
       ReturnType<RealOwnerDO["outsideAgents"]> {
@@ -130,5 +130,5 @@ export const TEST_SOURCES = catalogOf([...bundledRecords(), TEST_OAUTH]);
 
 export default {
   fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
-    serve(request, env, ctx, FAKE_UPSTREAM, TEST_SOURCES),
+    serve(request, env, ctx, () => FAKE_UPSTREAM, TEST_SOURCES),
 };

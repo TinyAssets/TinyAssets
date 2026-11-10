@@ -18,7 +18,7 @@ import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { type DoorsEnv } from "../src/config";
-import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
+import { serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
 import worker, { type OwnerDO } from "./entry";
 import { EGRESS_CHUNKS, EGRESS_USAGE } from "./fake-providers";
@@ -252,10 +252,6 @@ afterEach(() => {
 });
 
 describe("the egress door", () => {
-  it("keeps the gateway's own deadline (the gateway's tests hold the two equal)", () => {
-    expect(EGRESS_DEADLINE_MS).toBe(EGRESS_DEADLINE_S * 1000);
-  });
-
   it("forwards a live token's call with the sealed key in place of every credential, its " +
      "output cap clamped, streams the answer back and settles it at pi-ai's cost", async () => {
     const box = await sandbox();
@@ -939,11 +935,21 @@ describe("settlement", () => {
     expect(await spends(box.owner)).toMatchObject([{ state: "settled", est_cost: null }]);
   });
 
-  it("records the door's deadline", async () => {
+  it("records the door's deadline, the gateway's day", async () => {
     const box = await sandbox();
     const ctx = createExecutionContext();
-    const response = await serveEgress(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-deadline" } }), doorsEnv, ctx, 300);
+    // Only the door's own timer runs fast: a day passes, and nothing else is faked.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let response: Response;
+    try {
+      response = await serveEgress(egressRequest(box, COMPLETIONS, {
+        headers: { "x-fake-egress": "slow-deadline" } }), doorsEnv, ctx);
+      await vi.advanceTimersByTimeAsync(EGRESS_DEADLINE_S * 1000 - 1);
+      expect(await reservations(box.owner)).toMatchObject([{ state: "open" }]);
+      await vi.advanceTimersByTimeAsync(1);
+    } finally {
+      vi.useRealTimers();
+    }
     const reader = response.body!.getReader();
     expect(await drained(reader)).toBe("egress_deadline");
     await settledOf(box.owner);

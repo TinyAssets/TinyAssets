@@ -706,11 +706,9 @@ account and no deploy.
   a prefix, and matched exactly by the provider (RFC 9700 §4.1); OpenRouter's key exchange
   takes any callback: `.../callback/openrouter_user_models_v1/<state>`; Sign in with
   ChatGPT's hosted client and registration once OpenAI approves (founder), which then
-  drops its record's `unwired`. Slice L: as data, one registration a source in
-  `doors/redirect-registrations.json` (`exact` at its own callback, or a key exchange's
-  `any_callback` with its state's segment), kept apart from the source records the sandbox
-  runner bundles, held by a guard to the URI the doors derive (`redirectOf`), listed for
-  the founder in `platform/deploy/checklist.md`. Owed: the
+  drops its record's `unwired`. Slice L: each source's callback is the one the doors
+  derive (`connect.ts`, `redirectFor`), listed for the founder in
+  `platform/deploy/checklist.md`. Owed: the
   registrations at the providers themselves (only `chatgpt`, parked, needs one today).
 - [x] The key exchange's residual mix-up, before any uncurated source: a source on an
   authorization server the platform does not curate (an MCP server, or a source from an

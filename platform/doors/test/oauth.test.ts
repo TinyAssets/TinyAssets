@@ -173,7 +173,7 @@ describe("the authorization flow", () => {
     const approve = new Request(url("/authorize"), {
       method: "POST", headers: { Cookie: jar.header() },
       body: new URLSearchParams({ handle: handleOf(await page.text()), decision: "approve" }) });
-    await expect(serve(approve, doorsEnv, createExecutionContext(), upstream, TEST_SOURCES))
+    await expect(serve(approve, doorsEnv, createExecutionContext(), () => upstream, TEST_SOURCES))
       .rejects.toThrow("max_age=0");
   });
 
@@ -233,7 +233,7 @@ describe("the authorization flow", () => {
     try {
       const failed = await serve(new Request(url(`/oauth/upstream/callback?${back}`), {
         headers: { ...NAVIGATE, Cookie: jar.header() } }), doorsEnv, createExecutionContext(),
-                                 upstream, TEST_SOURCES);
+                                 () => upstream, TEST_SOURCES);
       expect(failed.status).toBe(502);
       expect(await failed.text()).toBe(`The sign-in could not be completed: ${reason}.`);
       expect(logged).toHaveBeenCalledWith(`the upstream sign-in failed: ${reason}`);

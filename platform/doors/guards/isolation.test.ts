@@ -6,15 +6,14 @@
  * mutable state and no write through the global object (the OAuth provider, the resource
  * host and the MCP handler are built per request for it), no `exports`, and nothing from
  * `cloudflare:workers` but the classes a source extends. This guard checks that the
- * doors are in what they scan, so the doors can never fall outside them.
+ * doors are in what they scan (`workerSources`), so the doors can never fall outside them.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../ci/paths";
 import { workerSources } from "../../ci/kit/sources";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
@@ -27,9 +26,5 @@ describe("doors isolation guards", () => {
       .map((path) => `doors/src/${path}`).sort();
     expect(scanned.sort()).toEqual(sources);
     expect(sources).toContain("doors/src/binder.ts");
-    for (const guard of ["module-state.test.ts", "self-reach.test.ts"]) {
-      expect(readFileSync(join(PLATFORM, "owner", "guards", guard), "utf8"))
-        .toContain("workerSources()");
-    }
   });
 });

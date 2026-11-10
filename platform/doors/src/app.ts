@@ -1,92 +1,33 @@
 /**
  * The owner surface, `/app/api/*` (research §8; checklist 7, 8, 13-16): the owner's own
- * app, with a first-party token for the owner and the session cookie for widenings.
+ * app, with a first-party token for the owner and the session cookie for widenings. Its
+ * routes are data (`routes()`): each a door of the owner's table, called with the body as
+ * its request, or a binder sequence.
  *
  * Order, before any object is reached:
  * 1. The credential is the owner's first-party token: validated for `/app` and issued to
  *    a first-party client. An outside credential (an API key, or an MCP token) is
  *    refused `403`, so an outside origin never reaches an owner-surface door (the
  *    Python's `mailbox_door._owner`). The one pairing of an outside origin with the
- *    session is the registering route below, and its credential is still this token.
+ *    session is `outside-agents`, and its credential is still this token.
  * 2. The maintenance gate.
  * 3. A POST of exactly `application/json`; the session is attached by `session.ts`'s
  *    rules alone.
+ * Two routes come before the body: the live socket, whose one credential is its ticket (a
+ * browser's `WebSocket` sends no `Authorization`), and an upload's bytes, streamed to
+ * `FILES` (`file-bytes.ts`).
  *
- * Routes, each a door or a binder sequence:
- * - `keys`, `keys/list`, `keys/revoke`, `keys/delete`: `api-keys.ts` (the key store's mint
- *   and list in the object).
- * - `grants/revoke`: an MCP client's revoke, object then provider (`revoke.ts`).
- * - `account/erase`: the owner's erasure, in session and confirmed (`erase.ts`).
- * - `hooks/create`, `hooks/list`, `hooks/set`, `hooks/revoke`: the owner's inbound
- *   bindings and their directory entries (`inbound.ts`).
- * - `files/upload/begin`, `PUT files/upload/<intent_id>`, `files/upload/commit`: an upload,
- *   its bytes streamed to `FILES` by the binder (`file-bytes.ts`).
- * - `outside-agents`: the owner's browser registering an agent for an API key it holds.
- * - `session/extend`: the session's renewal.
- * - `session/close`: sign-out, the session closed and the presented token's grant revoked.
- * - `connections/key`, `connections/oauth`, `connections/oauth/finish`,
- *   `connections/revoke`, `connections/list`: the model connect doors (`connect.ts`).
+ * **Which need the session** (app review M1): every change to the owner's agent
+ * definitions (`OWNER_TREES`: `file_mkdir`, `file_remove`, `file_rename`, `file_restore`
+ * there, as `files/write`), which the object takes only in the owner's live session on
+ * every route alike, since an agent's files are its instructions and authority. The rest
+ * (collections, other files, digests, runs, `code`, whose script calls are held the same
+ * way) change no agent's authority, so the owner's token suffices, as it does for a
+ * full-mode API key.
  *
- * - `agent/doorbell`, `agent/doorbell/end`, `agent/wake-limits`: an agent's doorbell (slice
- *   W): the owner pastes the `/fire` or routine URL and token a vendor showed it, which go
- *   straight to the gateway's seal (`connect.ts`), the object storing only the blob under the
- *   id derived here (the answer never echoes the token); one ended by its id; and the owner's
- *   own wake settings for an agent (`policyWakeLimits`), off by default; and
- *   `agent/doorbell/kinds`, the wake kinds whose records have the owner paste the URL and
- *   token (id and the agents each wakes), so the app's wake-up form is the records' data.
- * - The owner app's reads and settings (the app slice), each one door: `account` (the
- *   owner's tier, `tierRead`, beside the control record's tier numbers and its file usage:
- *   tiers differ only by simultaneous runs and storage), `notices`, `policy` and
- *   `policy/write` (code mode's switch and the owner's `custom` tools are policy),
- *   `grants` and `grants/set` (a client's mode, scopes and profile; a revoke goes by
- *   `grants/revoke` alone, so the provider's refresh tokens die with it), `files/read` and
- *   `files/write` (an agent is files: the owner reads and writes them as UTF-8 text, a file
- *   of at most one chunk).
- * - `sources`: the source records' public facts (name, how each connects, which engines a
- *   key runs, which credentials an engine takes, why one is unwired), so the app's connect
- *   screen is the records' data, never a list of its own.
- * - `tools`: the MCP door's table, each tool's name and title (the owner's `custom` choice).
- * - `capabilities`: the capabilities an agent's runs and a key's scopes hold (one list, the
- *   grants' own), each in plain words, so the app's agent and key forms are the object's.
- * - `tools/<name>`: the owner calling one tool of the MCP door's table (`tools.ts`) as
- *   itself, the same doors and fields an outside client's call takes, held by the object to
- *   the owner's own authority. **Which need the session** (app review M1): every change to
- *   the owner's agent definitions (`OWNER_TREES`: `file_mkdir`, `file_remove`, `file_rename`,
- *   `file_restore` there, as `files/write`), which the object takes only in the owner's live
- *   session on every route alike, since an agent's files are its instructions and authority.
- *   The rest (collections, other files, digests, runs, `code`, whose script calls are held
- *   the same way) change no agent's authority, so the owner's token suffices, as it does for
- *   a full-mode API key.
- * - `signin/start`, `signin/code`, `signin/cancel`, `signin/list` (slice SIGNIN): the
- *   vendor's own sign-in (or sign-out) inside the owner's own sandbox or one client's, its
- *   prompt watched on the app socket by the sign-in's id (`agent/socket-ticket` takes it as
- *   its `conversation_id`), a pasted code handed back, a sign-in stopped, and the sign-ins in
- *   progress with each engine's presence.
- * - `runs` (slice SIGNIN): the owner's past runs, newest first, a page at a time.
- *
- * Every answer but a socket's upgrade carries `SURFACE_HEADERS` (nosniff, a CSP of none).
- * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
- *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
- *   outside client; the control record's tier numbers ride the binding (`withTiers`).
- * - `storage`: the owner's one storage number, used and left (`storageUsage`).
- * - `export`: the owner's export manifest (`owner/src/export.ts`), streamed as
- *   newline-delimited JSON (`exportStream`), resumable from any cursor line (it names the
- *   export's id), ending as the owner at one moment however the owner writes meanwhile (a
- *   generation, `owner/src/backup.ts`); `export/chunks` its chunks' bytes by hash;
- *   `export/end` its id let go.
- * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's conversations
- *   (A6, salvaged), behind every check above, bound to the token's grant and expiry
- *   (`bindOwnerGrant`).
- * - `agent/socket`: the owner app's live socket on one of its conversations: a `GET` with
- *   `Upgrade: websocket`, `?conversation_id=` and `?ticket=`, its one credential the ticket
- *   (a browser's `WebSocket` sends no `Authorization`; no bearer is read here), a
- *   routing-MAC token the doors verify before any object (`bindTicket`), behind the
- *   maintenance gate; the binder forwards it to the object's `fetch` as a fresh request
- *   (`socketRequest`), the object consumes the ticket, and its answer, the socket or its
- *   fixed refusal, is the door's.
- *
- * Sign-out tells the object first, whether or not a session cookie came, so the sockets
- * opened under the device's grant close before the grant is revoked (`socketsEnd`).
+ * The app's forms are the platform's data, never lists of their own: `sources` (the source
+ * records' public facts), `agent/doorbell/kinds` (the wake records'), `capabilities` (the
+ * grants' own list, each in plain words) and `tools` (the MCP door's table).
  */
 import { refusalOf } from "../../contract/src/refusal";
 import { utf8Decoder } from "../../contract/src/text";
@@ -102,15 +43,17 @@ import type { ControlRead } from "../../contract/src/control";
 import type { JsonBody } from "../../contract/src/owner";
 import { ownerGate, ownerRead } from "./control";
 import {
-  deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,
+  deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
-import { CONNECT_ROUTES, ConnectRefused, sealDoorbell } from "./connect";
+import { CONNECT_ROUTES, ConnectRefused, DOORBELL_VERSION, sealDoorbell } from "./connect";
 import { eraseOwner } from "./erase";
 import { streamUpload } from "./file-bytes";
 import { HOOK_ROUTES } from "./inbound";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
-import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
+import {
+  bearer, clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf,
+} from "./session";
 import type { Sources } from "../../sources/src/schema";
 import { signinsRead } from "../../sources/src/signin";
 import { refusalResponse } from "./refused";
@@ -135,7 +78,7 @@ function json(status: number, body: unknown, headers: HeadersInit = {}): Respons
  * Every owner-surface answer but the socket's upgrade carries these: JSON is never sniffed
  * into anything else, and no answer runs or frames anything if opened as a page.
  */
-export const SURFACE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+const SURFACE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   "X-Content-Type-Options": "nosniff",
   "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
 });
@@ -154,12 +97,6 @@ function surfaced(answer: Response): Response {
 
 function failure(status: number, message: string, headers: HeadersInit = {}): Response {
   return json(status, { error: message }, headers);
-}
-
-export function bearer(request: Request): string | null {
-  const header = request.headers.get("Authorization") ?? "";
-  const match = /^Bearer ([^\s]+)$/.exec(header);
-  return match === null ? null : match[1]!;
 }
 
 /**
@@ -316,7 +253,7 @@ const ownerTool: Route = async ({ owner: { binding, stub }, body: request, rest:
  * 4 MiB an object, 256 MiB a response). The client asks again with the last cursor line it
  * read, which names its export_id.
  */
-export const EXPORT_PAGES = 64;
+const EXPORT_PAGES = 64;
 
 /**
  * The owner's export, as newline-delimited JSON (`application/x-ndjson`): its generation's
@@ -389,7 +326,7 @@ async function doorbell({ env, owner: { binding, stub }, body: request }: Served
   const sealed = await sealDoorbell(env, binding.owner, id, { record: kind.id, url, secret });
   return json(200, await stub.agentDoorbell(binding, {
     agent_id: request["agent_id"], kind: kind.id, subscription_id: id, board: follow.board,
-    rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: 1 }));
+    rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: DOORBELL_VERSION }));
 }
 
 /** `agent/doorbell/kinds`: the wake kinds the owner pastes a URL and token for. */
@@ -499,7 +436,7 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "files/read": { serve: fileRead },
     "files/write": { serve: fileWrite },
     "keys": answered(({ env, owner, body }) => mintKey(env, owner, body)),
-    "keys/list": answered(({ owner }) => listKeys(owner)),
+    "keys/list": { door: "keyList" },
     "account/erase": answered(({ owner, body }) => eraseOwner(owner, body),
                               { "Set-Cookie": clearedCookie() }),
     "files/upload/begin": { door: "fileUploadBegin" },
