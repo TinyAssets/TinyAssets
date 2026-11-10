@@ -250,6 +250,44 @@ describe("the dispatch's gate, the workflow's first step", () => {
       }
     }
   });
+
+  it("refuses a mode's credential pasted with a trailing CR or space, or a line break, by name", () => {
+    const without = (name: string) => ({ ...SECRETS, [name]: "" });
+    const MODES = ["census", "bundle", "stage", "verify", "wipe", "admit", "dlq", "offsite", "clean"];
+    const LISTS = ["DO_SSH_KEY", "IMPORT_EXCLUSION_LIST"];
+    let checked = 0;
+    for (const mode of MODES) {
+      const inputs = mode === "offsite" ? { MODE: mode, REHEARSAL: "false", CONFIRM: "window-r1" }
+                                        : { MODE: mode };
+      expect(gate(inputs).status).toBe(0);
+      for (const [name, value] of Object.entries(SECRETS)) {
+        // The secrets this mode needs: the ones its gate names when they are missing.
+        const needed = gate(inputs, without(name)).out.includes(name);
+        const half = Math.floor(value.length / 2);
+        for (const bad of [`${value}\r`, `${value} `, `${value.slice(0, half)}\n${value.slice(half)}`]) {
+          const run = gate(inputs, { ...SECRETS, [name]: bad });
+          if (needed && !LISTS.includes(name)) {
+            checked += 1;
+            expect(run.status).toBe(1);
+            expect(run.out).toBe(`::error::refused: mode ${mode}'s credential(s) ${name} hold a ` +
+                                 "space or a control character\n");
+          } else if (name === "CLOUDFLARE_ACCOUNT_ID") {
+            // The repository variable is held to its own shape in every mode.
+            expect(run.out).toContain("CLOUDFLARE_ACCOUNT_ID is no 32-hex account id");
+          } else {
+            // A secret the mode never hands over, or a list's lines, are not held to one line.
+            expect(run.status).toBe(0);
+          }
+          for (const part of [value.slice(0, half), value.slice(half)]) {
+            expect(run.out).not.toContain(part);
+          }
+        }
+      }
+    }
+    // Every one-line credential of every mode: the DO token and the reserved IP in each, and
+    // the modes' own.
+    expect(checked).toBe(3 * (2 * 9 + 2 + 5 * 5 + 5));
+  });
 });
 
 describe("the run step, its ssh faked", () => {
@@ -657,6 +695,58 @@ describe("the host guard, on a fake import host", () => {
     expect(h.calls()).toEqual([]);
     // The script reads no env file: the droplet's own BACKUP_DEST is nothing to it.
     expect(readFileSync(join(stage, "window.sh"), "utf8")).not.toMatch(/BACKUP_DEST=|TA_IMPORT_ENV/);
+    // A key pasted with a trailing CR, a space or a tab: refused by its name, before any call,
+    // and never shown.
+    for (const [input, name] of [["spaces-id-value\r\nspaces-secret-value\n", "SPACES_ACCESS_KEY_ID"],
+                                 ["spaces-id-value\nspaces-secret-value \n", "SPACES_SECRET_ACCESS_KEY"],
+                                 ["spaces-id-value\nspaces\tsecret\n", "SPACES_SECRET_ACCESS_KEY"]]) {
+      const pasted = h.window(["census", "k2", "rehearsal"], input);
+      expect(pasted.status).toBe(2);
+      expect(pasted.out).toBe(`refused: the run was handed a ${name} that holds a space or a ` +
+                              "control character\n");
+      expect(h.calls()).toEqual([]);
+    }
+    // The job's credentials too, on a copy that is otherwise whole.
+    h.window(["census", "k3", "rehearsal"]);
+    expect(existsSync(join(h.work("k3"), "copy.done"))).toBe(true);
+    const job = h.window(["stage", "k3", "rehearsal"],
+                         `${"a".repeat(32)}\nr2-id\r\nr2-secret\ntoken\nkey\n`);
+    expect(job.out).toContain("refused: the run was handed a R2_ACCESS_KEY_ID that holds a space");
+  });
+
+  it("refuses each credential of every mode that takes one, pasted with a CR, a space or a line break", () => {
+    const h = host();
+    const SOURCE = ["SPACES_ACCESS_KEY_ID", "SPACES_SECRET_ACCESS_KEY"];
+    const takes: [string, string, string[]][] = [
+      ["census", "rehearsal", SOURCE],
+      ["offsite", "window", [...SOURCE, "CLOUDFLARE_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"]],
+      ...["stage", "verify", "wipe", "admit", "dlq"].map((mode): [string, string, string[]] =>
+        [mode, "rehearsal", CREDENTIALS])];
+    for (const [mode, kind, names] of takes) {
+      const values = names.map((name, n) => `${name.toLowerCase()}-value-${n}`);
+      const handed = (each: readonly string[]) => h.window([mode, "c1", kind], `${each.join("\n")}\n`);
+      names.forEach((name, n) => {
+        const value = values[n]!;
+        const with_ = (bad: string) => values.map((each, k) => (k === n ? bad : each));
+        for (const bad of [`${value}\r`, `${value} `]) {
+          const run = handed(with_(bad));
+          expect(run.status).toBe(2);
+          expect(run.out).toBe(`refused: the run was handed a ${name} that holds a space or a ` +
+                               "control character\n");
+        }
+        // A line break shifts every value after it: the line left over refuses the run.
+        const broken = handed(with_(`${value.slice(0, 8)}\n${value.slice(8)}`));
+        expect(broken.status).toBe(2);
+        expect(broken.out).toBe("refused: the run was handed a line more than its credentials: " +
+                                `one of ${names.join(" ")} holds a line break\n`);
+      });
+      // Clean values pass take: with no copy, the run is refused there instead (census's
+      // clean key makes its copy in the test above).
+      if (mode !== "census") {
+        expect(handed(values).out).toBe("refused: this run has no copy: run census first\n");
+      }
+      expect(h.calls()).toEqual([]);
+    }
   });
 });
 

@@ -43,7 +43,9 @@
 #   A remote's refusal names the operation, rclone's exit code and an allowlisted S3 code and
 #   HTTP status (`cause`), never rclone's own words, which go to the log alone.
 # - Credentials arrive on stdin, one a line: the source key (census, offsite) in
-#   SOURCE_CREDENTIALS' order, then the off-site key (offsite) in OFFSITE_CREDENTIALS'; the
+#   SOURCE_CREDENTIALS' order, then the off-site key (offsite) in OFFSITE_CREDENTIALS'; each
+#   refused by its name when it holds a space or a control character, and the run refused when
+#   a line follows the last (a credential that held a line break); the
 #   job's (stage, verify, wipe, admit, dlq) in CREDENTIALS' order, which reach only the job,
 #   piped to its stdin (`docker run -i`), so they are in no argument, no container config
 #   (`docker inspect`), no environment and no file. The exclusion list (bundle) is stdin
@@ -130,15 +132,25 @@ log="$work/host.private.log"
 exec 9>"$lock"
 flock -n 9 || refuse "another import window run holds this host"
 
-# take <name>...: each from stdin's next line, into this shell alone (never exported).
+# take <name>...: each from stdin's next line, into this shell alone (never exported). No
+# credential holds a space or a control character: one that does (a secret pasted with a
+# trailing CR or space) is refused by its name, before any request signs with it.
 take() {
   local name value
   for name in "$@"; do
     value=""
     IFS= read -r value || true
     [[ -n "$value" ]] || refuse "the run was handed no ${name}"
+    [[ "$value" != *[[:space:][:cntrl:]]* ]] \
+      || refuse "the run was handed a ${name} that holds a space or a control character"
     printf -v "$name" '%s' "$value"
   done
+  # Nothing after them: a line more is a credential that held a line break, and every value
+  # after it shifted by one, so the run is refused before any is used.
+  local rest=""
+  if IFS= read -r rest || [[ -n "$rest" ]]; then
+    refuse "the run was handed a line more than its credentials: one of $* holds a line break"
+  fi
 }
 
 network=none
