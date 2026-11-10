@@ -223,37 +223,23 @@ const ANTHROPIC: ApiRules = Object.freeze({
   })]),
 });
 
-/** Mistral's chat completions: as OpenAI's, but its stream reports its usage unasked. */
-const MISTRAL: ApiRules = Object.freeze({
-  outputs: Object.freeze([Object.freeze(["max_tokens"]), Object.freeze(["max_completion_tokens"])]),
-  counts: Object.freeze([Object.freeze(["n"])]),
-  stream: Object.freeze(["stream"]),
-  usage: Object.freeze([]),
-  tools: Object.freeze({ list: Object.freeze(["tools"]),
-                         kind: Object.freeze({ field: "type", allowed: Object.freeze(["function"]) }) }),
-  paid: Object.freeze([Object.freeze(["web_search_options"]), Object.freeze(["plugins"])]),
-  fallbacks: Object.freeze([Object.freeze(["models"])]),
-  model: "model",
-  tier: null,
-  unpriced: Object.freeze([
-    Object.freeze({ path: Object.freeze(["service_tier"]), allowed: Object.freeze([]) }),
-    Object.freeze({ path: Object.freeze(["modalities"]), allowed: Object.freeze(["text"]) }),
-    Object.freeze({ path: Object.freeze(["audio"]), allowed: Object.freeze([]) }),
-  ]),
-  served: null,
-  betas: Object.freeze([]),
-  free: Object.freeze([]),
-});
+/**
+ * Mistral's chat completions: as OpenAI's, but its stream reports its usage unasked and its
+ * answer names no served tier.
+ */
+const MISTRAL: ApiRules = Object.freeze({ ...COMPLETIONS, usage: Object.freeze([]),
+                                          served: null });
 
-/** The rules for each API a sandbox call may be metered on; any other is never metered. */
+/**
+ * The rules for each API a sandbox call may be metered on, and so each API a credential may
+ * be sealed for (`SUPPORTED_APIS`): every one some source record speaks.
+ */
 const RULES: Readonly<Record<string, ApiRules>> = Object.freeze({
   "anthropic-messages": ANTHROPIC,
   "openai-completions": COMPLETIONS,
   "mistral-conversations": MISTRAL,
   "openai-responses": RESPONSES,
-  "azure-openai-responses": RESPONSES,
   "google-generative-ai": GOOGLE,
-  "google-vertex": GOOGLE,
 });
 
 /** Every API a sandbox call may be metered on: the ids the rules are keyed by. */
@@ -326,11 +312,6 @@ export function paidTool(rules: ApiRules, body: unknown): boolean {
     }
     return false;
   });
-}
-
-/** Whether the request streams its answer: its flag, or the API's streaming path. */
-export function streams(rules: ApiRules, body: unknown): boolean {
-  return rules.stream === null || valueAt(body, rules.stream) === true;
 }
 
 /** Whether the request lists fallback models, any of which may serve it. */

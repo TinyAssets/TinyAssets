@@ -34,7 +34,7 @@ import { SUBSCRIPTION_ID } from "../../contract/src/ids";
 import {
   AUTH_HEADER, callbackSecret, callbackUrl, kindNamed, type Push,
 } from "../../contract/src/wake-records";
-import { Refusal } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import type {
   DoorbellVerified, Resealed, RingAnswer, RingRequest, Sealed,
 } from "../../contract/src/gateway";
@@ -49,6 +49,9 @@ export interface DoorbellSecret {
   readonly secret: string;
   readonly sealed_at: number;
 }
+
+/** The refusals a blob that cannot be opened for its subscription is answered with. */
+const UNOPENED: readonly string[] = Object.freeze(["credential_refused", "invalid_binding"]);
 
 /** How a request leaves: the runtime's fetch, or a test's recording one. */
 export type Send = (request: Request) => Promise<Response>;
@@ -113,7 +116,6 @@ function plaintext(input: unknown): DoorbellSecret {
   }
 }
 
-/** Seals a pasted doorbell token for its subscription. */
 export async function sealDoorbell(env: KeyringEnv, owner: string, subscription: string,
                                    version: number, input: unknown): Promise<Sealed> {
   return sealValue(env, bound(owner, subscription, version), plaintext(input), doorbellSecret);
@@ -277,10 +279,12 @@ export async function ringDoorbell(env: KeyringEnv, owner: string, subscription:
       }
     }
   } catch (error) {
-    if (error instanceof Refusal && error.code === "keyring_unavailable") {
-      throw error;
+    // A blob that does not open, or a binding it was never sealed for, is this wake's own
+    // refusal; anything else (a keyring the config lost) fails the call loudly.
+    if (UNOPENED.includes(refusalOf(error)?.code ?? "")) {
+      return { state: "refused" };
     }
-    return { state: "refused" };
+    throw error;
   }
   const secret = opened.value;
   const stamp = Math.floor(Date.now() / 1000);

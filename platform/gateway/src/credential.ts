@@ -32,7 +32,6 @@ interface Common {
   readonly sealed_at: number;
 }
 
-/** The sealed plaintext. */
 export type Credential =
   | (Common & { readonly kind: "api_key"; readonly secret: string })
   | (Common & { readonly kind: "oauth2"; readonly oauth: OAuthGrant });
@@ -70,7 +69,6 @@ export function credential(value: unknown): Credential {
       return Object.freeze({ ...common, kind: "oauth2", oauth: grant(fields["oauth"], common.upstream) });
     }
   } catch {
-    // Falls through to the one refusal below.
   }
   throw new Refusal("credential_refused");
 }

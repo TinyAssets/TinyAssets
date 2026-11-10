@@ -20,7 +20,6 @@ const SHA256 = HEX64;
 /** A generation's id: 16 lowercase hex characters, the owner's object makes it. */
 const GEN = HEX16;
 
-/** An owner namespace: 32 lowercase hex characters. */
 export function namespace(ns: unknown): string {
   if (typeof ns !== "string" || !NS.test(ns)) {
     throw new Refusal("invalid", "a namespace is 32 lowercase hex characters");
@@ -28,7 +27,6 @@ export function namespace(ns: unknown): string {
   return ns;
 }
 
-/** A chunk's SHA-256: 64 lowercase hex characters. */
 export function chunkHash(sha256: unknown): string {
   if (typeof sha256 !== "string" || !SHA256.test(sha256)) {
     throw new Refusal("invalid", "a chunk hash is 64 lowercase hex characters");
@@ -41,7 +39,6 @@ export function chunkKey(ns: unknown, name: unknown): string {
   return `o/${namespace(ns)}/c/${chunkHash(name)}`;
 }
 
-/** A generation's id: 16 lowercase hex characters. */
 export function generation(gen: unknown): string {
   if (typeof gen !== "string" || !GEN.test(gen)) {
     throw new Refusal("invalid", "a manifest's generation is 16 lowercase hex characters");
@@ -49,7 +46,6 @@ export function generation(gen: unknown): string {
   return gen;
 }
 
-/** A log segment's span: whole seqs, `a` before `b`. */
 export function segmentSpan(a: unknown, b: unknown): [number, number] {
   if (typeof a !== "number" || typeof b !== "number" || !Number.isSafeInteger(a)
       || !Number.isSafeInteger(b) || a < 0 || b <= a) {
@@ -58,7 +54,6 @@ export function segmentSpan(a: unknown, b: unknown): [number, number] {
   return [a, b];
 }
 
-/** A manifest part's number: 0 to `MANIFEST_PARTS - 1`. */
 export function manifestPart(part: unknown): number {
   if (typeof part !== "number" || !Number.isSafeInteger(part) || part < 0
       || part >= MANIFEST_PARTS) {

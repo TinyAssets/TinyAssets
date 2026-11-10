@@ -98,7 +98,6 @@ async function resealWith(keys: Ring, bound: Binding, value: unknown): Promise<R
   return Object.freeze({ ...(await sealWith(keys, next, value)), version: next.version });
 }
 
-/** Seals `plaintext` for `bound` under the active kid. */
 export async function seal(env: KeyringEnv, bound: Binding,
                            plaintext: Credential): Promise<Sealed> {
   return sealWith(ring(env), bound, credential(plaintext));

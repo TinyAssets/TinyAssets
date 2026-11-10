@@ -1,9 +1,10 @@
 /**
- * Raw passthrough for sandbox egress (research §5.4): inbound credentials stripped, the
- * sealed one injected, the sealed endpoints enforced, the deadline, and the secret
- * redacted from what comes back. And the connection's setup check (`verify`).
+ * Raw passthrough for sandbox egress (research §5.4), as a free call takes it: inbound
+ * credentials stripped, the sealed one injected, the sealed endpoints enforced, a stalled
+ * answer cut, and the secret redacted from what comes back. And the connection's setup check
+ * (`verify`).
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
@@ -11,11 +12,18 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { builtinCatalog, modelInfos, recordOf } from "../src/catalog";
 import { checkedRecord } from "../../contract/src/model-record";
 import { Refusal } from "../../contract/src/refusal";
-import { forward, redact, verify } from "../src/forward";
-import { seal } from "../src/keyring";
+import type { Source } from "../../contract/src/egress-scope";
+import { forwardRead, IDLE_CUT_MS, redact, verify } from "../src/forward";
+import { seal, type Binding } from "../src/keyring";
 import { ALICE, ANTHROPIC, OPENAI, ring, rotate, sealed } from "./support";
 
 const SECRET = "sk-alice-forward-0123456789";
+
+/** Anthropic, with its token count sealed: the one free call that carries a body. */
+const COUNTING: Source = Object.freeze({ ...ANTHROPIC, endpoints: [...ANTHROPIC.endpoints, {
+  origin: "https://api.anthropic.com", paths: ["/v1/messages/count_tokens"],
+  methods: ["POST"] }] });
+const COUNT = "https://egress/v1/messages/count_tokens";
 
 /** The fake upstream echoes credential headers as SHA-256 hex (fake-upstream.ts). */
 async function sha256(value: string): Promise<string> {
@@ -23,8 +31,9 @@ async function sha256(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function call(blob: string, request: Request, env = ring("k1"), deadlineMs?: number) {
-  return forward(env, ALICE, blob, request, deadlineMs);
+async function call(blob: string, request: Request, env = ring("k1"),
+                    bound: Binding = ALICE): Promise<Response> {
+  return (await forwardRead(env, bound, blob, request, new ReadableStream())).response;
 }
 
 describe("forward", () => {
@@ -32,27 +41,23 @@ describe("forward", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     const response = await call(blob, new Request(
-      "https://egress.tinyassets.io/v1/responses?key=placeholder&api_key=p&stream=true", {
-        method: "POST",
+      "https://egress.tinyassets.io/v1/models?key=placeholder&api_key=p&stream=true", {
         headers: {
           authorization: "Bearer ta_ph_c1_placeholder", "x-api-key": "ta_ph_c1_placeholder",
           "x-goog-api-key": "ta_ph", "api-key": "ta_ph", cookie: "session=s",
           "proxy-authorization": "Basic x", "x-ta-envelope": "forged", "x-ta-sandbox": "jwt",
           "cf-connecting-ip": "10.0.0.1", "x-forwarded-for": "10.0.0.1",
-          "openai-beta": "responses=v1", "content-type": "application/json",
-          "x-fake-mode": "echo",
+          "openai-beta": "responses=v1", "x-fake-mode": "echo",
         },
-        body: JSON.stringify({ input: "hi" }),
       }), env);
     expect(response.status).toBe(200);
     const echo = await response.json() as { digests: Record<string, string>; method: string;
                                             host: string; path: string; query: string;
-                                            headers: Record<string, string>; body: string };
-    expect(echo.method).toBe("POST");
+                                            headers: Record<string, string> };
+    expect(echo.method).toBe("GET");
     expect(echo.host).toBe("api.openai.com");
-    expect(echo.path).toBe("/v1/responses");
+    expect(echo.path).toBe("/v1/models");
     expect(echo.query).toBe("?stream=true");
-    expect(echo.body).toBe(JSON.stringify({ input: "hi" }));
     expect(echo.digests["authorization"]).toBe(await sha256(`Bearer ${SECRET}`));
     for (const stripped of ["x-api-key", "x-goog-api-key", "api-key", "cookie",
                             "proxy-authorization", "x-ta-envelope", "x-ta-sandbox",
@@ -68,22 +73,24 @@ describe("forward", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, {
       ...OPENAI, upstream: { ...OPENAI.upstream, auth: { header: "x-custom-key", scheme: "" } } });
-    const response = await call(blob, new Request("https://egress/v1/responses", {
-      method: "POST", headers: { "x-custom-key": "ta_ph_c1_placeholder", "x-fake-mode": "echo" },
-      body: "{}" }), env);
+    const response = await call(blob, new Request("https://egress/v1/models", {
+      headers: { "x-custom-key": "ta_ph_c1_placeholder", "x-fake-mode": "echo" } }), env);
     const echo = await response.json() as { headers: Record<string, string> };
     // Only the sealed secret is sent, which the answer redacts: no placeholder beside it.
     expect(echo.headers["x-custom-key"]).toBe("[redacted]");
   });
 
-  it("injects by the sealed template: a bare header for Anthropic's convention", async () => {
+  it("injects by the sealed template, a bare header for Anthropic's, and streams the body",
+     async () => {
     const env = ring("k1");
-    const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
-    const response = await call(blob, new Request("https://egress/v1/messages", {
+    const blob = await sealed(env, ALICE, SECRET, COUNTING);
+    const response = await call(blob, new Request(COUNT, {
       method: "POST", headers: { authorization: "Bearer ph", "x-api-key": "ph",
-                                 "x-fake-mode": "echo" }, body: "{}" }), env);
-    const echo = await response.json() as { digests: Record<string, string>; host: string; headers: Record<string, string> };
+                                 "x-fake-mode": "echo" }, body: '{"messages":[]}' }), env);
+    const echo = await response.json() as { digests: Record<string, string>; host: string;
+                                            body: string };
     expect(echo.host).toBe("api.anthropic.com");
+    expect(echo.body).toBe('{"messages":[]}');
     expect(echo.digests["x-api-key"]).toBe(await sha256(SECRET));
     expect(echo.digests["authorization"]).toBeUndefined();
   });
@@ -120,10 +127,10 @@ describe("forward", () => {
     const blob = await sealed(env, ALICE, SECRET, {
       ...OPENAI,
       endpoints: [...OPENAI.endpoints,
-                  { origin: "https://api.anthropic.com", paths: ["/*"], methods: ["POST"] }],
+                  { origin: "https://api.anthropic.com", paths: ["/*"], methods: ["GET"] }],
     });
     const response = await call(blob, new Request("https://egress//api.anthropic.com/v1/x", {
-      method: "POST", headers: { "x-fake-mode": "echo" }, body: "{}" }), env);
+      headers: { "x-fake-mode": "echo" } }), env);
     expect(response.status).toBe(403);
   });
 
@@ -132,23 +139,47 @@ describe("forward", () => {
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     for (const bound of [{ ...ALICE, owner: "bob" }, { ...ALICE, connection: "c9" },
                          { ...ALICE, version: 3 }]) {
-      const response = await forward(env, bound, blob, new Request("https://egress/v1/models",
-        { headers: { "x-fake-mode": "echo" } }));
+      const response = await call(blob, new Request("https://egress/v1/models",
+        { headers: { "x-fake-mode": "echo" } }), env, bound);
       expect(response.status).toBe(403);
       expect(await response.text()).toBe(JSON.stringify(
         { error: { code: "credential_refused", message: "credential_refused" } }));
     }
   });
 
-  it("cuts a request at its deadline", async () => {
+  it("cuts an answer its provider goes silent on for the idle cut, and ends its request",
+     async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
-    const started = Date.now();
-    const response = await call(blob, new Request("https://egress/v1/models", {
-      headers: { "x-fake-mode": "hang" } }), env, 300);
-    expect(response.status).toBe(504);
-    expect(((await response.json()) as { error: { code: string } }).error.code).toBe("deadline");
-    expect(Date.now() - started).toBeLessThan(5000);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let ended: string | undefined;
+    try {
+      const response = await call(blob, new Request("https://egress/v1/models", {
+        headers: { "x-fake-mode": "stall", "x-fake-id": "idle" } }), env);
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      // The bytes it sent come through; then it says nothing more.
+      expect((await reader.read()).value!.byteLength).toBeGreaterThan(0);
+      const next = reader.read().then(() => "read on", (error: Error) => error.message);
+      void next.then((how) => {
+        ended = how;
+      });
+      await vi.advanceTimersByTimeAsync(IDLE_CUT_MS - 1_000);
+      expect(ended).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await next).toBe("deadline");
+    } finally {
+      vi.useRealTimers();
+    }
+    for (let tries = 0; ; tries++) {
+      const state = await (await fetch("https://status.test/cancelled?id=idle")).json() as
+        { cancelled: boolean };
+      if (state.cancelled || tries === 100) {
+        expect(state.cancelled).toBe(true);
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
   });
 
   it("never follows a redirect", async () => {
@@ -216,8 +247,8 @@ describe("forward", () => {
 
   it("strips a method override, so a sealed POST cannot act as another method", async () => {
     const env = ring("k1");
-    const blob = await sealed(env, ALICE, SECRET, OPENAI);
-    const response = await call(blob, new Request("https://egress/v1/responses", {
+    const blob = await sealed(env, ALICE, SECRET, COUNTING);
+    const response = await call(blob, new Request(COUNT, {
       method: "POST", body: "{}",
       headers: { "x-fake-mode": "echo", "x-http-method-override": "DELETE",
                  "x-http-method": "DELETE", "x-method-override": "DELETE" } }), env);

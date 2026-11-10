@@ -9,7 +9,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -31,6 +31,19 @@ interface Bundled {
 }
 
 const bundled = JSON.parse(readFileSync(join(STARTER, "starter.json"), "utf8")) as Bundled;
+
+/**
+ * A copy of what the starter's one build reads and writes (the starter, the plugins and the
+ * doors' identity), in a temporary platform of its own; the caller removes it.
+ */
+function platformCopy(): string {
+  const root = mkdtempSync(join(tmpdir(), "starter-"));
+  cpSync(STARTER, join(root, "starter"), { recursive: true });
+  cpSync(join(PLATFORM, "plugins"), join(root, "plugins"), { recursive: true });
+  mkdirSync(join(root, "contract"));
+  cpSync(join(PLATFORM, "contract", "identity.json"), join(root, "contract", "identity.json"));
+  return root;
+}
 const fileAt = (suffix: string) => bundled.files.find((file) => file.path.endsWith(suffix))!;
 
 /** A SKILL.md's frontmatter keys and values (one level). */
@@ -48,7 +61,7 @@ function frontOf(text: string): Map<string, string> {
 }
 
 describe("the starter package", () => {
-  it("is carried as its sources make it (bundle.mjs --check)", () => {
+  it("is carried, and its plugins made, as its sources make them (bundle.mjs --check)", () => {
     expect(() => execFileSync(process.execPath, [join(STARTER, "bundle.mjs"), "--check"],
                               { stdio: "pipe" })).not.toThrow();
     const manifest = JSON.parse(readFileSync(join(STARTER, "manifest.json"), "utf8"));
@@ -58,9 +71,9 @@ describe("the starter package", () => {
   });
 
   it("refuses to bundle a path dropped without being retired (review R2-L4)", () => {
-    const copy = mkdtempSync(join(tmpdir(), "starter-"));
+    const root = platformCopy();
+    const copy = join(root, "starter");
     try {
-      cpSync(STARTER, copy, { recursive: true });
       const manifestPath = join(copy, "manifest.json");
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
       const gone = manifest.files.splice(5, 1)[0].path as string;  // the scratch skill
@@ -75,7 +88,7 @@ describe("the starter package", () => {
       expect(JSON.parse(readFileSync(join(copy, "starter.json"), "utf8")).retired)
         .toContain(gone);
     } finally {
-      rmSync(copy, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
     // And against main's bundle: nothing dropped unretired. Said loudly when it cannot run.
     const history = spawnSync("git", ["rev-parse", "--verify", "--quiet", "origin/main"],
@@ -363,6 +376,37 @@ describe("the OKF watcher", () => {
                            '\\u007e\\u007e\\u007e here"');
     expect(body).toContain('"v1\\u200b"');
     expect(quoted([])).toBe("none");
+  });
+
+  it("applies a new spec through the starter's one build, its plugins carrying it too " +
+     "(untangle v:P-H1)", () => {
+    const root = platformCopy();
+    const upstream = mkdtempSync(join(tmpdir(), "okf-"));
+    try {
+      const vendoredPath = join(root, "starter", bundled.okf.vendored.slice(1));
+      const newer = `${vendoredSpec(readFileSync(vendoredPath, "utf8"))}A new rule.\n`;
+      writeFileSync(join(upstream, "SPEC.md"), newer);
+      writeFileSync(join(upstream, "README.md"), readme);
+      const git = (...args: string[]) => execFileSync("git", ["-C", upstream, "-c",
+        "user.name=okf", "-c", "user.email=okf@example.invalid", ...args], { stdio: "pipe" });
+      git("init", "-q");
+      git("add", ".");
+      git("commit", "-qm", "upstream");
+      execFileSync(process.execPath, [join(root, "starter", "okf-watch.ts"), "apply",
+                                      "--upstream", upstream, "--body", join(root, "body.md")],
+                   { stdio: "pipe" });
+      expect(vendoredSpec(readFileSync(vendoredPath, "utf8"))).toBe(newer);
+      for (const plugin of ["chatgpt", "claude"]) {
+        expect(readFileSync(join(root, "plugins", plugin, "skills", "knowledge", "references",
+                                 "okf-spec.md"), "utf8")).toBe(readFileSync(vendoredPath, "utf8"));
+      }
+      const checked = spawnSync(process.execPath, [join(root, "starter", "bundle.mjs"),
+                                                   "--check"], { encoding: "utf8" });
+      expect([checked.status, checked.stderr]).toEqual([0, ""]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(upstream, { recursive: true, force: true });
+    }
   });
 
   it("raises the starter's version only for new spec bytes (review L7)", () => {

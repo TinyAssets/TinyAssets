@@ -4,16 +4,20 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { calculateCost } from "@earendil-works/pi-ai/models";
+import type { Context, FetchFunction } from "@earendil-works/pi-ai";
+import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 
 import {
   apiRules, fallbackList, freeCall, manyChoices, paidTool, ruledApis, servedPriced, tierMultiplier,
   unpricedOption,
 } from "../../contract/src/api-rules";
-import { builtinCatalog } from "../src/catalog";
-import { egressTarget, meteredCall, meteredModel } from "../../contract/src/egress-scope";
+import { builtinCatalog, NO_AMBIENT, providerFor } from "../src/catalog";
+import { within } from "../src/egress";
 import {
-  clamped, describes, learnMeter, meteredRecord, meteredUsage, sentHeaders, snapshotOf,
+  egressTarget, GLOBAL_FETCH_APIS, meteredCall, meteredModel, type Upstream,
+} from "../../contract/src/egress-scope";
+import {
+  clamped, describes, learnMeter, meteredRecord, meteredUsage, snapshotOf,
 } from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 
@@ -44,6 +48,36 @@ function completion(model: string | null, usage: unknown | null): string {
                                        choices: [], usage })]),
     "data: [DONE]\n\n",
   ].join("");
+}
+
+/**
+ * The headers pi-ai's adapter sends with `upstream`'s model call, captured by one run whose
+ * every request is answered here: what a source record's sealed auth header must match.
+ */
+async function sentHeaders(upstream: Upstream, apiKey: string): Promise<Headers | null> {
+  const provider = providerFor(builtinCatalog(), upstream);
+  const model = provider.getModels().find((entry) => entry.api === upstream.api);
+  if (model === undefined) {
+    return null;
+  }
+  let sent: Headers | null = null;
+  const capture: FetchFunction = async (input, init) => {
+    sent ??= new Request(input, init).headers;
+    return new Response("{}", { status: 400, headers: { "content-type": "application/json" } });
+  };
+  const models = createModels({ authContext: NO_AMBIENT });
+  models.setProvider(provider);
+  const context = { messages: [{ role: "user", content: "x", timestamp: 0 }] } as unknown as
+    Context;
+  await within(capture, async () => {
+    for await (const _event of models.streamSimple({ ...model, baseUrl: upstream.base_url },
+                                                   context, { apiKey, maxRetries: 0,
+      // Google's adapter refuses a custom fetch: the interposer's scope holds it to `capture`.
+      ...(GLOBAL_FETCH_APIS.includes(upstream.api) ? {} : { fetch: capture }) } as never)) {
+      // The adapter reports the refusal as its stream's error.
+    }
+  }).catch(() => undefined);
+  return sent;
 }
 
 const BIG = { prompt_tokens: 200_000, completion_tokens: 50_000, total_tokens: 250_000 };
@@ -153,7 +187,7 @@ describe("the meter pi-ai's adapter teaches", () => {
   it.each(keys.map((record) => [record.id, record] as const))(
     "seals the %s source's key in the header pi-ai sends it in, by its scheme",
     async (id, { upstream }) => {
-      const headers = await sentHeaders(builtinCatalog(), upstream!, "sk-probe-key");
+      const headers = await sentHeaders(upstream!, "sk-probe-key");
       expect(headers, id).not.toBeNull();
       const { header, scheme } = upstream!.auth;
       expect(headers!.get(header), id).toBe(scheme === "" ? "sk-probe-key"
@@ -213,16 +247,19 @@ describe("the meter pi-ai's adapter teaches", () => {
     expect(meteredModel(meter, "POST", "/v1/messages", { model: "model-x" })).toBe("model-x");
     expect(meteredModel(meter, "POST", "/v1/messages", {})).toBeNull();
     expect(meteredModel(meter, "POST", "/v1/models", { model: "model-x" })).toBeNull();
-    expect(clamped(meter, { model: "m", max_tokens: 50_000 }, 1000)).toEqual({ model: "m",
-                                                                              max_tokens: 1000 });
-    expect(clamped(meter, { model: "m", max_tokens: 10 }, 1000)).toEqual({ model: "m",
-                                                                          max_tokens: 10 });
-    expect(clamped(meter, { model: "m" }, 1000)).toEqual({ model: "m", max_tokens: 1000 });
-    expect(clamped(meter, { model: "m", max_tokens: "lots" }, 1000))
-      .toEqual({ model: "m", max_tokens: 1000 });
+    const api = "anthropic-messages";
+    const tier = { service_tier: "standard_only" };
+    expect(clamped(meter, { model: "m", max_tokens: 50_000 }, 1000, api))
+      .toEqual({ model: "m", max_tokens: 1000, ...tier });
+    expect(clamped(meter, { model: "m", max_tokens: 10 }, 1000, api))
+      .toEqual({ model: "m", max_tokens: 10, ...tier });
+    expect(clamped(meter, { model: "m" }, 1000, api)).toEqual({ model: "m", max_tokens: 1000,
+                                                               ...tier });
+    expect(clamped(meter, { model: "m", max_tokens: "lots" }, 1000, api))
+      .toEqual({ model: "m", max_tokens: 1000, ...tier });
     const google = (await learnMeter(builtinCatalog(), GOOGLE.upstream, "AIza-x"))!;
-    expect(clamped(google, { contents: [] }, 7)).toEqual({ contents: [],
-                                                          generationConfig: { maxOutputTokens: 7 } });
+    expect(clamped(google, { contents: [] }, 7, "google-generative-ai"))
+      .toEqual({ contents: [], generationConfig: { maxOutputTokens: 7 } });
   });
 
   it("reads an Anthropic stream's usage with pi-ai's parser, priced by the catalog", async () => {

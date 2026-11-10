@@ -24,7 +24,8 @@ const RING = JSON.stringify({ active: "k2", keys: { ...JSON.parse(OLD).keys, k2:
 const seen: Presented[] = [];
 
 const service = (bucket: R2Bucket = ssec(env.BLOBS, seen), ring: unknown = RING) =>
-  new FilesService(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: ring });
+  new FilesService(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: ring,
+                                               FILES_CIPHER: "ssec" });
 
 const KEYS = new Map<string, Promise<string>>();
 /** A namespace's one data key, minted on first use; a malformed namespace gets none. */
@@ -538,8 +539,8 @@ describe("manifests", () => {
     expect(await service().rewrapManifestRoot(space, "3333333333333333")).toBeNull();
     // With the old kid gone, the root still opens, and its key reads its parts.
     const without = new FilesService(createExecutionContext(), {
-      BLOBS: ssec(env.BLOBS), FILES_KEYRING: JSON.stringify({ active: "k2", keys: {
-        k2: JSON.parse(RING).keys.k2 } }) });
+      BLOBS: ssec(env.BLOBS), FILES_CIPHER: "ssec", FILES_KEYRING: JSON.stringify({
+        active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } }) });
     const root = (await without.getManifestRoot(space, "2222222222222222"))!;
     expect(root.parts).toEqual([part]);
     expect(await without.getManifestPart(space, root.key, "1111111111111111", 0, part.sha256))
@@ -591,6 +592,12 @@ describe("the AES-GCM fallback (FILES_CIPHER aes-gcm)", () => {
     expect((await failure(() => sealed().putChunks(space, key, [{ sha256: hash,
                                                                   bytes: bytes("other") }])))
       .message).toBe("the chunk's bytes do not match its sha256");
+    // Under a hash nothing holds yet too: R2 checks only the sealed bytes, so this Worker
+    // checks the plain ones before it seals.
+    const fresh = ns();
+    expect((await failure(async () => sealed().putChunks(fresh, await keyOf(fresh), [{
+      sha256: hash, bytes: bytes("other") }]))).message)
+      .toBe("the chunk's bytes do not match its sha256");
   });
 
   it("fails loudly on a changed byte, and on bytes moved under another chunk's key", async () => {
@@ -628,7 +635,7 @@ describe("the AES-GCM fallback (FILES_CIPHER aes-gcm)", () => {
     expect(await files().getChunks(other, [range, range, range])).toHaveLength(3);
   });
 
-  it("seals manifest parts too, and refuses a cipher it does not know", async () => {
+  it("seals manifest parts too, and refuses a cipher it does not know, or none", async () => {
     const space = ns();
     const key = await keyOf(space);
     const part = await sealed().putManifestPart(space, key, "0123456789abcdef", 0, bytes("a manifest"));
@@ -638,6 +645,11 @@ describe("the AES-GCM fallback (FILES_CIPHER aes-gcm)", () => {
                                                              FILES_KEYRING: RING,
                                                              FILES_CIPHER: "rot13" });
     expect((await failure(() => odd.getChunks(space, key, [{ sha256: part.sha256 }]))).message)
+      .toBe("FILES_CIPHER is ssec or aes-gcm");
+    // No default: a Worker run without the config's cipher fails, never guesses SSE-C.
+    const none = new FilesService(createExecutionContext(), { BLOBS: env.BLOBS,
+                                                              FILES_KEYRING: RING } as never);
+    expect((await failure(() => none.getChunks(space, key, [{ sha256: part.sha256 }]))).message)
       .toBe("FILES_CIPHER is ssec or aes-gcm");
   });
 });

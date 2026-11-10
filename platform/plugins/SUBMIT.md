@@ -1,8 +1,9 @@
 # Submitting the TinyAssets plugins
 
 This is the founder's checklist. Submitting a listing is an outward act, so no agent does
-it. The plugins in `chatgpt/` and `claude/` are built by `node platform/plugins/build.mjs`
-from the starter's skills and `platform/contract/apps.json`. Don't edit them by hand.
+it. The plugins in `chatgpt/` and `claude/` are built by the starter's one build,
+`node platform/starter/bundle.mjs`, from the starter's skills, `plugins.mjs` and
+`platform/contract/identity.json`. Don't edit them by hand.
 
 ## Before either submission
 
@@ -17,7 +18,7 @@ from the starter's skills and `platform/contract/apps.json`. Don't edit them by 
 4. **The legal pages say what TinyAssets stores.** Both directories link the privacy and
    terms pages, which today are `https://tinyassets.io/legal/`.
 5. **Icons and screenshots.** Neither plugin has any yet. Add them under each plugin's
-   `assets/` through `build.mjs`, and name them in the manifests.
+   `assets/` through `plugins.mjs`, and name them in the manifests.
 
 ## ChatGPT and Codex (OpenAI's plugin directory)
 
@@ -76,5 +77,5 @@ from the starter's skills and `platform/contract/apps.json`. Don't edit them by 
 
 - Add its listing URL to that app's `connect.link` in `apps.json`, then rebuild. The public
   connect page and `agents_list` pick it up.
-- Raise the plugin's version with every starter version (`build.mjs` takes it from
-  `manifest.json`), and resubmit if the directory doesn't follow updates on its own.
+- The plugin's version follows the starter's (`bundle.mjs` takes it from
+  `manifest.json`): resubmit if the directory doesn't follow updates on its own.

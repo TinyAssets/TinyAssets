@@ -4,7 +4,7 @@
  * `guards/config.test.ts`).
  *
  * The public identity is the contract's `identity.json`, its one copy, which the deploy kit
- * (`deploy/facts.ts`) and the plugins (`plugins/build.mjs`) read too: `host`, the public
+ * (`deploy/facts.ts`) and the plugins (`plugins/plugins.mjs`) read too: `host`, the public
  * origin's; `egress`, the sandbox's door, a custom domain of this Worker; `routes`, the
  * route patterns the doors take at the cutover, each from the origin; the MCP door
  * (`mcp`); where a sign-in starts and where the upstream returns it (`signin`); the doors'

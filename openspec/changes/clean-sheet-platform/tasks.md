@@ -2216,7 +2216,8 @@ R, S, M and W.
     vendor's name or none is refused `invalid_client_metadata`. Production stays
     `DCR_ENABLED: "false"` until the doors go live (mode `routes`; the go-ahead deploy,
     mode `dark`, moves no route, `platform/deploy/checklist.md`).
-  - Plugins (`platform/plugins/`, `build.mjs`, `--check` in the doors' guard): ChatGPT and
+  - Plugins (`platform/plugins/`, made by the starter's one build `starter/bundle.mjs`, whose
+    `--check` the starter guard runs): ChatGPT and
     Codex (Agent Plugins format, OpenAI extension, onboarding skill, first example prompt
     "Set me up on TinyAssets") and Claude (`.claude-plugin/`, `.mcp.json`), each the MCP
     server and the starter's `shared-brain`, `onboarding`, `goals`, `knowledge`,

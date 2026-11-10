@@ -36,7 +36,7 @@ function named(value: unknown): value is string {
   return typeof value === "string" && value !== "" && value.length <= NAME_MAX;
 }
 
-export class Hooks extends WorkerEntrypoint<HooksEnv>
+export default class Hooks extends WorkerEntrypoint<HooksEnv>
     implements HooksService<CodemodeRemoteRequest, CodemodeRemoteExchange> {
   /**
    * One code mode execution, named by the owner: the VM runs in that sandbox object and
@@ -50,5 +50,3 @@ export class Hooks extends WorkerEntrypoint<HooksEnv>
     await this.env.CODEMODE.getByName(name).execute(request, exchange);
   }
 }
-
-export default Hooks;

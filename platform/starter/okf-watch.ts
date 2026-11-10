@@ -13,7 +13,8 @@
 // seen, the spec's own version line, and every hidden or control character in the new text
 // (the "rules file backdoor": text a reviewer cannot see, §3). `apply` writes the new spec
 // into the vendored file under its provenance line, moves the pin, raises the starter's
-// version, rebuilds `starter.json`, and writes the pull request's body. Merging that pull
+// version, runs the starter's one build (`bundle.mjs`: `starter.json` and the plugins that
+// carry the spec), and writes the pull request's body. Merging that pull
 // request, after its cooldown and review, ships the new spec to every owner whose copy is
 // unedited (`owner/src/starter.ts`); nothing here merges anything.
 import { execFileSync } from "node:child_process";
