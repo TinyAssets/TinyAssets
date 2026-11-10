@@ -595,8 +595,8 @@ account and no deploy.
     off stops powering a schedule's or a mail's run though the owner makes no door call.
   - A standing check: every template build ends by running each record's login up to its
     prompt on a throwaway sandbox under the production egress allowlist (the egress door
-    alone, widened by that engine's own hosts), `ta-runner login-probe`, `build.py
-    --check-logins`, checking its pinned page and that it never sends the browser to
+    alone, widened by that engine's own hosts), the probes' `login-probe` (`template/checks.ts`),
+    checking its pinned page and that it never sends the browser to
     localhost.
   - The past runs: `runs` (owner app) and `runList` (the object's door, held to the
     caller's grant: an outside client sees its own), newest first, a page at a time.
@@ -1330,8 +1330,8 @@ R, S, M and W.
     per owner, which serializes that owner's E2B calls (so a release's pause never freezes a
     run a start just launched) and looks after its sandboxes; and `SandboxSlots`, the
     platform's one line for one more running sandbox (`src/slots.ts`). The versioned
-    template (`template/build.py`, its tag the digest of the runner's bundle, the records,
-    their locks and `tier.ts`, `E2B_TEMPLATE` held to it by `guards/template.test.ts`); the
+    template (`template/image.py` from `image.ts`'s spec, its tag the digest of the image's
+    build inputs, the pin held to it by the deploy kit); the
     runner (`runner/*.ts`, bundled; 34 workerd and 32 Node tests against a fake E2B and fake
     CLIs of each record's event shapes, the review's five attacks among them, refused; the
     runner's tests need real root and real uids, so `root-tests.mjs` runs them as root or
@@ -1536,7 +1536,7 @@ R, S, M and W.
     key run reads it; joined to its key, never bare; and no argument a signed-in run gets is
     endpoint- or provider-shaped. An API-key run's home carries the store's sessions and
     never its secrets (a vendor sign-in's `auth.json` stays out of a key run's reach). The
-    route probe (`ta-runner route-probe`, `build.py` after every build, on a sandbox whose
+    route probe (the probes' `route-probe`, `template/checks.ts` at every pair check, on a sandbox whose
     network denies all but the pinned resolver): every keyed engine on every provider it
     keys, run as a run runs it with its door on a loopback capture server at the real path
     and a fake sign-in seeded in the store, passes only if the first model request reached
@@ -2770,7 +2770,7 @@ R, S, M and W.
 - [x] **The runner by digest** (founder, 2026-11-04; `rs_template.md` §3 and §4): the template
   is the environment alone (Node, the engines from their locks, the user pool, the
   directories, the loader `template/ta-runner`), its tag the digest of those inputs only
-  (`build.py`, the loader, `RUNS_CEILING`'s value, the engines' install pins and locks), so a
+  (`image.py`, its spec, the loader and the engines' locks: untangle A6 part b), so a
   runner change is a Worker deploy, never a template build. The sandbox Worker's build makes
   `runner.mjs` (`build.command`) and imports it as data (`src/runner-bytes.ts`); its digest is
   computed from those bytes. Every command is `ta-runner <sha256> <command>`, the loader
@@ -2803,10 +2803,10 @@ R, S, M and W.
   LF in `.gitattributes`); `adopt`; the real runner's written run, sign-in and kept files
   against the record, and its reading of each recorded format; the rule across a format
   change and back; the protocol's commands on both sides; the template guard (the tag takes
-  no runner input, `build.py`'s tag and the guard's equal, the bundle the same bytes every
-  build). The deploy workflow's `pair` job (production environment, the E2B key alone, its
-  SDK from the hashed lock `template/requirements.txt`, 60 minutes against the checks' 50)
-  runs the pair check (`deploy.ts --mode pair`, `build.py --check-pair`) before the apply job,
+  no runner input, the bundle the same bytes every
+  build). The deploy workflow's `pair` job (production environment, the E2B key alone, 60
+  minutes against the checks' 50)
+  runs the pair check (`deploy.ts --mode pair`, `template/checks.ts pair`) before the apply job,
   which stops without the pair's tag at E2B (`pairTag`); a manual workflow
   (`sandbox-template.yml`, production environment, the key in its build step alone) builds
   templates with no host. The `runner` column is in the sandbox object's baseline, which is

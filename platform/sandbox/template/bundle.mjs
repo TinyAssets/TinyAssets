@@ -1,34 +1,73 @@
-// The runner as the template carries it: one ES module for Node, its records and checks
-// bundled in (`runner/runner.ts`), built with the workspace's own esbuild (wrangler's).
-// `node sandbox/template/bundle.mjs <out>` writes `<out>/runner.mjs` and prints its SHA-256.
+// The runner as the Worker ships it, and the template's probes beside it: two ES modules for
+// Node, built with the workspace's own esbuild (wrangler's), each from its own entry
+// (`runner/runner.ts`, `runner/probes.ts`) in a build of its own, so neither output depends
+// on the other. The probes are given the runner's SHA-256 (`TA_RUNNER_SHA`), so they run
+// only beside the runner they were built with. The pair the deploy looks for names both
+// digests (`pair.ts`).
+//
+//   node sandbox/template/bundle.mjs <out>   writes <out>/runner.mjs and <out>/probes.mjs,
+//                                            and prints each one's SHA-256 and name
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(join(here, "..", "..", "package.json"));
+const platform = join(here, "..", "..");
+const require = createRequire(join(platform, "package.json"));
 const esbuild = require("esbuild");
-const out = process.argv[2] === undefined ? undefined : resolve(process.argv[2]);
-if (!out) {
-  throw new Error("bundle.mjs <out dir>");
+
+/** Each bundle's entry, by its output's name. */
+export const ENTRIES = Object.freeze({ "runner.mjs": "sandbox/runner/runner.ts",
+                                       "probes.mjs": "sandbox/runner/probes.ts" });
+
+/** One bundle's build: the same options for both, `define` the probes' runner digest. */
+async function one(root, entry, define) {
+  const built = await esbuild.build({
+    entryPoints: [join(root, entry)],
+    bundle: true,
+    platform: "node",
+    target: "node22",
+    format: "esm",
+    banner: { js: "import { createRequire as __ta } from 'node:module'; " +
+                  "const require = __ta(import.meta.url);" },
+    legalComments: "none",
+    define,
+    // Paths in the bundle's comments from the workspace root, whoever runs it, so its digest
+    // (the pair's tag) is the same everywhere.
+    absWorkingDir: root,
+    logLevel: "warning",
+    write: false,
+    outfile: join(root, "bundle.mjs"),
+    metafile: true,
+  });
+  const bytes = Buffer.from(built.outputFiles[0].contents);
+  return { bytes, sha: createHash("sha256").update(bytes).digest("hex"),
+           inputs: Object.keys(built.metafile.inputs).sort() };
 }
-mkdirSync(out, { recursive: true });
-await esbuild.build({
-  entryPoints: [join(here, "..", "runner", "runner.ts")],
-  outfile: join(out, "runner.mjs"),
-  bundle: true,
-  platform: "node",
-  target: "node22",
-  format: "esm",
-  banner: { js: "import { createRequire as __ta } from 'node:module'; " +
-                "const require = __ta(import.meta.url);" },
-  legalComments: "none",
-  // Paths in the bundle's comments from the workspace root, whoever runs it, so its digest
-  // (the template's tag) is the same everywhere.
-  absWorkingDir: join(here, "..", ".."),
-  logLevel: "warning",
-});
-const bytes = readFileSync(join(out, "runner.mjs"));
-process.stdout.write(`${createHash("sha256").update(bytes).digest("hex")}\n`);
+
+/**
+ * Both bundles of the platform tree at `root` (this one by default), in memory: each one's
+ * bytes, SHA-256 and the source files it was built from.
+ */
+export async function build(root = platform) {
+  const runner = await one(root, ENTRIES["runner.mjs"], {});
+  const probes = await one(root, ENTRIES["probes.mjs"],
+                           { TA_RUNNER_SHA: JSON.stringify(runner.sha) });
+  return { runner, probes };
+}
+
+if (process.argv[1] !== undefined
+    && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  const out = process.argv[2] === undefined ? undefined : resolve(process.argv[2]);
+  if (!out) {
+    throw new Error("bundle.mjs <out dir>");
+  }
+  mkdirSync(out, { recursive: true });
+  const built = await build();
+  for (const [name, bundle] of [["runner.mjs", built.runner], ["probes.mjs", built.probes]]) {
+    writeFileSync(join(out, name), bundle.bytes);
+    process.stdout.write(`${bundle.sha}  ${name}\n`);
+  }
+}

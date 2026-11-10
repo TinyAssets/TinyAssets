@@ -1,4 +1,4 @@
-# The E2B SDK the template build and the pair check run (build.py), every dependency pinned
+# The E2B SDK the image build runs (image.py), every dependency pinned
 # with its hashes: `pip install --require-hashes -r` this. Made with pip-tools from
 # `e2b==2.62.0` (`pip-compile --generate-hashes`, Python 3.13).
 anyio==4.16.0 \

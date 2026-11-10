@@ -60,6 +60,13 @@ export function defaultSyncIgnore(): readonly string[] {
  */
 export const AUTOMATON_STATES = 8_192;
 /**
+ * The most nanoseconds one automaton step (a byte of text, a 32-state word) may take in the
+ * sandbox: the constant `AUTOMATON_STATES` is derived from, measured there (`stepNanos`) by
+ * the template's standing check (`sandbox/runner/probes.ts`'s `matcher-probe`), which fails
+ * the pair past it.
+ */
+export const STEP_NS = 6;
+/**
  * The most bytes of the list applied, in file order: a technical ceiling, the matcher's
  * memory in the sync agent's heap: (`SANDBOX_HEAP` − `AGENT_PEAK`) / `HEAP_PER_LIST_BYTE`,
  * measured in a sandbox of the template (`scripts/probes/matcherprobe/`), is 7.8 MiB with
@@ -1196,9 +1203,8 @@ export function ignoredBy(lines: readonly string[]): Matcher {
  * reads and writes its passed states too), and text of `/` bytes (the branch that re-arms
  * as well), with `*\/**\/…` and `**\/` lines keeping states alive throughout; the median of
  * five runs of `ms` each after a warm-up, so a neighbour's moment on the sandbox's CPU moves
- * it little; the slower of the two texts (`/` and none). The template build's standing check
- * runs it in the sandbox and holds it to `STEP_NS` (`owner/src/sync-ignore.ts`, where the
- * template build reads it).
+ * it little; the slower of the two texts (`/` and none). The template's standing check runs
+ * it in the sandbox and holds it to `STEP_NS`.
  */
 export function stepNanos(ms = 600): number {
   const lines: AutomatonLine[] = [];
