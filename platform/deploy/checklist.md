@@ -341,7 +341,7 @@ them through the window, and revoke them after it.**
 | `production` secret | What it is | Scope |
 |---|---|---|
 | `IMPORT_RESERVED_IP` | One reserved IPv4 in `sfo3` (step 1). | Every run's import host is given it in turn. Free while assigned, $0.01 an hour while not. |
-| `IMPORT_DO_TOKEN` | A custom-scope DigitalOcean token (step 2). | Droplet create, read and delete; image read; SSH key read; tag create; reserved IP read and update. An expiry just after the window. It is not the DR drill's `DIGITALOCEAN_TOKEN`. |
+| `IMPORT_DO_TOKEN` | A custom-scope DigitalOcean token (step 2). | Droplet create, read and delete; image read; SSH key read; tag create and read (the `tag_name` filter and a Droplet's `tags` need `tag:read`); reserved IP read and update. An expiry just after the window. It is not the DR drill's `DIGITALOCEAN_TOKEN`. |
 | `IMPORT_SPACES_ACCESS_KEY_ID` and `IMPORT_SPACES_SECRET_ACCESS_KEY` | A limited-access Spaces key (step 3). | **Read** on `workflow-backups-jonnyton-sfo3` alone, the bucket the nightly backup writes. |
 | `IMPORT_EXCLUSION_LIST` | Your principal and every canary owner's, one a line (`#` starts a comment). They start fresh: backed up, never imported. | none |
 | `IMPORT_R2_ACCESS_KEY_ID` and `IMPORT_R2_SECRET_ACCESS_KEY` | The S3 key pair of one Cloudflare API token, made through the API (step 4). | Workers R2 Storage Bucket Item Write on `tinyassets-import-staging` and on `tinyassets-final-backup` (the off-site copy), Workers R2 Storage Bucket Item Read on `tinyassets-files`: it can never write the live files bucket. The reserved IP only; an end date. |
