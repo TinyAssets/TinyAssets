@@ -558,25 +558,38 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
+  /** The nightly manifest (`backup.ts`). */
   readonly #backups: Backups;
+  /** The exports open, each named for a week (`open-exports.ts`). */
   readonly #exports: OpenExports;
+  /** The change log a generation captures (`changelog.ts`). */
   readonly #log: ChangeLog;
+  /** Sandbox time, per run and per day (`sandbox-time.ts`). */
   readonly #sandboxTime: SandboxTime;
   /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
   readonly #bodies: Bodies;
   readonly #registrations: Registrations;
   readonly #notices: Notices;
+  /** The starter package: the default agent's files, seeded and kept current (`starter.ts`). */
   readonly #starter: Starter;
   readonly #connections: Connections;
   readonly #usage: ModelUsage;
+  /** Sandbox egress: each request admitted at open and settled once it ends (`egress.ts`). */
   readonly #egress: Egress;
+  /** The owner's runs: admission, grants, conversations, schedules (`runs.ts`). */
   readonly #runs: Runs;
+  /** Runs launched and delivered, and their sandbox's leases (`launch.ts`). */
   readonly #launcher: Launcher;
+  /** The object's state, as its modules are handed it (`OwnerState`). */
   readonly #state: OwnerState;
+  /** The owner app's sockets and the runs' live tails (`relay.ts`), a Lifecycle capability. */
   readonly #relay: Relay;
+  /** The vendor's own sign-ins in progress inside a sandbox (`signins.ts`). */
   readonly #signins: Signins;
   readonly #tickets: Tickets;
+  /** The owner's API keys (`keys.ts`): the key store. */
   readonly #keys: Keys;
+  /** The owner's inbound bindings (`inbound.ts`). */
   readonly #inbound: Inbound;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly #posts = new PostGate();
@@ -590,6 +603,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   readonly #sandbox: SandboxLeases;
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
+  /** The archive: its moves and rewrites, and reads of archived mail (`archive.ts`). */
   readonly #archive: Archive;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
@@ -602,6 +616,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * refuses.
    */
   readonly #tombstone: boolean;
+  /** The owner's erasure (`erasure.ts`, `erase.ts`), begun at `ownerErase`. */
   readonly #erasure: Erasure;
   /**
    * The cutover's discard (`#discard`): null until this instance wiped its owner's database
@@ -953,19 +968,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return this.#relay.serve(request, (upgrade) => this.#lifecycle.fetch(upgrade));
   }
 
+  /** A hibernating socket's frame, handed to Lifecycle (`relay.ts` reads it). */
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     await this.#lifecycle.webSocketMessage(ws, message);
   }
 
+  /** A hibernating socket's close, handed to Lifecycle. */
   override async webSocketClose(ws: WebSocket, code: number, reason: string,
                                 wasClean: boolean): Promise<void> {
     await this.#lifecycle.webSocketClose(ws, code, reason, wasClean);
   }
 
+  /** A hibernating socket's error, handed to Lifecycle. */
   override async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     await this.#lifecycle.webSocketError(ws, error);
   }
 
+  /** A door's synchronous body, as one unit of the write gate. */
   #door<T>(act: () => T): Promise<T> {
     return this.#gate.write(act);
   }
@@ -978,6 +997,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return this.#gate.quiet(act);
   }
 
+  /** A door's unit, then the one schedule synced from the rows it changed. */
   async #synced<T>(act: () => T): Promise<T> {
     const done = await this.#door(act);
     await this.#schedule.sync();

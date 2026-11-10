@@ -17,8 +17,8 @@ import { FILE_QUOTA, FILE_SHARE, type Files, MAX_OPEN_INTENTS } from "../src/fil
 import { sha256Hex } from "../../contract/src/digest";
 import { WriteGate } from "../src/gate";
 import {
-  CHUNK_LIST_ROW_BYTES, HISTORY_BYTES, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES,
-  RECORD_FIXED, record, recordBytes, SHARE_BYTES, TABLE_KEPT, WORST_FILL,
+  CHUNK_LIST_ROW_BYTES, HISTORY_BYTES, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PAGE_ROOM,
+  PAGE_USABLE, RECORD_FIXED, record, recordBytes, SHARE_BYTES, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import type { OwnerDO } from "../src/owner-do";
 import { FILE_SETTINGS } from "../../contract/src/policy-document";
@@ -458,7 +458,9 @@ describe("a lowered share", () => {
 });
 
 describe("the manifest charge at worst fill", () => {
-  it("charges a record its share of a page, as SQLite fits records into it", () => {
+  it("counts a page at three quarters of its room, and a third full at worst", () => {
+    expect(PAGE_ROOM).toBe(PAGE_USABLE * 3 / 4);
+    expect(WORST_FILL).toBe(PAGE_ROOM / (PAGE_USABLE / 3));
     expect(recordBytes(100, 1002)).toBe(Math.floor(PAGE_BYTES / Math.floor(3066 / 104)));
   });
 

@@ -915,6 +915,7 @@ export class Files {
       : { content_id: row.content_id, size: row.size };
   }
 
+  /** The newest version of a path's history. A read. */
   lastVersion(path: string): number {
     return this.#sql.exec<{ version: number | null }>(
       "SELECT MAX(version) AS version FROM file_history WHERE path = ?", path).one().version ?? 0;

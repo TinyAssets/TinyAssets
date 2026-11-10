@@ -45,7 +45,7 @@ import { isPrintable } from "../../contract/src/text";
 import type {
   Call, Door, OwnerState,
 } from "./owner-do";
-import { EGRESS_ORIGIN, runUrls } from "../../contract/src/egress";
+import { EGRESS_ORIGIN, SIGNIN_DOOR, signinEventsUrl } from "../../contract/src/egress";
 import { FRAME_VERSION } from "../../contract/src/run-events";
 import { SANDBOX_ABSENT, started } from "./sandbox";
 import { clock } from "./clock";
@@ -459,8 +459,8 @@ export const signinsDoors = Object.freeze({
         tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
         route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
                                                      authority: begun.row.authority }),
-        urls: { events: `${EGRESS_ORIGIN}/signin/${begun.row.id}/events`,
-                signin: runUrls(`run_${"0".repeat(32)}`, "0".repeat(64)).signin } }));
+        urls: { events: signinEventsUrl(begun.row.id),
+                signin: `${EGRESS_ORIGIN}${SIGNIN_DOOR}` } }));
     } catch {
       console.error("a sign-in's start had no answer");
       answer = null;
