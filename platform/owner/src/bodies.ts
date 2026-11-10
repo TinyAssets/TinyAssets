@@ -67,14 +67,14 @@ export interface Window {
   readonly size: number;
 }
 
-export const BODY_OFFSET_INSIDE =
+const BODY_OFFSET_INSIDE =
   "body_offset is inside a character: start at a body_next_offset an answer gave";
 
 /**
  * The verified range reads of a body's bytes `[offset, end)`: each chunk it spans, by the
  * range it needs, which `FILES` reads whole, rechecks and answers alone (review L7).
  */
-export function windowReads(chunks: readonly string[], size: number, offset: number,
+function windowReads(chunks: readonly string[], size: number, offset: number,
                             end: number, base = 0):
     { sha256: string; offset: number; length: number; verify: true }[] {
   const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];

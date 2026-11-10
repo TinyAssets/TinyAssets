@@ -42,7 +42,7 @@ export interface Stamp {
 }
 
 /** What `standing` answers; the object's grants (`grants.ts`). */
-export interface StandingReader {
+interface StandingReader {
   standing(client: unknown, generation: unknown, authenticatedAt: number | null): unknown;
 }
 

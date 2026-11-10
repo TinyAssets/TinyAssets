@@ -153,7 +153,7 @@ export type Ring = (subscription: string, version: number, blob: string,
                     request: RingRequest) => Promise<RingAnswer>;
 
 /** What the doorbell reads and calls: the object's, handed in by the object. */
-export interface DoorbellDeps {
+interface DoorbellDeps {
   readonly ledger: Ledger;
   /** Whether an outside client's grant still stands (`Grants.live`), read at each send. */
   readonly live: (client: string) => boolean;
@@ -173,7 +173,7 @@ export interface DoorbellDeps {
 }
 
 /** What a wake says to one subscription: just the changes it follows. */
-export function wakeContent(target: WakeTarget, changes: readonly Change[]): WakeContent {
+function wakeContent(target: WakeTarget, changes: readonly Change[]): WakeContent {
   const read = [
     ...(changes.includes("mail") || changes.includes("rooms") ? ["inbox_digest"] : []),
     ...(changes.includes("board") ? ["board_digest"] : []),

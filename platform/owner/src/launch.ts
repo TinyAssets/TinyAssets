@@ -57,7 +57,7 @@ export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was a
  * The bytes a mail's run's input takes in the waiting inputs' queue: none, since its row
  * keeps only the mail's reference (ADR-035); the queue's rows bound it.
  */
-export const MAIL_INPUT_BYTES = 0;
+const MAIL_INPUT_BYTES = 0;
 
 /**
  * One engine run's environment's inputs: the run itself (its base URLs carry it), the CLI
@@ -76,7 +76,7 @@ export interface SandboxRun {
 }
 
 /** What the sandbox slice sets up a sandbox from (`network.ts`). */
-export interface SandboxConfig {
+interface SandboxConfig {
   readonly generation: number;
   readonly egress: EgressPolicy;
   /**

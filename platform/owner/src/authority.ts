@@ -31,16 +31,13 @@ import { sha256Hex } from "../../contract/src/digest";
 export const OWNER_ONLY = "owner";
 
 /** What an operation needs: each of these capabilities (none: only a standing authority), or the owner itself. */
-export type Need = readonly RunCapability[] | typeof OWNER_ONLY;
+type Need = readonly RunCapability[] | typeof OWNER_ONLY;
 
 /** The fixed reasons work is refused with: the receipts see only these. */
 export const AUTHORITY_CHANGED = "outside client authority no longer stands";
 export const NOT_GRANTED = "outside client capability not granted";
 export const NO_AUTHORITY = "this work runs under no authority";
 export const NOT_OWNER = "only the owner may use this capability";
-
-/** The receipt's rule for refused work. */
-export const AUTHORITY_RULE = "outside_authority";
 
 /** The authority work runs under: the client's, as it was admitted, and where. */
 export type Stamped = {
@@ -54,7 +51,7 @@ export type Stamped = {
 };
 
 /** An authority: the owner's, a client's stamp, or none. */
-export type AuthorityState =
+type AuthorityState =
   | { by: "owner" }
   | { by: "client"; stamp: Stamped }
   | { by: "none" };
@@ -62,11 +59,6 @@ export type AuthorityState =
 /** Work's authority: the owner's own (`null`), or the stamp of a client's. */
 export function authorityOf(stamp: Stamped | null): AuthorityState {
   return stamp === null ? { by: "owner" } : { by: "client", stamp: { ...stamp } };
-}
-
-/** The stamp of an authority, if it is a client's. */
-export function stampOf(state: Readonly<AuthorityState> | undefined): Stamped | null {
-  return state?.by === "client" ? state.stamp : null;
 }
 
 const STAMP_KEYS = "agent,authenticated_at,client,generation,universe";
@@ -114,7 +106,7 @@ export function stamped(value: unknown): Stamped | null {
 }
 
 /** A capability where work acts: a scoped grant's triple. */
-export interface Triple {
+interface Triple {
   readonly universe: string;
   readonly agent: string;
   readonly capability: string;
@@ -160,11 +152,11 @@ export function may(holder: Holder | null, capability: string, where: Where): bo
 }
 
 /** What a check reads of the object's grants: `Grants.standing`, with `holds`. */
-export interface AuthorityGrants {
+interface AuthorityGrants {
   standing(client: unknown, generation: unknown, authenticatedAt: number | null): StandingGrant;
 }
 
-export interface AuthorityParts {
+interface AuthorityParts {
   readonly grants: AuthorityGrants;
   /**
    * The owner's admission's `require_work` refusal, or null while it is admitted: a

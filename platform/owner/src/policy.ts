@@ -87,7 +87,7 @@ import { clock } from "./clock";
  * The files settings a document leaves in force: its own, and the defaults for the rest;
  * `max_bytes` is the owner's own lower one, or null for the tier's storage alone.
  */
-export function fileSettings(document: PolicyDocument):
+function fileSettings(document: PolicyDocument):
     Omit<FileSettings, "max_bytes"> & { readonly max_bytes: number | null } {
   return { ...FILE_DEFAULTS, max_bytes: null, ...document.files };
 }
@@ -116,7 +116,7 @@ export function customTools(document: PolicyDocument): readonly string[] {
 }
 
 /** The model settings a document leaves in force. */
-export interface ModelSettings {
+interface ModelSettings {
   readonly turn_requests: number | null;
   readonly turn_tokens: number | null;
   readonly turn_cost: number | null;
@@ -134,7 +134,7 @@ export function modelSettings(document: PolicyDocument): ModelSettings {
 /** A held proposal's change: the JSON object an agent filed. */
 export type Change = { readonly [key: string]: string | number | boolean | null | object };
 
-export interface PolicyState {
+interface PolicyState {
   readonly generation: number;
   readonly digest: string;
   readonly document: PolicyDocument;
@@ -148,9 +148,9 @@ export interface Projection {
   readonly policy: PolicyDocument;
 }
 
-export type ReceiptKind = "write" | "wake_limits" | "outside_grant" | "proposal" | "refusal";
+type ReceiptKind = "write" | "wake_limits" | "outside_grant" | "proposal" | "refusal";
 
-export interface ReceiptFields {
+interface ReceiptFields {
   readonly session_id?: string | null;
   readonly old_digest?: string | null;
   readonly new_digest?: string | null;
@@ -172,12 +172,6 @@ export type Receipt = {
   readonly decision: string | null;
   readonly outcome: string | null;
 };
-
-/** A held card the owner applies: its id and the digest of what the owner was shown. */
-export interface ProposalApply {
-  readonly request_id: string;
-  readonly digest: string;
-}
 
 type Usage = {
   pending_proposals: number;

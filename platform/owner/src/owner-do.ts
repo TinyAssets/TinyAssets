@@ -232,8 +232,8 @@ import type {
 } from "./signins";
 
 /** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
-export const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
-export const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
+const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
+const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
 
 export interface RegisterRequest {
   readonly command_center_id: string;
@@ -380,8 +380,8 @@ export interface Door<R = unknown> {
 /** What a run door needs where its agent acts: to start work, or (null) to read or cancel it. */
 type RunNeed = "converse" | "run_graph" | null;
 
-export const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
-export const MCP_REGISTERS_BY_CARD = "an MCP client's agent registers through the card it files";
+const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
+const MCP_REGISTERS_BY_CARD = "an MCP client's agent registers through the card it files";
 /** A sandbox token's binding at any door but its own, and any other binding at those. */
 export const SANDBOX_DOORS = "a sandbox's token reaches its own doors only";
 export const SANDBOX_ONLY = "a sandbox door takes its own sandbox token only";
@@ -1528,6 +1528,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    */
   async dataKeyRewrap(binding: Binding): Promise<{ rewrapped: boolean; roots: number }> {
     return this.#units("dataKeyRewrap", binding, undefined, filesDoors.dataKeyRewrap);
+  }
+
+  /**
+   * A gateway key rotation's sweep for this owner (`gateway/src/keyring.ts`): every model
+   * credential blob it holds resealed under the gateway keyring's active kid, an idle
+   * connection's too, since nothing else reseals it; the platform retires a kid once every
+   * owner's sweep left none. The platform's alone, as `dataKeyRewrap` is.
+   */
+  async gatewayReseal(binding: Binding): Promise<{ resealed: number; left: number }> {
+    return this.#units("gatewayReseal", binding, undefined, connectionsDoors.gatewayReseal);
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------

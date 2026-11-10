@@ -10,7 +10,6 @@
  * The count is the bytes `JSON.stringify` would make, from the value itself: no page is
  * serialized to be measured, so a page never holds the copy it is measuring.
  */
-import { utf8Bytes } from "./text";
 
 /**
  * The most UTF-8 bytes of JSON one answer's text holds: the strictest documented client
@@ -145,20 +144,4 @@ export function fitted(text: string, room: number): { text: string; bytes: numbe
     i += pair ? 2 : 1;
   }
   return { text: text.slice(0, i), bytes };
-}
-
-/**
- * The index in `text` of its UTF-8 byte `offset`, or null when the offset is inside a
- * character or past the end.
- */
-export function unitAt(text: string, offset: number): number | null {
-  let bytes = 0;
-  let i = 0;
-  while (bytes < offset && i < text.length) {
-    const c = text.charCodeAt(i);
-    const pair = c >= 0xd800 && c <= 0xdbff && paired(text, i);
-    bytes += pair ? 4 : c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
-    i += pair ? 2 : 1;
-  }
-  return bytes === offset ? i : null;
 }

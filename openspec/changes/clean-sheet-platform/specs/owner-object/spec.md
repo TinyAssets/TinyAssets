@@ -770,6 +770,10 @@ A blob the gateway resealed under its active kid SHALL be stored by compare-and-
 - **WHEN** a call made on version 1 under an older kid ends after a refresh stored version 2
 - **THEN** version 2's tokens stay, and the call's reseal is dropped
 
+#### Scenario: A gateway key rotation, an idle connection
+- **WHEN** the platform sweeps an owner (`gatewayReseal`, the platform's door) after the gateway's ring made a new kid active
+- **THEN** every connection blob the object holds under an older kid, an idle one's and one kept for its provider revoke included, is resealed at the next version by the same compare-and-swap, one under the active kid is left as it is, and the answer counts any blob a refresh held (`left`), so a kid leaves the ring only after a sweep of every owner left none
+
 ### Requirement: Every model call is reserved against the owner's model policy
 Each model call the object reserves (`usage.ts`; the runs slice keys it to a run) SHALL be reserved in one unit that reads the owner policy's generation and `models` ceilings: the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens. A source's ceilings SHALL be keyed by its source record, so a reconnect keeps them.
 

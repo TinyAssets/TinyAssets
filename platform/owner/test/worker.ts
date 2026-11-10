@@ -279,6 +279,10 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
       await faults()?.revokeGate;
       return gateway.revokeAtProvider(...args);
     },
+    reseal: (...args) => {
+      calls().push({ method: "reseal", text: JSON.stringify(args) });
+      return gateway.reseal(...args);
+    },
     ringDoorbell: (...args) => gateway.ringDoorbell(...args),
   };
 }
@@ -367,6 +371,7 @@ export class RungOwnerDO extends OwnerDO {
     const gateway: GatewayService = {
       refresh: (...args) => env.GATEWAY.refresh(...args),
       revokeAtProvider: (...args) => env.GATEWAY.revokeAtProvider(...args),
+      reseal: (...args) => env.GATEWAY.reseal(...args),
       ringDoorbell: async (owner, subscription, version, blob, previous, request) => {
         made.self?.rang.push({ subscription, version, blob, previous, request });
         await made.self?.during?.();
