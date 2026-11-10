@@ -94,7 +94,7 @@ function boxNode() {
   let suite = null;
   let node = "a temp dir";
   try {
-    suite = mkdtempSync(join(tmpdir(), "ta-suite-"));
+    suite = mkdtempSync(join(tmpdir(), `ta-suite-${process.pid}-`));
     node = join(suite, "node");
     copyFileSync(process.execPath, node);
     chownSync(node, 0, 0);
@@ -112,6 +112,49 @@ function boxNode() {
   return { suite, node };
 }
 
+/**
+ * What suites killed outright left (their temp dir outlives them, its Node copy about 118 MB),
+ * removed before this one makes its own: each is named by its suite's pid (`boxNode`), and one
+ * whose suite no longer runs is gone. Another suite's that still runs is kept.
+ */
+function sweep() {
+  for (const name of readdirSync(tmpdir())) {
+    const found = /^ta-suite-([0-9]+)-[A-Za-z0-9]{6}$/.exec(name);
+    if (found === null || Number(found[1]) === process.pid) {
+      continue;
+    }
+    try {
+      process.kill(Number(found[1]), 0);
+      continue;  // its suite runs
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        continue;
+      }
+    }
+    // Its vitest outlives a suite killed outright (`unshare` execs it, a child of the
+    // suite's): a dir whose Node a process still has as its boxes' is in use.
+    if (!boxesOf(join(tmpdir(), name, "node"))) {
+      rmSync(join(tmpdir(), name), { recursive: true, force: true });
+    }
+  }
+}
+
+/** Whether a process runs with `node` as its boxes' Node (`TA_BOX_NODE`). */
+function boxesOf(node) {
+  const named = `TA_BOX_NODE=${node}`;
+  for (const pid of readdirSync("/proc")) {
+    try {
+      if (/^[0-9]+$/.test(pid)
+          && readFileSync(`/proc/${pid}/environ`, "latin1").split("\0").includes(named)) {
+        return true;
+      }
+    } catch {
+      // gone since, or a kernel thread's
+    }
+  }
+  return false;
+}
+
 function giveBack(path, uid, gid) {
   const stat = lstatSync(path);
   if (stat.uid === 0) {
@@ -125,6 +168,7 @@ function giveBack(path, uid, gid) {
 }
 
 if (process.getuid() === 0) {
+  sweep();
   const made = boxNode();
   const refused = made.refused ?? preflight();
   const suite = made.suite;

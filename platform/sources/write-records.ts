@@ -1,8 +1,7 @@
 // The catalog's list of record files (`src/records.ts`), written from this folder: every
-// `*.json` beside this script is a record (`build.py` and the template guard read the same
-// files), imported in name order. A Worker's bundle has no filesystem, so the list is code;
-// the sources guard (`contract/guards/sources-records.test.ts`) fails while it is not the
-// folder's, so a record added without it is never left out.
+// `*.json` beside this script is a record, imported in name order. A Worker's bundle has no
+// filesystem, so the list is code; the sources guard (`contract/guards/sources-records.test.ts`)
+// fails while it is not the folder's, so a record added without it is never left out.
 //
 //   node platform/sources/write-records.ts
 import { readdirSync, writeFileSync } from "node:fs";

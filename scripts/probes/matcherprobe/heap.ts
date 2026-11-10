@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getHeapStatistics } from "node:v8";
 
-import { ignoredBy, stepNanos } from "../../../platform/owner/src/sync-ignore";
+import { ignoredBy, stepNanos } from "../../../platform/contract/src/sync-ignore";
 import { openMirror, SyncClient, syncOut } from "../../../platform/sandbox/runner/sync";
 
 const [mode, arg] = [process.argv[2], Number(process.argv[3] ?? 0)];

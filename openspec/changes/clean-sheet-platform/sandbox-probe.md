@@ -5,7 +5,7 @@ on the path), from scripts kept outside the repo. Every sandbox was created with
 `ta_probe=slice-s`, killed, and the account listed at the end: **0 running or paused**. Usage
 was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or the 2 vCPU /
 1 GiB template, for minutes each), about $0.10 at E2B's published rates. The template builds
-(`template/build.py`) are kept: the last, `tinyassets-sandbox:s41230244835b286a`, is the one
+(then `template/build.py`, now `image.py`) are kept: the last, `tinyassets-sandbox:s41230244835b286a`, is the one
 `E2B_TEMPLATE` names.
 
 ## Network (G4's owed list)
@@ -65,7 +65,8 @@ was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or t
 
 ## Sign-in up to its prompt (slice SIGNIN, 2026-11-03, templates `se0d866e5d827bf05` and `s6dec61a38e839d37`; 4 throwaway sandboxes, under 10 sandbox-minutes)
 
-The template build's standing check (`build.py`, `check_logins`): each record's login run by
+The template build's standing check (then `build.py`'s `check_logins`, now the probes'
+`login-probe`, run by `template/checks.ts`): each record's login run by
 `ta-runner login-probe` as a pool user on a terminal (`script`), stopped at its prompt, no
 account used.
 
@@ -100,7 +101,8 @@ way (1 throwaway sandbox, under 3 sandbox-minutes, 0 running after).
 
 ## The route probe (Codex's base URL build, 2026-11-03, templates `sb3da938719c968b4` and `s97c42c9c1b38e998`)
 
-`build.py`'s `route_probe` after every build: a throwaway sandbox of the template, `strace`
+`build.py`'s `route_probe` after every build (now the probes' `route-probe`, one engine and
+provider a step, run by `template/checks.ts`): a throwaway sandbox of the template, `strace`
 installed while its network is open, then every outbound address denied but the pinned
 resolver; `ta-runner route-probe` runs every keyed engine on every provider it keys as a run
 runs it (the real `invocation`, `runEnv` and `sandboxEnv`, an API-key run's home, a pool

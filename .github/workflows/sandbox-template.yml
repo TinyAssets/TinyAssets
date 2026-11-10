@@ -1,22 +1,22 @@
 name: Sandbox template (manual, founder-approved)
 
-# The sandbox's E2B template (platform/sandbox/template/build.py), built in the
-# deploying E2B team with that team's key, from no host (Direction 8). Since the
-# runner by digest, the template is the image alone (Node, the engines from
-# their locks, the user pool, the runner's loader): a runner change is a Worker
-# deploy, and this runs only when build.py's tag moves (an engine's pin, the
-# pool's size, the loader, the script).
+# The sandbox's E2B template (platform/sandbox/template/image.py, its spec and tag
+# image.ts), built in the deploying E2B team with that team's key, from no host
+# (Direction 8). The template is the image alone (Node, the engines from their
+# locks, the user pool, the runner's loader): a runner change is a Worker deploy,
+# and a build is due only when image.ts's tag moves (an engine's pin, the pool's
+# size, the loader, image.py).
 #
-# Modes:
-#   build - builds the template, runs its three standing checks with this
-#           commit's runner on throwaway sandboxes (each killed), tags the
-#           passed pair at E2B and uploads passed.json, whose new entry and the
-#           printed tag are then committed with the pin (wrangler.jsonc). Once a
+# Modes (checks.ts):
+#   build - builds this tree's image, runs its standing checks with this
+#           commit's runner and probes on throwaway sandboxes (each killed), tags
+#           the passed pair at E2B and uploads passed.json, whose new entry and
+#           the printed tag are then committed with the pin (wrangler.jsonc). Once a
 #           tag: when E2B already holds a ready build of it in this team (a second
 #           dispatch, or one after a failed check), it builds nothing and runs the
 #           standing checks, and their record, on that build.
-#   pair  - the pair check alone: the pinned template with this commit's
-#           runner, no build (the deploy kit runs the same before a deploy).
+#   pair  - the pair check alone: the pinned template with this commit's runner
+#           and probes, no build (the deploy kit runs the same before a deploy).
 #
 # Each run spends: a build and a few sandbox-minutes. Its secret comes from the
 # main-only `production` environment's store, so a branch's copy of this file
@@ -57,7 +57,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install the platform's pinned tools (the runner's bundle)
+      - name: Install the platform's pinned tools (the bundles, the checks)
         working-directory: platform
         run: npm ci
 
@@ -65,58 +65,22 @@ jobs:
         with:
           python-version: '3.13'
 
+      # image.py's build alone needs E2B's SDK, installed from its hashed lock.
       - name: Install the template's E2B SDK from its hashed lock
         run: python3 -m pip install --require-hashes -r platform/sandbox/template/requirements.txt
 
-      # The one step that holds the E2B key. Whether E2B already has a ready build of the
-      # tag is the E2B client's own check (sandbox/src/e2b.ts `ready`, the deploy kit's
-      # too); an answer it cannot
-      # read stops the step before anything is spent. A ready build gets build.py's own
-      # checks and record (CHECKS), on this tree's tag, never a second Template.build.
+      # The one step that holds the E2B key: the checks runner (checks.ts), on the E2B client
+      # the Worker and the deploy kit use. In build mode it asks E2B whether this tree's tag
+      # already has a ready build, and builds (image.py) only when it has none; an answer it
+      # cannot read stops it before anything is spent. A ready build gets the checks and
+      # their record alone, never a second build.
       - name: Build and check
         env:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
-          # build.py's main() after its build, driven rather than given a flag: build.py's
-          # text is in the template's tag, so an edit to it would be a new, paid build.
-          CHECKS: |
-            import hashlib, json, os, sys, tempfile
-            from pathlib import Path
-            sys.path.insert(0, os.path.join(os.getcwd(), "platform", "sandbox", "template"))
-            import build
-            os.chdir(build.PLATFORM)
-            name = f"{build.NAME}:{build.tag()}"
-            if name != sys.argv[1]:
-                raise SystemExit(f"this tree's template is {name}, not {sys.argv[1]}")
-            with tempfile.TemporaryDirectory() as tmp:
-                runner = build.bundle(Path(tmp) / "runner")
-                logins = build.check_logins(name, runner)
-                routes = build.route_probe(name, runner)
-                matcher = build.check_matcher(name, runner)
-                build.record_pass(name, runner, logins, routes, matcher)
-                print(json.dumps({"template": name, "runner": hashlib.sha256(runner).hexdigest(),
-                                  "install": matcher["install"]}))
-        run: |
-          set -euo pipefail
-          if [ "${MODE}" = "pair" ]; then
-            python3 platform/sandbox/template/build.py --check-pair
-          else
-            name="$(python3 platform/sandbox/template/build.py --tag-only)"
-            ready="$(node --experimental-strip-types --input-type=module -e '
-              const { E2b } = await import("./platform/sandbox/src/e2b.ts");
-              console.log(await new E2b(process.env.E2B_API_KEY ?? "").ready(process.argv[1]));
-            ' "$name")"
-            case "$ready" in
-              true)
-                echo "E2B already holds a ready build of ${name} in this team: no build;" \
-                  "its standing checks run on it." | tee -a "$GITHUB_STEP_SUMMARY"
-                python3 -c "$CHECKS" "$name" ;;
-              false)
-                python3 platform/sandbox/template/build.py ;;
-              *)
-                echo "::error::E2B's ready-build check answered '${ready}'"
-                exit 1 ;;
-            esac
-          fi
+        run: >-
+          node --experimental-strip-types --no-warnings
+          --import ./platform/sandbox/template/resolve.mjs
+          platform/sandbox/template/checks.ts "${MODE}"
 
       # An upload is a new record only: passed.json as checked out is no pass of this run.
       - name: Did this run record a pass

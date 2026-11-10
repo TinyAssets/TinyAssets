@@ -53,29 +53,17 @@
  */
 import { tokenShaped } from "../../contract/src/routing-mac";
 import {
-  DNS_SERVERS as RESOLVERS, EGRESS_HOST as DOOR_HOST, GENERATION_HEADER, SANDBOX_HEADER,
+  closedNetwork, EGRESS_HOST as DOOR_HOST, GENERATION_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { checkDestination } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
 import type { NetworkPlan, NetworkRule, Unexpressed } from "../../contract/src/sandbox";
-
-/**
- * The egress host and the pinned resolver as `sandbox/template/build.py` reads them: by their
- * text at this path (`network_constants`), for the template build's checks, which no code
- * imports. The platform's one definition is the contract's (`contract/src/egress.ts`), which
- * the network document below uses; `sandbox/guards/template.test.ts` holds this text to it.
- * Fix A6 moves the build's reads to the runner bundle's own facts, and these two go.
- */
-export const EGRESS_HOST = "egress.tinyassets.io";
-export const DNS_SERVERS: readonly string[] = Object.freeze(["1.1.1.1"]);
 
 /** What the owner is told of an allowlist: not a data boundary in v1 (above). */
 export const BOUNDARY_NOTE = "An egress allowlist keeps the sandbox's tools to the listed " +
   "hosts, but is not a data boundary: the sandbox's DNS resolver is reachable on every port, " +
   "so code that means to send data elsewhere can.";
 
-/** E2B's `ALL_TRAFFIC`. */
-export const ALL_TRAFFIC = "0.0.0.0/0";
 /** The ports E2B matches a name on: HTTP's `Host` and TLS's SNI. */
 const NAMED_PORTS: readonly number[] = Object.freeze([80, 443]);
 
@@ -111,8 +99,8 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
       allowed.add(entry.host);
     }
   }
-  allowed.delete(DOOR_HOST);
-  const allowOut = mode === "open" ? ["*", DOOR_HOST] : [...[...allowed].sort(), DOOR_HOST];
+  // `open` lets every name out (`*`); either way the door is listed, last (`allowList`).
+  const closed = closedNetwork(mode === "open" ? ["*"] : allowed);
   const headers: Record<string, string> = {};
   headers[SANDBOX_HEADER] = token;
   headers[GENERATION_HEADER] = String(generation);
@@ -121,9 +109,9 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
     transform: Object.freeze({ headers: Object.freeze(headers) }) })]);
   return Object.freeze({
     network: Object.freeze({
-      allowOut: Object.freeze(allowOut),
-      denyOut: Object.freeze([ALL_TRAFFIC]),
-      dnsServers: RESOLVERS,
+      allowOut: Object.freeze(closed.allowOut),
+      denyOut: Object.freeze(closed.denyOut),
+      dnsServers: Object.freeze(closed.dnsServers),
       rules: Object.freeze(rules),
     }),
     mode,

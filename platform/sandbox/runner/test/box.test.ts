@@ -102,6 +102,28 @@ describe("the suite", () => {
     }
   });
 
+  it("removes what a suite killed outright left, and keeps what a running suite holds", () => {
+    // A suite's temp dir is named by its pid: one of a suite gone (a process that ran and
+    // ended), one of a suite that runs (this one), and a name of no suite's.
+    const dir = mkdtempSync(join(tmpdir(), "ta-sweep-"));
+    try {
+      const gone = spawnSync("true").pid!;
+      for (const name of [`ta-suite-${gone}-AbC123`, `ta-suite-${process.pid}-dEf456`,
+                          "ta-suite-GhI789"]) {
+        mkdirSync(join(dir, name));
+        writeFileSync(join(dir, name, "node"), "a copy of Node");
+      }
+      const done = spawnSync(process.execPath, [
+        join(import.meta.dirname, "..", "..", "root-tests.mjs"), "runner/no-such-file.test.ts",
+      ], { env: { ...process.env, PATH: "", TMPDIR: dir }, encoding: "utf8" });
+      expect(done.status, done.stderr).toBe(2);
+      expect(readdirSync(dir).sort()).toEqual([`ta-suite-${process.pid}-dEf456`,
+                                               "ta-suite-GhI789"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses loudly, exit 2 with its reason, where its boxes' root-owned Node cannot be made",
      () => {
     // A temp dir no one may write (a read-only bind of an empty one, in a namespace of its

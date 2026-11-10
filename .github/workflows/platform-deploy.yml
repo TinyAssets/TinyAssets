@@ -96,11 +96,10 @@ jobs:
           if [ -n "${RECORD}" ]; then args+=(--record "${RECORD}"); fi
           node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"
 
-  # The pair check, in a job of its own before apply: the pinned E2B template and the
-  # runner this commit's sandbox Worker ships, unless E2B already holds their pair's tag
-  # (deploy.ts --mode pair runs sandbox/template/build.py --check-pair: three throwaway
-  # sandboxes of at most 900, 1800 and 300 s, one after another). It holds only the E2B
-  # key, and its SDK is installed from a hashed lock.
+  # The pair check, in a job of its own before apply: the pinned E2B template, the runner
+  # this commit's sandbox Worker ships and the probes beside it, unless E2B already holds
+  # their pair's tag (deploy.ts --mode pair runs sandbox/template/checks.ts pair: the
+  # probes' plan's throwaway sandboxes, one after another). It holds only the E2B key.
   pair:
     needs: plan
     if: github.ref == 'refs/heads/main' && (inputs.mode == 'dark' || inputs.mode == 'routes')
@@ -117,13 +116,6 @@ jobs:
       - name: Install the platform's pinned tools
         working-directory: platform
         run: npm ci
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Install the template's E2B SDK from its hashed lock
-        run: python3 -m pip install --require-hashes -r platform/sandbox/template/requirements.txt
 
       - name: The pair check
         env:

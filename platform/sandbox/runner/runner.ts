@@ -52,35 +52,31 @@
  *   sign-in and a sign-out each move the engine's store generation on, so no run live across
  *   one writes an older login back; a sign-out (`mode: out`) also stops that engine's live
  *   runs, runs the vendor's logout, deletes the engine's `secret_paths` from the store and
- *   reports the same. `login-cancel <id>` stops it. `login-probe <engine> [region]`: the
- *   template build's standing check, the login run up to its prompt and stopped, its shape
- *   checked; `route-probe` and `matcher-probe` the build's others (build-only, the
- *   protocol's `BUILD_COMMANDS`).
+ *   reports the same. `login-cancel <id>` stops it.
+ *
+ * It takes no probe: the template's standing checks are a bundle of their own (`probes.ts`),
+ * which nothing here imports.
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync,
          readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createServer as createHttpServer, type IncomingMessage } from "node:http";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 
-import type { EgressScope } from "../../contract/src/egress-scope";
-import { bundledRecords, bundledSources } from "../../sources/src/catalog";
-import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
+import { RUN_BASICS } from "../../sources/src/run-env";
 import type { SourceRecord } from "../../sources/src/schema";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
-import { EGRESS_ORIGIN, egressBaseUrl, RUNNER_HEADER, sandboxEnv } from "../../contract/src/egress";
-import { LEASE_TTL_S, SIGNIN_PASTE_MAX } from "../../contract/src/limits";
+import { RUNNER_HEADER } from "../../contract/src/egress";
+import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
 import { AGENTS_DIR, binPath, HOMES, invocation, isKept, keptPaths, SYSTEM,
          WORKSPACE } from "./engine";
 import { lineEvent, Outbox } from "./frames";
-import { remove, safeDirs, safeRead, safeWrite, type Walk, walkFiles } from "./fsafe";
+import { remove, safeDirs, safeRead, safeWrite, walkFiles } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
          secretAtoms } from "./guards";
@@ -89,10 +85,9 @@ import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, s
          scratchCleared, type ScratchCleared,
          markUsed,
          writeOrRelease } from "./scratch";
-import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
-import { AUTOMATON_STATES, LIST_BYTES, stepNanos } from "../../contract/src/sync-ignore";
+import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
   openMirror, RACY_MS, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport,
 } from "./sync";
@@ -100,14 +95,14 @@ import { type Command, COMMAND, EXIT, inboxCode, inboxDoc, JOB_FILES, type JobKi
          INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer, type RenewAnswer,
          RUNNERS, type SigninDoc, type StartDoc, type StateAnswer,
          STATE_DIR } from "./protocol";
+import { COMMAND_MS, CONVERSATIONS, configOwned, dropHome, engineEnv, giveTree, keepHome,
+         makeHome, nextGeneration, readJson, record, RECORDS, shared, sortedWalk, STORE,
+         withStore } from "./session";
 import { checkFormat, dropRunners } from "./state-format";
-import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
+import { asUser, E2B_USER, give, type Identity, killAll, POOL_PREFIX, SYNC_HOME, SYNC_USER,
+         take, user } from "./users";
 
 const STATE = STATE_DIR;
-const STORE = `${STATE}/store`;
-/** The sync agent's own directory (`ta-sync`, 0700): its mirror, sessions in and out. */
-const SYNC_HOME = "/var/lib/ta-sync";
-const CONVERSATIONS = "/var/lib/ta-conv";
 /** Each agent's stamp of its scratch's last use (`scratch.ts`), and the runner's reserve. */
 const SCRATCH_INDEX = `${STATE}/scratch-used`;
 const RESERVE = `${STATE}/reserve`;
@@ -125,35 +120,12 @@ const FLUSH_MS = 250;
  * well inside the lease's TTL (`LEASE_TTL_MS`), its runner's last post included.
  */
 export const CANCEL_GRACE_MS = HEARTBEAT_MS;
-/** The lease's TTL, the object's (`LEASE_TTL_S`). */
-export const LEASE_TTL_MS = LEASE_TTL_S * 1000;
-/**
- * The longest a status check, or the wait for a runner's answer, may take: the lease's TTL,
- * past which a start's run is lost anyway (a run with no post within it is settled lost).
- */
-const COMMAND_MS = LEASE_TTL_MS;
 const OK = EXIT.ok;
 const NO = EXIT.no;
 const FENCED = EXIT.fenced;
 /** The input a run resumed after a renewal or a reboot is continued with. */
 export const CONTINUE_PROMPT = "The sandbox paused to renew its runtime and your last step " +
   "was interrupted. Continue the task where you left off.";
-
-const sources = bundledSources();
-const RECORDS = new Map(sources.ids().map((id) => [id, sources.get(id)!] as const)
-  .filter(([, rec]) => rec.cli !== undefined));
-
-function record(engine: string): SourceRecord {
-  const found = RECORDS.get(engine);
-  if (found === undefined) {
-    throw new Error(`engine ${engine} has no CLI record`);
-  }
-  return found;
-}
-
-function readJson<T>(path: string): T {
-  return JSON.parse(readFileSync(path, "utf8")) as T;
-}
 
 /** A file of root's own state directory (no other user reaches it). */
 function writeJson(path: string, value: unknown): void {
@@ -439,208 +411,6 @@ class Job {
   }
 }
 
-function shared(): number {
-  return group("ta");
-}
-
-/** The engine's record variables, filled for a home (its status check's environment). */
-function engineEnv(rec: SourceRecord, home: string): Record<string, string> {
-  const cli = rec.cli!;
-  const env: Record<string, string> = {};
-  for (const name of RUN_BASICS) {
-    const value = process.env[name];
-    if (value !== undefined) {
-      env[name] = value;
-    }
-  }
-  const fill = (text: string) => text.replaceAll("{home}", home).replaceAll("{agent}", "");
-  for (const [name, value] of Object.entries({
-    ...cli.home_env, ...cli.env, ...("env" in cli.no_update ? cli.no_update.env : {}) })) {
-    if (!value.includes("{system}")) {
-      env[name] = fill(value);
-    }
-  }
-  env["HOME"] = home;
-  return env;
-}
-
-/** A tree's files in a walk's sorted order, each directory read whole before it is offered. */
-function sortedWalk(dir: string, skip?: (rel: string) => boolean): Generator<string> {
-  const walk: Walk = skip === undefined ? { sorted: true } : { sorted: true, skip };
-  return walkFiles(dir, walk);
-}
-
-// -- homes and the engines' stores ----------------------------------------------------
-
-/** How long a store's lock is waited for: one command's bound, then the call fails loudly. */
-const LOCK_WAIT_MS = COMMAND_MS;
-/** A store's lock is asked again every 20 ms, flat: every hold is short. */
-const STORE_RETRY_MS = 20;
-
-/**
- * The engine's store held by this process alone while `act` runs (a home copied from it, a
- * run's secrets written back, a sign-in's or sign-out's generation), by its lock
- * (`pid-lock.ts`, review N3). The wait sleeps, so the runner's heartbeats go on, and it is
- * bounded (`LOCK_WAIT_MS`): past it the call fails loudly. Every hold is short and
- * synchronous, and none is nested.
- */
-async function withStore<T>(rec: SourceRecord, act: () => T): Promise<T> {
-  const locks = `${STATE}/locks`;
-  safeDirs("/", locks, 0o700);
-  // `.lock`: a name no earlier runner's lock (a directory at `<id>`) ever had, so neither
-  // form is read by the other's runner, across an adoption or a rollback.
-  return withLock(`${locks}/${rec.id}.lock`, LOCK_WAIT_MS, () => new Error(
-    `the store of ${rec.id} stayed locked past ${LOCK_WAIT_MS} ms`), act, STORE_RETRY_MS);
-}
-
-/**
- * The engine's store generation: a sign-in that writes new secrets and a sign-out each move
- * it on (review N2: a sign-in that only began, failed or was stopped moves nothing), and a
- * run's home made under an older one never writes a secret back (review M3: a run live
- * across a sign-out never undoes it, nor clobbers a new sign-in).
- */
-function generation(rec: SourceRecord): number {
-  const path = `${STATE}/generations/${rec.id}`;
-  return existsSync(path) ? Number(readFileSync(path, "utf8")) : 0;
-}
-
-function nextGeneration(rec: SourceRecord): void {
-  safeDirs("/", `${STATE}/generations`, 0o700);
-  writeFileSync(`${STATE}/generations/${rec.id}`, String(generation(rec) + 1), { mode: 0o600 });
-}
-
-/**
- * What a home was made from: its store's generation, each secret's digest as copied, and
- * whether it carries the store's secrets at all (an API-key run's never does).
- */
-interface Snapshot {
-  readonly generation: number;
-  readonly secrets: Readonly<Record<string, string>>;
-  readonly signedIn: boolean;
-}
-
-function snapshotOf(home: string): string {
-  return `${STATE}/kept/${home.split("/").at(-1)!}.json`;
-}
-
-/** A home gone, and the snapshot it was made under (review L2: none is left behind). */
-function dropHome(home: string): void {
-  remove(home);
-  remove(snapshotOf(home));
-}
-
-/**
- * A run's home, made fresh by root in its root-only parent from the engine's store (its
- * kept paths alone), under the store's lock, its snapshot kept (the generation and each
- * secret's digest); `giveTree` then gives it to the run's user entry by entry: no other
- * user can reach it while it is made. A home made for an API-key run (`signedIn` false)
- * carries the store's sessions and never its secrets: the vendor sign-in's files (Codex's
- * `auth.json`, Claude's `.credentials.json`) stay out of a key run's reach, so no key run's
- * CLI can send them anywhere (codexurl_research.md; the route probe proves it live).
- */
-async function makeHome(name: string, rec: SourceRecord, signedIn = true): Promise<string> {
-  safeDirs("/", HOMES, 0o711);
-  const home = `${HOMES}/${name}`;
-  remove(home);
-  mkdirSync(home, { mode: 0o700 });
-  const store = `${STORE}/${rec.id}`;
-  const { secrets, sessions } = keptPaths(rec);
-  const copied: Record<string, string> = {};
-  const made = await withStore(rec, () => {
-    for (const rel of sortedWalk(store)) {
-      if (isKept(signedIn ? [...secrets, ...sessions] : sessions, rel)
-          && (signedIn || !isKept(secrets, rel))) {
-        const bytes = safeRead(store, join(store, rel));
-        if (bytes !== null) {
-          safeWrite(home, join(home, rel), bytes, 0o600);
-          if (isKept(secrets, rel)) {
-            copied[rel] = sha256Hex(bytes);
-          }
-        }
-      }
-    }
-    return generation(rec);
-  });
-  safeDirs("/", `${STATE}/kept`, 0o700);
-  const snapshot: Snapshot = { generation: made, secrets: copied, signedIn };
-  safeWrite(`${STATE}/kept`, snapshotOf(home),
-            new TextEncoder().encode(JSON.stringify(snapshot)), 0o600);
-  // Each directory the record's home variables name, made: a CLI may refuse a configured
-  // home that is not there yet (a first sign-in has nothing in its store).
-  for (const value of Object.values(rec.cli!.home_env)) {
-    safeDirs(home, value.replaceAll("{home}", home), 0o700);
-  }
-  mkdirSync(join(home, "tmp"), { mode: 0o700 });
-  return home;
-}
-
-/** Every entry of a tree root just made given to `as`, links as links. */
-function giveTree(path: string, as: Identity): void {
-  lchownSync(path, as.uid, as.gid);
-  if (lstatSync(path).isDirectory()) {
-    for (const entry of readdirSync(path)) {
-      giveTree(join(path, entry), as);
-    }
-  }
-}
-
-/**
- * The run's kept paths back into its engine's store, once no process of its user is left
- * (so nothing changes the home while it is read), no link followed, under the store's lock.
- * A run's secret is written back by compare-and-swap (review M3): only one this run changed,
- * only while the store still holds the copy the run started from, and only under the
- * generation its home was made in. So a stale copy never replaces a newer one (a vendor's
- * refresh token is single-use), and a run live across a sign-in or sign-out never undoes
- * it. A completed sign-in's (`signin`) new secrets are the owner's new login: written
- * whatever the store holds, and they move the generation on, then and only then (N2).
- */
-async function keepHome(home: string, rec: SourceRecord, signin = false): Promise<void> {
-  const store = `${STORE}/${rec.id}`;
-  safeDirs("/", store, 0o700);
-  const { secrets, sessions } = keptPaths(rec);
-  const path = snapshotOf(home);
-  const snapshot = existsSync(path) ? readJson<Snapshot>(path) : null;
-  await withStore(rec, () => {
-    const current = generation(rec);
-    let renewed = false;
-    for (const rel of sortedWalk(home)) {
-      if (!isKept([...secrets, ...sessions], rel)) {
-        continue;
-      }
-      const bytes = safeRead(home, join(home, rel));
-      if (bytes === null) {
-        continue;
-      }
-      if (isKept(secrets, rel)) {
-        const base = snapshot?.secrets[rel] ?? null;
-        const stored = safeRead(store, join(store, rel));
-        if (sha256Hex(bytes) === base) {
-          continue;  // unchanged: never written back
-        }
-        // A key run's home carried none, so it writes none back (it never had the login).
-        if (!signin && (snapshot === null || snapshot.signedIn !== true
-                        || snapshot.generation !== current
-                        || (stored === null ? null : sha256Hex(stored)) !== base)) {
-          continue;
-        }
-        renewed ||= signin;
-      } else {
-        // A session the store holds as it is is not written again, so its change time
-        // stands and it is not hashed again (`SESSIONS_SEEN`).
-        const stored = safeRead(store, join(store, rel));
-        if (stored !== null && sha256Hex(stored) === sha256Hex(bytes)) {
-          continue;
-        }
-      }
-      safeWrite(store, join(store, rel), bytes, 0o600);
-    }
-    if (renewed) {
-      nextGeneration(rec);
-    }
-  });
-  remove(path);
-}
-
 /** A session in an engine's store as last hashed: its identity, and a secret refusal's. */
 interface SeenSession {
   readonly size: number;
@@ -807,7 +577,7 @@ function lockSudo(): void {
   for (const file of existsSync("/etc/sudoers.d") ? readdirSync("/etc/sudoers.d") : []) {
     rmSync(`/etc/sudoers.d/${file}`, { force: true });
   }
-  for (const name of ["user", "ta-sync", `${POOL_PREFIX}0`]) {
+  for (const name of [E2B_USER, SYNC_USER, `${POOL_PREFIX}0`]) {
     const listed = spawnSync("sudo", ["-l", "-U", name], { encoding: "utf8" });
     if (!/is not allowed to run sudo/.test(listed.stdout)) {
       throw new Error(`${name} may still sudo: ${listed.stdout}`);
@@ -1001,7 +771,7 @@ interface SyncJob {
  */
 async function syncAgent(job: SyncJob):
     Promise<{ report: Record<string, unknown> | null; code: number }> {
-  const as = user("ta-sync");
+  const as = user(SYNC_USER);
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
                                        process.argv[1]!, COMMAND.sync]);
   const env: Record<string, string> = {};
@@ -1258,32 +1028,6 @@ class Poster {
 
 class RunRefused extends Error {
   override readonly name = "RunRefused";
-}
-
-/**
- * The run's config files (its MCP config, its settings, its models file) are root's,
- * readable and never writable by its CLI, so an agent cannot rewrite its own MCP door or
- * trust; a directory in the home that holds nothing but them is root's too. In `{system}`,
- * root's, readable by the run's own group alone.
- */
-function configOwned(rec: SourceRecord, home: string, system: string,
-                     files: Iterable<string>, as: Identity): void {
-  const cli = rec.cli!;
-  const kept = [...Object.values(cli.home_env), ...cli.session_paths, ...cli.secret_paths]
-    .map((path) => path.replaceAll("{home}", home).replace(/\/+$/, ""));
-  for (const file of files) {
-    if (file.startsWith(`${system}/`)) {
-      lchownSync(file, 0, as.gid);
-      continue;
-    }
-    lchownSync(file, 0, 0);
-    for (let dir = dirname(file); dir.startsWith(`${home}/`); dir = dirname(dir)) {
-      if (kept.some((path) => path === dir || path.startsWith(`${dir}/`))) {
-        break;
-      }
-      lchownSync(dir, 0, 0);
-    }
-  }
 }
 
 /** The env files a CLI would load: its home's, its cwd's, and each ancestor's of its cwd. */
@@ -1907,404 +1651,6 @@ async function loginRun(id: string): Promise<number> {
   return OK;
 }
 
-
-/**
- * The standing check of a record's sign-in (`template/build.py`, at every template build, so
- * at every pinned CLI's version bump): the record's login run, as a sign-in runs it, up to
- * the prompt its patterns find, then stopped. Its answer: whether the prompt is the record's
- * own shape (`signinShape`), the URL's host, whether a code was shown, and whether the URL
- * would send the owner's browser back to `localhost` (which strands it). No account needed.
- */
-async function loginProbe(engine: string, region: string | null): Promise<number> {
-  const rec = record(engine);
-  const login = rec.cli!.login;
-  if (login === undefined) {
-    throw new Error(`engine ${engine} has no vendor sign-in`);
-  }
-  const name = `probe-${rec.id}-${process.pid}`;
-  const as = take(STATE);
-  const home = await makeHome(name, rec);
-  let shown: Prompt = { url: null, code: null };
-  try {
-    const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
-    for (const [path, text] of Object.entries(files)) {
-      safeWrite(home, path.replaceAll("{home}", home), new TextEncoder().encode(text), 0o600);
-    }
-    giveTree(home, as);
-    const argv = asUser(as, [shared()], onTerminal(loginArgv(login, binPath(rec), region)));
-    await new Promise<void>((resolve) => {
-      const child = spawn(argv[0]!, argv.slice(1), { env: engineEnv(rec, home), cwd: home,
-                                                     detached: true,
-                                                     stdio: ["pipe", "pipe", "pipe"] });
-      let text = "";
-      // Its group killed; the answer waits for its close, so no exited child is left unreaped
-      // for the user's processes' kill to wait on.
-      const done = () => {
-        try {
-          process.kill(-child.pid!, "SIGKILL");
-        } catch {
-          // gone already
-        }
-      };
-      // As long as a command may take: a CLI that shows no prompt by then shows none.
-      const timer = setTimeout(done, COMMAND_MS);
-      const read = (data: Buffer) => {
-        text = (text + plain(data.toString("utf8"))).slice(-FRAME_UNITS_MAX);
-        shown = prompted(login, text, shown);
-        const wantsCode = login.code_pattern !== undefined;
-        if (shown.url !== null && (!wantsCode || shown.code !== null)) {
-          clearTimeout(timer);
-          done();
-        }
-      };
-      child.stdout!.on("data", read);
-      child.stderr!.on("data", read);
-      child.on("close", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-  } finally {
-    killAll(as.uid);
-    dropHome(home);
-    give(STATE, as);
-  }
-  const redirect = shown.url === null ? null : new URL(shown.url).searchParams.get("redirect_uri");
-  const local = redirect !== null && /^https?:\/\/(?:localhost|127\.|\[::1\])/.test(redirect);
-  const refused = shown.url === null ? null : signinShape(rec, region, shown.url, shown.code);
-  const why = shown.url === null ? "no sign-in URL shown"
-    : local ? "the URL sends the browser back to localhost"
-      : refused === null ? null : SIGNIN_REFUSALS[refused];
-  process.stdout.write(JSON.stringify({
-    engine, region, ok: why === null, reason: why,
-    host: shown.url === null ? null : new URL(shown.url).hostname, code_shown: shown.code !== null }));
-  return why === null ? OK : NO;
-}
-
-// -- the route probe (codexurl_research.md Q4) ------------------------------------------
-
-/** How long one probe turn may take: a command's bound. */
-const ROUTE_PROBE_MS = COMMAND_MS;
-
-const hex = (bytes: number) => randomBytes(bytes).toString("hex");
-
-/** The sealed API a provider's key goes to, as the gateway's record for it says. */
-function sealedScope(provider: string, engine: string): EgressScope {
-  const found = (bundledRecords() as Record<string, unknown>[]).filter((raw) =>
-    raw["provider"] === provider && raw["unwired"] === undefined
-    && typeof raw["base_url"] === "string" && Array.isArray(raw["connect"])
-    && (raw["connect"] as string[]).includes("api_key")
-    && Array.isArray(raw["engines"]) && (raw["engines"] as string[]).includes(engine))
-    .sort((a, b) => String(a["id"]).localeCompare(String(b["id"])))[0];
-  if (found === undefined) {
-    throw new Error(`no gateway record seals ${provider}'s key for ${engine}`);
-  }
-  return { api: String(found["api"]), base_url: String(found["base_url"]), endpoints: [],
-           meter: null };
-}
-
-/** One probe turn's outcome: its exit, the session it named, whether it gave its final text. */
-interface ProbeTurn {
-  /** Its stderr's tail, named when it failed. */
-  readonly stderr: string;
-  readonly exit: number;
-  readonly session_id: string | null;
-  readonly answered: boolean;
-  readonly resumed: boolean;
-  readonly connects: string[];
-}
-
-/**
- * One keyed engine on one provider, run as a run runs it (the real `invocation`, `runEnv`
- * and `sandboxEnv`, `makeHome` for an API-key run, its own pool user), its egress door a
- * loopback capture server at the door's real path answering each model request with a
- * minimal valid reply in its sealed API's wire format, under `strace` for its connects, with
- * a fake sign-in seeded in every one of its store's `secret_paths`. Two turns: a new
- * conversation, then its resume (its home made again from the store, as the next run's is),
- * that one compacting first where the record says how (`cli.compaction`). Each turn must exit
- * 0 with its final text, the first name its session where the record resumes by one, the
- * second resume it, a compaction be seen; and every request of both is judged
- * (`routeVerdict`).
- */
-async function probeRoute(rec: SourceRecord, provider: string,
-                          resolvers: readonly string[]): Promise<Record<string, unknown>> {
-  const cli = rec.cli!;
-  const egress = sealedScope(provider, rec.id);
-  const requests: Captured[] = [];
-  const server = createHttpServer((request: IncomingMessage, response) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    request.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size <= 4 * 1024 * 1024) {
-        chunks.push(chunk);
-      }
-    });
-    request.on("end", () => {
-      const captured: Captured = {
-        method: request.method ?? "", url: request.url ?? "",
-        headers: Object.fromEntries(Object.entries(request.headers).map(([name, value]) =>
-          [name, Array.isArray(value) ? value.join(", ") : value ?? ""])),
-        body: Buffer.concat(chunks).toString("utf8") };
-      requests.push(captured);
-      // The MCP door answers none (404: no server, so no client starts an OAuth discovery
-      // of it); a model request gets its API's minimal valid reply.
-      const answer = captured.url.split("?")[0]!.endsWith("/mcp")
-        ? { status: 404, type: "application/json", body: "{}" } : reply(egress.api, captured);
-      response.writeHead(answer.status, { "content-type": answer.type });
-      response.end(answer.body);
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as { port: number }).port;
-  const origin = `http://127.0.0.1:${port}`;
-  const local = (value: string) => value.replaceAll(EGRESS_ORIGIN, origin);
-  const run = `run_${hex(16)}`;
-  const secret = hex(32);
-  const connection = `c${hex(12)}`;
-  const marker = `ta_fake_signin_${hex(16)}`;
-  // The first turn's own word, which a resumed turn's requests carry only if it loaded the
-  // first turn's history (a CLI that silently starts afresh fails).
-  const nonce = `probe${hex(8)}`;
-  const engine = runEnv(sources, rec.id, "api_key");
-  const keyed = sandboxEnv([{ connection, provider, egress }], () => hex(16),
-                           { ...engine, run, secret, connection });
-  const placeholder = Object.values(keyed).find((value) => value.startsWith("ta_ph_"))!;
-  const names = cli.api_key_env![provider]!;
-  const inPath = engine.secret_header === undefined ? secret : undefined;
-  const prefix = new URL(egressBaseUrl(connection, names.base_url !== null
-    && names.base === "connection" ? null : egress, run, inPath)).pathname;
-  const env = Object.fromEntries(Object.entries({ ...engine.env, ...keyed }).map(
-    ([name, value]) => [name, local(value)]));
-  const first: StartDoc = {
-    run, agent: "route-probe", conversation: `cv_${hex(16)}`, engine: rec.id,
-    credential: "api_key", model: null, session_id: null,
-    prompt: `Remember the word ${nonce}. Reply with the word OK.`, unattended: false,
-    authority: "owner",
-    lease: { lease_id: hex(16), epoch: 1 },
-    config: { generation: 1, egress: { mode: "open", destinations: [] }, env,
-              inherit: engine.inherit },
-    urls: { mcp: `${origin}/r/${run}/${secret}/mcp`, mcp_bare: `${origin}/r/${run}/mcp`,
-            events: `${origin}/r/${run}/events`, signin: `${origin}/signin` } };
-  // A fake sign-in in each of the store's secret paths: if any of it reaches a request, a
-  // key run's home carried the sign-in.
-  const store = `${STORE}/${rec.id}`;
-  // What the store held before the probe: only what the probe adds (its fake sign-in, its
-  // turns' sessions) goes at its end.
-  const had = new Set(existsSync(store) ? sortedWalk(store) : []);
-  const seeded: string[] = [];
-  for (const rel of keptPaths(rec).secrets) {
-    const concrete = rel.split("/").map((part) => part === "*" ? "probe" : part).join("/");
-    const path = join(store, concrete.endsWith("/") ? `${concrete}probe.json` : concrete);
-    if (!existsSync(path)) {
-      safeDirs("/", dirname(path), 0o700);
-      safeWrite(store, path, new TextEncoder().encode(JSON.stringify({
-        access_token: marker, refresh_token: marker, id_token: marker,
-        tokens: { access_token: marker, refresh_token: marker },
-        claudeAiOauth: { accessToken: marker, refreshToken: marker } })), 0o600);
-      seeded.push(path);
-    }
-  }
-  const name = `route-${rec.id}-${process.pid}`;
-  const system = `${SYSTEM}/${name}`;
-  const agentDir = `${AGENTS_DIR}/${first.agent}`;
-  const conversationDir = cli.engine.resume === "continue_in_cwd"
-    ? `${CONVERSATIONS}/${rec.id}/${first.conversation}` : undefined;
-  const turns: ProbeTurn[] = [];
-
-  /** One turn, as one run runs: its own user and home, then its home kept and dropped. */
-  const turn = async (start: StartDoc, resumed: boolean,
-                      extra: readonly string[]): Promise<ProbeTurn> => {
-    const as = take(STATE);
-    const trace = `${STATE}/route-${name}.trace`;
-    let home: string | null = null;
-    let exit = 1;
-    let session: string | null = null;
-    let answered = false;
-    let text = "";
-    let stderr = "";
-    try {
-      home = await makeHome(name, rec, false);
-      const carried = [...sortedWalk(home)].filter((rel) => isKept(keptPaths(rec).secrets, rel));
-      if (carried.length > 0) {
-        throw new Error(`an API-key run's home carries the sign-in's ${carried.join(", ")}`);
-      }
-      remove(system);
-      mkdirSync(system, { mode: 0o750 });
-      chownSync(system, 0, as.gid);
-      giveTree(agentDir, as);
-      if (conversationDir !== undefined) {
-        safeDirs("/", conversationDir, 0o700);
-        giveTree(conversationDir, as);
-      }
-      const call = invocation(rec, start, process.env, {
-        continued: resumed, home, system,
-        ...(conversationDir === undefined ? {} : { conversationDir }) });
-      if (call.resumed !== resumed) {
-        throw new Error(resumed ? "the second turn does not resume the first"
-          : "the first turn resumes nothing");
-      }
-      for (const [path, text] of call.files) {
-        const inSystem = path.startsWith(`${system}/`);
-        safeWrite(inSystem ? system : home, path, new TextEncoder().encode(text),
-                  inSystem ? 0o640 : 0o644, undefined, inSystem ? 0o750 : 0o755);
-      }
-      giveTree(home, as);
-      configOwned(rec, home, system, call.files.keys(), as);
-      const argv = [call.argv[0]!, ...extra, ...call.argv.slice(1)];
-      const runHome = home;
-      exit = await new Promise<number>((resolve) => {
-        const child = spawn("strace", ["-f", "-qq", "-e", "trace=connect", "-o", trace, "--",
-                                       ...asUser(as, [shared()], argv)], {
-          cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp") }, detached: true,
-          stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] });
-        child.stderr!.on("data", (data: Buffer) => {
-          stderr = (stderr + data.toString("utf8")).slice(-600);
-        });
-        if (call.stdin !== null) {
-          child.stdin!.on("error", () => undefined);
-          child.stdin!.end(call.stdin);
-        }
-        createInterface({ input: child.stdout! }).on("line", (line) => {
-          if (line.trim() === "") {
-            return;
-          }
-          const read = readEvent(cli.engine.events, lineEvent(line));
-          session = read.session_id ?? session;
-          if (read.text !== null) {
-            // Its final text, as the run reads it: deltas accumulated where the record says.
-            text = read.text.accumulate ? text + read.text.value : read.text.value;
-            answered ||= text.includes("OK");
-          }
-        });
-        const timer = setTimeout(() => {
-          try {
-            process.kill(-child.pid!, "SIGKILL");
-          } catch {
-            // gone already
-          }
-        }, ROUTE_PROBE_MS);
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          resolve(code ?? 1);
-        });
-        child.on("error", () => {
-          clearTimeout(timer);
-          resolve(127);
-        });
-      });
-      killAll(as.uid);
-      await keepHome(home, rec);
-      return { stderr, exit, session_id: session, answered, resumed: call.resumed,
-               connects: outsideConnects(existsSync(trace) ? readFileSync(trace, "utf8") : "",
-                                         resolvers) };
-    } finally {
-      killAll(as.uid);
-      if (home !== null) {
-        dropHome(home);
-      }
-      remove(trace);
-      give(STATE, as);
-    }
-  };
-
-  let reason: string | null = null;
-  let compacted: boolean | null = null;
-  let history: boolean | null = null;
-  try {
-    if (spawnSync("strace", ["-V"], { encoding: "utf8" }).status !== 0) {
-      throw new Error("strace is not installed in the probe's sandbox");
-    }
-    safeDirs("/", SYSTEM, 0o755);
-    remove(agentDir);
-    safeDirs("/", agentDir, 0o755);
-    writeFileSync(`${agentDir}/agent.json`, JSON.stringify({ engine: rec.id, scopes: [] }));
-    writeFileSync(`${agentDir}/AGENTS.md`, "# Route probe\n\nReply with the word OK.\n");
-    const one = await turn(first, false, []);
-    turns.push(one);
-    if (one.exit !== 0 || !one.answered) {
-      throw new Error(`the first turn did not complete (exit ${one.exit}${one.answered ? ""
-        : ", no final text"}): ${one.stderr.trim().slice(-300)}`);
-    }
-    if (cli.engine.resume === "session_id" && one.session_id === null) {
-      throw new Error("the first turn named no session to resume");
-    }
-    const before = requests.length;
-    const two = await turn({ ...first, session_id: one.session_id,
-                             prompt: "Reply with the word OK once more." }, true,
-                           cli.compaction?.argv ?? []);
-    turns.push(two);
-    if (two.exit !== 0 || !two.answered) {
-      throw new Error(`the resumed turn did not complete (exit ${two.exit}${two.answered ? ""
-        : ", no final text"}): ${two.stderr.trim().slice(-300)}`);
-    }
-    history = requests.slice(before).some((request) => request.body.includes(nonce));
-    if (!history) {
-      throw new Error("the resumed turn's requests carry none of the first turn's history");
-    }
-    if (cli.compaction !== undefined) {
-      compacted = requests.slice(before).some((request) =>
-        request.body.includes(cli.compaction!.marker));
-      if (!compacted) {
-        throw new Error("the resumed turn made no compaction request");
-      }
-    }
-    reason = routeVerdict(requests, turns.flatMap((each) => each.connects), {
-      prefix, placeholder, secret, marker, resolvers,
-      mcp: [`/r/${run}/${secret}/mcp`, `/r/${run}/mcp`],
-      secretInHeader: engine.secret_header !== undefined });
-  } catch (error) {
-    reason = String(error instanceof Error ? error.message : error);
-    // What the CLI did is judged too: a leak or an outside connect is named first.
-    reason = routeVerdict(requests, turns.flatMap((each) => each.connects), {
-      prefix, placeholder, secret, marker, resolvers,
-      mcp: [`/r/${run}/${secret}/mcp`, `/r/${run}/mcp`],
-      secretInHeader: engine.secret_header !== undefined }) ?? reason;
-  } finally {
-    remove(system);
-    remove(agentDir);
-    if (conversationDir !== undefined) {
-      remove(conversationDir);
-    }
-    for (const rel of existsSync(store) ? sortedWalk(store) : []) {
-      if (!had.has(rel)) {
-        remove(join(store, rel));  // the probe's own sessions and its fake sign-in
-      }
-    }
-    for (const path of seeded) {
-      remove(path);
-    }
-    server.close();
-  }
-  return { engine: rec.id, provider, ok: reason === null, reason,
-           turns: turns.map((each) => ({ exit: each.exit, answered: each.answered,
-                                         resumed: each.resumed })),
-           compacted, history,
-           requests: requests.map((request) => `${request.method} ${request.url.split("?")[0]}`),
-           connects: [...new Set(turns.flatMap((each) => each.connects))] };
-}
-
-/**
- * The route probe (`route-probe <resolver>...`, at every template build, on a sandbox whose
- * network denies all): every record that runs on an API key, on every provider it keys, run
- * as a run runs it (`probeRoute`), one JSON line each; any failure fails the command.
- */
-async function routeProbe(resolvers: readonly string[]): Promise<number> {
-  let failed = false;
-  for (const rec of RECORDS.values()) {
-    const cli = rec.cli!;
-    if (rec.unwired !== undefined || !cli.credential.includes("api_key")) {
-      continue;
-    }
-    for (const provider of Object.keys(cli.api_key_env ?? {}).sort()) {
-      const result = await probeRoute(rec, provider, resolvers);
-      failed ||= result["ok"] !== true;
-      process.stdout.write(`${JSON.stringify(result)}\n`);
-    }
-  }
-  return failed ? NO : OK;
-}
-
 // -- main -----------------------------------------------------------------------------
 
 /** What a run's runner restarted after a reboot (`recover`) is started with. */
@@ -2334,13 +1680,6 @@ const HANDLERS: { readonly [C in Command]: Handler } = {
   [COMMAND.run]: (args) => runCommand(args[0] ?? "", args[1] === RECOVERING),
   [COMMAND.loginRun]: (args) => loginRun(args[0] ?? ""),
   [COMMAND.sync]: () => syncCommand(),
-  [COMMAND.loginProbe]: (args) => loginProbe(args[0] ?? "", args[1] ?? null),
-  [COMMAND.routeProbe]: (args) => routeProbe(args),
-  [COMMAND.matcherProbe]: () => {
-    // The sync-ignore automaton's step, timed here (the template build's standing check).
-    process.stdout.write(`${JSON.stringify({ step_ns: stepNanos() })}\n`);
-    return OK;
-  },
 };
 
 export async function main(argv: readonly string[]): Promise<number> {
