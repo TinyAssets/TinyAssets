@@ -127,7 +127,8 @@ function host() {
    */
   const lock = join(dir, "lock");
   const window = (args: readonly string[], input?: string,
-                  options: { marker?: string | null; flip?: string } = {}) => {
+                  options: { marker?: string | null; flip?: string;
+                             env?: Record<string, string> } = {}) => {
     const marker = join(hostRoot, "etc", "tinyassets-import-host");
     rmSync(marker, { force: true });
     const named = options.marker === undefined ? args[1] : options.marker;
@@ -140,7 +141,8 @@ function host() {
              TA_IMPORT_LOCK: lock, TA_IMPORT_HOST_ROOT: hostRoot,
              FAKE_REMOTE: remotes, FAKE_LOG: log, FAKE_DF_SIZE: String(disk.size),
              FAKE_DF_AVAIL: String(disk.avail), FAKE_DIGEST: DIGEST,
-             ...(options.flip === undefined ? {} : { FAKE_FLIP: options.flip }) } });
+             ...(options.flip === undefined ? {} : { FAKE_FLIP: options.flip }),
+             ...options.env } });
     return { status: result.status, out: result.stdout + result.stderr };
   };
   const calls = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
@@ -758,6 +760,125 @@ describe("the off-site copy of the window's final backup, on a fake import host"
     expect(newer.out).toContain(
       "refused: the backup remote's newest manifest is not the one this run's copy was made from");
     expect(existsSync(join(h.remotes, "taoff"))).toBe(false);
+  });
+});
+
+describe("a remote's refusal, on a fake import host", () => {
+  const OFFSITE_KEY = `${SOURCE_KEY}${"a".repeat(32)}\nr2-id-value\nr2-secret-value\n`;
+  /** What a refused request's stderr names (rclone 1.60's own shape): none may be printed. */
+  const KEY_ID = "DO00FAKEKEYQ7W2X9ZLM";
+  const HOST = "workflow-backups-jonnyton-sfo3.sfo3.digitaloceanspaces.com";
+  const PATH = "tasrc:workflow-backups-jonnyton-sfo3/workflow-backups/platform";
+  const PRIVATE = [KEY_ID, HOST, PATH, "workflow-backups", "digitaloceanspaces", "tasrc:",
+                   "taoff:", "Credential=", "request id", "error listing", "Access Denied"];
+  const stderrOf = (cause: string) =>
+    `2026/11/09 03:00:15 ERROR : platform: error listing for "${PATH}": ${cause}\n` +
+    `2026/11/09 03:00:15 Failed to create file system for "${PATH}" at https://${HOST}/ ` +
+    `(Credential=${KEY_ID}/20261109/sfo3/s3/aws4_request): ${cause}`;
+  const aws = (code: string, status: number) =>
+    `${code}: Access Denied\n\tstatus code: ${status}, request id: tx00-fake, host id: ${HOST}`;
+  const CODES = ["AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch", "NoSuchBucket",
+                 "NoSuchKey", "AuthorizationHeaderMalformed", "InvalidRequest",
+                 "PermanentRedirect", "RequestTimeTooSkewed", "Forbidden"];
+  /** A remote's refusal holds fixed words alone: its what, operation, exit, code and status. */
+  const SHAPE = new RegExp(`^refused: [a-z0-9' -]+ \\((list|read|size|copy) failed: rclone ` +
+                           `exit [0-9]+, code (${CODES.join("|")}|unknown), status ` +
+                           "(400|403|404|unknown)\\)$");
+
+  const refusedBy = (h: ReturnType<typeof host>, args: string[], input: string, fail: string,
+                     exit: number, stderr: string) => {
+    const run = h.window(args, input, { env: { FAKE_RCLONE_FAIL: fail,
+                                               FAKE_RCLONE_EXIT: String(exit),
+                                               FAKE_RCLONE_STDERR: stderrOf(stderr) } });
+    expect(run.status).toBe(2);
+    const refusal = run.out.split("\n").filter((line) => line.startsWith("refused: "));
+    expect(refusal).toHaveLength(1);
+    expect(refusal[0]).toMatch(SHAPE);
+    // Nothing of rclone's stderr, which the host's log holds whole.
+    for (const text of PRIVATE) {
+      expect(run.out).not.toContain(text);
+    }
+    expect(readFileSync(join(h.work(args[1]!), "host.private.log"), "utf8"))
+      .toContain(stderrOf(stderr));
+    countsOnly(run.out, h.work(args[1]!));
+    expect(released(run.out, forbidden(h.work(args[1]!)))).toBe(run.out);
+    return refusal[0];
+  };
+
+  it("names the listing's exit code and S3 code, apart from a listing with no manifest", () => {
+    const listing = "refused: the backup remote's platform manifests could not be listed";
+    const cases: [number, string, string][] = [
+      [1, aws("AccessDenied", 403), "rclone exit 1, code AccessDenied, status 403"],
+      [1, aws("SignatureDoesNotMatch", 403),
+       "rclone exit 1, code SignatureDoesNotMatch, status 403"],
+      [1, aws("InvalidAccessKeyId", 403), "rclone exit 1, code InvalidAccessKeyId, status 403"],
+      [1, aws("PermanentRedirect", 301), "rclone exit 1, code PermanentRedirect, status unknown"],
+      [1, aws("BadRequest", 400), "rclone exit 1, code unknown, status 400"],
+      // rclone's word for a bucket that answers 404 NoSuchBucket.
+      [3, "directory not found", "rclone exit 3, code unknown, status unknown"],
+      [1, `RequestError: send request failed\ncaused by: Get "https://${HOST}/": dial tcp: ` +
+          `lookup ${HOST}: no such host`, "rclone exit 1, code unknown, status unknown"],
+      // A code or a status only as a whole word.
+      [7, "XAccessDeniedHandler: denied\n\tstatus code: 4031",
+       "rclone exit 7, code unknown, status unknown"],
+    ];
+    for (const [exit, stderr, why] of cases) {
+      const h = host();
+      const refusal = refusedBy(h, ["census", "l1", "rehearsal"], SOURCE_KEY, "lsf tasrc", exit,
+                                stderr);
+      expect(refusal).toBe(`${listing} (list failed: ${why})`);
+      expect(existsSync(join(h.work("l1"), "copy.done"))).toBe(false);
+    }
+
+    // A listing that holds no manifest says so, and is no failed listing.
+    const h = host();
+    for (const name of [MANIFEST, "tinyassets-platform-2026-11-01T03-00-00Z.json"]) {
+      rmSync(join(h.remote, "platform", name));
+    }
+    const other = h.window(["census", "e1", "rehearsal"]);
+    expect(other.status).toBe(2);
+    expect(other.out).toContain("refused: the backup remote's platform folder was listed and " +
+                                "holds no platform manifest (objects listed: 1)");
+    expect(other.out).not.toContain("could not be listed");
+    rmSync(join(h.remote, "platform", "notes.txt"));
+    rmSync(h.work("e1"), { recursive: true });
+    expect(h.window(["census", "e1", "rehearsal"]).out).toContain(
+      "holds no platform manifest (objects listed: 0)");
+  });
+
+  it("names each other read of the source and the off-site bucket by its operation", () => {
+    const h = host();
+    expect(refusedBy(h, ["census", "c1", "rehearsal"], SOURCE_KEY, "cat tasrc", 1,
+                     aws("NoSuchKey", 404))).toBe(
+      "refused: the newest manifest could not be read (read failed: rclone exit 1, " +
+      "code NoSuchKey, status 404)");
+    expect(refusedBy(host(), ["census", "c2", "rehearsal"], SOURCE_KEY, "size tasrc", 1,
+                     aws("RequestTimeTooSkewed", 403))).toBe(
+      "refused: the archive's size could not be read (size failed: rclone exit 1, " +
+      "code RequestTimeTooSkewed, status 403)");
+    expect(refusedBy(host(), ["census", "c3", "rehearsal"], SOURCE_KEY, "copyto tasrc", 1,
+                     aws("Forbidden", 403))).toBe(
+      "refused: the archive could not be copied (copy failed: rclone exit 1, code Forbidden, " +
+      "status 403)");
+
+    // The off-site copy: its copy to R2, and its read-back.
+    const o = host();
+    o.window(["census", "o5", "window"]);
+    expect(refusedBy(o, ["offsite", "o5", "window"], OFFSITE_KEY, "copyto taoff", 1,
+                     aws("AccessDenied", 403))).toBe(
+      "refused: the manifest could not be copied off-site (copy failed: rclone exit 1, " +
+      "code AccessDenied, status 403)");
+    expect(refusedBy(o, ["offsite", "o5", "window"], OFFSITE_KEY, "cat taoff", 1,
+                     aws("NoSuchBucket", 404))).toBe(
+      "refused: the off-site manifest could not be read back (read failed: rclone exit 1, " +
+      "code NoSuchBucket, status 404)");
+    expect(refusedBy(o, ["offsite", "o5", "window"], OFFSITE_KEY, "size taoff", 1,
+                     aws("AuthorizationHeaderMalformed", 400))).toBe(
+      "refused: the archive's size could not be read (size failed: rclone exit 1, " +
+      "code AuthorizationHeaderMalformed, status 400)");
+    // No key's value reached the log or the output.
+    expect(readFileSync(join(o.work("o5"), "host.private.log"), "utf8"))
+      .not.toMatch(/r2-secret-value|spaces-secret-value/);
   });
 });
 
