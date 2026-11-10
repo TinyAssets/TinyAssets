@@ -468,7 +468,8 @@ function answered(value: (served: Served) => Promise<unknown>,
  * The owner surface's routes, as data (`OwnerRoute`), by path; a path ending in `/` is a
  * prefix, its rest the route's own (`tools/<name>`, an upload's `files/upload/<intent_id>`).
  */
-const ROUTES: Readonly<Record<string, OwnerRoute>> = Object.freeze({
+function routes(): Readonly<Record<string, OwnerRoute>> {
+  return {
     "agent/socket": { stage: "socket" },
     "files/upload/": { stage: "bytes" },
     "tools/": { serve: ownerTool },
@@ -526,18 +527,17 @@ const ROUTES: Readonly<Record<string, OwnerRoute>> = Object.freeze({
     ...Object.fromEntries(Object.entries(CONNECT_ROUTES).map(([path, connect]) =>
       [path, { serve: ({ env, owner, body, request, sources }: Served) =>
         connect({ env, bound: owner, body, request, sources }) }])),
-});
-
-const PREFIXES: readonly string[] = Object.freeze(Object.keys(ROUTES)
-  .filter((path) => path.endsWith("/")));
+  };
+}
 
 /** The route a path names, exactly or by its prefix, and the path's rest. */
 function routeOf(path: string): { route: OwnerRoute; rest: string } | null {
-  if (Object.hasOwn(ROUTES, path)) {
-    return { route: ROUTES[path]!, rest: "" };
+  const table = routes();
+  if (Object.hasOwn(table, path)) {
+    return { route: table[path]!, rest: "" };
   }
-  const prefix = PREFIXES.find((each) => path.startsWith(each));
-  return prefix === undefined ? null : { route: ROUTES[prefix]!, rest: path.slice(prefix.length) };
+  const prefix = Object.keys(table).find((each) => each.endsWith("/") && path.startsWith(each));
+  return prefix === undefined ? null : { route: table[prefix]!, rest: path.slice(prefix.length) };
 }
 
 /** The owner's first-party token, or the refusal for what came instead. */

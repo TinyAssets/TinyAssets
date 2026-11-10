@@ -42,7 +42,6 @@ import { refusalResponse } from "./refused";
 import { type ProfileName, type Tool, toolsNamed } from "../../contract/src/doors";
 import { callDoor } from "./tools";
 
-
 const SERVER_INFO = Object.freeze({ name: "tinyassets", version: "1.0.0" });
 
 async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallToolResult> {
