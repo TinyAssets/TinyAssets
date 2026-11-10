@@ -69,8 +69,11 @@ export const STEP_NS = 6;
 /**
  * The most bytes of the list applied, in file order: a technical ceiling, the matcher's
  * memory in the sync agent's heap: (`SANDBOX_HEAP` − `AGENT_PEAK`) / `HEAP_PER_LIST_BYTE`,
- * measured in a sandbox of the template (`scripts/probes/matcherprobe/`), is 7.8 MiB with
- * the worst class's heads diverging, so 6 MiB (`limits-audit.md`).
+ * is 7.8 MiB with the worst class's heads diverging, so 6 MiB (`limits-audit.md`). The three
+ * were measured in throwaway sandboxes of the pinned template, with the sandbox's own Node,
+ * on 2026-11-03: three runs, 5.9 sandbox-minutes, each sandbox killed and proven gone; the
+ * sandbox then compiled 6 MiB of every class beside the peak. The one-off probe that measured
+ * them is deleted (untangle B1).
  */
 export const LIST_BYTES = 6 * 1024 * 1024;
 /** The sync agent's heap limit in the sandbox (Node's own, the agent spawned with no flag). */
