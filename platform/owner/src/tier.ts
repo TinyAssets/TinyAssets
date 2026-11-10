@@ -36,14 +36,6 @@ import type {
   Call, OwnerState,
 } from "./owner-do";
 
-/**
- * The most live runs any tier record may give (`contract/src/control.ts`'s `RUNS_CEILING`,
- * the one definition), as `sandbox/template/build.py` reads it: by its text at this path, for
- * the template's tag, which no code imports. `sandbox/guards/template.test.ts` holds this
- * text to the contract's. Fix A6 moves the build's read, and this line goes.
- */
-export const RUNS_CEILING = 1000;
-
 /** No tier numbers were handed to this owner's object: no run is admitted without them. */
 export const TIER_UNREAD = "tier_unread: the platform's tier numbers are not known here";
 /** Over the tier's simultaneous runs. */

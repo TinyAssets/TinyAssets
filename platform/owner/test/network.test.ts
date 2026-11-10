@@ -13,9 +13,10 @@ import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { sourceRecord } from "../../sources/src/check";
 import { runEnv } from "../../sources/src/run-env";
 import { EGRESS_IP_LITERAL } from "../../contract/src/policy-document";
-import { ALL_TRAFFIC, BOUNDARY_NOTE, networkDocument } from "../src/network";
+import { BOUNDARY_NOTE, networkDocument } from "../src/network";
 import {
-  DNS_SERVERS, EGRESS_HOST, egressBaseUrl, GENERATION_HEADER, SANDBOX_HEADER, sandboxEnv,
+  ALL_TRAFFIC, DNS_SERVERS, EGRESS_HOST, egressBaseUrl, GENERATION_HEADER, SANDBOX_HEADER,
+  sandboxEnv,
 } from "../../contract/src/egress";
 
 const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.2000000000.${"T".repeat(43)}.${
