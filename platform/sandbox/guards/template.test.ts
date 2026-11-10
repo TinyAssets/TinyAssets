@@ -30,13 +30,13 @@ import { bundles, pairTag, tsTool } from "../template/pair";
 
 const TEMPLATE = join(PLATFORM, "sandbox", "template");
 /**
- * The image's recipe as E2B's SDK serializes it (`Template.to_json`, e2b 2.62.0): 21 steps,
- * the pinned template's (main's `build.py` gave the same, byte for byte, untangle A6 part b).
- * Its copies' hashes take each staged file's mode: git's, 0644 (`image.ts` stages so).
+ * The image's recipe as E2B's SDK serializes it (`Template.to_json`, e2b 2.62.0): 21 steps.
+ * Its copies' hashes take each staged file's mode: git's, 0644 (`image.ts` stages so). A new
+ * recipe is a new image: a paid build, then the pin PR.
  */
-const RECIPE = "e953e65c6191f91a73e625d0a403e80214d62998eca175c1f69215e51abe22a5";
-/** The same recipe from a checkout whose files are 0664 (umask 002), as A6b's research read it. */
-const RECIPE_664 = "8266c6a64ea93fb5103a8b604e23ad87d656cf2d9922ad06fa93ac03e397f78b";
+const RECIPE = "118169ff55d21b618352fd644c222039785aa93c5b5c3dc3e28c25c7ada0c46e";
+/** The same recipe from a checkout whose files are 0664 (umask 002). */
+const RECIPE_664 = "129f6027b5ba3aa4d10872ad17d4e067ebbe367e85b3a6814a932178d7f6ebe1";
 
 /**
  * E2B's SDK as far as the image's steps reach it (`Template`, `Template.to_json`), written

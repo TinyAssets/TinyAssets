@@ -26,7 +26,6 @@ connectrpc==0.12.1 \
 e2b==2.62.0 \
     --hash=sha256:480c447f26c8a3bd6340eef9f3cdbcf78764fddff574aa3270db84e3891ee6a9 \
     --hash=sha256:8773c829f2537c7543fbcc83610f5b7f295f5db1e02805d92036186880585158
-    # via -r /home/user/ta-work/dg_req.in
 e2b-dockerfile-utils==0.1.1 \
     --hash=sha256:c1d4179bae6f3131fe0bbb1e6787ffb07c6c6dca8bdb3399abb3de9056b2a08f \
     --hash=sha256:c648ecf56b3ffdb6d91469580850f4691f019cb2c925405e776ad36b761204f1
