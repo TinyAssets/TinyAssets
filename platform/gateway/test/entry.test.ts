@@ -280,9 +280,7 @@ describe("the gateway Worker", () => {
                                          granting(), new ReadableStream());
     expect(refused.response.status).toBe(400);
     // The owner's entrypoint forwards nothing: egress is the egress door's, metered or a read.
-    const owner = gateway as unknown as { forward: (...args: unknown[]) => Promise<Response> };
-    await expect(owner.forward("alice", "c1", 1, blob, new Request(
-      "https://egress/v1/models", { headers: { "x-fake-mode": "echo" } }))).rejects.toThrow();
+    expect(Object.hasOwn(Gateway.prototype, "forward")).toBe(false);
   });
 
   it("reserves a model call for the model and tier its one parse read, wherever the keys lie",
