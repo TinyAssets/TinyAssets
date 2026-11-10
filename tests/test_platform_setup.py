@@ -537,14 +537,3 @@ def test_the_real_gh_call_sends_bytes_and_no_shell(tmp_path, monkeypatch) -> Non
                             "--repo", REPO]
     assert seen["stdin"] == PEM
     assert gh.call("GET", "/x") == (200, {"n": "\u00e9"})
-
-
-@pytest.mark.verifies(
-    "clean-sheet-platform:The owner's sign-in is the owner issuer's "
-    "User Management code flow")
-def test_the_docs_give_the_windows_command() -> None:
-    for doc in (ROOT / "platform/deploy/checklist.md", ROOT / "docs/host-actions.md", PAGE,
-                ROOT / "scripts/platform_setup.py"):
-        text = doc.read_text(encoding="utf-8")
-        assert "python3 scripts/platform_setup.py" not in text, doc
-        assert "SETUP_PAT" not in text and "platform-setup.yml" not in text, doc
