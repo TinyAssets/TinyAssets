@@ -27,7 +27,7 @@ import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { DARK, keyring as ringSecret } from "../../ci/fixtures";
-import { PLATFORM } from "../../ci/paths";
+import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { WRANGLER, workerFolders } from "../../ci/workers";
 import { type Domain, openBlob, sealBlob } from "../../contract/src/envelope";
@@ -56,7 +56,6 @@ import platform from "../platform.json" with { type: "json" };
 
 type Json = Record<string, unknown>;
 
-const REPO = join(PLATFORM, "..");
 const configOf = (worker: string) => CONFIGS.get(worker)!;
 const UPSTREAM = { issuer: "https://auth.test",
                    record: { client_id: "c",

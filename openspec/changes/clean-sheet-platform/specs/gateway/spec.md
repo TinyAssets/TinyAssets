@@ -66,7 +66,7 @@ Every error the gateway returns or throws SHALL be one of its fixed codes, carry
 - **THEN** the gateway answers `upstream_unauthorized`, `upstream_rate_limited` or `upstream_rejected` with status 502, and neither the key nor the body appears anywhere in the answer
 
 ### Requirement: Sandbox egress is forwarded raw under the sealed endpoints
-`forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters in any case, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.
+`forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters in any case, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at a day (`EGRESS_DEADLINE_S`, the sandbox's own continuous-runtime ceiling), and pass the provider's answer through.
 
 #### Scenario: A sandbox client sends a placeholder key
 - **WHEN** a request carries a placeholder in `authorization`, `x-api-key` and `?key=`

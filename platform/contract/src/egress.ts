@@ -121,11 +121,6 @@ export function runUrls(run: string, secret: string):
                          signin: `${EGRESS_ORIGIN}${SIGNIN_DOOR}` });
 }
 
-/** A sign-in's event door on the egress host. */
-export function signinEventsUrl(signin: string): string {
-  return `${EGRESS_ORIGIN}${SIGNIN_DOOR}/${signin}/events`;
-}
-
 /** A connection the sandbox may reach: its id, its provider and where it may be forwarded. */
 export interface Egressible {
   readonly connection: string;

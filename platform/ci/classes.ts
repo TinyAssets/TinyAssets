@@ -16,13 +16,14 @@
  * Every project's tests are held to this at run time by a setup file (`class-check.ts`), so
  * no CLI flag can drop the check; a measuring run with `--reporter=json` keeps it.
  *
- * The budgets are derived, never chosen: `node ci/budgets.mjs --write <vitest JSON reports>`
- * recomputes `budgets.json` from a leg's report, and without `--write` it names each test
- * over half its class's budget (Bazel's `--test_verbose_timeout_warnings`), blocking nothing.
+ * The budgets are derived, never chosen: `node ci/budgets.mjs` recomputes `budgets.json`
+ * from a leg's Vitest JSON report.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import type { ClassTimeouts } from "./class-rule.ts";
 
 /** One measurement: the slowest test found, and where it was read. */
 export interface Slowest {
@@ -30,7 +31,7 @@ export interface Slowest {
   readonly test: string;
 }
 
-export interface Budgets {
+interface Budgets {
   readonly factor: number;
   readonly measured: string;
   readonly medium: Readonly<Record<string, Slowest>>;
@@ -51,7 +52,6 @@ export const SMALL_MS = 5_000;
 export const BUDGETS: Budgets = JSON.parse(readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "budgets.json"), "utf8")) as Budgets;
 
-/** `FACTOR` times the slowest measured, up to the second, at least `SMALL_MS`. */
 export function derived(slowest: Slowest, factor = BUDGETS.factor): number {
   return Math.max(SMALL_MS, Math.ceil((factor * slowest.slowest_ms) / 1000) * 1000);
 }
@@ -63,13 +63,13 @@ export function derived(slowest: Slowest, factor = BUDGETS.factor): number {
 export function budget(project: string): number {
   const slowest = BUDGETS.medium[project];
   if (slowest === undefined) {
-    throw new Error(`no measured budget for ${project}: run node ci/budgets.mjs --write`);
+    throw new Error(`no measured budget for ${project}: run node ci/budgets.mjs`);
   }
   return derived(slowest);
 }
 
 /** Vitest's default hook timeout: a hook's floor, since a report measures no hook. */
-export const HOOK_FLOOR_MS = 10_000;
+const HOOK_FLOOR_MS = 10_000;
 
 /** The setup file that holds each test to its class at run time (`class-check.ts`). */
 export const CLASS_CHECK = join(dirname(fileURLToPath(import.meta.url)), "class-check.ts");
@@ -81,7 +81,7 @@ export const CLASS_CHECK = join(dirname(fileURLToPath(import.meta.url)), "class-
  */
 export function medium(project: string): {
   testTimeout: number; hookTimeout: number; setupFiles: string[];
-  provide: { classTimeouts: { project: string; medium: number; large: number } };
+  provide: { classTimeouts: ClassTimeouts };
 } {
   const ms = budget(project);
   return { testTimeout: ms, hookTimeout: Math.max(ms, HOOK_FLOOR_MS), setupFiles: [CLASS_CHECK],
