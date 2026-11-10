@@ -61,9 +61,9 @@
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { type Cipher, cipherOf, open, seal, sha256Hex } from "./cipher";
-import { chunkName, mint, rewrap, unwrap } from "./datakey";
-import { base64, fromBase64 } from "../../contract/src/envelope";
+import { type Cipher, cipherOf, open, seal } from "./cipher";
+import { chunkName, type KeyringSecret, mint, rewrap, unwrap } from "./datakey";
+import { base64, fromBase64, hex } from "../../contract/src/envelope";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedManifest, type ManifestAt,
@@ -79,9 +79,9 @@ const BAD_DIGEST = /\(10037\)|did not match what we received/;
 export interface FilesEnv {
   readonly BLOBS: R2Bucket;
   /** The data keys' keyring, a Worker secret read only by `datakey.ts`. */
-  readonly FILES_KEYRING: unknown;
-  /** How the data key encrypts (`cipher.ts`): `ssec` or `aes-gcm`. */
-  readonly FILES_CIPHER: string;
+  readonly FILES_KEYRING?: KeyringSecret;
+  /** How the data key encrypts (`cipher.ts`): `ssec` (the default) or `aes-gcm`. */
+  readonly FILES_CIPHER?: string;
 }
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
@@ -116,6 +116,10 @@ function rootBytes(text: string): Uint8Array {
   } catch {
     throw new Error("a manifest root is out of shape");
   }
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
 function list<T>(value: unknown, what: string): T[] {
@@ -167,6 +171,39 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     return cipherOf(this.env.FILES_CIPHER);
   }
 
+
+  /**
+   * What a put of `plain` to `objectKey` stores, and its options: the plain bytes under the
+   * SSE-C key, R2 checking their hash; or the sealed bytes, R2 checking theirs.
+   */
+  async #stored(dataKey: ArrayBuffer, objectKey: string, plain: Uint8Array, sha256: string):
+      Promise<{ body: Uint8Array; options: R2PutOptions }> {
+    if (this.#cipher() === "ssec") {
+      return { body: plain, options: { sha256, ssecKey: dataKey } };
+    }
+    const body = await seal(dataKey, objectKey, plain);
+    return { body, options: { sha256: await sha256Hex(body) } };
+  }
+
+  /** A get's options: the SSE-C key and the range; sealed objects are read whole. */
+  #reading(dataKey: ArrayBuffer, at?: { offset: number; length: number }): R2GetOptions {
+    if (this.#cipher() === "ssec") {
+      return at === undefined ? { ssecKey: dataKey } : { ssecKey: dataKey, range: at };
+    }
+    return {};
+  }
+
+  /** The plain bytes a get answered: as they came, or opened and sliced to the range. */
+  async #plain(dataKey: ArrayBuffer, objectKey: string, object: R2ObjectBody,
+               at?: { offset: number; length: number }): Promise<Uint8Array> {
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (this.#cipher() === "ssec") {
+      return bytes;
+    }
+    const plain = await open(dataKey, objectKey, bytes);
+    return at === undefined ? plain : plain.slice(at.offset, at.offset + at.length);
+  }
+
   /** Store chunks under their hashes, each verified by R2; `created` counts the new ones. */
   async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
     namespace(ns);
@@ -190,9 +227,12 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
   async #put(ns: string, dataKey: ArrayBuffer, sha256: string, bytes: Uint8Array):
       Promise<boolean> {
     let put: R2Object | null;
-    const cipher = this.#cipher();
+    if (this.#cipher() === "aes-gcm" && await sha256Hex(bytes) !== sha256) {
+      throw new Refusal("invalid",
+                        "the chunk's bytes do not match its sha256");  // R2 sees sealed bytes
+    }
     const name = await chunkName(dataKey, sha256);
-    const stored = await cipher.stored(dataKey, chunkKey(ns, name), bytes, sha256);
+    const stored = await this.#stored(dataKey, chunkKey(ns, name), bytes, sha256);
     try {
       put = await this.env.BLOBS.put(chunkKey(ns, name), stored.body,
                                      { ...stored.options, onlyIf: { etagDoesNotMatch: "*" } });
@@ -214,9 +254,9 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     }
     let held: Uint8Array;
     try {
-      const object = await this.env.BLOBS.get(chunkKey(ns, name), cipher.reading(dataKey));
+      const object = await this.env.BLOBS.get(chunkKey(ns, name), this.#reading(dataKey));
       held = object === null ? new Uint8Array(0)
-        : await cipher.plain(dataKey, chunkKey(ns, name), object);
+        : await this.#plain(dataKey, chunkKey(ns, name), object);
     } catch {
       throw new Error("a chunk key holds bytes this Worker did not verify");
     }
@@ -234,7 +274,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
    */
   async getChunks(ns: string, key: string, reads: ChunkGet[]): Promise<Uint8Array[]> {
     namespace(ns);
-    const cipher = this.#cipher();
+    const whole = this.#cipher() !== "ssec";
     const gets = list<ChunkGet>(reads, "a get").map((read) => {
       if (typeof read !== "object" || read === null) {
         throw new Refusal("invalid", "a get is a hash and an optional range");
@@ -245,7 +285,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       }
       // A verified range moves only its length to the caller (the whole chunk is held here).
       return { sha256: chunkHash(read.sha256), ...at, verify: read.verify === true,
-               budget: read.verify === true ? at.budget : cipher.rangeCost(at.budget) };
+               budget: whole && read.verify !== true ? CHUNK_BYTES : at.budget };
     });
     if (gets.reduce((sum, get) => sum + get.budget, 0) > BATCH_BYTES) {
       throw new Refusal("invalid", `a get moves at most ${BATCH_BYTES} bytes`);
@@ -255,11 +295,11 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       const name = await chunkName(dataKey, get.sha256);
       const ranged = get.verify ? undefined : get.range;
       const object = await this.env.BLOBS.get(chunkKey(ns, name),
-                                              cipher.reading(dataKey, ranged));
+                                              this.#reading(dataKey, ranged));
       if (object === null) {
         throw new Error("a chunk the manifest holds is missing from the bucket");
       }
-      const bytes = await cipher.plain(dataKey, chunkKey(ns, name), object, ranged);
+      const bytes = await this.#plain(dataKey, chunkKey(ns, name), object, ranged);
       if (ranged === undefined && await sha256Hex(bytes) !== get.sha256) {
         throw new Error("a chunk's bytes no longer match its hash");
       }
@@ -319,8 +359,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     const body = chunkBytes(bytes);
     const sha256 = await sha256Hex(body);
     const dataKey = await this.#key(ns, key);
-    const stored = await this.#cipher().stored(dataKey, manifestObjectKey(ns, gen, at), body,
-                                               sha256);
+    const stored = await this.#stored(dataKey, manifestObjectKey(ns, gen, at), body, sha256);
     await this.env.BLOBS.put(manifestObjectKey(ns, gen, at), stored.body, stored.options);
     return { sha256, size: body.byteLength };
   }
@@ -329,13 +368,11 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
   async #getObject(ns: string, key: string, gen: string, at: ManifestAt, sha256: string):
       Promise<Uint8Array> {
     const dataKey = await this.#key(ns, key);
-    const cipher = this.#cipher();
-    const object = await this.env.BLOBS.get(manifestObjectKey(ns, gen, at),
-                                            cipher.reading(dataKey));
+    const object = await this.env.BLOBS.get(manifestObjectKey(ns, gen, at), this.#reading(dataKey));
     if (object === null) {
       throw new Error("a manifest object its root names is missing from the bucket");
     }
-    const bytes = await cipher.plain(dataKey, manifestObjectKey(ns, gen, at), object);
+    const bytes = await this.#plain(dataKey, manifestObjectKey(ns, gen, at), object);
     if (await sha256Hex(bytes) !== chunkHash(sha256)) {
       throw new Error("a manifest object's bytes no longer match its hash");
     }

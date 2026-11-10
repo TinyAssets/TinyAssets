@@ -4,20 +4,18 @@
  */
 import { describe, expect, it } from "vitest";
 
-import type { Context, FetchFunction } from "@earendil-works/pi-ai";
-import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
+import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import {
   apiRules, fallbackList, freeCall, manyChoices, paidTool, ruledApis, servedPriced, tierMultiplier,
   unpricedOption,
 } from "../../contract/src/api-rules";
-import { builtinCatalog, NO_AMBIENT, providerFor } from "../src/catalog";
-import { within } from "../src/egress";
+import { builtinCatalog } from "../src/catalog";
 import {
-  egressTarget, GLOBAL_FETCH_APIS, meteredCall, meteredModel, type Upstream,
+  egressTarget, meteredCall, meteredModel, SUPPORTED_APIS,
 } from "../../contract/src/egress-scope";
 import {
-  clamped, describes, learnMeter, meteredRecord, meteredUsage, snapshotOf,
+  clamped, describes, learnMeter, meteredRecord, meteredUsage, sentHeaders, snapshotOf,
 } from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 
@@ -48,36 +46,6 @@ function completion(model: string | null, usage: unknown | null): string {
                                        choices: [], usage })]),
     "data: [DONE]\n\n",
   ].join("");
-}
-
-/**
- * The headers pi-ai's adapter sends with `upstream`'s model call, captured by one run whose
- * every request is answered here: what a source record's sealed auth header must match.
- */
-async function sentHeaders(upstream: Upstream, apiKey: string): Promise<Headers | null> {
-  const provider = providerFor(builtinCatalog(), upstream);
-  const model = provider.getModels().find((entry) => entry.api === upstream.api);
-  if (model === undefined) {
-    return null;
-  }
-  let sent: Headers | null = null;
-  const capture: FetchFunction = async (input, init) => {
-    sent ??= new Request(input, init).headers;
-    return new Response("{}", { status: 400, headers: { "content-type": "application/json" } });
-  };
-  const models = createModels({ authContext: NO_AMBIENT });
-  models.setProvider(provider);
-  const context = { messages: [{ role: "user", content: "x", timestamp: 0 }] } as unknown as
-    Context;
-  await within(capture, async () => {
-    for await (const _event of models.streamSimple({ ...model, baseUrl: upstream.base_url },
-                                                   context, { apiKey, maxRetries: 0,
-      // Google's adapter refuses a custom fetch: the interposer's scope holds it to `capture`.
-      ...(GLOBAL_FETCH_APIS.includes(upstream.api) ? {} : { fetch: capture }) } as never)) {
-      // The adapter reports the refusal as its stream's error.
-    }
-  }).catch(() => undefined);
-  return sent;
 }
 
 const BIG = { prompt_tokens: 200_000, completion_tokens: 50_000, total_tokens: 250_000 };
@@ -122,6 +90,8 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
 
   it("cites a page and the day it was read for every free call, and lists only sealed ones", () => {
     expect(ruledApis()).toContain("anthropic-messages");
+    // A credential is sealed only for an API a call on it can be metered on (untangle v:S5).
+    expect([...SUPPORTED_APIS].sort()).toEqual([...ruledApis()].sort());
     for (const api of ruledApis()) {
       for (const call of apiRules(api)!.free) {
         expect(call.cite, api).toMatch(/^https:\/\/[^/]+\//);
@@ -187,7 +157,7 @@ describe("the meter pi-ai's adapter teaches", () => {
   it.each(keys.map((record) => [record.id, record] as const))(
     "seals the %s source's key in the header pi-ai sends it in, by its scheme",
     async (id, { upstream }) => {
-      const headers = await sentHeaders(upstream!, "sk-probe-key");
+      const headers = await sentHeaders(builtinCatalog(), upstream!, "sk-probe-key");
       expect(headers, id).not.toBeNull();
       const { header, scheme } = upstream!.auth;
       expect(headers!.get(header), id).toBe(scheme === "" ? "sk-probe-key"

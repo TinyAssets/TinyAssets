@@ -9,7 +9,8 @@
  * lifetimes, and prices with their long-context tiers (pi-ai's `calculateCost` reads
  * them). Left out: `provider`, `api` and `baseUrl` (the sealed upstream's), and `headers`,
  * `compat` and the sampling parameters, which shape the upstream request and which the
- * gateway's own adapter applies from its own copy of the record.
+ * gateway's own adapter applies from its own copy of the record; the owner's pi-messages
+ * client reads none of them.
  *
  * The same record is what a declared (`custom`) endpoint's source lists, checked whole
  * when it is sealed and again when it is opened (`gateway/src/credential.ts`), and what the

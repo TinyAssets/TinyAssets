@@ -55,16 +55,19 @@ const FORWARD_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
 
 /**
  * How long an answer may go without a byte from the provider while the gateway waits on it:
- * then the provider's request is aborted and the answer errored, so a stalled stream lets go
+ * then the answer is errored and the provider's request ended, so a stalled stream lets go
  * of its run's slot. The engines' own idle cut (Claude Code's byte-level and body idle
  * timeouts, Codex's `DEFAULT_STREAM_IDLE_TIMEOUT_MS`, each 300 s): a stream their own
- * clients would already have given up on (`egress_deadline_research.md` §4). A provider's
+ * clients would already have given up on (the untangle's decision on S1). A provider's
  * keep-alive (an SSE ping) is a byte; the wait for the answer's headers is not counted.
  */
 export const IDLE_CUT_MS = 300 * 1000;
 
+/** How long the setup check waits for the provider. */
 const VERIFY_DEADLINE_MS = 15 * 1000;
 
+
+/** The bytes each write of a metered call's upload carries. */
 const UPLOAD_SLICE = 64 * 1024;
 
 /** A metered call's rewritten body on its way up, and its end (its slots let go). */
@@ -466,6 +469,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     }
     ({ upload, model, listed } = ready);
     body = upload.body;
+    // Past its deadline, or stopped, the upload ends there.
     held = AbortSignal.any([cancelled.signal,
                             AbortSignal.timeout(heldDeadlineMs(Number(declared)))]);
     held.addEventListener("abort", () => upload?.stop(), { once: true });
@@ -482,6 +486,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
         headers.append(name, value);
       }
     }
+    // `set` replaces every value the request sent under the sealed header's name.
     headers.set(credential.upstream.auth.header, authValue(credential));
     // Plain bytes back, so the redaction reads what the provider wrote.
     headers.set("accept-encoding", "identity");
@@ -529,7 +534,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   let source = upstream.body;
   if (metered !== null && model !== null) {
     if (upstream.status < 200 || upstream.status >= 300) {
-      // A refusal before any output: the provider produced nothing.
+      // A refusal before any output: the provider produced nothing, as the loop settles it.
       outcome = Promise.resolve(FAILED);
     } else if (source !== null) {
       const [toCaller, toMeters] = source.tee();

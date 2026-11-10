@@ -112,6 +112,31 @@ export async function learnMeter(catalog: Catalog, upstream: Upstream, apiKey: s
   return null;
 }
 
+/**
+ * The headers pi-ai's adapter sends with the source's model call, learned by one run that
+ * reaches no network, as `learnMeter` learns the call: the sources guard holds a record's
+ * sealed auth header and scheme to them. Null when no model of the source can be asked.
+ */
+export async function sentHeaders(catalog: Catalog, upstream: Upstream,
+                                  apiKey: string): Promise<Headers | null> {
+  const [model] = apiModels(catalog, upstream);
+  if (model === undefined) {
+    return null;
+  }
+  let sent: Headers | null = null;
+  const capture: FetchFunction = async (input, init) => {
+    sent ??= new Request(input, init).headers;
+    return new Response("{}", { status: 400, headers: { "content-type": "application/json" } });
+  };
+  try {
+    await run(catalog, upstream, apiKey, { ...model, baseUrl: upstream.base_url }, capture,
+              TOKENS_MARK);
+  } catch {
+    // The adapter reports the refusal as its stream's error; a throw is the same.
+  }
+  return sent;
+}
+
 async function learned(catalog: Catalog, upstream: Upstream, apiKey: string,
                        model: Model<Api>): Promise<Meter | null> {
   const probe = { ...model, id: MODEL_MARK, baseUrl: upstream.base_url, maxTokens: TOKENS_MARK };

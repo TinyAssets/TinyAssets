@@ -6,18 +6,43 @@
  * Anthropic Messages, OpenAI Responses and Google Generative AI, each as SSE. What it
  * does is chosen by a `cmd:` word in the request body (the test's user message):
  *
- * - `cmd:echo` (and any other word): the reply's text is JSON of what it received (path,
- *   the credential headers, the output-token cap, the service tier), so a test reads back
- *   what the gateway sent; `x-fake-served-tier` names the tier an Anthropic answer says it
- *   served.
+ * - `cmd:echo`: the reply's text is JSON of what it received (path, the credential
+ *   headers, the output-token cap, the service tier), so a test reads back what the
+ *   gateway sent; `x-fake-served-tier` names the tier an Anthropic answer says it served.
+ * - `cmd:fail-<status>`: that status, with a body that quotes the credential.
+ * - `cmd:redirect`: a 302 to another host.
  * - `cmd:slow-<id>`: one text delta, then holds the stream open; its cancel is recorded
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
+ * - `cmd:tool`: a tool call (Anthropic).
+ * - `cmd:call-<name>`: a call of the tool `<name>` with no arguments (Anthropic); a tool
+ *   result that says `cmd:echo` turns the next answer back to text.
+ * - `cmd:ta-<name>`: the same through the owner's `ta` tool, a call of `<name>` with no
+ *   arguments; `cmd:ta-model` asks `ta`'s nested model call `cmd:echo`, and
+ *   `cmd:ta-model-<rest>` asks it `cmd:<rest>`, each with a system prompt and an output
+ *   cap (`TA_SYSTEM`, `TA_MAX_TOKENS`). `cmd:ta-codemode` runs a code mode script through
+ *   `ta` whose `tools.model_complete` asks the owner's model source `cmd:echo`
+ *   (`cmd:ta-codemode-<rest>`: `cmd:<rest>`), and shows the answer (`codemodeScript`).
+ * - `cmd:delegate-<rest>`: a call of the owner's `ta` capability `agent:delegate`, its task
+ *   `cmd:<rest>`, which the subagent's own request then asks (Anthropic).
+ * - `cmd:drip`: `DRIP` text deltas (`d0 ` to `d11 `), `DRIP_MS` apart, then the finish:
+ *   a stream that lasts longer than the owner object's one-second partial commits.
  *
- * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`, `say`,
- * `decoded`, `hdr`, `jsonesc`; `held`: the body read to its end, its length answered after
- * 1.5 s, as a provider holds its answer until its first token; `stall`: some bytes, then
- * silence, its cancel recorded under `x-fake-id`); `auth.test` and `auth.openai.com` are
- * token endpoints; `keys.test` is a key-exchange endpoint (OpenRouter's PKCE flow); `evil.test` records everything it receives, read back from
+ * - `cmd:redirect307`: a 307 to another host.
+ * - `cmd:overflow`: the provider's own refusal of a context too long for the model (HTTP
+ *   400, in its own words); `cmd:overflow-<id>` refuses so the first time `<id>` is asked
+ *   and answers as `cmd:echo` after, as a provider does once the context was compacted.
+ * - `cmd:streamoverflow`: a 200 stream that then fails for the context's length, as the
+ *   OpenAI Responses API reports it (`response.failed`, `context_length_exceeded`).
+ * - `cmd:tpm`: a 429 whose words read like an overflow ("too many tokens"), as a
+ *   tokens-per-minute limit does.
+ * - `cmd:measured-<name>`: as `cmd:ta-<name>` (Anthropic), its usage counting the request's
+ *   own size as its input, as a provider bills it; `cmd:measured-echo`, and any request
+ *   that offers no tools (a compaction's summary), is answered as `cmd:echo`, billed so too.
+ *
+ * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
+ * `say`, `decoded`, `hdr`, `jsonesc`, `stall` (some bytes, then silence), and `held`: the body read to its end, its length
+ * answered after 1.5 s, as a provider holds its answer until its first token); `auth.test` and `auth.openai.com` are token
+ * endpoints; `keys.test` is a key-exchange endpoint (OpenRouter's PKCE flow); `evil.test` records everything it receives, read back from
  * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
  * code: its module state (the cancel registry, the evil log) is the fake's, never the
  * gateway's. `doorbell.test`, and Claude's `/fire` path on `api.anthropic.com`, are a
@@ -27,8 +52,22 @@
  * sent, else 202.
  */
 const cancelled = new Map<string, boolean>();
+/** The `cmd:overflow-<id>` ids already refused once. */
+const overflowed = new Set<string>();
+/** What `cmd:ta-model` hands `ta`'s nested model call besides its question. */
+const TA_SYSTEM = "answer in one word";
+const TA_MAX_TOKENS = 77;
+
+/** A code mode script that asks the owner's model source `cmd:<asked>` and shows its text. */
+function codemodeScript(asked: string): string {
+  return "try { const answer = await tools.model_complete({ messages: [{ role: 'user', " +
+    `text: 'cmd:${asked}' }] });\ntext('asked: ' + answer.text); } ` +
+    "catch (error) { text('refused: ' + error.message); }";
+}
 const evil: unknown[] = [];
 const USAGE = { input: 11, output: 7 };
+const DRIP = 12;
+const DRIP_MS = 150;
 
 function sse(frames: readonly (readonly [string | null, unknown])[]): string {
   return frames.map(([event, data]) =>
@@ -46,17 +85,20 @@ function command(body: string): string {
 }
 
 interface Format {
-  readonly start: (model: string) => string;
+  /** Its first frames; `input` the input tokens it bills, where its format bills them first. */
+  readonly start: (model: string, input?: number) => string;
   readonly text: (delta: string) => string;
   readonly finish: (text: string) => string;
+  /** The provider's refusal of a context too long for the model: its status 400 body. */
+  readonly overflow: unknown;
 }
 
 function anthropicFormat(): Format {
   return {
-    start: (model) => sse([
+    start: (model, input = USAGE.input) => sse([
       ["message_start", { type: "message_start", message: {
         id: "msg_fake", type: "message", role: "assistant", model, content: [],
-        stop_reason: null, usage: { input_tokens: USAGE.input, output_tokens: 1 } } }],
+        stop_reason: null, usage: { input_tokens: input, output_tokens: 1 } } }],
       ["content_block_start", { type: "content_block_start", index: 0,
                                 content_block: { type: "text", text: "" } }]]),
     text: (delta) => sse([["content_block_delta", { type: "content_block_delta", index: 0,
@@ -66,6 +108,8 @@ function anthropicFormat(): Format {
       ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" },
                           usage: { output_tokens: USAGE.output } }],
       ["message_stop", { type: "message_stop" }]]),
+    overflow: { type: "error", error: { type: "invalid_request_error",
+                                        message: "prompt is too long: 213462 tokens > 200000 maximum" } },
   };
 }
 
@@ -85,6 +129,10 @@ function openaiFormat(): Format {
         id: "resp_fake", status: "completed",
         usage: { input_tokens: USAGE.input, output_tokens: USAGE.output,
                  total_tokens: USAGE.input + USAGE.output } } }]]),
+    overflow: { error: {
+      message: "Your input exceeds the context window of this model. Please adjust your input " +
+        "and try again.",
+      type: "invalid_request_error", param: "input", code: "context_length_exceeded" } },
   };
 }
 
@@ -97,6 +145,9 @@ function googleFormat(): Format {
       content: { role: "model", parts: [{ text: "" }] }, finishReason: "STOP" }],
       usageMetadata: { promptTokenCount: USAGE.input, candidatesTokenCount: USAGE.output,
                        totalTokenCount: USAGE.input + USAGE.output } }]]),
+    overflow: { error: { code: 400, status: "INVALID_ARGUMENT",
+                         message: "The input token count (1196265) exceeds the maximum number " +
+                           "of tokens allowed (1048575)." } },
   };
 }
 
@@ -105,11 +156,43 @@ function outputCap(body: Record<string, unknown>): unknown {
   return body["max_tokens"] ?? body["max_output_tokens"] ?? config?.["maxOutputTokens"] ?? null;
 }
 
-async function model(request: Request, format: Format): Promise<Response> {
+async function model(request: Request, format: Format, input?: number): Promise<Response> {
   const text = await request.text();
   const body = JSON.parse(text) as Record<string, unknown>;
   const cmd = command(text);
   const url = new URL(request.url);
+  const credential = credentialOf(request);
+  const failing = /^fail-(\d{3})$/.exec(cmd);
+  if (failing) {
+    return Response.json({ error: { type: "fake", message: `bad key ${credential}` } },
+                         { status: Number(failing[1]) });
+  }
+  const overflow = /^overflow(?:-([a-z0-9]+))?$/.exec(cmd);
+  if (overflow && (overflow[1] === undefined || !overflowed.has(overflow[1]))) {
+    if (overflow[1] !== undefined) {
+      overflowed.add(overflow[1]);
+    }
+    return Response.json(format.overflow, { status: 400 });
+  }
+  if (cmd === "tpm") {
+    return Response.json({ error: { message: "Too many tokens per minute for this key" } },
+                         { status: 429 });
+  }
+  if (cmd === "streamoverflow") {
+    return new Response(sse([
+      ["response.created", { type: "response.created", response: { id: "resp_fake" } }],
+      ["response.failed", { type: "response.failed", response: {
+        id: "resp_fake", status: "failed",
+        error: { code: "context_length_exceeded",
+                 message: "Your input exceeds the context window of this model." } } }]]),
+                        { headers: { "content-type": "text/event-stream" } });
+  }
+  if (cmd === "redirect307") {
+    return new Response(null, { status: 307, headers: { location: "https://evil.test/steal" } });
+  }
+  if (cmd === "redirect") {
+    return new Response(null, { status: 302, headers: { location: "https://evil.test/steal" } });
+  }
   const name = String(body["model"] ?? url.pathname.split("/").at(-1)?.split(":")[0] ?? "");
   const encoder = new TextEncoder();
   const slow = /^slow-([a-z0-9]+)$/.exec(cmd);
@@ -139,6 +222,29 @@ async function model(request: Request, format: Format): Promise<Response> {
     });
     return new Response(stream, { headers: { "content-type": "text/event-stream" } });
   }
+  if (cmd === "drip") {
+    let sent = 0;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(format.start(name)));
+        timer = setInterval(() => {
+          if (sent === DRIP) {
+            clearInterval(timer);
+            const all = Array.from({ length: DRIP }, (_, i) => `d${i} `).join("");
+            controller.enqueue(encoder.encode(format.finish(all)));
+            controller.close();
+            return;
+          }
+          controller.enqueue(encoder.encode(format.text(`d${sent++} `)));
+        }, DRIP_MS);
+      },
+      cancel() {
+        clearInterval(timer);
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+  }
   const reply = JSON.stringify({
     path: url.pathname, query: url.search,
     auth: { "x-api-key": request.headers.get("x-api-key"),
@@ -153,7 +259,7 @@ async function model(request: Request, format: Format): Promise<Response> {
   // OpenAI's Responses answer names the tier it served the call at, as the API does; an
   // Anthropic answer names its served tier in its usage when `x-fake-served-tier` asks.
   const served = request.headers.get("x-fake-served-tier");
-  const payload = (format.start(name) + format.text(reply.slice(0, half))
+  const payload = (format.start(name, input) + format.text(reply.slice(0, half))
     + format.text(reply.slice(half)) + format.finish(reply))
     .replace('"status":"completed",', tier === null ? '"status":"completed",'
       : `"status":"completed","service_tier":${JSON.stringify(tier === "auto" ? "default" : tier)},`)
@@ -164,6 +270,37 @@ async function model(request: Request, format: Format): Promise<Response> {
     .replace('"usage":{"input_tokens":', served === null ? '"usage":{"input_tokens":'
       : `"usage":{"service_tier":${JSON.stringify(served)},"input_tokens":`);
   return new Response(payload, { headers: { "content-type": "text/event-stream" } });
+}
+
+function anthropicTool(request: Request, body: Record<string, unknown>,
+                       tool?: string, args?: unknown, inputTokens = USAGE.input): Response {
+  const name = String(body["model"]);
+  const json = args === undefined ? "" : JSON.stringify(args);
+  const input = tool === undefined ? ["{\"q\":", "\"pi\"}"]
+    : args === undefined ? ["{", "}"] : [json.slice(0, 5), json.slice(5)];
+  return new Response(sse([
+    ["message_start", { type: "message_start", message: {
+      id: "msg_tool", type: "message", role: "assistant", model: name, content: [],
+      stop_reason: null, usage: { input_tokens: inputTokens, output_tokens: 1 } } }],
+    ["content_block_start", { type: "content_block_start", index: 0,
+                              content_block: { type: "thinking", thinking: "", signature: "" } }],
+    ["content_block_delta", { type: "content_block_delta", index: 0,
+                              delta: { type: "thinking_delta", thinking: "Look it up." } }],
+    ["content_block_delta", { type: "content_block_delta", index: 0,
+                              delta: { type: "signature_delta", signature: "sig-1" } }],
+    ["content_block_stop", { type: "content_block_stop", index: 0 }],
+    ["content_block_start", { type: "content_block_start", index: 1,
+                              content_block: { type: "tool_use", id: "toolu_1",
+                                               name: tool ?? "lookup", input: {} } }],
+    ["content_block_delta", { type: "content_block_delta", index: 1,
+                              delta: { type: "input_json_delta", partial_json: input[0] } }],
+    ["content_block_delta", { type: "content_block_delta", index: 1,
+                              delta: { type: "input_json_delta", partial_json: input[1] } }],
+    ["content_block_stop", { type: "content_block_stop", index: 1 }],
+    ["message_delta", { type: "message_delta", delta: { stop_reason: "tool_use" },
+                        usage: { output_tokens: USAGE.output } }],
+    ["message_stop", { type: "message_stop" }]]),
+    { headers: { "content-type": "text/event-stream", "x-request": request.url } });
 }
 
 async function token(request: Request): Promise<Response> {
@@ -248,7 +385,7 @@ async function forwardEcho(request: Request): Promise<Response> {
   }
   if (mode === "stall") {
     // Some bytes, then silence; a timer holds the stream open (so workerd does not cut it
-    // as hung) and ends it after 5 s.
+    // as hung) and ends it after 5 s. Its cancel is recorded under `x-fake-id`.
     const id = request.headers.get("x-fake-id") ?? "";
     cancelled.set(id, false);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -383,6 +520,36 @@ export default {
         ? Response.json({ data: [] }) : Response.json({ error: "no" }, { status: 401 });
     }
     if (url.hostname === "api.anthropic.com") {
+      const text = await request.clone().text();
+      const calling = /^call-([a-z]+)$/.exec(command(text));
+      if (command(text) === "tool" || calling !== null) {
+        return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, calling?.[1]);
+      }
+      const measured = /^measured-([a-z]+)$/.exec(command(text));
+      if (measured !== null) {
+        const body = JSON.parse(text) as Record<string, unknown>;
+        const billed = Math.ceil(text.length / 3.5);
+        return Array.isArray(body["tools"]) && body["tools"].length > 0 && measured[1] !== "echo"
+          ? anthropicTool(request, body, "ta", { op: "call", name: measured[1], arguments: {} },
+                          billed)
+          : model(request, anthropicFormat(), billed);
+      }
+      const delegated = /^delegate-([a-z0-9-]+)$/.exec(command(text));
+      if (delegated !== null) {
+        return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, "ta", {
+          op: "call", name: "agent:delegate", arguments: { task: `cmd:${delegated[1]}` } });
+      }
+      const through = /^ta-([a-z]+)(?:-([a-z0-9-]+))?$/.exec(command(text));
+      if (through !== null) {
+        const called = through[1]!;
+        return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, "ta", {
+          op: "call", name: called,
+          arguments: called === "model" ? {
+            messages: [{ role: "user", text: `cmd:${through[2] ?? "echo"}` }],
+            system: TA_SYSTEM, max_tokens: TA_MAX_TOKENS }
+            : called === "codemode" ? { code: codemodeScript(through[2] ?? "echo") } : {},
+        });
+      }
       return model(request, anthropicFormat());
     }
     if (url.hostname === "api.openai.com") {

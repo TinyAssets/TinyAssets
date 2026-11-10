@@ -116,6 +116,7 @@ function plaintext(input: unknown): DoorbellSecret {
   }
 }
 
+/** Seals a pasted doorbell token for its subscription. */
 export async function sealDoorbell(env: KeyringEnv, owner: string, subscription: string,
                                    version: number, input: unknown): Promise<Sealed> {
   return sealValue(env, bound(owner, subscription, version), plaintext(input), doorbellSecret);

@@ -54,20 +54,21 @@ export const GATEWAY_POOL_SLOTS = 16;
  */
 const ISOLATE: Isolate = { pool: null, tails: null };
 
+/** The isolate's pool, at the gateway's capacity. */
 export function gatewaySlots(): SlotPool {
   return isolatePool(ISOLATE, GATEWAY_POOL_SLOTS);
 }
 
 /** The text while it is read, a byte. */
-const TEXT_COST = 2.25;
+export const TEXT_COST = 2.25;
 /** The parse, stringify and encode's most, a byte, for a body with a non-ASCII character. */
-const BYTE_COST = 4.25;
+export const BYTE_COST = 4.25;
 /** The same for a body of ASCII bytes alone. */
-const ASCII_BYTE_COST = 2.25;
+export const ASCII_BYTE_COST = 2.25;
 /** Each structural token's node in the tree. */
-const TOKEN_COST = 32;
+export const TOKEN_COST = 32;
 /** The slowest a sender may be while it holds a slot, in bytes a second (see the header). */
-const MIN_RATE = UNIT_BYTES / TEXT_COST / (SLOT_WAIT_MS / 1000);
+export const MIN_RATE = UNIT_BYTES / TEXT_COST / (SLOT_WAIT_MS / 1000);
 
 /** The longest the upload of `length` bytes may take: the pool's wait, and the body. */
 export function heldDeadlineMs(length: number): number {
@@ -79,12 +80,13 @@ export function parseWeight(bytes: number, tokens: number, ascii: boolean): numb
   return (ascii ? ASCII_BYTE_COST : BYTE_COST) * bytes + TOKEN_COST * tokens;
 }
 
+/** The slots `weight` bytes take. */
 export function weightSlots(weight: number): number {
   return Math.max(1, Math.ceil(weight / UNIT_BYTES));
 }
 
 /** Why a held call stopped, as the gateway answers it. */
-const HELD_CODES = Object.freeze(["busy", "egress_too_large", "invalid_request",
+export const HELD_CODES = Object.freeze(["busy", "egress_too_large", "invalid_request",
                                          "aborted"] as const);
 export type HeldCode = (typeof HELD_CODES)[number];
 
@@ -182,6 +184,7 @@ export class Hold {
     return this.#lease.units;
   }
 
+  /** The most units one call may hold. */
   get most(): number {
     return this.#most;
   }

@@ -48,6 +48,9 @@ import {
 import { Refusal } from "../../contract/src/refusal";
 import { namespace } from "./keys";
 
+/** The one secret this module reads. */
+export type KeyringSecret = unknown;
+
 const SALT = "tinyassets/files/v1";
 /** A wrapped key's most characters: "v1." + a kid + a nonce + 48 bytes, base64url. */
 const WRAPPED_MAX = 3 + 32 + 1 + 16 + 1 + 64;
@@ -58,7 +61,7 @@ export const KEYRING_UNAVAILABLE = "files_keyring_unavailable";
 export const KEY_REFUSED = "data_key_refused";
 
 /** The ring, read from the secret; anything short of a usable ring fails loudly. */
-function ring(raw: unknown): Ring {
+function ring(raw: KeyringSecret): Ring {
   const keys = parseRing(raw);
   if (keys === null) {
     throw new Error(KEYRING_UNAVAILABLE);
@@ -72,7 +75,7 @@ function domain(ns: string): Domain {
 }
 
 /** A new data key for `ns`, returned wrapped under the active kid: its only form outside. */
-export async function mint(secret: unknown, ns: unknown): Promise<string> {
+export async function mint(secret: KeyringSecret, ns: unknown): Promise<string> {
   const space = namespace(ns);
   const keys = ring(secret);
   const data = crypto.getRandomValues(new Uint8Array(KEY_BYTES));
@@ -87,7 +90,7 @@ export async function mint(secret: unknown, ns: unknown): Promise<string> {
  * The data key `wrapped` holds for `ns`, wrapped again under the active kid; `wrapped` as it
  * is when its kid is the active one already. Refused as `unwrap` refuses.
  */
-export async function rewrap(secret: unknown, ns: unknown, wrapped: unknown):
+export async function rewrap(secret: KeyringSecret, ns: unknown, wrapped: unknown):
     Promise<string> {
   const space = namespace(ns);
   const keys = ring(secret);
@@ -118,7 +121,7 @@ export async function chunkName(dataKey: ArrayBuffer, sha256: string): Promise<s
  * namespace, a changed byte, a kid the ring no longer holds) is refused as `KEY_REFUSED`,
  * with no detail of which.
  */
-export async function unwrap(secret: unknown, ns: string, wrapped: unknown):
+export async function unwrap(secret: KeyringSecret, ns: string, wrapped: unknown):
     Promise<ArrayBuffer> {
   return (await opened(ring(secret), ns, wrapped)).plain.buffer;
 }

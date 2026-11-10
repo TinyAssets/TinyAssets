@@ -111,8 +111,7 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # The starter's one build (bundle.mjs) rewrote everything made from it, plugins too.
-          git add platform/starter platform/plugins
+          git add platform/starter
           git commit -m "$title"
           {
             echo "branch=$branch"

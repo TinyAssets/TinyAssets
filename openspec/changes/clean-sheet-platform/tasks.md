@@ -957,7 +957,8 @@ account and no deploy.
   door's outcome and bytes, and the charge `succeeded` at pi-ai's cost, `failed` (nothing
   sent, or the provider refused before any output) or `unknown` (a cut, an abort, an
   answer pi-ai cannot read), which keeps the whole charge; one never settled is `lost`
-  past six minutes, its charge `unknown`. Every stop (the object's end signal, the
+  three missed beats on (`LOST_AFTER_S`, 180 s), or past the day's deadline, its charge
+  `unknown`. Every stop (the object's end signal, the
   deadline, the client leaving) aborts the provider's request through a stop stream the
   gateway watches. **Ends**: a policy write, a suspension, the connection's revoke, the
   lease's close or a successor lease, and the erasure end the streams they cover (research
@@ -2216,8 +2217,7 @@ R, S, M and W.
     vendor's name or none is refused `invalid_client_metadata`. Production stays
     `DCR_ENABLED: "false"` until the doors go live (mode `routes`; the go-ahead deploy,
     mode `dark`, moves no route, `platform/deploy/checklist.md`).
-  - Plugins (`platform/plugins/`, made by the starter's one build `starter/bundle.mjs`, whose
-    `--check` the starter guard runs): ChatGPT and
+  - Plugins (`platform/plugins/`, `build.mjs`, `--check` in the doors' guard): ChatGPT and
     Codex (Agent Plugins format, OpenAI extension, onboarding skill, first example prompt
     "Set me up on TinyAssets") and Claude (`.claude-plugin/`, `.mcp.json`), each the MCP
     server and the starter's `shared-brain`, `onboarding`, `goals`, `knowledge`,
