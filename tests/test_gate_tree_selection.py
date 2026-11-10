@@ -45,7 +45,7 @@ def test_only_paths_in_the_trees_have_a_shape() -> None:
     assert provable_shape(["platform/doors/x.ts", "docs/a.md", "openspec/t.md",
                            "AGENTS.md"]) == "*.md+docs+openspec+platform"
     # A Python file anywhere, any other root, or nothing at all: the whole suite.
-    assert provable_shape(["platform/sandbox/template/build.py"]) is None
+    assert provable_shape(["platform/sandbox/template/image.py"]) is None
     assert provable_shape(["platform/a.ts", "tinyassets/x.py"]) is None
     assert provable_shape(["platform/a.ts", ".github/workflows/tests.yml"]) is None
     assert provable_shape(["deploy/x.md"]) is None

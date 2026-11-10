@@ -65,19 +65,20 @@ import { HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
 import { readControl, type SandboxCeilings } from "../../contract/src/control";
-import { bundledSources } from "../../sources/src/catalog";
+import { bundledSources, engineHosts } from "../../sources/src/catalog";
 import { LEASE_TTL_S } from "../../contract/src/limits";
-import { DNS_SERVERS, EGRESS_HOST } from "../../contract/src/egress";
+import { allowList, DNS_SERVERS, EGRESS_HOST } from "../../contract/src/egress";
 import { migrate } from "../../contract/src/migrate";
 import {
   METER_BATCH, type MeterEvent, type SandboxSignin, type SandboxStart, type Started,
 } from "../../contract/src/sandbox";
 
 import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
-import { COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL, type JobKind, JOBS,
-         LEASE_FILE, type LeaseFile, LOADER, type QuietAnswer, type SigninDoc, SPEAKS,
-         type StartDoc, type StateAnswer, type WorkerCommand } from "../runner/protocol";
+import { COMMAND, EXIT, inboxCode, inboxDoc, type JobKind, JOBS, LEASE_FILE,
+         type LeaseFile, LOADER, type QuietAnswer, type SigninDoc, SPEAKS, type StartDoc,
+         type StateAnswer, type WorkerCommand } from "../runner/protocol";
 
+import { install } from "./install";
 import { runnerBytes, runnerDigest } from "./runner-bytes";
 import { CONTROL_MIGRATIONS } from "./schema";
 import { SLOTS, type SandboxSlots } from "./slots";
@@ -154,7 +155,7 @@ const ALARM_WALL_MS = 15 * 60_000;
 
 export interface SandboxEnv {
   readonly E2B_API_KEY: string;
-  /** The versioned template, `name:tag` (`template/build.py` prints it). */
+  /** The versioned template, `name:tag` (`template/image.ts` prints this tree's). */
   readonly E2B_TEMPLATE: string;
   /** The platform's control record's namespace, read for its sandbox part (`#control`). */
   readonly CONTROL: KVNamespace;
@@ -228,31 +229,21 @@ export function widened(network: E2bNetwork, hosts: readonly string[]): E2bNetwo
   if (network.allowOut.includes("*") || hosts.every((host) => network.allowOut.includes(host))) {
     return null;
   }
-  const names = new Set([...network.allowOut, ...hosts]);
-  names.delete(EGRESS_HOST);
-  return { ...network, allowOut: [...[...names].sort(), EGRESS_HOST] };
+  return { ...network, allowOut: allowList([...network.allowOut, ...hosts]) };
 }
 
 /** The vendor's own hosts of an engine run on its sign-in; none on a key. */
 function vendorHosts(start: SandboxStart): string[] {
-  return start.credential !== "vendor_login_in_sandbox" ? [] : engineHosts(start.engine, null);
+  return start.credential !== "vendor_login_in_sandbox" ? [] : hostsOf(start.engine, null);
 }
 
-/**
- * An engine's vendor hosts, its sign-in's and its model calls': the record's, and the
- * chosen region's (`cli.regions`) when it has regions.
- */
-function engineHosts(engine: string, region: string | null): string[] {
-  const cli = bundledSources().get(engine)?.cli;
-  if (cli === undefined) {
+/** An engine's vendor hosts, and its region's (`engineHosts`), by the engine's id. */
+function hostsOf(engine: string, region: string | null): string[] {
+  const record = bundledSources().get(engine);
+  if (record?.cli === undefined) {
     throw new Error(`engine ${engine} has no CLI record`);
   }
-  const chosen = region === null ? undefined : cli.regions?.[region];
-  if (region !== null && chosen === undefined) {
-    throw new Error(`engine ${engine} has no region ${region}`);
-  }
-  return [...new Set([...cli.hosts.login, ...cli.hosts.provider,
-                      ...(chosen?.hosts.login ?? []), ...(chosen?.hosts.provider ?? [])])];
+  return engineHosts(record, region);
 }
 
 /** A sign-in's id: `si_` and 32 hex. */
@@ -482,14 +473,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   /** This Worker's runner uploaded into the sandbox and installed by the loader. */
   async #install(handle: Handle): Promise<void> {
-    const digest = await this.#digest;
-    const e2b = this.#e2b();
-    await e2b.upload(handle, incoming(digest), runnerBytes());
-    const done = await e2b.exec(handle, [LOADER, INSTALL, digest], { timeoutMs: COMMAND_MS });
-    if (done.exitCode !== EXIT.ok) {
-      throw new Error(`the runner ${digest} was not installed (${done.exitCode}): ${
-        done.stderr}`);
-    }
+    await install(this.#e2b(), handle, runnerBytes(), await this.#digest, COMMAND_MS);
   }
 
   /**
@@ -724,7 +708,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       throw new Error("a sign-in names its id, its authority, its lease, its route and its " +
                       "https doors on the egress host");
     }
-    const hosts = engineHosts(signin.engine, signin.region);
+    const hosts = hostsOf(signin.engine, signin.region);
     const { ceilings } = await this.#control();
     if (ceilings === null) {
       return { started: false, code: CODES.unconfigured };

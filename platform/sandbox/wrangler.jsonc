@@ -14,8 +14,8 @@
 // - E2B_API_KEY: the one secret, declared by name; `secrets.required` makes a deploy without
 //   it fail. Whoever holds it can read a sandbox's egress token back from E2B, so it has
 //   the egress token's custody.
-// - E2B_TEMPLATE: the versioned template, `name:tag`, as `template/build.py` builds and
-//   prints it; the template guard holds its tag to the sources it is built from.
+// - E2B_TEMPLATE: the versioned template, `name:tag`, as `template/image.ts` names and
+//   `image.py` builds it; the deploy kit refuses a tree whose image is not this pin.
 // `global_fetch_strictly_public` keeps every fetch off same-zone routing: it reaches E2B's
 // public hosts and nothing else (guards/config.test.ts reads every fetch in the source).
 {

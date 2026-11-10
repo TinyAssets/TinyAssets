@@ -56,14 +56,24 @@ const UNSHARE = ["--mount", "--pid", "--fork", "--kill-child", "--uts", "--propa
 
 let bundled: string | null = null;
 
-/** The runner's bundle, built once per test file (outside every box). */
-export function runnerBundle(): string {
+/** The bundles' directory: the runner and the probes beside it, built once per test file. */
+function bundles(): string {
   if (bundled === null) {
     const out = mkdtempSync(join(tmpdir(), "ta-runner-bundle-"));
     execFileSync(process.execPath, [join(SANDBOX, "template", "bundle.mjs"), out]);
-    bundled = join(out, "runner.mjs");
+    bundled = out;
   }
   return bundled;
+}
+
+/** The runner's bundle, built once per test file (outside every box). */
+export function runnerBundle(): string {
+  return join(bundles(), "runner.mjs");
+}
+
+/** The template's probes, built beside the runner (`runner/probes.ts`). */
+export function probesBundle(): string {
+  return join(bundles(), "probes.mjs");
 }
 
 /** Every box's process this one started, killed when it exits (a test that died left it). */
@@ -799,6 +809,23 @@ export class Sandbox extends Box {
   /** The runner, one command, to its end: `ta-runner <sha> <command>`, as the Worker runs it. */
   runner(...argv: string[]): Ran {
     const done = this.exec([LOADER, this.digest, ...argv]);
+    return ran(argv, done.status ?? -1, done.stdout, done.stderr);
+  }
+
+  /**
+   * One of the template's probes, to its end, as the checks run it: the probes bundle
+   * uploaded and installed by the loader beside the runner (each time: the runner's
+   * `prepare` drops it), then `ta-runner <probes> <command>`.
+   */
+  probe(...argv: string[]): Ran {
+    const bytes = readFileSync(probesBundle());
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    writeFileSync(this.path(incoming(digest)), bytes, { mode: 0o600 });
+    const installed = this.exec([LOADER, INSTALL, digest]);
+    if (installed.status !== 0) {
+      throw new Error(`the loader did not install the probes: ${installed.stderr}`);
+    }
+    const done = this.exec([LOADER, digest, ...argv]);
     return ran(argv, done.status ?? -1, done.stdout, done.stderr);
   }
 

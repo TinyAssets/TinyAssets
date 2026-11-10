@@ -226,6 +226,23 @@ export class E2b {
     return created(json);
   }
 
+  /**
+   * A throwaway sandbox (the template's checks), killed, never paused, at its timeout, so
+   * one a caller lost is gone at its timeout. Its network is E2B's default, open, unless
+   * one is given.
+   */
+  async createThrowaway(request: { template: string; timeoutS: number;
+                                   network: E2bNetwork | null;
+                                   metadata: Readonly<Record<string, string>> }):
+      Promise<Created> {
+    const { json } = await this.#api("POST", "/v2/sandboxes", {
+      templateID: request.template, timeout: request.timeoutS, secure: true, autoPause: false,
+      ...(request.network === null ? {} : { network: request.network }),
+      metadata: request.metadata,
+    }, [201, 200]);
+    return created(json);
+  }
+
   /** The sandbox's info, or null when E2B has no such sandbox (killed). */
   async info(id: string): Promise<SandboxInfo | null> {
     try {
@@ -361,6 +378,14 @@ export class E2b {
     return (await tag.json() as { exists?: unknown }).exists === true;
   }
 
+  /**
+   * `tags` assigned to the build `target` (`name:tag`) names (E2B's OpenAPI
+   * `AssignTemplateTagsRequest`): how the template's checks mark a pair that passed.
+   */
+  async tag(target: string, tags: readonly string[]): Promise<void> {
+    await this.#api("POST", "/templates/tags", { target, tags: [...tags] }, [200, 201, 204]);
+  }
+
   #hooks(): Record<string, string> {
     return { "X-API-Key": this.#key, "Content-Type": "application/json" };
   }
@@ -425,9 +450,12 @@ export class E2b {
   /**
    * Run `argv` in the sandbox as `user`, no shell, with an empty environment beside what
    * envd sets, and wait for it to end (at most `timeoutMs`): its output and exit code.
+   * `keepalive`: envd pings the stream every 50 s, as E2B's SDK asks it to, so a command
+   * quiet for minutes keeps its stream (a fetch outside workerd gives up on a body silent
+   * for 300 s); the template's checks ask it.
    */
   async exec(handle: Handle, argv: readonly string[], options: { user?: string;
-             timeoutMs: number }): Promise<Exec> {
+             timeoutMs: number; keepalive?: boolean }): Promise<Exec> {
     if (argv.length === 0 || !argv[0]!.startsWith("/")) {
       throw new Error("a command is an absolute path and its arguments");
     }
@@ -435,7 +463,8 @@ export class E2b {
       method: "POST",
       headers: { ...this.#envd(handle, options.user ?? "root"),
                  "Content-Type": "application/connect+json", "Connect-Protocol-Version": "1",
-                 "Connect-Timeout-Ms": String(options.timeoutMs) },
+                 "Connect-Timeout-Ms": String(options.timeoutMs),
+                 ...(options.keepalive === true ? { "Keepalive-Ping-Interval": "50" } : {}) },
       body: envelope({ process: { cmd: argv[0], args: argv.slice(1), envs: {} },
                        stdin: false }),
     });

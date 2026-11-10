@@ -1,14 +1,15 @@
 /**
  * The template's layout as a test sandbox's root holds it (`harness.ts`, `Box`), as plain
- * data: its users and groups, the directories it builds and their owners and modes, and where
- * Node, the loader and E2B's egress CA sit. One module, so the template's own spec can take
- * its place. The users' ids are the tests' own block (each box's pid namespace keeps every
- * suite's processes apart, so a fixed block is enough); the template's are its build's. Its
- * pool is four run users, where the template's is `RUNS_CEILING`.
+ * data, made from the image's own spec (`template/image.ts`): its users and groups, the
+ * directories it builds and their owners and modes, and where Node, the loader and E2B's
+ * egress CA sit. So the image and the test root share one definition. The users' ids are the
+ * tests' own block (each box's pid namespace keeps every suite's processes apart, so a fixed
+ * block is enough); the image's are its build's. Its pool is four run users, where the
+ * image's is `RUNS_CEILING`. What E2B's base image brings is the tests' own here: root, its
+ * default user (in `sudo`, as its provisioning boots it), the system directories, and its
+ * egress CA's path, which the loader names.
  */
-import { ENGINE_ROOT, WORKSPACE } from "../engine";
-import { INBOX, INCOMING, RUNNERS, STATE_DIR } from "../protocol";
-import { POOL_PREFIX } from "../users";
+import { spec } from "../../template/image";
 
 export interface LayoutUser {
   readonly name: string;
@@ -32,47 +33,55 @@ export interface LayoutDir {
   readonly group: string;
 }
 
+const IMAGE = spec();
+
 export const TA_GID = 50_000;
 export const SYNC_UID = 50_001;
 export const POOL_UIDS: readonly number[] = Object.freeze([50_002, 50_003, 50_004, 50_005]);
-const POOL = POOL_UIDS.map((uid, n) => ({ name: `${POOL_PREFIX}${n}`, uid }));
+const POOL = POOL_UIDS.map((uid, n) => ({ name: `${IMAGE.pool.prefix}${n}`, uid }));
+const E2B_UID = 1000;
 
 export const USERS: readonly LayoutUser[] = Object.freeze([
   { name: "root", uid: 0, gid: 0, home: "/root", shell: "/bin/bash" },
-  // E2B's default user, whom its provisioning puts back in `sudo` at every boot.
-  { name: "user", uid: 1000, gid: 1000, home: "/home/user", shell: "/bin/bash" },
-  { name: "ta-sync", uid: SYNC_UID, gid: SYNC_UID, home: "/nonexistent",
-    shell: "/usr/sbin/nologin" },
-  ...POOL.map(({ name, uid }) => ({ name, uid, gid: uid, home: "/nonexistent",
-                                    shell: "/bin/bash" })),
+  { name: IMAGE.e2b_user, uid: E2B_UID, gid: E2B_UID, home: `/home/${IMAGE.e2b_user}`,
+    shell: "/bin/bash" },
+  { name: IMAGE.sync.user, uid: SYNC_UID, gid: SYNC_UID, home: IMAGE.no_home,
+    shell: IMAGE.sync.shell },
+  ...POOL.map(({ name, uid }) => ({ name, uid, gid: uid, home: IMAGE.no_home,
+                                    shell: IMAGE.pool.shell })),
 ]);
 
 export const GROUPS: readonly LayoutGroup[] = Object.freeze([
   { name: "root", gid: 0, members: [] },
-  { name: "sudo", gid: 27, members: ["user"] },
-  { name: "user", gid: 1000, members: [] },
-  { name: "ta", gid: TA_GID, members: POOL.map(({ name }) => name) },
-  { name: "ta-sync", gid: SYNC_UID, members: [] },
+  { name: "sudo", gid: 27, members: [IMAGE.e2b_user] },
+  { name: IMAGE.e2b_user, gid: E2B_UID, members: [] },
+  { name: IMAGE.group, gid: TA_GID, members: POOL.map(({ name }) => name) },
+  { name: IMAGE.sync.user, gid: SYNC_UID, members: [] },
   ...POOL.map(({ name, uid }) => ({ name, gid: uid, members: [] })),
 ]);
+
+/** A directory the image's `mkdir -p` makes and no step changes: root's umask 022. */
+const MADE = 0o755;
 
 export const DIRS: readonly LayoutDir[] = Object.freeze([
   { path: "/var", mode: 0o755, owner: "root", group: "root" },
   { path: "/var/lib", mode: 0o755, owner: "root", group: "root" },
-  { path: STATE_DIR, mode: 0o700, owner: "root", group: "root" },
-  { path: INBOX, mode: 0o700, owner: "root", group: "root" },
-  { path: INCOMING, mode: 0o700, owner: "root", group: "root" },
-  { path: "/var/lib/ta-sync", mode: 0o700, owner: "ta-sync", group: "ta-sync" },
+  { path: IMAGE.state.dir, mode: IMAGE.state.mode, owner: "root", group: "root" },
+  { path: IMAGE.state.inbox, mode: MADE, owner: "root", group: "root" },
+  { path: IMAGE.state.incoming, mode: IMAGE.state.incoming_mode, owner: "root", group: "root" },
+  { path: IMAGE.sync.dir, mode: IMAGE.sync.mode, owner: IMAGE.sync.user,
+    group: IMAGE.sync.user },
   { path: "/var/tmp", mode: 0o1777, owner: "root", group: "root" },
   { path: "/tmp", mode: 0o1777, owner: "root", group: "root" },
   { path: "/run", mode: 0o755, owner: "root", group: "root" },
   { path: "/opt", mode: 0o755, owner: "root", group: "root" },
-  { path: "/opt/ta", mode: 0o755, owner: "root", group: "root" },
-  { path: RUNNERS, mode: 0o755, owner: "root", group: "root" },
-  { path: ENGINE_ROOT, mode: 0o755, owner: "root", group: "root" },
-  { path: WORKSPACE, mode: 0o2775, owner: "root", group: "ta" },
+  { path: IMAGE.opt, mode: MADE, owner: "root", group: "root" },
+  { path: IMAGE.runners.dir, mode: IMAGE.runners.mode, owner: "root", group: "root" },
+  { path: IMAGE.engines_dir, mode: MADE, owner: "root", group: "root" },
+  { path: IMAGE.workspace.dir, mode: IMAGE.workspace.mode, owner: "root",
+    group: IMAGE.group },
 ]);
 
-/** Node v22 and E2B's egress CA (the loader is the protocol's `LOADER`). */
-export const NODE = "/usr/local/bin/node";
+/** Node, under the image's prefix, and E2B's egress CA, where the loader trusts it. */
+export const NODE = `${IMAGE.node.prefix}/bin/node`;
 export const EGRESS_CA = "/usr/local/share/ca-certificates/e2b-ca.crt";
