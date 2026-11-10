@@ -32,7 +32,6 @@ import { refusalOf } from "../../contract/src/refusal";
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
 import { refusalResponse } from "./refused";
-import { mediaType } from "./session";
 
 const CHUNK_PATH = /^([0-9a-f]{32})\/(0|[1-9][0-9]{0,5})$/;
 
@@ -99,7 +98,8 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
   if (request.method !== "PUT") {
     return failure(405, "method not allowed");
   }
-  if (mediaType(request) !== "application/octet-stream") {
+  if ((request.headers.get("Content-Type") ?? "").split(";")[0]!.trim().toLowerCase()
+      !== "application/octet-stream") {
     return failure(415, "an upload's bytes are application/octet-stream");
   }
   const named = CHUNK_PATH.exec(path);

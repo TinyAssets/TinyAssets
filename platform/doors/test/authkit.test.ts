@@ -10,7 +10,7 @@
  * half-configured Worker, and the identity's deletion. An `auth_time` past the 600 s window
  * is the callback's to refuse (`oauth.test.ts`, "older than ten minutes").
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { type DoorsEnv, now, UPSTREAM_CALLBACK } from "../src/config";
 import { upstreamOf } from "../src/index";
@@ -173,16 +173,6 @@ describe("the access token", () => {
 });
 
 describe("the live upstream", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  /** The live upstream, its issuer answered by `fetcher` in place of the global fetch. */
-  const answeredBy = (fetcher: typeof fetch) => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(fetcher);
-    return oidcUpstream(ISSUER, CONFIG, SECRET);
-  };
-
   it("asks for a fresh sign-in (max_age=0) with exactly our challenge, state and callback",
      () => {
     const upstream = oidcUpstream(ISSUER, CONFIG, SECRET);
@@ -210,7 +200,7 @@ describe("the live upstream", () => {
       }
       return new Response("no", { status: 404 });
     }) as typeof fetch;
-    const upstream = answeredBy(fetcher);
+    const upstream = oidcUpstream(ISSUER, CONFIG, SECRET, fetcher);
     const signed = await upstream.finish({ code: "code-1", code_verifier: "verifier-1",
                                            redirect_uri: UPSTREAM_CALLBACK });
     expect(signed).toEqual({ issuer: ISSUER, subject: "user_01ALICE",
@@ -230,10 +220,10 @@ describe("the live upstream", () => {
     const answering = (status: number) => (async (input: RequestInfo | URL) =>
       String(input) === CONFIG.jwks_uri ? Response.json(jwks)
         : Response.json(answer, { status })) as typeof fetch;
-    await expect(answeredBy(answering(400)).finish({
+    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(400)).finish({
       code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
       .rejects.toThrow(/400/);
-    await expect(answeredBy(answering(200)).finish({
+    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(200)).finish({
       code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
       .rejects.toThrow(/user\.id/);
   });
@@ -245,7 +235,7 @@ describe("the live upstream", () => {
         seen.push(String(input));
         return new Response(null, { status, headers: { Location: "https://evil.test/t" } });
       }) as typeof fetch;
-      await expect(answeredBy(redirecting).finish({
+      await expect(oidcUpstream(ISSUER, CONFIG, SECRET, redirecting).finish({
         code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
         .rejects.toThrow(new RegExp(`answered ${status}$`));
     }
@@ -255,7 +245,7 @@ describe("the live upstream", () => {
   it("names a refused exchange's error code, and nothing else of its answer", async () => {
     const refusing = (body: unknown) => (async () =>
       Response.json(body, { status: 400 })) as unknown as typeof fetch;
-    const finish = (body: unknown) => answeredBy(refusing(body))
+    const finish = (body: unknown) => oidcUpstream(ISSUER, CONFIG, SECRET, refusing(body))
       .finish({ code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK });
     await expect(finish({ error: "invalid_client", error_description: `bad ${SECRET}` }))
       .rejects.toThrow(/^the upstream's token endpoint answered 400 \(invalid_client\)$/);
@@ -271,9 +261,9 @@ describe("the live upstream", () => {
       seen.push(new Request(input, init));
       return new Response(null, { status });
     }) as typeof fetch;
-    await answeredBy(answering(202)).forget("user_01ALICE");
-    await answeredBy(answering(404)).forget("user_01ALICE");
-    await expect(answeredBy(answering(500)).forget("user_01ALICE"))
+    await oidcUpstream(ISSUER, CONFIG, SECRET, answering(202)).forget("user_01ALICE");
+    await oidcUpstream(ISSUER, CONFIG, SECRET, answering(404)).forget("user_01ALICE");
+    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(500)).forget("user_01ALICE"))
       .rejects.toThrow(/500/);
     expect(seen[0]!.method).toBe("DELETE");
     expect(seen[0]!.url).toBe("https://api.workos.com/user_management/users/user_01ALICE");

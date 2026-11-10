@@ -19,12 +19,14 @@
  */
 import { type DoorsEnv, PUBLIC_HOST } from "./config";
 
+/** The pages, by path: each is its file. */
 const PAGES: Readonly<Record<string, string>> = Object.freeze({
   "/app": "index.html",
   "/app/signed-in": "signed-in.html",
   "/app/connected": "connected.html",
 });
 
+/** The pages' own scripts and style, under `/app/static/`. */
 const STATIC: Readonly<Record<string, string>> = Object.freeze({
   "app.js": "text/javascript; charset=utf-8",
   "api.js": "text/javascript; charset=utf-8",

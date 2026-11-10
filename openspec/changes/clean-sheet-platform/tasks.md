@@ -36,7 +36,7 @@ test, cutover.
   (`max_age=0`) on every sign-in, consent never remembered, `authenticated_at` in the grant's props and never
   moved by a refresh), the stateless MCP door on SDK v2's `createMcpHandler` 2.3.1 for
   2026-07-28 and 2025-11-25, one tool per outside-callable owner door with all four
-  hints (`tools.ts`), `/api` keys in the Python's format, the owner surface
+  hints (`contract/doors.json`), `/api` keys in the Python's format, the owner surface
   `/app/api/*` with the session cookie and CSRF rules, and the owner directory's `k:`
   entries and fail-closed `c:control` record. Guards: the binder, the tool table, the
   config; the platform's module-state and self-reach guards scan it. Declared
@@ -204,7 +204,7 @@ test, cutover.
   step (`platform/deploy/checklist.md`).
 - [x] The agent tools: `run_graph` and `converse` as tools and scope capabilities, with
   the agent's doors (5, A4): `converse`, `run_graph`, `run_status` and `run_cancel` in
-  `tools.ts` (the first two destructive, not idempotent and open world, the agent acting
+  `contract/doors.json` (the first two destructive, not idempotent and open world, the agent acting
   on outside services; `run_status` a read; `run_cancel` destructive and idempotent), on
   `/mcp` and `/api/tools/*`; `converse` and `run_graph` in the object's `CAPABILITIES`;
   the tool guard holds open world to those two doors alone; the owner's own
@@ -834,7 +834,7 @@ account and no deploy.
   `SandboxLeases.open` as `deadline` for each run, at most `RUN_DEADLINE_S`, a day, which
   is also the default);
   256 random bits; and HMAC-SHA-256 under the routing key over the token's kind, owner,
-  expiry and secret (`doors/src/routing-mac.ts`, the one module both Workers use). Past
+  expiry and secret (`contract/src/routing-mac.ts`, the one module both Workers use). Past
   its expiry the door refuses a token `egress_token_expired` without reaching any object. The routing key,
   `ROUTING_MAC_KEY`, is a Worker secret of the owner Worker (which mints) and the doors
   Worker (which verifies), 32 random bytes generated at deploy, declared in both configs

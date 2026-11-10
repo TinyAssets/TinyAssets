@@ -20,7 +20,7 @@
  * 6. The platform gates: an outside client's authorization is outside work (the kill
  *    switch and the maintenance gate); the owner's own sign-in, the maintenance gate.
  * 7. Sign-up: an owner the directory has no record of is admitted by the platform, its
- *    explicit admit (`bindPlatform`, `admissionSet`), and then recorded; a fresh object
+ *    explicit admit (`bindPlatformFor`, `admissionSet`), and then recorded; a fresh object
  *    is pending until then and refuses every door (`owner/src/admission.ts`).
  * 8. An outside client: the grant, its props holding the sign-in's time. The owner's
  *    app: `sessionOpen` at the sign-in's time, the session cookie set on the redirect,
@@ -41,7 +41,7 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 
 import {
-  type AppProps, bindPlatform, bindSignIn, type McpProps, mcpOrigin, ownerOf,
+  type AppProps, bindPlatformFor, bindSignIn, type McpProps, mcpOrigin, ownerOf,
 } from "./binder";
 import { type Vendor, vendorOf } from "../../contract/src/apps";
 import { boundedText, TOO_LARGE } from "./body";
@@ -172,11 +172,16 @@ function failed(error: unknown): Response {
 }
 
 /**
- * `GET` and `POST /authorize`. The owner's sign-in (`upstream`) is built only where a
- * sign-in needs it: a bad `UPSTREAM` breaks sign-in alone, never another door.
+ * The owner's sign-in, built only where a sign-in needs it: a bad `UPSTREAM` breaks
+ * sign-in alone, never another door.
  */
+function upstreamOf(source: Upstream | (() => Upstream)): Upstream {
+  return typeof source === "function" ? source() : source;
+}
+
+/** `GET` and `POST /authorize`. */
 export async function authorize(request: Request, env: DoorsEnv,
-                                upstream: () => Upstream): Promise<Response> {
+                                upstream: Upstream | (() => Upstream)): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
   try {
     if (request.method === "GET") {
@@ -197,7 +202,7 @@ export async function authorize(request: Request, env: DoorsEnv,
         return text(400, "This app may not send access to TinyAssets itself.");
       }
       if (forApp) {
-        return await signIn(oauth, upstream(), parsed);
+        return await signIn(oauth, upstreamOf(upstream), parsed);
       }
       const details = await oauth.describeConsent(parsed);
       const consent = await oauth.beginConsent(parsed);
@@ -223,7 +228,7 @@ export async function authorize(request: Request, env: DoorsEnv,
       // No `remember`: the approval is this authorization's alone. The grant's scopes
       // are cut to the catalogue when it is made.
       const approved = await oauth.approveConsent(request, handle);
-      return await signIn(oauth, upstream(), approved.request, approved.headers);
+      return await signIn(oauth, upstreamOf(upstream), approved.request, approved.headers);
     }
     return text(405, "method not allowed");
   } catch (error) {
@@ -237,8 +242,8 @@ export async function authorize(request: Request, env: DoorsEnv,
  * again at the next sign-in (the admit is idempotent) and a record never names an owner
  * its object did not admit.
  */
-async function admit(env: DoorsEnv, signedIn: SignIn, owner: string): Promise<boolean> {
-  const platform = bindPlatform(env, await bindSignIn(env, signedIn));
+async function admit(env: DoorsEnv, owner: string): Promise<boolean> {
+  const platform = bindPlatformFor(env, owner);
   let state: string;
   try {
     ({ state } = await platform.stub.admissionSet(platform.binding, { admit: true }));
@@ -304,7 +309,7 @@ async function signedInVendor(oauth: OAuthHelpers, clientId: string, redirectUri
 
 /** `GET /oauth/upstream/callback`: the verified sign-in becomes the grant. */
 export async function callback(request: Request, env: DoorsEnv,
-                               source: () => Upstream): Promise<Response> {
+                               source: Upstream | (() => Upstream)): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
   let resumed: Awaited<ReturnType<typeof oauth.finishUpstream<Verifier>>>;
   try {
@@ -312,7 +317,7 @@ export async function callback(request: Request, env: DoorsEnv,
   } catch (error) {
     return failed(error);
   }
-  const upstream = source();
+  const upstream = upstreamOf(source);
   const { request: original, data, headers } = resumed;
   const params = new URL(request.url).searchParams;
   const code = params.get("code");
@@ -350,7 +355,7 @@ export async function callback(request: Request, env: DoorsEnv,
     if (!outsideOpen(control, owner)) {
       return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
     }
-    if (record === null && !await admit(env, signedIn, owner)) {
+    if (record === null && !await admit(env, owner)) {
       return redirect(authorizationErrorRedirect(original, "access_denied",
                                                  "this account was erased"), headers);
     }
@@ -373,7 +378,7 @@ export async function callback(request: Request, env: DoorsEnv,
     if (!ownerOpen(control, owner)) {
       return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
     }
-    if (record === null && !await admit(env, signedIn, owner)) {
+    if (record === null && !await admit(env, owner)) {
       return redirect(authorizationErrorRedirect(original, "access_denied",
                                                  "this account was erased"), headers);
     }

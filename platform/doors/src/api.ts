@@ -10,6 +10,7 @@
  * fail-closed. The request's `Cookie` header is gone before this sees it (`index.ts`).
  */
 import { answerJson } from "./answers";
+import { bearer } from "./app";
 import { verifyKey } from "./api-keys";
 import { refusalOf } from "../../contract/src/refusal";
 
@@ -17,10 +18,10 @@ import { jsonObject } from "./body";
 import { API_BODY_MAX, type DoorsEnv } from "./config";
 import { outsideRead } from "./control";
 import { withTiers } from "./binder";
-import { bearer, mediaType } from "./session";
+import { mediaType } from "./session";
 import { profileOf } from "./mcp";
 import { refusalResponse } from "./refused";
-import { callDoor, toolDoor } from "./tools";
+import { callDoor } from "./tools";
 import type { Sources } from "../../sources/src/schema";
 
 const TOOL_PATH = /^\/api\/tools\/([a-z_]{1,64})$/;
@@ -62,7 +63,7 @@ export async function serveApi(request: Request, env: DoorsEnv, sources: Sources
     return args;
   }
   try {
-    return answerJson(tool.name, await callDoor(held.stub, held.binding, toolDoor(tool), args));
+    return answerJson(tool.name, await callDoor(held.stub, held.binding, tool.door, args));
   } catch (error) {
     const refused = refusalOf(error);
     if (refused === null) {

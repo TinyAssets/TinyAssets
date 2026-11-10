@@ -10,8 +10,8 @@ declare namespace Cloudflare {
     DCR_ENABLED: string;
     OWNER_ISSUER: string;
     FOREIGN_ISSUERS: string;
-    GATEWAY: import("../src/config").ConnectService;
-    EGRESS: import("../src/config").EgressService;
+    GATEWAY: import("../../contract/src/gateway").ConnectService;
+    EGRESS: import("../../contract/src/gateway").EgressService;
     /** The one secret, the sandbox tokens' routing key; the owner Worker's too. */
     ROUTING_MAC_KEY: string;
     /** The fake providers (test/fake-providers.ts), for the tests to read back. */

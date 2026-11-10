@@ -73,10 +73,8 @@ export const REFRESH_TOKEN_TTL_S = 30 * 86_400;
 export const SIGN_IN_MAX_AGE_S = 600;
 export const CLOCK_MARGIN_S = 5;
 
-/**
- * The largest body each door reads; past it, `413` before anything is parsed. The consent
- * form: its handle and decision, a few short fields.
- */
+/** The largest body each door reads; past it, `413` before anything is parsed. */
+/** The consent form: its handle and decision, a few short fields. */
 export const AUTHORIZE_BODY_MAX = 4 * 1024;
 /**
  * A tool call's arguments: the request body's one ceiling (`EGRESS_BODY_MAX`, 16 MiB, the
@@ -84,6 +82,7 @@ export const AUTHORIZE_BODY_MAX = 4 * 1024;
  * with room for its JSON escapes; a test holds the three.
  */
 export const API_BODY_MAX = 16 * 1024 * 1024;
+/** The owner surface's requests (a run's input among them): as a tool call's. */
 export const APP_BODY_MAX = API_BODY_MAX;
 
 /**
@@ -96,14 +95,14 @@ export const NOT_CONFIGURED = "not-configured";
 export const INBOUND_PATH = "/hooks/inbound/";
 /**
  * An inbound event's body: the platform's one request ceiling, the same as a tool call's
- * (`API_BODY_MAX`; slice LIM raises it to its 16 MiB), never a ceiling of its own.
+ * (`API_BODY_MAX`, 16 MiB), never a ceiling of its own.
  */
 export const INBOUND_BODY_MAX = API_BODY_MAX;
 
 /**
  * The erasure queue (`erase.ts`), the one the owner Worker's `ERASURES` producer sends to:
- * the queue handler takes every other batch as the sandbox's ring (`index.ts`), so
- * `guards/config.test.ts` holds this name to the configs.
+ * the queue handler takes a batch of neither it nor the import queue as the sandbox's ring
+ * (`index.ts`), so `guards/config.test.ts` holds this name to the configs.
  */
 export const ERASURE_QUEUE = "tinyassets-erasure";
 
@@ -130,8 +129,8 @@ export interface DoorsEnv {
    */
   readonly ROUTING_MAC_KEY: string;
   /**
-   * E2B's lifecycle webhook's signature secret (`e2b-hooks.ts`), a Worker secret the deploy
-   * kit sets and registers with E2B; unset, every delivery is refused `503`.
+   * E2B's lifecycle webhook's signature secret (`e2b-hooks.ts`), a Worker secret slice L's
+   * deploy kit sets and registers with E2B; unset, every delivery is refused `503`.
    */
   readonly E2B_WEBHOOK_SECRET?: string;
   /** The OAuth provider's own store (its schema; never ours). */

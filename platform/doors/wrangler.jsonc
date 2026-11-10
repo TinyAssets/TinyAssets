@@ -28,8 +28,8 @@
 // - DCR_ENABLED: dynamic registration for the vendors that offer no CIMD (the founder's
 //   ruling, 2026-11-04), off until the doors go live (mode `routes`); on, it takes only a client
 //   named for such a vendor whose every redirect is that vendor's (apps.json). OWNER_ISSUER:
-//   AuthKit's issuer, whose subjects stay owner ids; unset until the AuthKit slice, so
-//   every sign-in fails loudly. FOREIGN_ISSUERS: the other issuers whose owners are
+//   AuthKit's issuer, whose subjects stay owner ids; until the deploy sets it, every
+//   sign-in fails loudly. FOREIGN_ISSUERS: the other issuers whose owners are
 //   namespaced, each listed by its own slice; none today, and any unlisted issuer fails.
 //   UPSTREAM: the owner issuer's endpoints and our client at it (src/oidc.ts), filled by
 //   the deploy from the issuer's live discovery once its issuer is OWNER_ISSUER exactly.

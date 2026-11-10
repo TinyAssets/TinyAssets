@@ -22,8 +22,9 @@
  *   erasure always finishes.
  */
 import { refusalOf } from "../../contract/src/refusal";
+import { principal } from "../../contract/src/text";
+
 import { bindPlatformFor, type Bound, FOREIGN } from "./binder";
-import { queuedOwner } from "./body";
 import { type DoorsEnv, NOT_CONFIGURED, now } from "./config";
 import { deleteKey, deleteRoute, putOwner } from "./directory";
 import { revokeAll } from "./revoke";
@@ -63,8 +64,14 @@ export async function eraseOutside(env: DoorsEnv, owner: string, upstream: () =>
 export async function erasureQueue(batch: MessageBatch<unknown>, env: DoorsEnv,
                                    upstream: () => Upstream): Promise<void> {
   for (const message of batch.messages) {
-    const owner = queuedOwner(message.body);
-    if (owner === null) {
+    const body = message.body as { owner?: unknown } | null;
+    let owner: string;
+    try {
+      if (typeof body !== "object" || body === null || Object.keys(body).join() !== "owner") {
+        throw new Error("out of shape");
+      }
+      owner = principal(body.owner);
+    } catch {
       console.error("an erasure message is out of shape; dropped");
       message.ack();
       continue;

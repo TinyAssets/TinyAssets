@@ -36,13 +36,6 @@ export function mediaType(request: Request): string {
   return (request.headers.get("Content-Type") ?? "").split(";")[0]!.trim().toLowerCase();
 }
 
-/** The `Authorization` header's bearer token, or null. */
-export function bearer(request: Request): string | null {
-  const header = request.headers.get("Authorization") ?? "";
-  const match = /^Bearer ([^\s]+)$/.exec(header);
-  return match === null ? null : match[1]!;
-}
-
 /** The request without its `Cookie` header: what `/mcp`, `/api` and `/hooks` see. */
 export function withoutCookie(request: Request): Request {
   if (!request.headers.has("Cookie")) {

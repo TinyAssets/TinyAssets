@@ -2,7 +2,7 @@
  * The connect doors (gateway research §7.2, §7.3; tasks 4 G3): an owner connects a model
  * source by pasting a key or by OAuth, revokes one, and lists them. The only source that
  * reaches `GATEWAY`, and only its `ConnectGateway` entrypoint (`seal`, `exchange`,
- * `verify`).
+ * `verify`, and a doorbell's `sealDoorbell` and `verifyDoorbell`).
  *
  * **No plaintext reaches the owner's object.** A pasted key exists only in this request
  * and in the gateway: it goes to `GATEWAY.seal` alone, never to an object call, a log, an
@@ -403,6 +403,7 @@ async function list({ bound: { binding, stub }, body }: ConnectContext): Promise
   return json(200, await stub.connectionList(binding));
 }
 
+/** The connect routes, by their path under the owner surface. */
 /**
  * A wake's secret, handed straight to the gateway (slice W, ruling H1), as a pasted model
  * key is: the owner's pasted `/fire` or routine token sealed (`sealDoorbell`), or an MCP
@@ -430,7 +431,6 @@ export async function verifyDoorbell(env: DoorsEnv, owner: string, subscription:
   }
 }
 
-/** The connect routes, by their path under the owner surface. */
 export const CONNECT_ROUTES: Readonly<Record<string, (context: ConnectContext) =>
     Promise<Response>>> = Object.freeze({
   "connections/key": connectKey,

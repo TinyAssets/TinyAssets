@@ -188,6 +188,10 @@ describe("the owner a sign-in names", () => {
   const LISTED: DoorsEnv = { ...doorsEnv,
     FOREIGN_ISSUERS: JSON.stringify(["https://auth.openai.com", "https://other.example"]) };
 
+  it("is listed against no foreign issuer today", () => {
+    expect(doorsEnv.FOREIGN_ISSUERS).toBe("[]");
+  });
+
   it("is the owner issuer's subject as it stands", async () => {
     expect(await ownerOf(doorsEnv, FAKE_ISSUER, "user_01H")).toBe("user_01H");
   });

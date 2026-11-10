@@ -7,14 +7,25 @@
  * fails is retried by the queue; one the queue gives up on is rung again by the line's own
  * back-off.
  */
+import { principal } from "../../contract/src/text";
+
 import { ownerObject } from "./binder";
-import { queuedOwner } from "./body";
 import type { DoorsEnv } from "./config";
+
+export interface Ring {
+  readonly owner: string;
+}
 
 export async function ringQueue(batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> {
   for (const message of batch.messages) {
-    const owner = queuedOwner(message.body);
-    if (owner === null) {
+    const body = message.body as Partial<Ring> | null;
+    let owner: string;
+    try {
+      if (typeof body !== "object" || body === null || Object.keys(body).join() !== "owner") {
+        throw new Error("out of shape");
+      }
+      owner = principal(body.owner);
+    } catch {
       console.error("a sandbox ring is out of shape; dropped");
       message.ack();
       continue;

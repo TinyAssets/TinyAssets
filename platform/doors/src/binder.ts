@@ -391,20 +391,10 @@ export function bindKeyRegistration(env: DoorsEnv, token: ValidatedAccessToken<u
 }
 
 /**
- * The platform's own binding for `owner`, for its explicit admit at sign-up alone
- * (`authorize.ts`): the reserved caller (`PLATFORM_CALLER`, the contract's), which the
- * owner's object takes at `admissionSet` and refuses at every other door. Only a verified sign-in
- * whose owner the directory has no record of reaches it.
- */
-export function bindPlatform(env: DoorsEnv, signedIn: Bound): Bound {
-  const owner = principal(signedIn.binding.owner);
-  return bound(env, { owner, caller: PLATFORM_CALLER, origin: null });
-}
-
-/**
- * The platform's own binding for `owner` at its erasure's outside record (`erase.ts`): the
- * reserved admin caller, which the owner's object takes only at its erasure doors and only
- * while the owner is marked erasing.
+ * The platform's own binding for `owner`: the reserved caller (`PLATFORM_CALLER`, the
+ * contract's), which the owner's object takes only at its admit at sign-up (`authorize.ts`,
+ * `admissionSet`, for a verified sign-in whose owner the directory has no record of), at its
+ * erasure doors while the owner is marked erasing (`erase.ts`), and at the import's doors.
  */
 export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
   const named = principal(owner);

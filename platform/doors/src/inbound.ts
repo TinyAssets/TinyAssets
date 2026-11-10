@@ -43,7 +43,6 @@ import {
 import { inboundGate, ordinaryAdmits, readControl } from "../../contract/src/control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { shownCode } from "./refused";
-import { mediaType } from "./session";
 import type { Sources } from "../../sources/src/schema";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -102,10 +101,6 @@ function answer(status: number, body: unknown, retry = false): Response {
                                                   ...(retry ? { "Retry-After": "5" } : {}) } });
 }
 
-function sha256(text: string): string {
-  return sha256Hex(text);
-}
-
 /** The request's headers for the object: lowercase names, bounded (its `Cookie` is gone). */
 function headersOf(request: Request): Record<string, string> | null {
   const out: Record<string, string> = {};
@@ -121,7 +116,7 @@ function headersOf(request: Request): Record<string, string> | null {
 
 /** A JSON object from an uncompressed UTF-8 JSON body, or null (`_json_object`). */
 function envelopeOf(request: Request, body: Uint8Array): Record<string, unknown> | null {
-  const type = mediaType(request);
+  const type = (request.headers.get("Content-Type") ?? "").split(";")[0]!.trim().toLowerCase();
   const encoding = (request.headers.get("Content-Encoding") ?? "identity").toLowerCase();
   if (type !== "application/json" || encoding !== "identity") {
     return null;
@@ -192,7 +187,7 @@ function sharedEvent(app: SharedApp, request: Request, body: Uint8Array,
                                                      error: "event_identity_required" }) };
   }
   return { kind: "event", shared: true, eventId, eventAt,
-           route: `i:${app.id}:${enterprise ? "enterprise" : "workspace"}:${sha256(identity)}` };
+           route: `i:${app.id}:${enterprise ? "enterprise" : "workspace"}:${sha256Hex(identity)}` };
 }
 
 /** A capability URL's request: its token's route and the event's identity headers. */
@@ -203,7 +198,7 @@ function capabilityEvent(token: string, request: Request): Routed {
     return { kind: "answer", response: answer(400, { error: "event_identity_required" }) };
   }
   return { kind: "event", shared: false, eventId, eventAt: Number(stamp),
-           route: `h:${sha256(token)}` };
+           route: `h:${sha256Hex(token)}` };
 }
 
 /** The object's answer as the sender gets it: a shared app's never spends its budget. */
@@ -292,7 +287,7 @@ export const HOOK_ROUTES: Readonly<Record<string, (env: DoorsEnv, bound: Bound,
                                                    Promise<unknown>>> = Object.freeze({
   "hooks/create": async (env, { binding, stub }, request) => {
     const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
-    const route = `h:${sha256(token)}`;
+    const route = `h:${sha256Hex(token)}`;
     const made = await stub.inboundCreate(binding, { ...request, kind: "capability",
                                                      route });
     await putRoute(env, made.route, { o: binding.owner, b: made.binding_id, r: made.revision });

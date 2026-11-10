@@ -12,11 +12,12 @@
  *
  * Its entries: `k:` (API keys); `o:` (owners: the platform's record of each owner it
  * admitted at sign-up, and of each it erased, which the erasure writes first, so no sign-in
- * resolves an erased owner's name again and the platform never admits it again);
+ * resolves an erased owner's name again and the platform never admits it again: slice L);
  * `h:` (an inbound capability URL's token, by its SHA-256) and `i:` (a shared app's
  * installation), each routing to its owner's inbound binding at a revision
- * (`/hooks/inbound`). A sandbox's tokens have no entry: each names its owner itself
- * (`routing-mac.ts`, its MAC verified at the door), and the owner's object checks it.
+ * (`/hooks/inbound`, slice L). Owed: `a:` published app slugs (S6). A sandbox's tokens have
+ * no entry: each names its owner itself
+ * (G4, `routing-mac.ts`, its MAC verified at the door), and the owner's object checks it.
  * Nothing here, or anywhere, maps a session cookie or its hash to an owner (the binder
  * guard).
  */
