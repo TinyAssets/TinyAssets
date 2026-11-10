@@ -36,9 +36,6 @@ export const COMMAND = Object.freeze({
   run: "run",
   loginRun: "login-run",
   sync: "sync",
-  loginProbe: "login-probe",
-  routeProbe: "route-probe",
-  matcherProbe: "matcher-probe",
 } as const);
 
 export type Command = (typeof COMMAND)[keyof typeof COMMAND];
@@ -57,12 +54,13 @@ export const INTERNAL_COMMANDS = Object.freeze([COMMAND.run, COMMAND.loginRun,
                                                 COMMAND.sync] as const);
 
 /**
- * Build-only: the template build's standing checks (`template/build.py` runs them through
- * the loader on throwaway sandboxes). They leave the runner for a bundle of their own once
- * `build.py` runs that bundle (untangle A6, part b).
+ * Retired: commands protocol 1 records that the runner no longer takes, the template's
+ * standing checks, which run from a bundle of their own (`probes.ts`) and were never the
+ * Worker's. Recorded by mistake; the next protocol's record names the Worker's and the
+ * runner's own commands alone.
  */
-export const BUILD_COMMANDS = Object.freeze([COMMAND.loginProbe, COMMAND.routeProbe,
-                                             COMMAND.matcherProbe] as const);
+export const RETIRED_IN_1: readonly string[] = Object.freeze(["login-probe", "matcher-probe",
+                                                              "route-probe"]);
 
 /**
  * The exit codes. The runner's: done, a usage refused (no such command), "no" (not signed

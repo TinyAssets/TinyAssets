@@ -49,7 +49,15 @@ export function user(name: string): Identity {
   return found;
 }
 
+/** The pool's users' names: this and the user's number, from 0. */
 export const POOL_PREFIX = "ta-run-";
+/** The group every pool user is in, which the shared workspace is of. */
+export const SHARED_GROUP = "ta";
+/** The sync agent's user, and its own directory (0700): its mirror, sessions in and out. */
+export const SYNC_USER = "ta-sync";
+export const SYNC_HOME = "/var/lib/ta-sync";
+/** E2B's own default user, whom its provisioning puts back in `sudo` at every boot. */
+export const E2B_USER = "user";
 
 /**
  * A pool user taken by this process: its lock (`pid-lock.ts`) in the root-only state

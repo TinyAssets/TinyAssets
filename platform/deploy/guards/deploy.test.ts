@@ -42,11 +42,11 @@ import { type CfAnswer, cfApi, Cloudflare, handback, handover, type Route } from
 import {
   admitsNobody, authorizeCheck, authorizeLink, codeDigests, DARK_CONTROL, deployedConfig,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
-  lifecycleHook, listed, lockRefusal, maskInLog, MIGRATED, type Mode, MODES, pairTag, parse,
+  lifecycleHook, listed, lockRefusal, maskInLog, MIGRATED, type Mode, MODES, parse,
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, type RouteRecord,
-  secretPlan,
-  shippedRunner, upstreamFrom, versionOf, wranglerFor,
+  secretPlan, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
+import { bundles, pairTag, treeImage } from "../../sandbox/template/pair";
 import {
   boundBy, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES,
   NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, ZONE,
@@ -74,9 +74,11 @@ const ROTATED = ringSecret("k2", ["k1", "k2"]);
 const E2B_KEY = "e2b_test_key";
 const ACCOUNT = "a".repeat(32);
 const TEMPLATE = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
-/** The runner the fake bundle writes, and the pair it makes with the pinned template. */
+/** The runner and probes the fake bundle writes, and the pair they make with the pin. */
 const RUNNER = "the runner";
-const PAIR = pairTag(TEMPLATE, createHash("sha256").update(RUNNER).digest("hex"));
+const PROBE_BUNDLE = "the probes";
+const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const PAIR = pairTag(TEMPLATE, sha(RUNNER), sha(PROBE_BUNDLE));
 
 /** A Cloudflare API that answers each path with the answer `answers` names, or a 500. */
 function api(answers: Record<string, CfAnswer | Error>) {
@@ -124,6 +126,8 @@ interface WorldOptions {
   readonly probed?: boolean;
   /** E2B holds the pair's tag. */
   readonly paired?: boolean;
+  /** This tree's image, as `image.ts` computes it: the pin by default. */
+  readonly image?: string;
   /** The migrations guard reports this lock for every Worker. */
   readonly lock?: Record<string, string[]>;
   /** A wrangler command that fails. */
@@ -382,9 +386,13 @@ function world(options: WorldOptions = {}) {
     if (command === "python3") {
       events.push(`python3 ${basename(argv[0]!)}${argv.slice(1).map((arg) => ` ${arg}`).join("")}${
         options_.env === undefined ? "" : ` env=${Object.keys(options_.env).sort().join(",")}`}`);
-      if (argv[0]!.endsWith("build.py")) {
-        pairPassed = true;
-      }
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (command === process.execPath && argv.some((arg) => arg.endsWith("checks.ts"))) {
+      events.push(`node ${argv.slice(argv.findIndex((arg) => arg.endsWith("checks.ts")))
+        .map((arg) => basename(arg)).join(" ")} env=${Object.keys(options_.env ?? {}).sort()
+        .join(",")}`);
+      pairPassed = true;
       return { status: 0, stdout: "", stderr: "" };
     }
     if (String(argv[0]).endsWith("vitest.mjs")) {
@@ -399,8 +407,12 @@ function world(options: WorldOptions = {}) {
   const exec = ((_command: string, argv: readonly string[] = [],
                  options_: { env?: Record<string, string> } = {}) => {
     if (String(argv[0]).endsWith("bundle.mjs")) {
-      events.push("bundle the runner");
+      events.push("bundle the runner and the probes");
       writeFileSync(join(argv[1]!, "runner.mjs"), RUNNER);
+      writeFileSync(join(argv[1]!, "probes.mjs"), PROBE_BUNDLE);
+    } else if (String(argv.at(-1)).endsWith("image.ts")) {
+      events.push("the tree's image");
+      return `${options.image ?? TEMPLATE}\n`;
     } else {
       events.push(`exec ${basename(String(argv.at(-1)))} env has ${[...H2_INPUTS_LIST, "E2B_API_KEY"]
         .filter((name) => options_.env?.[name] !== undefined).join(",")}`);
@@ -602,7 +614,8 @@ describe("a dark run", () => {
     // record, the hook, and the canary.
     const at = order(w.events, [
       "guard owner", "guard sandbox", "cf GET /zones?name=tinyassets.io", "issuer discovery",
-      "e2b GET /templates/t1/tags/exists", "bundle the runner", "e2b GET /templates/t1/tags/exists",
+      "the tree's image", "e2b GET /templates/t1/tags/exists", "bundle the runner and the probes",
+      "e2b GET /templates/t1/tags/exists",
       "e2b GET /events/webhooks", "workos GET redirect_uris", "workos POST redirect_uris",
       "workos authorize", "cf GET /accounts", "wrangler kv namespace create",
       "wrangler r2 bucket create tinyassets-files", "wrangler queues create tinyassets-sandbox-ring",
@@ -612,10 +625,10 @@ describe("a dark run", () => {
       "log H2's probes wait"]);
     const first = w.events.findIndex((event) =>
       /^(wrangler [a-z ]*create|wrangler secret|cf PUT)/.test(event));
-    expect(at[10]).toBeLessThan(first);
+    expect(at[11]).toBeLessThan(first);
     // The webhook is registered disabled, with the doors' secret, after the doors hold it.
-    expect(w.events[at[20]!]).toContain('"enabled":false');
-    expect(w.events[at[20]!]).toContain('"signatureSecret":"hook-secret"');
+    expect(w.events[at[21]!]).toContain('"enabled":false');
+    expect(w.events[at[21]!]).toContain('"signatureSecret":"hook-secret"');
     // The plan is reported whole, every step's line in it, before the canary.
     expect(work.plan).toEqual(DARK_FRESH);
     expect(w.logs).toContain(summary("Changed", DARK_FRESH));
@@ -1474,12 +1487,12 @@ describe("the pair and h2 modes", () => {
      async () => {
     const w = world({ paired: false });
     await runMode(w, "pair");
-    expect(w.events.filter((event) => event.startsWith("python3"))).toEqual([
-      "python3 build.py --check-pair env=E2B_API_KEY,HOME,PATH"]);
+    expect(w.events.filter((event) => event.startsWith("node "))).toEqual([
+      "node checks.ts pair env=E2B_API_KEY,HOME,PATH"]);
     expect(w.logs).toEqual([`the pair ${PAIR} passed its standing checks, run now`]);
     const held = world();
     await runMode(held, "pair");
-    expect(held.events.some((event) => event.startsWith("python3"))).toBe(false);
+    expect(held.events.some((event) => event.startsWith("node "))).toBe(false);
     expect(held.logs).toEqual([`the pair ${PAIR} passed its standing checks in this E2B team`]);
     await expect(runMode(world(), "pair", [], { PATH: "/bin" }))
       .rejects.toThrow("E2B_API_KEY is not set (the production environment's secrets)");
@@ -2098,21 +2111,33 @@ describe("the template and the pair", () => {
     }
   });
 
-  it("names the pair it deploys by the template and the runner the sandbox Worker ships, as " +
-     "build.py tags a passed pair", () => {
-    const runner = shippedRunner();
-    expect(runner).toMatch(/^[0-9a-f]{64}$/);
-    expect(shippedRunner()).toBe(runner);  // the same bytes every build
-    expect(pairTag("tinyassets-sandbox:s0123456789abcdef", runner))
-      .toBe(`tinyassets-sandbox:s0123456789abcdef-r${runner.slice(0, 16)}`);
-    expect(() => pairTag("tinyassets-sandbox:s1", "runner")).toThrow(/SHA-256/);
-    // build.py's own pair_tag, imported as the workflow imports build.py.
-    const theirs = execFileSync("python3", ["-I", "-c",
-      "import sys; sys.path.insert(0, sys.argv[1]); import build; " +
-      "sys.stdout.write(build.pair_tag(sys.argv[2], sys.argv[3]))",
-      join(PLATFORM, "sandbox", "template"), "s0123456789abcdef", runner], { encoding: "utf8" });
-    expect(`tinyassets-sandbox:${theirs}`)
-      .toBe(pairTag("tinyassets-sandbox:s0123456789abcdef", runner));
+  it("names the pair it deploys by the template, the runner the sandbox Worker ships and the " +
+     "probes beside it, the one pair tag the checks mark", async () => {
+    const { runner, probes } = bundles();
+    expect([runner.sha, probes.sha].every((each) => /^[0-9a-f]{64}$/.test(each))).toBe(true);
+    expect(bundles().runner.sha).toBe(runner.sha);  // the same bytes every build
+    const w = world();
+    await runMode(w, "plan");
+    expect(w.events).toContain("bundle the runner and the probes");
+    expect(w.events.filter((event) => event === "the tree's image")).toHaveLength(1);
+    expect(PAIR)
+      .toBe(`${TEMPLATE}-r${sha(RUNNER).slice(0, 16)}-p${sha(PROBE_BUNDLE).slice(0, 16)}`);
+    expect(() => pairTag(TEMPLATE, sha(RUNNER), "probes")).toThrow(/SHA-256/);
+    // This tree's image, as image.ts prints it: the kit's pin check reads it so.
+    expect(treeImage()).toMatch(/^tinyassets-sandbox:s[0-9a-f]{16}$/);
+  });
+
+  it("plans a tree whose image is not the pin, and refuses to apply it", async () => {
+    const w = world({ image: "tinyassets-sandbox:s0123456789abcdef" });
+    const work = await runMode(w, "plan");
+    expect(work.plan).toContain(`the pinned template ${TEMPLATE} is not this tree's image ` +
+      "tinyassets-sandbox:s0123456789abcdef: build it (sandbox-template.yml, build) and pin " +
+      "its passed pair");
+    await expect(runMode(world({ image: "tinyassets-sandbox:s0123456789abcdef" }), "dark",
+                         ["--yes"]))
+      .rejects.toThrow(`the pinned template ${TEMPLATE} is not this tree's image ` +
+        "tinyassets-sandbox:s0123456789abcdef: build it (sandbox-template.yml, build) and pin " +
+        "its passed pair; nothing is deployed");
   });
 
   it("versions a later deploy by the id wrangler prints", () => {
@@ -2198,11 +2223,11 @@ describe("platform-deploy.yml", () => {
     expect(pair!.needs).toBe("plan");
     expect(pair!.environment).toBe("production");
     expect(pair!.env).toBeUndefined();
+    // No Python: the checks are checks.ts, on the E2B client (image.py's SDK builds alone).
     expect(invoked(pair!, {})).toEqual([
       { argv: "npm ci", env: [] },
-      { argv: "python3 -m pip install --require-hashes -r " +
-              "platform/sandbox/template/requirements.txt", env: [] },
       { argv: `${KIT} --mode pair`, env: ["E2B_API_KEY"] }]);
+    expect(JSON.stringify(pair)).not.toMatch(/setup-python|pip install/);
     // The modes whose rows deploy Workers are the ones the pair job runs for.
     const deploying = (Object.keys(MODES) as Mode[]).filter((mode) =>
       MODES[mode].applies && MODES[mode].steps.some((each) => each.name === "workers"));
@@ -2211,14 +2236,20 @@ describe("platform-deploy.yml", () => {
       .join(" || ")})`);
   });
 
-  it("gives the pair check longer than build.py's three throwaway sandboxes live", () => {
-    // build.py's checks, run against a fake E2B SDK that records each sandbox's lifetime.
-    const lifetimes = execFileSync("python3", ["-I", "-c", PAIR_LIFETIMES,
-                                               join(PLATFORM, "sandbox", "template")],
-                                   { encoding: "utf8" }).trim().split(" ").map(Number);
-    expect(lifetimes).toHaveLength(3);
-    expect(Number(pair!["timeout-minutes"]) * 60)
-      .toBeGreaterThan(lifetimes.reduce((sum, each) => sum + each, 0));
+  it("gives the pair check longer than the checks' throwaway sandboxes live", () => {
+    // The probes' own plan, as checks.ts runs it: each sandbox's lifetime, one after another.
+    const out = mkdtempSync(join(tmpdir(), "ta-plan-"));
+    try {
+      bundles(execFileSync, out);
+      const plan = JSON.parse(execFileSync(process.execPath, [join(out, "probes.mjs"), "plan"],
+                                           { encoding: "utf8" })) as
+        { sandboxes: { timeout_s: number }[] };
+      expect(plan.sandboxes).toHaveLength(3);
+      expect(Number(pair!["timeout-minutes"]) * 60)
+        .toBeGreaterThan(plan.sandboxes.reduce((sum, each) => sum + each.timeout_s, 0));
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
   });
 
   it("applies after the plan and the pair, in production, the mode's own run", () => {
@@ -2277,32 +2308,6 @@ describe("platform-deploy.yml", () => {
     }
   });
 });
-
-/**
- * build.py's three standing checks, against a fake `e2b` module: each sandbox's requested
- * lifetime, its first action refused so nothing else runs. Prints the three, space apart.
- */
-const PAIR_LIFETIMES = `
-import os, sys, tempfile, types
-template = sys.argv[1]
-sys.path.insert(0, template)
-lifetimes = []
-class Stop(Exception):
-    pass
-class Sandbox:
-    @staticmethod
-    def create(template=None, timeout=None, **_):
-        lifetimes.append(timeout)
-        raise Stop()
-sys.modules["e2b"] = types.SimpleNamespace(Sandbox=Sandbox, ALL_TRAFFIC="0.0.0.0/0")
-import build
-for check in (build.check_logins, build.route_probe, build.check_matcher):
-    try:
-        check("tinyassets-sandbox:test", b"runner")
-    except Stop:
-        pass
-print(" ".join(str(each) for each in lifetimes))
-`;
 
 /** Paths the doors' routes cover, and two they do not. */
 const PROBES = ["tinyassets.io/mcp", "tinyassets.io/mcp?x=1", "tinyassets.io/api/tools/a",

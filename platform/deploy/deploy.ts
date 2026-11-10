@@ -29,8 +29,9 @@
  *   change too: anything changed since `routes` stops it, named. The handles canary follows
  *   the old stack's restart, so the run ends saying where it runs.
  * - `h2`: H2's probes alone, once a probe owner exists.
- * - `pair`: the pinned template with the runner this checkout ships, checked together on
- *   throwaway sandboxes unless E2B already holds their pair's tag (`build.py --check-pair`).
+ * - `pair`: the pinned template with the runner this checkout ships and the probes beside
+ *   it, checked together on throwaway sandboxes unless E2B already holds their pair's tag
+ *   (`sandbox/template/checks.ts pair`).
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -67,8 +68,9 @@
  * Before anything is changed it checks, live: the owner issuer's discovery names
  * `OWNER_ISSUER` exactly and an https JWKS (an absent field is unknown, and unknown stops
  * the kit); WorkOS's authorize, sent the URL the doors build with a throwaway challenge,
- * redirects to AuthKit's sign-in (`authorizeCheck`); the sandbox's `E2B_TEMPLATE` has a ready
- * build, and E2B holds the tag of the pair this deploy makes (`pairTag`), which `pair` makes.
+ * redirects to AuthKit's sign-in (`authorizeCheck`); the sandbox's `E2B_TEMPLATE` is this
+ * tree's image (`sandbox/template/image.ts`) and has a ready build, and E2B holds the tag of
+ * the pair this deploy makes (`pairTag`), which `pair` makes.
  * The access token's exact `iss` and `auth_time` only a real sign-in shows: `probe` settles
  * them.
  */
@@ -86,6 +88,7 @@ import { WRANGLER } from "../ci/workers.ts";
 import { CONTROL_KEY } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import { E2b } from "../sandbox/src/e2b.ts";
+import { bundles, checksArgv, pairTag, treeImage } from "../sandbox/template/pair.ts";
 import {
   type BackStep, cfApi, Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback,
   handover, type Kept, type Moved, narrower, type Route, type RouteStep, unlike,
@@ -473,29 +476,12 @@ export async function registerRedirect(key: string, apply: boolean, fetcher: Fet
 // --- E2B: the pair and the lifecycle webhook --------------------------------------------
 
 /**
- * The runner the sandbox Worker ships, built as its build makes it (`build.command`,
- * `sandbox/template/bundle.mjs`, the same bytes every build): its SHA-256.
+ * The pair this checkout deploys: the pinned template, the runner the sandbox Worker ships
+ * and the probes beside it, built as its build makes them (`sandbox/template/pair.ts`).
  */
-export function shippedRunner(exec: Io["exec"] = IO.exec): string {
-  const out = mkdtempSync(join(tmpdir(), "ta-runner-"));
-  try {
-    exec(process.execPath, [join(PLATFORM, "sandbox", "template", "bundle.mjs"), out],
-         { stdio: "ignore" });
-    return createHash("sha256").update(readFileSync(join(out, "runner.mjs"))).digest("hex");
-  } finally {
-    rmSync(out, { recursive: true, force: true });
-  }
-}
-
-/**
- * The E2B tag a (template, runner) pair is marked with once it passed its standing checks
- * (`build.py`'s `pair_tag`): the template's `name:tag`, its tag followed by the runner's.
- */
-export function pairTag(template: string, runner: string): string {
-  if (!/^[0-9a-f]{64}$/.test(runner)) {
-    throw new Error("a runner is named by its SHA-256");
-  }
-  return `${template}-r${runner.slice(0, 16)}`;
+function shippedPair(exec: Io["exec"]): string {
+  const { runner, probes } = bundles(exec);
+  return pairTag(template(), runner.sha, probes.sha);
 }
 
 /**
@@ -980,22 +966,35 @@ const upstream = step("upstream", async (run, work) => {
   work.plan.push(`set the doors' OWNER_ISSUER to ${work.upstream.issuer}, held to its discovery`);
 });
 
-/** E2B has a ready build of the pinned template: the first of the run's calls to E2B. */
+/**
+ * The pinned template is this tree's image (`image.ts`), and E2B has a ready build of it: the
+ * first of the run's calls to E2B. A tree whose image is not built and pinned yet (the pin PR
+ * follows the template's build) is planned, and refused by an apply.
+ */
 const templateBuilt = step("template", async (run, work) => {
   const pinned = template();
+  const tree = treeImage(run.io.exec);
+  if (tree !== pinned) {
+    const why = `the pinned template ${pinned} is not this tree's image ${tree}: build it ` +
+      "(sandbox-template.yml, build) and pin its passed pair";
+    if (run.apply) {
+      throw new Error(`${why}; nothing is deployed`);
+    }
+    work.plan.push(why);
+  }
   if (secretsReached(run)) {
     work.e2b = new E2b(input(run, "E2B_API_KEY")!, run.io.fetch);
   }
   if (work.e2b === undefined) {
     work.plan.push(`E2B's ready build of ${pinned}: ${LATER}`);
   } else if (!await work.e2b.ready(pinned)) {
-    throw new Error(`E2B has no ready build of ${pinned}: build it (sandbox/template/build.py)`);
+    throw new Error(`E2B has no ready build of ${pinned}: build it (sandbox-template.yml)`);
   }
 });
 
-/** The pair this deploy makes, the template and the runner the sandbox Worker ships, passed. */
+/** The pair this deploy makes (`shippedPair`), passed. */
 const pairPassed = step("pair", async (run, work) => {
-  const pair = pairTag(template(), shippedRunner(run.io.exec));
+  const pair = shippedPair(run.io.exec);
   if (work.e2b === undefined) {
     work.plan.push(`the pair ${pair} passed its standing checks: ${LATER}`);
   } else if (await work.e2b.ready(pair)) {
@@ -1445,10 +1444,10 @@ const h2 = step("h2", (run) => {
 });
 
 /**
- * The pair check (the workflow's `pair` job, before the apply job): the pinned template and
- * the runner this checkout ships, unless E2B already holds their pair's tag; `build.py
- * --check-pair` runs the standing checks and tags the pair, given only what it needs (never
- * the deploy's other secrets). A failure, or no tag after it, throws.
+ * The pair check (the workflow's `pair` job, before the apply job): the pair this checkout
+ * deploys (`shippedPair`), unless E2B already holds its tag; `checks.ts pair` runs the
+ * standing checks and tags the pair, given only what it needs (never the deploy's other
+ * secrets). A failure, or no tag after it, throws.
  */
 const pair = step("pair check", async (run) => {
   const key = input(run, "E2B_API_KEY");
@@ -1456,13 +1455,12 @@ const pair = step("pair check", async (run) => {
     throw new Error("E2B_API_KEY is not set (the production environment's secrets)");
   }
   const e2b = new E2b(key, run.io.fetch);
-  const tag = pairTag(template(), shippedRunner(run.io.exec));
+  const tag = shippedPair(run.io.exec);
   if (await e2b.ready(tag)) {
     run.io.log(`the pair ${tag} passed its standing checks in this E2B team`);
     return;
   }
-  const checked = run.io.spawn("python3", [join(PLATFORM, "sandbox", "template", "build.py"),
-                                           "--check-pair"],
+  const checked = run.io.spawn(process.execPath, checksArgv("pair"),
                                { stdio: "inherit", env: { PATH: run.env["PATH"] ?? "",
                                                           HOME: run.env["HOME"] ?? "",
                                                           E2B_API_KEY: key } });
