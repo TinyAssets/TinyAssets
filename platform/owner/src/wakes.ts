@@ -30,7 +30,7 @@ import type { Write } from "./gate";
 import {
   type Ledger, type LiveCallback, type Outcome, outcome, WAKE_LEASE_S, type WakeTarget,
 } from "./ledger";
-import { inTime, type Lane, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
+import { inTime, type Lane, LANE_CALL_MS } from "./schedule";
 import {
   type Change, doorbellRequest, type WakeContent,
 } from "../../contract/src/wake-kinds";
@@ -44,12 +44,6 @@ export const WAKES_PER_ALARM = 16;
  * to reach every location (KV's 60 s), so a sooner read sees the same record.
  */
 export const WAKE_RETRY_S = 60;
-/**
- * How long the lane waits on one send, and on the kill switch's answer: what is left of
- * the lane's hung timeout once the pass stops taking rows, so a pass ends inside it
- * whatever a sender does.
- */
-export const WAKE_SEND_MS = (LANE_HUNG_S - LANE_PASS_S) * 1000;
 /** What a pass answers when the kill switch was closed: it claimed nothing. */
 export const CLOSED = "closed";
 
@@ -91,7 +85,7 @@ export interface WakeSender {
  */
 export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock: () => number,
                                write: Write, limit: number = WAKES_PER_ALARM,
-                               sendMs: number = WAKE_SEND_MS,
+                               sendMs: number = LANE_CALL_MS,
                                until: number = Infinity): Promise<number | typeof CLOSED> {
   for (const lapsed of ledger.lapsedClaims(clock(), limit)) {
     try {
@@ -244,7 +238,7 @@ export class Doorbell implements WakeSender, Lane {
    */
   async run(_now: number, until: number): Promise<unknown> {
     const done = await runWakes(this.#deps.ledger, this, this.#deps.clock, this.#deps.write,
-                                WAKES_PER_ALARM, WAKE_SEND_MS, until);
+                                WAKES_PER_ALARM, LANE_CALL_MS, until);
     return done === CLOSED ? { hold: this.#deps.clock() + WAKE_RETRY_S } : done;
   }
 

@@ -23,12 +23,11 @@
  * (`registerPropose`, `registrations.ts`), which the owner applies in session by its id.
  * Every other door refuses the pair.
  *
- * Its code cannot reach another owner's object: the Worker binds only `FILES`, the files
- * Worker, which itself binds no Durable Object and no service, `GATEWAY`, the model
- * gateway, which binds nothing at all, and `HOOKS`, the hooks Worker, which binds only its
- * own class (`codemode.ts`: code mode's VMs run there, never here); it binds no Durable
- * Object namespace; the runtime hands it no `ctx.exports` (`disable_ctx_exports`); and
- * its source never names `exports` or imports `env` (the config and self-reach guards). The owner's file bytes reach the bucket only
+ * Its code cannot reach another owner's object: no service the Worker binds reaches an
+ * object (`wrangler.jsonc`, held by the config guard; code mode's VMs run in `HOOKS`,
+ * never here); it binds no Durable Object namespace; the runtime hands it no
+ * `ctx.exports` (`disable_ctx_exports`); and its source never names `exports` or imports
+ * `env` (the config and self-reach guards). The owner's file bytes reach the bucket only
  * through `FILES`, under the owner's namespace, which only this object holds
  * (`files.ts`). The module keeps no mutable state at top level (the module-state
  * guard), since objects of one class can share an isolate.
@@ -71,11 +70,11 @@
  * read and cancel runs (`runs.ts`): an engine's run in the owner's sandbox, admitted here in
  * one unit against the owner's admission, the agent, the tier's simultaneous runs, the
  * owner's own limits and the initiator's stamp, its source chosen, its row, grant and lease
- * written, then started through the `SANDBOX` interface (`sandbox.ts`), absent until slice
- * S binds it, so until then every run is refused loudly. A run's engine calls back on the
- * egress host: its MCP door, every door held to its run grant's scopes (a run binding,
- * `#runAccount`), and its event door (`runEvents`), whose frames the object reads by the
- * engine's record and relays to the owner's app sockets subscribed to that conversation.
+ * written, then started through the `SANDBOX` service (`sandbox.ts`). A run's engine
+ * calls back on the egress host: its MCP door, every door held to its run grant's scopes
+ * (a run binding, `#runAccount`), and its event door (`runEvents`), whose frames the object
+ * reads by the engine's record and relays to the owner's app sockets subscribed to that
+ * conversation.
  *
  * A main agent spends few calls (slice M): `inboxDigest` and `boardDigest` answer what
  * changed for it since its cursor in one read, held to its grant; `codeRun` is code mode at
@@ -84,8 +83,8 @@
  * `toolProfile` answers the doors which tools a caller is served (`contract/profiles.json`:
  * its grant's profile, or a run's).
  *
- * Erasing the owner (`erasure.ts`, `erase.ts`) is an internal path, which no door reaches
- * until the erasure door (slice 10): once it marks the owner, every door refuses
+ * Erasing the owner (`erasure.ts`, `erase.ts`; the door `ownerErase`): once it marks the
+ * owner, every door refuses
  * (`ERASING`, in the binding check every door's first unit runs) and no lane runs; it ends
  * every run, then wipes the owner whole, leaving only the erased admission row
  * (`admission.ts`). An object that finds that tombstone as it
@@ -559,38 +558,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
-  /** The nightly manifest (`backup.ts`). */
   readonly #backups: Backups;
-  /** The exports open, each named for a week (`open-exports.ts`). */
   readonly #exports: OpenExports;
-  /** The change log a generation captures (`changelog.ts`). */
   readonly #log: ChangeLog;
-  /** Sandbox time, per run and per day (`sandbox-time.ts`). */
   readonly #sandboxTime: SandboxTime;
   /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
   readonly #bodies: Bodies;
   readonly #registrations: Registrations;
   readonly #notices: Notices;
-  /** The starter package: the default agent's files, seeded and kept current (`starter.ts`). */
   readonly #starter: Starter;
   readonly #connections: Connections;
   readonly #usage: ModelUsage;
-  /** Sandbox egress: each request admitted at open and settled once it ends (`egress.ts`). */
   readonly #egress: Egress;
-  /** The owner's runs: admission, grants, conversations, schedules (`runs.ts`). */
   readonly #runs: Runs;
-  /** Runs launched and delivered, and their sandbox's leases (`launch.ts`). */
   readonly #launcher: Launcher;
-  /** The object's state, as its modules are handed it (`OwnerState`). */
   readonly #state: OwnerState;
-  /** The owner app's sockets and the runs' live tails (`relay.ts`), a Lifecycle capability. */
   readonly #relay: Relay;
-  /** The vendor's own sign-ins in progress inside a sandbox (`signins.ts`). */
   readonly #signins: Signins;
   readonly #tickets: Tickets;
-  /** The owner's API keys (`keys.ts`): the key store. */
   readonly #keys: Keys;
-  /** The owner's inbound bindings (`inbound.ts`). */
   readonly #inbound: Inbound;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly #posts = new PostGate();
@@ -604,7 +590,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   readonly #sandbox: SandboxLeases;
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
-  /** The archive: its moves and rewrites, and reads of archived mail (`archive.ts`). */
   readonly #archive: Archive;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
@@ -617,10 +602,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * refuses.
    */
   readonly #tombstone: boolean;
-  /**
-   * The owner's erasure (`erasure.ts`, `erase.ts`): an internal path, which the erasure
-   * door (slice 10) calls; no door reaches it yet.
-   */
   readonly #erasure: Erasure;
   /**
    * The cutover's discard (`#discard`): null until this instance wiped its owner's database
@@ -943,7 +924,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       gone: () => object.#tombstone || object.#erasure.erased || erasing(storage),
       discard: () => object.#discard(),
       admission: () => admission(storage),
-      keepTiers: (binding: Binding) => object.#keepTiers(binding),
+      keepTiers: (binding: Binding) => keepTiers(storage, binding.tiers, clock()),
       scope: (account: Account, capability: RunCapability, center?: unknown, agent?: string) =>
         object.#scope(account, capability, center, agent),
       universe: (account: Account) => object.#universe(account),
@@ -972,23 +953,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return this.#relay.serve(request, (upgrade) => this.#lifecycle.fetch(upgrade));
   }
 
-  /** A hibernating socket's frame, handed to Lifecycle (`relay.ts` reads it). */
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     await this.#lifecycle.webSocketMessage(ws, message);
   }
 
-  /** A hibernating socket's close, handed to Lifecycle. */
   override async webSocketClose(ws: WebSocket, code: number, reason: string,
                                 wasClean: boolean): Promise<void> {
     await this.#lifecycle.webSocketClose(ws, code, reason, wasClean);
   }
 
-  /** A hibernating socket's error, handed to Lifecycle. */
   override async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     await this.#lifecycle.webSocketError(ws, error);
   }
 
-  /** A door's synchronous body, as one unit of the write gate. */
   #door<T>(act: () => T): Promise<T> {
     return this.#gate.write(act);
   }
@@ -1001,7 +978,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return this.#gate.quiet(act);
   }
 
-  /** A door's unit, then the one schedule synced from the rows it changed. */
   async #synced<T>(act: () => T): Promise<T> {
     const done = await this.#door(act);
     await this.#schedule.sync();
@@ -1897,14 +1873,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    */
   roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
     return this.#units("roomPost", binding, request, ledgerDoors.roomPost);
-  }
-
-  /**
-   * The tier numbers a door's binding handed, kept for the runs the lane starts (a mail's);
-   * none handed (`null`) forgets the kept ones, and that run is refused then, not this call.
-   */
-  #keepTiers(binding: Binding): void {
-    keepTiers(this.#storage, binding.tiers, clock());
   }
 
   // -- MODEL CONNECTIONS: sealed credentials, flows and spend (tasks 4 G2) ------------

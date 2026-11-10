@@ -66,6 +66,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
 import { base64url, KID, parseBlob } from "../../contract/src/envelope";
+import { fields } from "../../contract/src/doors";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 
 import type { GatewayService, Refreshed } from "../../contract/src/gateway";
@@ -78,7 +79,7 @@ import {
 } from "../../contract/src/limits";
 import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
-import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
+import { inTime, LANE_CALL_MS } from "./schedule";
 import { codePoints, isPrintable, SOURCE_ID, utf8Bytes } from "../../contract/src/text";
 import type {
   Call, Door, OwnerState,
@@ -122,7 +123,7 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   leaseMs: 60 * 1000,
   revokeTries: 5,
   revokeRetryS: 300,
-  revokeMs: (LANE_HUNG_S - LANE_PASS_S) * 1000,
+  revokeMs: LANE_CALL_MS,
   revokesPerPass: 8,
 });
 
@@ -193,20 +194,7 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Exactly `required`, plus any of `optional`, none `undefined`. */
-function fields(request: unknown, required: readonly string[],
-                optional: readonly string[] = []): Record<string, unknown> {
-  if (!object(request)) {
-    throw new Refusal("invalid", "invalid connection request");
-  }
-  const keys = Object.keys(request);
-  if (!required.every((key) => keys.includes(key))
-      || !keys.every((key) => required.includes(key) || optional.includes(key))
-      || Object.values(request).some((value) => value === undefined)) {
-    throw new Refusal("invalid", "invalid connection request");
-  }
-  return request;
-}
+const INVALID_REQUEST = "invalid connection request";
 
 function text(value: unknown, max: number, what: string): string {
   if (typeof value !== "string" || !value || codePoints(value) > max || !isPrintable(value)) {
@@ -347,7 +335,7 @@ export class Connections {
    */
   prepare(sessionId: string, request: unknown, now: number): Prepared {
     const r = fields(request, ["source", "kind", "display_name", "provider", "revocable"],
-                     ["redirect_uri"]);
+                     ["redirect_uri"], INVALID_REQUEST);
     const source = grammar(r["source"], SOURCE_ID, "source");
     const provider = grammar(r["provider"], PROVIDER, "provider");
     const kind = r["kind"];
@@ -397,7 +385,7 @@ export class Connections {
    */
   commit(request: unknown, now: number): ConnectionView {
     const r = fields(request, ["connection", "version", "blob", "kid", "models"],
-                     ["expires_at", "failed", "egress"]);
+                     ["expires_at", "failed", "egress"], INVALID_REQUEST);
     const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const kid = grammar(r["kid"], KID, "kid");
     const blob = blobOf(r["blob"], kid);
@@ -485,7 +473,7 @@ export class Connections {
    */
   revoke(request: unknown, now: number): { connection: string; revoked: boolean;
                                            provider_revoke: boolean } {
-    const r = fields(request, ["connection"]);
+    const r = fields(request, ["connection"], [], INVALID_REQUEST);
     const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const row = this.#row(id);
     if (row === undefined) {
@@ -557,7 +545,7 @@ export class Connections {
   flowFinish(sessionId: string, request: unknown, now: number):
       { connection: string; version: number; verifier: string; redirect_uri: string;
         source: string } {
-    const r = fields(request, ["state"]);
+    const r = fields(request, ["state"], [], INVALID_REQUEST);
     const state = grammar(r["state"], STATE, "state");
     const flow = this.#sql.exec<{ connection_id: string; session_id: string; verifier: string;
                                   redirect_uri: string }>(

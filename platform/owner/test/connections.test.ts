@@ -1021,6 +1021,45 @@ describe("the platform's reseal sweep", () => {
     expect((await revokes()).map((sent) => sent.slice(0, 3)))
       .toEqual([[r.name, connection, 1], [r.name, connection, 2]]);
   });
+
+  it("never brings back a blob its provider revoke deleted while the gateway resealed it",
+     async () => {
+    const r = await gated();
+    const connection = (await r.stub.connectionPrepare(r.session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT })).connection;
+    const far = Date.now() + 86_400_000;
+    await r.stub.connectionCommit(r.session(), {
+      connection, version: 1, kid: "k1", models: await catalog(OPENAI), expires_at: far,
+      egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
+        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
+        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: far } }) });
+    let letReseal!: () => void;
+    let letRevoke!: () => void;
+    await r.in((instance) => {
+      instance.faults.resealGate = new Promise<void>((resolve) => { letReseal = resolve; });
+      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
+    });
+    await r.stub.connectionRevoke(r.session(), { connection });
+    // The sweep reads the kept blob and waits on its reseal; the lane's revoke deletes it.
+    const sweep = r.stub.gatewayReseal(platform(r));
+    await until(async () => (await r.in((instance) => instance.calls))
+      .some((made) => made.method === "reseal"), "the reseal to be asked");
+    await r.in((instance) => {
+      instance.faults.revokeGate = null;
+      letRevoke();
+    });
+    await until(async () => {
+      await lanes(r);
+      return (await secrets(r, connection)).length === 0;
+    }, "the provider revoke", 50);
+    await r.in((instance) => {
+      instance.faults.resealGate = null;
+      letReseal();
+    });
+    expect(await sweep).toEqual({ resealed: 0, left: 1 });
+    expect(await secrets(r, connection)).toEqual([]);
+  });
 });
 
 describe("the plaintext key", () => {

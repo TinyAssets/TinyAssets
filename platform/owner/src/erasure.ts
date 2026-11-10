@@ -1,6 +1,6 @@
 /**
- * Erasing an owner (design-decision §1.4 item 6; tasks 5, S4-S5; ADR-034): the internal
- * path the erasure door (slice 10) will call. The order is what makes it complete:
+ * Erasing an owner (design-decision §1.4 item 6; tasks 5, S4-S5; ADR-034), begun at
+ * `ownerErase`. The order is what makes it complete:
  *
  * 1. **Mark the owner erasing** (`owner_erasure`), in one unit. From then on every door
  *    refuses (`OwnerDO`'s binding check) and no lane runs (the object's alarm resumes the

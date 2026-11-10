@@ -257,6 +257,8 @@ export interface GatewayFaults {
     Resealed & { readonly expires_at: number | null }) | null;
   /** Awaited before a provider revoke is sent, when set. */
   revokeGate: Promise<void> | null;
+  /** Awaited before a reseal's answer is handed back, when set. */
+  resealGate: Promise<void> | null;
   /** The next chunk read from the files plane rejected with this, when set, then cleared. */
   chunkRead: unknown;
 }
@@ -279,9 +281,11 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
       await faults()?.revokeGate;
       return gateway.revokeAtProvider(...args);
     },
-    reseal: (...args) => {
+    reseal: async (...args) => {
       calls().push({ method: "reseal", text: JSON.stringify(args) });
-      return gateway.reseal(...args);
+      const answer = await gateway.reseal(...args);
+      await faults()?.resealGate;
+      return answer;
     },
     ringDoorbell: (...args) => gateway.ringDoorbell(...args),
   };
@@ -321,7 +325,7 @@ export class GatedOwnerDO extends OwnerDO {
   readonly recorder: RecordingSandbox;
   calls: GatewayCall[] = [];
   readonly faults: GatewayFaults = { refreshGate: null, refreshed: null, revokeGate: null,
-                                      chunkRead: null };
+                                      resealGate: null, chunkRead: null };
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { self?: GatedOwnerDO; sandbox?: SandboxLeases } = {};

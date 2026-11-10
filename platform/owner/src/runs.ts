@@ -637,7 +637,6 @@ export class Runs {
     return this.#sql.exec<RunRow>("SELECT * FROM runs WHERE id = ?", runId).toArray()[0];
   }
 
-  /** How many runs are live now. A read. */
   live(): number {
     return this.#sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM runs WHERE ${LIVE}`).one().n;
   }
@@ -845,7 +844,6 @@ export class Runs {
     return true;
   }
 
-  /** How many runs wait for a sandbox now. A read. */
   waitingForSandbox(): number {
     return this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM runs WHERE sandbox_wait = 1").one().n;
@@ -1388,7 +1386,6 @@ export class Runs {
       .map((row) => ({ run: row.id, lease_id: row.lease_id!, epoch: row.epoch! }));
   }
 
-  /** Every live run and its lease. A read. */
   liveRuns(): LiveRun[] {
     return this.#sql.exec<LiveRun>(
       `SELECT id AS run, lease_id, epoch FROM runs WHERE ${LIVE} ORDER BY seq`).toArray();

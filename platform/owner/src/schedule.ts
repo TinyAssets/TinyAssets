@@ -1,7 +1,7 @@
 /**
  * The owner object's one schedule, on the Agents SDK Lifecycle job queue (ADR-032, tasks 3.6).
  *
- * Lifecycle (`agents/lifecycle`, agents 0.31.0) owns the Durable Object's queue of durable
+ * Lifecycle (`agents/lifecycle`) owns the Durable Object's queue of durable
  * jobs and its single physical alarm, which the erasure's job shares. So no source here
  * sets, reads or clears the alarm (the alarm guard): every queue change re-arms it from the queue, and
  * `OwnerDO.alarm` only hands the runtime's alarm to Lifecycle, which drives the due jobs
@@ -32,8 +32,8 @@
  *   is short: it hands long work off and returns. Its job is single-flight, so an overlapping alarm (the deadman wake, a
  *   platform re-fire) skips it while it runs, for up to `LANE_HUNG_S`. Every pass fits
  *   that by wall clock, not by a batch size: it takes no new row once `LANE_PASS_S` has
- *   passed, and each outside call a row makes is bounded by `LANE_HUNG_S - LANE_PASS_S`
- *   (each doorbell send's and revoke's `WAKE_SEND_MS`, which the lane holds itself, a
+ *   passed, and each outside call a row makes is bounded by `LANE_CALL_MS`
+ *   (each doorbell send and revoke, which the lane holds itself, a
  *   a chunk delete's remaining budget, never
  *   begun with less than `DELETE_FLOOR_MS` left), so a pass ends before an overlapping alarm
  *   may run it again. A pass writes its rows through the object's write gate a unit at a
@@ -72,6 +72,12 @@ export const LANE_RETRY_S = 300;
 export const LANE_HUNG_S = 60;
 /** How long a pass takes new rows; a row's own outside call then ends within the rest. */
 export const LANE_PASS_S = 45;
+/**
+ * How long a lane waits on one outside call a row makes (a doorbell send, the kill switch's
+ * answer, a provider revoke): what is left of its hung timeout once the pass stops taking
+ * rows, so a pass ends inside it whatever the other side does.
+ */
+export const LANE_CALL_MS = (LANE_HUNG_S - LANE_PASS_S) * 1000;
 
 /**
  * `run`'s result if it settles within `ms`, else "late": how a pass bounds a row's outside
