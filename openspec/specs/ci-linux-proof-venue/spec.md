@@ -51,15 +51,28 @@ quarantine comparison and the `required-tests` aggregate job SHALL be unchanged.
 - **THEN** the oracle refuses and runs nothing
 
 ### Requirement: A tree-only diff runs the Python tests that can read it
-The merge-group selection SHALL run, for a diff confined to `platform/`, `docs/`,
-`openspec/`, `ideas/` and the top-level `.md` files with no `.py` file, the tests
-`affected_tests.tree_readers` maps to a touched tree, plus `select()`. It SHALL
-run the whole surface for any other diff. Every runner run SHALL audit reads:
-a test that reads a tree the map does not give it fails.
+The merge-group selection SHALL run, for a diff confined to the trees no Python
+imports, the tests `affected_tests.tree_readers` maps to a touched tree, plus
+`select()`, and none when there are none. It SHALL be the whole surface for any
+other diff. Every runner run SHALL audit reads: a test that reads a tree the map
+does not give it fails. The structural guards SHALL run under the same selection:
+a guard runs when its test file is selected.
+
+#### Scenario: What a tree holds
+- **WHEN** a path lies under `platform/`, `docs/`, `openspec/`, `ideas/`, `.github/`, `.claude/`, `.agents/` or `scripts/`, or is a top-level `.md` file
+- **THEN** it is a tree file, unless it is Python outside `platform/` and `scripts/tests/`, or one of the files the runner itself reads (the quarantine ledger, the heavy list, the shard packing)
 
 #### Scenario: A platform-only diff is queued
 - **WHEN** a merge group's diff changes only files under `platform/`
 - **THEN** the shards run only the tests that name `platform/` in path form, walk the checkout's root or run git, and a test of the old stack that does neither does not run
+
+#### Scenario: A workflow changes
+- **WHEN** a diff changes only files under `.github/workflows/`
+- **THEN** the tests that name `.github/` in path form run, with those that walk the checkout's root or run git, and no other test of the old stack runs
+
+#### Scenario: The old stack changes
+- **WHEN** a diff touches `tinyassets/`, `deploy/`, `tests/`, `packaging/`, `Dockerfile`, `pyproject.toml`, or a Python file outside `platform/` and `scripts/tests/`
+- **THEN** the selection is the whole surface, and every structural guard runs
 
 #### Scenario: A test reads a tree the map cannot see
 - **WHEN** a test opens, lists, checks the existence of, or hands a child process a path in a tree its file is not mapped to, or runs git in the checkout with a subcommand that reads it
@@ -69,9 +82,13 @@ a test that reads a tree the map does not give it fails.
 - **WHEN** a module's import reads a tree that some test importing it is not mapped to
 - **THEN** the run fails naming the module and that test, whichever test loaded it first
 
-#### Scenario: A diff touches Python
-- **WHEN** any changed path is a `.py` file or lies outside the trees, counting a moved file's old path
+#### Scenario: A diff leaves the trees
+- **WHEN** any changed path lies in no tree, counting a moved file's old path
 - **THEN** the selection is the whole surface
+
+#### Scenario: A directory that holds Python is checked for
+- **WHEN** a test checks that `scripts/` exists, or the import system lists it
+- **THEN** the audit records no read: a tree-only diff can neither remove the directory nor change what the import system finds there
 
 ### Requirement: A merge-queue removal counts against a head only for a test its diff selected
 

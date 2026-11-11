@@ -44,11 +44,24 @@ def test_only_paths_in_the_trees_have_a_shape() -> None:
     assert provable_shape(["platform/owner/src/a.ts"]) == "platform"
     assert provable_shape(["platform/doors/x.ts", "docs/a.md", "openspec/t.md",
                            "AGENTS.md"]) == "*.md+docs+openspec+platform"
-    # A Python file anywhere, any other root, or nothing at all: the whole suite.
-    assert provable_shape(["platform/sandbox/template/image.py"]) is None
-    assert provable_shape(["platform/a.ts", "tinyassets/x.py"]) is None
-    assert provable_shape(["platform/a.ts", ".github/workflows/tests.yml"]) is None
-    assert provable_shape(["deploy/x.md"]) is None
+    # The workflows, the provider files and the files beside the scripts that are not Python.
+    assert provable_shape([".github/workflows/tests.yml", ".claude/settings.json",
+                           ".agents/skills/x/SKILL.md", "scripts/probes/p.mjs",
+                           "scripts/load_secrets.sh"]) == ".agents+.claude+.github+scripts"
+    # Python that nothing here imports: the platform's own, and the process's tests.
+    assert provable_shape(["platform/sandbox/template/image.py"]) == "platform"
+    assert provable_shape(["scripts/tests/test_main_red.py"]) == "scripts"
+    # The old stack, any other Python, any other root, what the runner itself reads, or
+    # nothing at all: the whole suite.
+    for path in ("tinyassets/x.py", "tinyassets/providers/quota.json", "deploy/x.md",
+                 "tests/test_x.py", "tests/fixtures/x.json", "packaging/x.json",
+                 "Dockerfile", "pyproject.toml", "docker/linux-oracle.Dockerfile",
+                 "scripts/affected_tests.py", "scripts/invariants/x.py",
+                 "scripts/__pycache__/x.cpython-311.pyc", ".claude/hooks/bash_guard.py",
+                 "docs/audits/repro.py", ".github/known-failing-tests.txt",
+                 ".github/heavy-test-files.txt", ".github/test-durations.json"):
+        assert provable_shape([path]) is None, path
+        assert provable_shape(["platform/a.ts", ".github/workflows/tests.yml", path]) is None
     assert provable_shape([]) is None
 
 
@@ -108,6 +121,109 @@ def test_a_tree_a_conftest_reads_runs_the_whole_suite(tmp_path) -> None:
     assert shared == {"docs"}
     assert gate_selection(["docs/a.md"], root=root, shared=set())[0] is None
     assert gate_selection(["platform/owner/x.json"], root=root, shared=set())[0] is not None
+
+
+def _process_repo(root: Path) -> Path:
+    """The old stack with its tests, and the files a platform PR edits beside it."""
+    return _tree(root, {
+        ".github/workflows/tests.yml": "name: Tests\n",
+        ".github/workflows/deploy.yml": "name: Deploy\n",
+        ".github/known-failing-tests.txt": "",
+        ".claude/settings.json": "{}\n",
+        "platform/import/host.py": "print('host')\n",
+        "platform/import/window.sh": "true\n",
+        "scripts/__init__.py": "",
+        "scripts/tool.py": "from pathlib import Path\nHERE = Path(__file__).resolve().parent\n",
+        "scripts/probe.mjs": "export {}\n",
+        "tinyassets/__init__.py": "",
+        "tinyassets/thing.py": "VALUE = 1\n",
+        "tests/__init__.py": "",
+        "tests/test_old.py": "from tinyassets.thing import VALUE\ndef test_it(): assert VALUE\n",
+        "tests/test_tool.py": "from scripts.tool import HERE\ndef test_it(): assert HERE\n",
+        "tests/test_pin.py": (
+            "from pathlib import Path\nROOT = Path(__file__).parents[1]\n"
+            "def test_it(): assert (ROOT / '.github' / 'workflows' / 'tests.yml').read_text()\n"),
+        "tests/test_probe.py": (
+            "from pathlib import Path\nROOT = Path(__file__).parents[1]\n"
+            "def test_it(): assert (ROOT / 'scripts' / 'probe.mjs').read_text()\n"),
+    })
+
+
+def test_a_workflow_or_script_diff_runs_its_readers_and_the_old_stack_runs_everything(
+        tmp_path) -> None:
+    root = _process_repo(tmp_path)
+    for changed, expected in (
+        # A workflow, the gate's own included: the tests that read the workflows.
+        ([".github/workflows/tests.yml"], ["tests/test_pin.py"]),
+        ([".github/workflows/deploy.yml"], ["tests/test_pin.py"]),
+        # A file beside the scripts that is not Python: the tests that read such files.
+        (["scripts/probe.mjs"], ["tests/test_probe.py"]),
+        # Nothing reads these, so nothing runs: the platform's Python (changed or
+        # deleted), its shell, a provider file.
+        (["platform/import/host.py", "platform/import/window.sh"], []),
+        (["platform/import/gone.py"], []),
+        ([".claude/settings.json"], []),
+        ([".github/workflows/deploy.yml", "platform/import/host.py", "scripts/probe.mjs"],
+         ["tests/test_pin.py", "tests/test_probe.py"]),
+    ):
+        selected, reasons = gate_selection(changed, root=root, shared=set())
+        assert selected == expected, (changed, reasons)
+    # The PR's advisory slice no longer runs everything for the platform's Python either.
+    selected, _ = select(["platform/import/host.py"], root=root, graph=Graph(root),
+                         shared=set(), pr=True)
+    assert selected == []
+    # The old stack's code, tests, manifest and image, any Python that Python can import,
+    # and what the runner reads outside any test: everything, alone or beside a tree file.
+    for path in ("tinyassets/thing.py", "tests/test_old.py", "scripts/tool.py",
+                 "pyproject.toml", "Dockerfile", "deploy/compose.yml", "packaging/x.json",
+                 ".github/known-failing-tests.txt"):
+        assert gate_selection([path], root=root, shared=set())[0] is None, path
+        assert gate_selection([".github/workflows/tests.yml", path], root=root,
+                              shared=set())[0] is None, path
+
+
+def test_the_audit_holds_the_workflows_and_the_non_python_files_beside_the_scripts(
+        tmp_path) -> None:
+    root = _process_repo(tmp_path)
+    _tree(root, {
+        # Imports a script and resolves its path: the import system lists scripts/ and
+        # realpath checks that the directory exists. Neither reads a file a tree-only
+        # diff can change, so neither needs the map.
+        "tests/test_exists.py": (
+            "from pathlib import Path\nfrom scripts.tool import HERE\n"
+            "def test_it(): assert HERE.is_dir() and (HERE / 'tool.py').read_text()\n"),
+        # Reads a workflow, and a file beside the scripts, by paths the map cannot see.
+        "tests/test_hidden_workflow.py": (
+            "from pathlib import Path\nROOT = Path(__file__).parents[1]\n"
+            "HUB = ROOT / ('.git' + 'hub')\n"
+            "def test_it(): assert (HUB / 'workflows' / 'deploy.yml').exists()\n"),
+        "tests/test_hidden_probe.py": (
+            "from scripts.tool import HERE\n"
+            "def test_it(): assert (HERE / 'probe.mjs').read_text()\n"),
+        # Lists the scripts' directory: that sees which non-Python files exist.
+        "tests/test_hidden_listing.py": (
+            "from scripts.tool import HERE\n"
+            "def test_it(): assert sorted(p.name for p in HERE.iterdir())\n"),
+        # The platform's Python is a tree file like any other.
+        "tests/test_hidden_host.py": (
+            "from pathlib import Path\nROOT = Path(__file__).parents[1]\n"
+            "HOST = ROOT / ('plat' + 'form') / 'import' / 'host.py'\n"
+            "def test_it(): assert HOST.read_text()\n"),
+        # The quarantine ledger is in no tree (a diff to it runs everything), so reading
+        # it needs no map.
+        "tests/test_ledger.py": (
+            "from pathlib import Path\nROOT = Path(__file__).parents[1]\n"
+            "HUB = ROOT / ('.git' + 'hub')\n"
+            "def test_it(): assert (HUB / 'known-failing-tests.txt').exists()\n"),
+    })
+    outcomes = _run_audited(root)
+    for mapped in ("test_old", "test_tool", "test_pin", "test_probe", "test_exists",
+                   "test_ledger"):
+        assert outcomes[mapped] == "passed", (mapped, outcomes[mapped])
+    assert ".github: .github/workflows/deploy.yml" in outcomes["test_hidden_workflow"]
+    assert "scripts: scripts/probe.mjs" in outcomes["test_hidden_probe"]
+    assert "scripts: scripts" in outcomes["test_hidden_listing"]
+    assert "platform: platform/import/host.py" in outcomes["test_hidden_host"]
 
 
 def test_a_tree_named_as_data_selects_no_test_that_merely_walks(tmp_path) -> None:
