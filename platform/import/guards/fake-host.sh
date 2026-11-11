@@ -10,7 +10,9 @@
 # FAKE_METADATA, FAKE_EGRESS_STATUS; FAKE_NO_IMAGE for a copy that names no Node), and
 # recording each other call's stdin; ssh-keyscan offering FAKE_HOSTKEY; ssh-keygen making
 # that key; scp doing nothing. Every call is recorded in FAKE_LOG. FAKE_FLIP names an object
-# whose off-site copy (remote taoff) gets a changed byte.
+# whose off-site copy (remote taoff) gets a changed byte. FAKE_RCLONE_FAIL ("<command>
+# <remote>") makes each such rclone call fail as a refused request does: FAKE_RCLONE_STDERR on
+# its stderr, exit FAKE_RCLONE_EXIT.
 set -euo pipefail
 tool="$(basename "$0")"
 printf '%s %s\n' "$tool" "$*" >> "$FAKE_LOG"
@@ -26,6 +28,13 @@ case "$tool" in
   rclone)
     printf 'rclone-keys %s\n' "$(env | sed -n 's/^RCLONE_CONFIG_\([A-Z]*\)_ACCESS_KEY_ID=.*/\1/p' \
                                  | sort | tr '\n' ' ')" >> "$FAKE_LOG"
+    if [[ -n "${FAKE_RCLONE_FAIL:-}" ]]; then
+      read -r fail_command fail_remote <<< "$FAKE_RCLONE_FAIL"
+      if [[ "$1" == "$fail_command" && " $* " == *" ${fail_remote}:"* ]]; then
+        printf '%s\n' "${FAKE_RCLONE_STDERR:-}" >&2
+        exit "${FAKE_RCLONE_EXIT:-1}"
+      fi
+    fi
     command="$1"
     shift
     case "$command" in
