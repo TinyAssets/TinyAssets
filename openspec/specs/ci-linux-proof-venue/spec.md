@@ -66,8 +66,12 @@ a guard runs when its test file is selected.
 - **WHEN** a merge group's diff changes only files under `platform/`
 - **THEN** the shards run only the tests that name `platform/` in path form, walk the checkout's root or run git, and a test of the old stack that does neither does not run
 
+#### Scenario: A path whose merge deploys the old stack changes
+- **WHEN** a diff changes a path the old stack's build workflow (`build-image.yml`) lists as a push trigger, its deploy chain's workflows and actions among them
+- **THEN** the selection is the whole surface, since production takes that commit with no test run after the merge
+
 #### Scenario: A workflow changes
-- **WHEN** a diff changes only files under `.github/workflows/`
+- **WHEN** a diff changes only files under `.github/workflows/` that start no build of the old stack
 - **THEN** the tests that name `.github/` in path form run, with those that walk the checkout's root or run git, and no other test of the old stack runs
 
 #### Scenario: The old stack changes

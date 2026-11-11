@@ -27,6 +27,8 @@ beside the scripts that are not Python) runs only the tests the reader map gives
 those trees (``tree_readers``), and none when it gives none. A diff that touches the
 old stack (``tinyassets/``, ``deploy/``, ``tests/``, ``packaging/``, the image, the
 manifest, or any Python outside ``platform/`` and ``scripts/tests/``) runs everything.
+So does a diff that touches a path whose merge builds and deploys the old stack
+(``deploy_paths``: its deploy chain's workflows), whoever reads it.
 The hourly run on main runs everything whatever changed.
 
 When unsure it selects EVERYTHING (output ``ALL``):
@@ -63,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import importlib.util
 import os
 import re
@@ -443,7 +446,8 @@ def provable_shape(changed: list[str]) -> str | None:
     ``scripts/`` is a tree of its non-Python files only (probes, shell, data): a
     change to a ``.py`` there is still everything, because tests import it and
     the import graph is not sound (above). The workflows are a tree, the gate's
-    own included: a test reads a workflow as text or not at all. What the runner
+    own included: a test reads a workflow as text or not at all (``gate_selection``
+    still runs everything for one whose merge deploys the old stack). What the runner
     reads outside any test (``RUNNER_READS``) is in no tree, since no audit of
     the tests can say who depends on it.
 
@@ -881,6 +885,38 @@ def tree_readers(graph: Graph, extra_md: tuple[str, ...] = ()
     return readers, shared
 
 
+#: The workflow whose push trigger lists every path that, merged, builds the old stack's
+#: image. `deploy-prod.yml` runs on its completion and waits for no test run, so the merge
+#: group is the last whole-suite run before that commit is deployed.
+DEPLOY_TRIGGER = ".github/workflows/build-image.yml"
+
+
+def deploy_paths(root: Path = REPO_ROOT) -> list[str]:
+    """``DEPLOY_TRIGGER``'s push paths, as GitHub reads them; none once it is deleted."""
+    path = root / DEPLOY_TRIGGER
+    if not path.is_file():
+        return []
+    try:
+        import yaml
+
+        # YAML 1.1 reads the key `on` as True.
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        trigger = doc.get(True, doc.get("on"))
+        if not isinstance(trigger, dict) or "push" not in trigger:
+            return []
+        paths = (trigger["push"] or {}).get("paths")
+    except Exception as exc:
+        raise RuntimeError(f"{DEPLOY_TRIGGER}: its push paths cannot be read: {exc!r}") from exc
+    # No path filter: every merge builds.
+    return ["**"] if paths is None else [str(p) for p in paths if not str(p).startswith("!")]
+
+
+def deploys(rel: str, patterns: list[str]) -> bool:
+    """Whether a merge that changes `rel` starts the old stack's build (over-matching is safe)."""
+    return any(rel.startswith(p[:-2]) if p.endswith("/**") else fnmatch.fnmatchcase(rel, p)
+               for p in patterns)
+
+
 def gate_selection(
     changed: list[str],
     root: Path = REPO_ROOT,
@@ -900,6 +936,14 @@ def gate_selection(
         return None, [
             "no completeness argument covers this diff shape: running the whole suite"
         ]
+    # A tree file can still be one whose merge deploys the old stack: its deploy chain's
+    # workflows. Production then takes this commit, so this commit runs everything.
+    patterns = deploy_paths(root)
+    shipped = sorted(rel for rel in (c.replace("\\", "/") for c in changed)
+                     if deploys(rel, patterns))
+    if shipped:
+        return None, [f"{shipped[0]}: merging it builds and deploys the old stack "
+                      f"({DEPLOY_TRIGGER}): running the whole suite"]
     graph = graph or Graph(root)
     selected, reasons = select(changed, root, graph, shared, mapped=True)
     if selected is None:

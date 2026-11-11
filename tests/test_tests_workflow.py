@@ -969,6 +969,51 @@ def test_select_installs_before_it_selects() -> None:
     assert not steps[install].get("continue-on-error", False)
 
 
+def test_select_runs_everything_on_every_event_but_a_merge_group(tmp_path) -> None:
+    """Push, schedule and dispatch select the whole surface; a merge group, its own diff.
+
+    The gate runs only a tree-only diff's readers, so main's own runs are the one place
+    the whole surface runs after such a merge. The step's own script runs here, with
+    `python` replaced by a recorder that writes the selection each mode would.
+    """
+    step = next(s for s in _load()["jobs"]["select"]["steps"] if s.get("id") == "pick")
+    assert "if" not in step and not step.get("continue-on-error")
+    assert step["env"] == {"BASE": "${{ github.event.merge_group.base_sha }}"}
+    fake = tmp_path / "bin" / "python"
+    fake.parent.mkdir()
+    fake.write_text(
+        '#!/bin/sh\necho "$@" >> "$CALLS"\n'
+        'case "$*" in\n'
+        '  *"--ci-select all"*) echo ALL > affected.txt ;;\n'
+        '  *"--ci-select"*) echo tests/test_x.py > affected.txt ;;\n'
+        '  *) echo sha256:recorded ;;\nesac\n', encoding="utf-8")
+    fake.chmod(0o755)
+    everything = "scripts/ci_required_tests.py --ci-select all --out affected.txt"
+    diff = "scripts/ci_required_tests.py --ci-select gate --base abc123 --out affected.txt"
+    for event, base, call, scope in (
+        ("merge_group", "abc123", diff, "affected"),
+        ("push", "", everything, "ALL"),
+        ("schedule", "", everything, "ALL"),
+        ("workflow_dispatch", "", everything, "ALL"),
+        # A merge group with no base cannot name its diff: everything.
+        ("merge_group", "", everything, "ALL"),
+    ):
+        work = tmp_path / f"{event}-{base or 'none'}"
+        work.mkdir()
+        script = step["run"].replace("${{ github.event_name }}", event)
+        assert "${{" not in script
+        env = {"PATH": f"{fake.parent}{os.pathsep}{os.environ['PATH']}",
+               "CALLS": str(work / "calls.txt"), "BASE": base,
+               "GITHUB_OUTPUT": str(work / "output.txt"),
+               "GITHUB_STEP_SUMMARY": str(work / "summary.md")}
+        done = subprocess.run(["bash", "-s"], input=script.encode(), env=env, cwd=work,
+                              capture_output=True)
+        assert done.returncode == 0, done.stderr
+        calls = (work / "calls.txt").read_text(encoding="utf-8").splitlines()
+        assert calls[0] == call and len(calls) == 2, (event, calls)
+        assert f"scope={scope}" in (work / "output.txt").read_text(encoding="utf-8"), event
+
+
 def test_the_gate_asks_for_the_conservative_selection() -> None:
     """`--gate`, not the advisory PR-time mode.
 

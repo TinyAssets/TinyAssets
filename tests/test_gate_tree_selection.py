@@ -17,6 +17,7 @@ import pytest
 
 from scripts.affected_tests import (
     Graph,
+    deploy_paths,
     gate_selection,
     provable_shape,
     retiring_tests,
@@ -58,6 +59,8 @@ def test_only_paths_in_the_trees_have_a_shape() -> None:
                  "Dockerfile", "pyproject.toml", "docker/linux-oracle.Dockerfile",
                  "scripts/affected_tests.py", "scripts/invariants/x.py",
                  "scripts/__pycache__/x.cpython-311.pyc", ".claude/hooks/bash_guard.py",
+                 # Whatever else the import system loads beside a script: no tree file.
+                 "scripts/sourceless.pyc", "scripts/native.so", "scripts/stub.pyi",
                  "docs/audits/repro.py", ".github/known-failing-tests.txt",
                  ".github/heavy-test-files.txt", ".github/test-durations.json"):
         assert provable_shape([path]) is None, path
@@ -224,6 +227,45 @@ def test_the_audit_holds_the_workflows_and_the_non_python_files_beside_the_scrip
     assert "scripts: scripts/probe.mjs" in outcomes["test_hidden_probe"]
     assert "scripts: scripts" in outcomes["test_hidden_listing"]
     assert "platform: platform/import/host.py" in outcomes["test_hidden_host"]
+
+
+def test_a_path_whose_merge_deploys_the_old_stack_runs_the_whole_suite(tmp_path) -> None:
+    root = _process_repo(tmp_path)
+    readers = ["tests/test_pin.py"]
+    # No build workflow (after the cutover): a workflow is a tree file like any other.
+    assert gate_selection([".github/workflows/deploy.yml"], root=root, shared=set())[0] == readers
+    _tree(root, {
+        ".github/workflows/build-image.yml": (
+            "name: Build\non:\n  push:\n    branches: [main]\n    paths:\n"
+            "      - 'tinyassets/**'\n      - '.github/actions/canary/**'\n"
+            "      - '.github/workflows/build-image.yml'\n"
+            "      - '.github/workflows/deploy.yml'\n  workflow_dispatch:\n"),
+        ".github/actions/canary/action.yml": "name: canary\n",
+        ".github/workflows/lint.yml": "name: Lint\n",
+    })
+    # Merging any of these builds and deploys the old stack, whoever reads them.
+    for path in (".github/workflows/deploy.yml", ".github/workflows/build-image.yml",
+                 ".github/actions/canary/action.yml", ".github/workflows/gone-from-disk.yml"):
+        expected = readers if path.endswith("gone-from-disk.yml") else None
+        assert gate_selection([path], root=root, shared=set())[0] == expected, path
+        if expected is None:
+            assert gate_selection([path, "platform/import/host.py", ".github/workflows/lint.yml"],
+                                  root=root, shared=set())[0] is None, path
+    # Every other workflow, the gate's own included, still runs its readers.
+    for path in (".github/workflows/tests.yml", ".github/workflows/lint.yml"):
+        assert gate_selection([path], root=root, shared=set())[0] == readers, path
+    # With no path filter every merge builds, and a trigger that cannot be read is no answer.
+    _tree(root, {".github/workflows/build-image.yml": "name: Build\non:\n  push:\n"})
+    assert gate_selection(["platform/import/window.sh"], root=root, shared=set())[0] is None
+    _tree(root, {".github/workflows/build-image.yml": "on: [push\n"})
+    with pytest.raises(RuntimeError, match="push paths cannot be read"):
+        gate_selection(["platform/import/window.sh"], root=root, shared=set())
+    # On this checkout no path of the old stack's build trigger is left to a reader map.
+    patterns = deploy_paths(_REPO)
+    assert ".github/workflows/deploy-prod.yml" in patterns and "tinyassets/**" in patterns
+    for pattern in patterns:
+        sample = pattern[:-2] + "x" if pattern.endswith("/**") else pattern
+        assert gate_selection([sample], root=_REPO, shared=set())[0] is None, pattern
 
 
 def test_a_tree_named_as_data_selects_no_test_that_merely_walks(tmp_path) -> None:

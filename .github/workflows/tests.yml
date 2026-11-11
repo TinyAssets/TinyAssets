@@ -369,7 +369,9 @@ jobs:
   # push run would leave nothing covering the rest.
   #
   # The selection is ALL for any diff that touches the old stack: its code, its
-  # tests, its packaging, or any Python outside `platform/`. A diff confined to
+  # tests, its packaging, any Python outside `platform/`, or a path that starts its
+  # image build (`build-image.yml`'s push paths: the deploy chain's workflows).
+  # A diff confined to
   # the trees no Python imports (`affected_tests.TREES`: the platform, the prose,
   # the workflows, the provider files, the non-Python files under `scripts/`)
   # selects only the tests the reader map gives those trees, and none when the
