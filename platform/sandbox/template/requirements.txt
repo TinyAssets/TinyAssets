@@ -1,6 +1,7 @@
 # The E2B SDK the image build runs (image.py), every dependency pinned
 # with its hashes: `pip install --require-hashes -r` this. Made with pip-tools from
-# `e2b==2.62.0` (`pip-compile --generate-hashes`, Python 3.13).
+# `e2b==2.62.0` (`pip-compile --generate-hashes`, Python 3.13). This file is in the
+# image's tag (image.ts): another SDK is a new image, a paid build.
 anyio==4.16.0 \
     --hash=sha256:59bb03251907983d1603d27c3087ddb1e93299ea2163adcdba37899a4fb12ffb \
     --hash=sha256:c66ae634e0b8228396b801741beb3294326d4b6102f7bba4041c0dfb58c29026

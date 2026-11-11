@@ -2,8 +2,9 @@
  * The sandbox's template and the pair it runs (`template/`):
  * - the image (`image.py`, from `image.ts`'s spec and staged files) is the recipe the pinned
  *   template was built from, as E2B's SDK serializes it: a step changed is a new image;
- * - its tag moves with every input of the image's build, and with nothing else (the runner,
- *   the probes, the checks, the tag's own code);
+ * - its tag moves with every input of the image's build (the lock of the SDK that runs it
+ *   among them), and with nothing else (the runner, the probes, the checks, the tag's own
+ *   code);
  * - the runner the Worker ships is the bundle as built, byte for byte, and carries none of
  *   the probes, which are a bundle of their own beside it; a change to the probes alone
  *   moves the pair's tag;
@@ -226,7 +227,8 @@ describe("the image", () => {
     expect(sha(recipe(0o664))).toBe(RECIPE_664);
   });
 
-  it("is versioned by its build's inputs: image.py, the spec and the staged files", async () => {
+  it("is versioned by its build's inputs: image.py, its SDK's lock, the spec, the staged files",
+     async () => {
     const copy = copied();
     const image = `${NAME}:${tag()}`;
     expect(tagOf(copy)).toBe(image);
@@ -234,6 +236,11 @@ describe("the image", () => {
     // Each input of the image's build moves it.
     const moves: [string, (text: string) => string][] = [
       ["sandbox/template/image.py", (text) => `${text}# a comment is a new image\n`],
+      // Another SDK pinned, or another build of a dependency of it, may build another image.
+      ["sandbox/template/requirements.txt", (text) => text.replace("\ne2b==2.62.0 ",
+                                                                  "\ne2b==2.62.1 ")],
+      ["sandbox/template/requirements.txt", (text) => text.replace("--hash=sha256:",
+                                                                  "--hash=sha256:0")],
       ["sandbox/template/ta-runner", (text) => `${text}# a new loader\n`],
       ["sources/locks/codex/package.json", (text) => `${text}\n`],
       ["sandbox/runner/users.ts", (text) => text.replace('"ta-run-"', '"ta-job-"')],

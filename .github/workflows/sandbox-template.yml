@@ -5,7 +5,7 @@ name: Sandbox template (manual, founder-approved)
 # (Direction 8). The template is the image alone (Node, the engines from their
 # locks, the user pool, the runner's loader): a runner change is a Worker deploy,
 # and a build is due only when image.ts's tag moves (an engine's pin, the pool's
-# size, the loader, image.py).
+# size, the loader, image.py, the E2B SDK's lock).
 #
 # Modes (checks.ts):
 #   build - builds this tree's image, runs its standing checks with this
