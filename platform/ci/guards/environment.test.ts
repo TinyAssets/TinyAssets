@@ -96,8 +96,9 @@ const ENVIRONMENT_SECRETS: Record<string, string> = {
 const KNOWN_PRODUCTION_WORKFLOWS = [
   "apply-daemon-env.yml", "box-preflight.yml", "cloud-only-preflight.yml", "deploy-prod.yml",
   "diagnose-prod-startup.yml", "dr-drill.yml", "droplet-resize.yml", "fetch-prod-logs.yml",
-  "handles-canary.yml", "install-host-services.yml", "p0-outage-triage.yml",
-  "platform-deploy.yml", "restart-daemon.yml", "sandbox-template.yml", "uptime-canary.yml",
+  "handles-canary.yml", "import-window.yml", "install-host-services.yml",
+  "p0-outage-triage.yml", "platform-deploy.yml", "restart-daemon.yml", "sandbox-template.yml",
+  "uptime-canary.yml",
 ];
 
 // `secrets.NAME`, `secrets['NAME']`, `secrets["NAME"]`, `secrets[NAME]`,

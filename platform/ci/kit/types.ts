@@ -20,7 +20,7 @@ import { PLATFORM } from "../paths.ts";
 import { WRANGLER, workerFolders } from "../workers.ts";
 
 /** The generated file, in each Worker's folder. */
-export const TYPES_FILE = "worker-configuration.d.ts";
+const TYPES_FILE = "worker-configuration.d.ts";
 
 /**
  * `worker`'s binding types as wrangler makes them now from its own config, into `out` (its
@@ -79,7 +79,7 @@ function parsed(path: string): ts.SourceFile {
 }
 
 /** The bindings `worker`'s committed binding types name, sorted. */
-export function bindingNames(worker: string): string[] {
+function bindingNames(worker: string): string[] {
   const path = join(PLATFORM, worker, TYPES_FILE);
   return [...members(parsed(path), (found) => found.startsWith("__BaseEnv_")) ?? []].sort();
 }

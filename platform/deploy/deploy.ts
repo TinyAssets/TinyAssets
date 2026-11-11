@@ -1343,13 +1343,14 @@ function reported(unchanged: string): Step {
  * verify, since no probe owner's key can be minted before the doors serve `/app/api`, and
  * the dark control record admits no one.
  */
-function canary(side: "auto" | "new --unkeyed"): Step {
+function canary(...side: ["auto"] | ["new", "--unkeyed"]): Step {
   return step("canary", (run) => {
     const ran = run.io.spawn("python3", [join(REPO, "scripts", "cutover_handles_canary.py"),
-                                         "--side", ...side.split(" ")],
+                                         "--side", ...side],
                              { stdio: "inherit", cwd: REPO });
     if (ran.status !== 0) {
-      throw new Error(`the handles canary (side ${side}) failed (exit ${ran.status})`);
+      throw new Error(`the handles canary (side ${side.join(" ")}) failed (exit ${
+        ran.status})`);
     }
   });
 }
@@ -1706,7 +1707,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   routes: {
     steps: [...READS, routePlan, recorded, redirect, authorize, ...STORAGE, ...DEPLOY, handOver,
             customDomain, hook(true, ", after the routes"), reported("\nNothing was changed."),
-            canary("new --unkeyed"), h2Next],
+            canary("new", "--unkeyed"), h2Next],
     plans: true, applies: true, options: true,
   },
   h2: { steps: [h2], plans: false, applies: true, options: true },
@@ -1722,7 +1723,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
 // --- The keyring tools ------------------------------------------------------------------
 
 /** `keyring-new <file>`: a first keyring, written for the founder to store; never printed. */
-export function keyringNew(file: string, log: Io["log"] = IO.log): void {
+export function keyringNew(file: string, log: Io["log"]): void {
   writeFileSync(file, ringText({ active: "k1", keys: new Map([["k1", randomBytes(KEY_BYTES)]]) }),
                 { mode: 0o600, flag: "wx" });
   log(`wrote a new keyring to ${file}; store it as ${KEYRINGS.join(" or ")}, one ring each`);
@@ -1732,7 +1733,7 @@ export function keyringNew(file: string, log: Io["log"] = IO.log): void {
  * `keyring-add <file>`: the keyring in `file` with one more key under the kid after its
  * highest (never a retired kid's name), made active; the old kept.
  */
-export function keyringAdd(file: string, log: Io["log"] = IO.log): void {
+export function keyringAdd(file: string, log: Io["log"]): void {
   const ring = ringWith(keyring(readFileSync(file, "utf8"), "the keyring"),
                         randomBytes(KEY_BYTES));
   writeFileSync(file, ringText(ring), { mode: 0o600 });

@@ -61,7 +61,7 @@ export function workerFolders(): string[] {
 }
 
 /** The wrangler package the platform installs (hoisted to `platform/node_modules`). */
-export const WRANGLER_PACKAGE = dirname(createRequire(join(PLATFORM, "package.json"))
+const WRANGLER_PACKAGE = dirname(createRequire(join(PLATFORM, "package.json"))
   .resolve("wrangler/package.json"));
 /** Its command line, run with Node. */
 export const WRANGLER = join(WRANGLER_PACKAGE, "bin", "wrangler.js");
