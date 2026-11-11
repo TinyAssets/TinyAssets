@@ -821,8 +821,8 @@ function recordId(run: Run): string {
  * egress domain's Worker `domain` and E2B's `hook` as listed.
  */
 function routeRecord(run: Run, zoneId: string, table: readonly Route[],
-                            steps: readonly RouteStep[], domain: string | null,
-                            hook: Json | null): RouteRecord {
+                     steps: readonly RouteStep[], domain: string | null,
+                     hook: Json | null): RouteRecord {
   return {
     kind: RECORD_KIND, zone: ZONE, zone_id: zoneId, run: recordId(run),
     attempt: input(run, "GITHUB_RUN_ATTEMPT") ?? null, at: run.io.now().toISOString(),

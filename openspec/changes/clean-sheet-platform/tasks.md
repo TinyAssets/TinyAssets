@@ -959,8 +959,8 @@ account and no deploy.
   answer pi-ai cannot read), which keeps the whole charge; one never settled is `lost`,
   its charge `unknown`, three missed beats on (`LOST_AFTER_S`, 180 s), or past the
   stream's own day (`EGRESS_DEADLINE_S`, 86,400 s) whatever its beats. Every stop (the
-  object's end signal, the deadline, the client leaving) aborts the provider's request through a stop stream the
-  gateway watches. **Ends**: a policy write, a suspension, the connection's revoke, the
+  object's end signal, the deadline, the client leaving) aborts the provider's request
+  through a stop stream the gateway watches. **Ends**: a policy write, a suspension, the connection's revoke, the
   lease's close or a successor lease, and the erasure end the streams they cover (research
   §6 let them finish within five minutes: a declared difference). The object stays
   resident while it holds a stream's end signal, billed duration for it. **Owed by 3.5,

@@ -52,6 +52,7 @@ export const SMALL_MS = 5_000;
 export const BUDGETS: Budgets = JSON.parse(readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "budgets.json"), "utf8")) as Budgets;
 
+/** `FACTOR` times the slowest measured, up to the second, at least `SMALL_MS`. */
 export function derived(slowest: Slowest, factor = BUDGETS.factor): number {
   return Math.max(SMALL_MS, Math.ceil((factor * slowest.slowest_ms) / 1000) * 1000);
 }
