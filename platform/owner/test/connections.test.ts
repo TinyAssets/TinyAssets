@@ -1022,6 +1022,47 @@ describe("the platform's reseal sweep", () => {
       .toEqual([[r.name, connection, 1], [r.name, connection, 2]]);
   });
 
+  it("leaves a revoked connection's kept blob while its refresh is in flight, so the " +
+     "rotated tokens are kept for the provider revoke", async () => {
+    const r = await gated();
+    const connection = (await r.stub.connectionPrepare(r.session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT })).connection;
+    const soon = Date.now() + 60_000;
+    await r.stub.connectionCommit(r.session(), {
+      connection, version: 1, kid: "k1", models: await catalog(OPENAI), expires_at: soon,
+      egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
+        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
+        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: soon } }) });
+    let letRefresh!: () => void;
+    let letRevoke!: () => void;
+    await r.in((instance) => {
+      instance.faults.refreshGate = new Promise<void>((resolve) => { letRefresh = resolve; });
+      // The lane's provider revoke is held, so the kept blob stays for the sweep.
+      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
+    });
+    const calling = calls(r, 1).then(() => undefined, () => undefined);
+    await until(async () => (await r.sql("SELECT lease_id FROM connections"))[0]!["lease_id"]
+      !== null, "the lease to be taken");
+    await r.stub.connectionRevoke(r.session(), { connection });
+    // The revoke cleared the row's lease: only this instance's refresh still holds the blob.
+    expect(await r.sql("SELECT status, lease_id FROM connections"))
+      .toEqual([{ status: "revoked", lease_id: null }]);
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 1 });
+    expect(await kids(r)).toEqual([[connection, 1, "k1"]]);
+    await r.in(() => letRefresh());
+    await calling;
+    await until(async () => (await kids(r))[0]?.[1] === 2, "the refreshed tokens to be kept");
+    const [row] = await secrets(r, connection);
+    const opened = await open(keyring("k2"), { owner: r.name, connection, version: 2 },
+                              row!["blob"]);
+    expect(opened.credential.kind === "oauth2" && opened.credential.oauth.refresh).toBe("rt-2");
+    await r.in((instance) => {
+      instance.faults.revokeGate = null;
+      letRevoke();
+    });
+  });
+
   it("never brings back a blob its provider revoke deleted while the gateway resealed it",
      async () => {
     const r = await gated();
