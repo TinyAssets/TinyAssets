@@ -26,6 +26,17 @@ export interface Found {
   readonly what: string;
 }
 
+/** The guards a workspace may owe: each one's test holds `ratchet` over what it finds. */
+export const GUARDS: readonly string[] = Object.freeze(["layers"]);
+
+/** Each entry owed to a guard no test holds, which would never be found stale. */
+export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {
+  return [...owed].flatMap(([workspace, entries]) => entries
+    .filter((each) => !GUARDS.includes(each.guard))
+    .map((each) => `${rulesOf(workspace)} owes "${each.what}" to "${each.guard}", ` +
+                   "a guard no one holds"));
+}
+
 /**
  * What `from` owes the layer table (`layers.ts`) for each of its imports `to` lands on, until
  * `fix` removes them: paths from the repository root, as the table's guard names them.

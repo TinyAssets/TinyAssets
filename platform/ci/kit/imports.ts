@@ -23,7 +23,7 @@
  * seen), not proof against deliberate evasion.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 
 import ts from "typescript";
@@ -328,24 +328,109 @@ function ownLayers(layer: Layer, ws: string, layers: readonly Layer[],
  */
 function specifiers(path: string, source: string): (string | null)[] {
   const named = ts.preProcessFile(source, true, true);
-  const found: (string | null)[] = [...named.referencedFiles, ...named.importedFiles]
-    .map((each) => each.fileName);
-  if (!/\b(?:import|require)\s*\(/.test(source)) {
+  const found: (string | null)[] = [
+    ...named.referencedFiles, ...named.importedFiles,
+    ...named.typeReferenceDirectives.filter((each) => each.fileName.startsWith(".")),
+  ].map((each) => each.fileName);
+  if (!/\b(?:import|require|createRequire)\s*\(|=\s*require\b|\bimport\.meta\.|\bvi\./
+    .test(source)) {
     return found;
   }
+  // `require` under another name: `createRequire` itself imported as another
+  // (`createRequire as make`), a binding of what it makes or of `require`
+  // (`const load = createRequire(…)`, `module.createRequire(…)`, `= require`), and what it
+  // makes called at once (`createRequire(…)(…)`).
+  const makers = new Set(["createRequire", ...[...source.matchAll(
+    /\bcreateRequire\s+as\s+([A-Za-z_$][\w$]*)/g)].map((each) => each[1]!)]);
+  const made = (node: ts.Expression): boolean => ts.isCallExpression(node)
+    && (ts.isIdentifier(node.expression) ? makers.has(node.expression.text)
+      : ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === "createRequire");
+  const requires = new Set(["require"]);
+  const bind = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+        && node.initializer !== undefined
+        && (made(node.initializer)
+            || (ts.isIdentifier(node.initializer) && requires.has(node.initializer.text)))) {
+      requires.add(node.name.text);
+    }
+    ts.forEachChild(node, bind);
+  };
+  const loads = (callee: ts.Expression): "named" | "computed" | null => {
+    if (callee.kind === ts.SyntaxKind.ImportKeyword
+        || (ts.isIdentifier(callee) && requires.has(callee.text)) || made(callee)) {
+      return "named";
+    }
+    if (!ts.isPropertyAccessExpression(callee)) {
+      return null;
+    }
+    // vitest's loaders name a module as an import does; `import.meta`'s find one at run time.
+    if (ts.isIdentifier(callee.expression) && callee.expression.text === "vi"
+        && /^(?:mock|doMock|unmock|doUnmock|importActual|importMock)$/.test(callee.name.text)) {
+      return "named";
+    }
+    return ts.isMetaProperty(callee.expression) && /^(?:glob|resolve)$/.test(callee.name.text)
+      ? "computed" : null;
+  };
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)
-        && (node.expression.kind === ts.SyntaxKind.ImportKeyword
-            || (ts.isIdentifier(node.expression) && node.expression.text === "require"))
-        && (node.arguments[0] === undefined || !ts.isStringLiteralLike(node.arguments[0]))) {
-      found.push(null);
+    const how = ts.isCallExpression(node) ? loads(node.expression) : null;
+    if (how !== null && ts.isCallExpression(node)) {
+      const first = node.arguments[0];
+      if (how === "computed" || first === undefined || !ts.isStringLiteralLike(first)) {
+        found.push(null);
+      } else if (node.expression.kind !== ts.SyntaxKind.ImportKeyword
+                 && !(ts.isIdentifier(node.expression) && node.expression.text === "require")) {
+        found.push(first.text);  // the pre-processor has read `import("…")` and `require("…")`
+      }
     }
     ts.forEachChild(node, visit);
   };
-  visit(ts.createSourceFile(path, source, ts.ScriptTarget.Latest, false,
-                            KINDS[posix.extname(path)] ?? ts.ScriptKind.TS));
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, false,
+                                   KINDS[posix.extname(path)] ?? ts.ScriptKind.TS);
+  bind(file);
+  visit(file);
   return found;
 }
+
+/** Each workspace's package name (`@tinyassets/owner`), with its folder from the repository root. */
+let packages: Map<string, string> | undefined;
+function workspacePackages(): Map<string, string> {
+  return packages ??= new Map(readdirSync(PLATFORM).flatMap((folder) => {
+    const at = join(PLATFORM, folder, "package.json");
+    const name = isFile(at) ? (JSON.parse(readFileSync(at, "utf8")) as { name?: string }).name
+      : undefined;
+    return name === undefined ? [] : [[name, `platform/${folder}`] as const];
+  }));
+}
+
+/**
+ * Where a specifier that names a workspace by its package (`@tinyassets/owner/src/x`, which
+ * npm links into `node_modules`) lands, or null for any other: held as the path is.
+ */
+function workspaceNamed(specifier: string): string | null {
+  for (const [name, folder] of workspacePackages()) {
+    if (specifier === name || specifier.startsWith(`${name}/`)) {
+      return landing(`${folder}/[package]`, `.${specifier.slice(name.length)}`,
+                     (path) => isFile(join(REPO, path)));
+    }
+  }
+  return null;
+}
+
+/**
+ * A specifier that names a package or a runtime's module (`vitest/config`, `@scope/name/x`,
+ * `node:fs`, `cloudflare:workers`). Any other that is no relative path names a place under
+ * another name: an absolute path, a URL, or a path rooted at an expression
+ * (`${{ github.workspace }}/platform/…`, `$GITHUB_WORKSPACE/…`).
+ */
+const PACKAGE =
+  /^(?:[a-z][a-z0-9-]*:)?(?:@[a-z0-9~-][a-z0-9._~-]*\/)?[a-z0-9~-][a-z0-9._~-]*(?:\/[\w.~@/-]+)?$/;
+
+/**
+ * A path rooted at an expression a workflow step holds the checkout's folder in
+ * (`$GITHUB_WORKSPACE/…`, `${root}/…`, `${{ github.workspace }}/…`): the path from there.
+ */
+const ROOTED = /^(?:\$\{\{[^}]*\}\}|\$\{[^}]*\}|\$[A-Za-z_]\w*)\/(.+)$/;
 
 /** Where `specifier`, relative, from `from`, lands: the file it names, by the bundler's tries. */
 function landing(from: string, specifier: string, has: (path: string) => boolean): string {
@@ -372,12 +457,15 @@ function edgeViolations(layer: Layer, layers: readonly Layer[], from: string, ws
       if (layer.computed !== true) {
         out.push(`${from} imports a computed module`);
       }
-    } else if (specifier.startsWith("./") || specifier.startsWith("../")) {
-      const to = landing(from, specifier, has);
+    } else if (specifier.startsWith("./") || specifier.startsWith("../")
+               || workspaceNamed(specifier) !== null) {
+      const to = workspaceNamed(specifier) ?? landing(from, specifier, has);
       if (!holders.some((each) => mayImport(each, ws, to, workers))) {
         out.push(`${from} imports ${to}`);
       }
-    } else if (layer.packages === undefined ? ABSOLUTE.test(specifier)
+    } else if (specifier.startsWith("#")) {
+      out.push(`${from} imports ${specifier}, a name its package maps to a path`);
+    } else if (layer.packages === undefined ? !PACKAGE.test(specifier)
                : !layer.packages.some((name) => specifier === name
                                       || specifier.startsWith(`${name}/`))) {
       out.push(`${from} imports ${specifier}`);
@@ -434,13 +522,21 @@ export function layerProblems(inputs: LayerInputs): LayerReport {
       unplaced.push(`${path} is no workflow`);
       continue;
     }
+    const found = new Set<string>();
     for (const { dir, code } of inlineImports(text)) {
-      const from = posix.join(dir, "[inline]");
-      for (const what of edgeViolations(inline, layers, from, null,
-                                        specifiers("inline.ts", code), has, workers)) {
-        violations.push({ workspace: "ci", what: `${path}${what.slice(from.length)}` });
+      // A path rooted at an expression (`$GITHUB_WORKSPACE/…`) is held from the root.
+      const named = specifiers("inline.ts", code);
+      const rooted = named.map((each) => (each === null ? null : ROOTED.exec(each)?.[1]));
+      for (const [from, held] of [
+        [posix.join(dir, "[inline]"), named.filter((_each, at) => rooted[at] == null)],
+        ["[inline]", rooted.filter((each) => each != null).map((each) => `./${each}`)],
+      ] as const) {
+        for (const what of edgeViolations(inline, layers, from, null, held, has, workers)) {
+          found.add(`${path}${what.slice(from.length)}`);
+        }
       }
     }
+    violations.push(...[...found].map((what) => ({ workspace: "ci", what })));
   }
   return { unplaced, violations };
 }
@@ -454,9 +550,10 @@ function isFile(path: string): boolean {
 }
 
 /**
- * The modules a workflow's run steps evaluate inline (`node -e`, `--eval`, `-p`, `--print`),
- * each with the folder it runs in, from the repository root (the step's `working-directory`,
- * else its job's or the workflow's default), its shell quoting undone.
+ * The modules a workflow's or a composite action's steps name inline, each with the folder
+ * its step runs in, from the repository root (the step's `working-directory`, else its job's
+ * or the workflow's default): what a step evaluates (`node -e`, `--eval`, `-p`, `--print`),
+ * its shell quoting undone, and each module its text names by a path, however it is run.
  */
 export function inlineImports(text: string): { dir: string; code: string }[] {
   // The workflow YAML is untyped data, read field by field.
@@ -465,23 +562,48 @@ export function inlineImports(text: string): { dir: string; code: string }[] {
   const found: { dir: string; code: string }[] = [];
   const named = (value: unknown) => (typeof value === "string" ? value : undefined);
   const evals = /(?:^|\s)(?:-e|--eval|-p|--print)(?:\s|\\\n)+("(?:[^"\\]|\\[\s\S])*"|'[^']*')/g;
-  for (const job of Object.values<Data>(data?.jobs ?? {})) {
+  // A module a step names by a relative path, in any text it runs: `--eval=`, `-pe`, a
+  // here-document, `shell: node`, a script of `actions/github-script`.
+  const paths = /\b(?:from|import|require)\b[\s(]*\\?["'`](\.{1,2}\/[^"'`\\\s]+)/g;
+  // And by a path that is absolute or rooted at an expression (`$X/…`, `${{ … }}/…`), where
+  // it names a script or a data file: a shell command of the same words names neither.
+  const rooted =
+    /\b(?:from|import|require)\b[\s(]*\\?["'`]([/$](?:\{\{[^}]*\}\}|[^"'`\\\s])+\.(?:[cm]?[jt]s|json))["'`\\]/g;
+  // A composite action's steps run in the caller's folder, as a workflow's do.
+  const jobs = [...Object.values<Data>(data?.jobs ?? {}),
+                ...(data?.runs === undefined ? [] : [data.runs])];
+  for (const job of jobs) {
     for (const step of (job?.steps ?? []) as Data[]) {
-      if (typeof step?.run !== "string") {
-        continue;
-      }
-      const dir = posix.normalize(named(step["working-directory"])
+      const texts = [step?.run, step?.with?.script]
+        .filter((each): each is string => typeof each === "string");
+      const dir = posix.normalize(named(step?.["working-directory"])
         ?? named(job?.defaults?.run?.["working-directory"])
         ?? named(data?.defaults?.run?.["working-directory"]) ?? ".");
-      for (const match of (step.run as string).matchAll(evals)) {
-        const quoted = match[1]!;
-        const code = quoted.startsWith("'") ? quoted.slice(1, -1)
-          : quoted.slice(1, -1).replace(/\\\n/g, "").replace(/\\(["\\$`])/g, "$1");
-        found.push({ dir: dir === "." ? "" : dir, code });
+      for (const text of texts) {
+        for (const match of text.matchAll(evals)) {
+          const quoted = match[1]!;
+          const code = quoted.startsWith("'") ? quoted.slice(1, -1)
+            : quoted.slice(1, -1).replace(/\\\n/g, "").replace(/\\(["\\$`])/g, "$1");
+          found.push({ dir: dir === "." ? "" : dir, code });
+        }
+        const pathed = [...text.matchAll(paths), ...text.matchAll(rooted)]
+          .map((match) => match[1]!);
+        if (pathed.length) {
+          found.push({ dir: dir === "." ? "" : dir,
+                       code: pathed.map((each) => `import ${JSON.stringify(each)};`).join("\n") });
+        }
       }
     }
   }
   return found;
+}
+
+/** Every path under `platform/` and `scripts/` git tracks, or does not ignore. */
+function listed(): string[] {
+  return execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                              "--", "platform", "scripts"],
+                      { cwd: REPO, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+    .split("\0").filter((path) => path !== "").sort();
 }
 
 /**
@@ -489,10 +611,15 @@ export function inlineImports(text: string): { dir: string; code: string }[] {
  * text: what git tracks, and any new file it does not ignore (dependencies and builds are).
  */
 export function repoScripts(): Map<string, string> {
-  const listed = execFileSync("git", ["ls-files", "-z", "--cached", "--others",
-                                      "--exclude-standard", "--", "platform", "scripts"],
-                              { cwd: REPO, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  return new Map(listed.split("\0")
-    .filter((path) => SCRIPT.test(path) && isFile(join(REPO, path))).sort()
+  return new Map(listed().filter((path) => SCRIPT.test(path) && isFile(join(REPO, path)))
     .map((path) => [path, readFileSync(join(REPO, path), "utf8")] as const));
+}
+
+/**
+ * Every symbolic link under `platform/` and `scripts/`: a link is a file, or a folder, of
+ * another path, which the table would hold by the link's own.
+ */
+export function repoLinks(): string[] {
+  return listed().filter((path) => lstatSync(join(REPO, path), { throwIfNoEntry: false })
+    ?.isSymbolicLink() === true);
 }
