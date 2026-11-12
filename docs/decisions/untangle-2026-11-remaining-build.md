@@ -318,3 +318,23 @@ Every known-wrong data shape is fixed before the cutover imports real data: a fi
 - capture always on: new recurring spend, about $62 a month for a heavy owner;
 - non-model credentials through a TLS proxy: needs a host, against Direction 8;
 - the directory listing's own MCP door: Direction 2, and the directory submission.
+
+## §R. B9's Env half (2026-11-12)
+
+C2 built B9's `npm run generate` and its staleness guard, and stopped at the `Env` half: d2 B9's design can't be built as written. C2 measured this against wrangler 4.154.0:
+- **The six generated files can't all be compiled.** `wrangler types --env-interface <Worker>Env` still writes the global augmentations: `Cloudflare.Env`, `Cloudflare.GlobalProps`, `StringifyValues` and, for a Worker with string vars, `NodeJS.ProcessEnv`. No flag drops only those. With all six included, `tsc` gives 62 errors: `process.env` requires every Worker's string vars, so every `execFileSync(…, { env })` in Node code fails, and `Cloudflare.Env` merges all six Workers' bindings.
+- **Wrangler types a binding to another Worker by its implementation, never by its contract.** Given only the Worker's own config, the binding is `Fetcher` or an untyped `Service`. Given the bound Worker's config too, it is `Service<typeof import("../gateway/src/index").default>` or `DurableObjectNamespace<import("../owner/src/index").OwnerDO>`, an edge into another Worker's `src`.
+- Strict vars also type deploy-time values as the config's placeholders (`OWNER_ISSUER: "not-configured"`).
+
+**Decided: option (a).**
+- `ci/kit/types.ts` writes each `<Worker>Env` from wrangler's binding list.
+- A binding to another Worker is typed by its contract interface, through a table in the contract.
+- The output has no global augmentation.
+- The hand `Env` interfaces and `envProblems` are deleted.
+- `SANDBOX` and `ERASURES` become required in the same change.
+
+**Not (b), one tsconfig per Worker:** it types bindings by implementation, which the layer table refuses.
+
+**Not (c), keeping wrangler's files excluded beside the hand interfaces:** it keeps hand copies held only by a name check, the hidden link the untangle removes.
+
+It builds as its own PR, **C2b**, right after C2.
