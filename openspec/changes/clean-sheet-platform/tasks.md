@@ -386,7 +386,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     stop matcher in its record's `events`; a run settles `waiting` on a card.
   - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
     `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
-    when needed, and runs the start check.
+    when needed, and runs the start check; the honest note (d3 §N5): `policyRead` gives each
+    rule where it holds and where it can't (`holds_at`, `not_enforced`), from `acts.json` and
+    the agent's engine record.
   - [ ] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
     the mapping, the old defaults written explicitly (d3 §N7), and the archive file; the
     notice. Until it lands, an old document is archived whole (`policy.refused.json`).

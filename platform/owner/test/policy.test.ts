@@ -532,5 +532,10 @@ describe("the policy document's new shape, migration 6 (d3 §N)", () => {
     expect(stopped.refused).toMatch(/the owner policy is not the old default document/);
     expect(stopped.version).toBe(5);
     expect(stopped.row).toEqual({ generation: 2, digest: policyDigest(OLD), document: other });
+    // The old default's digest over another document: its rules are never replaced unread.
+    const mismatched = await reshaped((sql) => sql.exec(
+      "UPDATE owner_policy SET document = ?", other));
+    expect(mismatched.refused).toMatch(/the owner policy is not the old default document/);
+    expect(mismatched.row).toMatchObject({ document: other });
   });
 });
