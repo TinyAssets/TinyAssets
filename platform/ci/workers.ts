@@ -395,9 +395,10 @@ export function hostSecrets(options: unknown): string[] {
 
 /**
  * A test's Workers' options, checked before they run
- * (`cloudflareTest(once(async () => pool(...)))`, and the doors' browser test's Miniflare): refused when they read a config through the pool
- * (`wrangler`, or `experimental`'s config file: wrangler's conversion fills either's secrets
- * and vars from the host) or carry any host secret (`hostSecrets`).
+ * (`cloudflareTest(once(async () => pool(...)))`, and the doors' browser test's Miniflare):
+ * refused when they read a config through the pool (`wrangler`, or `experimental`'s config
+ * file: wrangler's conversion fills either's secrets and vars from the host) or carry any
+ * host secret (`hostSecrets`).
  */
 export function pool<Options extends object>(options: Options): Options {
   const reads = ["wrangler", "experimental"].filter((option) => option in options);
