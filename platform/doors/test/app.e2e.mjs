@@ -24,11 +24,10 @@ import { fileURLToPath } from "node:url";
 
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { chromium } from "playwright";
-import { unstable_getMiniflareWorkerOptions } from "wrangler";
 
 import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts";
 import { PLATFORM } from "../../ci/paths.ts";
-import { auxiliary, bundled, fake, workerConfig } from "../../ci/workers.ts";
+import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ORIGIN = "https://tinyassets.io";
@@ -76,31 +75,27 @@ async function doors() {
   const gateway = workerConfig(join(PLATFORM, "gateway"));
   const hooks = workerConfig(join(PLATFORM, "hooks"));
   const files = workerConfig(join(PLATFORM, "files"));
-  const { workerOptions } = unstable_getMiniflareWorkerOptions(join(DOORS, "wrangler.jsonc"));
   const keyring = newKeyring();
   const webClient = `${ORIGIN}/oauth/clients/web.json`;
-  mf = new Miniflare(convertV4MiniflareOptions({
+  mf = new Miniflare(convertV4MiniflareOptions(pool({
     host: "127.0.0.1", port: 0, https: true,
     workers: [
-      {
-        ...workerOptions,
-        name: "tinyassets-doors",
-        modulesRoot: DOORS,
-        modules: bundled(DOORS, "test/e2e-entry.ts"),
-        bindings: { ...workerOptions.bindings, OWNER_ISSUER: UPSTREAM,
-                    ROUTING_MAC_KEY: randomBytes(32).toString("base64url") },
+      // The doors' test Worker, with everything the doors' config gives it (`auxiliary`):
+      // its secrets are the test's, none read from the host.
+      auxiliary(DOORS, {
+        bindings: { OWNER_ISSUER: UPSTREAM,
+                    ROUTING_MAC_KEY: randomBytes(32).toString("base64url"),
+                    WORKOS_API_KEY: "test-client-secret",
+                    E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret" },
         durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
-        serviceBindings: {
-          GATEWAY: { name: gateway.name, entrypoint: "ConnectGateway" },
-          EGRESS: { name: gateway.name, entrypoint: "EgressGateway" },
-          HOOKS: hooks.name, PROVIDERS: "fake-providers",
-          FILES: { name: files.name, entrypoint: "FilesUpload" }, OWNER_FILES: files.name,
-        },
+        // HOOKS and OWNER_FILES: the owner object's, in this script for the test.
+        serviceBindings: { HOOKS: hooks.name, PROVIDERS: "fake-providers",
+                           OWNER_FILES: files.name },
         // The provider fetches the first-party app's metadata document, as production does
         // over the public internet; nothing else leaves the doors.
         outboundService: (request) => request.url === webClient ? mf.dispatchFetch(webClient)
           : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
-      },
+      }, "test/e2e-entry.ts"),
       auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: keyring },
                                              outboundService: "fake-providers" }),
       // The files Worker: its config's bucket and cipher, and a test keyring.
@@ -114,7 +109,7 @@ async function doors() {
         modules: true, script: HAND_OFF,
       },
     ],
-  }));
+  })));
   await mf.ready;
   const control = await mf.getKVNamespace("CONTROL", "tinyassets-doors");
   await writeControl(control, JSON.stringify(OPEN));

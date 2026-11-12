@@ -7,7 +7,7 @@ import { defineConfig } from "vitest/config";
 import { keyring } from "../ci/fixtures";
 import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
-import { auxiliary, fake, once } from "../ci/workers";
+import { auxiliary, fake, main, once, pool } from "../ci/workers";
 
 /** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), made fresh for each run. */
 const ROUTING_KEY = randomBytes(32).toString("base64url");
@@ -31,16 +31,14 @@ export default defineConfig({
       // tests' own way to them, to read back what they received. ROUTING_MAC_KEY, the
       // config's one secret, is the owner Worker's too: here both are this Worker. The
       // gateway, hooks and files Workers are each bundled from their own config, as a
-      // deploy bundles them.
+      // deploy bundles them. Every Worker here has every binding its config gives it
+      // (`main`, `auxiliary`), and the tests state each secret: none is read from the host.
       // The import consumer's tests take a bundle the slice-2 builder made in Node
       // (`test/import-setup.ts`), deleted at the cutover with the importer.
       project("doors", "workerd", {
         test: { globalSetup: ["./test/import-setup.ts"] },
         plugins: [
-          cloudflareTest(once(() => ({
-            main: "./test/entry.ts",
-            wrangler: { configPath: "./wrangler.jsonc" },
-            miniflare: {
+          cloudflareTest(once(() => pool(main(join(PLATFORM, "doors"), {
               durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
               bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY,
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
@@ -58,8 +56,7 @@ export default defineConfig({
                 fake(join(PLATFORM, "doors", "test", "fake-providers.ts")),
                 auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: KEYRING } }),
               ],
-            },
-          }))),
+            }, "./test/entry.ts")))),
         ],
       }),
       // Static guards over the source and config, in Node.

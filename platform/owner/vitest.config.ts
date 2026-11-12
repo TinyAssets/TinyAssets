@@ -7,7 +7,7 @@ import { defineConfig } from "vitest/config";
 import { keyring } from "../ci/fixtures";
 import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
-import { auxiliary, fake, once } from "../ci/workers";
+import { auxiliary, fake, main, once, pool } from "../ci/workers";
 
 import { NAMESPACES } from "./test/namespaces";
 
@@ -30,19 +30,17 @@ export default defineConfig({
       // kid, and FILES_TEST_RING the files Worker's, so a test can wrap a data key under its
       // older kid; every fetch of the gateway, the sandbox and the tests reaches the gateway's
       // fake outside world (`gateway/test/fake-upstream.ts`). ROUTING_MAC_KEY is the
-      // config's one secret, the sandbox tokens' routing key. Each Worker beside it has
-      // every binding its config gives it (`auxiliary`), and a test states only its secrets
-      // and what it changes. The sandbox Worker's CONTROL is the config's namespace, the
+      // config's one secret, the sandbox tokens' routing key. The test Worker and each
+      // Worker beside it have every binding their configs give them (`main`, `auxiliary`),
+      // and a test states only their secrets and what it changes; nothing is read from the
+      // host (`pool`). The sandbox Worker's CONTROL is the config's namespace, the
       // owner's too, as at deploy; no test writes a control record there, so it starts
       // nothing (`sandbox_unconfigured`), and its key reaches no E2B: its behaviour against
       // E2B is its own package's tests (`sandbox/test`).
       // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
       project("owner", "workerd", {
         plugins: [
-          cloudflareTest(once(() => ({
-            main: "./test/worker.ts",
-            wrangler: { configPath: "./wrangler.jsonc" },
-            miniflare: {
+          cloudflareTest(once(() => pool(main(join(PLATFORM, "owner"), {
               durableObjects: Object.fromEntries(Object.entries(NAMESPACES).map(
                 ([binding, className]) => [binding, { className, useSQLite: true }])),
               bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
@@ -63,8 +61,7 @@ export default defineConfig({
                   outboundService: "fake-upstream" }),
                 fake(join(PLATFORM, "gateway", "test", "fake-upstream.ts")),
               ],
-            },
-          }))),
+            }, "./test/worker.ts")))),
         ],
         test: { setupFiles: ["./test/admitted.ts"] },
       }),

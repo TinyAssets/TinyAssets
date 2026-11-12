@@ -9,7 +9,7 @@ import { keyring } from "./fixtures";
 import { control, gate, methodsOf } from "./gate";
 import { PLATFORM } from "./paths";
 import { project } from "./project";
-import { auxiliary, once, workerConfig } from "./workers";
+import { auxiliary, once, pool, workerConfig } from "./workers";
 
 const OWNER = join(PLATFORM, "owner");
 const FILES = join(PLATFORM, "files");
@@ -35,7 +35,7 @@ export default defineConfig({
       // call none of them.
       project("ci", "workerd", {
         plugins: [
-          cloudflareTest(once(() => ({
+          cloudflareTest(once(() => pool({
             miniflare: {
               compatibilityDate: workerConfig(OWNER).compatibility_date,
               compatibilityFlags: ["nodejs_compat"],

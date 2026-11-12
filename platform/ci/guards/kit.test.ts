@@ -4,11 +4,14 @@
  * every Worker's every source is what the source guards scan, a config that does not parse
  * fails loudly, a fake is built at its Worker's own date, an auxiliary Worker has a namespace
  * of every class it defines and every binding its config declares, a test's bindings merge
- * into its config's by name, a gate is built from a contract's methods, and a job's own
+ * into its config's by name, a test pool's own Worker is built the same way with every secret
+ * stated by the test, no test's Workers carry a host secret or read a config through the
+ * pool, a gate is built from a contract's methods, and a job's own
  * sources are the scripts in its folder. The gate and the auxiliary Workers run in
  * `ci/test/gate.test.ts`.
  */
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 
@@ -17,8 +20,9 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../paths";
 import { gate, methodsOf } from "../gate";
 import { configFiles, scriptsIn, workerSources } from "../kit/sources";
-import { configBindings, fake, objectBindings, once, parseWrangler, readWrangler, withChanges,
-         type WorkerConfig, workerConfig, workerFolders } from "../workers";
+import { configBindings, declaredSecrets, fake, hostSecrets, main, objectBindings, once,
+         parseWrangler, pool, readWrangler, withChanges, type WorkerConfig, workerConfig,
+         workerFolders } from "../workers";
 
 /**
  * The files under a Worker's `src/` that are no script, each named: data a source imports
@@ -142,6 +146,133 @@ describe("the Worker kit", () => {
     // A kind the config has none of is the test's alone (`auxiliary` keeps it as given).
     expect(withChanges({ name: "y", compatibility_date: "2026-10-23" }, { bindings: { A: "a" } }))
       .toEqual({});
+  });
+
+  it("builds a test pool's own Worker from its config, its every secret the test's to state",
+     () => {
+    for (const folder of workerFolders()) {
+      const dir = join(PLATFORM, folder);
+      const config = workerConfig(dir);
+      const secrets = config.secrets?.required ?? [];
+      const stated = Object.fromEntries(secrets.map((name) => [name, `test-${name}`]));
+      const built = main(dir, { bindings: stated });
+      expect(built.main, folder).toBe(join(dir, String(config.main)));
+      const options = built.miniflare as Record<string, unknown>;
+      expect(options["compatibilityDate"], folder).toBe(config.compatibility_date);
+      expect(options["bindings"] ?? {}, folder).toEqual({ ...config.vars, ...stated });
+      expect(options["modulesRules"], folder).toEqual(config.rules === undefined ? undefined
+        : config.rules.map((rule) => ({ type: rule.type, include: rule.globs,
+                                        ...(rule.fallthrough === undefined ? {}
+                                          : { fallthrough: rule.fallthrough }) })));
+      expect(Object.keys(options["queueConsumers"] ?? {}), folder)
+        .toEqual((config.queues?.consumers ?? []).map((consumer) => consumer["queue"]));
+      if (config.assets !== undefined) {
+        expect(options["assets"], folder).toMatchObject({
+          directory: join(dir, String(config.assets["directory"])),
+          binding: config.assets["binding"] });
+      }
+      for (const name of secrets) {
+        const short = Object.fromEntries(Object.entries(stated).filter(([key]) => key !== name));
+        expect(() => main(dir, { bindings: short }), folder)
+          .toThrow(`${config.name}: a test states each secret its config requires, and ` +
+                   `${name} is not stated`);
+      }
+    }
+    expect(main(join(PLATFORM, "owner"), { bindings: { ROUTING_MAC_KEY: "k" } }, "./x.ts").main)
+      .toBe("./x.ts");
+  });
+
+  it("fails loudly on a config key, queue field or assets field the kit does not carry", () => {
+    const base = { name: "x", compatibility_date: "2026-10-23" };
+    expect(() => configBindings({ ...base, ratelimits: [] } as WorkerConfig))
+      .toThrow("x: the Worker kit does not carry ratelimits");
+    expect(() => configBindings({ ...base, queues: { other: [] } } as unknown as WorkerConfig))
+      .toThrow("x: the Worker kit does not carry queues.other");
+    expect(() => configBindings({ ...base, queues: { consumers: [{ queue: "q", odd: 1 }] } }))
+      .toThrow("x: the Worker kit does not carry queues.consumers[].odd");
+    expect(configBindings({ ...base, queues: { consumers: [
+      { queue: "q", max_batch_size: 1, max_concurrency: 4, dead_letter_queue: "d" }] } }))
+      .toEqual({ queueConsumers: { q: { maxBatchSize: 1, deadLetterQueue: "d" } } });
+    const dir = mkdtempSync(join(tmpdir(), "kit-assets-"));
+    try {
+      writeFileSync(join(dir, "wrangler.jsonc"), JSON.stringify({ ...base, main: "a.ts",
+        assets: { directory: "./app", binding: "A", run_worker_first: true, headers: {} } }));
+      expect(() => main(dir, {})).toThrow(/x: the Worker kit reads assets'.*not headers/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a test's Workers that carry a host secret or read a config through the pool",
+     () => {
+    const name = declaredSecrets()[0]!;
+    expect(name).toMatch(/^[A-Z][A-Z0-9_]+$/);
+    // A dummy value, set for this test alone: never a real secret, and never printed.
+    const dummy = `dummy-${randomBytes(12).toString("hex")}`;
+    const before = process.env[name];
+    process.env[name] = dummy;
+    try {
+      const options = { miniflare: { bindings: { X: dummy, Y: "test" },
+                                     workers: [{ name: "w", bindings: { Z: [dummy] } }] } };
+      expect(hostSecrets(options)).toEqual([`miniflare.bindings.X is the host's ${name}`,
+                                            `miniflare.workers[0].bindings.Z[0] is the host's ${name}`]);
+      let refused = "";
+      try {
+        pool(options);
+      } catch (error) {
+        refused = String(error);
+      }
+      expect(refused).toContain(`a test's Workers carry a host secret: miniflare.bindings.X`);
+      expect(refused).not.toContain(dummy);
+      const clean = { miniflare: { bindings: { X: "test" } } };
+      expect(pool(clean)).toBe(clean);
+      process.env[name] = "";
+      expect(hostSecrets({ bindings: { X: "" } })).toEqual([]);
+    } finally {
+      if (before === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = before;
+      }
+    }
+    expect(() => pool({ wrangler: {} })).toThrow(/a test pool reads no config itself/);
+  });
+
+  it("builds every test's Workers through the kit: no config read by the pool or wrangler, " +
+     "and every pool checked", () => {
+    const forbidden = ["configPath", "unstable_getMiniflareWorkerOptions", "getPlatformProxy",
+                       "unstable_readConfig"];
+    const problems: string[] = [];
+    const walk = (dir: string, at: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = at === "" ? entry.name : `${at}/${entry.name}`;
+        if (entry.isDirectory()) {
+          if (!["node_modules", ".wrangler", "dist"].includes(entry.name)) {
+            walk(join(dir, entry.name), path);
+          }
+          continue;
+        }
+        if (!/\.(?:[cm]?[jt]s)$/.test(entry.name) || path === "ci/guards/kit.test.ts") {
+          continue;
+        }
+        const text = readFileSync(join(dir, entry.name), "utf8");
+        for (const word of forbidden.filter((token) => text.includes(token))) {
+          problems.push(`${path} names ${word}`);
+        }
+        const pools = text.split("cloudflareTest(").length - 1;
+        const checked = text.split("cloudflareTest(once(() => pool(").length - 1;
+        if (entry.name === "vitest.config.ts" && pools !== checked) {
+          problems.push(`${path} builds a test pool without pool()`);
+        }
+        const made = text.split("new Miniflare(").length - 1;
+        const madeChecked = text.split("new Miniflare(convertV4MiniflareOptions(pool(").length - 1;
+        if (made !== madeChecked) {
+          problems.push(`${path} starts a Miniflare without pool()`);
+        }
+      }
+    };
+    walk(PLATFORM, "");
+    expect(problems).toEqual([]);
   });
 
   it("builds a gate before a service or before objects, with a contract's methods", () => {
