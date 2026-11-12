@@ -143,7 +143,7 @@ import {
   type Client, type ConnectedApp, type Grant, Grants, grantsDoors, type Scope,
 } from "./grants";
 import {
- type CodemodeBounds, codemodeDoors, type CodemodeService, type CodeRequest, type CodeResult,
+  codemodeDoors, type CodemodeService, type CodeRequest, type CodeResult,
 } from "./codemode";
 import {
   type Agent, type ChainMail, Ledger, ledgerDoors, type LedgerLimits, type MailPage,
@@ -409,8 +409,6 @@ export interface Internals {
   readonly eraseRetryMs?: number;
   /** The erasure's wait for a put begun before its mark (`PUT_GRACE_MS`), for the tests. */
   readonly putGraceMs?: number;
-  /** Code mode's bounds, smaller in a test than production's (`codemode.ts`). */
-  readonly codemode?: CodemodeBounds;
   /** How long a script's read of the control record serves its calls (`control-gate.ts`). */
   readonly controlFreshMs?: number;
   /**
@@ -479,8 +477,6 @@ export interface OwnerState {
   readonly erasure: Erasure;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly posts: PostGate;
-  /** Code mode's bounds: production's, unless a test passed smaller. */
-  readonly codemode: CodemodeBounds;
   /** The held-back count a sync commit in progress carries for the sync-ignore list. */
   heldBack: { kept: number; changed: number } | null;
   /** A synchronous body as one unit of the write gate. */
@@ -587,8 +583,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   readonly #inbound: Inbound;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly #posts = new PostGate();
-  /** Code mode's bounds: production's, unless a test passed smaller. */
-  readonly #codemode: CodemodeBounds;
   /** How long a script's read of the control record serves its calls. */
   readonly #controlFreshMs: number;
   /** The owner this object is named by (`ctx.id.name`), refused when it has none. */
@@ -824,7 +818,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
     internals.erasure?.(this.#erasure);
-    this.#codemode = internals.codemode ?? {};
     this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
       .use(this.#relay.capability);
@@ -890,7 +883,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       get archive() { return object.#archive; },
       get erasure() { return object.#erasure; },
       get posts() { return object.#posts; },
-      get codemode() { return object.#codemode; },
       heldBack: null,
       door: <T>(act: () => T) => object.#door(act),
       quiet: <T>(act: () => T) => object.#quiet(act),
