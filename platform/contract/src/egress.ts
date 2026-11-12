@@ -29,6 +29,7 @@
  * API path.
  */
 import type { EgressScope } from "./egress-scope";
+import type { NetworkRule } from "./sandbox";
 import { Refusal } from "./refusal";
 import { CONNECTION_ID, HEX64, RUN_ID } from "./ids";
 import { forbids } from "./text";
@@ -63,7 +64,7 @@ export function allowList(hosts: Iterable<string>): string[] {
  */
 export function closedNetwork(hosts: Iterable<string>): {
   allowOut: string[]; denyOut: string[]; dnsServers: string[];
-  rules: Record<string, readonly unknown[]>;
+  rules: Record<string, readonly NetworkRule[]>;
 } {
   return { allowOut: allowList(hosts), denyOut: [ALL_TRAFFIC], dnsServers: [...DNS_SERVERS],
            rules: {} };
@@ -87,6 +88,16 @@ export function doorHeaders(network: unknown): Readonly<Record<string, unknown>>
     ? headers as Readonly<Record<string, unknown>> : null;
 }
 
+/** `network` with the door's one transform setting `name` to `value` beside what it sets. */
+function withDoorHeader<N extends { readonly rules: object }>(network: N, name: string,
+                                                              value: string): N {
+  const headers: Record<string, unknown> = { ...doorHeaders(network) };
+  headers[name] = value;
+  const rules: Record<string, unknown> = { ...network.rules };
+  rules[EGRESS_HOST] = [{ transform: { headers } }];
+  return { ...network, rules } as N;
+}
+
 /** The egress token a network document's door transform carries, or null: its one reader. */
 export function egressTokenOf(network: unknown): string | null {
   const token = doorHeaders(network)?.[SANDBOX_HEADER];
@@ -100,11 +111,37 @@ export function egressTokenOf(network: unknown): string | null {
  */
 export function withEgressToken<N extends { readonly rules: object }>(network: N,
                                                                      token: string): N {
-  const headers: Record<string, unknown> = { ...doorHeaders(network) };
-  headers[SANDBOX_HEADER] = token;
-  const rules: Record<string, unknown> = { ...network.rules };
-  rules[EGRESS_HOST] = [{ transform: { headers } }];
-  return { ...network, rules } as N;
+  return withDoorHeader(network, SANDBOX_HEADER, token);
+}
+
+/** A generation as `GENERATION_HEADER` carries it: a whole number from 1, in decimal. */
+const GENERATION_TEXT = /^[1-9][0-9]{0,14}$/;
+
+/**
+ * The egress generation a `GENERATION_HEADER` value names, or null: the one reader of its
+ * text, for the egress door (a request's header) and a network document (`generationOf`).
+ */
+export function generationIn(header: unknown): number | null {
+  return typeof header === "string" && GENERATION_TEXT.test(header) ? Number(header) : null;
+}
+
+/** The egress generation a network document's door transform carries, or null. */
+export function generationOf(network: unknown): number | null {
+  return generationIn(doorHeaders(network)?.[GENERATION_HEADER]);
+}
+
+/**
+ * `network` with the egress `generation` it is made under set in the door's transform, so
+ * E2B stamps it on every call through the door: its one writer, for the owner's network
+ * document. A generation its reader would not read back is refused.
+ */
+export function withGeneration<N extends { readonly rules: object }>(network: N,
+                                                                    generation: number): N {
+  const text = String(generation);
+  if (generationIn(text) !== generation) {
+    throw new Refusal("invalid", "a policy generation is a whole number from 1");
+  }
+  return withDoorHeader(network, GENERATION_HEADER, text);
 }
 /**
  * The run's own secret as a header, where its CLI sends one (`run_secret_env`, its MCP
