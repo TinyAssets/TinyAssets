@@ -130,7 +130,9 @@ function probe(state: DurableObjectState, names: string[]): Probe {
       due: row.payload === null ? null : (JSON.parse(row.payload) as { due?: unknown }).due,
     }])),
   };
-  const schedule = new Schedule(lanes, () => p.now, new WriteGate(state.storage).write);
+  // Never halted: these lanes' owner is not being erased.
+  const schedule = new Schedule(lanes, () => p.now, new WriteGate(state.storage).write,
+                                () => false);
   const host = { ctx, constructor: { name: "ProbeHost" } } as unknown as OwnerDO;
   return Object.assign(p, { schedule, lifecycle: new Lifecycle(host).use(schedule) });
 }

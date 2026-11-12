@@ -491,18 +491,21 @@ describe("every door admits an outside client against its grant (review L1, L4)"
   it("holds one client to its share of the pending proposals, never the owner", async () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
+    const { pendingProposals: most, pendingPerClient: share } = POLICY_LIMITS;
+    const owners = most - share - 1;
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage, { ...POLICY_LIMITS, pendingProposals: 6,
-                                                 pendingPerClient: 2 });
+      const policy = new Policy(state.storage);
       const now = clock();
       policy.propose({ n: 1 }, "a", CHATGPT.client, now);
-      policy.propose({ n: 2 }, "b", CHATGPT.client, now);
-      expect(() => policy.propose({ n: 3 }, "c", CHATGPT.client, now))
+      for (let n = 1; n < share; n++) {
+        policy.propose({ n }, `c${n}`, CHATGPT.client, now);
+      }
+      expect(() => policy.propose({ n: -1 }, "c", CHATGPT.client, now))
         .toThrow("this client's pending policy proposals are at their limit");
       policy.propose({ n: 1 }, "a", CHATGPT.client, now);  // the same card again: a no-op
       policy.propose({ n: 4 }, "d", CLAUDE.client, now);
-      for (const card of ["e", "f", "h"]) {  // the owner past a client's share
-        policy.propose({ card }, card, "owner", now);
+      for (let n = 0; n < owners; n++) {  // the owner past a client's share
+        policy.propose({ card: n }, `o${n}`, "owner", now);
       }
       expect(() => policy.propose({ n: 6 }, "i", "owner", now))
         .toThrow("too many pending policy proposals");
@@ -514,7 +517,7 @@ describe("every door admits an outside client against its grant (review L1, L4)"
       policy.propose({ n: 7 }, "g", CHATGPT.client, now);
     });
     expect((await r.table("proposal_shares")).map((row) => [row["proposer"], row["pending"]])
-      .sort()).toEqual([[CHATGPT.client, 2], [CLAUDE.client, 1], ["owner", 3]].sort());
+      .sort()).toEqual([[CHATGPT.client, share], [CLAUDE.client, 1], ["owner", owners]].sort());
   });
 });
 

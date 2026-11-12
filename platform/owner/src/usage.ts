@@ -57,7 +57,7 @@ import { costMicros, largestFitting, periods } from "./money";
 import type { Call, OwnerState } from "./owner-do";
 import { clock } from "./clock";
 
-export interface UsageLimits {
+interface UsageLimits {
   /** Reservation rows kept, as receipts; no cap reads them. */
   readonly receiptsKept: number;
   readonly receiptsListed: number;
@@ -155,15 +155,12 @@ export function priced(model: Pick<Model<Api>, "cost">, input: number, output: n
 export class Usage {
   readonly #storage: OwnerStorage;
   readonly #policy: () => UsagePolicy;
-  readonly #limits: UsageLimits;
   /** The open reservations this instance made: any other open row is a dead instance's. */
   readonly #live = new Set<string>();
 
-  constructor(storage: OwnerStorage, policy: () => UsagePolicy,
-              limits: UsageLimits = USAGE_LIMITS) {
+  constructor(storage: OwnerStorage, policy: () => UsagePolicy) {
     this.#storage = storage;
     this.#policy = policy;
-    this.#limits = limits;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -212,8 +209,8 @@ export class Usage {
         return refuse(unauthorized);
       }
       const floor = Math.min(ask.maxOutputTokens, ask.reasoning
-        ? Math.max(this.#limits.minOutput, this.#limits.minReasoningOutput)
-        : this.#limits.minOutput);
+        ? Math.max(USAGE_LIMITS.minOutput, USAGE_LIMITS.minReasoningOutput)
+        : USAGE_LIMITS.minOutput);
       // The room each ceiling leaves, the tightest first to name.
       const rooms: [string, number][] = [];
       const own = settings.sources[ask.source];
@@ -275,7 +272,7 @@ export class Usage {
   #prune(now: number): void {
     this.#sql.exec("DELETE FROM model_reservations WHERE seq <= " +
                      "(SELECT MAX(seq) FROM model_reservations) - ? " +
-                     "AND state NOT IN ('reserved', 'dispatched')", this.#limits.receiptsKept);
+                     "AND state NOT IN ('reserved', 'dispatched')", USAGE_LIMITS.receiptsKept);
     this.spendPruned(now);
   }
 
@@ -285,10 +282,10 @@ export class Usage {
    * so an owner who uses only the sandbox never fills them. None in a window is touched.
    */
   spendPruned(now: number): void {
-    const day = periods(now - this.#limits.daysKept * 86_400).day;
+    const day = periods(now - USAGE_LIMITS.daysKept * 86_400).day;
     const month = new Date(now * 1000);
     month.setUTCDate(1);
-    month.setUTCMonth(month.getUTCMonth() - this.#limits.monthsKept);
+    month.setUTCMonth(month.getUTCMonth() - USAGE_LIMITS.monthsKept);
     this.#sql.exec("DELETE FROM model_spend WHERE period < ?", `d:${day}`);
     this.#sql.exec("DELETE FROM model_spend WHERE period >= 'm:' AND period < ?",
                    `m:${month.toISOString().slice(0, 7)}`);
@@ -352,7 +349,7 @@ export class Usage {
     return this.#sql.exec<Record<string, SqlStorageValue>>(
       "SELECT id, created_at, connection_id, source, model, state, rule, max_output_tokens, " +
         "est_tokens, est_cost, tokens, cost, settled_at FROM model_reservations " +
-        "ORDER BY seq DESC LIMIT ?", this.#limits.receiptsListed).toArray()
+        "ORDER BY seq DESC LIMIT ?", USAGE_LIMITS.receiptsListed).toArray()
       .map((row) => ({
         reservation: row["id"] as string, at: row["created_at"] as number,
         connection: row["connection_id"] as string, source: row["source"] as string,

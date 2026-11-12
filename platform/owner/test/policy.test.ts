@@ -324,45 +324,51 @@ describe("an agent's proposal", () => {
     // A proposal with no card is receipted and held nowhere.
     await r.stub.policyPropose(r.bind(null), { change: change(1) });
     expect(await r.table("policy_proposals")).toEqual([]);
-    const limits = { ...POLICY_LIMITS, pendingProposals: 2, appliedProposals: 1 };
+    const { pendingProposals: most, proposalTtlS: ttl } = POLICY_LIMITS;
+    const ids = (from: number) => Array.from({ length: most }, (_, n) => `p${from + n}`);
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage, limits);
+      const policy = new Policy(state.storage);
       const now = clock();
-      policy.propose(change(1), "a", "owner", now);
-      policy.propose(change(2), "b", "owner", now);
+      for (const id of ids(0)) {
+        policy.propose(change(1), id, "owner", now);
+      }
       // A pending one is never evicted: a full set refuses.
-      expect(() => policy.propose(change(3), "c", "owner", now))
+      expect(() => policy.propose(change(1), "over", "owner", now))
         .toThrow("too many pending policy proposals");
-      expect(policy.held("a", now + limits.proposalTtlS - 1)).not.toBeNull();
-      expect(policy.held("a", now + limits.proposalTtlS + 1)).toBeNull();  // expired
-      // An expired one is pruned at the next filing, which makes room.
-      const later = now + limits.proposalTtlS + 1;
-      policy.propose(change(3), "c", "owner", later);
-      policy.propose(change(4), "d", "owner", later);
-      expect(() => policy.propose(change(5), "e", "owner", later))
+      expect(policy.held("p0", now + ttl - 1)).not.toBeNull();
+      expect(policy.held("p0", now + ttl + 1)).toBeNull();  // expired
+      // The expired ones are pruned at the next filing, which makes room.
+      const later = now + ttl + 1;
+      for (const id of ids(most)) {
+        policy.propose(change(1), id, "owner", later);
+      }
+      expect(() => policy.propose(change(1), "over", "owner", later))
         .toThrow("too many pending policy proposals");
     });
     expect((await r.table("policy_proposals")).map((row) => row["request_id"]).sort())
-      .toEqual(["c", "d"]);
+      .toEqual(ids(most).sort());
   });
 
   it("keeps only the newest applied proposals", async () => {
     const r = await rig();
-    const limits = { ...POLICY_LIMITS, appliedProposals: 1 };
+    const kept = POLICY_LIMITS.appliedProposals;
+    const applied = Array.from({ length: kept + 2 }, (_, n) => `a${n}`);
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage, limits);
+      const policy = new Policy(state.storage);
       const now = clock();
-      for (const [n, id] of ["a", "b", "c"].entries()) {
+      for (const [n, id] of applied.entries()) {
         const generation = policy.read().generation;
         policy.propose(change(generation), id, "owner", now + n);
         const { digest } = policy.held(id, now + n)!;
         policy.write("session", generation, defaults(), { request_id: id, digest }, now + n);
       }
-      policy.propose(change(9), "d", "owner", now + 5);
+      policy.propose(change(policy.read().generation), "d", "owner", now + applied.length);
     });
-    expect((await r.table("policy_proposals")).map((row) => [row["request_id"],
-                                                             row["applied_at"] !== null]))
-      .toEqual([["c", true], ["d", false]]);
+    const rows = await r.table("policy_proposals");
+    expect(rows.filter((row) => row["applied_at"] !== null).map((row) => row["request_id"])
+      .sort()).toEqual(applied.slice(2).sort());
+    expect(rows.filter((row) => row["applied_at"] === null).map((row) => row["request_id"]))
+      .toEqual(["d"]);
   });
 });
 
@@ -388,10 +394,11 @@ describe("the receipts", () => {
 
   it("keeps each bucket's newest receipts, counted by its own counter", async () => {
     const r = await rig();
-    const limits = { ...POLICY_LIMITS, receiptsPerBucket: 3 };
+    const kept = POLICY_LIMITS.receiptsPerBucket;
+    const newest = (prefix: string) => Array.from({ length: kept }, (_, n) => `${prefix}${n + 2}`);
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage, limits);
-      for (let n = 0; n < 5; n++) {
+      const policy = new Policy(state.storage);
+      for (let n = 0; n < kept + 2; n++) {
         policy.receipt("write", { rule: `w${n}` }, n);
         policy.receipt("proposal", { rule: `p${n}` }, n);
         policy.refusal("write", { n }, n);
@@ -399,12 +406,12 @@ describe("the receipts", () => {
     });
     const rows = await r.table("policy_receipts");
     expect(rows.filter((row) => row["kind"] === "write").map((row) => row["rule"]))
-      .toEqual(["w2", "w3", "w4"]);
+      .toEqual(newest("w"));
     expect(rows.filter((row) => row["kind"] === "proposal").map((row) => row["rule"]))
-      .toEqual(["p2", "p3", "p4"]);
+      .toEqual(newest("p"));
     const [usage] = await r.sql(
       "SELECT owner_receipts, agent_receipts, refusal_receipts FROM policy_usage");
-    expect(usage).toEqual({ owner_receipts: 3, agent_receipts: 3, refusal_receipts: 3 });
+    expect(usage).toEqual({ owner_receipts: kept, agent_receipts: kept, refusal_receipts: kept });
     expect((await failure(() => r.sql("UPDATE policy_receipts SET rule = 'x'"))).message)
       .toMatch(/a policy receipt is never changed/);
   });
@@ -412,16 +419,17 @@ describe("the receipts", () => {
   it("prunes a full bucket's own oldest rows, never another bucket's", async () => {
     const r = await rig();
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage, { ...POLICY_LIMITS, receiptsPerBucket: 3 });
+      const policy = new Policy(state.storage);
       for (let n = 0; n < 3; n++) {
         policy.receipt("proposal", { rule: `p${n}` }, n);  // the oldest rows of all
       }
-      for (let n = 0; n < 5; n++) {
+      for (let n = 0; n < POLICY_LIMITS.receiptsPerBucket + 2; n++) {
         policy.receipt("write", { rule: `w${n}` }, 10 + n);
       }
     });
-    expect((await r.table("policy_receipts")).map((row) => row["rule"]))
-      .toEqual(["p0", "p1", "p2", "w2", "w3", "w4"]);
+    const rules = (await r.table("policy_receipts")).map((row) => row["rule"]);
+    expect(rules.slice(0, 4)).toEqual(["p0", "p1", "p2", "w2"]);
+    expect(rules).toHaveLength(3 + POLICY_LIMITS.receiptsPerBucket);
   });
 });
 

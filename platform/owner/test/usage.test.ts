@@ -18,7 +18,7 @@ import { MODEL_DEFAULTS, MODEL_SETTINGS, validate } from "../../contract/src/pol
 import { modelSettings } from "../src/policy";
 import { largestFitting, periods } from "../src/money";
 import {
-  type Ask, type ModelCaps, priced, Usage, USAGE_LIMITS, type UsageLimits,
+  type Ask, type ModelCaps, priced, Usage, USAGE_LIMITS,
 } from "../src/usage";
 import { gated } from "./gateway-support";
 import { failure, ownerObject } from "./support";
@@ -59,14 +59,14 @@ class Standing extends Usage {
   }
 }
 
-function withUsage<R>(act: (r: Rig) => Promise<R>, limits: Partial<UsageLimits> = {}): Promise<R> {
+function withUsage<R>(act: (r: Rig) => Promise<R>): Promise<R> {
   return runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
     const gate = new WriteGate(state.storage);
     const policy: Rig["policy"] = { generation: 1, caps: {} };
     const make = () => new Standing(gate.storage, () => ({
       generation: policy.generation,
       settings: { ...MODEL_DEFAULTS, sources: {}, ...policy.caps },
-    }), { ...USAGE_LIMITS, ...limits });
+    }));
     const sql = state.storage.sql;
     const usage = make();
     return act({
@@ -433,13 +433,14 @@ describe("a dead instance's calls", () => {
 describe("the receipts", () => {
   it("keep the newest, and pruning one never frees what it held", () =>
     withUsage(async (r) => {
-      for (let i = 0; i < 6; i++) {
+      const calls = USAGE_LIMITS.receiptsKept + 3;
+      for (let i = 0; i < calls; i++) {
         await spent(r, { ...ASK, run: `t${i}` }, 10, 7);
       }
-      expect(r.rows().length).toBeLessThanOrEqual(4);
-      expect(r.spend()[DAY]).toBe(42);
-      expect(r.spend()[MONTH]).toBe(42);
-    }, { receiptsKept: 3 }));
+      expect(r.rows().length).toBeLessThanOrEqual(USAGE_LIMITS.receiptsKept + 1);
+      expect(r.spend()[DAY]).toBe(calls * 7);
+      expect(r.spend()[MONTH]).toBe(calls * 7);
+    }));
 
   it("never prune a reservation still open, reserved or dispatched", () =>
     withUsage(async (r) => {
@@ -449,16 +450,16 @@ describe("the receipts", () => {
         throw new Error("refused");
       }
       await r.gate.write(() => r.usage.dispatched(out.id, NOW, null));
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < USAGE_LIMITS.receiptsKept + 2; i++) {
         await spent(r, { ...ASK, run: `s${i}` }, 10, 7);
       }
       const ids = r.rows().map((row) => row["id"]);
       expect(ids).toContain(open.id);
       expect(ids).toContain(out.id);
-      expect(r.rows().length).toBeLessThanOrEqual(4);
+      expect(r.rows().length).toBeLessThanOrEqual(USAGE_LIMITS.receiptsKept + 3);
       expect(await r.gate.write(() => r.usage.settle(out.id, { state: "succeeded", tokens: 1,
                                                                cost: 1 }, NOW))).toBe(true);
-    }, { receiptsKept: 1 }));
+    }));
 
   it("drop spend counters past their window", () => withUsage(async (r) => {
     await spent(r, ASK, 10, 7);

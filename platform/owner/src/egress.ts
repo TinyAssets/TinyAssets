@@ -396,17 +396,15 @@ function settleRequest(value: unknown): SettleRequest {
 export class Egress {
   readonly #storage: OwnerStorage;
   readonly #deps: EgressDeps;
-  readonly #limits: EgressLimits;
   /** Each open reservation's end signal, by reservation, with what it covers. */
   readonly #live = new Map<string, LiveStream & {
     readonly end: WritableStreamDefaultWriter<Uint8Array>;
     /** An admitted model call whose charge waits for the gateway's parse (`reserve`). */
     reserving: boolean }>();
 
-  constructor(storage: OwnerStorage, deps: EgressDeps, limits: EgressLimits = EGRESS_LIMITS) {
+  constructor(storage: OwnerStorage, deps: EgressDeps) {
     this.#storage = storage;
     this.#deps = deps;
-    this.#limits = limits;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -475,7 +473,7 @@ export class Egress {
     const runs = this.#deps.tierRuns();
     if (runs === null
         || this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'open'")
-          >= this.#limits.openPerRun * runs) {
+          >= EGRESS_LIMITS.openPerRun * runs) {
       return refuse("egress_rate");
     }
     // A model call's API must have rules the gateway meters it by; its charge waits for the
@@ -674,7 +672,7 @@ export class Egress {
   /** The newest receipts, newest first: what was admitted, refused and how each ended. */
   receipts(): EgressReceipt[] {
     return this.#sql.exec<Row>("SELECT * FROM egress_reservations ORDER BY opened_at DESC, " +
-                                 "rowid DESC LIMIT ?", this.#limits.receiptsListed).toArray()
+                                 "rowid DESC LIMIT ?", EGRESS_LIMITS.receiptsListed).toArray()
       .map((row) => ({ reservation: row.id, connection: row.connection_id, method: row.method,
                        path: row.path, state: row.state, code: row.code, ended: row.ended,
                        outcome: row.outcome, status: row.status, bytes: row.bytes,
@@ -746,8 +744,8 @@ export class Egress {
 
   /** Each bucket's rows past its newest kept, oldest first: admitted and refused apart. */
   #prune(): void {
-    for (const [states, kept] of [["state = 'settled'", this.#limits.receiptsKept],
-                                  ["state = 'refused'", this.#limits.refusalsKept]] as const) {
+    for (const [states, kept] of [["state = 'settled'", EGRESS_LIMITS.receiptsKept],
+                                  ["state = 'refused'", EGRESS_LIMITS.refusalsKept]] as const) {
       const over = this.#count(`SELECT COUNT(*) AS n FROM egress_reservations WHERE ${states}`)
         - kept;
       if (over > 0) {

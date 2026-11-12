@@ -699,7 +699,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       ring: (subscription, version, blob, previous, request): Promise<RingAnswer> =>
         env.GATEWAY.ringDoorbell(owner(), subscription, version, blob, previous, request),
     });
-    this.#connections = new Connections(storage, write, () => env.GATEWAY, owner,
+    this.#connections = new Connections(storage, write, env.GATEWAY, owner,
                                         this.#notices, clock);
     this.#egress = new Egress(storage, {
       lease: (token, now) => this.#files.leaseByToken("egress", token, now),
@@ -776,7 +776,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       wakes: this.#sender, files: this.#files, connections: this.#connections,
       runs: this.#launcher, manifest: this.#backups, sandbox: this.#sandboxTime,
       archive: this.#archive, starter: this.#starter,
-    }, clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
+    }, clock, write, () => wiped(storage.sql) || erasing(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
       storage, write, clock, lifecycle,
