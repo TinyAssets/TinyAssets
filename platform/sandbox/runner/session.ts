@@ -26,7 +26,7 @@ export const STORE = `${STATE}/store`;
 /** The conversations of the engines that resume by their working directory. */
 export const CONVERSATIONS = "/var/lib/ta-conv";
 /** The lease's TTL, the object's (`LEASE_TTL_S`). */
-export const LEASE_TTL_MS = LEASE_TTL_S * 1000;
+const LEASE_TTL_MS = LEASE_TTL_S * 1000;
 /**
  * The longest a status check, or the wait for a runner's answer, may take: the lease's TTL,
  * past which a start's run is lost anyway (a run with no post within it is settled lost).
@@ -129,7 +129,7 @@ export interface Snapshot {
   readonly signedIn: boolean;
 }
 
-export function snapshotOf(home: string): string {
+function snapshotOf(home: string): string {
   return `${STATE}/kept/${home.split("/").at(-1)!}.json`;
 }
 

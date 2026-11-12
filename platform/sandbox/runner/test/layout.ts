@@ -5,7 +5,9 @@
  * egress CA sit. So the image and the test root share one definition. The users' ids are the
  * tests' own block (each box's pid namespace keeps every suite's processes apart, so a fixed
  * block is enough); the image's are its build's. Its pool is four run users, where the
- * image's is `RUNS_CEILING`. What E2B's base image brings is the tests' own here: root, its
+ * image's is `RUNS_CEILING`. Each pool user's own group's gid is not its uid, since the
+ * image's `useradd -U` makes a group of the user's name and promises no number. What E2B's
+ * base image brings is the tests' own here: root, its
  * default user (in `sudo`, as its provisioning boots it), the system directories, and its
  * egress CA's path, which the loader names.
  */
@@ -38,7 +40,9 @@ const IMAGE = spec();
 export const TA_GID = 50_000;
 export const SYNC_UID = 50_001;
 export const POOL_UIDS: readonly number[] = Object.freeze([50_002, 50_003, 50_004, 50_005]);
-const POOL = POOL_UIDS.map((uid, n) => ({ name: `${IMAGE.pool.prefix}${n}`, uid }));
+export const POOL_GIDS: readonly number[] = Object.freeze([50_102, 50_103, 50_104, 50_105]);
+const POOL = POOL_UIDS.map((uid, n) => ({ name: `${IMAGE.pool.prefix}${n}`, uid,
+                                          gid: POOL_GIDS[n]! }));
 const E2B_UID = 1000;
 
 export const USERS: readonly LayoutUser[] = Object.freeze([
@@ -47,8 +51,8 @@ export const USERS: readonly LayoutUser[] = Object.freeze([
     shell: "/bin/bash" },
   { name: IMAGE.sync.user, uid: SYNC_UID, gid: SYNC_UID, home: IMAGE.no_home,
     shell: IMAGE.sync.shell },
-  ...POOL.map(({ name, uid }) => ({ name, uid, gid: uid, home: IMAGE.no_home,
-                                    shell: IMAGE.pool.shell })),
+  ...POOL.map(({ name, uid, gid }) => ({ name, uid, gid, home: IMAGE.no_home,
+                                         shell: IMAGE.pool.shell })),
 ]);
 
 export const GROUPS: readonly LayoutGroup[] = Object.freeze([
@@ -57,7 +61,7 @@ export const GROUPS: readonly LayoutGroup[] = Object.freeze([
   { name: IMAGE.e2b_user, gid: E2B_UID, members: [] },
   { name: IMAGE.group, gid: TA_GID, members: POOL.map(({ name }) => name) },
   { name: IMAGE.sync.user, gid: SYNC_UID, members: [] },
-  ...POOL.map(({ name, uid }) => ({ name, gid: uid, members: [] })),
+  ...POOL.map(({ name, gid }) => ({ name, gid, members: [] })),
 ]);
 
 /** A directory the image's `mkdir -p` makes and no step changes: root's umask 022. */

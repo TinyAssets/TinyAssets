@@ -56,7 +56,7 @@ import {
 } from "../../contract/src/sync-ignore";
 
 /** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
-export const INTENT_ID_CHARS = 2 * INTENT_ID_BYTES;
+const INTENT_ID_CHARS = 2 * INTENT_ID_BYTES;
 /**
  * A commit's ops, each counted at its bytes in the body (`opBytes`): the door's body less the
  * commit's own fields (its lease id, epoch and the JSON around them, under 128 bytes).
@@ -129,7 +129,7 @@ export class SyncClient {
 }
 
 /** What the sandbox last synced of one path: its version, and its bytes' identity. */
-export interface Known {
+interface Known {
   readonly version: number;
   readonly size: number;
   readonly mtime_ms: number;
@@ -140,7 +140,7 @@ export interface Known {
  * What the sandbox last synced: the feed's cursor, and each path's version and identity,
  * read and written a row at a time.
  */
-export interface Mirror {
+interface Mirror {
   cursor(): number;
   setCursor(cursor: number): void;
   get(path: string): Known | undefined;
@@ -217,10 +217,6 @@ export function openMirror(path: string): Mirror {
     resetEnd: () => { db.exec("DROP TABLE IF EXISTS seen"); },
     close: () => { db.close(); },
   };
-}
-
-function sha256(bytes: Uint8Array): string {
-  return sha256Hex(bytes);
 }
 
 /** Where the sandbox keeps the owner's files, and the sync agent's own directories. */
@@ -478,7 +474,7 @@ const RACY = -1;
  * many bytes), or the defaults, the file written with them (so the owner sees and edits
  * them) when it is missing.
  */
-export function syncIgnore(local: string): { lines: readonly string[]; past: number } {
+function syncIgnore(local: string): { lines: readonly string[]; past: number } {
   const path = localOf({ local }, SYNC_IGNORE);
   const read = safeReadHead(local, path, LIST_BYTES);
   if (read !== null) {
@@ -534,7 +530,7 @@ async function scanned(base: string, local: string, atoms: readonly string[]):
   let size = 0;
   const ok = await safePieces(base, local, CHUNK_BYTES, (piece) => {
     whole.update(piece);
-    chunks.push(sha256(piece));
+    chunks.push(sha256Hex(piece));
     size += piece.byteLength;
     if (!secret && atoms.length > 0) {
       const seen = Buffer.concat([tail, piece]);
@@ -571,7 +567,7 @@ async function upload(client: SyncClient, op: Op,
     const missing = new Set(begun["missing"] as string[]);
     const ok = await safePieces(op.from!.base, op.from!.local, CHUNK_BYTES,
                                 async (piece, i) => {
-      const hash = sha256(piece);
+      const hash = sha256Hex(piece);
       if (hash !== op.chunks![i]) {
         throw new ChangedWhileSyncing(op.path);
       }
@@ -732,7 +728,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
       if (small.byteLength > INLINE_BYTES) {
         return offer(path, base, local);  // it grew since its stat: read it as a large one
       }
-      const digest = sha256(small);
+      const digest = sha256Hex(small);
       if (known !== undefined && known.sha256 === digest) {
         mirror.put(path, { ...known, size: small.byteLength, mtime_ms: mtime });
         return;
@@ -798,14 +794,14 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   for (const rel of walkFiles(place.local, { skip: (each, isDir) => {
     const name = each.split("/").at(-1)!;
     return each === ".sessions" || name.startsWith(".ta-")
-      || out(each.split("\\").join("/"), isDir);
+      || out(each, isDir);
   }, unnamed: (rel) => {
     unnamedCount += 1;
     if (unnamed.length < LISTED) {
       unnamed.push(`/workspace/${rel}`);
     }
   } })) {
-    const path = `/workspace/${rel.split("\\").join("/")}`;
+    const path = `/workspace/${rel}`;
     if (place.authority !== "owner" && clientReadOnly(path)) {
       continue;
     }

@@ -26,12 +26,15 @@ import { runInNewContext } from "node:vm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import {
-  AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, wildcard,
+  AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, SYNC_IGNORE,
+  wildcard,
 } from "../../contract/src/sync-ignore";
-import { CHUNK_BYTES, INLINE_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX } from "../../contract/src/limits";
-import {
-  INTENT_ID_CHARS, openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut,
-} from "./sync";
+import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX }
+  from "../../contract/src/limits";
+import { openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
+
+/** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
+const INTENT_ID_CHARS = 2 * INTENT_ID_BYTES;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -626,6 +629,23 @@ describe("names that are not UTF-8", () => {
     expect(sent).toContain("/workspace/src/ok.txt");
     expect([...report.unnamed].sort()).toEqual(["/workspace/\\xc3(", "/workspace/src/f\\xffo"]);
     expect(report.unnamed_count).toBe(2);
+  });
+});
+
+describe("a name with a backslash", () => {
+  it("is offered as it is, a backslash being a name's own character on Linux", async () => {
+    const { place: p, local } = place();
+    mkdirSync(join(local, "a"));
+    writeFileSync(join(local, "a\\b.txt"), "the backslash's");
+    writeFileSync(join(local, "a", "b.txt"), "the directory's");
+    mkdirSync(join(local, ".ta"));
+    writeFileSync(join(local, ".ta", "sync-ignore"), "a/\n");
+    const sent: string[] = [];
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body, sent)
+      : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
+    // The directory's file is kept out by its line; the other is no path under it.
+    expect(sent.filter((path) => path !== SYNC_IGNORE))
+      .toEqual(["/workspace/a\\b.txt"]);
   });
 });
 

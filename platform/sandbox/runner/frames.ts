@@ -11,6 +11,12 @@
  */
 import { EVENT_FRAMES_MAX, EVENTS_BODY_MAX, FRAME_UNITS_MAX } from "../../contract/src/run-events";
 
+/**
+ * The runner's heartbeat: slice R's lease renewal cadence, a post at least every 20 s
+ * (`Poster`), well inside the lease's TTL.
+ */
+export const HEARTBEAT_MS = 20_000;
+
 export interface PostedFrame {
   readonly seq: number;
   readonly at: number;
@@ -52,7 +58,7 @@ export function fitted(seq: number, at: number, event: unknown): PostedFrame {
  * its cut marker (`ta_cut`). The runner's alone: a CLI's line, which the run's agent and
  * every tool it runs may write (round 8, R8-1), never is one.
  */
-export function runnerShaped(event: object): boolean {
+function runnerShaped(event: object): boolean {
   if (Array.isArray(event)) {
     return false;
   }

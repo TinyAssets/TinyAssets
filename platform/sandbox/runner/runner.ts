@@ -75,7 +75,7 @@ import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
 import { AGENTS_DIR, binPath, HOMES, invocation, isKept, keptPaths, SYSTEM,
          WORKSPACE } from "./engine";
-import { lineEvent, Outbox } from "./frames";
+import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite, walkFiles } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
@@ -111,20 +111,18 @@ const SESSIONS_SEEN = `${STATE}/sessions-seen.json`;
 /** What the runner keeps that is a cache alone, discarded when its format changes. */
 const CACHES: readonly string[] = Object.freeze([SESSIONS_SEEN]);
 
-/** The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). */
-export const HEARTBEAT_MS = 20_000;
 /** How often the runner flushes what its CLI wrote: the frames' own cadence (§2.2). */
 const FLUSH_MS = 250;
 /**
  * A cancelled CLI's grace before the kill: one heartbeat, so its end reaches the object
  * well inside the lease's TTL (`LEASE_TTL_MS`), its runner's last post included.
  */
-export const CANCEL_GRACE_MS = HEARTBEAT_MS;
+const CANCEL_GRACE_MS = HEARTBEAT_MS;
 const OK = EXIT.ok;
 const NO = EXIT.no;
 const FENCED = EXIT.fenced;
 /** The input a run resumed after a renewal or a reboot is continued with. */
-export const CONTINUE_PROMPT = "The sandbox paused to renew its runtime and your last step " +
+const CONTINUE_PROMPT = "The sandbox paused to renew its runtime and your last step " +
   "was interrupted. Continue the task where you left off.";
 
 /** A file of root's own state directory (no other user reaches it). */
@@ -472,7 +470,7 @@ function atoms(): string[] {
  * Whether the engine is signed in inside this sandbox: its record's `status_argv` (and
  * `status_equals`), or, for a record with none, its `state_checks` over the engine's store.
  */
-export async function signedIn(rec: SourceRecord): Promise<boolean> {
+async function signedIn(rec: SourceRecord): Promise<boolean> {
   const login = rec.cli?.login;
   if (login === undefined) {
     return false;
@@ -507,7 +505,7 @@ export async function signedIn(rec: SourceRecord): Promise<boolean> {
       return false;
     }
   } finally {
-    killAll(as.uid);
+    killAll(as);
     dropHome(home);
     give(STATE, as);
   }
@@ -1269,7 +1267,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       if (exitCode === 0 || attempt > 0 || work.stopped || work.cancelled() || !renewed) {
         break;
       }
-      killAll(as.uid);
+      killAll(as);
       call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
         continued: true, home, system, prompt: CONTINUE_PROMPT,
         ...(conversationDir === undefined ? {} : { conversationDir }) });
@@ -1296,7 +1294,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       }
       if (as !== null) {
         // Every process the run's user left is gone before its home is read.
-        killAll(as.uid);
+        killAll(as);
         cleanScratch(as.uid);
         if (home !== null) {
           await keepHome(home, rec);
@@ -1606,7 +1604,7 @@ async function loginRun(id: string): Promise<number> {
       if (expiry !== null) {
         clearTimeout(expiry);
       }
-      killAll(as.uid);
+      killAll(as);
       // Only a sign-in that completed keeps what it wrote, as the owner's new login (which
       // moves the store's generation on); one refused, stopped, expired or failed keeps
       // nothing, so it never discards a live run's refresh (review N2).
@@ -1633,7 +1631,7 @@ async function loginRun(id: string): Promise<number> {
     remove(inboxCode(id));
     if (as !== null) {
       try {
-        killAll(as.uid);
+        killAll(as);
       } finally {
         if (home !== null) {
           dropHome(home);

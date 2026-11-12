@@ -30,10 +30,10 @@ const HELPER_KEY = /helper/i;
  * region, a model name, an account id) is no credential, and occurs in ordinary text, so
  * refusing it would refuse files that hold no secret.
  */
-export const ATOM_MIN = 39;
+const ATOM_MIN = 39;
 
 /** A `.env` file's variable names (`NAME=...`, `export NAME=...`). */
-export function dotenvNames(text: string): string[] {
+function dotenvNames(text: string): string[] {
   return text.split(/\r?\n/).flatMap((line) => {
     const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
     return match === null ? [] : [match[1]!];

@@ -28,7 +28,7 @@ import { incoming, inboxDoc, INSTALL, LEASE_FILE, type LeaseFile, LOADER, RUNNER
          type SigninDoc, type StartDoc } from "../protocol";
 import { DIRS, EGRESS_CA, GROUPS, NODE, USERS } from "./layout";
 
-export { POOL_UIDS, SYNC_UID, TA_GID } from "./layout";
+export { POOL_GIDS, POOL_UIDS, SYNC_UID, TA_GID } from "./layout";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SANDBOX = join(HERE, "..", "..");
