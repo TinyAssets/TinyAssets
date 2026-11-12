@@ -15,13 +15,13 @@ name: Enqueue merge
 #
 # This calls enqueuePullRequest once a Jonnyton comment opens with
 # Drain-Review-Verdict: APPROVE and Drain-Review-Head for this change, the
-# body cites that comment, required checks have passed, and a release-critical
-# diff carries the infra-change label. The actor is MERGE_ATTRIBUTION_TOKEN.
+# body cites that comment and required checks have passed. The actor is
+# MERGE_ATTRIBUTION_TOKEN.
 # If that token lacks Merge queues: Read and write, the job logs the owner
 # step and exits 0. It never uses GITHUB_TOKEN.
 #
-# A receipt or an infra-change label does not rerun Tests. pr-scope-guard
-# re-reads both, on pull_request_target. This job runs when that guard, Tests,
+# A receipt does not rerun Tests. pr-scope-guard re-reads it, on
+# pull_request_target. This job runs when that guard, Tests,
 # or invariants succeeds for a pull request. It does not listen to edited or
 # labeled itself: those events must not start another copy of the test jobs.
 

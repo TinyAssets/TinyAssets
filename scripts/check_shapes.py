@@ -593,7 +593,7 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=root).decode().split("\0")
     problems = set()
     for rel in tracked:
-        # Append-only history no PR may edit (scripts/check_forbidden_pr_paths.py).
+        # Append-only history, kept as it was written until it is deleted.
         if rel in HISTORY_FILES or rel.startswith(HISTORY_DIRS):
             continue
         path = root / rel

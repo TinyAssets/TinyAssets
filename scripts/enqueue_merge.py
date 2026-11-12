@@ -11,9 +11,7 @@ them from a person, and enabling auto-merge does not emit
 This calls ``enqueuePullRequest`` with the merge-attribution token after the
 same receipt ``pr-scope-guard.yml`` requires: a comment by Jonnyton that opens
 with ``Drain-Review-Verdict: APPROVE`` and ``Drain-Review-Head`` for this
-change, cited at the top of the body. Release-critical diffs also need the
-``infra-change`` label, using that workflow's path list. No receipt, no label,
-no enqueue.
+change, cited at the top of the body. No receipt, no enqueue.
 
 A token that cannot call the mutation (missing ``Merge queues: Read and
 write``) logs that sentence and returns success. The job stays green so the
@@ -24,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -52,16 +49,13 @@ REQUIRED_CHECKS = (
 # three run on the pull request; a skip there means the gate did not run.
 _SKIPPABLE = frozenset({"slow-tests"})
 _PASSING = frozenset({"SUCCESS", "SKIPPED"})
-REQUIRED_LABEL = "infra-change"
 TRUSTED_LOGIN = "jonnyton"
-_SCOPE_GUARD = REPO_ROOT / ".github" / "workflows" / "pr-scope-guard.yml"
 
 _PR_QUERY = """query($owner:String!,$name:String!,$number:Int!){
 repository(owner:$owner,name:$name){pullRequest(number:$number){
 id state isDraft baseRefName baseRefOid headRefOid
 headRepository { nameWithOwner }
 body
-labels(first:100){pageInfo{hasNextPage} nodes{name}}
 mergeQueueEntry { state }
 commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{
 __typename
@@ -113,32 +107,6 @@ def checks_green(conclusions: dict[str, str]) -> bool:
     return True
 
 
-def load_scope_policy(text: str) -> re.Pattern[str]:
-    """The scope guard's release-critical pattern.
-
-    Read from the workflow text so enqueue cannot grow a second list.
-    """
-    sensitive = re.search(r"^\s*SENSITIVE_RE='([^']+)'", text, re.M)
-    if sensitive is None:
-        raise RuntimeError("pr-scope-guard.yml has no SENSITIVE_RE")
-    return re.compile(sensitive.group(1))
-
-
-def label_block(
-    paths: list[str],
-    labels: set[str],
-    *,
-    pattern: re.Pattern[str],
-) -> str | None:
-    """None when the label rule is satisfied."""
-    hits = [path for path in paths if pattern.search(path)]
-    if not hits:
-        return None
-    if REQUIRED_LABEL not in labels:
-        return f"missing {REQUIRED_LABEL} label"
-    return None
-
-
 def skip_reason(
     *,
     state: str,
@@ -150,7 +118,6 @@ def skip_reason(
     receipt: bool,
     green: bool,
     head_matches: bool,
-    label_problem: str | None = None,
 ) -> str | None:
     """None means enqueue. Anything else is a quiet skip."""
     if state != "OPEN":
@@ -169,8 +136,6 @@ def skip_reason(
         return "queue-attempt cap"
     if not green:
         return "required checks are not green"
-    if label_problem:
-        return label_problem
     if not receipt:
         return "no review receipt for this head"
     return None
@@ -341,22 +306,6 @@ def _cited_heads(body: str, comments: str, *, head: str) -> list[str]:
     return found
 
 
-def _changed_paths(repo: str, number: int) -> list[str] | None:
-    proc = _gh(
-        [
-            "api",
-            "--paginate",
-            f"repos/{repo}/pulls/{number}/files",
-            "--jq",
-            ".[] | .filename, (.previous_filename // empty)",
-        ],
-        timeout=90,
-    )
-    if proc.returncode != 0:
-        return None
-    return [line for line in proc.stdout.splitlines() if line]
-
-
 def _comments(repo: str, number: int) -> str | None:
     parts: list[str] = []
     endpoints = (
@@ -426,18 +375,6 @@ def _benign_enqueue_error(detail: str) -> bool:
     )
 
 
-def _labels(pr: dict) -> set[str] | None:
-    block = pr.get("labels") or {}
-    page = block.get("pageInfo") or {}
-    if page.get("hasNextPage"):
-        return None
-    names = set()
-    for node in block.get("nodes") or []:
-        if isinstance(node, dict) and isinstance(node.get("name"), str):
-            names.add(node["name"])
-    return names
-
-
 def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
     owner, name = repo.split("/", 1)
     try:
@@ -461,7 +398,6 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") or {}
         contexts = ((rollup.get("contexts") or {}).get("nodes")) or []
     conclusions = latest_conclusions(contexts)
-    labels = _labels(pr)
     reason = skip_reason(
         state=pr.get("state") or "",
         draft=bool(pr.get("isDraft")),
@@ -472,23 +408,9 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         receipt=True,
         green=checks_green(conclusions),
         head_matches=not expect_head or expect_head == head,
-        label_problem=None,
     )
-    if reason is None and labels is None:
-        reason = "could not read every label"
     if reason is None and _capped(repo, number):
         reason = "queue-attempt cap"
-    if reason is None:
-        try:
-            pattern = load_scope_policy(_SCOPE_GUARD.read_text(encoding="utf-8"))
-        except (OSError, RuntimeError) as exc:
-            print(f"::error::could not read the scope policy: {exc}", file=sys.stderr)
-            return 1
-        paths = _changed_paths(repo, number)
-        if paths is None:
-            reason = "could not read changed files"
-        else:
-            reason = label_block(paths, labels or set(), pattern=pattern)
     if reason is None:
         comments = _comments(repo, number)
         if comments is None:

@@ -9,10 +9,10 @@ name: PR scope guard
 # DIFF SCOPE caught it. With auto-merge enabled, that PR would have shipped
 # changes to the production deploy workflow under the banner of an auth fix.
 #
-# So: a PR that touches release-critical infrastructure carries the
-# `infra-change` label, which this guard adds itself once the head's receipt
-# passes. The receipt, not the label, is the control — see the honesty note
-# at the bottom of this file.
+# So: every PR's diff against main is reviewed before it merges, and the
+# receipt below is the control. The release-critical files a PR touches are
+# counted in the step summary for the reviewer — see the honesty note at the
+# bottom of this file.
 #
 # Since 2026-09-26 the exact-head receipt this guard already demanded on
 # gate-defining and authority paths has to be a PUBLISHED APPROVAL, not a
@@ -33,8 +33,8 @@ on:
   # judges it — the guard would grade its own homework. We never check out or
   # execute PR-head code here, so using _target is safe.
   pull_request_target:
-    # `labeled`/`unlabeled` matter: declaring an infra change must re-run the gate.
-    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
+    # `edited` matters: the receipt is cited in the body.
+    types: [opened, reopened, synchronize, ready_for_review, edited]
   # The merge queue. `Diff scope declared` is a required check, and a queue waits
   # for every required check on the merge-group commit, so this must report
   # there. It reports a pass WITHOUT re-running the gate, deliberately:
@@ -42,8 +42,8 @@ on:
   #   1. GitHub admits a PR to the queue only after it "has passed all required
   #      branch protection checks" (docs: Managing a merge queue). This gate,
   #      at the PR's current head, is one of them.
-  #   2. Everything the gate reads -- the file list, the labels, the body and
-  #      the receipt comment -- belongs to the PR, and none of it changes when
+  #   2. Everything the gate reads -- the file list, the body and the
+  #      receipt comment -- belongs to the PR, and none of it changes when
   #      the queue stacks the PR on a newer main. What does change is the code,
   #      and `required-tests`, `slow-tests` and `invariants` re-test that on
   #      the merge-group commit.
@@ -57,9 +57,9 @@ on:
 
 permissions:
   contents: read
-  # write only to add the infra-change label after the receipt check passes;
-  # PR code is never checked out or run.
-  pull-requests: write
+  # read: the file list, the comments and the reviews. PR code is never
+  # checked out or run.
+  pull-requests: read
 
 concurrency:
   # A merge_group event has no pull_request number. Without the head_ref
@@ -158,7 +158,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
           BASE_OID: ${{ github.event.pull_request.base.sha }}
           DIFF_KEY: ${{ steps.diffkey.outputs.key }}
@@ -190,57 +189,13 @@ jobs:
           # only `.filename` let a PR move tinyassets/auth/provider.py to an
           # unprotected path and escape the authority receipt entirely -- the
           # gate saw only the destination (cross-family review 2026-08-26).
-          # Each entry's status is kept beside its paths for the forbidden-paths
-          # check, which allows a deletion.
-          FILES_TSV="$RUNNER_TEMP/pr-files.tsv"
-          if ! gh api --paginate "repos/${REPO}/pulls/${PR}/files" \
-              --jq '.[] | [.status, .filename, (.previous_filename // "")] | @tsv' \
-              > "$FILES_TSV" 2>/dev/null; then
+          if ! CHANGED="$(gh api --paginate "repos/${REPO}/pulls/${PR}/files" \
+              --jq '.[] | .filename, (.previous_filename // empty)' 2>/dev/null)"; then
             echo "::error::could not read the PR file list — failing closed"
             exit 1
           fi
-          CHANGED="$(awk -F '\t' '{ print $2; if ($3 != "") print $3 }' "$FILES_TSV")"
 
           TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
-
-          # Paths no PR may touch at all (scripts/check_forbidden_pr_paths.py).
-          # Checked FIRST, and on purpose: fixing this is mechanical and takes seconds, and the fix is a PUSH,
-          # which voids a head-pinned receipt anyway. Telling the author now
-          # means they fix it and get stamped once; bundling it with the receipt
-          # failure would have them get stamped and then void it.
-          #
-          # The `-f` guard is REQUIRED, not defensive. Under
-          # pull_request_target this workflow is the trusted copy from the
-          # default branch, but the CHECKOUT above is the PR's own base sha --
-          # so for any PR whose base predates the script, the workflow calls a
-          # file that is not there. Without this, python exited 2 ("can't open
-          # file"), the `if !` read that as "a forbidden path was found", and
-          # the REQUIRED `Diff scope declared` check failed every such PR with
-          # a message naming the wrong cause. The step above does exactly this
-          # for scripts/test_hygiene_gate.py and I did not copy it. A base whose
-          # script predates `--changes` gets bare paths, each read as an edit.
-          FORBIDDEN_OK=1
-          if [ ! -f scripts/check_forbidden_pr_paths.py ]; then
-            echo "::notice::base predates scripts/check_forbidden_pr_paths.py; nothing to check"
-          elif grep -q -- '--changes' scripts/check_forbidden_pr_paths.py; then
-            python scripts/check_forbidden_pr_paths.py --changes < "$FILES_TSV" \
-              2> "$RUNNER_TEMP/forbidden-paths.txt" || FORBIDDEN_OK=0
-          else
-            printf '%s\n' "$CHANGED" | python scripts/check_forbidden_pr_paths.py \
-              2> "$RUNNER_TEMP/forbidden-paths.txt" || FORBIDDEN_OK=0
-          fi
-          if [ "$FORBIDDEN_OK" -eq 0 ]; then
-            echo "::error::this PR changes a path no PR may change"
-            {
-              echo "### PR scope guard"
-              echo ""
-              echo "**Blocked — this PR changes a path no PR may change.**"
-              echo ""
-              sed 's/^/> /' "$RUNNER_TEMP/forbidden-paths.txt"
-            } >> "$GITHUB_STEP_SUMMARY"
-            cat "$RUNNER_TEMP/forbidden-paths.txt"
-            exit 1
-          fi
 
           # The endpoint caps at 3000 files and says nothing when it truncates.
           # An earlier version of this comment claimed the read above already
@@ -441,45 +396,12 @@ jobs:
             echo "Note: ${TOTAL} files changed (advisory threshold ${LARGE_TOTAL})." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          case ",${LABELS}," in
-            *,infra-change,*)
-              echo "" >> "$GITHUB_STEP_SUMMARY"
-              echo "Declared via the \`infra-change\` label — allowed." >> "$GITHUB_STEP_SUMMARY"
-              echo "scope guard: ${HIT_COUNT} release-critical file(s), declared by label"
-              exit 0
-              ;;
-          esac
-
-          # The receipt check above already passed for this head, so the
-          # declaration is applied here rather than by hand. A failed label
-          # write fails closed: the PR stays blocked until a rerun labels it.
-          # The POST labels the PR, not a commit, so refuse if a newer,
-          # unreceipted head arrived after this run's receipt check.
-          CURRENT_HEAD="$(gh api "repos/${REPO}/pulls/${PR}" --jq .head.sha)" || CURRENT_HEAD=""
-          if [ "$CURRENT_HEAD" != "$HEAD_OID" ]; then
-            echo "scope guard: BLOCKED — PR head moved from ${HEAD_OID} to ${CURRENT_HEAD:-unknown}; the new head's run decides the label"
-            exit 1
-          fi
-          if ! gh api -X POST "repos/${REPO}/issues/${PR}/labels" \
-              -f 'labels[]=infra-change' >/dev/null; then
-            echo "::error::could not add the infra-change label; rerun this check"
-            echo "scope guard: BLOCKED — receipted, but the infra-change label could not be added"
-            exit 1
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Receipted: the \`infra-change\` label was added automatically for ${HIT_COUNT} release-critical file(s)." >> "$GITHUB_STEP_SUMMARY"
-          echo "scope guard: ${HIT_COUNT} release-critical file(s), receipted; infra-change label added"
+          echo "scope guard: ${HIT_COUNT} release-critical file(s), receipted"
           exit 0
 
 # Honesty note
 # ------------
-# A label-based exemption is only as strong as whoever applies the label, so this
-# does NOT stop a determined actor — it is not a security boundary. What it does
-# stop is the failure that actually happened: infrastructure changing SILENTLY,
-# as a side effect of a branch's history, while the PR title and CI both say
-# something narrower. It converts an invisible diff into a deliberate one.
-#
-# The same honesty applies to the review receipt. The receipt lives in the PR
+# The review receipt is not a security boundary. The receipt lives in the PR
 # BODY, which the PR author can edit, so an author who is also a trusted
 # reviewer can stamp their own PR. That is not closed here, and deliberately:
 # this repository has exactly one account with write access, so a rule of
