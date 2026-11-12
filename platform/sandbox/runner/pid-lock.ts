@@ -12,8 +12,9 @@ import { randomBytes } from "node:crypto";
 import { closeSync, linkSync, lstatSync, openSync, readFileSync, rmSync,
          writeSync } from "node:fs";
 
-/** A wait's first sleep, and its longest. */
+/** A wait's first sleep. */
 const FIRST_MS = 20;
+/** A wait's longest sleep: each doubles from `FIRST_MS` up to it. */
 const MOST_MS = 1_000;
 /**
  * The longest a takeover's claim stands: a taker holds it for a few calls, so one older is a

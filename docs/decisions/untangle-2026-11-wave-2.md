@@ -509,18 +509,18 @@ The listings, and the other working files this log names (`*_research.md`, `*_re
 **Removes:** `s2:N18` (`S55`), `S56`, `N21`, `N26`, `N27`.
 
 **Design:**
-- `withRunUser(rec, name, {signedIn, system?, files?}, act)`:
-  - takes a pool user and makes the home (and system dir);
+- `withRunUser(rec, name, {signedIn, keeps, files?}, act)` (as built in S3: `keeps` is the run's compare-and-swap keep, a run's and the route probe's; checks, sign-outs and the login probe keep nothing, and a sign-in keeps its completed login in its own act, review N2):
+  - takes a pool user and makes the home and, for every session, its system dir;
   - writes the invocation's files at their modes, then `giveTree` and `configOwned`;
   - runs `act`, then kills, keeps, drops and gives.
-- `spawnBounded(argv, opts, ms)`: SIGTERM, then SIGKILL of the group, with one "killed" exit code. `killAll` waits between rounds instead of spinning.
+- `spawnBounded(argv, opts, ms)`: SIGTERM, then SIGKILL of the group, with one "killed" exit code. Every process either bundle starts goes through it (`Infinity`: no bound, for the job launcher, the sync agent and a run's CLI). `killAll` waits between rounds instead of spinning.
 - Callers: `runCommand`, `signedIn`, `loginRun` in and out, `loginProbe`, and the route probe's turn. The route probe then judges the code production runs.
 - `runCommand`'s staging step moves to `sync.ts`.
 - `withLock`'s one-caller `mostMs` goes.
 
 **Files:** `sandbox/runner/{session,runner,probes,users,pid-lock,sync}.ts`.
 
-**Guard:** a runner test: no runner or probe module calls `spawn` or `take` outside `session.ts`, by a closure check over the two entries.
+**Guard:** no runner or probe module imports a process starter (anything but `spawnSync`) or `take` outside `session.ts`, by a closure check over the two entries. As built, it sits with the pair's other closure check in `sandbox/guards/template.test.ts`: it reads sources and needs no root.
 
 **Proof:**
 - the root tests (`npm run test:root -w sandbox`) pass;

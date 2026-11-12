@@ -380,6 +380,8 @@ export interface Bounded {
 export function spawnBounded(argv: readonly string[], opts: SpawnOptions, ms: number): Bounded {
   const child = spawn(argv[0]!, argv.slice(1), { ...opts, detached: true });
   let kill: ReturnType<typeof setTimeout> | null = null;
+  // Its close, not its own exit: a child of it holding its output keeps the group live.
+  let closed = false;
   const signal = (name: NodeJS.Signals) => {
     try {
       process.kill(-child.pid!, name);
@@ -388,7 +390,7 @@ export function spawnBounded(argv: readonly string[], opts: SpawnOptions, ms: nu
     }
   };
   const stop = () => {
-    if (child.pid === undefined || child.exitCode !== null || kill !== null) {
+    if (child.pid === undefined || closed || kill !== null) {
       return;
     }
     signal("SIGTERM");
@@ -398,6 +400,7 @@ export function spawnBounded(argv: readonly string[], opts: SpawnOptions, ms: nu
   const exit = new Promise<number>((resolve, reject) => {
     child.on("error", reject);
     child.on("close", (code) => {
+      closed = true;
       if (bound !== null) {
         clearTimeout(bound);
       }

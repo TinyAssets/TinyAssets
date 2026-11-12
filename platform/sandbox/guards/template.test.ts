@@ -179,7 +179,6 @@ interface Built {
   readonly inputs: readonly string[];
 }
 
-/** `bundle.mjs`'s own build, both bundles of the platform tree at `root` (this one). */
 /** The run session (`withRunUser`, `spawnBounded`): every CLI either bundle starts. */
 const SESSION = "sandbox/runner/session.ts";
 
@@ -221,6 +220,7 @@ function outsideSession(path: string, source: string): string[] {
   return found;
 }
 
+/** `bundle.mjs`'s own build, both bundles of the platform tree at `root` (this one). */
 async function bundler(): Promise<{
   build: (root?: string) => Promise<{ runner: Built; probes: Built }> }> {
   return await import(pathToFileURL(join(TEMPLATE, "bundle.mjs")).href) as {

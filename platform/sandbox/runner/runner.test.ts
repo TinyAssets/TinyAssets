@@ -1751,6 +1751,24 @@ describe("cancel and the runner's state", () => {
     expect(box.runner("cancel", start.run).code).toBe(3);
   });
 
+  it("stops the CLI's group, not only its own process: a child left holding its output",
+     async () => {
+    box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
+                             heir: true });
+    const start = startDoc(doors, "claude-code", { config: config("claude-code") });
+    box.start(start);
+    box.runner("launch", start.run);
+    const state = () => JSON.parse(readFileSync(
+      box.path(`/var/lib/ta/runs/${start.run}/state.json`), "utf8")) as { cli_pid: number | null };
+    await waitFor(() => (state().cli_pid ?? 0) > 0);
+    const pid = state().cli_pid!;
+    // Its own process gone, and reaped (a pid of the box's own namespace).
+    await waitFor(() => box.exec(["kill", "-0", String(pid)]).status !== 0);
+    expect(box.runner("cancel", start.run).code).toBe(0);  // live: its output still open
+    // Inside the grace: the SIGTERM reached the child, so the end needs no group's kill.
+    await doors.ended_(10_000, start.run);
+  });
+
   it("adopts this runner only when nothing lives: its format held, nothing deleted",
      async () => {
     // The runner the loader installed is this one (`TA_RUNNER_DIGEST`, the loader's); an
