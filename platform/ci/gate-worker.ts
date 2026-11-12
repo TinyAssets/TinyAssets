@@ -228,6 +228,16 @@ export class Control extends WorkerEntrypoint {
     if (!SETUP.methods.includes(arm.method)) {
       throw new Error(`the gate has no method ${arm.method}`);
     }
+    const acts = ["hold", "corrupt", "refuse"].filter((act) => act in arm);
+    const hold = (arm as { hold?: unknown }).hold;
+    if (acts.length !== 1 || (acts[0] === "hold" && hold !== "before" && hold !== "after")) {
+      throw new Error("an arming holds a call before or after it, changes its bytes, or " +
+                      `refuses it: one of those, not ${JSON.stringify(arm)}`);
+    }
+    if (!SETUP.object && arm.name !== undefined) {
+      throw new Error("a call to a service has no object's name, so an arming for one by " +
+                      "name would never act");
+    }
     const times = arm.times ?? 1;
     if (!Number.isSafeInteger(times) || times < 1) {
       throw new Error(`an arming acts on at least one call, not ${times}`);

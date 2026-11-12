@@ -429,17 +429,25 @@ export function transpiled(path: string): string {
 }
 
 /**
- * A test's fake outside world (`<workspace>/test/fake-*.ts`), transpiled into an auxiliary
- * Worker named as its file, at its workspace's Worker's compatibility date.
+ * The fake Worker at `path` (`<workspace>/test/fake-*.ts`) as `fake()` runs it: named as its
+ * file, in its workspace, at its workspace's Worker's compatibility date.
  */
-export function fake<Extra extends object = object>(path: string, extra: Extra = {} as Extra) {
+export function fakeConfig(path: string): { name: string; workspace: string;
+                                           compatibility_date: string } {
   const workspace = join(PLATFORM, relative(PLATFORM, path).split(sep)[0]!);
+  return { name: basename(path, ".ts"), workspace,
+           compatibility_date: workerConfig(workspace).compatibility_date };
+}
+
+/** A test's fake outside world, transpiled into an auxiliary Worker (`fakeConfig`). */
+export function fake<Extra extends object = object>(path: string, extra: Extra = {} as Extra) {
+  const config = fakeConfig(path);
   return {
-    name: basename(path, ".ts"),
-    modulesRoot: workspace,
+    name: config.name,
+    modulesRoot: config.workspace,
     modules: [{ type: "ESModule" as const, path: path.replace(/\.ts$/, ".js"),
                 contents: transpiled(path) }],
-    compatibilityDate: workerConfig(workspace).compatibility_date,
+    compatibilityDate: config.compatibility_date,
     ...extra,
   };
 }

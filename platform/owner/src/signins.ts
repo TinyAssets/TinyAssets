@@ -47,7 +47,7 @@ import type {
 } from "./owner-do";
 import { EGRESS_ORIGIN, SIGNIN_DOOR, signinEventsUrl } from "../../contract/src/egress";
 import { FRAME_VERSION } from "../../contract/src/run-events";
-import { SANDBOX_ABSENT, started } from "./sandbox";
+import { started } from "./sandbox";
 import { clock } from "./clock";
 import { sealRoute } from "../../contract/src/routing-mac";
 import type { Runs } from "./runs";
@@ -453,7 +453,7 @@ export const signinsDoors = Object.freeze({
     });
     let answer: Started | null = null;
     try {
-      answer = started(await o.env.SANDBOX!.signin(o.owner(), {
+      answer = started(await o.env.SANDBOX.signin(o.owner(), {
         id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
         authority: begun.row.authority, lease: begun.lease,
         tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
@@ -500,8 +500,8 @@ export const signinsDoors = Object.freeze({
     }
     if (stopped) {
       // Its CLI stopped: what it showed is not the vendor's page, or it is past its deadline.
-      await o.env.SANDBOX?.signinCancel(o.owner(), { authority: row.authority,
-                                                                id: row.id })
+      await o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority,
+                                                               id: row.id })
         .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
     }
     return { accepted: frames.length, ended };
@@ -516,21 +516,13 @@ export const signinsDoors = Object.freeze({
       }
       return { row, code };
     });
-    const sandbox = o.env.SANDBOX;
-    if (sandbox === undefined) {
-      throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
-    }
-    return sandbox.signinInput(o.owner(), { authority: row.authority, id: row.id,
-                                                    code });
+    return o.env.SANDBOX.signinInput(o.owner(), { authority: row.authority, id: row.id,
+                                                  code });
   },
   async signinCancel(o: OwnerState, door: Door<SigninRequestById>):
       Promise<{ cancelled: boolean }> {
     const row = await o.door(() => o.signins.get(door.check().r["id"]));
-    const sandbox = o.env.SANDBOX;
-    if (sandbox === undefined) {
-      throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
-    }
-    return sandbox.signinCancel(o.owner(), { authority: row.authority, id: row.id });
+    return o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority, id: row.id });
   },
   signinList(o: OwnerState, _call: Call<undefined>): { signins: SigninView[];
                                            engines: ReturnType<Runs["signins"]> } {

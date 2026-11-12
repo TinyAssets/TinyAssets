@@ -134,8 +134,8 @@ function dayOf(at: number): string {
 
 /** Where the `sandbox` lane reads the sandbox Worker's log, and the gate it writes through. */
 interface MeterSource {
-  /** The owner's log after `after`, as the sandbox Worker answers; null with none bound. */
-  read(after: number): Promise<unknown> | null;
+  /** The owner's log after `after`, as the sandbox Worker answers. */
+  read(after: number): Promise<unknown>;
   readonly write: Write;
 }
 
@@ -152,8 +152,7 @@ export class SandboxTime {
 
   /**
    * The `sandbox` lane's pass: the sandbox Worker's log read after the cursor, a batch at a
-   * time until the pass's end, each applied in a unit. Without a sandox bound there is no
-   * log, and runs that never started are metered at none. A read that fails backs the lane
+   * time until the pass's end, each applied in a unit. A read that fails backs the lane
    * off in its row; the pass completes.
    */
   async run(_now: number, until: number): Promise<void> {
@@ -162,8 +161,7 @@ export class SandboxTime {
       let read: { events: ReturnType<typeof meterRead>["events"]; next: number };
       const readAt = Date.now();
       try {
-        const answer = this.#source.read(after);
-        read = answer === null ? { events: [], next: after } : meterRead(await answer, after);
+        read = meterRead(await this.#source.read(after), after);
       } catch {
         console.error("the sandbox meter's read failed; it is tried again later");
         await this.#source.write(() => this.failed(Date.now() / 1000));

@@ -94,7 +94,6 @@ export const REFUSALS = Object.freeze({
   run_inputs_full: REFUSED,
   run_no_mailbox: REFUSED,
   run_starts_none: REFUSED,
-  sandbox_absent: REFUSED,
   signin_lapsed: REFUSED,
   signin_live: REFUSED,
   signin_off: REFUSED,
