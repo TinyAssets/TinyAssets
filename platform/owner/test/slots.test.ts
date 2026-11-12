@@ -24,7 +24,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 describe("a pool of units", () => {
   it("grants what is free, queues the rest first come first served in its class, and " +
      "drains on release", async () => {
-    const pool = new SlotPool(3, 1000, 4);
+    const pool = new SlotPool(3, 1000, 4, 0, 4);
     const a = await pool.acquire(2);
     const b = await pool.acquire(1);
     const order: string[] = [];
@@ -47,7 +47,7 @@ describe("a pool of units", () => {
 
   it("never holds a one-unit call behind larger ones: they leave the reserve free",
      async () => {
-    const pool = new SlotPool(7, 1000, 8, 1);
+    const pool = new SlotPool(7, 1000, 8, 1, 8);
     // Larger holds fill all but the reserve, and another waits for room.
     const large = [await pool.acquire(3), await pool.acquire(3)];
     const waitingLarge = pool.acquire(3);
@@ -67,7 +67,7 @@ describe("a pool of units", () => {
     (await waitingLarge).release();
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
     expect(() => pool.acquire(7)).toThrow(/takes 1 to 6 units, not 7/);
-    expect(() => new SlotPool(2, 1000, 2, 2)).toThrow(/at least one unit/);
+    expect(() => new SlotPool(2, 1000, 2, 2, 2)).toThrow(/at least one unit/);
   });
 
   // Review rvmem4 (M-b), flipped: a stream of one-unit holds once starved a larger one.
@@ -112,7 +112,7 @@ describe("a pool of units", () => {
 
   it("refuses busy past its deadline and past its waiters, and a release twice is once",
      async () => {
-    const pool = new SlotPool(1, 50, 1);
+    const pool = new SlotPool(1, 50, 1, 0, 1);
     const held = await pool.acquire(1);
     const waiting = pool.acquire(1);
     const over = await pool.acquire(1).catch((error: Error) => error);
@@ -124,11 +124,11 @@ describe("a pool of units", () => {
     held.release();
     expect(pool.state().held).toBe(0);
     expect(() => pool.acquire(2)).toThrow(/takes 1 to 1 units/);
-    expect(() => new SlotPool(0)).toThrow(/at least one unit/);
+    expect(() => new SlotPool(0, 1000, 1, 0, 1)).toThrow(/at least one unit/);
   });
 
   it("lets cap + 1 holders all land: the extra one waits, then holds", async () => {
-    const pool = new SlotPool(3, 5000);
+    const pool = new SlotPool(3, 5000, 12, 0, 12);
     let most = 0;
     const done = await Promise.all(Array.from({ length: 4 }, (_, n) =>
       slotted(pool, 1, async () => {
@@ -141,7 +141,7 @@ describe("a pool of units", () => {
   });
 
   it("releases whatever the work does", async () => {
-    const pool = new SlotPool(1);
+    const pool = new SlotPool(1, 1000, 1, 0, 1);
     const failed = await slotted(pool, 1, () => Promise.reject(new Error("boom")))
       .catch((error: Error) => error.message);
     expect([failed, pool.state().held]).toEqual(["boom", 0]);
@@ -152,7 +152,7 @@ describe("a pool of units", () => {
   it("serves the owners waiting in turn, each owner's own calls first come first served",
      async () => {
     for (const units of [1, 2]) {
-      const pool = new SlotPool(2, 5000);
+      const pool = new SlotPool(2, 5000, 8, 0, 8);
       const holding = await pool.acquire(2, "a");
       const order: string[] = [];
       const wait = (owner: string, name: string) => pool.acquire(units, owner).then((slot) => {
@@ -170,7 +170,7 @@ describe("a pool of units", () => {
 
   it("shares its waiters without a cap an owner: a newcomer takes the place of the owner " +
      "waiting most", async () => {
-    const pool = new SlotPool(1, 5000, 3);
+    const pool = new SlotPool(1, 5000, 3, 0, 3);
     const holding = await pool.acquire(1, "a");
     const flooded = [pool.acquire(1, "a"), pool.acquire(1, "a"), pool.acquire(1, "a")]
       .map((call) => call.then((slot) => { slot.release(); return "landed"; },
@@ -191,7 +191,7 @@ describe("a pool of units", () => {
 
   it("lets only the oldest holder wait to grow (wait-die): a younger one gives everything back",
      async () => {
-    const pool = new SlotPool(6, 5000);
+    const pool = new SlotPool(6, 5000, 24, 0, 24);
     const older = pool.lease("a");
     const younger = pool.lease("b");
     await older.grow(2);
@@ -224,7 +224,7 @@ describe("a pool of units", () => {
 
   it("holds an owner at half the pool or more to what it holds while another owner waits",
      async () => {
-    const pool = new SlotPool(4, 5000);
+    const pool = new SlotPool(4, 5000, 16, 0, 16);
     const a1 = await pool.acquire(1, "a");
     const a2 = await pool.acquire(1, "a");
     const b1 = await pool.acquire(1, "b");
@@ -249,7 +249,7 @@ describe("a pool of units", () => {
   });
 
   it("takes a stopped wait out of the queue at once", async () => {
-    const pool = new SlotPool(1, 5000);
+    const pool = new SlotPool(1, 5000, 4, 0, 4);
     const held = await pool.acquire(1, "x");
     const stop = new AbortController();
     const waiting = pool.acquire(1, "a", stop.signal).catch((error: unknown) => error);
@@ -264,7 +264,7 @@ describe("a pool of units", () => {
 
   it("lets a larger lease hold one unit outside the reserve, grow a step and give it back, " +
      "still the oldest holder (the archive's move)", async () => {
-    const pool = new SlotPool(7, 1000, 8, 1);
+    const pool = new SlotPool(7, 1000, 8, 1, 8);
     const move = pool.lease("", true);
     await move.grow(1);  // its records': the larger class, never the reserve
     const edit = await pool.acquire(5);

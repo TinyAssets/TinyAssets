@@ -18,9 +18,6 @@
  *   blocked: E2B matches domains on ports 80 and 443 only); in `allowlist` mode the policy's
  *   destinations; and in every mode `egress.tinyassets.io`, the egress door, so the
  *   sandbox's model clients always reach their providers through us.
- * - `ask` mode is an allowlist plus a refusal receipt: nothing can ask the owner from
- *   inside E2B's filter, so what is not listed is refused, and the object receipts that
- *   once each time the network is applied (`receipt`).
  * - A destination E2B cannot express is refused here, never widened: a port other than 80
  *   or 443 (E2B filters other ports by CIDR only). A name on 80 or 443 opens both, since
  *   E2B matches a name on either; that is the one way the network is wider than the
@@ -53,7 +50,9 @@
  *
  */
 import { closedNetwork, withGeneration } from "../../contract/src/egress";
-import { checkDestination } from "../../contract/src/policy-document";
+import {
+  checkDestination, EGRESS_MODES, type EgressMode,
+} from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
 import type { NetworkPlan, Unexpressed } from "../../contract/src/sandbox";
 
@@ -67,7 +66,7 @@ const NAMED_PORTS: readonly number[] = Object.freeze([80, 443]);
 
 /** The owner policy's egress table, as `policy.ts` validates it. */
 export interface EgressPolicy {
-  readonly mode: string;
+  readonly mode: EgressMode;
   readonly destinations: readonly { readonly host: string; readonly port: number }[];
 }
 
@@ -80,7 +79,7 @@ export interface EgressPolicy {
  */
 export function networkDocument(egress: EgressPolicy, generation: number): NetworkPlan {
   const mode = egress.mode;
-  if (mode !== "open" && mode !== "allowlist" && mode !== "ask") {
+  if (!EGRESS_MODES.includes(mode)) {
     throw new Refusal("invalid", "invalid egress policy");
   }
   const allowed = new Set<string>();
@@ -103,9 +102,7 @@ export function networkDocument(egress: EgressPolicy, generation: number): Netwo
       rules: Object.freeze(closed.rules),
     }),
     mode,
-    generation,
     unexpressed: Object.freeze(mode === "open" ? [] : unexpressed),
-    receipt: mode === "ask",
     boundary: false,
     note: BOUNDARY_NOTE,
   });

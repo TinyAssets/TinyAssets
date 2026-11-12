@@ -350,6 +350,21 @@ The owner's policy SHALL be one validated document whose digest is rechecked on 
 - **WHEN** the owner writes twice naming the same generation
 - **THEN** the first commits with one receipt and the second is refused with "policy generation changed"
 
+### Requirement: An action rule holds where the action is seen
+The owner's action rules SHALL be one `actions` table, empty until the owner writes one (Fact 15): each names an act of `contract/acts.json`, `ask` or `never`, and MAY name the MCP tools that do it. It SHALL hold only where its act is seen (the doors naming it, its CLI tool kinds, its tools), and `acts.json` SHALL name what nothing of ours sees. A rule nothing could see SHALL be refused. The old rule tables, spend caps and egress `ask` SHALL NOT be policy.
+
+#### Scenario: A rule nothing could see
+- **WHEN** the owner writes `{ act: "browser.action", do: "ask" }` naming no tools
+- **THEN** the write is refused "nothing can decide this action rule", and the same rule with `tools: ["mcp:playwright:browser_*"]` commits
+
+#### Scenario: The old stack's document
+- **WHEN** a document with `entries`, `spend` or egress mode `ask` is written
+- **THEN** it is refused whole, and the generation does not move
+
+#### Scenario: The stored default at the migration
+- **WHEN** an object holding the old default document migrates
+- **THEN** it holds the new default at the same generation, and an object holding any other old document stops loudly rather than keep a document its validator refuses
+
 ### Requirement: Every outside call is admitted against its client's grant
 The object SHALL admit each call from an outside client against that client's grant before any door acts: an MCP client's first verified call records it `full`, an API key with no grant is refused, a revoked client is refused, and after a revoke only a sign-in made after it is admitted. Only the owner in its session SHALL change a grant; the owner's account MAY revoke one without a session.
 
@@ -964,7 +979,7 @@ Once its own unit committed, a policy write SHALL end every open egress stream, 
 - **THEN** only the revoked connection's stream ends
 
 ### Requirement: The sandbox's network is made from owner policy
-`networkDocument` SHALL make E2B's network configuration from the owner's egress policy, in E2B's own field names: `denyOut` all traffic; `allowOut` `*` (names by SNI) in `open` mode, else the policy's destinations on ports 80 and 443, and in every mode `egress.tinyassets.io`; `dnsServers` pinned to one resolver; one transform, on `egress.tinyassets.io` only, setting the egress token and the egress generation. A destination on another port SHALL be refused, never widened; an IP literal SHALL be refused; `ask` mode SHALL be an allowlist whose application leaves a refusal receipt. **An allowlist is not a data boundary in v1**: E2B allows all traffic to a DNS server, on every port, and its rules name no ports, so the pinned resolver cannot be held to port 53; every network plan SHALL say so to the owner (`boundary: false`, its note). The E2B project's API key SHALL be held as a platform secret, since it can read the sandbox's transform, and so the egress token.
+`networkDocument` SHALL make E2B's network configuration from the owner's egress policy, in E2B's own field names: `denyOut` all traffic; `allowOut` `*` (names by SNI) in `open` mode, else the policy's destinations on ports 80 and 443, and in every mode `egress.tinyassets.io`; `dnsServers` pinned to one resolver; one transform, on `egress.tinyassets.io` only, setting the egress token and the egress generation. A destination on another port SHALL be refused, never widened; an IP literal SHALL be refused. **An allowlist is not a data boundary in v1**: E2B allows all traffic to a DNS server, on every port, and its rules name no ports, so the pinned resolver cannot be held to port 53; every network plan SHALL say so to the owner (`boundary: false`, its note). The E2B project's API key SHALL be held as a platform secret, since it can read the sandbox's transform, and so the egress token.
 
 #### Scenario: An allowlist naming an IP and a database port
 - **WHEN** the policy lists `8.8.8.8:443` or `db.example.com:5432`
@@ -1167,7 +1182,7 @@ Each frame (`{v, run, seq, at, kind, event}`) SHALL be relayed to the owner app'
 - **THEN** it receives the run's tail first, then each frame as it comes
 
 ### Requirement: Every chunk is put and read under its owner's data key
-Every chunk get and put, a file's and a placed body's alike, and every nightly manifest part SHALL be under its owner's own data key: R2's SSE-C (`ssecKey`) by default, or AES-256-GCM per object in the files Worker (`FILES_CIPHER` `aes-gcm`, the object's R2 key as additional data) should the live probe find SSE-C does not combine with the create-once put. The data key SHALL be 32 random bytes made by the files Worker for one namespace and kept only wrapped: AES-256-GCM under a wrapping key derived for that namespace from the files Worker's own keyring (`FILES_KEYRING`, HKDF-SHA256), its additional data binding the namespace and the kid, so the owner's object holds no key it can use and a wrapped key presented for another namespace fails. A get or put with no key, or one that does not open, SHALL be refused before R2 is reached; a missing or malformed ring SHALL fail every call loudly. Erasure SHALL leave no copy of the wrapped key, so a chunk that outlives the prefix delete is unreadable. A chunk's R2 name SHALL be an HMAC of its hash under a key derived from the data key, so a listing of the bucket confirms no known file. A key rotation SHALL re-wrap the same data key under the active kid (`rewrapKey`), the object's copy and then every manifest root it keeps (`dataKeyRewrap`, the platform's door), an idle owner's included, and a kid SHALL leave the ring only after every owner's re-wrap answered.
+Every chunk get and put, a file's and a placed body's alike, and every nightly manifest part SHALL be under its owner's own data key: sealed with AES-256-GCM per object in the files Worker (the envelope's per-object seal, the object's R2 key as additional data), so the bucket holds only ciphertext and a copy of it needs no key (d3 §G). There is no other cipher and no setting that chooses one. The data key SHALL be 32 random bytes made by the files Worker for one namespace and kept only wrapped: AES-256-GCM under a wrapping key derived for that namespace from the files Worker's own keyring (`FILES_KEYRING`, HKDF-SHA256), its additional data binding the namespace and the kid, so the owner's object holds no key it can use and a wrapped key presented for another namespace fails. A get or put with no key, or one that does not open, SHALL be refused before R2 is reached; a missing or malformed ring SHALL fail every call loudly. Erasure SHALL leave no copy of the wrapped key, so a chunk that outlives the prefix delete is unreadable. A chunk's R2 name SHALL be an HMAC of its hash under a key derived from the data key, so a listing of the bucket confirms no known file. A key rotation SHALL re-wrap the same data key under the active kid (`rewrapKey`), the object's copy and then every manifest root it keeps (`dataKeyRewrap`, the platform's door), an idle owner's included, and a kid SHALL leave the ring only after every owner's re-wrap answered.
 
 #### Scenario: Another owner's key
 - **WHEN** a chunk put under Alice's key is read with Bob's wrapped key, or with a second key minted for Alice's own namespace

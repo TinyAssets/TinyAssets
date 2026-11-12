@@ -21,8 +21,8 @@
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { randomBytes } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
-import { chownSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage } from "node:http";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -39,15 +39,15 @@ import { runEnv } from "../../sources/src/run-env";
 import type { SourceRecord } from "../../sources/src/schema";
 import { SIGNIN_REFUSALS, signinShape } from "../../sources/src/signin";
 
-import { binPath, invocation, isKept, keptPaths, SYSTEM } from "./engine";
+import { binPath, invocation, isKept, keptPaths } from "./engine";
 import { lineEvent } from "./frames";
 import { remove, safeDirs, safeWrite } from "./fsafe";
 import { loginArgv, onTerminal, plain, type Prompt, prompted } from "./login";
 import { COMMAND_MS, EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
-import { CONVERSATIONS, configOwned, dropHome, engineEnv, giveTree, keepHome,
-         makeHome, record, RECORDS, shared, sortedWalk, sources, STORE } from "./session";
-import { asUser, give, killAll, take } from "./users";
+import { CONVERSATIONS, engineEnv, giveTree, homeOf, loginFiles, record, RECORDS, shared,
+         sortedWalk, sources, spawnBounded, STORE, systemOf, withRunUser } from "./session";
+import { asUser } from "./users";
 
 /** The digest of the runner built beside this bundle (`bundle.mjs` defines it). */
 declare const TA_RUNNER_SHA: string;
@@ -125,9 +125,6 @@ export function plan(runner: string): Plan {
   const routes: PlanStep[] = [];
   for (const rec of [...RECORDS.values()].sort((a, b) => (a.id < b.id ? -1 : 1))) {
     const cli = rec.cli!;
-    if (rec.unwired !== undefined) {
-      continue;
-    }
     if (cli.login !== undefined) {
       const regions = Object.keys(cli.regions ?? {}).sort();
       for (const region of regions.length > 0 ? regions : [null]) {
@@ -172,54 +169,31 @@ async function loginProbe(engine: string, region: string | null): Promise<number
   if (login === undefined) {
     throw new Error(`engine ${engine} has no vendor sign-in`);
   }
-  const name = `probe-${rec.id}-${process.pid}`;
-  const as = take(STATE);
-  const home = await makeHome(name, rec);
   let shown: Prompt = { url: null, code: null };
-  try {
-    const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
-    for (const [path, text] of Object.entries(files)) {
-      safeWrite(home, path.replaceAll("{home}", home), new TextEncoder().encode(text), 0o600);
-    }
-    giveTree(home, as);
-    const argv = asUser(as, [shared()], onTerminal(loginArgv(login, binPath(rec), region)));
-    await new Promise<void>((resolve) => {
-      const child = spawn(argv[0]!, argv.slice(1), { env: engineEnv(rec, home), cwd: home,
-                                                     detached: true,
-                                                     stdio: ["pipe", "pipe", "pipe"] });
-      let text = "";
-      // Its group killed; the answer waits for its close, so no exited child is left unreaped
-      // for the user's processes' kill to wait on.
-      const done = () => {
-        try {
-          process.kill(-child.pid!, "SIGKILL");
-        } catch {
-          // gone already
-        }
-      };
-      // As long as a command may take: a CLI that shows no prompt by then shows none.
-      const timer = setTimeout(done, COMMAND_MS);
-      const read = (data: Buffer) => {
-        text = (text + plain(data.toString("utf8"))).slice(-FRAME_UNITS_MAX);
-        shown = prompted(login, text, shown);
-        const wantsCode = login.code_pattern !== undefined;
-        if (shown.url !== null && (!wantsCode || shown.code !== null)) {
-          clearTimeout(timer);
-          done();
-        }
-      };
-      child.stdout!.on("data", read);
-      child.stderr!.on("data", read);
-      child.on("close", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-  } finally {
-    killAll(as);
-    dropHome(home);
-    give(STATE, as);
-  }
+  await withRunUser(rec, `probe-${rec.id}-${process.pid}`, { signedIn: true, keeps: false },
+                    async (session) => {
+    const { as, home } = session;
+    loginFiles(rec, session);
+    // As long as a command may take: a CLI that shows no prompt by then shows none. The
+    // answer waits for its close, so no exited child is left unreaped for the user's
+    // processes' kill to wait on.
+    const cli = spawnBounded(asUser(as, [shared()],
+                                    onTerminal(loginArgv(login, binPath(rec), region))),
+                             { env: engineEnv(rec, home), cwd: home,
+                               stdio: ["pipe", "pipe", "pipe"] }, COMMAND_MS);
+    let text = "";
+    const read = (data: Buffer) => {
+      text = (text + plain(data.toString("utf8"))).slice(-FRAME_UNITS_MAX);
+      shown = prompted(login, text, shown);
+      const wantsCode = login.code_pattern !== undefined;
+      if (shown.url !== null && (!wantsCode || shown.code !== null)) {
+        cli.stop();
+      }
+    };
+    cli.child.stdout!.on("data", read);
+    cli.child.stderr!.on("data", read);
+    await cli.exit;
+  });
   const redirect = shown.url === null ? null : new URL(shown.url).searchParams.get("redirect_uri");
   const local = redirect !== null && /^https?:\/\/(?:localhost|127\.|\[::1\])/.test(redirect);
   const refused = shown.url === null ? null : signinShape(rec, region, shown.url, shown.code);
@@ -242,7 +216,7 @@ const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 /** The sealed API a provider's key goes to, as the gateway's record for it says. */
 function sealedScope(provider: string, engine: string): EgressScope {
   const found = (bundledRecords() as Record<string, unknown>[]).filter((raw) =>
-    raw["provider"] === provider && raw["unwired"] === undefined
+    raw["provider"] === provider
     && typeof raw["base_url"] === "string" && Array.isArray(raw["connect"])
     && (raw["connect"] as string[]).includes("api_key")
     && Array.isArray(raw["engines"]) && (raw["engines"] as string[]).includes(engine))
@@ -267,7 +241,7 @@ interface ProbeTurn {
 
 /**
  * One keyed engine on one provider, run as a run runs it (the real `invocation`, `runEnv`
- * and `sandboxEnv`, `makeHome` for an API-key run, its own pool user), its egress door a
+ * and `sandboxEnv`, and the run session, `withRunUser`, for an API-key run), its egress door a
  * loopback capture server at the door's real path answering each model request with a
  * minimal valid reply in its sealed API's wire format, under `strace` for its connects, with
  * a fake sign-in seeded in every one of its store's `secret_paths`. Two turns: a new
@@ -357,7 +331,6 @@ async function probeRoute(rec: SourceRecord, provider: string,
     }
   }
   const name = `route-${rec.id}-${process.pid}`;
-  const system = `${SYSTEM}/${name}`;
   const agentDir = `${AGENTS_DIR}/${first.agent}`;
   const conversationDir = cli.engine.resume === "continue_in_cwd"
     ? `${CONVERSATIONS}/${rec.id}/${first.conversation}` : undefined;
@@ -366,49 +339,39 @@ async function probeRoute(rec: SourceRecord, provider: string,
   /** One turn, as one run runs: its own user and home, then its home kept and dropped. */
   const turn = async (start: StartDoc, resumed: boolean,
                       extra: readonly string[]): Promise<ProbeTurn> => {
-    const as = take(STATE);
+    const home = homeOf(name);
+    const system = systemOf(name);
     const trace = `${STATE}/route-${name}.trace`;
-    let home: string | null = null;
-    let exit = 1;
-    let session: string | null = null;
-    let answered = false;
-    let text = "";
-    let stderr = "";
+    const call = invocation(rec, start, process.env, {
+      continued: resumed, home, system,
+      ...(conversationDir === undefined ? {} : { conversationDir }) });
+    if (call.resumed !== resumed) {
+      throw new Error(resumed ? "the second turn does not resume the first"
+        : "the first turn resumes nothing");
+    }
     try {
-      home = await makeHome(name, rec, false);
-      const carried = [...sortedWalk(home)].filter((rel) => isKept(keptPaths(rec).secrets, rel));
-      if (carried.length > 0) {
-        throw new Error(`an API-key run's home carries the sign-in's ${carried.join(", ")}`);
-      }
-      remove(system);
-      mkdirSync(system, { mode: 0o750 });
-      chownSync(system, 0, as.gid);
-      giveTree(agentDir, as);
-      if (conversationDir !== undefined) {
-        safeDirs("/", conversationDir, 0o700);
-        giveTree(conversationDir, as);
-      }
-      const call = invocation(rec, start, process.env, {
-        continued: resumed, home, system,
-        ...(conversationDir === undefined ? {} : { conversationDir }) });
-      if (call.resumed !== resumed) {
-        throw new Error(resumed ? "the second turn does not resume the first"
-          : "the first turn resumes nothing");
-      }
-      for (const [path, text] of call.files) {
-        const inSystem = path.startsWith(`${system}/`);
-        safeWrite(inSystem ? system : home, path, new TextEncoder().encode(text),
-                  inSystem ? 0o640 : 0o644, undefined, inSystem ? 0o750 : 0o755);
-      }
-      giveTree(home, as);
-      configOwned(rec, home, system, call.files.keys(), as);
-      const argv = [call.argv[0]!, ...extra, ...call.argv.slice(1)];
-      const runHome = home;
-      exit = await new Promise<number>((resolve) => {
-        const child = spawn("strace", ["-f", "-qq", "-e", "trace=connect", "-o", trace, "--",
-                                       ...asUser(as, [shared()], argv)], {
-          cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp") }, detached: true,
-          stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] });
+      return await withRunUser(rec, name, { signedIn: false, keeps: true, files: call.files },
+                               async ({ as }) => {
+        const carried = [...sortedWalk(home)].filter((rel) =>
+          isKept(keptPaths(rec).secrets, rel));
+        if (carried.length > 0) {
+          throw new Error(`an API-key run's home carries the sign-in's ${carried.join(", ")}`);
+        }
+        giveTree(agentDir, as);
+        if (conversationDir !== undefined) {
+          safeDirs("/", conversationDir, 0o700);
+          giveTree(conversationDir, as);
+        }
+        const argv = [call.argv[0]!, ...extra, ...call.argv.slice(1)];
+        const probe = spawnBounded(["strace", "-f", "-qq", "-e", "trace=connect", "-o", trace,
+                                    "--", ...asUser(as, [shared()], argv)], {
+          cwd: call.cwd, env: { ...call.env, TMPDIR: join(home, "tmp") },
+          stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] }, ROUTE_PROBE_MS);
+        const { child } = probe;
+        let session: string | null = null;
+        let answered = false;
+        let text = "";
+        let stderr = "";
         child.stderr!.on("data", (data: Buffer) => {
           stderr = (stderr + data.toString("utf8")).slice(-600);
         });
@@ -428,34 +391,13 @@ async function probeRoute(rec: SourceRecord, provider: string,
             answered ||= text.includes("OK");
           }
         });
-        const timer = setTimeout(() => {
-          try {
-            process.kill(-child.pid!, "SIGKILL");
-          } catch {
-            // gone already
-          }
-        }, ROUTE_PROBE_MS);
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          resolve(code ?? 1);
-        });
-        child.on("error", () => {
-          clearTimeout(timer);
-          resolve(127);
-        });
+        const exit = await probe.exit;
+        return { stderr, exit, session_id: session, answered, resumed: call.resumed,
+                 connects: outsideConnects(existsSync(trace) ? readFileSync(trace, "utf8") : "",
+                                           resolvers) };
       });
-      killAll(as);
-      await keepHome(home, rec);
-      return { stderr, exit, session_id: session, answered, resumed: call.resumed,
-               connects: outsideConnects(existsSync(trace) ? readFileSync(trace, "utf8") : "",
-                                         resolvers) };
     } finally {
-      killAll(as);
-      if (home !== null) {
-        dropHome(home);
-      }
       remove(trace);
-      give(STATE, as);
     }
   };
 
@@ -466,7 +408,6 @@ async function probeRoute(rec: SourceRecord, provider: string,
     if (spawnSync("strace", ["-V"], { encoding: "utf8" }).status !== 0) {
       throw new Error("strace is not installed in the probe's sandbox");
     }
-    safeDirs("/", SYSTEM, 0o755);
     remove(agentDir);
     safeDirs("/", agentDir, 0o755);
     writeFileSync(`${agentDir}/agent.json`, JSON.stringify({ engine: rec.id, scopes: [] }));
@@ -503,7 +444,6 @@ async function probeRoute(rec: SourceRecord, provider: string,
   } catch (error) {
     failed = String(error instanceof Error ? error.message : error);
   } finally {
-    remove(system);
     remove(agentDir);
     if (conversationDir !== undefined) {
       remove(conversationDir);
@@ -541,7 +481,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
 async function routeProbe(engine: string, provider: string,
                           resolvers: readonly string[]): Promise<number> {
   const rec = record(engine);
-  if (rec.unwired !== undefined || !rec.cli!.credential.includes("api_key")
+  if (!rec.cli!.credential.includes("api_key")
       || rec.cli!.api_key_env?.[provider] === undefined) {
     throw new Error(`engine ${engine} runs on no API key of provider ${provider}`);
   }

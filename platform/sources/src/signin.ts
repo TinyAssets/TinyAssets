@@ -146,7 +146,7 @@ export function signinShape(rec: SourceRecord, region: string | null, url: strin
 export function signinOn(rec: SourceRecord,
                          switches: Readonly<Record<string, boolean>> | null): boolean {
   const login = rec.cli?.login;
-  return login !== undefined && rec.unwired === undefined
+  return login !== undefined
     && (switches?.[rec.id] ?? login.hosted_use.verdict === "allowed");
 }
 

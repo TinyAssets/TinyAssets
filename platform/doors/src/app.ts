@@ -43,8 +43,8 @@
  *   `files/write` (an agent is files: the owner reads and writes them as UTF-8 text, a file
  *   of at most one chunk).
  * - `sources`: the source records' public facts (name, how each connects, which engines a
- *   key runs, which credentials an engine takes, why one is unwired), so the app's connect
- *   screen is the records' data, never a list of its own.
+ *   key runs, which credentials an engine takes), so the app's connect screen is the
+ *   records' data, never a list of its own.
  * - `tools`: the MCP door's table, each tool's name and title (the owner's `custom` choice).
  * - `capabilities`: the capabilities an agent's runs and a key's scopes hold (one list, the
  *   grants' own), each in plain words, so the app's agent and key forms are the object's.
@@ -286,7 +286,7 @@ function sourceList(sources: Sources, switchedOn: readonly string[]): unknown {
       const record = sources.get(id)!;
       return {
         id, display_name: record.display_name, help_url: record.help_url ?? null,
-        suggested: record.suggested, connect: record.connect, unwired: record.unwired ?? null,
+        suggested: record.suggested, connect: record.connect,
         engines: record.engines ?? [], credentials: record.cli?.credential ?? [],
         // The vendor's own sign-in, as the app offers it: whether there is one, and the
         // regions the owner chooses among (their names alone).

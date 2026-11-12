@@ -20,13 +20,11 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S } from "../src/erasure";
 import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
-import { Grants } from "../src/grants";
 import { Ledger } from "../src/ledger";
 import { clock } from "../src/clock";
 import { OwnerDO } from "../src/owner-do";
 import { doorTable } from "../../contract/src/doors";
-import { Policy } from "../src/policy";
-import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
+import { ledgerParts, MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { recorder } from "./runs-support";
 import { alarmOf, failure, sqlIn, TIERS } from "./support";
 import type { FauxOwnerDO } from "./worker";
@@ -176,9 +174,9 @@ describe("the owner's admission", () => {
     await r.post(null, `dm:${muse}`);
     const due = clock() + 3600;
     const out = await runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage));
+      const [storage, grants, , ...rest] = ledgerParts(state.storage);
       const wake = (admitted: boolean) => {
-        const ledger = new Ledger(state.storage, grants, undefined, () => admitted);
+        const ledger = new Ledger(storage, grants, () => admitted, ...rest);
         return { next: ledger.nextDue(clock(), admitted),
                  claim: ledger.claim(ledger.dueOpen(due, 1)[0]!.wake_id, due).outcome };
       };

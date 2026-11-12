@@ -6,10 +6,12 @@ import { defineConfig } from "vitest/config";
 import { keyring } from "../ci/fixtures";
 import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
-import { fake, main, once, pool } from "../ci/workers";
+import { fake, fakeConfig, main, once, pool } from "../ci/workers";
 
 /** A keyring made fresh for each run: a rotated ring, so `k1` is an older kid. */
 const KEYRING = keyring("k2", ["k1", "k2"]);
+/** The fake outside world every global fetch reaches. */
+const FAKE_UPSTREAM = join(PLATFORM, "gateway", "test", "fake-upstream.ts");
 
 export default defineConfig({
   test: {
@@ -20,10 +22,10 @@ export default defineConfig({
       // (`test/fake-upstream.ts`).
       project("gateway", "workerd", {
         plugins: [
-          cloudflareTest(once(() => pool(main(join(PLATFORM, "gateway"), {
+          cloudflareTest(once(async () => pool(main(join(PLATFORM, "gateway"), {
             bindings: { GATEWAY_KEYRING: KEYRING },
-            outboundService: "fake-upstream",
-            workers: [fake(join(PLATFORM, "gateway", "test", "fake-upstream.ts"))],
+            outboundService: fakeConfig(FAKE_UPSTREAM).name,
+            workers: [fake(FAKE_UPSTREAM)],
           })))),
         ],
       }),

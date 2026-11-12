@@ -133,6 +133,8 @@ Each joins the lane named. None blocks its u3 PR.
 - **B22:** the gateway deadline before a provider's headers is untested since the test-only parameter went; it gets a test that drives real time or B23's fake time. `owner/src/egress.ts:71` still says "5-minute".
 - **After merge of u3-services:** the runner and probes bundles move (`2cf8172d`, `079923e2`), so the next deploy needs a pair check and the pin PR. No template build.
 - **Engines' idle cuts:** the 300 s cut follows Claude Code's and Codex's own. Gemini CLI's and pi's were not researched; that research rides the live stage's engine checks.
+- **Lane S, from S3 (B16):** the run `lchown`s only the top of a conversation directory (`runner.ts`), and the route probe gives it whole (`probes.ts`), so the probe does not judge the run's handover there. Research which one is right (a later run may take another pool user than the one that wrote the files), then the session owns the one way, for both. And a run whose CLI exited while a child of it holds its output stays live until a cancel (S3's review; before S3 the cancel did not reach it either): decide whether a run ends at its CLI's own exit.
+- **The live stage's engine checks, from S3:** a sign-in's credential files are its user's (0600), a run's root's (0644). Whether Gemini CLI's login writes its `settings.json` is unmeasured; measure it, then settle the sign-in's mode.
 
 - (doors review, 2026-11-12) When u3-cross and u3-services merge main after u3-doors: they conflict in text on one doors spec sentence, and u3-cross on `platform/tsconfig.json`. Take the sibling side in each. With the doors F1 fix (7ce8da937) all three merges typecheck.
 
@@ -167,6 +169,8 @@ Each joins the lane named. None blocks its u3 PR.
      - production ceilings, and the one-file starter package by a Vite alias;
      - the memory probe is driven through the doors.
      - (the coordinator, 2026-11-12) The ledger's `limits` parameter is deleted outright, with no test-only parameter or second constructor. The memory probe's `LegSegments` moves to production's ledger limits, as `LegArchive` did, its leg seeded so production's own seal rule makes the segment it measures, with large bodies. The ledger's ceilings come before T1d, since T1d needs T1c's real entry and T1c needs the ledger's ceilings.
+     - (the coordinator, 2026-11-12, from T1b3's measurement) At production's seal (`archivePick`) two 4 MiB bodies seal together but an 8 MiB body, the cap, seals alone. So the leg's `bodies` case keeps 4 against 8 MiB as production seals them, and its `rewrite` meets the largest segment production makes: the kept body one byte short of sealing alone, then an 8 MiB one, about 16 MiB, its two records checked. No test-only seal size.
+     - (the coordinator, 2026-11-12, T1b4) The measured move meets that largest segment too: the `bodies` case's muse body is the smaller of `mib` MiB and the largest body that does not seal alone, so at 8 MiB the run moves the segment of about 16 MiB, and the run checks loudly that it is one segment of two records.
    - **B3**, on the cleaned constructors.
    - **T2, the doors, after D3:**
      - the doors run on their real entry, with the owner as an auxiliary Worker;
@@ -276,6 +280,8 @@ Each joins the lane named. None blocks its u3 PR.
    - They are the owner's own settings, which Fact 15 allows, and the owner can change them.
    - The notice's wording is outward-facing, so it goes to the founder (`founder_batch.md` item 6).
 8. **Build slices, after B25 and alongside lane O:** the report's six. None adds spending.
+   The honest note (§N5, `policyRead`'s `holds_at` and `not_enforced`), in no slice's list,
+   rides slice 4 (P-hooks), once the engine records say where a hook holds.
 9. **Live checks owed at the dark redeploy:**
    - Claude `defer` with several tool calls in one turn;
    - managed settings against an org's server-managed settings;

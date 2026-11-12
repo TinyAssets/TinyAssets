@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
-  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER,
+  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import {
@@ -48,7 +48,7 @@ describe("the sign-in routes and door", () => {
     expect(view.state).toBe("starting");
     const [asked] = (await recorded(who)).signins as SandboxSignin[];
     const inside = { [SANDBOX_HEADER]: egressTokenOf(asked!.network!.network)!,
-                     [GENERATION_HEADER]: String(asked!.network!.generation),
+                     [GENERATION_HEADER]: String(generationOf(asked!.network!.network)),
                      "x-ta-runner": asked!.tokens!.runner_token };
     const url = CLAUDE_PAGE;
     const posted = await call(new Request(`${EGRESS_ORIGIN}/signin/${view.id}/events`, {
@@ -78,7 +78,7 @@ describe("the sign-in routes and door", () => {
     const at = `${EGRESS_ORIGIN}/signin/${view.id}/events`;
     for (const headers of [
       { [SANDBOX_HEADER]: egressTokenOf(asked!.network!.network)!,
-        [GENERATION_HEADER]: String(asked!.network!.generation) },
+        [GENERATION_HEADER]: String(generationOf(asked!.network!.network)) },
       { "x-ta-runner": asked!.tokens!.runner_token }]) {
       const refused = await call(new Request(at, { method: "POST", body,
         headers: { "Content-Type": "application/json", ...headers } }));

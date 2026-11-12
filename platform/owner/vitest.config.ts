@@ -8,7 +8,7 @@ import { keyring } from "../ci/fixtures";
 import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
 import { control, gate, methodsOf } from "../ci/gate";
-import { auxiliary, fake, main, once, pool } from "../ci/workers";
+import { auxiliary, fake, fakeConfig, main, once, pool, workerConfig } from "../ci/workers";
 
 import { NAMESPACES } from "./test/namespaces";
 
@@ -20,6 +20,10 @@ const KEYRING = keyring("k2", ["k1", "k2"]);
 const FILES_RING = keyring("k2", ["k1", "k2"]);
 /** The sandbox Worker the owner's object reaches in these tests: a fake, by its file. */
 const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
+/** The gate in front of it, `SANDBOX`. */
+const SANDBOX_GATE = "sandbox-gate";
+/** The gateway's fake outside world, which every fetch of the gateway and the tests reaches. */
+const FAKE_UPSTREAM = join(PLATFORM, "gateway", "test", "fake-upstream.ts");
 
 export default defineConfig({
   test: {
@@ -44,7 +48,7 @@ export default defineConfig({
       // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
       project("owner", "workerd", {
         plugins: [
-          cloudflareTest(once(() => pool(main(join(PLATFORM, "owner"), {
+          cloudflareTest(once(async () => pool(main(join(PLATFORM, "owner"), {
               durableObjects: Object.fromEntries(Object.entries(NAMESPACES).map(
                 ([binding, className]) => [binding, { className, useSQLite: true }])),
               bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
@@ -52,20 +56,23 @@ export default defineConfig({
               // The files Worker's bucket, test-only: a test changes a chunk's bytes under
               // its key, as storage failing would, and sees a verified read refuse them.
               r2Buckets: ["BLOBS"],
-              serviceBindings: { CONNECT: { name: "tinyassets-gateway",
+              serviceBindings: { CONNECT: { name: workerConfig(join(PLATFORM, "gateway")).name,
                                             entrypoint: "ConnectGateway" },
-                                 SANDBOX: "sandbox-gate", SANDBOX_GATE: control("sandbox-gate"),
-                                 SANDBOX_LOG: { name: "fake-sandbox", entrypoint: "Log" } },
-              outboundService: "fake-upstream",
+                                 SANDBOX: SANDBOX_GATE, SANDBOX_GATE: control(SANDBOX_GATE),
+                                 SANDBOX_LOG: { name: fakeConfig(FAKE_SANDBOX).name,
+                                                entrypoint: "Log" } },
+              outboundService: fakeConfig(FAKE_UPSTREAM).name,
               workers: [
-                auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: FILES_RING } }),
-                auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: KEYRING },
-                                                       outboundService: "fake-upstream" }),
-                auxiliary(join(PLATFORM, "codemode"), {}),
-                gate("sandbox-gate", methodsOf(join(PLATFORM, "contract", "src", "sandbox.ts"),
+                await auxiliary(join(PLATFORM, "files"),
+                                { bindings: { FILES_KEYRING: FILES_RING } }),
+                await auxiliary(join(PLATFORM, "gateway"),
+                                { bindings: { GATEWAY_KEYRING: KEYRING },
+                                  outboundService: fakeConfig(FAKE_UPSTREAM).name }),
+                await auxiliary(join(PLATFORM, "codemode"), {}),
+                gate(SANDBOX_GATE, methodsOf(join(PLATFORM, "contract", "src", "sandbox.ts"),
                                                 "SandboxService"), { fake: FAKE_SANDBOX }),
                 fake(FAKE_SANDBOX),
-                fake(join(PLATFORM, "gateway", "test", "fake-upstream.ts")),
+                fake(FAKE_UPSTREAM),
               ],
             }, "./test/worker.ts")))),
         ],

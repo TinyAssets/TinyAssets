@@ -7,12 +7,15 @@
  * alone; a test that acts while a call is out holds it at the gate in front.
  *
  * A copy of this Worker runs in each workerd process and outlives a test, so everything is
- * kept by owner, and each test names a fresh one.
+ * kept by owner, and each test names a fresh one. It is transpiled alone (`ci/workers.ts`
+ * `fake()`), so it imports types only: `METER_BATCH` is written out, checked against the
+ * contract's by its type.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import type {
-  MeterEvent, NetworkApplied, NetworkReapply, SandboxSignin, SandboxStart, Started,
+  METER_BATCH, MeterEvent, NetworkApplied, NetworkReapply, SandboxService, SandboxSignin,
+  SandboxStart, Started,
 } from "../../contract/src/sandbox";
 
 /** What one owner's object asked of the sandbox. */
@@ -75,7 +78,7 @@ function answered<T>(answer: T | "throw"): T {
 }
 
 /** The sandbox Worker as the owner's object reaches it. */
-export default class FakeSandbox extends WorkerEntrypoint {
+export default class FakeSandbox extends WorkerEntrypoint implements SandboxService {
   async start(owner: string, start: SandboxStart): Promise<Started> {
     const starts = recordOf(owner).starts;
     starts.push(start);
@@ -137,7 +140,7 @@ export default class FakeSandbox extends WorkerEntrypoint {
       throw new Error("the sandbox did not answer");
     }
     const events = (logs.get(owner) ?? []).filter((event) => event.seq > request.after)
-      .slice(0, 1000);
+      .slice(0, 1000 satisfies typeof METER_BATCH);
     return { events, next: events.at(-1)?.seq ?? request.after };
   }
 }

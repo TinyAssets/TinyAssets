@@ -25,7 +25,8 @@
 //   move's own code: no real mail reaches it) within `moveTableUnits` and 256 bytes a record;
 //   the merge of the most records real mail reaches (round 5's), its records within the same
 //   at its passes' ends; a tail seal of small messages, a move of
-//   two large bodies (4 against 8 MiB each, O(1) in size) and a purge's rewrite of them,
+//   two large bodies as one segment (4 MiB each, against the largest segment production
+//   makes, 8 MiB and the largest body short of the seal: O(1) in size) and a purge's rewrite,
 //   each run by the object's own `archive` lane, every pass within its table's and its own
 //   units;
 // - a generation's burst (slice P): at production sizes, of the smallest lines, run by the
@@ -84,13 +85,10 @@ const owner :Workerd.Worker = (
   durableObjectNamespaces = [ (className = "LegOwner", uniqueKey = "owner-memory-leg",
                                enableSql = true),
                               (className = "LegArchive", uniqueKey = "owner-memory-archive",
-                               enableSql = true),
-                              (className = "LegSegments", uniqueKey = "owner-memory-segments",
                                enableSql = true) ],
   durableObjectStorage = (localDisk = "objects"),
   bindings = [ (name = "OWNER", durableObjectNamespace = "LegOwner"),
                (name = "ARCHIVE", durableObjectNamespace = "LegArchive"),
-               (name = "SEGMENTS", durableObjectNamespace = "LegSegments"),
                (name = "FILES", service = (name = "files", entrypoint = "Store")),
                (name = "STORE", service = (name = "files", entrypoint = "Store")),
                (name = "DRIVER", service = "driver"),
@@ -204,10 +202,16 @@ try {
   const costs = JSON.parse(await get("/costs"));
   const UNIT = costs.unit;
   const QUARTER = costs.chunk / 4;
-  /** The most a case holds over the isolate at rest after its setup, and its checkpoints. */
+  /**
+   * The most a case holds over the isolate at rest with it ready, and its checkpoints. The
+   * floor is read after its setup and again at the run's `start`, before its path begins, and
+   * is the lesser: earlier work's garbage still counted at one reading (a stale reference)
+   * only ever adds to it, and a floor read high reads the whole run low (a 96 MiB edit once
+   * read 0.01 MiB against its usual 8, and failed the 192 against 96 difference).
+   */
   const peak = async (path, mib, n = 1) => {
     await get(`/setup?path=${path}&mib=${mib}&n=${n}`);
-    const floor = Math.min(await live(), await live());
+    let floor = Math.min(await live(), await live());
     let most = 0;
     let points = 0;
     // The most a sample in the owner isolate read past the units its pool held then: each
@@ -224,9 +228,14 @@ try {
     // The most live while a log segment's ship hold (`SHIP_UNITS`) is what the pool holds.
     let shipMost = 0;
     sample = async (held, at) => {
+      const reading = await live();
+      if (at.split("+").every((each) => each === "start")) {
+        floor = Math.min(floor, reading);
+        return;
+      }
       points += 1;
       heldMost = Math.max(heldMost, held ?? 0);
-      const now = await live() - floor;
+      const now = reading - floor;
       if (held === costs.SHIP_UNITS) {
         shipMost = Math.max(shipMost, now);
       }
@@ -410,11 +419,12 @@ try {
         costs.move_seal_units * UNIT + pass,
         "moveTableUnits(archiveRecords, the most a seal takes) + MOVE_PASS_UNITS");
   const bodies = { 4: await twice("bodies", 4), 8: await twice("bodies", 8) };
-  check("archive move: peak(two 8 MiB bodies) - peak(two 4 MiB), least of two runs",
-        bodies[8].least - bodies[4].least, QUARTER, "a quarter chunk");
-  check("archive move: peak(two 8 MiB bodies), worst of two runs", bodies[8].most,
-        costs.move_body_units * UNIT + pass, "moveTableUnits(2) + MOVE_PASS_UNITS");
-  check("archive rewrite: peak, a purge of one of two 8 MiB bodies",
+  check("archive move: peak(the largest segment, about 16 MiB) - peak(two 4 MiB bodies), " +
+        "least of two runs", bodies[8].least - bodies[4].least, QUARTER, "a quarter chunk");
+  check("archive move: peak(the largest segment, about 16 MiB), worst of two runs",
+        bodies[8].most, costs.move_body_units * UNIT + pass,
+        "moveTableUnits(2) + MOVE_PASS_UNITS");
+  check("archive rewrite: peak, a purge of one body of the largest segment",
         await peak("rewrite", 8), costs.move_body_units * UNIT + pass,
         "moveTableUnits(2) + MOVE_PASS_UNITS");
 

@@ -13,6 +13,9 @@ import { auxiliary, once, pool, workerConfig } from "./workers";
 
 const OWNER = join(PLATFORM, "owner");
 const FILES = join(PLATFORM, "files");
+/** The gates in front of the files Worker and of the owner's objects. */
+const FILES_GATE = "files-gate";
+const OWNER_GATE = "owner-gate";
 /** The owner object's doors, the methods the owner gate has (`contract/doors.json`). */
 const DOORS = (JSON.parse(readFileSync(join(PLATFORM, "contract", "doors.json"), "utf8")) as
   { doors: { door: string }[] }).doors.map((row) => row.door);
@@ -35,33 +38,33 @@ export default defineConfig({
       // call none of them.
       project("ci", "workerd", {
         plugins: [
-          cloudflareTest(once(() => pool({
+          cloudflareTest(once(async () => pool({
             miniflare: {
               compatibilityDate: workerConfig(OWNER).compatibility_date,
               compatibilityFlags: ["nodejs_compat"],
               durableObjects: {
-                OWNER: { className: "OwnerDO", scriptName: "owner-gate", useSQLite: true },
+                OWNER: { className: "OwnerDO", scriptName: OWNER_GATE, useSQLite: true },
                 REAL_OWNER: { className: "OwnerDO", scriptName: workerConfig(OWNER).name,
                               useSQLite: true },
               },
               serviceBindings: {
-                FILES: "files-gate", REAL_FILES: workerConfig(FILES).name,
-                FILES_GATE: control("files-gate"), OWNER_GATE: control("owner-gate"),
+                FILES: FILES_GATE, REAL_FILES: workerConfig(FILES).name,
+                FILES_GATE: control(FILES_GATE), OWNER_GATE: control(OWNER_GATE),
               },
               workers: [
-                auxiliary(OWNER, {
+                await auxiliary(OWNER, {
                   bindings: { ROUTING_MAC_KEY: randomBytes(32).toString("base64url") },
-                  serviceBindings: { FILES: "files-gate" },
+                  serviceBindings: { FILES: FILES_GATE },
                 }),
-                auxiliary(FILES, { bindings: { FILES_KEYRING: keyring() } }),
-                auxiliary(join(PLATFORM, "gateway"), {
+                await auxiliary(FILES, { bindings: { FILES_KEYRING: keyring() } }),
+                await auxiliary(join(PLATFORM, "gateway"), {
                   bindings: { GATEWAY_KEYRING: keyring() } }),
-                auxiliary(join(PLATFORM, "codemode"), {}),
-                auxiliary(join(PLATFORM, "sandbox"), {
+                await auxiliary(join(PLATFORM, "codemode"), {}),
+                await auxiliary(join(PLATFORM, "sandbox"), {
                   bindings: { E2B_API_KEY: "e2b_unused_in_kit_tests" } }),
-                gate("files-gate", methodsOf(join(PLATFORM, "contract", "src", "files.ts"),
+                gate(FILES_GATE, methodsOf(join(PLATFORM, "contract", "src", "files.ts"),
                                              "ChunkStore"), { worker: FILES }),
-                gate("owner-gate", DOORS, { worker: OWNER, className: "OwnerDO" }),
+                gate(OWNER_GATE, DOORS, { worker: OWNER, className: "OwnerDO" }),
               ],
             },
           }))),

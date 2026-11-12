@@ -1,0 +1,67 @@
+{
+  "about": "The kinds of action an owner's `actions` rule names (d3 §N; r5_research.md §4, §5), and where each is seen, so a rule holds there and nowhere else. The doors that do an act name it in their own row (`contract/doors.json` `act`, with the condition under which a call is the act, `when`): our MCP tools, the owner-only doors and file sync. `hook`: the sandbox CLIs' own tool kinds that are the act whole, seen by each CLI's pre-tool hook. A rule may also name the tools that do its act (`tools`, `mcp:<server>:<tool>`, each part a name or `*` patterns), which the hook sees by name. An act no door does and no hook kind is, named by a rule with no tools, is seen nowhere, so that rule is refused when it is written. `unseen`: the ways the act can be done that nothing of ours sees, so no rule holds there. The old stack's acts nothing can see (`commons.publish`, `app.read`, `app.write`) have no entry, nor its spend caps: the model ceilings are the policy's `models` table, held at the egress door.",
+  "kinds": {
+    "shell": "a shell command the CLI runs, seen by its command line, not by what the programs it starts do",
+    "file_write": "a file the CLI writes or edits with its own file tool"
+  },
+  "conditions": {
+    "outside_member": "the room has a member outside the owner's own agents",
+    "public_row": "the row is written with private false, so visitors read it"
+  },
+  "unseen": {
+    "main_agent": "the user's own main agent's own tools and other connectors, which never reach us",
+    "sandbox_programs": "programs the agent writes and runs in its sandbox, which the hook does not see"
+  },
+  "acts": {
+    "people.message": {
+      "says": "A message to another person or party.",
+      "hook": [],
+      "unseen": ["main_agent", "sandbox_programs"]
+    },
+    "share": {
+      "says": "Making the owner's work visible to others.",
+      "hook": [],
+      "unseen": ["main_agent", "sandbox_programs"]
+    },
+    "browser.action": {
+      "says": "An action in a web browser, through a browser's tools.",
+      "hook": [],
+      "unseen": ["main_agent", "sandbox_programs"]
+    },
+    "spend": {
+      "says": "Spending money through a tool, such as a purchase. Model calls are held by the models table instead.",
+      "hook": [],
+      "unseen": ["main_agent", "sandbox_programs"]
+    },
+    "money.move": {
+      "says": "Moving money, such as a payment or a transfer.",
+      "hook": [],
+      "unseen": ["main_agent", "sandbox_programs"]
+    },
+    "security.change": {
+      "says": "Changing the owner's policy or model connections.",
+      "hook": [],
+      "unseen": ["main_agent"]
+    },
+    "access.grant": {
+      "says": "Granting access: an outside client's grant, an API key or an inbound URL.",
+      "hook": [],
+      "unseen": ["main_agent"]
+    },
+    "workspace.files": {
+      "says": "Changing the owner's files.",
+      "hook": ["file_write"],
+      "unseen": []
+    },
+    "workspace.shell": {
+      "says": "Running a shell command in the sandbox, its network included.",
+      "hook": ["shell"],
+      "unseen": ["main_agent", "sandbox_programs"]
+    },
+    "workspace.workflows": {
+      "says": "Starting or scheduling an agent's run.",
+      "hook": [],
+      "unseen": []
+    }
+  }
+}

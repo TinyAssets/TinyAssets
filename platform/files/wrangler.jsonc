@@ -1,8 +1,8 @@
 // The files Worker: owner file bytes as content-addressed chunks in one R2 bucket
 // (ADR-032, plan §6). It binds the bucket and nothing else, and serves no URL; owner objects
 // reach it only by their `FILES` service binding (guards/config.test.ts). Its one secret,
-// FILES_KEYRING (the data keys' ring, read only by src/datakey.ts: every chunk is put and
-// read under its owner's SSE-C key), is required, so a deploy without it fails.
+// FILES_KEYRING (the data keys' ring, read only by src/datakey.ts: every object is sealed in
+// this Worker under its owner's data key), is required, so a deploy without it fails.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tinyassets-files",
@@ -14,8 +14,5 @@
   "r2_buckets": [
     { "binding": "BLOBS", "bucket_name": "tinyassets-files" }
   ],
-  "secrets": { "required": ["FILES_KEYRING"] },
-  // How the data key encrypts (src/cipher.ts): R2's SSE-C, or AES-GCM in this Worker should
-  // slice L's live probe find SSE-C does not combine with the create-once put.
-  "vars": { "FILES_CIPHER": "ssec" }
+  "secrets": { "required": ["FILES_KEYRING"] }
 }

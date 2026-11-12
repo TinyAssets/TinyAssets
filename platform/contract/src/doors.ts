@@ -20,6 +20,10 @@
  * the write gate (`door`), a quiet one (`quiet`), a unit and then the schedule synced
  * (`synced`; `filing`, whatever the unit did), or units of its own (`units`).
  *
+ * A door that does one of the acts an owner's `actions` rule names says so (`act`, an act of
+ * `acts.json`, and `when`, the condition under which a call is the act, every call when it
+ * names none), so a rule on that act holds at that door.
+ *
  * The outside-callable doors' rows carry their MCP tool (`tool`, research §4.3), which the
  * doors serve on `/mcp` and as `POST /api/tools/<name>` (`doors/src/tools.ts`): its capability
  * and its arguments are its door's own. Each tool's four hints are explicit (OpenAI's
@@ -39,6 +43,7 @@
 import raw from "../doors.json" with { type: "json" };
 import profiles from "../profiles.json" with { type: "json" };
 
+import { actNamed, type Condition, isCondition } from "./acts";
 import { RUN_CAPABILITIES, type RunCapability } from "./capabilities";
 import { Refusal } from "./refusal";
 
@@ -150,6 +155,8 @@ export interface DoorRow {
   /** The request's field naming the agent a run door acts as, and its default. */
   readonly agent?: { readonly field: string; readonly default?: string };
   readonly fieldsFirst?: true;
+  /** The act a call of this door is, and when (`acts.json`). */
+  readonly act?: { readonly name: string; readonly when?: Condition };
   readonly handler: Handler;
   readonly gate: Gate;
   readonly args: DoorArgs;
@@ -158,7 +165,7 @@ export interface DoorRow {
 
 const ROW_KEYS = Object.freeze(["door", "class", "caller", "action", "rule", "receipt",
   "registering", "closed", "live", "guard", "capability", "scope", "agent", "fieldsFirst",
-  "handler", "gate", "args", "tool"]);
+  "act", "handler", "gate", "args", "tool"]);
 const TOOL_KEYS = "description,destructiveHint,idempotentHint,name,openWorldHint," +
   "readOnlyHint,title";
 
@@ -253,6 +260,12 @@ export function doorProblems(rows: unknown): string[] {
     }
     if (row["guard"] !== undefined && !one(GUARDS, row["guard"])) {
       say("an unknown guard");
+    }
+    const act = row["act"];
+    if (act !== undefined && (!plain(act) || actNamed(act["name"]) === undefined
+        || !Object.keys(act).every((key) => key === "name" || key === "when")
+        || ("when" in act && !isCondition(act["when"])))) {
+      say("an act is one of acts.json's, and when, one of its conditions");
     }
     if (!one(HANDLERS, row["handler"])) {
       say("no handler module");
@@ -374,6 +387,11 @@ export const DEFAULT_PROFILE: ProfileName = "custom";
 /** A profile's tool names, as its data lists them (`custom`: the default of the owner's choice). */
 export function profileNames(name: ProfileName): readonly string[] {
   return Object.freeze([...profiles[name].tools]);
+}
+
+/** The doors that do the act named `name`. */
+export function actDoors(name: string): readonly string[] {
+  return doorTable().flatMap((row) => row.act?.name === name ? [row.door] : []);
 }
 
 /** Every tool's name, in the table's order. */

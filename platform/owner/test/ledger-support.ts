@@ -1,19 +1,23 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { isAdmitted } from "../src/admission";
+import { type Adopt, Bodies } from "../src/bodies";
+import { Collections } from "../src/collections";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import {
   Ledger, LEDGER_LIMITS, type LedgerLimits, type Outcome, type WakeTarget,
 } from "../src/ledger";
 import { apiKeyOrigin } from "../../contract/src/binding";
+import type { Refusal } from "../../contract/src/refusal";
 import { clock } from "../src/clock";
 import type { Binding, Origin, Source } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
-import { alarmOf, EVERY_SIGNIN, laneAt, TIERS } from "./support";
+import { alarmOf, collectionParts, EVERY_SIGNIN, filesOn, laneAt, TIERS } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -88,13 +92,33 @@ export interface Post {
 }
 
 /**
- * The ledger on an object's own storage, reading that object's own grants. A test that
- * registers on it directly first admits the agent's outside client, as the object's door
- * admits every outside call before any act: an MCP client is recorded `full`.
+ * The ledger's parts on an object's own storage, a copy of the object's wiring (`OwnerDO`): its
+ * grants, the owner's admission, the collections' change cursor, and its files' adoption of
+ * a placed body and their one wall (`filesOn`'s, with no tier named). It goes when the tests
+ * reach the ledger only by the object's doors (T1c).
+ */
+export type LedgerParts = [storage: DurableObjectStorage, grants: Grants,
+                           admitted: () => boolean, changes: () => number, adopt: Adopt,
+                           wall: (needed: number) => Refusal];
+export function ledgerParts(storage: DurableObjectStorage): LedgerParts {
+  const gate = new WriteGate(storage);
+  const files = filesOn(gate.storage, gate.write);
+  const collections = new Collections(...collectionParts(storage));
+  return [storage, new Grants(storage, new Policy(storage)),
+          () => isAdmitted(storage), () => collections.clock(),
+          new Bodies(files, gate.storage, gate.write).adopt,
+          (needed: number) => files.fullRefusal(needed)];
+}
+
+/**
+ * The ledger on an object's own storage, built as the object builds it (`ledgerParts`). A
+ * test that registers on it directly first admits the agent's outside client, as the
+ * object's door admits every outside call before any act: an MCP client is recorded `full`.
  */
 export function ledgerOn(storage: DurableObjectStorage,
                          limits: Partial<LedgerLimits> = {}): Ledger {
-  const grants = new Grants(storage, new Policy(storage));
+  const parts = ledgerParts(storage);
+  const grants = parts[1];
   return new (class extends Ledger {
     override register(origin: Origin | null, source: unknown,
                       request: Parameters<Ledger["register"]>[2], now?: number) {
@@ -103,7 +127,7 @@ export function ledgerOn(storage: DurableObjectStorage,
       }
       return super.register(origin, source, request, now);
     }
-  })(storage, grants, { ...LEDGER_LIMITS, ...limits });
+  })(...parts, { ...LEDGER_LIMITS, ...limits });
 }
 
 /** Now, in the whole seconds a binder reports a sign-in at. */
@@ -193,6 +217,12 @@ export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER
     /** The ledger on this object's own storage, with some bounds changed. */
     inLedger: <R>(limits: Partial<LedgerLimits>, act: (ledger: Ledger) => R): Promise<R> =>
       runInDurableObject(stub, (_i: OwnerDO, state) => act(ledgerOn(state.storage, limits))),
+    /**
+     * The object's storage let go, after a test that filled it to a ceiling: a filled object
+     * is tens of MB on disk, kept until the test file ends (`inFilled`'s reason).
+     */
+    letGo: (): Promise<void> => runInDurableObject(stub, (_i: OwnerDO, state) =>
+      state.storage.deleteAll()),
     /** One alarm pass at `now`, with the scripted doorbell. */
     tick: (now: number = clock()): Promise<number | typeof CLOSED> =>
       runInDurableObject(stub, (_i: OwnerDO, state) =>
@@ -229,13 +259,13 @@ export async function counters(r: Rig): Promise<[Row, Row]> {
       "FROM ledger_usage",
   );
   const [actual] = await r.sql(
-    "SELECT (SELECT COUNT(*) FROM outside_agents) AS agents, " +
-      "(SELECT COUNT(*) FROM outside_agents WHERE disabled_reason IS NULL) AS enabled_agents, " +
+    "SELECT (SELECT COUNT(*) FROM outside_agents) + (SELECT COUNT(*) FROM native_agents) " +
+      "AS agents, (SELECT COUNT(*) FROM outside_agents WHERE disabled_reason IS NULL) + " +
+      "(SELECT COUNT(*) FROM native_agents WHERE retired_at IS NULL) AS enabled_agents, " +
       "(SELECT COUNT(*) FROM ledger_messages) AS messages, " +
       "(SELECT COUNT(*) FROM ledger_messages WHERE unacked > 0) AS unacked, " +
       "(SELECT coalesce(SUM(line_bytes), 0) FROM ledger_messages WHERE unacked = 0) " +
       "AS acked_bytes, " +
-
       "(SELECT COUNT(*) FROM ledger_wakes WHERE settled_at IS NOT NULL) AS settled_wakes, " +
       "(SELECT json_group_object(agent_id, n) FROM (SELECT r.agent_id, " +
       "COUNT(*) AS n FROM ledger_recipients r JOIN ledger_messages m " +

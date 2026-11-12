@@ -45,7 +45,7 @@ import { CONFIG as FILES } from "../../files/guards/rules";
 import { CONFIG as GATEWAY } from "../../gateway/guards/rules";
 import { CONFIG as CODEMODE_VM } from "../../codemode/guards/rules";
 import { CONFIG as SANDBOX } from "../../sandbox/guards/rules";
-import { imports, type Owed } from "../../ci/kit/owed";
+import { imports, type Owed, refusals } from "../../ci/kit/owed";
 
 /** The classes the Worker's migrations make, each SQLite-backed. */
 export const CLASSES = Object.freeze(["OwnerDO"]);
@@ -109,7 +109,7 @@ export interface Bound {
 /** The service bindings the owner Worker may hold, by binding name. */
 export const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
   FILES: Object.freeze({ service: FILES.name, bindings: Object.freeze({ r2_buckets: 1 }),
-                         secrets: FILES.secrets!, vars: Object.keys(FILES.vars!) }),
+                         secrets: FILES.secrets! }),
   GATEWAY: Object.freeze({ service: GATEWAY.name, bindings: Object.freeze({}),
                            secrets: GATEWAY.secrets! }),
   CODEMODE_VM: Object.freeze({ service: CODEMODE_VM.name, bindings: Object.freeze({}),
@@ -150,4 +150,8 @@ export const OWED: readonly Owed[] = Object.freeze([
              ["platform/files/src/datakey.ts", "platform/files/src/keys.ts"]),
   ...imports("B23", "platform/owner/test/runs-authority.test.ts",
              ["platform/doors/src/binder.ts"]),
+  // Error classes of the object's own, each a contract refusal by its code: B2 (O4).
+  ...refusals("B2", "platform/owner/src/collections.ts", ["class Conflict extends Error"]),
+  ...refusals("B2", "platform/owner/src/files.ts", ["class FileConflict extends Error"]),
+  ...refusals("B2", "platform/owner/src/ledger.ts", ["class ParentMoved extends Error"]),
 ]);

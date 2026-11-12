@@ -274,7 +274,7 @@ describe("the verification's cases (rveg2)", () => {
   });
 
   it("never counts a wait for a unit against the sender (V-M2)", async () => {
-    const pool = new SlotPool(3, 12_000);
+    const pool = new SlotPool(3, 12_000, 12, 0, 12);
     const blocker = await pool.acquire(2, "x");
     const text = JSON.stringify({ input: "a".repeat(2 * 1024 * 1024) });
     const hold = new Hold(pool, "a", new AbortController().signal);
@@ -334,7 +334,7 @@ describe("wait-die under load (rveg2 V-M1)", () => {
 
   it("lets a burst through without waiting out the pool's wait: the oldest grows, the others " +
      "give way", async () => {
-    const pool = new SlotPool(16, 1000);
+    const pool = new SlotPool(16, 1000, 64, 0, 64);
     const started = Date.now();
     const ends = await Promise.all(["a", "b", "c", "d"].map((owner) =>
       call(pool, owner, 4, 8, 50)));
@@ -345,7 +345,7 @@ describe("wait-die under load (rveg2 V-M1)", () => {
 
   it("keeps a closed loop of 8 owners at least as productive as one call at a time",
      async () => {
-    const pool = new SlotPool(16, 500);
+    const pool = new SlotPool(16, 500, 64, 0, 64);
     const until = Date.now() + 4000;
     let done = 0;
     let busy = 0;
