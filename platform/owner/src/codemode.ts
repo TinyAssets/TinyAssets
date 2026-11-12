@@ -53,27 +53,23 @@ export type CodemodeService = CodemodeWorker<CodemodeRemoteRequest, CodemodeRemo
 
 /** What code mode's sandbox reaches: the codemode Worker, the owner it runs for, its tools. */
 interface CodemodeParts {
-  readonly service: () => CodemodeService | undefined;
+  readonly service: CodemodeService;
   readonly owner: () => string;
   readonly tools: CodemodeTools;
 }
 
 /**
  * A sandbox whose scripts run in the codemode Worker, each execution named
- * `<owner>/<random id>`; with no codemode Worker bound, an execution fails loudly.
+ * `<owner>/<random id>`.
  */
 export function codemodeSandbox(parts: CodemodeParts): RemoteCodemodeSandbox {
   return new RemoteCodemodeSandbox({
     timeoutMs: CODEMODE_TIMEOUT_MS,
     tools: [...parts.tools],
     remote: (): CodemodeRemote => {
-      const service = parts.service();
-      if (service === undefined) {
-        throw new Error("no codemode Worker is bound, so code mode cannot run");
-      }
       const name = `${parts.owner()}/${randomUUID()}`;
-      return { execute: (request, exchange) => service.codemodeExecute(name, request,
-                                                                        exchange) };
+      return { execute: (request, exchange) => parts.service.codemodeExecute(name, request,
+                                                                              exchange) };
     },
   });
 }
@@ -181,7 +177,7 @@ export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is pa
 
 /** What a script runs with: the codemode Worker, its owner, and its tools. */
 interface ScriptParts {
-  readonly service: () => CodemodeService | undefined;
+  readonly service: CodemodeService;
   readonly owner: string;
   readonly script: string;
   /** The caller's tools, each called through its own door (`call`), rechecked there. */
@@ -321,7 +317,7 @@ export const codemodeDoors = Object.freeze({
     if (closed !== null) {
       throw new Refusal("refused", closed);
     }
-    return runScript({ service: () => o.env.CODEMODE_VM, owner, script, tools,
+    return runScript({ service: o.env.CODEMODE_VM, owner, script, tools,
                        call: (tool, args) => scripted(o, door.binding, tool, args,
                                                       () => control.refusal(gate, owner)) });
   },
