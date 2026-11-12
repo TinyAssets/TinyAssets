@@ -7,7 +7,7 @@ import { defineConfig } from "vitest/config";
 import { keyring } from "../ci/fixtures";
 import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
-import { auxiliary, fake, main, once, pool, workerConfig } from "../ci/workers";
+import { auxiliary, fake, fakeConfig, main, once, pool, workerConfig } from "../ci/workers";
 
 /** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), made fresh for each run. */
 const ROUTING_KEY = randomBytes(32).toString("base64url");
@@ -17,6 +17,10 @@ const SLACK_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
 
 /** A keyring made fresh for each run, the gateway's and the files Worker's. */
 const KEYRING = keyring();
+
+/** The fake providers the gateway's fetches reach, and the owner suite's fake sandbox. */
+const FAKE_PROVIDERS = join(PLATFORM, "doors", "test", "fake-providers.ts");
+const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
 
 export default defineConfig({
   test: {
@@ -52,17 +56,19 @@ export default defineConfig({
               // the tests), to the real codemode and files Workers, as the owner config binds
               // them (the owner's FILES is the files Worker's whole service, the doors' its
               // upload entrypoint), and to the owner suite's fake sandbox Worker.
-              serviceBindings: { PROVIDERS: "fake-providers",
+              serviceBindings: { PROVIDERS: fakeConfig(FAKE_PROVIDERS).name,
                                  CODEMODE_VM: workerConfig(join(PLATFORM, "codemode")).name,
                                  OWNER_FILES: workerConfig(join(PLATFORM, "files")).name,
-                                 SANDBOX: "fake-sandbox",
-                                 SANDBOX_LOG: { name: "fake-sandbox", entrypoint: "Log" } },
+                                 SANDBOX: fakeConfig(FAKE_SANDBOX).name,
+                                 SANDBOX_LOG: { name: fakeConfig(FAKE_SANDBOX).name,
+                                                entrypoint: "Log" } },
               workers: [
                 auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: KEYRING },
-                                                       outboundService: "fake-providers" }),
+                                                       outboundService:
+                                                         fakeConfig(FAKE_PROVIDERS).name }),
                 auxiliary(join(PLATFORM, "codemode"), {}),
-                fake(join(PLATFORM, "doors", "test", "fake-providers.ts")),
-                fake(join(PLATFORM, "owner", "test", "fake-sandbox.ts")),
+                fake(FAKE_PROVIDERS),
+                fake(FAKE_SANDBOX),
                 auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: KEYRING } }),
               ],
             }, "./test/entry.ts")))),

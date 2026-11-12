@@ -59,7 +59,7 @@ function log(value: unknown): void {
 }
 
 /** The image the sandbox Worker names (`wrangler.jsonc`'s `E2B_TEMPLATE`). */
-function pinned(): string {
+export function pinned(): string {
   return String((readWrangler(join(TEMPLATE, "..")) as { vars: { E2B_TEMPLATE: string } })
     .vars.E2B_TEMPLATE);
 }

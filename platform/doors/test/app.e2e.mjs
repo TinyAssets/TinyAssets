@@ -76,6 +76,8 @@ async function doors() {
   const gateway = workerConfig(join(PLATFORM, "gateway"));
   const codemode = workerConfig(join(PLATFORM, "codemode"));
   const files = workerConfig(join(PLATFORM, "files"));
+  const providers = fake(join(DOORS, "test", "fake-providers.ts"));
+  const sandbox = fake(join(PLATFORM, "owner", "test", "fake-sandbox.ts"));
   const keyring = newKeyring();
   const webClient = `${ORIGIN}/oauth/clients/web.json`;
   mf = new Miniflare(convertV4MiniflareOptions(pool({
@@ -91,21 +93,21 @@ async function doors() {
         durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
         // CODEMODE_VM, OWNER_FILES and SANDBOX: the owner object's, in this script for the
         // test; SANDBOX the owner suite's fake sandbox Worker, which SANDBOX_LOG reads back.
-        serviceBindings: { CODEMODE_VM: codemode.name, PROVIDERS: "fake-providers",
-                           OWNER_FILES: files.name, SANDBOX: "fake-sandbox",
-                           SANDBOX_LOG: { name: "fake-sandbox", entrypoint: "Log" } },
+        serviceBindings: { CODEMODE_VM: codemode.name, PROVIDERS: providers.name,
+                           OWNER_FILES: files.name, SANDBOX: sandbox.name,
+                           SANDBOX_LOG: { name: sandbox.name, entrypoint: "Log" } },
         // The provider fetches the first-party app's metadata document, as production does
         // over the public internet; nothing else leaves the doors.
         outboundService: (request) => request.url === webClient ? mf.dispatchFetch(webClient)
           : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
       }, "test/e2e-entry.ts"),
       auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: keyring },
-                                             outboundService: "fake-providers" }),
+                                             outboundService: providers.name }),
       // The files Worker: its config's bucket and cipher, and a test keyring.
       auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: keyring } }),
       auxiliary(join(PLATFORM, "codemode"), {}),
-      fake(join(DOORS, "test", "fake-providers.ts")),
-      fake(join(PLATFORM, "owner", "test", "fake-sandbox.ts")),
+      providers,
+      sandbox,
       {
         // The two hand-off hosts, each answering the browser's top-level navigation at once.
         name: "hand-off", routes: ["upstream.test/*", "auth.test/*"],
