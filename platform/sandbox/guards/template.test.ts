@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import ts from "typescript";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
@@ -179,6 +180,47 @@ interface Built {
 }
 
 /** `bundle.mjs`'s own build, both bundles of the platform tree at `root` (this one). */
+/** The run session (`withRunUser`, `spawnBounded`): every CLI either bundle starts. */
+const SESSION = "sandbox/runner/session.ts";
+
+/**
+ * What the source at `path` (from `platform/`) imports that only the run session may: a
+ * process starter of `node:child_process` (anything but `spawnSync`, whose callers start no
+ * CLI: none can take a run user), or the pool's `take`.
+ */
+function outsideSession(path: string, source: string): string[] {
+  if (path === SESSION) {
+    return [];
+  }
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const found: string[] = [];
+  for (const statement of file.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
+        || statement.importClause === undefined || statement.importClause.isTypeOnly) {
+      continue;
+    }
+    const from = statement.moduleSpecifier.text;
+    const users = from.startsWith(".")
+      && join(path, "..", from).replace(/\.ts$/, "") === "sandbox/runner/users";
+    if (from !== "node:child_process" && from !== "child_process" && !users) {
+      continue;
+    }
+    const bindings = statement.importClause.namedBindings;
+    if (bindings === undefined || ts.isNamespaceImport(bindings)
+        || statement.importClause.name !== undefined) {
+      found.push(`${path} imports ${from} whole`);
+      continue;
+    }
+    for (const element of bindings.elements) {
+      const name = (element.propertyName ?? element.name).text;
+      if (!element.isTypeOnly && (users ? name === "take" : name !== "spawnSync")) {
+        found.push(`${path} imports ${name} from ${from}`);
+      }
+    }
+  }
+  return found;
+}
+
 async function bundler(): Promise<{
   build: (root?: string) => Promise<{ runner: Built; probes: Built }> }> {
   return await import(pathToFileURL(join(TEMPLATE, "bundle.mjs")).href) as {
@@ -302,6 +344,22 @@ describe("the pair", () => {
                                                                 "sandbox/runner/route.ts"]));
     expect(built.probes.inputs).not.toContain("sandbox/runner/runner.ts");
     expect(built.probes.bytes.toString("utf8")).toContain(JSON.stringify(runner.sha));
+  });
+
+  it("starts each process and takes each run user in the run session alone (B16)", async () => {
+    const built = await (await bundler()).build();
+    const reached = [...new Set([...built.runner.inputs, ...built.probes.inputs])]
+      .filter((path) => path.endsWith(".ts"));
+    expect(reached).toContain(SESSION);
+    expect(reached.flatMap((path) => outsideSession(path, readFileSync(join(PLATFORM, path),
+                                                                       "utf8")))).toEqual([]);
+    // What it sees: either, anywhere but the session.
+    for (const planted of ['import { spawn } from "node:child_process";',
+                           'import * as child from "node:child_process";',
+                           'import { take as hold } from "./users";']) {
+      expect(outsideSession("sandbox/runner/runner.ts", planted), planted).not.toEqual([]);
+      expect(outsideSession(SESSION, planted), planted).toEqual([]);
+    }
   });
 
   /** The copy's bundles as they stand, built once. */

@@ -1,11 +1,13 @@
 /**
- * What a run's home is made of, shared by the runner (`runner.ts`) and the template's probes
- * (`probes.ts`), which run a CLI as a run runs it: the platform's CLI records, the engines'
- * stores under their locks and generations, a run's home made from its store and kept back
- * into it, and the run's config files made root's. Nothing here runs a CLI or reads a job.
+ * The run session, shared by the runner (`runner.ts`) and the template's probes
+ * (`probes.ts`), so every CLI either starts runs as a run runs it (`withRunUser`, bounded
+ * by `spawnBounded`): the platform's CLI records, the engines' stores under their locks and
+ * generations, a run's home made from its store and kept back into it, and the run's config
+ * files made root's. Nothing here reads a job.
  */
 import { sha256Hex } from "../../contract/src/digest";
-import { existsSync, lchownSync, lstatSync, mkdirSync, readdirSync, readFileSync,
+import { type ChildProcess, spawn, type SpawnOptions, spawnSync } from "node:child_process";
+import { chownSync, existsSync, lchownSync, lstatSync, mkdirSync, readdirSync, readFileSync,
          writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -13,11 +15,12 @@ import { bundledSources } from "../../sources/src/catalog";
 import { RUN_BASICS } from "../../sources/src/run-env";
 import type { SourceRecord } from "../../sources/src/schema";
 
-import { HOMES, isKept, keptPaths } from "./engine";
+import { HOMES, isKept, keptPaths, SYSTEM } from "./engine";
+import { HEARTBEAT_MS } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite, type Walk, walkFiles } from "./fsafe";
 import { withLock } from "./pid-lock";
 import { COMMAND_MS, STATE_DIR } from "./protocol";
-import { group, type Identity, SHARED_GROUP } from "./users";
+import { give, group, type Identity, killAll, SHARED_GROUP, take } from "./users";
 
 const STATE = STATE_DIR;
 /** Each engine's store: what a run's home is made from and kept back into. */
@@ -76,8 +79,6 @@ export function sortedWalk(dir: string, skip?: (rel: string) => boolean): Genera
 
 /** How long a store's lock is waited for: one command's bound, then the call fails loudly. */
 const LOCK_WAIT_MS = COMMAND_MS;
-/** A store's lock is asked again every 20 ms, flat: every hold is short. */
-const STORE_RETRY_MS = 20;
 
 /**
  * The engine's store held by this process alone while `act` runs (a home copied from it, a
@@ -92,7 +93,7 @@ export async function withStore<T>(rec: SourceRecord, act: () => T): Promise<T> 
   // `.lock`: a name no earlier runner's lock (a directory at `<id>`) ever had, so neither
   // form is read by the other's runner, across an adoption or a rollback.
   return withLock(`${locks}/${rec.id}.lock`, LOCK_WAIT_MS, () => new Error(
-    `the store of ${rec.id} stayed locked past ${LOCK_WAIT_MS} ms`), act, STORE_RETRY_MS);
+    `the store of ${rec.id} stayed locked past ${LOCK_WAIT_MS} ms`), act);
 }
 
 /**
@@ -125,6 +126,16 @@ function snapshotOf(home: string): string {
   return `${STATE}/kept/${home.split("/").at(-1)!}.json`;
 }
 
+/** The home a session named `name` runs in. */
+export function homeOf(name: string): string {
+  return `${HOMES}/${name}`;
+}
+
+/** The root-owned directory of a session named `name`, for the files a CLI takes only there. */
+export function systemOf(name: string): string {
+  return `${SYSTEM}/${name}`;
+}
+
 /** A home gone, and the snapshot it was made under (review L2: none is left behind). */
 export function dropHome(home: string): void {
   remove(home);
@@ -140,9 +151,9 @@ export function dropHome(home: string): void {
  * `auth.json`, Claude's `.credentials.json`) stay out of a key run's reach, so no key run's
  * CLI can send them anywhere (codexurl_research.md; the route probe proves it live).
  */
-export async function makeHome(name: string, rec: SourceRecord, signedIn = true): Promise<string> {
+async function makeHome(name: string, rec: SourceRecord, signedIn: boolean): Promise<string> {
   safeDirs("/", HOMES, 0o711);
-  const home = `${HOMES}/${name}`;
+  const home = homeOf(name);
   remove(home);
   mkdirSync(home, { mode: 0o700 });
   const store = `${STORE}/${rec.id}`;
@@ -249,7 +260,7 @@ export async function keepHome(home: string, rec: SourceRecord, signin = false):
  * trust; a directory in the home that holds nothing but them is root's too. In `{system}`,
  * root's, readable by the run's own group alone.
  */
-export function configOwned(rec: SourceRecord, home: string, system: string,
+function configOwned(rec: SourceRecord, home: string, system: string,
                      files: Iterable<string>, as: Identity): void {
   const cli = rec.cli!;
   const kept = [...Object.values(cli.home_env), ...cli.session_paths, ...cli.secret_paths]
@@ -267,4 +278,133 @@ export function configOwned(rec: SourceRecord, home: string, system: string,
       lchownSync(dir, 0, 0);
     }
   }
+}
+
+/** Files a session's user left in the shared scratch directories, removed (links as links). */
+function cleanScratch(uid: number): void {
+  for (const dir of ["/tmp", "/var/tmp", "/dev/shm"]) {
+    spawnSync("find", [dir, "-xdev", "-mindepth", "1", "-user", String(uid),
+                       "-delete"], { stdio: "ignore" });
+  }
+}
+
+/** A session's user, its home and its root-owned directory, as `act` is handed them. */
+export interface RunSession {
+  readonly as: Identity;
+  readonly home: string;
+  readonly system: string;
+}
+
+/**
+ * `act` run as a run runs, by every CLI the runner or the probes start: a pool user taken;
+ * its home made from the engine's store (with its secrets when `signedIn`) and its own
+ * root-owned directory (`systemOf`); `files` (an invocation's, by path) written, those in
+ * that directory root's and readable by the user's group, the rest root's in the home
+ * (`configOwned`), and the home given to the user. Once `act` is over, however it ends:
+ * every process of the user killed, what it left in the shared scratch removed, the home
+ * kept back into the store as a run's (`keeps`: by compare-and-swap, `keepHome`), the home
+ * and the directory dropped, and the user given back.
+ */
+export async function withRunUser<T>(rec: SourceRecord, name: string,
+                                     opts: { readonly signedIn: boolean;
+                                             readonly keeps: boolean;
+                                             readonly files?: ReadonlyMap<string, string> },
+                                     act: (session: RunSession) => Promise<T>): Promise<T> {
+  const as = await take(STATE);
+  const system = systemOf(name);
+  let home: string | null = null;
+  try {
+    home = await makeHome(name, rec, opts.signedIn);
+    safeDirs("/", SYSTEM, 0o755);
+    remove(system);
+    mkdirSync(system, { mode: 0o750 });
+    chownSync(system, 0, as.gid);
+    const files = opts.files ?? new Map<string, string>();
+    for (const [path, text] of files) {
+      const inSystem = path.startsWith(`${system}/`);
+      safeWrite(inSystem ? system : home, path, new TextEncoder().encode(text),
+                inSystem ? 0o640 : 0o644, undefined, inSystem ? 0o750 : 0o755);
+    }
+    giveTree(home, as);
+    configOwned(rec, home, system, files.keys(), as);
+    return await act({ as, home, system });
+  } finally {
+    try {
+      await killAll(as);
+      cleanScratch(as.uid);
+      if (home !== null && opts.keeps) {
+        await keepHome(home, rec);
+      }
+    } finally {
+      if (home !== null) {
+        dropHome(home);
+      }
+      remove(system);
+      await give(STATE, as);
+    }
+  }
+}
+
+/** A sign-in's own files (its record's `vendor_login_in_sandbox` files), its user's. */
+export function loginFiles(rec: SourceRecord, { as, home }: RunSession): void {
+  const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
+  for (const [path, text] of Object.entries(files)) {
+    safeWrite(home, path.replaceAll("{home}", home), new TextEncoder().encode(text), 0o600, as);
+  }
+}
+
+/** The exit of a CLI killed (by `spawnBounded`'s stop or its bound): SIGTERM's. */
+export const KILLED_BY_TERM = 128 + 15;
+/**
+ * A stopped CLI's grace between its SIGTERM and its group's SIGKILL: one heartbeat, so a
+ * cancelled run's end reaches the object well inside the lease's TTL (`LEASE_TTL_MS`), its
+ * runner's last post included.
+ */
+export const KILL_GRACE_MS = HEARTBEAT_MS;
+
+/** A process `spawnBounded` started: its exit, and its stop. */
+export interface Bounded {
+  readonly child: ChildProcess;
+  /** Its exit code once it closed (`KILLED_BY_TERM` when a signal ended it). */
+  readonly exit: Promise<number>;
+  /** SIGTERM to its process group, then SIGKILL of the group after `KILL_GRACE_MS`. */
+  stop(): void;
+}
+
+/**
+ * `argv` started in a process group of its own, stopped at `ms` (`Infinity`: never, as
+ * `withLock`'s wait) as `stop` stops it. No kill outlives its close, so none reaches a
+ * group that reused its id.
+ */
+export function spawnBounded(argv: readonly string[], opts: SpawnOptions, ms: number): Bounded {
+  const child = spawn(argv[0]!, argv.slice(1), { ...opts, detached: true });
+  let kill: ReturnType<typeof setTimeout> | null = null;
+  const signal = (name: NodeJS.Signals) => {
+    try {
+      process.kill(-child.pid!, name);
+    } catch {
+      // gone already
+    }
+  };
+  const stop = () => {
+    if (child.pid === undefined || child.exitCode !== null || kill !== null) {
+      return;
+    }
+    signal("SIGTERM");
+    kill = setTimeout(() => signal("SIGKILL"), KILL_GRACE_MS);
+  };
+  const bound = Number.isFinite(ms) ? setTimeout(stop, ms) : null;
+  const exit = new Promise<number>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (bound !== null) {
+        clearTimeout(bound);
+      }
+      if (kill !== null) {
+        clearTimeout(kill);
+      }
+      resolve(code ?? KILLED_BY_TERM);
+    });
+  });
+  return { child, exit, stop };
 }

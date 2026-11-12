@@ -91,23 +91,6 @@ describe("the runner's lock", () => {
       .rejects.toThrow("held too long");
   });
 
-  it("is asked again at its caller's longest sleep at most: a flat retry takes it at once",
-     async () => {
-    const lock = lockPath();
-    expect(tryLock(lock)).toBe(true);
-    let freed = 0;
-    setTimeout(() => {
-      unlock(lock);
-      freed = Date.now();
-    }, 1_500);
-    let took = 0;
-    // The store's flat 20 ms retry: never a backed-off second's wait after the lock is free.
-    await withLock(lock, 5_000, () => new Error("held too long"), () => {
-      took = Date.now();
-    }, 20);
-    expect(took - freed).toBeLessThan(200);
-  });
-
   it("is taken over by one taker alone, however many race for a gone holder's lock",
      async () => {
     // Takers in processes of their own, each told the round at once (a byte on its stdin),

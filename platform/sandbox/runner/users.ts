@@ -63,24 +63,25 @@ export const E2B_USER = "user";
 /**
  * A pool user taken by this process: its lock (`pid-lock.ts`) in the root-only state
  * directory, one a pool user; a lock whose holder is gone is taken over (its holder died).
- * Every process the user still has is killed first.
+ * Every process the user still has is killed first. A run session's alone
+ * (`session.ts` `withRunUser`).
  */
-export function take(state: string): Identity {
+export async function take(state: string): Promise<Identity> {
   const dir = `${state}/pool`;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (const candidate of users().filter((each) => each.name.startsWith(POOL_PREFIX))) {
     if (!tryLock(`${dir}/${candidate.name}`)) {
       continue;  // a live run's
     }
-    killAll(candidate);
+    await killAll(candidate);
     return candidate;
   }
   throw new Error("every run user of the template is taken");
 }
 
 /** The user given back, once every process of it is gone. */
-export function give(state: string, taken: Identity): void {
-  killAll(taken);
+export async function give(state: string, taken: Identity): Promise<void> {
+  await killAll(taken);
   unlock(`${state}/pool/${taken.name}`);
 }
 
@@ -103,6 +104,11 @@ export function processesOf(uid: number): number[] {
  * stuck in the kernel (uninterruptible sleep): the user is not given back, loudly.
  */
 const KILL_WITHIN_MS = HEARTBEAT_MS;
+/**
+ * The wait between rounds: a SIGKILLed process leaves `/proc` once it is reaped, so a round
+ * is tried again after a short sleep, not at once (the runner's heartbeats go on meanwhile).
+ */
+const KILL_ROUND_MS = 50;
 
 /**
  * Every process of `who` killed, until none is left: `kill -9 -1` run as that user, its own
@@ -110,7 +116,7 @@ const KILL_WITHIN_MS = HEARTBEAT_MS;
  * once, so a process forking as it dies is caught too), then each one `/proc` still shows;
  * any left past `KILL_WITHIN_MS` fails.
  */
-export function killAll(who: Identity): void {
+export async function killAll(who: Identity): Promise<void> {
   const { uid } = who;
   if (uid === 0) {
     throw new Error("root's processes are never killed by uid");
@@ -133,6 +139,7 @@ export function killAll(who: Identity): void {
         // gone already
       }
     }
+    await new Promise((resolve) => setTimeout(resolve, KILL_ROUND_MS));
   }
 }
 
