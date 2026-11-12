@@ -466,6 +466,11 @@ export const signinsDoors = Object.freeze({
       answer = null;
     }
     if (answer?.started === true) {
+      const opened = begun.opened;
+      if (opened !== null) {
+        // The start that opened the lease applied its network (`Launcher.networkApplied`).
+        await o.door(() => o.launcher.networkApplied(begun.lease, opened.network));
+      }
       return signinView(begun.row);
     }
     await o.door(() => {

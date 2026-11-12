@@ -115,8 +115,6 @@ describe("one sandbox an authority (review H-1)", () => {
     const plan = await ownerRun(r.stub, r.bind(), { ...SIGNED_IN, scopes: ["read_files"] },
                                 "plan");
     expect(plan.start.lease).toEqual(keyed.start.lease);
-    await r.in((instance) => instance.sandbox.networkApplied({
-      ...keyed.start.lease, generation: 1 }));
     // The run id alone, or another run's secret, authorizes nothing.
     for (const presented of [{}, { secret: hashed(secretOf(plan.start)) }]) {
       expect((await failure(() => r.stub.fileStat(
@@ -249,8 +247,6 @@ describe("one sandbox an authority (review H-1)", () => {
     const keyed = await ownerRun(r.stub, r.bind(), { engine: "claude-code",
                                                       credential: "api_key", connection: key,
                                                       scopes: [] }, "keyed");
-    await r.in((instance) => instance.sandbox.networkApplied({
-      ...keyed.start.lease, generation: 1 }));
     const opened = await r.stub.egressOpen(
       sandboxOf(r, keyed.start, { secret: hashed(secretOf(keyed.start)) }),
       { run: keyed.run.run_id, connection: key, method: "GET", path: "/v1/models",
@@ -663,8 +659,6 @@ describe("a run's cancel and its heartbeat (review M-2, M-3)", () => {
     const keyed = await ownerRun(r.stub, r.bind(), { engine: "claude-code",
                                                       credential: "api_key", connection: key,
                                                       scopes: ["read_files"] }, "keyed");
-    await r.in((instance) => instance.sandbox.networkApplied({
-      ...keyed.start.lease, generation: 1 }));
     await r.stub.agentCancel(r.bind(), { run_id: keyed.run.run_id });
     expect((await failure(() => r.stub.fileStat(runBinding(r, keyed.start),
                                                 { path: "/workspace" }))).message)

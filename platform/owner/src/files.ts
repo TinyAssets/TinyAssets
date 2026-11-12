@@ -2058,7 +2058,8 @@ export class Files {
    * the runner's; the secrets never stay in the object) and their deadline. Lapsed leases go
    * first (a lease is taken only after the runs under a lapsed one were settled), so the
    * leases are never more than the live runs. Its network is not yet applied
-   * (`network_generation` null), so egress waits until the sandbox slice applies it.
+   * (`network_generation` null), so egress waits until the start that carried it is
+   * answered `started` (`networkApplied`).
    */
   leaseAcquire(authority: unknown, holder: unknown, tokens: LeaseTokens): Lease {
     if (typeof authority !== "string"
@@ -2123,18 +2124,16 @@ export class Files {
   }
 
   /**
-   * The sandbox's network applied under egress `generation` (the sandbox slice's
-   * `updateNetwork` returned), fenced by the lease: egress opens again only when that is
-   * the current egress generation (`egress.ts`).
+   * The sandbox's network applied under egress `generation` (the start that carried it was
+   * answered `started`, `Launcher.networkApplied`), fenced by the lease: egress opens only
+   * while that is the current egress generation (`egress.ts`). A lease lost meanwhile is no
+   * error, and changes nothing: whether it was applied.
    */
-  networkApplied(leaseId: unknown, epoch: unknown, generation: number): Lease {
-    return this.#change(null, (now) => {
-      const lease = this.#fenced(leaseId, epoch, now);
-      this.#sql.exec("UPDATE sandbox_leases SET network_generation = ? WHERE lease_id = ?",
-                     generation, lease.lease_id);
-      return { lease_id: lease.lease_id, epoch: lease.epoch, expires_at: lease.lease_expires,
-               base: this.#space().seq };
-    });
+  networkApplied(leaseId: string, epoch: number, generation: number): boolean {
+    return this.#change(null, (now) => this.#sql.exec(
+      "UPDATE sandbox_leases SET network_generation = ? " +
+        `WHERE lease_id = ? AND epoch = ? AND ${LIVE_LEASE}`,
+      generation, leaseId, epoch, now).rowsWritten > 0);
   }
 
   /** The live lease these name, or refused: a stale epoch or lease id is fenced. */

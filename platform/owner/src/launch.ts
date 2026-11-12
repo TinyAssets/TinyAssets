@@ -14,8 +14,9 @@
  * - **a mail's reply** (`answer`): a run's result posted as its agent's reply to that mail, in
  *   the settle's unit, its body placed in R2 first when long (`beginReply`, `withReply`);
  * - **the sandbox's leases** (`openLease`, `sandboxLeases`): an authority's lease opened with its
- *   tokens and network, given back, and paused through the sandbox Worker once no run holds it
- *   (`leaseFreed`); one run's whole environment (`#runConfig`).
+ *   tokens and network, that network applied once the start that carried it is answered
+ *   `started` (`networkApplied`), given back, and paused through the sandbox Worker once no
+ *   run holds it (`leaseFreed`); one run's whole environment (`#runConfig`).
  *
  * It reaches the owner's other modules only through the object's state it is handed
  * (`OwnerState`), each read or write in the unit it is called in.
@@ -106,9 +107,6 @@ export interface SandboxLeases {
    * still live under it settled `unknown` (its runner is gone with it).
    */
   close(request: { lease_id: string; epoch: number }): Promise<{ released: boolean }>;
-  /** The network applied under egress `generation` (8b's `updateNetwork` returned). */
-  networkApplied(request: { lease_id: string; epoch: number; generation: number }):
-    Promise<Lease>;
   /** The network document for the current egress policy, with the egress token. */
   network(egressToken: string): Promise<NetworkPlan>;
   /** Whether a live lease's network is older than the egress policy: 8b re-applies it. */
@@ -334,6 +332,9 @@ export class Launcher implements RunHost {
         this.runs.settle(admitted.run, "unknown", "start_lost", null, clock());
       } else if (answer.started) {
         this.runs.started(admitted.run, clock());
+        if (admitted.network !== null) {
+          this.networkApplied(admitted.lease, admitted.network);
+        }
       } else if (answer.code === SANDBOX_WAITING) {
         // E2B runs as many sandboxes as its plan allows: the run waits, never refused, and
         // the lane starts it again when the platform's line rings the owner (`sandboxRung`).
@@ -726,6 +727,23 @@ export class Launcher implements RunHost {
   }
 
   /**
+   * In the unit that records a start answered `started` (a run's, or a sign-in's) that
+   * carried `network`: that network applied to its lease, at the generation it was made
+   * under, never the current one (`sandbox.ts`: the start that opened the lease applies its
+   * network whole). A policy write while the start was out leaves the newer generation stale,
+   * and its egress refused `egress_network_stale`. In `ask` mode the owner gets a refusal
+   * receipt at each apply (`network.ts`). A lease lost meanwhile has nothing applied.
+   */
+  networkApplied(lease: { lease_id: string; epoch: number }, network: NetworkPlan): void {
+    if (this.#o.files.networkApplied(lease.lease_id, lease.epoch, network.generation)
+        && network.receipt) {
+      this.#o.policy.refusal("sandbox_network", { mode: network.mode,
+                                                  generation: network.generation },
+                             clock(), "egress.ask");
+    }
+  }
+
+  /**
    * One run's whole environment (slice E's `runEnv`, G4's `sandboxEnv`), from its record,
    * its credential and an API-key run's connection, with the owner's egress policy and its
    * generation: refused (`invalid`) when the record does not run on that credential.
@@ -781,21 +799,6 @@ export class Launcher implements RunHost {
           }
         }
         return { released };
-      }),
-      networkApplied: (request) => this.#o.door(() => {
-        this.#o.admitted("work");
-        const generation = this.#o.policy.egressGeneration();
-        if (request.generation !== generation) {
-          throw new Refusal("egress_policy_stale",
-                            "egress_policy_stale: the network was made under another egress " +
-                            "generation");
-        }
-        const lease = this.#o.files.networkApplied(request.lease_id, request.epoch, generation);
-        if (this.#o.policy.read().document.egress.mode === "ask") {
-          this.#o.policy.refusal("sandbox_network", { mode: "ask", generation }, clock(),
-                                 "egress.ask");
-        }
-        return lease;
       }),
       network: (egressToken) => this.#o.door(() => {
         this.#o.admitted("read");
