@@ -500,20 +500,11 @@ describe("an OAuth connect", () => {
     expect(await finished.json()).toEqual({ error: "oauth_malformed" });
   });
 
-  it("refuses Sign in with ChatGPT loudly, unwired until OpenAI's approval", async () => {
-    const app = await signedIn();
-    const { environment, calls } = spied();
-    const answer = await post(app, "connections/oauth", { source: "chatgpt" }, environment);
-    expect(answer.status).toBe(501);
-    expect((await answer.json<{ error: string }>()).error)
-      .toMatch(/^the source is not connectable yet: .*OpenAI's approval/);
-    expect(calls).toEqual([]);
-  });
-
   it.each([
     ["a key-only source", { source: "groq" }, 400],
     ["a vendor CLI", { source: "codex" }, 400],
     ["an unknown source", { source: "nope" }, 404],
+    ["a source with no record (Sign in with ChatGPT)", { source: "chatgpt" }, 404],
     ["an owner", { source: "test_oauth", owner: "bob" }, 400],
     ["a redirect URI", { source: "test_oauth", redirect_uri: "https://evil.test/cb" }, 400],
   ])("refuses to begin with %s, before any object call", async (_what, body, status) => {
@@ -822,17 +813,17 @@ describe("a flow's finish", () => {
     expect(await received()).toEqual([]);
   });
 
-  it("re-checks the source is still connectable, before any exchange", async () => {
+  it("re-checks the source still has its record, before any exchange", async () => {
     const { app, started, body } = await begun();
-    const paused = catalogOf([...bundledRecords(), { ...TEST_OAUTH, unwired: "paused" }]);
+    const gone = catalogOf(bundledRecords());
     const ctx = createExecutionContext();
     const answer = await serve(new Request(url("/app/api/connections/oauth/finish"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: ORIGIN,
                  "Sec-Fetch-Site": "same-origin", Authorization: `Bearer ${app.token}`,
                  Cookie: `__Host-ta-owner=${app.session}; ${started.binding}` },
-      body: JSON.stringify(body) }), doorsEnv, ctx, FAKE_UPSTREAM, paused);
-    expect(answer.status).toBe(501);
+      body: JSON.stringify(body) }), doorsEnv, ctx, FAKE_UPSTREAM, gone);
+    expect(answer.status).toBe(404);
     expect(await received()).toEqual([]);
     expect(await connectionRows(app.owner)).toEqual([{ status: "revoked", revoke_due: null }]);
   });

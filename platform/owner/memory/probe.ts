@@ -8,8 +8,8 @@
  *   Its paths are the real ones: `fileEdit` (through `Files.writeChunks`), `fileAppend`, and
  *   a placed body read whole (`Bodies.fetch`) or by a window (`Bodies.windows`), the real
  *   `Bodies` over the object's own storage.
- * - **The archive's objects** (`LegArchive` at the production ledger limits, `LegSegments`
- *   at the archive tests' small ones) run the `archive` lane's real move and rewrite: the
+ * - **The archive's objects** (`LegArchive`, at the production ledger limits) run the
+ *   `archive` lane's real move and rewrite, the segments production's own seal makes: the
  *   mail set up in their own ledger (bodies placed as a post places them), the lane rung by
  *   an owner's post, its pass run by the object's own alarm.
  * - **The store** (`files`, `Store`) answers the files Worker's chunk calls from memory,
@@ -38,11 +38,13 @@ import { TIERS } from "../../ci/fixtures";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
 import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
+import { isAdmitted } from "../src/admission";
 import { Backups } from "../src/backup";
 import { Bodies, type Located } from "../src/bodies";
 import { ChangeLog } from "../src/changelog";
+import { Collections } from "../src/collections";
 import { Grants } from "../src/grants";
-import { Ledger, LEDGER_LIMITS, type LedgerLimits } from "../src/ledger";
+import { Ledger, LEDGER_LIMITS } from "../src/ledger";
 import { EDIT_BYTES_MAX, Files } from "../src/files";
 import { WriteGate } from "../src/gate";
 import * as holds from "../src/holds";
@@ -53,10 +55,11 @@ import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import type { OwnerEnv } from "../src/env";
 import { OwnerDO } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
-import { Policy } from "../src/policy";
+import { fileLimits, Policy } from "../src/policy";
 import { MIGRATIONS } from "../src/schema";
 import {
-  MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, SEGMENT_LEAST_BYTES,
+  MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, RECORD_TRAILER_BYTES,
+  SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES,
 } from "../src/segments";
 import { UNIT_BYTES } from "../../contract/src/slots";
 import type { ChunkStore } from "../../contract/src/files";
@@ -66,7 +69,6 @@ declare function gc(): void;
 interface LegEnv extends OwnerEnv {
   readonly OWNER: DurableObjectNamespace<LegOwner>;
   readonly ARCHIVE: DurableObjectNamespace<LegArchive>;
-  readonly SEGMENTS: DurableObjectNamespace<LegSegments>;
   readonly STORE: Service<Store>;
   readonly DRIVER: Fetcher;
 }
@@ -188,6 +190,16 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
 }
 
 /**
+ * The leg's files on `gate`'s storage, over `store`: at 25 GB, and alone, as
+ * the leg measures them: nothing to reclaim, tell or keep, and the wall the plain refusal.
+ */
+function legFiles(gate: WriteGate, store: ChunkStore): Files {
+  return new Files(gate.storage, store, () => ({ ...FILE_DEFAULTS, max_bytes: 25_000_000_000 }),
+                   gate.write, () => new Refusal("storage_full"), () => false, () => {},
+                   () => null);
+}
+
+/**
  * The store as the owner isolate calls it: each chunk read, once it is in hand, is a
  * checkpoint too, so a sample sees the bytes a call brought before the path goes on.
  */
@@ -288,11 +300,7 @@ export class LegOwner extends OwnerDO {
     super(state, { ...env, FILES: files });
     this.#leg = env;
     this.#gate = new WriteGate(state.storage);
-    const bodyFiles = new Files(this.#gate.storage, files,
-                            () => ({ ...FILE_DEFAULTS, max_bytes: 25_000_000_000 }),
-                            this.#gate.write, () => new Refusal("storage_full"),
-                            // The leg measures bodies alone: nothing to reclaim, tell or keep.
-                            () => false, () => {}, () => null);
+    const bodyFiles = legFiles(this.#gate, files);
     this.#bodies = new Bodies(bodyFiles, this.#gate.storage, this.#gate.write);
     this.#files = bodyFiles;
   }
@@ -460,29 +468,42 @@ const PAT: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(6
 const ORIGINS = [MUSE, DOT, PAT];
 
 /**
- * An owner object whose `archive` lane the leg runs: the real `OwnerDO` at `limits`, its
- * mail set up in its own ledger, outside any measurement.
+ * An owner object whose `archive` lane the leg runs: the real `OwnerDO` at the production
+ * ledger limits, its mail set up in its own ledger, outside any measurement.
  */
-class ArchiveObject extends OwnerDO {
+export class LegArchive extends OwnerDO {
   readonly #state: DurableObjectState;
-  readonly #limits: LedgerLimits;
+  readonly #store: ChunkStore;
 
-  constructor(state: DurableObjectState, env: LegEnv, limits: LedgerLimits) {
-    super(state, { ...env, FILES: received(env) }, { ledgerLimits: limits, starter: null });
+  constructor(state: DurableObjectState, env: LegEnv) {
+    const store = received(env);
+    super(state, { ...env, FILES: store }, { starter: null });
     this.#state = state;
-    this.#limits = limits;
+    this.#store = store;
   }
 
-  #ledger(): Ledger {
+  /**
+   * The ledger on the object's storage, a copy of the object's wiring: the owner's admission,
+   * the collections' change cursor, and the leg's own files' adoption and wall (`legFiles`).
+   * It goes when the probe reaches the ledger only by the doors (T1d).
+   */
+  #ledger(grants = new Grants(this.#state.storage, new Policy(this.#state.storage))): Ledger {
     const storage = this.#state.storage;
-    return new Ledger(storage, new Grants(storage, new Policy(storage)), this.#limits);
+    const gate = new WriteGate(storage);
+    const files = legFiles(gate, this.#store);
+    const bodies = new Bodies(files, gate.storage, gate.write);
+    const collections = new Collections(storage, bodies.adopt, () =>
+      fileLimits(new Policy(storage).read().document, null));
+    return new Ledger(storage, grants, () => isAdmitted(storage),
+                      () => collections.clock(), bodies.adopt,
+                      (needed) => files.fullRefusal(needed));
   }
 
   /** Agents registered as their own clients file them: each's id. */
   legAgents(): string[] {
     const storage = this.#state.storage;
     const grants = new Grants(storage, new Policy(storage));
-    const ledger = new Ledger(storage, grants, this.#limits);
+    const ledger = this.#ledger(grants);
     return ORIGINS.map((origin, n) => {
       grants.admit(origin.client, "mcp", null, Math.floor(Date.now() / 1000));
       return ledger.register(origin, { kind: "mcp", ref: `conn-${n}` }, {
@@ -504,6 +525,21 @@ class ArchiveObject extends OwnerDO {
       }
     }
     return last;
+  }
+
+  /** `count` small messages from the owner to `room`'s agent, left unread. */
+  legUnread(room: string, count: number): void {
+    const ledger = this.#ledger();
+    for (let n = 0; n < count; n++) {
+      ledger.post(null, room, `u${n}`, "x", null);
+    }
+  }
+
+  /** What a message's record takes past its body's bytes, as its segment will hold it. */
+  legOverhead(id: string): number {
+    return this.#state.storage.sql.exec<{ n: number }>(
+      "SELECT m.line_bytes - b.body_bytes AS n FROM ledger_messages m JOIN message_bodies b " +
+        "ON b.message_id = m.message_id WHERE m.message_id = ?", id).one().n;
   }
 
   /** Every message to `reader` acked, through the message `id`. */
@@ -595,20 +631,6 @@ class ArchiveObject extends OwnerDO {
   }
 }
 
-/** At the production ledger limits: a tail seal of small messages. */
-export class LegArchive extends ArchiveObject {
-  constructor(state: DurableObjectState, env: LegEnv) {
-    super(state, env, LEDGER_LIMITS);
-  }
-}
-
-/** At the archive tests' small limits: a segment sealed at two records, large bodies. */
-export class LegSegments extends ArchiveObject {
-  constructor(state: DurableObjectState, env: LegEnv) {
-    super(state, env, { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4, archiveRecords: 2 });
-  }
-}
-
 const SIGNINS = Object.freeze(signinsOn(
   bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
 
@@ -691,7 +713,7 @@ async function upload(stub: DurableObjectStub<LegOwner>, who: Binding, path: str
 interface Ready {
   /** Its object's name: a stub is one request's, so each route gets its own. */
   readonly name: string;
-  /** An archive case's: its first agent's id, and the segments its lane stands at once done. */
+  /** An archive case's: its first agent's id, and the records its archive holds once done. */
   readonly agents?: string[];
   readonly want?: number;
   readonly who: Binding;
@@ -734,14 +756,14 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // At the production limits: small acked messages past half the hot ceiling (and `mib`
       // thousand more), so the lane seals a tail of them: 8 MiB of records (8,489 of these),
       // its arrays near the doubling's worst (at 16,384).
-      const stub = await archiveObject(env.ARCHIVE, name);
+      const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
       await stub.legSmall(`dm:${agents[0]}`, 0, 25_000 + mib * 1000);
       LEG.ready.push({ name, who, agents, want: 1 });
     } else if (path === "merge") {
       // At the production limits: the muse's sealed mail, Dot's merged into it, and Pat's
       // left for the run to ack: its merge is the measured move.
-      const stub = await archiveObject(env.ARCHIVE, name);
+      const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
       const lasts = await stub.legInterleaved(agents.map((agent) => `dm:${agent}`));
       await ring(stub, who, agents[0]!, "r0");
@@ -755,28 +777,49 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       LEG.ready.push({ name, who, agents, want: (await stub.legArchived()).records + 10_000,
                        offset: lasts.pat });
     } else if (path === "bodies" || path === "rewrite") {
-      // At the small limits: two acked bodies of `mib` MiB each, the owner's to the muse and
-      // to Dot, sealed together; for the rewrite, the lane has sealed them and Dot is deleted.
-      const stub = await archiveObject(env.SEGMENTS, name);
+      // At the production limits: two acked bodies, the owner's to the muse and to Dot, and
+      // the hot mail past half its ceiling with unread small mail, so the lane seals the
+      // bodies and nothing else, as production seals them (`archivePick`): the muse's body the
+      // smaller of `mib` MiB and the largest that does not seal alone, then Dot's at `mib`, so
+      // the two are one segment. At 4 MiB they seal together; at 8 MiB, the body cap, they are
+      // the largest segment production makes, about 16 MiB of two records. The move moves it;
+      // the rewrite's setup moves it, then deletes Dot.
+      const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
-      const body = (k: number) => new TextDecoder().decode(letters(seed * 10 + k, mib * MIB));
-      const one = await stub.roomPost(who, { room_id: `dm:${agents[0]}`,
-                                             client_message_id: "b0", body: body(0),
-                                             parent_id: null });
-      const two = await stub.roomPost(who, { room_id: `dm:${agents[1]}`,
-                                             client_message_id: "b1", body: body(1),
-                                             parent_id: null });
-      await stub.legAck(0, one.message_id);
-      await stub.legAck(1, two.message_id);
-      // Past half the hot ceiling with small acked mail, so the two are due to move.
-      await stub.legSmall(`dm:${agents[0]}`, 0, 3);
+      const post = async (on: DurableObjectStub<LegArchive>, k: number, bytes: number,
+                          as = who, to = agents) =>
+        (await on.roomPost(as, { room_id: `dm:${to[k]}`, client_message_id: `b${k}`,
+                                  body: new TextDecoder().decode(letters(seed * 10 + k, bytes)),
+                                  parent_id: null })).message_id;
+      // A record's own bytes past its body's, read from a message of the same shape on an
+      // object of its own. Its three rows each write its post's `clock()`, whole seconds to
+      // three decimals, so another post's record is up to `TIMES_SLACK` longer: the largest
+      // body that does not seal alone is then at most that and a byte short of the seal.
+      const sizing = await archiveObject(env, `${name}-sizing`);
+      const its = await sizing.legAgents();
+      const overhead = await sizing.legOverhead(
+        await post(sizing, 0, SEGMENT_MIN_BYTES / 2, owner(`${name}-sizing`), its));
+      const kept = Math.min(mib * MIB, SEGMENT_MIN_BYTES - 1 - TIMES_SLACK
+                                         - (overhead - RECORD_TRAILER_BYTES));
+      await stub.legAck(0, await post(stub, 0, kept));
+      await stub.legAck(1, await post(stub, 1, mib * MIB));
+      // Each ring is one more unread message (the run rings once, the rewrite's setup once
+      // before it): with them, the hot mail stays past half its ceiling through the last
+      // seal, and the unread within `maxUnacked`.
+      const rings = path === "rewrite" ? 2 : 1;
+      await stub.legUnread(`dm:${agents[0]}`, LEDGER_LIMITS.maxMessages / 2 - rings);
       if (path === "rewrite") {
         await ring(stub, who, agents[0]!, "r0");
         await settled(stub, (seen) => seen.segments >= 1);
         await idle(stub);
+        const seen = await stub.legArchived();
+        if (seen.segments !== 1 || seen.records !== 2) {
+          throw new Error(`the rewrite's two bodies are not one segment of two records: ${
+            JSON.stringify(seen)} (the seal rule changed?)`);
+        }
         await stub.legRemove(agents[1]!);
       }
-      LEG.ready.push({ name, who, agents, want: path === "rewrite" ? 0 : 1 });
+      LEG.ready.push({ name, who, agents, want: path === "rewrite" ? 0 : 2 });
     } else if (path === "fetch" || path === "window") {
       LEG.ready.push({ name, who, content: await stub.legPlace(seed, mib * MIB),
                        offset: Math.floor(mib * MIB / 2) });
@@ -787,28 +830,33 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
 }
 
 /** An archive case's object, admitted as sign-up admits it. */
-async function archiveObject<T extends ArchiveObject>(namespace: DurableObjectNamespace<T>,
-                                                     name: string):
-    Promise<DurableObjectStub<T>> {
-  const stub = namespace.getByName(name);
+async function archiveObject(env: LegEnv, name: string): Promise<DurableObjectStub<LegArchive>> {
+  const stub = env.ARCHIVE.getByName(name);
   await stub.admissionSet({ owner: name, caller: PLATFORM_CALLER, origin: null } as Binding,
                           { admit: true });
   return stub;
 }
 
 /** An owner's post to the agent `agent`: its door syncs the lanes, so the archive's runs. */
-async function ring(stub: DurableObjectStub<ArchiveObject>, who: Binding, agent: string,
+async function ring(stub: DurableObjectStub<LegArchive>, who: Binding, agent: string,
                     cmid: string): Promise<void> {
   await stub.roomPost(who, { room_id: `dm:${agent}`, client_message_id: cmid, body: "ring",
                              parent_id: null });
 }
+
+/**
+ * The most two posts' records of one shape differ by: each of a record's three rows (the
+ * message, its body, its recipient) writes the post's `clock()`, `Date.now() / 1000`, as
+ * whole seconds up to three decimals, so 4 characters a row (`".123"`).
+ */
+const TIMES_SLACK = 3 * ".123".length;
 
 /** How often a case looks at its archive object's lane, and how many looks it waits at most. */
 const LANE_POLL_MS = 10;
 const LANE_LOOKS = 12_000;
 
 /** Until the lane's passes stand as `done` says (its own alarm runs them), or loudly not. */
-async function settled(stub: DurableObjectStub<ArchiveObject>,
+async function settled(stub: DurableObjectStub<LegArchive>,
                        done: (seen: { segments: number; records: number;
                                   purges: number }) => boolean):
     Promise<void> {
@@ -832,7 +880,7 @@ async function settled(stub: DurableObjectStub<ArchiveObject>,
  * sees `settled`'s condition already held; returning then, the next case's setup would drop
  * the store under the second pass.
  */
-async function idle(stub: DurableObjectStub<ArchiveObject>): Promise<void> {
+async function idle(stub: DurableObjectStub<LegArchive>): Promise<void> {
   for (let n = 0; n < LANE_LOOKS; n++) {
     if (await stub.legIdle()) {
       return;
@@ -843,17 +891,28 @@ async function idle(stub: DurableObjectStub<ArchiveObject>): Promise<void> {
     await stub.legArchived())}`);
 }
 
+/**
+ * Each hold's end, before its release, as a checkpoint (`SlotPool.observe`). Made outside
+ * `run`, so the pool, which keeps it until the next run, holds `env` alone: a closure made in
+ * `run` shares its one context, and kept this case's appended text live into the next
+ * case's floor.
+ */
+function observer(env: LegEnv): (units: number) => Promise<void> {
+  return (units) => owned(env, `end-of-${units}`);
+}
+
 async function run(env: LegEnv, path: string, mib: number, timed: boolean):
     Promise<number[]> {
   TIMED.on = timed;
-  // Each hold's end, before its release, is a checkpoint too (`SlotPool.observe`).
-  holds.ownerSlots().observe = (units) => owned(env, `end-of-${units}`);
+  holds.ownerSlots().observe = observer(env);
   await env.STORE.timed(timed);
   const appended = LEG.appended;
   return Promise.all(LEG.ready.map(async ({ name, who, etag, content, offset, agents,
                                           want }) => {
     const stub = env.OWNER.getByName(name);
     try {
+      // Every case ready and nothing of its path begun: the driver reads its floor here too.
+      await owned(env, "start");
       if (path === "records") {
         return await moveRecords(env, MOVE_RECORDS);
       }
@@ -872,13 +931,17 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
         return (await archive.legArchived()).records;
       }
       if (path === "move" || path === "bodies" || path === "rewrite") {
-        const archive = path === "move" ? env.ARCHIVE.getByName(name)
-          : env.SEGMENTS.getByName(name);
+        const archive = env.ARCHIVE.getByName(name);
         await ring(archive, who, agents![0]!, "ring");
         await settled(archive, path === "rewrite" ? (seen) => seen.purges === 0
-          : (seen) => seen.segments >= want!);
+          : (seen) => seen.records >= want!);
         await idle(archive);
-        return (await archive.legArchived()).records;
+        const seen = await archive.legArchived();
+        if (path === "bodies" && (seen.segments !== 1 || seen.records !== 2)) {
+          throw new Error(`the move's two bodies are not one segment of two records: ${
+            JSON.stringify(seen)} (the seal rule changed?)`);
+        }
+        return seen.records;
       }
       if (path === "edit") {
         const done = await stub.fileEdit(who, { path: "/workspace/f.txt", old_text: MARK,

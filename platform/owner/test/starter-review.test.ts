@@ -13,9 +13,10 @@ import { AGENT_UNDEFINED } from "../src/agent-file";
 import { SEARCH_ANSWER_BYTES, searchPage, type Scanned } from "../src/file-search";
 import { Notices } from "../src/notices";
 import type { OwnerDO } from "../src/owner-do";
+import { Starter, STARTER_RETRY_S } from "../src/starter";
 import {
-  carried, NEWER, Starter, STARTER_RETRY_S, type StarterFile, starterPackage, type StarterPackage,
-} from "../src/starter";
+  carried, NEWER, type StarterFile, starterPackage, type StarterPackage,
+} from "../src/starter-package";
 import { gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import {

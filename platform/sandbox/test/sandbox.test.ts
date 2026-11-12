@@ -80,7 +80,7 @@ const LEASE = { lease_id: hex(32, "b"), epoch: 1 };
 const EGRESS_TOKEN = "egress-token-0f1e2d3c4b5a";
 const NETWORK = {
   network: withEgressToken(withGeneration(closedNetwork(["github.com"]), 1), EGRESS_TOKEN),
-  mode: "allowlist", generation: 1, unexpressed: [], receipt: false, boundary: false, note: "",
+  mode: "allowlist", unexpressed: [], boundary: false, note: "",
 };
 
 function start(over: Partial<SandboxStart> = {}): SandboxStart {
@@ -1323,7 +1323,7 @@ describe("the network", () => {
 describe("a live lease's network re-applied (E2)", () => {
   /** A re-apply's plan under `generation`: the policy's `hosts`, its generation, no token. */
   const at = (generation: number, hosts: string[] = []) =>
-    ({ ...NETWORK, generation, network: withGeneration(closedNetwork(hosts), generation) });
+    ({ ...NETWORK, network: withGeneration(closedNetwork(hosts), generation) });
   const PLAN = at(2);
   const reapply = (over: Record<string, unknown> = {}) =>
     ({ authority: "owner", lease: LEASE, network: PLAN, ...over }) as never;

@@ -26,7 +26,7 @@ import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
-import { egressTokenOf } from "../../contract/src/egress";
+import { egressTokenOf, generationOf } from "../../contract/src/egress";
 import { hashed, ownerRun, secretOf } from "./runs-support";
 import {
   ANTHROPIC, catalog, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT, scopeOf, sealedAs,
@@ -64,7 +64,8 @@ async function sandboxOf(r: Gated): Promise<Binding> {
   RUN = start.run;
   const token = verifyToken(env.ROUTING_MAC_KEY, "egress",
                             egressTokenOf(start.network!.network)!)!.hash;
-  return r.bind({ sandbox: { kind: "egress", token, generation: start.network!.generation,
+  return r.bind({ sandbox: { kind: "egress", token,
+                             generation: generationOf(start.network!.network)!,
                              secret: hashed(secretOf(start)) } });
 }
 

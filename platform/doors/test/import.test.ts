@@ -217,7 +217,8 @@ describe("the import consumer", () => {
     expect(w.puts).toEqual([]);
     // Every entry, row, the policy and the notice as they were: nothing written again.
     expect(await held(owner)).toEqual(before);
-    expect(before).toMatchObject({ intents: 0, notices: 1, generation: 2 });
+    // The old stack's policy is archived, not carried (d3 §N6), so the default's generation.
+    expect(before).toMatchObject({ intents: 0, notices: 1, generation: 1 });
   });
 
   it("goes on from its own continuation, one slice at a time, to the same owner state", async () => {

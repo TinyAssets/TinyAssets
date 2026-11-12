@@ -681,37 +681,29 @@ export class Launcher implements RunHost {
    * call bearing the token was made through the network, and a run's first model call is
    * admitted however soon it comes, before its start's answer is recorded. A policy write
    * while the start is out leaves the newer generation stale (`egress_network_stale`), and a
-   * start that fails gives the lease back, so a mark on it admits nothing. In `ask` mode the
-   * owner gets a refusal receipt for each network made (`network.ts`).
+   * start that fails gives the lease back, so a mark on it admits nothing.
    */
   openLease(now: number, authority: string):
       { lease: Lease; tokens: OpenedTokens; network: NetworkPlan } {
     const egress = mintToken(this.#o.env.ROUTING_MAC_KEY, "egress", this.#o.owner(), LEASE_LIVED);
     const sync = mintToken(this.#o.env.ROUTING_MAC_KEY, "sync", this.#o.owner(), LEASE_LIVED);
     const runner = randomHex(32);
+    const generation = this.#o.policy.egressGeneration();
     const lease = this.#o.files.leaseAcquire(authority, "sandbox", {
-      egress: egress.hash, sync: sync.hash, runner: sha256Hex(runner) },
-                                             this.#o.policy.egressGeneration());
+      egress: egress.hash, sync: sync.hash, runner: sha256Hex(runner) }, generation);
     const live = new Set(this.#o.files.liveLeases(now).map((each) => each.lease_id));
     this.#o.egress.end("lease", (stream) => !live.has(stream.lease));
-    const plan = this.#networkPlan();
+    const plan = this.#networkPlan(generation);
     return { lease, tokens: { sync_token: sync.token, runner_token: runner },
              network: { ...plan, network: withEgressToken(plan.network, egress.token) } };
   }
 
   /**
-   * In a unit: the network for the owner's egress policy at the current egress generation,
-   * with no egress token (`networkDocument`); in `ask` mode its refusal receipt, one at each
-   * network made (a lease's first, each re-apply).
+   * In a unit: the network for the owner's egress policy at the egress `generation` the unit
+   * read, with no egress token (`networkDocument`).
    */
-  #networkPlan(): NetworkPlan {
-    const plan = networkDocument(this.#o.policy.read().document.egress,
-                                 this.#o.policy.egressGeneration());
-    if (plan.receipt) {
-      this.#o.policy.refusal("sandbox_network", { mode: plan.mode, generation: plan.generation },
-                             clock(), "egress.ask");
-    }
-    return plan;
+  #networkPlan(generation: number): NetworkPlan {
+    return networkDocument(this.#o.policy.read().document.egress, generation);
   }
 
   /**
@@ -749,15 +741,15 @@ export class Launcher implements RunHost {
       const now = clock();
       const generation = this.#o.policy.egressGeneration();
       const due = this.#behind(now).filter(({ due: at }) => at <= now);
-      const out: { lease: SandboxLease; network: NetworkPlan }[] = [];
+      const out: { lease: SandboxLease; generation: number; network: NetworkPlan }[] = [];
       for (const { lease } of due) {
         if (this.#o.files.networkSent(lease.lease_id, lease.epoch, generation, now)) {
-          out.push({ lease, network: this.#networkPlan() });
+          out.push({ lease, generation, network: this.#networkPlan(generation) });
         }
       }
       return out;
     });
-    await Promise.all(sent.map(async ({ lease, network }) => {
+    await Promise.all(sent.map(async ({ lease, generation, network }) => {
       let answer: "applied" | "at_resume" | "failed" = "failed";
       try {
         const got = await inTime(sandbox.network(this.#o.owner(), {
@@ -772,7 +764,7 @@ export class Launcher implements RunHost {
                       "again", error);
       }
       await this.#o.door(() => this.#o.files.networkAnswered(
-        lease.lease_id, lease.epoch, network.generation, answer, clock()));
+        lease.lease_id, lease.epoch, generation, answer, clock()));
     }));
   }
 

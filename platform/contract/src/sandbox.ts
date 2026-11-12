@@ -12,10 +12,10 @@
  * - the Worker's own log of the owner's sandboxes (`MeterEvent`), read `METER_BATCH` at a time.
  */
 
+import type { EgressMode } from "./policy-document";
+
 /** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
 export type CredentialKind = "vendor_login_in_sandbox" | "api_key";
-
-export type EgressMode = "open" | "allowlist" | "ask";
 
 /** E2B's `SandboxNetworkRule`, its static transform. */
 export interface NetworkRule {
@@ -37,16 +37,16 @@ export interface Unexpressed {
   readonly reason: "port";
 }
 
-/** What the sandbox slice sends, and what the object receipts when it is applied. */
+/**
+ * What the sandbox slice sends. The egress generation it was made under is in the
+ * document's door transform alone (`generationOf`), the header E2B stamps and the door
+ * admits by.
+ */
 export interface NetworkPlan {
   readonly network: NetworkDocument;
   readonly mode: EgressMode;
-  /** The policy generation the document was made under. */
-  readonly generation: number;
   /** Destinations refused because E2B cannot filter them by name. */
   readonly unexpressed: readonly Unexpressed[];
-  /** `ask` mode: what is not listed is refused, with a refusal receipt at each apply. */
-  readonly receipt: boolean;
   /** Whether the network is a data boundary: never, in v1 (`BOUNDARY_NOTE`). */
   readonly boundary: false;
   readonly note: string;

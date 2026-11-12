@@ -14,7 +14,9 @@ import { describe, expect, it } from "vitest";
 
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
-import { MODEL_DEFAULTS, MODEL_SETTINGS, validate } from "../../contract/src/policy-document";
+import {
+  DEFAULT_POLICY_JSON, MODEL_DEFAULTS, MODEL_SETTINGS, validate,
+} from "../../contract/src/policy-document";
 import { modelSettings } from "../src/policy";
 import { largestFitting, periods } from "../src/money";
 import {
@@ -478,9 +480,7 @@ describe("the receipts", () => {
 });
 
 describe("the models table of owner policy", () => {
-  const base = { entries: [], egress: { mode: "open", destinations: [] },
-                 spend: { daily: null, monthly: null, transaction: null, ask_above: null,
-                          source_ceilings: {} } };
+  const base = JSON.parse(DEFAULT_POLICY_JSON) as object;
 
   it("is optional, every cap off until the owner sets it (ADR-034 decision 7)", () => {
     expect(modelSettings(validate(base))).toEqual({ ...MODEL_DEFAULTS, sources: {} });

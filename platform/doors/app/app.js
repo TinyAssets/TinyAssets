@@ -209,9 +209,8 @@ async function agents(arg) {
   // switched on.
   const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL
                                                        || record.signin?.enabled === true);
-  const engines = sources.filter((s) => s.unwired === null && usable(s).length > 0);
-  const signinOnly = sources.filter((s) => s.unwired === null && s.credentials.length > 0
-                                           && usable(s).length === 0);
+  const engines = sources.filter((s) => usable(s).length > 0);
+  const signinOnly = sources.filter((s) => s.credentials.length > 0 && usable(s).length === 0);
   const name = h("input", { type: "text", placeholder: "main", autocomplete: "off" });
   const engine = h("select", {}, h("option", { value: "auto" },
     "Your strongest connected source"), engines.map((s) => h("option", { value: s.id },
@@ -682,9 +681,6 @@ async function sources(arg = null) {
   const presence = new Map(engines.map((engine) => [engine.engine, engine]));
   const shown = connections.filter((c) => c.status !== "revoked");
   const connect = (record) => {
-    if (record.unwired !== null) {
-      return h("p", { class: "muted" }, `Not available yet: ${record.unwired}`);
-    }
     const ways = [];
     if (record.connect.includes("api_key")) {
       const key = h("input", { type: "password", autocomplete: "off", placeholder: "API key" });

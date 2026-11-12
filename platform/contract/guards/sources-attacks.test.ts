@@ -3,8 +3,8 @@
  * tests. Each case states what the checker does with a record an attacker or a careless
  * edit could write. The holes the review found are closed, so each now expects a refusal:
  * a session path that sweeps a credential (`/*` + `/`, `/root/`), a secret path reached
- * through `/proc`, an engine configured to nothing (`--tools ""`, `mcp_servers={}`), a
- * bare positional prompt, and a key naming an unwired engine.
+ * through `/proc`, an engine configured to nothing (`--tools ""`, `mcp_servers={}`), and a
+ * bare positional prompt.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -184,10 +184,5 @@ describe("engines cross-check", () => {
   it("refuses a key naming an engine of another provider", () => {
     expect(() => catalogOf([...bundledRecords().filter((r) => (r as Json)["id"] !== "anthropic"),
       { ...anthropic, engines: ["codex"] }]).get("anthropic")).toThrow(SourceRecordError);
-  });
-  it("refuses a key naming an unwired CLI", () => {
-    const records = [...bundledRecords().filter((r) => (r as Json)["id"] !== "claude-code"),
-      { ...claude, unwired: "parked" }];
-    expect(() => catalogOf(records).get("anthropic")).toThrow(SourceRecordError);
   });
 });

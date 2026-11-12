@@ -413,8 +413,8 @@ export const signinsDoors = Object.freeze({
       const { r } = door.check();
       const rec = typeof r["engine"] === "string" ? bundledSources().get(r["engine"]) : undefined;
       const cli = rec?.cli;
-      if (rec === undefined || cli === undefined || rec.unwired !== undefined
-          || cli.login === undefined || !cli.credential.includes("vendor_login_in_sandbox")) {
+      if (rec === undefined || cli === undefined || cli.login === undefined
+          || !cli.credential.includes("vendor_login_in_sandbox")) {
         throw new Refusal("invalid",
                           "a sign-in names an engine that signs in with the vendor's own login");
       }

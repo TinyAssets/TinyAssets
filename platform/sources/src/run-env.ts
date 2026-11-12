@@ -48,8 +48,7 @@ export interface RunEnv {
 export function runEnv(sources: Sources, engine: string, credential: CredentialKind): RunEnv {
   const record = sources.get(engine);
   const cli = record?.cli;
-  if (record === undefined || cli === undefined || record.unwired !== undefined
-      || !cli.credential.includes(credential)) {
+  if (record === undefined || cli === undefined || !cli.credential.includes(credential)) {
     throw new SourceRecordError(`engine ${JSON.stringify(engine)} is not a served CLI ` +
                                 `record that runs on ${credential}`);
   }

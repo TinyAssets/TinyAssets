@@ -1020,7 +1020,7 @@ export class Runs {
         : (sources.get(candidate.source)?.engines ?? []).includes(engine));
     if (file.engine !== AUTO) {
       const record = sources.get(file.engine);
-      if (record?.cli === undefined || record.unwired !== undefined) {
+      if (record?.cli === undefined) {
         throw new Refusal("no_source", `${NO_SOURCE} (${file.engine} is no served engine)`);
       }
       const credentials: readonly CredentialKind[] = file.credential !== null
@@ -1057,7 +1057,7 @@ export class Runs {
       for (const signin of signins.values()) {
         const record = sources.get(signin.engine);
         // A switched-off source's plan is no candidate (review H1).
-        if (record?.cli === undefined || record.unwired !== undefined
+        if (record?.cli === undefined
             || !record.cli.credential.includes("vendor_login_in_sandbox")
             || !this.#signinOn(signin.engine)) {
           continue;

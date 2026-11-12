@@ -661,7 +661,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                                    sqlite_autoindex_inbound_bindings_2: key(INBOUND_ROUTE_MAX) } },
     // The starter package's receipts: one a path of the carried package, its path at its
     // widest and two content ids; and the one row of the version reconciled.
-    starter_receipts: { rows: named("STARTER_FILES_MAX", "starter"),
+    starter_receipts: { rows: named("STARTER_FILES_MAX", "starter-package"),
                         bytes: ROW + 4 * KIB + 2 * 64 + 2 * 16,
                         by: "STARTER_FILES_MAX paths, each its path and two content ids" },
     starter_state: { rows: 1, bytes: ROW, by: "one row" },

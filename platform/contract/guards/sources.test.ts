@@ -39,7 +39,15 @@ function files(dir: string): Map<string, unknown> {
 const records = files(SOURCES);
 const groq = records.get("groq") as Record<string, unknown>;
 const openrouter = records.get("openrouter_user_models_v1") as Record<string, unknown>;
-const chatgpt = records.get("chatgpt") as Record<string, unknown>;
+const openai = records.get("openai") as Record<string, unknown>;
+/** An RFC 6749 source, refreshed by pi-ai's own refresh: no bundled record is one. */
+const rfc6749 = { ...openai, id: "test_oauth", display_name: "Test OAuth", connect: ["oauth"],
+  engines: [], oauth: {
+    protocol: "rfc6749",
+    authorization_endpoint: "https://auth.openai.com/api/accounts/authorize",
+    token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
+    client_id: "dynamic_agent_client", client_auth: { method: "none" },
+    scope: "openid offline_access", refresh_with: "provider" } };
 const claude = records.get("claude-code") as Record<string, unknown>;
 const anthropic = records.get("anthropic") as Record<string, unknown>;
 const pi = records.get("pi") as Record<string, unknown>;
@@ -98,11 +106,11 @@ describe("the source records", () => {
     expect(sealedSource(record, "oauth")).toEqual({
       upstream: record.upstream, endpoints: record.endpoints,
       key_exchange: { endpoint: "https://openrouter.ai/api/v1/auth/keys" } });
-    expect(sealedSource(sourceRecord(chatgpt), "oauth").oauth).toMatchObject({
+    expect(sealedSource(sourceRecord(rfc6749), "oauth").oauth).toMatchObject({
       client_auth: { method: "none" }, refresh_with: "provider",
       token_endpoint: "https://auth.openai.com/api/accounts/oauth/token" });
     expect(() => sealedSource(sourceRecord(groq), "oauth")).toThrow(SourceRecordError);
-    expect(() => sealedSource(sourceRecord(chatgpt), "api_key")).toThrow(SourceRecordError);
+    expect(() => sealedSource(sourceRecord(rfc6749), "api_key")).toThrow(SourceRecordError);
     expect(() => sealedSource(sourceRecord(claude), "api_key")).toThrow(SourceRecordError);
   });
 
@@ -115,21 +123,13 @@ describe("the source records", () => {
 
   it("take an issuer, bare or with a path, and its RFC 9207 flag", () => {
     for (const issuer of ["https://auth.openai.com", "https://auth.openai.com/tenant"]) {
-      const record = sourceRecord({ ...chatgpt, oauth: {
-        ...(chatgpt["oauth"] as object), issuer,
+      const record = sourceRecord({ ...rfc6749, oauth: {
+        ...(rfc6749["oauth"] as object), issuer,
         authorization_response_iss_parameter_supported: true } });
       expect(record.oauth).toMatchObject({ issuer,
                                            authorization_response_iss_parameter_supported: true });
     }
-    expect(sourceRecord(chatgpt).oauth).not.toHaveProperty("issuer");
-  });
-
-  it("park Sign in with ChatGPT, unwired, naming why", () => {
-    expect(sourceRecord(chatgpt).unwired).toMatch(/^Parked: .*in-object loop.*OpenAI's approval/);
-    expect(sourceRecord(chatgpt).engines).toEqual([]);
-    const served = [...records.values()].map(sourceRecord)
-      .filter((record) => record.unwired !== undefined).map((record) => record.id);
-    expect(served).toEqual(["chatgpt"]);
+    expect(sourceRecord(rfc6749).oauth).not.toHaveProperty("issuer");
   });
 
   it("are copies, so a reader cannot change the bundled data", () => {
@@ -146,7 +146,7 @@ describe("the source records", () => {
 
 describe("the key exchange's residual mix-up", () => {
   const exchange = String(openrouter["id"]);
-  const uncurated = { ...chatgpt, id: "mcp_server_x", curated: false };
+  const uncurated = { ...rfc6749, id: "mcp_server_x", curated: false };
   const without = bundledRecords().filter((record) => (record as Json)["id"] !== exchange);
 
   it("is no catalog with an uncurated authorization server beside a key exchange", () => {
@@ -300,9 +300,6 @@ describe("the engine records", () => {
                                         ["anthropic", "api_key"], ["nope", "api_key"]] as const) {
       expect(() => runEnv(catalog, engine, credential), engine).toThrow(SourceRecordError);
     }
-    expect(() => runEnv(catalogOf([...bundledRecords().filter((record) =>
-      (record as Json)["id"] !== "codex"), { ...(records.get("codex") as Json),
-      unwired: "parked" }]), "codex", "vendor_login_in_sandbox")).toThrow(SourceRecordError);
   });
 
   it("build every run's environment from an allow-list, nothing credential-shaped in it",
@@ -835,7 +832,6 @@ describe("a record that does not fit", () => {
       ...((claude["cli"] as Record<string, object>)["install"]), integrity: "sha1-x" } } }],
     ["a CLI host that is not a name", { ...claude, cli: { ...(claude["cli"] as object), hosts: {
       registry: ["registry.npmjs.org"], login: ["http://claude.ai"], provider: [] } } }],
-    ["an unwired reason that is not text", { ...groq, unwired: 1 }],
     ["a suggestion that is not true", { ...groq, suggested: "yes" }],
     ["a help URL over http", { ...groq, help_url: "http://console.groq.com/keys" }],
     ["authorize params that set the state", { ...openrouter, oauth: {
@@ -846,35 +842,30 @@ describe("a record that does not fit", () => {
       ...(openrouter["oauth"] as object), authorize_params: { key_label: "x".repeat(129) } } }],
     ["an empty authorize param", { ...openrouter, oauth: {
       ...(openrouter["oauth"] as object), authorize_params: { key_label: "" } } }],
-    ["an http issuer", { ...chatgpt, oauth: {
-      ...(chatgpt["oauth"] as object), issuer: "http://auth.openai.com" } }],
-    ["an issuer with a query", { ...chatgpt, oauth: {
-      ...(chatgpt["oauth"] as object), issuer: "https://auth.openai.com?x=1" } }],
-    ["the RFC 9207 flag with no issuer", { ...chatgpt, oauth: {
-      ...(chatgpt["oauth"] as object), authorization_response_iss_parameter_supported: true } }],
-    ["the RFC 9207 flag false", { ...chatgpt, oauth: {
-      ...(chatgpt["oauth"] as object), issuer: "https://auth.openai.com",
+    ["an http issuer", { ...rfc6749, oauth: {
+      ...(rfc6749["oauth"] as object), issuer: "http://auth.openai.com" } }],
+    ["an issuer with a query", { ...rfc6749, oauth: {
+      ...(rfc6749["oauth"] as object), issuer: "https://auth.openai.com?x=1" } }],
+    ["the RFC 9207 flag with no issuer", { ...rfc6749, oauth: {
+      ...(rfc6749["oauth"] as object), authorization_response_iss_parameter_supported: true } }],
+    ["the RFC 9207 flag false", { ...rfc6749, oauth: {
+      ...(rfc6749["oauth"] as object), issuer: "https://auth.openai.com",
       authorization_response_iss_parameter_supported: false } }],
     ["an http exchange endpoint", { ...openrouter, oauth: {
       ...(openrouter["oauth"] as object), exchange_endpoint: "http://openrouter.ai/keys" } }],
     ["an unknown protocol", { ...openrouter, oauth: {
       ...(openrouter["oauth"] as object), protocol: "implicit" } }],
-    ["a client secret in the data", { ...chatgpt, oauth: {
-      ...(chatgpt["oauth"] as object), client_auth: { method: "client_secret_post", secret: "s" } } }],
-    ["the provider's refresh for another token endpoint", { ...chatgpt, oauth: {
-      ...(chatgpt["oauth"] as object), token_endpoint: "https://auth.test/token" } }],
-    ["a refresh that is neither", { ...chatgpt, oauth: {
-      ...(chatgpt["oauth"] as object), refresh_with: "magic" } }],
-    ["a scope with a newline", { ...chatgpt, oauth: {
-      ...(chatgpt["oauth"] as object), scope: "openid\nprofile" } }],
+    ["a client secret in the data", { ...rfc6749, oauth: {
+      ...(rfc6749["oauth"] as object),
+      client_auth: { method: "client_secret_post", secret: "s" } } }],
+    ["the provider's refresh for another token endpoint", { ...rfc6749, oauth: {
+      ...(rfc6749["oauth"] as object), token_endpoint: "https://auth.test/token" } }],
+    ["a refresh that is neither", { ...rfc6749, oauth: {
+      ...(rfc6749["oauth"] as object), refresh_with: "magic" } }],
+    ["a scope with a newline", { ...rfc6749, oauth: {
+      ...(rfc6749["oauth"] as object), scope: "openid\nprofile" } }],
   ])("fails loudly: %s", (_what, record) => {
     expect(refused(record)).toMatch(/^source record "[^"]*": /);
-  });
-
-  it("refuses a key whose engine is unwired", () => {
-    expect(() => catalogOf([...bundledRecords().filter((record) =>
-      (record as Json)["id"] !== "claude-code"), { ...claude, unwired: "parked" }])
-      .get("anthropic")).toThrow(/^source record "anthropic": engine "claude-code" is unwired/);
   });
 
   it("fails loudly as a second record under one id", () => {
