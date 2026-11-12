@@ -314,6 +314,27 @@ Each joins the lane named. None blocks its u3 PR.
 
 Every known-wrong data shape is fixed before the cutover imports real data: a fix is free on a dark platform and a live migration after it. So none is deferred to "live migration later". Each one names its lane PR; R4's §10 step 20 points here.
 
+**Decided from `datashapes_research.md`** (the coordinator, 2026-11-12; the research adopted whole, in its order):
+1. **Receipts:** each fact moves onto the recipient row and `ledger_receipts` is deleted. After T1b4.
+2. **Rooms:** a `rooms` table and room members, with opaque room ids. Lane O, after T1c and before S4.
+3. **Collection history**, in three steps (the first build stopped under Fact 14):
+   - (a) **Research, now.** It starts from four findings:
+     - only delete and clear history entries carry `change`, so the research's key needs `change` on every entry, and the feed's deletion read changed to match;
+     - a delete or clear drops the key's history, so archived entries need a per-key drop set and a rewrite (mail's per-agent filter is too small for keys);
+     - the change feed reads tombstones only from the hot rows, so archiving one either raises `erasure_floor` or makes the feed read R2;
+     - `archived_head` must point by key, because segments are rewritten.
+   - (b) **After T1b4 (and T1b5 if it splits):** one PR moves the segment and lane code out of the ledger, with no behaviour change and a migration widening the segment tables' stream checks. Items 4 and F2 also build on these shared segments.
+   - (c) **The history stream**, on (b).
+4. **Conversations:** ids carry their order key, and idle conversations move to segments. After T1b4.
+5. **Files:**
+   - F1: retention off by default, one recorded byte ceiling, `#fit`'s silent prune deleted, and the latency probe's workflow, scripts and branch deleted. After R5's P-shape.
+   - F2: file versions move to segments, with mark-and-sweep. After R1 and item 3.
+   - F3: the live index's R2 level, later. Whether F3 comes before the cutover is still an open founder question; the recommendation is no.
+6. **Deliberate retentions**, each recorded with its reason in `limits-audit.md` unless a reader needs older facts:
+   - `RUNS_KEPT`: a settled run's results live on in its mail reply and its transcript, so the row is only a receipt;
+   - the policy and egress receipts: a recent audit window, while each decision's effect lives in the policy document and the run;
+   - the settled wakes' week and 1,000: delivery telemetry for debugging the doorbell, not the owner's data.
+
 
 ## §Q. The questions buried in `tasks.md` (from R4's review, 2026-11-12)
 
