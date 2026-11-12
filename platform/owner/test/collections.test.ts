@@ -19,7 +19,8 @@ import {
 } from "./support";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
-import { rig, type Rig } from "./ledger-support";
+import type { Origin } from "../../contract/src/binding";
+import { DOT, MUSE, origin, rig, type Rig } from "./ledger-support";
 
 const ROOM = "room:chess:main";
 
@@ -193,53 +194,50 @@ describe("the revision primitive", () => {
 
   it("holds an outside writer to the owner's own share, and all of them to its reserve",
      async () => {
+    // Through the object's doors, so the shares are the ones the object reads: its owner's
+    // policy, written in the owner's session.
     const r = await rig();
-    const alice = r.owner;
-    const client = (n: number) => `client:${String(n).repeat(64)}`;
     const room = "room:go:main";
     const body = "s".repeat(PLACE_BYTES);
-    const charged = await inObject(r.stub, (store, state) => {
-      store.write(alice, alice, room, "p000000", body, "", false, "write", null, client(1));
-      const taken = state.storage.sql.exec<{ who: string; charge: number }>(
-        "SELECT who, charge FROM collection_usage ORDER BY who").toArray();
-      store.clear(alice, room, null);
-      return taken;
-    });
+    const put = async (origin: Origin | null, rowId: string, etag = "") => {
+      const answer = await r.stub.collectionWrite(r.bind(origin), {
+        collection: room, row_id: rowId, body, expected_etag: etag, private: false });
+      return "row" in answer ? answer.row.etag : "";
+    };
+    const used = async (who: string) => Number((await r.sql(
+      "SELECT charge FROM collection_usage WHERE who = ?", who))[0]?.["charge"] ?? 0);
     // The row counted in its writer's own share and all outside writers'.
-    expect(charged.map((row) => row.who)).toEqual(["*", client(1)]);
-    const each = charged[0]!.charge;
-    // The owner's shares: a writer 2% of the rows' bound, all of them 3%.
-    await setShares(r, 2, 97);
-    const mine = Math.floor(LIMITS.maxRowsCharge * 2 / 100);
-    const outside = Math.floor(LIMITS.maxRowsCharge * 3 / 100);
-    await inObject(r.stub, (store, state) => {
-      const put = (filer: string, rowId: string, etag = "") =>
-        store.write(alice, alice, room, rowId, body, etag, false, "write", null, filer);
-      const used = (who: string) => state.storage.sql.exec<{ charge: number }>(
-        "SELECT charge FROM collection_usage WHERE who = ?", who).one().charge;
-      /** `filer`'s rows written until one is refused: the refusal's message. */
-      const until = (filer: string, prefix: string) => {
-        for (let n = 0; n <= LIMITS.maxRowsCharge / each; n++) {
-          try {
-            put(filer, `${prefix}${String(n).padStart(6, "0")}`);
-          } catch (error) {
-            return (error as Error).message;
-          }
+    await put(MUSE, "p000000");
+    const each = await used(`client:${MUSE.client}`);
+    expect(await used("*")).toBe(each);
+    await r.stub.collectionClear(r.bind(null), { collection: room, writer: null });
+    // The owner's shares: a writer 1% of the rows' bound, and all of them 1% too, so one
+    // writer meets its own share and the next the reserve's.
+    await setShares(r, 1, 99);
+    const share = Math.floor(LIMITS.maxRowsCharge / 100);
+    /** `origin`'s rows written until one is refused: the refusal's message. */
+    const until = async (origin: Origin, prefix: string) => {
+      for (let n = 0; n <= LIMITS.maxRowsCharge / each; n++) {
+        try {
+          await put(origin, `${prefix}${String(n).padStart(6, "0")}`);
+        } catch (error) {
+          return (error as Error).message;
         }
-        throw new Error("never refused");
-      };
-      const r0 = put(client(1), "r0");
-      expect(until(client(1), "r")).toMatch(/^this writer's share/);
-      expect([used(client(1)) <= mine, used(client(1)) + each > mine]).toEqual([true, true]);
-      expect(until(client(2), "s")).toMatch(/^outside writers' share/);
-      expect([used("*") <= outside, used("*") + each > outside]).toEqual([true, true]);
-      expect(() => put(client(3), "t0")).toThrow("outside writers' share");
-      // A takeover moves the row's charge to its new writer, and the owner's own rows count
-      // in neither share.
-      put("owner", "r0", r0.etag);
-      put(client(1), "r1");
-      put("owner", "o0");
-    });
+      }
+      throw new Error("never refused");
+    };
+    const r0 = await put(MUSE, "r0");
+    expect(await until(MUSE, "r")).toMatch(/^this writer's share/);
+    const muse = await used(`client:${MUSE.client}`);
+    expect([muse <= share, muse + each > share, await used("*")]).toEqual([true, true, muse]);
+    expect(await until(DOT, "s")).toMatch(/^outside writers' share/);
+    expect((await failure(() => put(origin(3), "t0"))).message)
+      .toMatch(/^outside writers' share/);
+    // A takeover moves the row's charge to its new writer, and the owner's own rows count
+    // in neither share.
+    await put(null, "r0", r0);
+    await put(MUSE, "r1");
+    await put(null, "o0");
   });
 
   it("a seq collision fails loudly and deletes nothing", async () => {
