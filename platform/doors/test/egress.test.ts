@@ -10,12 +10,16 @@
  * clamped to its reservation; every refusal is a fixed code that forwards nothing; and every
  * admitted call is settled once, however it ends, at the cost pi-ai read, or kept whole.
  */
-import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
+import {
+  createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
+} from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
-import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
+import {
+  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER,
+} from "../../contract/src/egress";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { type DoorsEnv } from "../src/config";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
@@ -26,7 +30,7 @@ import {
   appPost, call, doorsEnv, OPEN, reached, serveFirstPartyDocument, setControl, signInApp, sqlIn,
   url,
 } from "./support";
-import type { NetworkPlan } from "../../contract/src/sandbox";
+import type { NetworkApplied, NetworkPlan } from "../../contract/src/sandbox";
 import type {
   EgressRequest, ReserveRequest, SettleSent,
 } from "../../contract/src/owner";
@@ -116,7 +120,7 @@ async function sandbox(models: Record<string, unknown> = {
   const { run_id: run } = await submitted.json<{ run_id: string }>();
   const start = await runInDurableObject(env.OWNER.getByName(owner), (instance: unknown) =>
     (instance as OwnerDO).recorder.starts.find((each) => each.run === run)!);
-  const opened: Opened = { egress_token: start.tokens!.egress_token,
+  const opened: Opened = { egress_token: egressTokenOf(start.network!.network)!,
                            sync_token: start.tokens!.sync_token, lease: start.lease,
                            network: start.network!, env: start.config.env };
   return { owner, session: app.session, token: opened.egress_token, app: app.access_token,
@@ -222,8 +226,15 @@ async function settledOf(owner: string): Promise<void> {
   await until(async () => (await reservations(owner))[0]!["state"] === "settled", "the settle");
 }
 
-/** A policy write in the owner's session that changes the egress table. */
-async function writeEgress(box: Sandbox): Promise<number> {
+/**
+ * A policy write in the owner's session that changes the egress table, its lease's network
+ * re-applied as the write commits, the sandbox answering `reapplied` (`applied` unless said).
+ */
+async function writeEgress(box: Sandbox,
+                           reapplied: NetworkApplied = { state: "applied" }): Promise<number> {
+  await runInDurableObject(env.OWNER.getByName(box.owner), (instance: unknown) => {
+    (instance as OwnerDO).recorder.networkAnswer = reapplied;
+  });
   const { generation, policy } = await box.bound.stub.policyRead(box.bound.binding);
   await box.bound.stub.policyWrite(sessionOf(box), {
     expected_generation: generation,
@@ -713,8 +724,9 @@ describe("a refused call", () => {
       const stale = await send(egressRequest(box, COMPLETIONS, { generation }));
       expect([stale.status, await codeOf(stale)]).toEqual([409, "egress_policy_stale"]);
     }
-    // An egress write since the start: the network it applied is generation 1's.
-    expect(await writeEgress(box)).toBe(2);
+    // An egress write since the start, whose re-apply finds no sandbox: the network it
+    // applied is generation 1's still.
+    expect(await writeEgress(box, { state: "lost" })).toBe(2);
     const unapplied = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
     expect([unapplied.status, await codeOf(unapplied)]).toEqual([409, "egress_network_stale"]);
     expect(await forwarded()).toEqual([]);
@@ -753,8 +765,8 @@ describe("a sandbox token", () => {
 });
 
 describe("a policy write mid-stream", () => {
-  it("ends the stream and settles it; the next call waits for the network only when the " +
-     "write changed egress", async () => {
+  it("ends the stream and settles it; a write that changed egress re-applies the network, " +
+     "and the next call through it is answered", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
       headers: { "x-fake-egress": "slow-policy" } }));
@@ -774,8 +786,15 @@ describe("a policy write mid-stream", () => {
     await until(() => upstreamCancelled("policy"), "the upstream cancel");
     const old = await send(egressRequest(box));
     expect([old.status, await codeOf(old)]).toEqual([409, "egress_policy_stale"]);
-    const waiting = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
-    expect([waiting.status, await codeOf(waiting)]).toEqual([409, "egress_network_stale"]);
+    // The `runs` lane the write woke re-applied the lease's network under generation 2 (the
+    // sandbox Worker's `network`), so a call through it is answered.
+    await runDurableObjectAlarm(env.OWNER.getByName(box.owner));
+    const asked = await runInDurableObject(env.OWNER.getByName(box.owner), (instance: unknown) =>
+      (instance as OwnerDO).recorder.networks);
+    expect(asked).toMatchObject([{ lease: box.opened.lease, network: { generation: 2 } }]);
+    const applied = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
+    expect(applied.status).toBe(200);
+    expect(await applied.text()).toBe(EGRESS_CHUNKS.join(""));
   });
 });
 

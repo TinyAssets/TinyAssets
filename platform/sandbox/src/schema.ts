@@ -29,6 +29,13 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE IF NOT EXISTS known_retention (only INTEGER PRIMARY KEY " +
       "CHECK (only = 1), days REAL)",
   ]),
+  // 2 (E2): each launched job's vendor hosts, so a network that replaces its sandbox's whole
+  // (a start that opens a lease, a re-apply) keeps them; and a re-apply kept while its
+  // sandbox is paused, applied as it resumes.
+  Object.freeze([
+    "ALTER TABLE launched ADD COLUMN hosts TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE sandboxes ADD COLUMN network_due TEXT",
+  ]),
 ]);
 
 /** `SandboxSlots`'s, the one line for the platform. */

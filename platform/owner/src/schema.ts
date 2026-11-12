@@ -2031,4 +2031,15 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'outside_clients', 'row', json_object('client', NEW.client, 'source', NEW.source, 'mode', NEW.mode, 'scopes', NEW.scopes, 'generation', NEW.generation, 'revoked_at', NEW.revoked_at, 'name', NEW.name, 'first_seen', NEW.first_seen, 'last_seen', NEW.last_seen, 'owner_set', NEW.owner_set, 'agents', NEW.agents, 'held', NEW.held, 'profile', NEW.profile, 'revision', NEW.revision, 'vendor', NEW.vendor, 'vendor_verified', NEW.vendor_verified)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
   ]),
+  // 5, after the vendor's 4 (E2): a live lease's network re-applied under a newer egress
+  // generation (`Launcher.reapply`): the generation a re-apply is out with, whose calls are
+  // admitted under it too; and the lane's retry clock, when the last was sent or failed
+  // and under which generation.
+  // `sandbox_leases` is kept out of the export (`NOT_EXPORTED`), so no capture trigger.
+  Object.freeze([
+    "ALTER TABLE sandbox_leases ADD COLUMN network_pending INTEGER CHECK (network_pending IS " +
+      "NULL OR network_pending >= 1)",
+    "ALTER TABLE sandbox_leases ADD COLUMN network_tried_at REAL",
+    "ALTER TABLE sandbox_leases ADD COLUMN network_tried_generation INTEGER",
+  ]),
 ]);

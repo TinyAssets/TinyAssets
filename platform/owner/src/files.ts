@@ -320,6 +320,15 @@ export interface SandboxLease {
   readonly expires_at: number;
   /** The egress generation the sandbox's network was last applied under, or null. */
   readonly network_generation: number | null;
+  /**
+   * The egress generation a re-apply of its network is out with (`Launcher.reapply`), or
+   * null: its calls are admitted under it too, since only that network sets it.
+   */
+  readonly network_pending: number | null;
+  /** When the last re-apply was sent or failed (s), and under which generation: the lane's
+   * retry clock. */
+  readonly network_tried_at: number | null;
+  readonly network_tried_generation: number | null;
   /** The engines its own runner last reported signed in inside it (a client's sandbox's). */
   readonly signins: readonly string[];
 }
@@ -337,14 +346,17 @@ interface LeaseTokens {
 type LeaseRow = {
   authority: string; lease_id: string; epoch: number; holder: string; lease_expires: number;
   egress_token: string; sync_token: string; runner_token: string;
-  network_generation: number | null; signins: string;
+  network_generation: number | null; network_pending: number | null;
+  network_tried_at: number | null; network_tried_generation: number | null; signins: string;
 };
 
 function leaseOf(row: LeaseRow): SandboxLease {
   return { authority: row.authority, lease_id: row.lease_id, epoch: row.epoch,
            egress_token: row.egress_token, sync_token: row.sync_token,
            runner_token: row.runner_token, expires_at: row.lease_expires,
-           network_generation: row.network_generation,
+           network_generation: row.network_generation, network_pending: row.network_pending,
+           network_tried_at: row.network_tried_at,
+           network_tried_generation: row.network_tried_generation,
            signins: row.signins === "" ? [] : row.signins.split(",") };
 }
 
@@ -2057,10 +2069,12 @@ export class Files {
    * next epoch, bound to the SHA-256 hex of its three tokens' secrets (`egress`, `sync` and
    * the runner's; the secrets never stay in the object) and their deadline. Lapsed leases go
    * first (a lease is taken only after the runs under a lapsed one were settled), so the
-   * leases are never more than the live runs. Its network is not yet marked
-   * (`network_generation` null) until `leaseNetwork`, in the same unit.
+   * leases are never more than the live runs. Its network is marked at `generation`, the
+   * egress generation of the network the start that opens it carries (`Launcher.openLease`):
+   * egress opens only while that, or a re-apply's, is the current one (`egress.ts`).
    */
-  leaseAcquire(authority: unknown, holder: unknown, tokens: LeaseTokens): Lease {
+  leaseAcquire(authority: unknown, holder: unknown, tokens: LeaseTokens,
+               generation: number): Lease {
     if (typeof authority !== "string"
         || (authority !== OWNER_AUTHORITY && !/^[!-~]{64}$/.test(authority))) {
       throw new Refusal("invalid", "a lease's authority is the owner's or one outside client's");
@@ -2090,9 +2104,10 @@ export class Files {
       const leaseId = randomHex(16);
       this.#sql.exec(
         "INSERT INTO sandbox_leases (authority, lease_id, epoch, holder, lease_expires, " +
-          "egress_token, sync_token, runner_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "egress_token, sync_token, runner_token, network_generation) VALUES " +
+          "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
         authority, leaseId, row.epoch, holder, now + LEASE_TTL_S,
-        tokens.egress, tokens.sync, tokens.runner);
+        tokens.egress, tokens.sync, tokens.runner, generation);
       return { lease_id: leaseId, epoch: row.epoch, expires_at: now + LEASE_TTL_S,
                base: row.seq };
     });
@@ -2123,14 +2138,42 @@ export class Files {
   }
 
   /**
-   * The egress `generation` of the network the start that opens the lease carries, set in
-   * the unit that took it (`Launcher.openLease`): egress opens only while that is the
-   * current egress generation (`egress.ts`).
+   * A re-apply of the live lease's network sent under `generation` at `now`: its calls are
+   * admitted under it from this unit on. Whether that lease, at that epoch, is still live.
    */
-  leaseNetwork(leaseId: string, generation: number): void {
+  networkSent(leaseId: string, epoch: number, generation: number, now: number): boolean {
+    return this.#change(null, () => this.#sql.exec(
+      "UPDATE sandbox_leases SET network_pending = ?, network_tried_at = ?, " +
+        `network_tried_generation = ? WHERE lease_id = ? AND epoch = ? AND ${LIVE_LEASE}`,
+      generation, now, generation, leaseId, epoch, now).rowsWritten > 0);
+  }
+
+  /**
+   * A re-apply's answer, fenced by the lease: `applied` confirms its generation (never an
+   * older one over a newer) and clears it from out; `at_resume` keeps it out (its sandbox
+   * paused, the Worker applies it as it resumes), its retry clock from `now`; a failure
+   * (`lost`, no answer) clears it, so its calls are refused again, and the lane tries again
+   * once its retry clock passes.
+   */
+  networkAnswered(leaseId: string, epoch: number, generation: number,
+                  answer: "applied" | "at_resume" | "failed", now: number): void {
     this.#change(null, () => {
-      this.#sql.exec("UPDATE sandbox_leases SET network_generation = ? WHERE lease_id = ?",
-                     generation, leaseId);
+      const fence = `WHERE lease_id = ? AND epoch = ? AND ${LIVE_LEASE}`;
+      if (answer === "applied") {
+        this.#sql.exec(
+          "UPDATE sandbox_leases SET network_generation = MAX(COALESCE(network_generation, " +
+            "0), ?), network_pending = CASE WHEN network_pending <= ? THEN NULL ELSE " +
+            "network_pending END, network_tried_at = CASE WHEN network_pending <= ? THEN " +
+            `NULL ELSE network_tried_at END ${fence}`,
+          generation, generation, generation, leaseId, epoch, now);
+      } else if (answer === "at_resume") {
+        this.#sql.exec(`UPDATE sandbox_leases SET network_tried_at = ? ${fence} AND ` +
+                         "network_pending = ?", now, leaseId, epoch, now, generation);
+      } else {
+        this.#sql.exec("UPDATE sandbox_leases SET network_pending = NULL, network_tried_at = ? " +
+                         `${fence} AND network_pending = ?`, now, leaseId, epoch, now,
+                       generation);
+      }
     });
   }
 

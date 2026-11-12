@@ -1,12 +1,12 @@
 /**
  * A recording fake behind the `SANDBOX` interface (`sandbox.ts`), in tests only: it records
- * every start, cancel, status, release, unwait and erase the owner's object sends, and
- * answers as a test
- * sets it. Nothing is started: slice S's sandbox Worker (`platform/sandbox`) is the real
+ * every start, cancel, status, release, network re-apply, unwait and erase the owner's
+ * object sends, and answers as a test sets it. Nothing is started: slice S's sandbox Worker (`platform/sandbox`) is the real
  * one, tested against a fake E2B in its own package.
  */
 import type {
-  MeterEvent, SandboxService, SandboxSignin, SandboxStart, Started,
+  MeterEvent, NetworkApplied, NetworkReapply, SandboxService, SandboxSignin, SandboxStart,
+  Started,
 } from "../../contract/src/sandbox";
 
 export class RecordingSandbox implements SandboxService {
@@ -27,6 +27,21 @@ export class RecordingSandbox implements SandboxService {
   answer: Started | "throw" | readonly (Started | "throw")[] = { started: true };
   /** Run before a start answers, with what it was asked: a test's act while it is out. */
   beforeAnswer: ((start: SandboxStart) => Promise<void>) | null = null;
+  /** Every network re-apply asked, in order. */
+  readonly networks: NetworkReapply[] = [];
+  /** What a re-apply answers, or no answer at all (a throw). */
+  networkAnswer: NetworkApplied | "throw" = { state: "applied" };
+  /** Run before a re-apply answers, with what it was asked: a test's act while it is out. */
+  beforeNetwork: ((request: NetworkReapply) => Promise<void>) | null = null;
+
+  async network(_owner: string, request: NetworkReapply): Promise<NetworkApplied> {
+    this.networks.push(request);
+    await this.beforeNetwork?.(request);
+    if (this.networkAnswer === "throw") {
+      throw new Error("the sandbox did not answer");
+    }
+    return this.networkAnswer;
+  }
 
   async start(_owner: string, start: SandboxStart): Promise<Started> {
     this.starts.push(start);
