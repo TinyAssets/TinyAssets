@@ -10,7 +10,8 @@
  * runs the process's own tests with plain pytest on the runner, with nothing of the old
  * stack installed. Held here: every workspace `platform/package.json` lists has its tests run
  * by a leg, its `test` script whole or each `npm run` part of it; every workspace with a
- * large test has its `test:sizes` run, every shard of it; the typecheck has its leg; no leg
+ * large test has its `test:sizes` run, every shard of it, each writing its Vitest JSON report
+ * and its leg uploading it (what `ci/budgets.mjs` reads); the typecheck has its leg; no leg
  * is excluded, conditional or allowed to fail; and each leg runs exactly its command.
  * Nothing may change how a command runs (round 8, R8-2): the jobs and their steps carry only
  * the keys listed below, no `shell` (`shell: true {0}` makes every leg a no-op that
@@ -39,6 +40,15 @@ const STEPS = [
   { run: "npm ci" },
   { run: "${{ matrix.command }}" },
 ];
+/** The report each `test:sizes` writes in its workspace, for `ci/budgets.mjs`. */
+export const SIZES_REPORT = "sizes-report.json";
+/** A sizes leg's steps: a leg's, then its report uploaded, one artifact a leg. */
+const SIZES_STEPS = [
+  ...STEPS,
+  { uses: "actions/upload-artifact@v4",
+    with: { name: "sizes-report-${{ strategy.job-index }}",
+            path: `platform/*/${SIZES_REPORT}`, "if-no-files-found": "error" } },
+];
 const JOB_KEYS = ["defaults", "name", "runs-on", "steps", "strategy", "timeout-minutes"];
 
 function tests(): Data {
@@ -46,7 +56,7 @@ function tests(): Data {
 }
 
 /** Each way a leg job could run something other than its legs' commands, whole. */
-export function legJobProblems(job: Data, name: string): string[] {
+export function legJobProblems(job: Data, name: string, steps: readonly Data[]): string[] {
   const found: string[] = [];
   const keys = Object.keys(job ?? {}).sort();
   if (JSON.stringify(keys) !== JSON.stringify(JOB_KEYS)) {
@@ -81,9 +91,9 @@ export function legJobProblems(job: Data, name: string): string[] {
   if (new Set(legs.map((leg) => leg.command)).size !== legs.length) {
     found.push(`two of ${name}'s legs run the same command`);
   }
-  if (JSON.stringify(job?.steps) !== JSON.stringify(STEPS)) {
-    found.push(`${name}'s steps are checkout, setup-node, npm ci and the leg's command, ` +
-               "each alone");
+  if (JSON.stringify(job?.steps) !== JSON.stringify(steps)) {
+    found.push(`${name}'s steps are ${steps.map((step) => step["uses"] ?? step["run"]).join(", ")
+      }, each alone`);
   }
   return found;
 }
@@ -178,29 +188,34 @@ export function sizesProblems(job: Data, withLarge: string[]): string[] {
   return found;
 }
 
-/** Each workspace's test scripts leave the large tests out, and its sizes script runs them. */
-export function tagFilterProblems(): string[] {
-  const found: string[] = [];
-  for (const ws of json("package.json").workspaces as string[]) {
-    const scripts: Record<string, string> = json(`${ws}/package.json`).scripts;
-    for (const [name, script] of Object.entries(scripts)) {
-      if (!/\bvitest run\b|root-tests\.mjs/.test(script)) {
-        continue;
-      }
-      const wanted = name === "test:sizes" ? "--tags-filter=large" : "--tags-filter=!large";
-      if (!script.includes(wanted)) {
-        found.push(`${ws}'s ${name} must run ${wanted}: ${script}`);
-      }
-    }
+/**
+ * A workspace's test script's problems: each leaves the large tests out, and its sizes
+ * script runs them and writes its JSON report.
+ */
+export function scriptProblems(ws: string, name: string, script: string): string[] {
+  if (!/\bvitest run\b|root-tests\.mjs/.test(script)) {
+    return [];
   }
-  return found;
+  const wanted = name === "test:sizes"
+    ? ["--tags-filter=large", "--reporter=default", "--reporter=json",
+       `--outputFile.json=${SIZES_REPORT}`]
+    : ["--tags-filter=!large"];
+  return wanted.filter((flag) => !script.split(" ").includes(flag))
+    .map((flag) => `${ws}'s ${name} must run ${flag}: ${script}`);
+}
+
+/** Every workspace's test scripts' problems (`scriptProblems`). */
+export function tagFilterProblems(): string[] {
+  return (json("package.json").workspaces as string[]).flatMap((ws) =>
+    Object.entries(json(`${ws}/package.json`).scripts as Record<string, string>)
+      .flatMap(([name, script]) => scriptProblems(ws, name, script)));
 }
 
 describe("platform-tests and platform-sizes", () => {
   it("run every workspace's tests, whole, each leg its command alone", () => {
     const jobs = tests().jobs;
-    expect(legJobProblems(jobs["platform-tests"], "platform-tests")).toEqual([]);
-    expect(legJobProblems(jobs["platform-sizes"], "platform-sizes")).toEqual([]);
+    expect(legJobProblems(jobs["platform-tests"], "platform-tests", STEPS)).toEqual([]);
+    expect(legJobProblems(jobs["platform-sizes"], "platform-sizes", SIZES_STEPS)).toEqual([]);
     expect(coverageProblems(jobs["platform-tests"])).toEqual([]);
     expect(sizesProblems(jobs["platform-sizes"], workspacesWithLarge())).toEqual([]);
     expect(tagFilterProblems()).toEqual([]);
@@ -263,7 +278,7 @@ describe("platform-tests and platform-sizes", () => {
     it(`catch the mutation: ${name}`, () => {
       const job = structuredClone(tests().jobs["platform-tests"]);
       mutate(job);
-      expect([...legJobProblems(job, "platform-tests"), ...coverageProblems(job)])
+      expect([...legJobProblems(job, "platform-tests", STEPS), ...coverageProblems(job)])
         .not.toEqual([]);
     });
   }
@@ -279,6 +294,24 @@ describe("platform-tests and platform-sizes", () => {
     legs(stray)[0].command = "npm run test -w owner";
     expect(sizesProblems(stray, withLarge)).not.toEqual([]);
     expect(sizesProblems(job, [...withLarge, "doors-not-in-sizes"])).not.toEqual([]);
+  });
+
+  it("catch a sizes leg that uploads no report, or another file, and a sizes script that " +
+     "writes none", () => {
+    const job = tests().jobs["platform-sizes"];
+    const unsent = structuredClone(job);
+    unsent.steps.pop();
+    const elsewhere = structuredClone(job);
+    elsewhere.steps.at(-1).with.path = "platform/*/report.json";
+    for (const broken of [unsent, elsewhere]) {
+      expect(legJobProblems(broken, "platform-sizes", SIZES_STEPS)).not.toEqual([]);
+    }
+    const sizes = json("owner/package.json").scripts["test:sizes"] as string;
+    expect(scriptProblems("owner", "test:sizes", sizes)).toEqual([]);
+    for (const flag of ["--reporter=json", `--outputFile.json=${SIZES_REPORT}`]) {
+      expect(scriptProblems("owner", "test:sizes", sizes.replace(flag, "")))
+        .not.toEqual([]);
+    }
   });
 });
 

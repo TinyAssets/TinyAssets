@@ -6,7 +6,7 @@
     "test": "npm run test:workerd && npm run test:memory",
     "test:workerd": "vitest run --tags-filter=!large",
     "test:memory": "node memory/leg.mjs",
-    "test:sizes": "vitest run --tags-filter=large"
+    "test:sizes": "vitest run --tags-filter=large --reporter=default --reporter=json --outputFile.json=sizes-report.json"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.9",

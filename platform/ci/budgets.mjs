@@ -5,12 +5,13 @@
  *
  *   node ci/budgets.mjs --measured "<where and when>" <report.json>...
  *
- * A test's project is read from its path: the folder each project's tests are in
- * (`classes.ts`'s `PROJECTS`, which every config's projects are made from). Only passed
- * tests count; a failed or skipped one measures nothing.
+ * A test's project is read from its path in the platform folder of the checkout that ran it
+ * (a CI leg's or this one's): the folder each project's tests are in (`classes.ts`'s
+ * `PROJECTS`, which every config's projects are made from). Only passed tests count; a
+ * failed or skipped one measures nothing. The `platform-sizes` legs upload their reports.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PROJECTS as FOLDERS } from "./classes.ts";
@@ -20,13 +21,16 @@ const CI = dirname(fileURLToPath(import.meta.url));
 const BUDGETS = join(CI, "budgets.json");
 /** Each project's name, by the folder its tests are in. */
 const PROJECTS = Object.fromEntries(Object.entries(FOLDERS).map(([name, folder]) => [folder, name]));
+/** The platform folder's own name, as every checkout has it. */
+const PLATFORM_DIR = `/${basename(PLATFORM)}/`;
 
 /** Every passed test in `reports` as { project, test, ms, large }. */
 export function measured(reports) {
   const out = [];
   for (const report of reports) {
     for (const file of report.testResults ?? []) {
-      const rel = relative(PLATFORM, file.name).split("\\").join("/");
+      const path = file.name.split("\\").join("/");
+      const rel = path.slice(path.lastIndexOf(PLATFORM_DIR) + PLATFORM_DIR.length);
       const [workspace, dir] = rel.split("/");
       const project = PROJECTS[dir];
       if (project === undefined) {
