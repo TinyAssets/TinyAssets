@@ -90,7 +90,7 @@ describe("the sync lease", () => {
     expect(entryOf(await write(r, `${W}/a`, "api")).writer).toBe("owner");
   });
 
-  it("has no door: the object's own sandbox lifecycle takes it (`SandboxLeases`)", async () => {
+  it("has no door: a run's admission takes it (`launch.ts` `openLease`)", async () => {
     const r = await rig();
     for (const door of ["sandboxLeaseOpen", "fileLeaseAcquire", "sandboxConfig"]) {
       expect(Object.getOwnPropertyNames(OwnerDO.prototype)).not.toContain(door);

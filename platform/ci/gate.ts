@@ -14,13 +14,13 @@
  * - `control(name)`: the binding of a gate's `Control` entrypoint, for the test Worker alone.
  */
 import { readFileSync } from "node:fs";
-import { basename, join, relative, sep } from "node:path";
+import { join } from "node:path";
 
 import ts from "typescript";
 
 import type { Arm, Crossed, GateSetup, Held } from "./gate-worker.ts";
 import { PLATFORM } from "./paths.ts";
-import { transpiled, workerConfig } from "./workers.ts";
+import { fakeConfig, transpiled, workerConfig } from "./workers.ts";
 
 /** The gate Worker's source. */
 const GATE_WORKER = join(PLATFORM, "ci", "gate-worker.ts");
@@ -34,21 +34,16 @@ type GateTo =
   | { readonly worker: string; readonly className: string }
   | { readonly fake: string };
 
-/** The name and runtime of the Worker a gate stands in front of, as `fake()` names a fake. */
+/** The name and runtime of the Worker a gate stands in front of. */
 function fronted(to: GateTo): { name: string; compatibility_date: string;
                                 compatibility_flags?: readonly string[] } {
-  if ("fake" in to) {
-    const workspace = join(PLATFORM, relative(PLATFORM, to.fake).split(sep)[0]!);
-    return { name: basename(to.fake, ".ts"),
-             compatibility_date: workerConfig(workspace).compatibility_date };
-  }
-  return workerConfig(to.worker);
+  return "fake" in to ? fakeConfig(to.fake) : workerConfig(to.worker);
 }
 
 /**
  * The gate Worker `name`, with `methods`, in front of `to`: the Worker at the folder
  * `to.worker`, as its config names it, at its runtime and flags, or the fake Worker at the
- * file `to.fake`, as `fake()` names it. In front of a service its
+ * file `to.fake` (`fakeConfig`). In front of a service its
  * default entrypoint is the gate; in front of objects it exports the class `to.className`,
  * bound by `scriptName` as the real class is, each object forwarding to the real object of
  * its name. What a test changes is `extra`.
