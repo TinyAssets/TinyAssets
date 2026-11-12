@@ -24,7 +24,7 @@ import { parse } from "yaml";
 
 import { OPTIONAL, SECRET_INPUTS } from "../../deploy/facts";
 import { REPO } from "../paths";
-import { type Data, workflow, workflowNames } from "../workflows";
+import { type Data, workflow, workflowNames, WORKFLOWS } from "../workflows";
 
 /** The secrets the `production` environment must own (docs/host-actions.md row). */
 const PRODUCTION_SECRETS = [
@@ -54,8 +54,9 @@ const NON_PRODUCTION_SECRETS: Record<string, string> = {
   PUSHOVER_APP_TOKEN: "send-only notification credential",
   PUSHOVER_USER_KEY: "send-only notification recipient",
   CLOUDFLARE_API_TOKEN: "Cloudflare edge account (Worker + DNS): separate credential, no " +
-    "host shell; deploy-worker.yml dry-runs on pull_request so it cannot sit in a main-only " +
-    "environment. An edge environment is its own lane.",
+    "host shell; platform-deploy.yml's plan job reads it outside production by design (the " +
+    "plan holds no production secret), and deploy-worker.yml dry-runs on pull_request, so it " +
+    "cannot sit in a main-only environment. An edge environment is its own lane.",
   CLOUDFLARE_ACCOUNT_ID: "Cloudflare account identifier, not a credential",
   CLOUDFLARE_ZONE_ID: "Cloudflare zone identifier, not a credential",
   // Store release pipelines: these sign and upload artifacts, never reach the host, and run
@@ -95,7 +96,8 @@ const ENVIRONMENT_SECRETS: Record<string, string> = {
 const KNOWN_PRODUCTION_WORKFLOWS = [
   "apply-daemon-env.yml", "box-preflight.yml", "cloud-only-preflight.yml", "deploy-prod.yml",
   "diagnose-prod-startup.yml", "dr-drill.yml", "droplet-resize.yml", "fetch-prod-logs.yml",
-  "install-host-services.yml", "p0-outage-triage.yml", "restart-daemon.yml",
+  "handles-canary.yml", "import-window.yml", "install-host-services.yml",
+  "p0-outage-triage.yml", "platform-deploy.yml", "restart-daemon.yml", "sandbox-template.yml",
   "uptime-canary.yml",
 ];
 
@@ -285,16 +287,9 @@ describe("production workflows", () => {
 
   it("the allowlist is in use and never names a production secret", () => {
     const used = new Set<string>();
-    const actions = join(REPO, ".github", "actions");
-    const texts = workflowNames().map((file) => readFileSync(
-      join(REPO, ".github", "workflows", file), "utf8"));
-    for (const folder of existsSync(actions) ? readdirSync(actions) : []) {
-      for (const name of ["action.yml", "action.yaml"]) {
-        if (existsSync(join(actions, folder, name))) {
-          texts.push(readFileSync(join(actions, folder, name), "utf8"));
-        }
-      }
-    }
+    const texts = [
+      ...workflowNames().map((file) => readFileSync(join(WORKFLOWS, file), "utf8")),
+      ...actionTexts().map(([, text]) => text)];
     for (const text of texts) {
       for (const name of secretNames(text)) {
         used.add(name.toUpperCase());

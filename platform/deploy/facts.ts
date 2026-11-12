@@ -132,10 +132,10 @@ export const KEYRINGS: readonly string[] = Object.freeze(
 /** The zone and origin the doors serve (`identity.json`). */
 export const ZONE = identity.host;
 export const ORIGIN = `https://${ZONE}`;
-/** The doors' public routes (`--routes`, the cutover's), on the zone. */
+/** The doors' public routes (mode `routes`, the cutover's), on the zone. */
 export const ROUTES: readonly string[] = Object.freeze(
   identity.routes.map((path) => `${ZONE}${path}`));
-/** The sandbox's egress host, a custom domain of the doors Worker (`--routes`). */
+/** The sandbox's egress host, a custom domain of the doors Worker (mode `routes`). */
 export const EGRESS_DOMAIN = identity.egress;
 /** Where a sign-in starts, and where the upstream returns it. */
 export const AUTHORIZE = `${ORIGIN}${identity.signin.authorize}`;
@@ -147,7 +147,7 @@ export function takes(pattern: string, url: string): boolean {
 }
 
 /**
- * The sign-in probe's routes (`--probe`): the routes that take the sign-in's own two paths,
+ * The sign-in probe's routes (mode `probe`): the routes that take the sign-in's own two paths,
  * which no Worker serves before the cutover, so handing them to the doors early serves no
  * user.
  */

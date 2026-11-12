@@ -79,7 +79,7 @@ async function main(): Promise<void> {
     "{ await tools.agents_list({}); n++; } return { n, ms: Date.now() - t };"));
   const token = process.env[INPUTS.token];
   const keyId = process.env[INPUTS.keyId];
-  if (token === undefined || keyId === undefined) {
+  if (!token || !keyId) {
     console.log(`| 5 revoke and app read during a script | skipped | | ${INPUTS.token} and ` +
                 `${INPUTS.keyId} unset |`);
     return;

@@ -110,8 +110,8 @@ export function secretProblems(secrets: unknown, names: readonly string[], where
 }
 
 /** How `vars` holds other than exactly `allowed`, each as text. */
-export function varProblems(vars: unknown,
-                            allowed: Readonly<Record<string, readonly string[] | null>>): string[] {
+function varProblems(vars: unknown,
+                     allowed: Readonly<Record<string, readonly string[] | null>>): string[] {
   const names = Object.keys(allowed).sort();
   const fits = object(vars) && same(Object.keys(vars).sort(), names)
     && names.every((name) => typeof vars[name] === "string"
@@ -121,7 +121,7 @@ export function varProblems(vars: unknown,
 }
 
 /** How `buckets` holds other than exactly `bindings`, each a binding and a bucket name. */
-export function bucketProblems(buckets: unknown, bindings: readonly string[]): string[] {
+function bucketProblems(buckets: unknown, bindings: readonly string[]): string[] {
   const fits = Array.isArray(buckets) && buckets.length === bindings.length
     && buckets.every((bucket, i) => object(bucket)
       && same(Object.keys(bucket).sort(), ["binding", "bucket_name"])
@@ -133,7 +133,7 @@ export function bucketProblems(buckets: unknown, bindings: readonly string[]): s
  * How `namespaces` holds other than exactly `bindings`, each a binding and a placeholder id
  * (`not-provisioned-…`, so a deploy fails until the cutover makes it), the ids distinct.
  */
-export function kvProblems(namespaces: unknown, bindings: readonly string[]): string[] {
+function kvProblems(namespaces: unknown, bindings: readonly string[]): string[] {
   const fits = Array.isArray(namespaces) && namespaces.length === bindings.length
     && same(namespaces.map((n: Config) => n["binding"]).sort(), [...bindings].sort())
     && namespaces.every((n: unknown) => object(n) && same(Object.keys(n).sort(), ["binding", "id"])

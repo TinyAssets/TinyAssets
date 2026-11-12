@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 /**
- * Read Vitest JSON reports (`--reporter=json --outputFile=<f>`) and either name each test
- * over half its class's budget (the default, which blocks nothing), or, with `--write`,
- * recompute `budgets.json` from them: each project's slowest medium test, and the slowest
- * large one (`classes.ts` has the rule).
+ * Recompute `budgets.json` from Vitest JSON reports (`--reporter=json --outputFile=<f>`):
+ * each project's slowest medium test, and the slowest large one (`classes.ts` has the rule).
  *
- *   node ci/budgets.mjs [--write] [--measured "<where and when>"] <report.json>...
+ *   node ci/budgets.mjs --measured "<where and when>" <report.json>...
  *
  * A test's project is read from its path: the folder each project's tests are in
  * (`classes.ts`'s `PROJECTS`, which every config's projects are made from). Only passed
@@ -15,7 +13,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { derived, PROJECTS as FOLDERS } from "./classes.ts";
+import { PROJECTS as FOLDERS } from "./classes.ts";
 import { PLATFORM } from "./paths.ts";
 
 const CI = dirname(fileURLToPath(import.meta.url));
@@ -52,41 +50,25 @@ function slowest(rows) {
 }
 
 function main(argv) {
-  const write = argv.includes("--write");
   const at = argv.indexOf("--measured");
-  const where = at === -1 ? null : argv[at + 1];
-  const files = argv.filter((arg, i) => !arg.startsWith("--") && (at === -1 || i !== at + 1));
+  const where = at === -1 ? undefined : argv[at + 1];
+  if (where === undefined) {
+    throw new Error("budgets.mjs needs --measured \"<where and when>\"");
+  }
+  const files = argv.filter((_, i) => i !== at && i !== at + 1);
   const rows = measured(files.map((file) => JSON.parse(readFileSync(file, "utf8"))));
   const budgets = JSON.parse(readFileSync(BUDGETS, "utf8"));
-  if (write) {
-    if (where === null) {
-      throw new Error("--write needs --measured \"<where and when>\"");
-    }
-    const medium = { ...budgets.medium };
-    for (const project of new Set(rows.filter((r) => !r.large).map((r) => r.project))) {
-      medium[project] = slowest(rows.filter((r) => !r.large && r.project === project));
-    }
-    const large = rows.filter((r) => r.large);
-    const next = { ...budgets, measured: where,
-                   medium: Object.fromEntries(Object.entries(medium).sort()),
-                   large: large.length ? slowest(large) : budgets.large };
-    writeFileSync(BUDGETS, `${JSON.stringify(next, null, 2)}\n`);
-    return 0;
+  const medium = { ...budgets.medium };
+  for (const project of new Set(rows.filter((r) => !r.large).map((r) => r.project))) {
+    medium[project] = slowest(rows.filter((r) => !r.large && r.project === project));
   }
-  const lines = [];
-  for (const row of rows) {
-    const limit = row.large ? derived(budgets.large, budgets.factor)
-      : budgets.medium[row.project] && derived(budgets.medium[row.project], budgets.factor);
-    if (limit !== undefined && row.ms > limit / 2) {
-      lines.push(`- ${row.test}: ${Math.round(row.ms)} ms, over half its ` +
-                 `${row.large ? "large" : row.project} budget of ${limit} ms`);
-    }
-  }
-  console.log(lines.length ? ["Tests over half their class's budget:", ...lines].join("\n")
-    : "No test is over half its class's budget.");
-  return 0;
+  const large = rows.filter((r) => r.large);
+  const next = { ...budgets, measured: where,
+                 medium: Object.fromEntries(Object.entries(medium).sort()),
+                 large: large.length ? slowest(large) : budgets.large };
+  writeFileSync(BUDGETS, `${JSON.stringify(next, null, 2)}\n`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.exitCode = main(process.argv.slice(2));
+  main(process.argv.slice(2));
 }
