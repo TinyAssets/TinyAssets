@@ -8,8 +8,8 @@
  *   Its paths are the real ones: `fileEdit` (through `Files.writeChunks`), `fileAppend`, and
  *   a placed body read whole (`Bodies.fetch`) or by a window (`Bodies.windows`), the real
  *   `Bodies` over the object's own storage.
- * - **The archive's objects** (`LegArchive` at the production ledger limits, `LegSegments`
- *   at the archive tests' small ones) run the `archive` lane's real move and rewrite: the
+ * - **The archive's objects** (`LegArchive`, at the production ledger limits) run the
+ *   `archive` lane's real move and rewrite, the segments production's own seal makes: the
  *   mail set up in their own ledger (bodies placed as a post places them), the lane rung by
  *   an owner's post, its pass run by the object's own alarm.
  * - **The store** (`files`, `Store`) answers the files Worker's chunk calls from memory,
@@ -55,7 +55,8 @@ import { PAGE_BYTES } from "../src/pages";
 import { Policy } from "../src/policy";
 import { MIGRATIONS } from "../src/schema";
 import {
-  MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, SEGMENT_LEAST_BYTES,
+  MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, RECORD_TRAILER_BYTES,
+  SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES,
 } from "../src/segments";
 import { UNIT_BYTES } from "../../contract/src/slots";
 import type { ChunkStore } from "../../contract/src/files";
@@ -65,7 +66,6 @@ declare function gc(): void;
 interface LegEnv extends OwnerEnv {
   readonly OWNER: DurableObjectNamespace<LegOwner>;
   readonly ARCHIVE: DurableObjectNamespace<LegArchive>;
-  readonly SEGMENTS: DurableObjectNamespace<LegSegments>;
   readonly STORE: Service<Store>;
   readonly DRIVER: Fetcher;
 }
@@ -505,6 +505,21 @@ class ArchiveObject extends OwnerDO {
     return last;
   }
 
+  /** `count` small messages from the owner to `room`'s agent, left unread. */
+  legUnread(room: string, count: number): void {
+    const ledger = this.#ledger();
+    for (let n = 0; n < count; n++) {
+      ledger.post(null, room, `u${n}`, "x", null);
+    }
+  }
+
+  /** What a message's record takes past its body's bytes, as its segment will hold it. */
+  legOverhead(id: string): number {
+    return this.#state.storage.sql.exec<{ n: number }>(
+      "SELECT m.line_bytes - b.body_bytes AS n FROM ledger_messages m JOIN message_bodies b " +
+        "ON b.message_id = m.message_id WHERE m.message_id = ?", id).one().n;
+  }
+
   /** Every message to `reader` acked, through the message `id`. */
   legAck(reader: number, id: string): void {
     const ledger = this.#ledger();
@@ -598,13 +613,6 @@ class ArchiveObject extends OwnerDO {
 export class LegArchive extends ArchiveObject {
   constructor(state: DurableObjectState, env: LegEnv) {
     super(state, env, LEDGER_LIMITS);
-  }
-}
-
-/** At the archive tests' small limits: a segment sealed at two records, large bodies. */
-export class LegSegments extends ArchiveObject {
-  constructor(state: DurableObjectState, env: LegEnv) {
-    super(state, env, { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4, archiveRecords: 2 });
   }
 }
 
@@ -754,28 +762,50 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       LEG.ready.push({ name, who, agents, want: (await stub.legArchived()).records + 10_000,
                        offset: lasts.pat });
     } else if (path === "bodies" || path === "rewrite") {
-      // At the small limits: two acked bodies of `mib` MiB each, the owner's to the muse and
-      // to Dot, sealed together; for the rewrite, the lane has sealed them and Dot is deleted.
-      const stub = await archiveObject(env.SEGMENTS, name);
+      // At the production limits: two acked bodies, the owner's to the muse and to Dot, and
+      // the hot mail past half its ceiling with unread small mail, so the lane seals the
+      // bodies and nothing else, as production seals them (`archivePick`). For the move, two
+      // of `mib` MiB: under the seal each, together in one segment; at 8 MiB, the body cap,
+      // each its own, since one reaches the seal alone. For the rewrite, the largest segment
+      // one can meet: the muse's body the largest that does not seal alone, then Dot's at
+      // `mib` (the cap), one segment of about 16 MiB; then Dot is deleted.
+      const stub = await archiveObject(env.ARCHIVE, name);
       const agents = await stub.legAgents();
-      const body = (k: number) => new TextDecoder().decode(letters(seed * 10 + k, mib * MIB));
-      const one = await stub.roomPost(who, { room_id: `dm:${agents[0]}`,
-                                             client_message_id: "b0", body: body(0),
-                                             parent_id: null });
-      const two = await stub.roomPost(who, { room_id: `dm:${agents[1]}`,
-                                             client_message_id: "b1", body: body(1),
-                                             parent_id: null });
-      await stub.legAck(0, one.message_id);
-      await stub.legAck(1, two.message_id);
-      // Past half the hot ceiling with small acked mail, so the two are due to move.
-      await stub.legSmall(`dm:${agents[0]}`, 0, 3);
+      const post = async (on: DurableObjectStub<ArchiveObject>, k: number, bytes: number,
+                          as = who, to = agents) =>
+        (await on.roomPost(as, { room_id: `dm:${to[k]}`, client_message_id: `b${k}`,
+                                  body: new TextDecoder().decode(letters(seed * 10 + k, bytes)),
+                                  parent_id: null })).message_id;
+      let kept = mib * MIB;
+      if (path === "rewrite") {
+        // A record's own bytes past its body's, read from a message of the same shape on an
+        // object of its own: the kept body is then one byte short of the seal alone.
+        const sizing = await archiveObject(env.ARCHIVE, `${name}-sizing`);
+        const its = await sizing.legAgents();
+        const overhead = await sizing.legOverhead(
+          await post(sizing, 0, SEGMENT_MIN_BYTES / 2, owner(`${name}-sizing`), its));
+        kept = SEGMENT_MIN_BYTES - 1 - (overhead - RECORD_TRAILER_BYTES);
+      }
+      await stub.legAck(0, await post(stub, 0, kept));
+      await stub.legAck(1, await post(stub, 1, mib * MIB));
+      // Each ring is one more unread message (the run rings once, the rewrite's setup once
+      // before it): with them, the hot mail stays past half its ceiling through the last
+      // seal, and the unread within `maxUnacked`.
+      const rings = path === "rewrite" ? 2 : 1;
+      await stub.legUnread(`dm:${agents[0]}`, LEDGER_LIMITS.maxMessages / 2 - rings);
+      const sealed = path === "bodies" && mib * MIB >= SEGMENT_MIN_BYTES ? 2 : 1;
       if (path === "rewrite") {
         await ring(stub, who, agents[0]!, "r0");
         await settled(stub, (seen) => seen.segments >= 1);
         await idle(stub);
+        const seen = await stub.legArchived();
+        if (seen.segments !== 1 || seen.records !== 2) {
+          throw new Error(`the rewrite's two bodies are not one segment of two records: ${
+            JSON.stringify(seen)} (the seal rule changed?)`);
+        }
         await stub.legRemove(agents[1]!);
       }
-      LEG.ready.push({ name, who, agents, want: path === "rewrite" ? 0 : 1 });
+      LEG.ready.push({ name, who, agents, want: path === "rewrite" ? 0 : sealed });
     } else if (path === "fetch" || path === "window") {
       LEG.ready.push({ name, who, content: await stub.legPlace(seed, mib * MIB),
                        offset: Math.floor(mib * MIB / 2) });
@@ -871,8 +901,7 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
         return (await archive.legArchived()).records;
       }
       if (path === "move" || path === "bodies" || path === "rewrite") {
-        const archive = path === "move" ? env.ARCHIVE.getByName(name)
-          : env.SEGMENTS.getByName(name);
+        const archive = env.ARCHIVE.getByName(name);
         await ring(archive, who, agents![0]!, "ring");
         await settled(archive, path === "rewrite" ? (seen) => seen.purges === 0
           : (seen) => seen.segments >= want!);
