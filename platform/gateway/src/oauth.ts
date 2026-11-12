@@ -26,8 +26,9 @@ import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 
 import { type Catalog, providerFor } from "./catalog";
 import { type Credential, type OAuthGrant } from "./credential";
+import { object } from "../../contract/src/checks";
 import {
-  keyExchangeSource, type OAuthClient, source, type Source,
+  keyExchangeSource, type OAuthClient, scope, secret, source, type Source,
 } from "../../contract/src/egress-scope";
 import { nativeFetch, within } from "./egress";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
@@ -37,11 +38,19 @@ import { type Binding, type KeyringEnv, open, reseal, seal } from "./keyring";
 /** How long one token-endpoint call may take (pi-ai's own refresh bound). */
 const TOKEN_DEADLINE_MS = 15 * 1000;
 
-const TOKEN = /^[\x21-\x7e]{1,16384}$/;
 const CODE = /^[\x21-\x7e]{1,2048}$/;
 /** RFC 7636 §4.1. */
 const VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
-const SCOPE = /^[\x20-\x7e]{0,4096}$/;
+
+/** Whether `value` passes the credential's own check of it (`egress-scope.ts`), as it is sealed. */
+function sealable(check: (value: unknown) => string, value: unknown): value is string {
+  try {
+    check(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface TokenAnswer {
   readonly access: string;
@@ -52,10 +61,6 @@ interface TokenAnswer {
 
 /** The most of a token endpoint's answer the gateway reads. */
 const ANSWER_MAX = 64 * 1024;
-
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** RFC 6749 §2.3.1: the client id and secret are form-encoded before Basic auth. */
 function basic(id: string, secret: string): string {
@@ -145,20 +150,19 @@ async function token(client: OAuthClient, params: Record<string, string>): Promi
     throw new Refusal("oauth_malformed");
   }
   const { access_token: access, token_type: type, expires_in: expires,
-          refresh_token: refresh, scope } = body;
-  if (typeof access !== "string" || !TOKEN.test(access)
-      || typeof type !== "string" || type.toLowerCase() !== "bearer"
+          refresh_token: refresh, scope: granted } = body;
+  if (!sealable(secret, access) || typeof type !== "string" || type.toLowerCase() !== "bearer"
       || (expires !== undefined && (typeof expires !== "number" || !Number.isFinite(expires)
                                     || expires <= 0))
-      || (refresh !== undefined && (typeof refresh !== "string" || !TOKEN.test(refresh)))
-      || (scope !== undefined && (typeof scope !== "string" || !SCOPE.test(scope)))) {
+      || (refresh !== undefined && !sealable(secret, refresh))
+      || (granted !== undefined && !sealable(scope, granted))) {
     throw new Refusal("oauth_malformed");
   }
   return {
     access,
     expires_at: expires === undefined ? null : Date.now() + Math.floor(expires * 1000),
     ...(refresh === undefined ? {} : { refresh }),
-    ...(scope === undefined ? {} : { scope }),
+    ...(granted === undefined ? {} : { scope: granted }),
   };
 }
 
@@ -239,7 +243,7 @@ async function keyExchange(env: KeyringEnv, bound: Binding, grant: unknown,
   }
   const body = await boundedJson(answer);
   const key = object(body) ? body["key"] : undefined;
-  if (typeof key !== "string" || !TOKEN.test(key)) {
+  if (!sealable(secret, key)) {
     throw new Refusal("oauth_malformed");
   }
   const sealed = await seal(env, bound, { kind: "api_key", secret: key,
@@ -288,15 +292,14 @@ async function providerRefresh(catalog: Catalog, credential: Extract<Credential,
     // pi-ai's message quotes the provider's body; only the fixed code goes on.
     throw new Refusal("oauth_rejected");
   }
-  if (typeof next.access !== "string" || !TOKEN.test(next.access)
-      || typeof next.refresh !== "string" || !TOKEN.test(next.refresh)
+  if (!sealable(secret, next.access) || !sealable(secret, next.refresh)
       || typeof next.expires !== "number" || !Number.isFinite(next.expires)) {
     throw new Refusal("oauth_malformed");
   }
   const scopes = next["scopes"];
   return {
     access: next.access, refresh: next.refresh, expires_at: Math.floor(next.expires),
-    ...(Array.isArray(scopes) && scopes.every((scope) => typeof scope === "string")
+    ...(Array.isArray(scopes) && scopes.every((each) => typeof each === "string")
       ? { scope: scopes.join(" ") } : {}),
   };
 }

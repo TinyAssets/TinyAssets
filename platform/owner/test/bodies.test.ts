@@ -45,7 +45,7 @@ async function namespace(stub: DurableObjectStub<OwnerDO>): Promise<string> {
 /** What R2 holds under a chunk's hash, as UTF-8, or the failure reading it. */
 async function inR2(ns: string, body: string, sha256 = sha(body)): Promise<string> {
   try {
-    const [bytes] = await env.FILES.getChunks(ns, KEYS.get(ns)!, [{ sha256 }]);
+    const [bytes] = await env.FILES.getChunks(ns, KEYS.get(ns)!, [{ sha256, verify: true }]);
     return new TextDecoder().decode(bytes);
   } catch (error) {
     return `missing: ${(error as Error).message}`;

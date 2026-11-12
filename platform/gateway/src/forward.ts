@@ -28,8 +28,9 @@ import { bearer, type Credential } from "./credential";
 import {
   type EgressScope, egressTarget, type Meter, meteredCall, meteredModel,
 } from "../../contract/src/egress-scope";
-import type {
-  Metering, MeterOutcome, Resealed, Reservation, Reserve, Verified,
+import {
+  metering, MODEL_NAME, type MeterOutcome, type Resealed, type Reservation, type Reserve,
+  type Verified,
 } from "../../contract/src/gateway";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 import { codeOf, failureResponse, upstreamCode } from "./failure";
@@ -234,24 +235,6 @@ function refusal(code: GatewayCode, resealed?: Resealed): Response {
   return failureResponse(code, extra);
 }
 
-/** A model id or tier as the owner's object takes one: visible ASCII. */
-const NAMED = /^[\x21-\x7e]{1,256}$/;
-
-/** The metering a reserve answered, its whole numbers and its model and tier, or a bug. */
-function meteringOf(value: unknown): Metering {
-  const fields = value as Partial<Metering> | null;
-  const whole = (n: unknown) => typeof n === "number" && Number.isSafeInteger(n) && n >= 1;
-  const named = (s: unknown) => typeof s === "string" && NAMED.test(s);
-  if (typeof value !== "object" || value === null
-      || Object.keys(value).sort().join() !== "input_bytes,max_output_tokens,model,tier"
-      || !whole(fields!.input_bytes) || !whole(fields!.max_output_tokens)
-      || !named(fields!.model) || (fields!.tier !== null && !named(fields!.tier))) {
-    throw new Refusal("internal");
-  }
-  return { input_bytes: fields!.input_bytes!, max_output_tokens: fields!.max_output_tokens!,
-           model: fields!.model!, tier: fields!.tier ?? null };
-}
-
 /**
  * A sandbox's model call, metered (G4), once the owner's object admitted it: held to pi-ai's
  * own model call for the sealed API (`learnMeter`); its slots taken as it arrives
@@ -311,7 +294,7 @@ async function prepared(request: Request, length: number, credential: Credential
   if (id === null) {
     return { refused: "unmetered" };
   }
-  const model = NAMED.test(id) ? meteredRecord(catalog, credential.upstream, id) : null;
+  const model = MODEL_NAME.test(id) ? meteredRecord(catalog, credential.upstream, id) : null;
   if (model === null) {
     return { refused: "unknown_model" };
   }
@@ -331,7 +314,7 @@ async function prepared(request: Request, length: number, credential: Credential
     return { refused: "egress_unpriced_option" };
   }
   const tier = rules.tier === null ? null : valueAt(parsed, [rules.tier.key]) ?? null;
-  if (tier !== null && (typeof tier !== "string" || !NAMED.test(tier))) {
+  if (tier !== null && (typeof tier !== "string" || !MODEL_NAME.test(tier))) {
     return { refused: "egress_unpriced_option" };
   }
   if (tierMultiplier(rules, tier) === null) {
@@ -354,17 +337,17 @@ async function prepared(request: Request, length: number, credential: Credential
   if (!("metering" in reserved)) {
     return { refused: "egress_reserve_refused" };
   }
-  const metering = meteringOf(reserved.metering);
-  if (metering.model !== id || metering.tier !== tier) {
+  const terms = metering(reserved.metering);
+  if (terms.model !== id || terms.tier !== tier) {
     throw new Refusal("internal");  // the object reserved another call than it was asked
   }
-  if (read.bytes > metering.input_bytes) {
+  if (read.bytes > terms.input_bytes) {
     return { refused: "invalid_request" };
   }
   read = null;
   const listed = fallbackList(rules, parsed);
   let text: string | null = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
-                                                   metering.max_output_tokens,
+                                                   terms.max_output_tokens,
                                                    credential.upstream.api));
   parsed = null;
   const bytes = new TextEncoder().encode(text);

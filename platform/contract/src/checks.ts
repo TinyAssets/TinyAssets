@@ -9,6 +9,18 @@ export function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Whether `value` is an object of exactly `keys`, sorted and comma-joined. */
+export function keyed(value: unknown, keys: string): value is Record<string, unknown> {
+  return object(value) && Object.keys(value).sort().join() === keys;
+}
+
+/** Whether `value` is a whole number from `min` to `max`. */
+export function whole(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER):
+    value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= min
+    && value <= max;
+}
+
 /** Refuses `value` unless its keys are all in `allowed` and include every one of `required`. */
 export function shape(value: unknown, required: readonly string[],
                       optional: readonly string[] = []): Record<string, unknown> {
@@ -31,7 +43,7 @@ export function text(value: unknown, pattern: RegExp, max = 1024): string {
 }
 
 export function count(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
+  if (!whole(value, min, max)) {
     throw new Refusal("invalid_source");
   }
   return value;

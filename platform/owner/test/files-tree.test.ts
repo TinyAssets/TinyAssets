@@ -153,7 +153,7 @@ describe("a rename", () => {
       .toEqual(text("a"));
     expect(await sqlIn(r.stub, "SELECT sha256, refs FROM file_chunks")).toEqual(before);
     expect(await env.FILES.getChunks(space!["ns"] as string, space!["data_key"] as string,
-                                     [{ sha256: before[0]!["sha256"] as string }]))
+                                     [{ sha256: before[0]!["sha256"] as string, verify: true }]))
       .toEqual([big]);
     // History continues on both sides: the old paths end, the new ones begin.
     const from = await r.stub.fileHistory(r.bind(null), { path: `${W}/src/deep/b.bin`, limit: 5 });

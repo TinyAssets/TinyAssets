@@ -8,11 +8,12 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
-import { hex, OBJECT_OVERHEAD, sealObject } from "../../contract/src/envelope";
+import { base64, hex, OBJECT_OVERHEAD, sealObject } from "../../contract/src/envelope";
 import { chunkName, KEY_REFUSED, KEYRING_UNAVAILABLE, unwrap } from "../src/datakey";
 import FilesService from "../src/index";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import { chunkKey, manifestKey } from "../src/keys";
+import type { ChunkGet } from "../../contract/src/files";
 
 import { ringKey } from "../../ci/fixtures";
 
@@ -56,6 +57,12 @@ async function sealedAt(space: string, hash: string, body: Uint8Array): Promise<
   return sealObject(await unwrap(RING, space, await keyOf(space)), await named(space, hash),
                     body);
 }
+
+/** A read of the whole chunk `sha256`, as every read is: verified. */
+const chunk = (sha256: string): ChunkGet => ({ sha256, verify: true });
+
+/** What a get of more whole chunks than a batch holds is refused with. */
+const TOO_MANY = `a get reads at most 2 chunks, ${BATCH_BYTES} bytes of whole chunks`;
 
 function ns(): string {
   return crypto.randomUUID().replaceAll("-", "");
@@ -124,7 +131,7 @@ describe("putChunks", () => {
     expect((await failure(() => files().putChunks(space, [{ sha256: hash,
                                                              bytes: bytes("other") }]))).message)
       .toBe("the chunk's bytes do not match its sha256");
-    expect(await files().getChunks(space, [{ sha256: hash }])).toEqual([body]);
+    expect(await files().getChunks(space, [chunk(hash)])).toEqual([body]);
   });
 
   it("fails loudly on a hash key holding bytes it did not verify", async () => {
@@ -208,10 +215,10 @@ describe("putChunks", () => {
                             (_, i) => new Uint8Array(CHUNK_BYTES).fill(i + 1));
     expect(await put(space, ...full)).toEqual({ created: full.length });
     const hashes = await Promise.all(full.map(sha));
-    const whole = await files().getChunks(space, hashes.map((sha256) => ({ sha256 })));
+    const whole = await files().getChunks(space, hashes.map(chunk));
     expect(await Promise.all(whole.map(sha))).toEqual(hashes);
     expect(await files().getChunks(space, hashes.map((sha256) => ({
-      sha256, offset: CHUNK_BYTES - 3, length: 3, verify: true }))))
+      ...chunk(sha256), offset: CHUNK_BYTES - 3, length: 3 }))))
       .toEqual(full.map((chunk) => chunk.slice(CHUNK_BYTES - 3)));
   });
 });
@@ -234,7 +241,7 @@ describe("keys", () => {
                                                         [{ sha256: hash, bytes: bytes("x") }]));
     expect(error.message).toMatch(/^a (namespace|chunk hash) is \d+ lowercase hex characters$/);
     expect(() => chunkKey(space, hash)).toThrow(error.message);
-    for (const call of [() => files().getChunks(space as string, [{ sha256: hash }]),
+    for (const call of [() => files().getChunks(space as string, [chunk(hash)]),
                         () => files().deleteChunks(space as string, [hash])]) {
       expect((await failure(call)).message).toBe(error.message);
     }
@@ -256,7 +263,7 @@ describe("keys", () => {
     expect(listed).toHaveLength(2);
     expect(listed.some((key) => key.endsWith(hash))).toBe(false);
     expect(listed[0]!.slice(-64)).not.toBe(listed[1]!.slice(-64));
-    expect(await files().getChunks(theirs, [{ sha256: hash }])).toEqual([known]);
+    expect(await files().getChunks(theirs, [chunk(hash)])).toEqual([known]);
   });
 });
 
@@ -266,33 +273,28 @@ describe("getChunks", () => {
     const [digits, letters] = [bytes("0123456789"), bytes("abcdef")];
     await put(space, digits, letters);
     const [d, l] = [await sha(digits), await sha(letters)];
-    expect(await files().getChunks(space, [{ sha256: l }, { sha256: d }]))
+    expect(await files().getChunks(space, [chunk(l), chunk(d)]))
       .toEqual([letters, digits]);
-    expect(await files().getChunks(space, [{ sha256: d, offset: 2, length: 3 },
-                                           { sha256: d, offset: 8, length: 100 }]))
+    expect(await files().getChunks(space, [{ ...chunk(d), offset: 2, length: 3 },
+                                           { ...chunk(d), offset: 8, length: 100 }]))
       .toEqual([bytes("234"), bytes("89")]);
-    expect(await files().getChunks(space, [{ sha256: l, offset: 0, length: 1 }]))
+    expect(await files().getChunks(space, [{ ...chunk(l), offset: 0, length: 1 }]))
       .toEqual([bytes("a")]);
-    expect((await failure(() => files().getChunks(ns(), [{ sha256: d }]))).message)
+    expect((await failure(() => files().getChunks(ns(), [chunk(d)]))).message)
       .toBe("a chunk the manifest holds is missing from the bucket");
   });
 
-  it("reads a verified range from its whole chunk, its hash rechecked (review L7)", async () => {
+  it("reads every range from its whole chunk, its hash rechecked (review L7)", async () => {
     const space = ns();
     const digits = bytes("0123456789");
     await put(space, digits);
     const d = await sha(digits);
-    const verified = () => files().getChunks(space, [{ sha256: d, offset: 2, length: 3,
-                                                       verify: true },
-                                                     { sha256: d, offset: 8, length: 100,
-                                                       verify: true }]);
-    expect(await verified()).toEqual([bytes("234"), bytes("89")]);
-    // Other bytes sealed under the chunk's key: a verified range fails loudly, a plain one
-    // cannot see.
+    const ranges = () => files().getChunks(space, [{ ...chunk(d), offset: 2, length: 3 },
+                                                   { ...chunk(d), offset: 8, length: 100 }]);
+    expect(await ranges()).toEqual([bytes("234"), bytes("89")]);
+    // Other bytes sealed under the chunk's key, outside every range read: still loud.
     await env.BLOBS.put(await named(space, d), await sealedAt(space, d, bytes("0123456780")));
-    expect((await failure(verified)).message).toBe("a chunk's bytes no longer match its hash");
-    expect(await files().getChunks(space, [{ sha256: d, offset: 2, length: 3 }]))
-      .toEqual([bytes("234")]);
+    expect((await failure(ranges)).message).toBe("a chunk's bytes no longer match its hash");
   });
 
   it.each([
@@ -300,18 +302,24 @@ describe("getChunks", () => {
     [{ offset: 0, length: CHUNK_BYTES + 1 }], [{ offset: CHUNK_BYTES, length: 1 }],
     [{ offset: 0 }], [{ length: 4 }], [{ offset: "0", length: 1 }],
   ])("refuses the range %j", async (at) => {
-    expect((await failure(() => files().getChunks(ns(), [{ sha256: "a".repeat(64), ...at }] as
+    expect((await failure(() => files().getChunks(ns(), [{ ...chunk("a".repeat(64)), ...at }] as
                                                   never))).message)
       .toBe("a chunk range is an offset and a length inside one chunk");
   });
 
-  it("refuses a get of no chunks, or of more bytes than a batch", async () => {
+  it("refuses a get of no chunks, or of more whole chunks than a batch", async () => {
     expect((await failure(() => files().getChunks(ns(), []))).message)
       .toBe("a get is a list of at least one chunk");
     const whole = Array.from({ length: BATCH_BYTES / CHUNK_BYTES + 1 },
-                             () => ({ sha256: "a".repeat(64) }));
+                             () => chunk("a".repeat(64)));
     expect((await failure(() => files().getChunks(ns(), whole))).message)
-      .toBe(`a get moves at most ${BATCH_BYTES} bytes`);
+      .toBe(TOO_MANY);
+  });
+
+  it.each([[undefined], [false], ["true"]])("refuses a get whose verify is %j", async (verify) => {
+    expect((await failure(() => files().getChunks(ns(), [{ sha256: "a".repeat(64), verify }] as
+                                                  never))).message)
+      .toBe("a get is a hash, an optional range and verify: true");
   });
 
   it("fails loudly when a chunk's bytes no longer match its hash", async () => {
@@ -321,7 +329,7 @@ describe("getChunks", () => {
     const hash = await sha(body);
     // Sealed under the very key, so it opens: the bytes, not the key, are what changed.
     await env.BLOBS.put(await named(space, hash), await sealedAt(space, hash, bytes("corrupted")));
-    expect((await failure(() => files().getChunks(space, [{ sha256: hash }]))).message)
+    expect((await failure(() => files().getChunks(space, [chunk(hash)]))).message)
       .toBe("a chunk's bytes no longer match its hash");
   });
 });
@@ -379,8 +387,8 @@ describe("data keys", () => {
     const body = bytes("keyed");
     const hash = await sha(body);
     await put(space, body);
-    expect(await files().getChunks(space, [{ sha256: hash }, { sha256: hash, offset: 1,
-                                                                length: 2 }]))
+    expect(await files().getChunks(space, [chunk(hash), { ...chunk(hash), offset: 1,
+                                                          length: 2 }]))
       .toEqual([body, bytes("ey")]);
     const stored = new Uint8Array(await (await env.BLOBS.get(await named(space, hash)))!
       .arrayBuffer());
@@ -388,7 +396,7 @@ describe("data keys", () => {
     expect(new TextDecoder().decode(stored)).not.toContain("keyed");
     for (const key of [undefined, "", "v1.k2.AAAA.AAAA", 7]) {
       expect((await failure(() => service().getChunks(space, key as string,
-                                                      [{ sha256: hash }]))).message)
+                                                      [chunk(hash)]))).message)
         .toBe(KEY_REFUSED);
       expect((await failure(() => service().putChunks(space, key as string,
                                                       [{ sha256: hash, bytes: body }]))).message)
@@ -404,13 +412,13 @@ describe("data keys", () => {
     expect(await keyOf(mine)).not.toBe(await keyOf(theirs));
     // Their wrapped key, presented for my namespace, does not open: its tag binds theirs.
     expect((await failure(async () => service().getChunks(mine, await keyOf(theirs),
-                                                          [{ sha256: hash }]))).message)
+                                                          [chunk(hash)]))).message)
       .toBe(KEY_REFUSED);
     // A second key minted for my very namespace opens, but names no chunk the first put.
     const second = (await service().mintKey(mine)).key;
-    expect((await failure(() => service().getChunks(mine, second, [{ sha256: hash }]))).message)
+    expect((await failure(() => service().getChunks(mine, second, [chunk(hash)]))).message)
       .toBe("a chunk the manifest holds is missing from the bucket");
-    expect(await files().getChunks(mine, [{ sha256: hash }])).toEqual([body]);
+    expect(await files().getChunks(mine, [chunk(hash)])).toEqual([body]);
   });
 
   it("keeps no plaintext key: a wrapped key is AES-GCM under the ring, and a changed byte fails", async () => {
@@ -418,7 +426,7 @@ describe("data keys", () => {
     const key = await keyOf(space);
     expect(key).toMatch(/^v1\.k2\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{64}$/);
     const flipped = key.slice(0, -2) + (key.at(-2) === "A" ? "B" : "A") + key.at(-1)!;
-    expect((await failure(() => service().getChunks(space, flipped, [{ sha256: "a".repeat(64) }])))
+    expect((await failure(() => service().getChunks(space, flipped, [chunk("a".repeat(64))])))
       .message).toBe(KEY_REFUSED);
   });
 
@@ -428,10 +436,10 @@ describe("data keys", () => {
     expect(old.startsWith("v1.k1.")).toBe(true);
     const body = bytes("older");
     await service().putChunks(space, old, [{ sha256: await sha(body), bytes: body }]);
-    expect(await service().getChunks(space, old, [{ sha256: await sha(body) }])).toEqual([body]);
+    expect(await service().getChunks(space, old, [chunk(await sha(body))])).toEqual([body]);
     const without = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
     expect((await failure(() => service(env.BLOBS, without)
-      .getChunks(space, old, [{ sha256: "a".repeat(64) }]))).message).toBe(KEY_REFUSED);
+      .getChunks(space, old, [chunk("a".repeat(64))]))).message).toBe(KEY_REFUSED);
   });
 
   it("wraps a key again under the active kid: the same data key, so every chunk still reads",
@@ -446,7 +454,7 @@ describe("data keys", () => {
     // The old kid leaves the ring: the re-wrapped key reads what the old one put.
     const without = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
     expect(await service(env.BLOBS, without).getChunks(space, key,
-                                                             [{ sha256: await sha(body) }]))
+                                                             [chunk(await sha(body))]))
       .toEqual([body]);
     // Another namespace's key is refused, as a read refuses it.
     expect((await failure(() => service().rewrapKey(ns(), old))).message).toBe(KEY_REFUSED);
@@ -463,12 +471,12 @@ describe("data keys", () => {
     const hash = await sha(body);
     const under = (ring: string) => service(env.BLOBS, ring);
     await under(rotated).putChunks(space, older.wrapped, [{ sha256: hash, bytes: body }]);
-    expect(await under(rotated).getChunks(space, VECTORS.files.rewrapped, [{ sha256: hash }]))
+    expect(await under(rotated).getChunks(space, VECTORS.files.rewrapped, [chunk(hash)]))
       .toEqual([body]);
     const { key } = await under(rotated).rewrapKey(space, older.wrapped);
-    expect(await under(retired).getChunks(space, key, [{ sha256: hash }])).toEqual([body]);
+    expect(await under(retired).getChunks(space, key, [chunk(hash)])).toEqual([body]);
     expect((await failure(() => under(retired).getChunks(space, older.wrapped,
-                                                         [{ sha256: hash }]))).message)
+                                                         [chunk(hash)]))).message)
       .toBe(KEY_REFUSED);
     expect(hex(new Uint8Array(await unwrap(rotated, space, key)))).toBe(older.key);
   });
@@ -484,7 +492,7 @@ describe("data keys", () => {
     expect((await failure(() => service(env.BLOBS, ring).mintKey(space))).message)
       .toBe(KEYRING_UNAVAILABLE);
     expect((await failure(async () => service(env.BLOBS, ring).getChunks(
-      space, await keyOf(space), [{ sha256: "a".repeat(64) }]))).message)
+      space, await keyOf(space), [chunk("a".repeat(64))]))).message)
       .toBe(KEYRING_UNAVAILABLE);
   });
 });
@@ -570,6 +578,32 @@ describe("manifests", () => {
     expect((await failure(async () => service().putManifestSegment(
       space, await keyOf(space), "0123456789abcdef", 5, 5, bytes("x")))).message).toMatch(/^a manifest/);
   });
+
+  it("holds a root's lists to one checker, as it seals them and as it opens them", async () => {
+    const space = ns();
+    const key = await keyOf(space);
+    const gen = "0123456789abcdef";
+    const part = await service().putManifestPart(space, key, gen, 0, bytes("night one"));
+    for (const [parts, segments] of [
+      [[{ ...part, sha256: part.sha256.toUpperCase() }], []],
+      [[part], [{ ...part, a: 3, b: 3 }]],
+      [[{ ...part, extra: 1 }], []],
+    ] as const) {
+      expect((await failure(() => service().putManifestRoot(
+        space, key, gen, parts as never, segments as never, { s: 1, e: 0 }))).message)
+        .toMatch(/^a manifest has 1 to/);
+    }
+    await service().putManifestRoot(space, key, gen, [part], [], { s: 1, e: 0 });
+    // The root's own sealed lists, rewritten out of shape under its very key: loud on open.
+    const root = JSON.parse(await (await env.BLOBS.get(manifestKey(space, gen)))!.text());
+    const lists = { parts: [{ ...part, size: 0 }], segments: [], s: 1, e: 0, at: 1 };
+    const sealed = await sealObject(await unwrap(RING, space, root.key), manifestKey(space, gen),
+                                    bytes(JSON.stringify(lists)));
+    await env.BLOBS.put(manifestKey(space, gen),
+                        JSON.stringify({ ...root, sealed: base64(sealed) }));
+    expect((await failure(() => service().getManifestRoot(space, gen))).message)
+      .toBe("a manifest root is out of shape");
+  });
 });
 
 describe("sealed objects", () => {
@@ -587,12 +621,12 @@ describe("sealed objects", () => {
       .arrayBuffer());
     expect(new TextDecoder().decode(raw)).not.toContain("plain words");
     expect(raw.byteLength).toBe(body.byteLength + OBJECT_OVERHEAD);
-    expect(await service().getChunks(space, key, [{ sha256: hash },
-                                                  { sha256: hash, offset: 6, length: 5 }]))
+    expect(await service().getChunks(space, key, [chunk(hash),
+                                                  { ...chunk(hash), offset: 6, length: 5 }]))
       .toEqual([body, bytes("words")]);
     // Another key minted for the very namespace names nothing stored under the first.
     const second = (await service().mintKey(space)).key;
-    expect((await failure(() => service().getChunks(space, second, [{ sha256: hash }]))).message)
+    expect((await failure(() => service().getChunks(space, second, [chunk(hash)]))).message)
       .toBe("a chunk the manifest holds is missing from the bucket");
     expect((await failure(() => service().putChunks(space, key, [{ sha256: hash,
                                                                    bytes: bytes("other") }])))
@@ -609,12 +643,12 @@ describe("sealed objects", () => {
       .arrayBuffer());
     await env.BLOBS.put(await named(space, await sha(two)), stored);
     const twoSha = await sha(two);
-    expect((await failure(() => service().getChunks(space, key, [{ sha256: twoSha }])))
+    expect((await failure(() => service().getChunks(space, key, [chunk(twoSha)])))
       .message).toBe("a stored object does not open under its owner's key");
     stored[20] = stored[20]! ^ 1;
     await env.BLOBS.put(await named(space, await sha(one)), stored);
     const oneSha = await sha(one);
-    expect((await failure(() => service().getChunks(space, key, [{ sha256: oneSha }])))
+    expect((await failure(() => service().getChunks(space, key, [chunk(oneSha)])))
       .message).toBe("a stored object does not open under its owner's key");
   });
 
@@ -626,7 +660,7 @@ describe("sealed objects", () => {
     await put(bob, body);
     const raw = async (at: string) => (await env.BLOBS.get(at))!.arrayBuffer();
     await env.BLOBS.put(await named(bob, hash), await raw(await named(alice, hash)));
-    expect((await failure(() => files().getChunks(bob, [{ sha256: hash }]))).message)
+    expect((await failure(() => files().getChunks(bob, [chunk(hash)]))).message)
       .toBe("a stored object does not open under its owner's key");
     const key = await keyOf(alice);
     const [older, newer] = ["1111111111111111", "2222222222222222"];
@@ -637,17 +671,19 @@ describe("sealed objects", () => {
       .message).toBe("a stored object does not open under its owner's key");
   });
 
-  it("charges an unverified range a whole chunk, which it opens whole: a batch pulls no more",
+  it("charges every range the whole chunk it opens and checks: a batch holds no more",
      async () => {
     const space = ns();
-    const key = await keyOf(space);
-    const body = bytes("ranges");
-    const hash = await sha(body);
-    await service().putChunks(space, key, [{ sha256: hash, bytes: body }]);
-    const range = { sha256: hash, offset: 0, length: 1 };
-    expect(await service().getChunks(space, key, [range, range])).toEqual([bytes("r"), bytes("r")]);
-    expect((await failure(() => service().getChunks(space, key, [range, range, range]))).message)
-      .toBe(`a get moves at most ${BATCH_BYTES} bytes`);
+    const chunks = Array.from({ length: BATCH_BYTES / CHUNK_BYTES + 1 },
+                              (_, i) => new Uint8Array(CHUNK_BYTES).fill(i + 1));
+    await put(space, ...chunks.slice(0, 2));
+    await put(space, chunks[2]!);
+    const ranges = await Promise.all(chunks.map(async (each) =>
+      ({ ...chunk(await sha(each)), offset: 0, length: 1 })));
+    expect(await files().getChunks(space, ranges.slice(0, 2)))
+      .toEqual([new Uint8Array([1]), new Uint8Array([2])]);
+    // Three one-byte ranges answer three bytes, but the Worker holds three whole chunks.
+    expect((await failure(() => files().getChunks(space, ranges))).message).toBe(TOO_MANY);
   });
 
   it("seals manifest parts too: the bucket holds no part's plain bytes", async () => {

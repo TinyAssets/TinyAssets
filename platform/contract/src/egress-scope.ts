@@ -103,6 +103,8 @@ const HEADER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SCHEME = /^(?:[A-Za-z][A-Za-z0-9-]{0,31})?$/;
 /** Visible ASCII: a secret is sent in a header, so it never holds a space, CR or LF. */
 export const TOKEN = /^[\x21-\x7e]+$/;
+const SCOPE = /^[\x20-\x7e]*$/;
+const SCOPE_MAX = 4096;
 /** An exact path, or a prefix ending `/*` (`/*` alone is every path at the origin). */
 const PATH = /^\/(?:[A-Za-z0-9._~!$&'()+,;=:@-][A-Za-z0-9._~!$&'()+,;=:@/-]*)?(?:\/?\*)?$/;
 const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
@@ -291,6 +293,11 @@ export function keyExchangeSource(value: unknown): Source & { readonly key_excha
 /** A secret as it is sealed: visible ASCII, so it can only ever be one header value. */
 export function secret(value: unknown): string {
   return text(value, TOKEN, SECRET_MAX);
+}
+
+/** A granted scope as it is sealed (RFC 6749 §3.3): printable ASCII, spaces between. */
+export function scope(value: unknown): string {
+  return text(value, SCOPE, SCOPE_MAX);
 }
 
 /** Whether `path` is one of `paths`: equal to an exact entry, or under a `/*` prefix. */

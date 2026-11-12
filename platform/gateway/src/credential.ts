@@ -10,10 +10,10 @@
  * Every value is checked when it is sealed and again when it is opened, so a blob written
  * by older code that no longer fits fails loudly rather than being half-read.
  */
-import { count, list, shape, text } from "../../contract/src/checks";
+import { count, list, shape } from "../../contract/src/checks";
 import {
   CLIENT_KEYS, CLIENT_OPTIONAL, endpoint, type Endpoint, ENDPOINTS_MAX, oauthClient,
-  type OAuthClient, secret, SECRET_MAX, TOKEN, upstream, type Upstream,
+  type OAuthClient, scope, secret, upstream, type Upstream,
 } from "../../contract/src/egress-scope";
 import { Refusal } from "../../contract/src/refusal";
 
@@ -42,13 +42,13 @@ function grant(value: unknown, sealed: Upstream): OAuthGrant {
                        [...CLIENT_OPTIONAL, "refresh", "scope"]);
   const expires = fields["expires_at"];
   const refresh = fields["refresh"];
-  const scope = fields["scope"];
+  const granted = fields["scope"];
   return Object.freeze({
     ...oauthClient(fields, sealed),
-    access: text(fields["access"], TOKEN, SECRET_MAX),
+    access: secret(fields["access"]),
     expires_at: expires === null ? null : count(expires, 0),
-    ...(refresh === undefined ? {} : { refresh: text(refresh, TOKEN, SECRET_MAX) }),
-    ...(scope === undefined ? {} : { scope: text(scope, /^[\x20-\x7e]*$/, 4096) }),
+    ...(refresh === undefined ? {} : { refresh: secret(refresh) }),
+    ...(granted === undefined ? {} : { scope: scope(granted) }),
   });
 }
 

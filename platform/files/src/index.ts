@@ -25,10 +25,10 @@
  *   lists SHA-256 as a composite checksum only). An existing key is a no-op only when it
  *   opens to exactly these bytes; anything else under a hash key fails loudly instead of
  *   counting as a deduplicated hit.
- * - `getChunks` reads chunks whole, rechecking each hash, or byte ranges of them. Every read
- *   fetches and opens its whole chunk (GCM authenticates the whole) and answers the range
- *   alone; with `verify` it rechecks the chunk's hash too, so the caller holds only the range
- *   and still reads verified bytes.
+ * - `getChunks` reads chunks whole or byte ranges of them. Every read fetches and opens its
+ *   whole chunk (GCM authenticates the whole) and rechecks its hash, then answers the range
+ *   alone, so the caller holds only the range and still reads verified bytes. Each read is
+ *   charged the whole chunk it holds meanwhile, so a call holds at most `BATCH_BYTES`.
  * - `deleteChunks` removes up to 1,000 chunks in one call (R2's batch limit), named by their
  *   hashes under the owner's key; the owner object's garbage collection is its only caller,
  *   for keys in its own chunk table.
@@ -70,11 +70,12 @@ import { base64, fromBase64, hex, openObject, sealObject } from "../../contract/
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedManifest, type ManifestAt,
-  manifestKey, manifestObjectKey, manifestPart, manifestPrefix, namespace, segmentKey, segmentSpan,
+  manifestKey, manifestObjectKey, manifestPart, manifestPrefix, segmentKey,
 } from "./keys";
 import { Refusal } from "../../contract/src/refusal";
-import type {
-  ChunkGet, ChunkPut, ChunkStore, ChunkUpload, ManifestObject, ManifestRoot, ManifestSegment,
+import {
+  type ChunkGet, type ChunkPut, type ChunkStore, type ChunkUpload, GET_READS, type ManifestLists,
+  manifestLists, type ManifestObject, type ManifestRoot, type ManifestSegment, namespace,
 } from "../../contract/src/files";
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
@@ -109,6 +110,21 @@ function rootBytes(text: string): Uint8Array {
   } catch {
     throw new Error("a manifest root is out of shape");
   }
+}
+
+/** A root's opened lists, held to their checker; anything else fails loudly. */
+function openedLists(plain: Uint8Array): ManifestLists {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(plain));
+  } catch {
+    throw new Error("a manifest root is out of shape");
+  }
+  const listed = manifestLists(parsed);
+  if (listed === null) {
+    throw new Error("a manifest root is out of shape");
+  }
+  return listed;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -147,18 +163,18 @@ function chunkBytes(bytes: unknown): Uint8Array {
   return bytes;
 }
 
-/** A read's range, or none for the whole chunk, and the bytes it may move. */
-function range(read: ChunkGet): { range?: { offset: number; length: number }; budget: number } {
+/** A read's range, or none for the whole chunk. */
+function range(read: ChunkGet): { offset: number; length: number } | undefined {
   const { offset, length } = read;
   if (offset === undefined && length === undefined) {
-    return { budget: CHUNK_BYTES };
+    return undefined;
   }
   if (typeof offset !== "number" || typeof length !== "number" || !Number.isSafeInteger(offset)
       || !Number.isSafeInteger(length) || offset < 0 || length < 1
       || offset + length > CHUNK_BYTES) {
     throw new Refusal("invalid", "a chunk range is an offset and a length inside one chunk");
   }
-  return { range: { offset, length }, budget: length };
+  return { offset, length };
 }
 
 export default class FilesService extends WorkerEntrypoint<FilesEnv> implements ChunkStore {
@@ -228,26 +244,21 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
   }
 
   /**
-   * Chunks' bytes, in order: each whole (its hash rechecked) or a range of it. Each read
-   * fetches and opens its whole chunk; an unverified range costs a whole chunk, a verified
-   * one its length, which is all it moves to the caller.
+   * Chunks' bytes, in order: each whole or a range of it. Each read fetches, opens and
+   * rechecks its whole chunk, which it holds until it answers, so each is charged a whole
+   * chunk, whatever its range.
    */
   async getChunks(ns: string, key: string, reads: ChunkGet[]): Promise<Uint8Array[]> {
     namespace(ns);
     const gets = list<ChunkGet>(reads, "a get").map((read) => {
-      if (typeof read !== "object" || read === null) {
-        throw new Refusal("invalid", "a get is a hash and an optional range");
+      if (typeof read !== "object" || read === null || read.verify !== true) {
+        throw new Refusal("invalid", "a get is a hash, an optional range and verify: true");
       }
-      const at = range(read);
-      if (read.verify !== undefined && typeof read.verify !== "boolean") {
-        throw new Refusal("invalid", "a get's verify is true or false");
-      }
-      const verify = read.verify === true;
-      return { sha256: chunkHash(read.sha256), ...at, verify,
-               budget: verify ? at.budget : CHUNK_BYTES };
+      return { sha256: chunkHash(read.sha256), range: range(read) };
     });
-    if (gets.reduce((sum, get) => sum + get.budget, 0) > BATCH_BYTES) {
-      throw new Refusal("invalid", `a get moves at most ${BATCH_BYTES} bytes`);
+    if (gets.length > GET_READS) {
+      throw new Refusal("invalid", `a get reads at most ${GET_READS} chunks, `
+                        + `${BATCH_BYTES} bytes of whole chunks`);
     }
     const dataKey = await this.#key(ns, key);
     return Promise.all(gets.map(async (get) => {
@@ -258,7 +269,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       }
       const bytes = await opened(dataKey, chunkKey(ns, name),
                                  new Uint8Array(await object.arrayBuffer()));
-      if ((get.range === undefined || get.verify) && await sha256Hex(bytes) !== get.sha256) {
+      if (await sha256Hex(bytes) !== get.sha256) {
         throw new Error("a chunk's bytes no longer match its hash");
       }
       return get.range === undefined ? bytes
@@ -368,27 +379,13 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       Promise<void> {
     const wrapped = await rewrap(this.env.FILES_KEYRING, ns, key);
     const dataKey = await this.#key(ns, wrapped);
-    const object = (item: unknown, keys: string) => typeof item === "object" && item !== null
-      && Object.keys(item).sort().join() === keys
-      && typeof (item as ManifestObject).size === "number"
-      && Number.isSafeInteger((item as ManifestObject).size)
-      && (item as ManifestObject).size >= 1 && (item as ManifestObject).size <= CHUNK_BYTES;
-    if (!Array.isArray(parts) || !Array.isArray(segments) || parts.length === 0
-        || parts.length + segments.length > MANIFEST_PARTS
-        || !parts.every((part) => object(part, "sha256,size"))
-        || !segments.every((segment) => object(segment, "a,b,sha256,size"))
-        || typeof span !== "object" || span === null || !Number.isSafeInteger(span.s)
-        || !Number.isSafeInteger(span.e) || span.s < 1 || span.e < span.s - 1) {
+    const { s, e } = typeof span === "object" && span !== null ? span : { s: null, e: null };
+    const listed = manifestLists({ parts, segments, s, e, at: Date.now() });
+    if (listed === null) {
       throw new Refusal("invalid", `a manifest has 1 to ${MANIFEST_PARTS} objects and a log span`);
     }
-    const listed = JSON.stringify({
-      parts: parts.map((part) => ({ sha256: chunkHash(part.sha256), size: part.size })),
-      segments: segments.map((segment) => {
-        const [a, b] = segmentSpan(segment.a, segment.b);
-        return { a, b, sha256: chunkHash(segment.sha256), size: segment.size };
-      }),
-      s: span.s, e: span.e, at: Date.now() });
-    const lists = await sealObject(dataKey, manifestKey(ns, gen), new TextEncoder().encode(listed));
+    const lists = await sealObject(dataKey, manifestKey(ns, gen),
+                                   new TextEncoder().encode(JSON.stringify(listed)));
     const root: StoredRoot = { format: "tinyassets-manifest", version: 2, gen: generation(gen),
                                key: wrapped, sealed: base64(lists) };
     await this.env.BLOBS.put(manifestKey(ns, gen), JSON.stringify(root));
@@ -402,12 +399,10 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     }
     const root = storedRoot(await object.text(), gen);
     const dataKey = await this.#key(ns, root.key);
-    const listed = JSON.parse(new TextDecoder().decode(await opened(
-      dataKey, manifestKey(ns, gen), rootBytes(root.sealed)))) as
-      Pick<ManifestRoot, "parts" | "segments" | "s" | "e" | "at">;
+    const listed = openedLists(await opened(dataKey, manifestKey(ns, gen),
+                                            rootBytes(root.sealed)));
     return { format: root.format, version: root.version, gen: root.gen, key: root.key,
-             parts: listed.parts, segments: listed.segments, s: listed.s, e: listed.e,
-             at: listed.at };
+             ...listed };
   }
 
   /**

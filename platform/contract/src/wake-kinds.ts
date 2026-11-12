@@ -7,7 +7,7 @@ import { sha256Hex } from "./digest";
 import { Refusal } from "./refusal";
 import { codePoints, isPrintable } from "./text";
 import { ARGUMENTS_CHARS } from "./limits";
-import type { RingRequest } from "./gateway";
+import { type RingRequest, ringRequest } from "./gateway";
 import type { WakeKind } from "./wake-records";
 
 /** What a wake says changed: mail to the agent, a room's rows, or the board's. */
@@ -108,7 +108,8 @@ function filled(value: unknown, values: Readonly<Record<string, unknown>>): unkn
  * which the gateway adds from the sealed secret, and its body bytes). `eventId` is the
  * wake's own id, kept across a retry; `at` is the change's own time, in seconds. Refused
  * (`invalid`) before any byte when the kind pushes nothing or the body is past its record's
- * cited size.
+ * cited size; held to the gateway's own check of a ring (`ringRequest`, `invalid_request`), so
+ * the object never builds what the gateway refuses.
  */
 export function doorbellRequest(kind: WakeKind, subscriptionIdValue: string, wake: WakeContent,
                                 eventId: string, at: number): RingRequest {
@@ -129,5 +130,5 @@ export function doorbellRequest(kind: WakeKind, subscriptionIdValue: string, wak
   for (const [name, value] of Object.entries(p.headers)) {
     headers[name] = String(filled(value, values));
   }
-  return { headers: Object.freeze(headers), body, event_id: eventId };
+  return ringRequest({ headers, body, event_id: eventId });
 }

@@ -88,7 +88,7 @@ describe("the files gate", () => {
   it("forwards each call as it is, and records what crossed with its bytes counted", async () => {
     const s = await space();
     await e.FILES_GATE.seen();
-    const read = [{ sha256: s.hash }];
+    const read = [{ sha256: s.hash, verify: true as const }];
     expect(await e.FILES.getChunks(s.ns, s.key, read))
       .toEqual(await e.REAL_FILES.getChunks(s.ns, s.key, read));
     expect(await e.FILES_GATE.seen()).toEqual([
@@ -103,7 +103,7 @@ describe("the files gate", () => {
     const s = await space();
     for (const at of ["before", "after"] as const) {
       await e.FILES_GATE.arm({ method: "getChunks", hold: at });
-      const reading = e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }]);
+      const reading = e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash, verify: true }]);
       const read = watched(reading);
       const held = await e.FILES_GATE.held(HELD_WAIT_MS);
       expect(held).toEqual([{ id: expect.any(Number), method: "getChunks", name: null, at }]);
@@ -114,7 +114,8 @@ describe("the files gate", () => {
       expect(await e.FILES_GATE.held()).toEqual([]);
     }
     // Armed once, it acts once.
-    expect(await e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }])).toEqual([s.bytes]);
+    expect(await e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash, verify: true }]))
+      .toEqual([s.bytes]);
     expect(await outcome(() => e.FILES_GATE.release(1_000_000)))
       .toMatchObject({ message: "no call 1000000 is held at the gate" });
   });
@@ -124,7 +125,7 @@ describe("the files gate", () => {
     const refusal = { code: "busy", message: "busy: the files Worker is full", retryAfterS: 3,
                       facts: { held: 2 } };
     await e.FILES_GATE.arm({ method: "getChunks", refuse: refusal, times: 2 });
-    const read = () => e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }]);
+    const read = () => e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash, verify: true }]);
     expect(await outcome(read)).toEqual({ name: "Refusal", ...refusal });
     // The contract reads it as the refusal it was armed with.
     const refused = refusalOf(await read().catch((error: unknown) => error));
@@ -174,7 +175,7 @@ describe("the files gate", () => {
   it("is as it started once disarmed: no arming, no held call, an empty record", async () => {
     const s = await space();
     await e.FILES_GATE.arm({ method: "getChunks", hold: "before" });
-    const reading = e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }]);
+    const reading = e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash, verify: true }]);
     expect(await e.FILES_GATE.held(HELD_WAIT_MS)).toHaveLength(1);
     await e.FILES_GATE.arm({ method: "mintKey", refuse: { code: "busy", message: "busy" } });
     await e.FILES_GATE.disarm();

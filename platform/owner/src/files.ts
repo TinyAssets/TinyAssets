@@ -109,7 +109,7 @@ import type {
 } from "./owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { Edited, EditRefusal } from "./edit";
-import type { ChunkStore } from "../../contract/src/files";
+import { type ChunkStore, GET_READS } from "../../contract/src/files";
 import { fitList, PAGE_BYTES, RESULT_TOO_LARGE } from "./pages";
 import {
   frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
@@ -1032,17 +1032,17 @@ export class Files {
     return { rewrapped: key !== held, roots };
   }
 
-  /** Chunk bytes in order, fetched from `FILES` at most two chunks a call. */
+  /** Chunk bytes in order, fetched from `FILES` `GET_READS` reads a call at most. */
   async fetch(reads: readonly { sha256: string; offset?: number; length?: number;
-                                 verify?: boolean }[]): Promise<Uint8Array[]> {
+                                 verify?: true }[]): Promise<Uint8Array[]> {
     if (reads.length === 0) {
       return [];
     }
     const { ns, key } = await this.space();
-    const groups = batches(reads.map((read) => ({ read, size: read.length ?? CHUNK_BYTES })));
     const out: Uint8Array[] = [];
-    for (const group of groups) {
-      out.push(...await this.#store.getChunks(ns, key, group.map((item) => item.read)));
+    for (let at = 0; at < reads.length; at += GET_READS) {
+      out.push(...await this.#store.getChunks(ns, key, reads.slice(at, at + GET_READS)
+        .map((read) => ({ ...read, verify: true as const }))));
     }
     return out;
   }
