@@ -1685,9 +1685,16 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
       const readers = state.storage.sql.exec<{ reader: string; unacked: number }>(
         "SELECT reader, unacked FROM ledger_readers").toArray();
       const full = refusal("over");
+      // Mail to the owner waits on the same one ceiling: no mailbox has its own.
+      let toOwner = null;
+      try {
+        ledger.post(MUSE, `dm:${muse}`, "to-owner", BODY, null);
+      } catch (error) {
+        toOwner = (error as Error).message;
+      }
       // Muse reads and acks its first message: one room, for one post.
       ledger.ack(MUSE, ledger.read(MUSE, 1).messages[0]!.seq);
-      return { atOne, first, atLast, last, readers, full, landed: refusal("one"),
+      return { atOne, first, atLast, last, readers, full, toOwner, landed: refusal("one"),
                again: refusal("two") };
     });
     console.log(`a post's rows at ${seen.atOne} unread: ${JSON.stringify(seen.first)}; at ` +
@@ -1699,6 +1706,7 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
     expect(held(muse)).toBeGreaterThan(held(dot));
     expect(seen.full).toMatch(/^ledger_full: too much mail is unread/);
     expect(seen.full).toContain(`the most for Muse (${held(muse)}), Dot (${held(dot)})`);
+    expect(seen.toOwner).toBe(seen.full);
     expect(seen.landed).toBeNull();
     expect(seen.again).toMatch(/^ledger_full:/);
   });
