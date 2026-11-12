@@ -324,7 +324,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     null` at `:180`; T1b), and `NetworkPlan`'s typed `generation` beside the header the Worker
     reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
-    `ci/budgets.mjs --write` (d3 §I).
+    `node ci/budgets.mjs` from the Vitest reports the `platform-sizes` legs upload, owed once one
+    CI run has uploaded them (d3 §I).
   - Lane C: P-T1, the starter guard's "DID NOT RUN" warning that passes when it cannot check
     against main, fails instead (V1 and C2 each left it to the other); `contract/src/slots.ts`
     `SlotPool`'s constructor defaults (T1b).
@@ -334,8 +335,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     workflow half; V1).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
-  - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
-    (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
+  - Lane R's cipher PR: `files/src/cipher.ts`'s SSE-C premise (d3 §O8).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
   (d3 §K1, §K2). T1 is six PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`

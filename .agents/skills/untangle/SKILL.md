@@ -17,13 +17,18 @@ tokens searching, break less without noticing, and find root causes faster.
   building; step 5 on its own diff before pushing. Fix the problems inside the
   change's scope, and never add one: no shim, alias, copy of a value,
   one-caller parameter, test-only hook, optional binding or special case.
-- **The PR body** carries an **Untangle check** section: what you found, what
-  you fixed, what you left and why, and that the diff adds no new problem of
-  any of the four kinds: hidden link, needless link, surplus or special case.
+- **The PR body** is the one document. It carries an **Untangle check**
+  section: what you found, what you fixed, what you left and why, and that the
+  diff adds no new problem of any of the four kinds: hidden link, needless
+  link, surplus or special case.
 - **Every reviewer** runs step 5 on the PR and checks each claim in the
   Untangle check section; a missing section is a finding. A new problem the PR
   adds is blocking, and so is one it leaves in its own scope with no stated
-  reason.
+  reason. Reviewers commit their own small fixes and approve that head.
+- **Lean** (the founder, 2026-11-12): CI is the one full run, so run only what
+  your diff can break, and one mutation per declared change. Read only what
+  applies. One PR in flight per lane, never stacked. Known fixes and process
+  cuts are made at once, as their own small PR.
 
 ## 1. Scope
 

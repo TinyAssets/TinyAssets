@@ -30,15 +30,27 @@ import { largeTests } from "../timeouts";
 import { PLATFORM, REPO } from "../paths";
 import { type Data, json, workflow } from "../workflows";
 
-const STEPS = [
+const SETUP = [
   // Full history, no file contents until read: the migration lock's guard reads its base.
   { uses: "actions/checkout@v4", with: { "fetch-depth": 0, filter: "blob:none" } },
   { uses: "actions/setup-node@v4",
     with: { "node-version": "22", cache: "npm",
             "cache-dependency-path": "platform/package-lock.json" } },
   { run: "npm ci" },
-  { run: "${{ matrix.command }}" },
 ];
+/** Each leg job's steps. The sizes legs also upload the Vitest JSON report `ci/budgets.mjs`
+ *  reads, once their tests have passed. */
+const STEPS: Record<string, Data[]> = {
+  "platform-tests": [...SETUP, { run: "${{ matrix.command }}" }],
+  "platform-sizes": [
+    ...SETUP,
+    { run: "${{ matrix.command }} --reporter=default --reporter=json " +
+           "--outputFile.json=${{ runner.temp }}/report.json" },
+    { uses: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+      with: { name: "sizes-report-${{ strategy.job-index }}",
+              path: "${{ runner.temp }}/report.json", "if-no-files-found": "error" } },
+  ],
+};
 const JOB_KEYS = ["defaults", "name", "runs-on", "steps", "strategy", "timeout-minutes"];
 
 function tests(): Data {
@@ -81,9 +93,9 @@ export function legJobProblems(job: Data, name: string): string[] {
   if (new Set(legs.map((leg) => leg.command)).size !== legs.length) {
     found.push(`two of ${name}'s legs run the same command`);
   }
-  if (JSON.stringify(job?.steps) !== JSON.stringify(STEPS)) {
+  if (JSON.stringify(job?.steps) !== JSON.stringify(STEPS[name])) {
     found.push(`${name}'s steps are checkout, setup-node, npm ci and the leg's command, ` +
-               "each alone");
+               "each alone, and for the sizes the report's upload");
   }
   return found;
 }
@@ -145,17 +157,20 @@ export function workspacesWithLarge(): string[] {
   return [...found].sort();
 }
 
-/** Every workspace with a large test has every shard of its `test:sizes` run, nothing else. */
+/**
+ * Every workspace with a large test has every shard of its `test:sizes` run, nothing else.
+ * Each leg names its shard, `1/1` when whole, so the step's reporter flags reach Vitest.
+ */
 export function sizesProblems(job: Data, withLarge: string[]): string[] {
   const found: string[] = [];
   const shards = new Map<string, { n: number; seen: Set<number> }>();
   for (const command of commands(job)) {
-    const match = /^npm run test:sizes -w ([\w-]+)(?: -- --shard=(\d+)\/(\d+))?$/.exec(command);
+    const match = /^npm run test:sizes -w ([\w-]+) -- --shard=(\d+)\/(\d+)$/.exec(command);
     if (match === null) {
       found.push(`a sizes leg runs something other than a workspace's test:sizes: ${command}`);
       continue;
     }
-    const [, ws, i = "1", n = "1"] = match;
+    const [, ws, i, n] = match;
     const entry = shards.get(ws!) ?? { n: Number(n), seen: new Set<number>() };
     if (entry.n !== Number(n)) {
       found.push(`${ws}'s sizes legs disagree on their shard count`);
