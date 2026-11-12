@@ -1,0 +1,4 @@
+{
+  "about": "Made by platform/plugins/build.mjs from the starter's onboarding skill: its steps' bold leads. Edit the skill and run the build, never this file.",
+  "steps": "ask in one message what to call them, their time zone, what they want help with and are working toward, and when not to message them; save the answers in USER.md's Profile; ask which other AI assistants they use and, for each that agents_list's apps shows not connected, give its connect_url; then fill in the Profile's Onboarded line with today's date"
+}

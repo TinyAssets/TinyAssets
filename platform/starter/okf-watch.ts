@@ -29,7 +29,8 @@ export interface Pin {
   readonly spec_blob: string;
   readonly readme_blob: string;
   readonly vendored: string;
-  readonly tags?: readonly string[];
+  /** The upstream's tags the pin has seen. */
+  readonly tags: readonly string[];
 }
 
 export interface Upstream {
@@ -110,7 +111,7 @@ export function vendoredSpec(file: string): string {
 export function report(pin: Pin, upstream: Upstream, vendored: string): Report {
   const specChanged = blobId(upstream.spec) !== pin.spec_blob;
   const readmeChanged = blobId(upstream.readme) !== pin.readme_blob;
-  const known = new Set(pin.tags ?? []);
+  const known = new Set(pin.tags);
   const newTags = upstream.tags.filter((tag) => !known.has(tag));
   const moved = readmeChanged ? relocation(upstream.readme) : [];
   // Everything upstream that reaches the pull request is checked, not the spec alone.
@@ -192,6 +193,21 @@ export function applied<M extends { version: number; okf: Pin }>(
            vendored: `${provenance}\n${upstream.spec}` };
 }
 
+/**
+ * `manifest.json`'s text as it is committed: JSON at two spaces, but a list of records one
+ * record a line, so a proposal's diff is only what it changes.
+ */
+export function manifestText(manifest: object): string {
+  const inline = (record: object) => `{ ${Object.entries(record).map(([key, value]) =>
+    `${JSON.stringify(key)}: ${JSON.stringify(value)}`).join(", ")} }`;
+  const laid = (value: unknown) => Array.isArray(value) && value.length > 0
+      && value.every((item) => typeof item === "object" && item !== null && !Array.isArray(item))
+    ? `[\n${value.map((record: object) => `    ${inline(record)}`).join(",\n")}\n  ]`
+    : JSON.stringify(value, null, 2).replaceAll("\n", "\n  ");
+  return `{\n${Object.entries(manifest).map(([key, value]) =>
+    `  ${JSON.stringify(key)}: ${laid(value)}`).join(",\n")}\n}\n`;
+}
+
 /** The upstream as a clone at `dir` holds it: its head commit, spec, README and tags. */
 export function readUpstream(dir: string): Upstream {
   const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args],
@@ -243,7 +259,7 @@ function main(argv: readonly string[]): void {
   if (next.vendored !== vendored) {
     writeFileSync(vendoredPath, next.vendored);
   }
-  writeFileSync(manifestPath, `${JSON.stringify(next.manifest, null, 2)}\n`);
+  writeFileSync(manifestPath, manifestText(next.manifest));
   execFileSync("npm", ["run", "--silent", "generate"], { cwd: join(HERE, ".."),
                                                        stdio: "inherit" });
   writeFileSync(body, prBody(pin, upstream, found));
