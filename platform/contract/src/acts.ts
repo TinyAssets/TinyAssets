@@ -82,11 +82,12 @@ export function actProblems(file: unknown): string[] {
  * the isolate; or undefined for a name the file does not hold.
  */
 export function actNamed(name: unknown): Act | undefined {
-  if (typeof name !== "string" || !Object.hasOwn(raw.acts, name)) {
+  const found = Object.entries(raw.acts as Record<string, Act>).find(([key]) => key === name);
+  if (found === undefined) {
     return undefined;
   }
-  const act = (raw.acts as Record<string, Act>)[name]!;
-  const problems = actProblems({ ...raw, acts: { [name]: act } });
+  const act = found[1];
+  const problems = actProblems({ ...raw, acts: Object.fromEntries([found]) });
   if (problems.length > 0) {
     throw new Error(`the acts file is broken: ${problems.join("; ")}`);
   }
