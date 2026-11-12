@@ -548,8 +548,8 @@ describe("manifests", () => {
     expect(await service().rewrapManifestRoot(space, "2222222222222222")).toEqual({ key });
     expect(await service().rewrapManifestRoot(space, "3333333333333333")).toBeNull();
     // With the old kid gone, the root still opens, and its key reads its parts.
-    const without = service(env.BLOBS,
-                            JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } }));
+    const retired = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
+    const without = service(env.BLOBS, retired);
     const root = (await without.getManifestRoot(space, "2222222222222222"))!;
     expect(root.parts).toEqual([part]);
     expect(await without.getManifestPart(space, root.key, "1111111111111111", 0, part.sha256))
@@ -586,7 +586,7 @@ describe("sealed objects", () => {
     const raw = new Uint8Array(await (await env.BLOBS.get(await named(space, hash)))!
       .arrayBuffer());
     expect(new TextDecoder().decode(raw)).not.toContain("plain words");
-    expect(raw.byteLength).toBe(body.byteLength + 12 + 16);
+    expect(raw.byteLength).toBe(body.byteLength + OBJECT_OVERHEAD);
     expect(await service().getChunks(space, key, [{ sha256: hash },
                                                   { sha256: hash, offset: 6, length: 5 }]))
       .toEqual([body, bytes("words")]);
