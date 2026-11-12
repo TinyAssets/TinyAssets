@@ -288,8 +288,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B9: `okf-watch apply` runs `npm run generate`, and its workflow adds `platform/plugins`
     (d3 §O5).
   - B11: a Worker's existence from `Cloudflare.workers`, never from its secret listing: the
-    `workers` and `doors deployed` steps, which read the `secrets` step's listing
-    (`deploy/deploy.ts:1199`) for it (d3 §O2).
+    `workers` and `doors deployed` steps, which read a secret listing for it
+    (`deploy/deploy.ts:1231-1236`, `:1394-1396`) (d3 §O2).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H). The `apply` job runs
     the plan it was approved on: the plan passes as an artifact, and `apply` stops on any

@@ -546,7 +546,8 @@ def _head_commit(root: Path) -> str:
 def deleted_doc_references(root: Path = ROOT) -> list[str]:
     """A path this diff deletes (or renames away) that is still cited.
 
-    A deleted ``docs/`` path fails wherever the tracked tree cites it. Any other
+    A deleted ``docs/`` path fails wherever the tracked tree cites it, by its path or
+    by a relative link. Any other
     deleted path, or a folder the diff emptied, fails where an instruction file
     cites it (``instruction_text``). Archived and superseded changes are history, and so
     is ``docs/decisions/``.
@@ -603,6 +604,8 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
         except (UnicodeError, OSError):
             continue
         cited_docs = {item.rstrip(".,;") for item in re.findall(r"docs/[\w./-]+", source)}
+        if deleted_docs:
+            cited_docs |= cited_paths(rel, source) & deleted_docs  # a relative link too
         for ref in cited_docs & deleted_docs:
             problems.add(f"deleted-doc-reference: {rel} cites {ref}")
         text = instruction_text(rel, source, superseded)
