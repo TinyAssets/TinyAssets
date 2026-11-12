@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { verifyToken } from "../../contract/src/routing-mac";
+import { egressTokenOf } from "../../contract/src/egress";
 
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
@@ -88,7 +89,7 @@ const LEASE_TOKENS = new Map<string, { egress: string; sync: string; runner: str
 export function leaseTokens(start: SandboxStart): { egress: string; sync: string;
                                                     runner: string } {
   if (start.tokens !== null) {
-    LEASE_TOKENS.set(start.lease.lease_id, { egress: start.tokens.egress_token,
+    LEASE_TOKENS.set(start.lease.lease_id, { egress: egressTokenOf(start.network!.network)!,
                                              sync: start.tokens.sync_token,
                                              runner: start.tokens.runner_token });
   }

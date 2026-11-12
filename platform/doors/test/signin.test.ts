@@ -8,7 +8,9 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
+import {
+  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER,
+} from "../../contract/src/egress";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import type { OwnerDO } from "./entry";
 import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } from "./support";
@@ -46,7 +48,7 @@ describe("the sign-in routes and door", () => {
     expect(view.state).toBe("starting");
     const [asked] = await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
       (instance as OwnerDO).recorder.signins) as SandboxSignin[];
-    const inside = { [SANDBOX_HEADER]: asked!.tokens!.egress_token,
+    const inside = { [SANDBOX_HEADER]: egressTokenOf(asked!.network!.network)!,
                      [GENERATION_HEADER]: String(asked!.network!.generation),
                      "x-ta-runner": asked!.tokens!.runner_token };
     const url = CLAUDE_PAGE;
@@ -77,7 +79,7 @@ describe("the sign-in routes and door", () => {
     const body = JSON.stringify({ frames: [] });
     const at = `${EGRESS_ORIGIN}/signin/${view.id}/events`;
     for (const headers of [
-      { [SANDBOX_HEADER]: asked!.tokens!.egress_token,
+      { [SANDBOX_HEADER]: egressTokenOf(asked!.network!.network)!,
         [GENERATION_HEADER]: String(asked!.network!.generation) },
       { "x-ta-runner": asked!.tokens!.runner_token }]) {
       const refused = await call(new Request(at, { method: "POST", body,

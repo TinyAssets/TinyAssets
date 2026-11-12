@@ -20,7 +20,8 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { principal } from "../../contract/src/text";
 import type {
-  MeterEvent, SandboxService, SandboxSignin, SandboxStart, Started,
+  MeterEvent, NetworkApplied, NetworkReapply, SandboxService, SandboxSignin, SandboxStart,
+  Started,
 } from "../../contract/src/sandbox";
 
 import type { SandboxControl, SandboxEnv } from "./control";
@@ -68,6 +69,10 @@ export class Sandbox extends WorkerEntrypoint<Env> implements SandboxService {
   async signinCancel(owner: string, request: { authority: string; id: string }):
       Promise<{ cancelled: boolean }> {
     return this.#owner(owner).signinCancel(request);
+  }
+
+  async network(owner: string, request: NetworkReapply): Promise<NetworkApplied> {
+    return this.#owner(owner).network(request);
   }
 
   async unwait(owner: string): Promise<void> {

@@ -27,7 +27,7 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
 const TOKENS = (n = 0) => ({ egress: "a".repeat(63) + n, sync: "b".repeat(63) + n,
                             runner: "c".repeat(63) + n });
 const acquire = (r: Rig, holder = "sandbox-1", authority = "owner", n = 0) =>
-  inFiles(r.stub, {}, (files) => files.leaseAcquire(authority, holder, TOKENS(n)));
+  inFiles(r.stub, {}, (files) => files.leaseAcquire(authority, holder, TOKENS(n), 1));
 const renew = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>
   inFiles(r.stub, {}, (files) => files.leaseRenew(lease.lease_id, lease.epoch));
 const release = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>

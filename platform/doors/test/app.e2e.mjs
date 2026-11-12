@@ -184,13 +184,18 @@ after(async () => {
 
 const LEASE_TOKENS = new Map();
 
+/** The lease's egress token: only the network's transform carries it, as E2B sets it. */
+function egressOf(opened) {
+  return opened.network.network.rules["egress.tinyassets.io"][0].transform.headers["x-ta-sandbox"];
+}
+
 /** The starts the owner's object asked of its recording sandbox. */
 async function starts() {
   const all = await (await mf.dispatchFetch(`https://e2e.internal/starts/${WHO}`)).json();
   // A lease's tokens come only with the start that opened it; later runs on it reuse them.
   for (const start of all) {
     if (start.tokens !== null) {
-      LEASE_TOKENS.set(start.lease.lease_id, start.tokens);
+      LEASE_TOKENS.set(start.lease.lease_id, { ...start.tokens, egress_token: egressOf(start) });
     }
   }
   return all;
@@ -411,7 +416,7 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
     const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
       method: "POST", body: JSON.stringify(body),
       headers: { "Content-Type": "application/json",
-                 "x-ta-sandbox": signin.tokens.egress_token,
+                 "x-ta-sandbox": egressOf(signin),
                  "x-ta-network-generation": String(signin.network.generation),
                  "x-ta-runner": signin.tokens.runner_token } });
     assert.equal(answer.status, 200, await answer.clone().text());
@@ -501,7 +506,7 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
     const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
       method: "POST", body: JSON.stringify(body),
       headers: { "Content-Type": "application/json",
-                 "x-ta-sandbox": signin.tokens.egress_token,
+                 "x-ta-sandbox": egressOf(signin),
                  "x-ta-network-generation": String(signin.network.generation),
                  "x-ta-runner": signin.tokens.runner_token } });
     assert.equal(answer.status, 200, await answer.clone().text());

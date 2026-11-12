@@ -73,6 +73,39 @@ export function closedNetwork(hosts: Iterable<string>): {
 export const SANDBOX_HEADER = "x-ta-sandbox";
 /** The header the transform sets to the egress generation its network was made under. */
 export const GENERATION_HEADER = "x-ta-network-generation";
+
+/**
+ * The headers the egress door's one transform sets in a network document (an owner's plan,
+ * or a live sandbox's as E2B's info returns it), or null when it sets none.
+ */
+export function doorHeaders(network: unknown): Readonly<Record<string, unknown>> | null {
+  const rules = (network as { rules?: Record<string, unknown> } | null)?.rules;
+  const door = rules?.[EGRESS_HOST];
+  const first = Array.isArray(door) ? door[0] as { transform?: { headers?: unknown } } : undefined;
+  const headers = first?.transform?.headers;
+  return typeof headers === "object" && headers !== null
+    ? headers as Readonly<Record<string, unknown>> : null;
+}
+
+/** The egress token a network document's door transform carries, or null: its one reader. */
+export function egressTokenOf(network: unknown): string | null {
+  const token = doorHeaders(network)?.[SANDBOX_HEADER];
+  return typeof token === "string" && token !== "" ? token : null;
+}
+
+/**
+ * `network` with the lease's egress token set in the door's transform, the one place it
+ * goes (E2B sets it outside the VM): its one writer, for the start that opens the lease and
+ * the sandbox Worker's re-apply.
+ */
+export function withEgressToken<N extends { readonly rules: object }>(network: N,
+                                                                     token: string): N {
+  const headers: Record<string, unknown> = { ...doorHeaders(network) };
+  headers[SANDBOX_HEADER] = token;
+  const rules: Record<string, unknown> = { ...network.rules };
+  rules[EGRESS_HOST] = [{ transform: { headers } }];
+  return { ...network, rules } as N;
+}
 /**
  * The run's own secret as a header, where its CLI sends one (`run_secret_env`, its MCP
  * file's `headers`); the path carries it otherwise. Never forwarded (`x-ta-*`).

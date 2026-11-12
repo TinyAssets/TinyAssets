@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import { verifyToken } from "../../contract/src/routing-mac";
+import { egressTokenOf } from "../../contract/src/egress";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
@@ -29,8 +30,8 @@ import { keepTiers, PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/ti
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
- ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding, runnerSandbox,
- secretOf, startOf, TIERS,
+  ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding,
+  runnerSandbox, secretOf, startOf, TIERS,
 } from "./runs-support";
 import { drainDue, failure, sqlIn } from "./support";
 import type { GatedOwnerDO } from "./worker";
@@ -398,7 +399,7 @@ describe("simultaneous runs", () => {
     expect(JSON.stringify(onB.start.config.env)).not.toContain(a);
     const egress = (start: SandboxStart) => r.bind({ sandbox: {
       kind: "egress", generation: 1, secret: hashed(secretOf(start)), token: verifyToken(
-        env.ROUTING_MAC_KEY, "egress", onA.start.tokens!.egress_token)!.hash } });
+        env.ROUTING_MAC_KEY, "egress", egressTokenOf(onA.start.network!.network)!)!.hash } });
     const call = (run: string, connection: string,
                   as = run === onA.run.run_id ? onA.start : onB.start) =>
       r.stub.egressOpen(egress(as), {

@@ -15,8 +15,8 @@ import { runEnv } from "../../sources/src/run-env";
 import { EGRESS_IP_LITERAL } from "../../contract/src/policy-document";
 import { BOUNDARY_NOTE, networkDocument } from "../src/network";
 import {
-  ALL_TRAFFIC, DNS_SERVERS, EGRESS_HOST, egressBaseUrl, GENERATION_HEADER, SANDBOX_HEADER,
-  sandboxEnv,
+  ALL_TRAFFIC, DNS_SERVERS, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
+  SANDBOX_HEADER, sandboxEnv, withEgressToken,
 } from "../../contract/src/egress";
 
 const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.2000000000.${"T".repeat(43)}.${
@@ -24,7 +24,7 @@ const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.2000000000.${"T".repeat(43)
 /** A routing key, as a deploy generates one: 32 bytes, base64url. */
 const KEY = Buffer.alloc(32, 7).toString("base64url");
 const transform = (generation: number) => ({ [EGRESS_HOST]: [{ transform: { headers: {
-  [SANDBOX_HEADER]: TOKEN, [GENERATION_HEADER]: String(generation) } } }] });
+  [GENERATION_HEADER]: String(generation) } } }] });
 
 function thrown(act: () => unknown): Error {
   try {
@@ -43,7 +43,7 @@ const DESTINATIONS = [
 
 describe("the network document", () => {
   it("in open mode allows every name by SNI and the door, and denies all else", () => {
-    const plan = networkDocument({ mode: "open", destinations: DESTINATIONS }, 3, TOKEN);
+    const plan = networkDocument({ mode: "open", destinations: DESTINATIONS }, 3);
     expect(plan).toEqual({
       network: { allowOut: ["*", EGRESS_HOST], denyOut: [ALL_TRAFFIC], dnsServers: ["1.1.1.1"],
                  rules: transform(3) },
@@ -54,7 +54,7 @@ describe("the network document", () => {
   });
 
   it("in allowlist mode allows the policy's names and the door, once each, in order", () => {
-    const plan = networkDocument({ mode: "allowlist", destinations: DESTINATIONS }, 1, TOKEN);
+    const plan = networkDocument({ mode: "allowlist", destinations: DESTINATIONS }, 1);
     expect(plan.network).toEqual({
       allowOut: ["example.com", "files.pythonhosted.org", "pypi.org", EGRESS_HOST],
       denyOut: [ALL_TRAFFIC], dnsServers: ["1.1.1.1"], rules: transform(1) });
@@ -65,8 +65,8 @@ describe("the network document", () => {
   });
 
   it("in ask mode is an allowlist and a refusal receipt", () => {
-    const allowlist = networkDocument({ mode: "allowlist", destinations: DESTINATIONS }, 2, TOKEN);
-    const ask = networkDocument({ mode: "ask", destinations: DESTINATIONS }, 2, TOKEN);
+    const allowlist = networkDocument({ mode: "allowlist", destinations: DESTINATIONS }, 2);
+    const ask = networkDocument({ mode: "ask", destinations: DESTINATIONS }, 2);
     expect(ask.network).toEqual(allowlist.network);
     expect(ask.unexpressed).toEqual(allowlist.unexpressed);
     expect([ask.mode, ask.receipt]).toEqual(["ask", true]);
@@ -75,13 +75,13 @@ describe("the network document", () => {
   it.each(["open", "allowlist", "ask"])("always allows egress.tinyassets.io, last, in %s mode",
                                         (mode) => {
     for (const destinations of [[], DESTINATIONS, [{ host: EGRESS_HOST, port: 443 }]]) {
-      const { network } = networkDocument({ mode, destinations }, 1, TOKEN);
+      const { network } = networkDocument({ mode, destinations }, 1);
       expect(network.allowOut.at(-1)).toBe(EGRESS_HOST);
       expect(network.allowOut.filter((host) => host === EGRESS_HOST)).toHaveLength(1);
       expect(network.denyOut).toEqual([ALL_TRAFFIC]);
       expect(Object.keys(network.rules)).toEqual([EGRESS_HOST]);
     }
-    expect(networkDocument({ mode, destinations: [] }, 1, TOKEN).network.allowOut)
+    expect(networkDocument({ mode, destinations: [] }, 1).network.allowOut)
       .toEqual(mode === "open" ? ["*", EGRESS_HOST] : [EGRESS_HOST]);
   });
 
@@ -90,36 +90,37 @@ describe("the network document", () => {
     for (const host of ["8.8.8.8", "203.0.113.7", "127.1", "0x7f000001", "0177.0.0.1",
                         "[::1]", "::1", "2001:db8::1", "12345"]) {
       const error = thrown(() => networkDocument({ mode, destinations: [{ host, port: 443 }] },
-                                                 1, TOKEN));
+                                                 1));
       expect([(error as Refusal).code, error.message])
         .toEqual(["egress_ip_literal", EGRESS_IP_LITERAL]);
     }
   });
 
-  it("refuses what is not a policy: a mode, a destination, a generation or a token", () => {
-    for (const [egress, generation, token] of [
-      [{ mode: "closed", destinations: [] }, 1, TOKEN],
-      [{ mode: "allowlist", destinations: [{ host: "Example.com", port: 443 }] }, 1, TOKEN],
-      [{ mode: "allowlist", destinations: [{ host: "example.com", port: 0 }] }, 1, TOKEN],
-      [{ mode: "allowlist", destinations: [{ host: "example.com" }] }, 1, TOKEN],
-      [{ mode: "allowlist", destinations: [{ host: "example.com", port: 443, x: 1 }] }, 1, TOKEN],
-      [{ mode: "open", destinations: [] }, 0, TOKEN],
-      [{ mode: "open", destinations: [] }, 1.5, TOKEN],
-      [{ mode: "open", destinations: [] }, 1, "short"],
-      [{ mode: "open", destinations: [] }, 1, `${"T".repeat(42)}=`],
-      [{ mode: "open", destinations: [] }, 1, "T".repeat(43)],
-      [{ mode: "open", destinations: [] }, 1, `${btoa("owner-1")}.${"T".repeat(43)}`],
+  it("refuses what is not a policy: a mode, a destination or a generation", () => {
+    for (const [egress, generation] of [
+      [{ mode: "closed", destinations: [] }, 1],
+      [{ mode: "allowlist", destinations: [{ host: "Example.com", port: 443 }] }, 1],
+      [{ mode: "allowlist", destinations: [{ host: "example.com", port: 0 }] }, 1],
+      [{ mode: "allowlist", destinations: [{ host: "example.com" }] }, 1],
+      [{ mode: "allowlist", destinations: [{ host: "example.com", port: 443, x: 1 }] }, 1],
+      [{ mode: "open", destinations: [] }, 0],
+      [{ mode: "open", destinations: [] }, 1.5],
     ] as const) {
-      expect((thrown(() => networkDocument(egress as never, generation, token)) as Refusal)
+      expect((thrown(() => networkDocument(egress as never, generation)) as Refusal)
         .invalid).toBe(true);
     }
   });
 
-  it("carries the token and generation in the door's transform only", () => {
-    const { network } = networkDocument({ mode: "allowlist", destinations: DESTINATIONS }, 9,
-                                        TOKEN);
+  it("carries the generation, and the token once the opener adds it, in the door's " +
+     "transform only", () => {
+    const { network } = networkDocument({ mode: "allowlist", destinations: DESTINATIONS }, 9);
     expect(network.rules).toEqual(transform(9));
-    expect(JSON.stringify({ ...network, rules: {} })).not.toContain(TOKEN);
+    expect(egressTokenOf(network)).toBeNull();
+    const opened = withEgressToken(network, TOKEN);
+    expect(opened.rules).toEqual({ [EGRESS_HOST]: [{ transform: { headers: {
+      [GENERATION_HEADER]: "9", [SANDBOX_HEADER]: TOKEN } } }] });
+    expect(egressTokenOf(opened)).toBe(TOKEN);
+    expect({ ...opened, rules: {} }).toEqual({ ...network, rules: {} });
   });
 });
 

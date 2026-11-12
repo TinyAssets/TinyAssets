@@ -25,7 +25,7 @@ import { HEX64, randomHex } from "../../contract/src/ids";
 import { sha256Hex } from "../../contract/src/digest";
 import { utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { LEASE_LIVED, mintToken, sealRoute } from "../../contract/src/routing-mac";
-import { runUrls, sandboxEnv } from "../../contract/src/egress";
+import { runUrls, sandboxEnv, withEgressToken } from "../../contract/src/egress";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
@@ -35,7 +35,7 @@ import { CREDENTIAL_KINDS, SourceRecordError } from "../../sources/src/schema";
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
 import type { Stamped, StandingGrant } from "./authority";
 import type { Placed, Placing } from "./bodies";
-import { OWNER_AUTHORITY, type Lease } from "./files";
+import { OWNER_AUTHORITY, type Lease, type SandboxLease } from "./files";
 import { type Delivery, type MailAuthority, mailInput } from "./ledger";
 import { nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
@@ -47,10 +47,19 @@ import {
   type SpendCaps, type UsableSource,
 } from "./runs";
 import { SANDBOX_ABSENT, SANDBOX_WAITING, started } from "./sandbox";
+import { inTime, LANE_CALL_MS } from "./schedule";
 import { switchedOn } from "./signins";
 import { tierNumbers } from "./tier";
 import type { TierName } from "../../contract/src/control";
 import type { CredentialKind, NetworkPlan } from "../../contract/src/sandbox";
+
+/**
+ * How long a live lease's re-apply waits before the lane sends it again, after it was sent
+ * with no answer yet, failed, or was kept for its paused sandbox: long enough that a lane
+ * pass does not loop on a sandbox Worker that keeps failing, short enough that a model call
+ * refused for a stale network is answered within a minute of the Worker taking it again.
+ */
+export const NETWORK_RETRY_S = 30;
 
 /** The agent's file changed between its read and the admission: the caller tries again. */
 export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was admitted";
@@ -107,10 +116,6 @@ export interface SandboxLeases {
    * still live under it settled `unknown` (its runner is gone with it).
    */
   close(request: { lease_id: string; epoch: number }): Promise<{ released: boolean }>;
-  /** The network document for the current egress policy, with the egress token. */
-  network(egressToken: string): Promise<NetworkPlan>;
-  /** Whether a live lease's network is older than the egress policy: 8b re-applies it. */
-  stale(leaseId: string): Promise<boolean>;
   /** The owner's egress policy, its generation, and `run`'s environment. */
   config(run: SandboxRun): Promise<SandboxConfig>;
 }
@@ -483,11 +488,20 @@ export class Launcher implements RunHost {
 
   // -- THE RUNS LANE -----------------------------------------------------------------------
 
-  /** The `runs` lane's next time: mail no run has taken while admitted, else Runs' own. */
+  /**
+   * The `runs` lane's next time: mail no run has taken while admitted, else the soonest of
+   * Runs' own and a live lease's re-apply coming due (`reapply`).
+   */
   next(now: number): number | null {
     const admitted = this.#o.unadmitted() === null;
-    return admitted && this.#o.ledger.mailDue(this.runs.queueRoom(MAIL_INPUT_BYTES)) ? now
-      : this.runs.next(now, admitted);
+    if (admitted && this.#o.ledger.mailDue(this.runs.queueRoom(MAIL_INPUT_BYTES))) {
+      return now;
+    }
+    const times = [this.runs.next(now, admitted),
+                   ...(admitted && this.sandboxBound()
+                     ? this.#behind(now).map((each) => each.due) : [])]
+      .filter((time): time is number => time !== null);
+    return times.length === 0 ? null : Math.min(...times);
   }
 
   /**
@@ -512,6 +526,7 @@ export class Launcher implements RunHost {
   async run(_now: number, until: number): Promise<void> {
     await this.#laneSignins();
     await this.#o.door(() => this.runs.lost(clock()));
+    await this.reapply();
     while (clock() < until) {
       const waiting = await this.#o.door(() => {
         const next = this.#o.unadmitted() !== null ? null : this.runs.nextWaiting();
@@ -725,21 +740,94 @@ export class Launcher implements RunHost {
     const sync = mintToken(this.#o.env.ROUTING_MAC_KEY, "sync", this.#o.owner(), LEASE_LIVED);
     const runner = randomHex(32);
     const lease = this.#o.files.leaseAcquire(authority, "sandbox", {
-      egress: egress.hash, sync: sync.hash, runner: sha256Hex(runner) });
+      egress: egress.hash, sync: sync.hash, runner: sha256Hex(runner) },
+                                             this.#o.policy.egressGeneration());
     const live = new Set(this.#o.files.liveLeases(now).map((each) => each.lease_id));
     this.#o.egress.end("lease", (stream) => !live.has(stream.lease));
-    const { document } = this.#o.policy.read();
-    const network = networkDocument(document.egress, this.#o.policy.egressGeneration(),
-                                    egress.token);
-    this.#o.files.leaseNetwork(lease.lease_id, network.generation);
-    if (network.receipt) {
-      this.#o.policy.refusal("sandbox_network", { mode: network.mode,
-                                                  generation: network.generation },
+    const plan = this.#networkPlan();
+    return { lease, tokens: { sync_token: sync.token, runner_token: runner },
+             network: { ...plan, network: withEgressToken(plan.network, egress.token) } };
+  }
+
+  /**
+   * In a unit: the network for the owner's egress policy at the current egress generation,
+   * with no egress token (`networkDocument`); in `ask` mode its refusal receipt, one at each
+   * network made (a lease's first, each re-apply).
+   */
+  #networkPlan(): NetworkPlan {
+    const plan = networkDocument(this.#o.policy.read().document.egress,
+                                 this.#o.policy.egressGeneration());
+    if (plan.receipt) {
+      this.#o.policy.refusal("sandbox_network", { mode: plan.mode, generation: plan.generation },
                              clock(), "egress.ask");
     }
-    return { lease, tokens: { egress_token: egress.token, sync_token: sync.token,
-                              runner_token: runner },
-             network };
+    return plan;
+  }
+
+  /**
+   * In a unit: the live leases whose network is behind the current egress generation (an
+   * egress policy write since their start), each with its re-apply's due time: at once
+   * when none was tried under the current generation, else `NETWORK_RETRY_S` after the
+   * last was sent or failed (longer than a call's bound, `LANE_CALL_MS`, so never while
+   * one is out).
+   */
+  #behind(now: number): { lease: SandboxLease; due: number }[] {
+    const generation = this.#o.policy.egressGeneration();
+    return this.#o.files.liveLeases(now)
+      .filter((lease) => lease.network_generation !== generation)
+      .map((lease) => ({ lease, due: lease.network_tried_generation !== generation
+        || lease.network_tried_at === null ? now
+        : Math.max(now, lease.network_tried_at + NETWORK_RETRY_S) }));
+  }
+
+  /**
+   * Each live lease whose network is behind the current egress generation, made again
+   * under it and re-applied on its sandbox (the sandbox Worker's `network`, which keeps the
+   * live egress token and the launched jobs' vendor hosts), each one due (`#behind`): at
+   * once after a policy write that moved the egress generation, whose unit wakes this lane
+   * (`synced`). Its send is a unit (`networkSent`): the lease's calls are admitted under
+   * the new generation from there on, since only that network's transform sets it. Its
+   * answer is another (`networkAnswered`): `applied` confirms it; `at_resume` keeps it out
+   * for its paused sandbox; `lost` or a throw clears it. No answer within `LANE_CALL_MS`
+   * records nothing: the send's retry clock stands.
+   */
+  async reapply(): Promise<void> {
+    if (!this.sandboxBound()) {
+      return;  // no sandbox bound, so no lease was opened under one
+    }
+    const sandbox = this.#o.env.SANDBOX!;
+    const sent = await this.#o.door(() => {
+      if (this.#o.unadmitted() !== null) {
+        return [];
+      }
+      const now = clock();
+      const generation = this.#o.policy.egressGeneration();
+      const due = this.#behind(now).filter(({ due: at }) => at <= now);
+      const out: { lease: SandboxLease; network: NetworkPlan }[] = [];
+      for (const { lease } of due) {
+        if (this.#o.files.networkSent(lease.lease_id, lease.epoch, generation, now)) {
+          out.push({ lease, network: this.#networkPlan() });
+        }
+      }
+      return out;
+    });
+    await Promise.all(sent.map(async ({ lease, network }) => {
+      let answer: "applied" | "at_resume" | "failed" = "failed";
+      try {
+        const got = await inTime(sandbox.network(this.#o.owner(), {
+          authority: lease.authority, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
+          network }), LANE_CALL_MS);
+        if (got === "late") {
+          return;
+        }
+        answer = got.state === "lost" ? "failed" : got.state;
+      } catch (error) {
+        console.error("a lease's network re-apply did not reach the sandbox; the lane tries " +
+                      "again", error);
+      }
+      await this.#o.door(() => this.#o.files.networkAnswered(
+        lease.lease_id, lease.epoch, network.generation, answer, clock()));
+    }));
   }
 
   /**
@@ -798,16 +886,6 @@ export class Launcher implements RunHost {
           }
         }
         return { released };
-      }),
-      network: (egressToken) => this.#o.door(() => {
-        this.#o.admitted("read");
-        const { document } = this.#o.policy.read();
-        return networkDocument(document.egress, this.#o.policy.egressGeneration(), egressToken);
-      }),
-      stale: (leaseId) => this.#o.door(() => {
-        const lease = this.#o.files.liveLeases(clock()).find((each) => each.lease_id === leaseId);
-        return lease !== undefined
-          && lease.network_generation !== this.#o.policy.egressGeneration();
       }),
       config: (run) => this.#o.door(() => {
         this.#o.admitted("read");

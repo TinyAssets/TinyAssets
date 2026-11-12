@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import {
-  EGRESS_ORIGIN, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
+  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import type { Binding } from "../../contract/src/binding";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
@@ -90,7 +90,7 @@ const TOKENS = new Map<string, { egress: string; runner: string }>();
 
 function tokenOf(start: SandboxStart): string {
   if (start.tokens !== null) {
-    TOKENS.set(start.lease.lease_id, { egress: start.tokens.egress_token,
+    TOKENS.set(start.lease.lease_id, { egress: egressTokenOf(start.network!.network)!,
                                        runner: start.tokens.runner_token });
   }
   return TOKENS.get(start.lease.lease_id)!.egress;
