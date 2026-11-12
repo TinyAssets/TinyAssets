@@ -40,7 +40,7 @@
  *   that offers no tools (a compaction's summary), is answered as `cmd:echo`, billed so too.
  *
  * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
- * `say`, `decoded`, `hdr`, `jsonesc`, and `held`: the body read to its end, its length
+ * `say`, `decoded`, `hdr`, `jsonesc`, `stall` (some bytes, then silence), and `held`: the body read to its end, its length
  * answered after 1.5 s, as a provider holds its answer until its first token); `auth.test` and `auth.openai.com` are token
  * endpoints; `keys.test` is a key-exchange endpoint (OpenRouter's PKCE flow); `evil.test` records everything it receives, read back from
  * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
@@ -382,6 +382,23 @@ async function forwardEcho(request: Request): Promise<Response> {
     // Answers only after 10 s (a timer, so workerd does not cut it as hung).
     return new Promise<Response>((resolve) =>
       setTimeout(() => resolve(new Response("late")), 10_000));
+  }
+  if (mode === "stall") {
+    // Some bytes, then silence; a timer holds the stream open (so workerd does not cut it
+    // as hung) and ends it after 5 s. Its cancel is recorded under `x-fake-id`.
+    const id = request.headers.get("x-fake-id") ?? "";
+    cancelled.set(id, false);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("x".repeat(64)));
+        timer = setTimeout(() => controller.close(), 5_000);
+      },
+      cancel() {
+        clearTimeout(timer);
+        cancelled.set(id, true);
+      },
+    }));
   }
   if (mode === "held") {
     const length = (await request.arrayBuffer()).byteLength;

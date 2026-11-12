@@ -305,6 +305,8 @@ def pytest_addoption(parser) -> None:  # pragma: no cover - exercised via pytest
 # child processes, and a test that reads a tree the map does not give it FAILS,
 # naming the path. Every diff outside the trees runs the whole surface under it, so
 # a test cannot gain an unmapped read without its own change failing here first.
+# A tree file is what `affected_tests.tree_of` says. Outside `platform/` that is every
+# file but the Python: a diff that touches Python there runs the whole surface.
 
 
 class TreeAudit:
@@ -355,6 +357,7 @@ class TreeAudit:
         self._local = threading.local()
         self._map = None
         self._users: dict[str, set[str]] = {}
+        self._keeps: dict[str, bool] = {}
 
     # -- recording ----------------------------------------------------------------
     def __call__(self, event: str, args: tuple) -> None:
@@ -378,7 +381,10 @@ class TreeAudit:
             if self.current is not None and not getattr(self._local, "busy", False):
                 self._local.busy = True
                 try:
-                    self._record(list(self._path(path, kwargs.get("dir_fd"))))
+                    found = list(self._path(path, kwargs.get("dir_fd")))
+                    if name != "open":
+                        found = [(tree, rel) for tree, rel in found if not self._kept(rel)]
+                    self._record(found)
                 except Exception as exc:
                     self._record([("?", f"audit error {exc!r}")])
                 finally:
@@ -429,8 +435,30 @@ class TreeAudit:
             frame = frame.f_back
         return once or self.fixture, inner
 
+    def _kept(self, rel: str) -> bool:
+        """Whether `rel` is a directory holding a file that lies in no tree.
+
+        A tree-only diff cannot remove such a directory (``scripts/`` holds Python),
+        so checking that it exists reads nothing the diff can change. ``realpath``
+        makes that check on every component of a path.
+        """
+        if rel not in self._keeps:
+            root, found = self.roots[0], False
+            for base, dirs, names in os.walk(os.path.join(root, rel)):
+                dirs[:] = [d for d in dirs if d != "node_modules"]
+                here = os.path.relpath(base, root).replace(os.sep, "/")
+                if any(self.at.tree_of(f"{here}/{name}") is None for name in names):
+                    found = True
+                    break
+            self._keeps[rel] = found
+        return self._keeps[rel]
+
     def _import_system_listing(self) -> bool:
-        """Whether the audited call's own caller is the import system (it lists sys.path)."""
+        """Whether the audited call's own caller is the import system.
+
+        It lists every ``sys.path`` entry and package directory to find what it can
+        load, and what it can load lies in no tree (``affected_tests.tree_of``).
+        """
         frame = sys._getframe(1)
         while frame is not None and os.path.realpath(frame.f_code.co_filename) == self.plugin:
             frame = frame.f_back
@@ -502,12 +530,13 @@ class TreeAudit:
                 path = "."
             if path is None or isinstance(path, int):
                 return
+            if event != "open" and self._import_system_listing():
+                return
             if self._relative(path) == "":
                 # Listing the root sees which top-level .md files exist. (A tree's own
                 # directory is never deleted by a tree-only diff: gate_selection runs
-                # the whole suite for that.) Opening the root is no listing, and the
-                # import system lists every sys.path entry, the checkout among them.
-                if event != "open" and not self._import_system_listing():
+                # the whole suite for that.) Opening the root is no listing.
+                if event != "open":
                     yield self.at.TOP_MD, "."
                 return
             yield from self._path(path)
@@ -1336,10 +1365,11 @@ def ci_select(tier: str, out: Path, *, base: str | None = None,
         if tier == "gate":
             entries = selection_entries(out)
             if entries is not None:
+                # An empty selection stays empty: a diff no test can read runs none.
+                # Each shard then reports an empty slice and the aggregate covers nothing.
                 runnable, _ = collectible_under_gate(gating_selection(
                     entries, ".github/heavy-test-files.txt"))
-                out.write_text("".join(f"{rel}\n" for rel in runnable) if runnable
-                               else "ALL\n", encoding="utf-8")
+                out.write_text("".join(f"{rel}\n" for rel in runnable), encoding="utf-8")
     entries = selection_entries(out)
     scope = "ALL" if entries is None else "affected"
     digest = selection_digest(entries)

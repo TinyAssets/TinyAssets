@@ -15,9 +15,10 @@
  *
  * The image holds no runner: the sandbox Worker ships it and names it by its digest. The
  * tag is the digest of everything the image's build reads, and of nothing else: `image.py`,
- * the spec, and every file staged for it (the loader, the engines' locks), each by its path
- * and mode. So a change to the runner, the probes, the checks or this file's own code moves
- * no tag, and any change to the image's inputs does (`guards/template.test.ts`).
+ * the hashed lock of the E2B SDK that runs it (`requirements.txt`), the spec, and every file
+ * staged for it (the loader, the engines' locks), each by its path and mode. So a change to
+ * the runner, the probes, the checks or this file's own code moves no tag, and any change to
+ * the image's inputs does (`guards/template.test.ts`).
  *
  *   node <pair.ts tsTool("image.ts")> [--stage <dir> --spec <file>]
  *
@@ -177,6 +178,8 @@ export function tag(image: ImageSpec = spec()): string {
     digest.update(createHash("sha256").update(data).digest());
   };
   part("image.py", readFileSync(join(TEMPLATE, "image.py")));
+  // The SDK turns `image.py`'s steps into the build, so another SDK may make another image.
+  part("requirements.txt", readFileSync(join(TEMPLATE, "requirements.txt")));
   part("spec", canonical(image));
   for (const file of staged(image)) {
     part(`${file.rel}\0${file.mode.toString(8)}`, readFileSync(file.from));

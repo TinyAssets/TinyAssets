@@ -10,7 +10,8 @@
  * the sealed auth template, and sends it to the sealed origin. The provider's own answer
  * streams back, status and body, so the client sees its own API; only the secret is
  * redacted from the body, in case a provider quotes it back. A call is cut at
- * `FORWARD_DEADLINE_MS`, and redirects are never followed.
+ * `FORWARD_DEADLINE_MS`, or once its answer is silent for `IDLE_CUT_MS`, and redirects are
+ * never followed.
  *
  * User CLIs speak their provider's wire format. An unmetered call (a read, a cited free
  * call) only moves bytes: its body streams through. A metered one is the one request the
@@ -39,16 +40,28 @@ import {
 } from "../../contract/src/api-rules";
 import { clamped, learnMeter, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened } from "./keyring";
-import { heldCode, heldDeadlineMs, Hold, raced, weighedBody, weightSlots } from "./held";
+import {
+  gatewaySlots, heldCode, heldDeadlineMs, Hold, raced, weighedBody, weightSlots,
+} from "./held";
 import { RESEALED_HEADER } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract/src/limits";
 
 /**
  * The longest one forwarded request may run: the egress deadline (`EGRESS_DEADLINE_S`, a
- * day), which the egress door and the owner's object keep too. A policy write ends a stream
- * sooner, through the caller's stop.
+ * day, the sandbox's own continuous-runtime ceiling), which the egress door and the owner's
+ * object keep too. A policy write ends a stream sooner, through the caller's stop.
  */
-export const FORWARD_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
+const FORWARD_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
+
+/**
+ * How long an answer may go without a byte from the provider while the gateway waits on it:
+ * then the answer is errored and the provider's request ended, so a stalled stream lets go
+ * of its run's slot. The engines' own idle cut (Claude Code's byte-level and body idle
+ * timeouts, Codex's `DEFAULT_STREAM_IDLE_TIMEOUT_MS`, each 300 s): a stream their own
+ * clients would already have given up on (the untangle's decision on S1). A provider's
+ * keep-alive (an SSE ping) is a byte; the wait for the answer's headers is not counted.
+ */
+export const IDLE_CUT_MS = 300 * 1000;
 
 /** How long the setup check waits for the provider. */
 const VERIFY_DEADLINE_MS = 15 * 1000;
@@ -120,7 +133,7 @@ function internal(name: string): boolean {
 }
 
 /** The header value the sealed template makes of the credential's secret. */
-export function authValue(credential: Credential): string {
+function authValue(credential: Credential): string {
   const scheme = credential.upstream.auth.scheme;
   return scheme === "" ? bearer(credential) : `${scheme} ${bearer(credential)}`;
 }
@@ -139,7 +152,7 @@ function spellings(secrets: readonly string[]): string[] {
 }
 
 /** `value` with every spelling of each of `secrets` replaced by `[redacted]`. */
-export function redactText(value: string, secrets: readonly string[]): string {
+function redactText(value: string, secrets: readonly string[]): string {
   let out = value;
   for (const spelling of spellings(secrets)) {
     out = out.split(spelling).join(REDACTED);
@@ -221,17 +234,6 @@ function refusal(code: GatewayCode, resealed?: Resealed): Response {
   return failureResponse(code, extra);
 }
 
-/**
- * Forwards `request` (its method, path, query, headers and body; its host is ignored) to
- * the credential's sealed origin under `bound`. Refusals are a fixed-code JSON answer the
- * sandbox client sees as an error; the provider's own answers pass through.
- */
-export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
-                              request: Request,
-                              deadlineMs: number = FORWARD_DEADLINE_MS): Promise<Response> {
-  return (await send(env, bound, blob, request, deadlineMs, null, null)).response;
-}
-
 /** A model id or tier as the owner's object takes one: visible ASCII. */
 const NAMED = /^[\x21-\x7e]{1,256}$/;
 
@@ -254,22 +256,19 @@ function meteringOf(value: unknown): Metering {
  * A sandbox's model call, metered (G4), once the owner's object admitted it: held to pi-ai's
  * own model call for the sealed API (`learnMeter`); its slots taken as it arrives
  * (`held.ts`), its body read to its `Content-Length` and parsed once; refused for what no
- * reservation
- * bounds; its model and tier read from that parse and reserved through `reserve`; then its
- * output cap clamped to the reservation's `max_output_tokens`, so what it can cost is what
- * the owner's object reserved, and forwarded as `forward` forwards. The outcome comes once
- * the answer ends: `failed` when nothing was sent or the provider refused before any output,
- * the usage pi-ai read from the answer, priced by the catalog (`meteredUsage`), or
- * `unknown`. `stop`, closed or errored by the caller, aborts the provider's request at any
- * point.
+ * reservation bounds; its model and tier read from that parse and reserved through
+ * `reserve`; then its output cap clamped to the reservation's `max_output_tokens`, so what
+ * it can cost is what the owner's object reserved, and forwarded as a read is. The outcome
+ * comes once the answer ends: `failed` when nothing was sent or the provider refused before
+ * any output, the usage pi-ai read from the answer, priced by the catalog (`meteredUsage`),
+ * or `unknown`. `stop`, closed or errored by the caller, aborts the provider's request at
+ * any point.
  */
 export async function forwardMetered(env: KeyringEnv, bound: Binding, blob: unknown,
                                      request: Request, reserve: Reserve,
-                                     stop: ReadableStream<Uint8Array> | null,
-                                     catalog: Catalog,
-                                     deadlineMs: number = FORWARD_DEADLINE_MS):
+                                     stop: ReadableStream<Uint8Array>, catalog: Catalog):
     Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
-  return send(env, bound, blob, request, deadlineMs, { reserve, catalog }, stop);
+  return send(env, bound, blob, request, stop, { reserve, catalog });
 }
 
 /** A metered call ready to send, or the code it is refused with. */
@@ -374,30 +373,31 @@ async function prepared(request: Request, length: number, credential: Credential
 }
 
 /**
- * A sandbox's free call on a sealed endpoint, forwarded unmetered as `forward` forwards: a
- * read (`GET`, `HEAD`: a model list), which carries no model use, or a call its API's rules
- * cite as free (`freeCall`: a token count). Any other is `unmetered`, so no call the
- * owner's object did not charge reaches a provider's model.
+ * A sandbox's free call on a sealed endpoint, forwarded unmetered: a read (`GET`, `HEAD`: a
+ * model list), which carries no model use, or a call its API's rules cite as free
+ * (`freeCall`: a token count). Any other is `unmetered`, so no call the owner's object did
+ * not charge reaches a provider's model. Its request (its method, path, query, headers and
+ * body; its host is ignored) goes to the credential's sealed origin; the provider's own
+ * answer passes through.
  */
 export async function forwardRead(env: KeyringEnv, bound: Binding, blob: unknown,
-                                  request: Request, stop: ReadableStream<Uint8Array> | null,
-                                  deadlineMs: number = FORWARD_DEADLINE_MS):
+                                  request: Request, stop: ReadableStream<Uint8Array>):
     Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
-  return send(env, bound, blob, request, deadlineMs, null, stop, true);
+  return send(env, bound, blob, request, stop, null);
 }
 
 const FAILED: MeterOutcome = Object.freeze({ state: "failed" });
 const UNKNOWN: MeterOutcome = Object.freeze({ state: "unknown" });
 
+/** One admitted call: metered (its reserve and catalog), or, with none, a free call. */
 async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Request,
-                    deadlineMs: number,
-                    metered: { reserve: Reserve; catalog: Catalog } | null,
-                    stop: ReadableStream<Uint8Array> | null, free = false):
+                    stop: ReadableStream<Uint8Array>,
+                    metered: { reserve: Reserve; catalog: Catalog } | null):
     Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
   const refused = (code: GatewayCode, resealed?: Resealed) =>
     ({ response: refusal(code, resealed), outcome: Promise.resolve(FAILED) });
   const cancelled = new AbortController();
-  stop?.getReader().read().then(() => cancelled.abort(), () => cancelled.abort());
+  stop.getReader().read().then(() => cancelled.abort(), () => cancelled.abort());
   let opened: Opened;
   try {
     opened = await open(env, bound, blob);
@@ -416,8 +416,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   if (target === null) {
     return refused("endpoint_refused", resealed);
   }
-  // A sandbox's unmetered call (`free`): only a read, or a call its API's rules cite as free.
-  if (free && !freeCall(apiRules(credential.upstream.api), credential.upstream.provider,
+  if (metered === null && !freeCall(apiRules(credential.upstream.api), credential.upstream.provider,
                         request.method, target.pathname)) {
     return refused("unmetered", resealed);
   }
@@ -453,7 +452,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     }
     // Held from its first unit to its upload's last write, to its stop; its sender's deadline
     // is the read's (`readHeld`), its reserve's the pool's wait, its upload's its own.
-    const hold = new Hold(bound.owner, cancelled.signal);
+    const hold = new Hold(gatewaySlots(), bound.owner, cancelled.signal);
     let ready: Prepared;
     try {
       ready = await prepared(request, Number(declared), credential, any, target.pathname,
@@ -494,7 +493,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     if (metered !== null) {
       headers.delete("content-length");
     }
-    deadline = AbortSignal.timeout(deadlineMs);
+    deadline = AbortSignal.timeout(FORWARD_DEADLINE_MS);
     signal = AbortSignal.any([request.signal, deadline, cancelled.signal]);
   } catch {
     // Nothing was sent: the upload's slots go with it (L2), and the call is `failed` (M3).
@@ -574,15 +573,20 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
  * ends there: closed, not errored with the abort the stop caused. The caller already knows
  * why it stopped, and an abort error carried back over the RPC stream to a door that no
  * longer reads it is a rejection nothing can handle (workerd logs each one as uncaught). A
- * provider's own failure, or the gateway's deadline, still errors the answer.
+ * provider's own failure, the gateway's deadline, or a wait on the provider longer than
+ * `IDLE_CUT_MS` still errors the answer, and cancels the provider's, which ends its request.
  */
 function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
                    ended: () => void): ReadableStream<Uint8Array> {
   const reader = body.getReader();
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const silent = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Refusal("deadline")), IDLE_CUT_MS);
+      });
       try {
-        const { done, value } = await reader.read();
+        const { done, value } = await Promise.race([reader.read(), silent]);
         if (done) {
           ended();
           controller.close();
@@ -595,7 +599,11 @@ function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
           controller.close();
         } else {
           controller.error(error);
+          // Through the fetch's signal, so a metered answer's tee (its meter's readers) ends too.
+          cancelled.abort();
         }
+      } finally {
+        clearTimeout(timer);
       }
     },
     cancel(reason) {

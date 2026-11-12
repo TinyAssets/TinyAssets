@@ -161,7 +161,7 @@ describe("connecting a pasted key", () => {
     const prepared = await r.stub.connectionPrepare(r.session(), {
       source: "anthropic", kind: "api_key", display_name: "Key", provider: "anthropic",
       revocable: false });
-    const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, "sk-x", ANTHROPIC);
+    const sealed = await env.CONNECT.seal(r.name, prepared.connection, 1, "sk-x", ANTHROPIC);
     const models = (await catalog(ANTHROPIC)).slice(0, 2);
     const scope = await scopeOf(ANTHROPIC);
     const commit = (extra: Record<string, unknown>) => r.stub.connectionCommit(r.session(), {
@@ -772,7 +772,7 @@ describe("a connected model's record", () => {
     const prepared = await r.stub.connectionPrepare(r.session(), {
       source: "anthropic", kind: "api_key", display_name: "Key", provider: "anthropic",
       revocable: false });
-    const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, "sk-x", ANTHROPIC);
+    const sealed = await env.CONNECT.seal(r.name, prepared.connection, 1, "sk-x", ANTHROPIC);
     return r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                   blob: sealed.blob, kid: sealed.kid,
                                                   models: models as ModelRecord[],

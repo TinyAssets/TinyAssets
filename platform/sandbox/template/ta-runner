@@ -14,7 +14,7 @@
 # Exit 24: no runner of that digest here (the Worker uploads it, installs it, asks again);
 # 25: the bytes are not their name (refused loudly: nothing runs); 2: not a digest.
 set -eu
-# Fixed paths, taken from no environment (the loader's tests run a copy with their own).
+# Fixed paths, taken from no environment (its tests run this file as it ships, at these paths).
 RUNNERS=/opt/ta/runner
 INCOMING=/var/lib/ta/incoming
 NODE=/usr/local/bin/node

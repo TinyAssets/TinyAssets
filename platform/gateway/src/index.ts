@@ -6,20 +6,19 @@
  * - `seal`: a pasted API key, sealed with its source record (§7.2 inline connect).
  * - `exchange`, `refresh`, `revokeAtProvider`: OAuth connections (`oauth.ts`).
  * - `verify`: the connection's setup check, and the models it can be asked for.
- * - `forward`: raw passthrough for sandbox egress (`forward.ts`), also on its own
- *   entrypoint for the egress door.
+ * - `forward`: raw passthrough for sandbox egress (`forward.ts`).
  * - `reseal`: a blob resealed under the active kid at the next version (the sweep that
  *   retires a kid).
  * - `sealDoorbell`, `verifyDoorbell`, `ringDoorbell`: a wake's secret sealed, an MCP Events
  *   callback verified and sealed, and one wake sent with it (`doorbell.ts`, slice W).
  *
- * The owner Worker binds the default entrypoint. The doors Worker binds `ConnectGateway`,
- * which serves only `seal`, `exchange` and `verify`, the steps of a connect, and
+ * Each entrypoint serves one caller. The doors Worker binds `ConnectGateway`, the steps of
+ * a connect (`seal`, `exchange`, `verify`, and a doorbell's seal and verification), and
  * `EgressGateway`, which serves only `forward`: the egress door (the binder) streams a
  * sandbox's request through it once the owner's object admitted the request, so the
- * object sleeps while the bytes flow (research §5.4 step 4). Neither doors entrypoint can
- * make a model call, refresh, reseal or revoke. The owner's keeps `forward` for its own MCP
- * client (tasks 4 M, over G4's forward).
+ * object sleeps while the bytes flow (research §5.4 step 4). The owner Worker binds the
+ * default entrypoint: `refresh`, `revokeAtProvider`, `reseal` and `ringDoorbell`. No
+ * entrypoint serves another's methods.
  *
  * Every method takes the owner, connection and version the blob is bound to from its
  * caller, and the seal holds the call to them: the gateway never chooses an owner. Each
@@ -38,34 +37,12 @@ import {
 } from "../../contract/src/gateway";
 import { ringDoorbell, sealDoorbell, verifyDoorbell } from "./doorbell";
 import { codeOf, failureResponse, guarded } from "./failure";
-import { forward, forwardMetered, forwardRead, verify } from "./forward";
+import { forwardMetered, forwardRead, verify } from "./forward";
 import { binding, type KeyringEnv, open, reseal, seal } from "./keyring";
 import { exchange, refresh, revokeAtProvider } from "./oauth";
 
 /** The gateway's one binding: its keyring secret (`wrangler.jsonc`). */
 export type GatewayEnv = KeyringEnv;
-
-function sealKey(env: GatewayEnv, owner: string, connection: string, version: number,
-                 key: string, record: unknown): Promise<Sealed> {
-  return guarded(async () => {
-    const bound = binding(owner, connection, version);
-    const checked = source(record, false);
-    const plaintext: Credential = { kind: "api_key", secret: secret(key),
-                                    upstream: checked.upstream, endpoints: checked.endpoints,
-                                    sealed_at: Date.now() };
-    return seal(env, bound, plaintext);
-  });
-}
-
-function exchangeCode(env: GatewayEnv, owner: string, connection: string, version: number,
-                      grant: unknown, record: unknown): Promise<Exchanged> {
-  return guarded(() => exchange(env, binding(owner, connection, version), grant, record));
-}
-
-function verifySealed(env: GatewayEnv, owner: string, connection: string, version: number,
-                      blob: string): Promise<Verified> {
-  return guarded(() => verify(env, binding(owner, connection, version), blob, builtinCatalog()));
-}
 
 /**
  * What the doors Worker (the binder) binds, as the named entrypoint `ConnectGateway`:
@@ -77,19 +54,28 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> implements Conn
   /** Seals a pasted API key for the connection, with its source record's values. */
   async seal(owner: string, connection: string, version: number, key: string,
              record: unknown): Promise<Sealed> {
-    return sealKey(this.env, owner, connection, version, key, record);
+    return guarded(async () => {
+      const bound = binding(owner, connection, version);
+      const checked = source(record, false);
+      const plaintext: Credential = { kind: "api_key", secret: secret(key),
+                                      upstream: checked.upstream, endpoints: checked.endpoints,
+                                      sealed_at: Date.now() };
+      return seal(this.env, bound, plaintext);
+    });
   }
 
   /** Exchanges an authorization code and seals what it buys. */
   async exchange(owner: string, connection: string, version: number, grant: unknown,
                  record: unknown): Promise<Exchanged> {
-    return exchangeCode(this.env, owner, connection, version, grant, record);
+    return guarded(() => exchange(this.env, binding(owner, connection, version), grant,
+                                  record));
   }
 
   /** Checks a sealed credential against its provider, and lists its models. */
   async verify(owner: string, connection: string, version: number,
                blob: string): Promise<Verified> {
-    return verifySealed(this.env, owner, connection, version, blob);
+    return guarded(() => verify(this.env, binding(owner, connection, version), blob,
+                                builtinCatalog()));
   }
 
   /** Seals the owner's pasted wake token (a `/fire` token, a routine key) for its callback. */
@@ -134,6 +120,7 @@ export class EgressGateway extends WorkerEntrypoint<GatewayEnv> implements Egres
       sent = { response: failureResponse(codeOf(error, "internal")),
                outcome: Promise.resolve({ state: "unknown" }) };
     }
+    // A door that stopped reading the outcome (its client left) ends the write: nothing waits.
     const { readable, writable } = new IdentityTransformStream();
     const writer = writable.getWriter();
     void sent.outcome.then((outcome) => writer.write(new TextEncoder().encode(
@@ -142,6 +129,7 @@ export class EgressGateway extends WorkerEntrypoint<GatewayEnv> implements Egres
   }
 }
 
+/** What the owner's object binds (`GATEWAY`): its connections' upkeep and its wakes. */
 export default class Gateway extends WorkerEntrypoint<GatewayEnv>
     implements GatewayService {
   /** No model call is served over HTTP (ADR-034 decision 13): egress is the model path. */
@@ -149,39 +137,11 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv>
     return failureResponse("not_found");
   }
 
-  /** Seals a pasted API key for the connection, with its source record's values. */
-  async seal(owner: string, connection: string, version: number, key: string,
-             record: unknown): Promise<Sealed> {
-    return sealKey(this.env, owner, connection, version, key, record);
-  }
-
-  /** Exchanges an authorization code and seals what it buys. */
-  async exchange(owner: string, connection: string, version: number, grant: unknown,
-                 record: unknown): Promise<Exchanged> {
-    return exchangeCode(this.env, owner, connection, version, grant, record);
-  }
-
   /** Refreshes an OAuth credential; the result is bound to `version + 1`. */
   async refresh(owner: string, connection: string, version: number,
                 blob: string): Promise<Refreshed> {
     return guarded(() => refresh(this.env, binding(owner, connection, version), blob,
                                  builtinCatalog()));
-  }
-
-  /** Checks a sealed credential against its provider, and lists its models. */
-  async verify(owner: string, connection: string, version: number,
-               blob: string): Promise<Verified> {
-    return verifySealed(this.env, owner, connection, version, blob);
-  }
-
-  /** Forwards one request under the sealed endpoints, for the owner's own MCP client (M). */
-  async forward(owner: string, connection: string, version: number, blob: string,
-                request: Request): Promise<Response> {
-    try {
-      return await forward(this.env, binding(owner, connection, version), blob, request);
-    } catch (error) {
-      return failureResponse(codeOf(error, "internal"));
-    }
   }
 
   /** Sends one wake with its sealed secret, for the owner's object (`doorbell.ts`). */

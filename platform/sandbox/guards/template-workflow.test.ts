@@ -285,8 +285,8 @@ describe("the template's checks", () => {
   });
 });
 
-type Step = { name?: string; uses?: string; run?: string; env?: Record<string, string>;
-              with?: Record<string, unknown> };
+type Step = { name?: string; uses?: string; run?: string; if?: string;
+              env?: Record<string, string>; with?: Record<string, unknown> };
 
 describe("sandbox-template.yml", () => {
   const file = workflow("sandbox-template.yml") as {
@@ -329,11 +329,18 @@ describe("sandbox-template.yml", () => {
     expect(pins.every((line) => line.endsWith("\\"))).toBe(true);
   });
 
+  it("installs Python and E2B's SDK for a build alone, the one mode that runs image.py", () => {
+    const python = job.steps.filter((step) => step.uses?.startsWith("actions/setup-python@")
+                                              || (step.run ?? "").includes("requirements.txt"));
+    expect(python).toHaveLength(2);
+    expect(python.map((step) => step.if)).toEqual(["env.MODE == 'build'", "env.MODE == 'build'"]);
+  });
+
   it.each([[false, "no"], [true, "yes"]])(
     "uploads passed.json only when this run recorded a pass (changed: %s)", (change, fresh) => {
       const record = job.steps.find((step) => step.name === "Did this run record a pass")!;
       const upload = job.steps.find((step) => step.name === "Keep the record of what passed")!;
-      expect(upload["if" as keyof Step]).toBe("always() && steps.record.outputs.fresh == 'yes'");
+      expect(upload.if).toBe("always() && steps.record.outputs.fresh == 'yes'");
       const repo = mkdtempSync(join(dir, "repo-"));
       const passed = join(repo, "platform", "sandbox", "template", "passed.json");
       const git = (...args: string[]) => spawnSync("git", ["-C", repo, "-c", "user.name=t",

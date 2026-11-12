@@ -1,18 +1,19 @@
 name: Main red
 
 # After every Tests run on main (push or schedule), act on the REQUIRED surface
-# only (scripts/main_red.py). Red once: re-run the failed jobs. Red twice on a
-# merge whose parent was green: open a revert PR and raise the `main-red` alarm
-# issue. Otherwise red twice: alarm only. Green on main's tip: close the alarm.
-# `heavy-tests` (a red baseline) and quarantined/flaky tests never trigger it.
+# only (scripts/main_red.py). Red once: re-run the failed jobs. Red twice: raise
+# the `main-red` alarm issue. Green on main's tip: close the alarm. Nothing is
+# reverted: the test IDs a red run names are the old stack's, and that stack
+# takes fixes only. `heavy-tests` (a red baseline) and quarantined/flaky tests
+# never trigger it.
 #
 # This is the safety net that lets the merge-group gate run only the tests a
 # group can affect (docs/decisions/ADR-020-lean-ci-successor.md):
-# the full suite still runs on every merge, here, and a break is acted on.
+# the full suite still runs on main, on every push and every hour, and a break
+# is seen.
 #
-# Runs default-branch code only and never executes the commit under test. The
-# revert branch and PR use MERGE_ATTRIBUTION_TOKEN (a user token) so CI runs on
-# the revert PR; a GITHUB_TOKEN-opened PR starts no workflows.
+# Runs default-branch code only and never executes the commit under test. It
+# holds the run's own token and no other.
 
 on:
   workflow_run:
@@ -53,7 +54,6 @@ jobs:
       - name: React to the required-test result
         env:
           GH_TOKEN: ${{ github.token }}
-          REVERT_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           SHA: ${{ github.event.workflow_run.head_sha }}

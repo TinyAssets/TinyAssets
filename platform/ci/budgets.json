@@ -32,7 +32,7 @@
     },
     "gateway/guards": {
       "slowest_ms": 570,
-      "test": "gateway/guards/isolation.test.ts > gateway isolation guards finds the keyring named only in keyring.ts, and no OWNER or getByName, over the whole import closure"
+      "test": "gateway/guards/isolation.test.ts > gateway isolation, by its rules > finds nothing over the whole import closure"
     },
     "gateway/workerd": {
       "slowest_ms": 11017,
@@ -40,7 +40,7 @@
     },
     "hooks/guards": {
       "slowest_ms": 51,
-      "test": "hooks/guards/isolation.test.ts > hooks isolation guards find no owner binding, no storage and no import from outside"
+      "test": "hooks/guards/isolation.test.ts > hooks isolation, by its rules > finds nothing over the whole import closure"
     },
     "import/guards": {
       "slowest_ms": 4495,

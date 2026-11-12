@@ -20,6 +20,17 @@ A test file is selected when ANY of these holds:
    deeper). Tests here read workflows, app.html and docs as text, so the
    import graph alone would miss them.
 
+The merge gate (``--gate``) asks a different question: which diffs can the old
+stack's suite not see at all? A diff confined to the trees no Python imports
+(``TREES``: the platform, the prose, the workflows, the provider files, the files
+beside the scripts that are not Python) runs only the tests the reader map gives
+those trees (``tree_readers``), and none when it gives none. A diff that touches the
+old stack (``tinyassets/``, ``deploy/``, ``tests/``, ``packaging/``, the image, the
+manifest, or any Python outside ``platform/`` and ``scripts/tests/``) runs everything.
+So does a diff that touches a path whose merge builds and deploys the old stack
+(``deploy_paths``: its deploy chain's workflows), whoever reads it.
+The hourly run on main runs everything whatever changed.
+
 When unsure it selects EVERYTHING (output ``ALL``):
 
 - a conftest, pytest config, the dependency manifest or the gate's own
@@ -54,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import importlib.util
 import os
 import re
@@ -307,6 +319,7 @@ def select(
     graph: Graph | None = None,
     shared: set[str] | None = None,
     pr: bool = False,
+    mapped: bool = False,
 ) -> tuple[list[str] | None, list[str]]:
     """Return (test files, reasons). ``None`` means run the whole suite.
 
@@ -315,12 +328,14 @@ def select(
     CI_MACHINERY change, or a module in a conftest's closure, to the tests
     that import or name it instead of ALL: a selected test still loads every
     conftest dependency, so a startup break fails it. Conftest edits, the
-    manifest, unreached and deleted source still select ALL.
+    manifest, unreached and deleted source still select ALL. `mapped` says the
+    caller adds every test ``tree_readers`` maps to a touched tree
+    (``gate_selection``), so a tree file is not shared infrastructure here.
     """
     reasons: list[str] = []
     changed = sorted({c.replace("\\", "/") for c in changed if c.strip()})
     for rel in changed:
-        if pr and rel in CI_MACHINERY:
+        if (pr and rel in CI_MACHINERY) or (mapped and tree_of(rel)):
             continue
         if rel in FULL_SUITE_TRIGGERS or rel.rsplit("/", 1)[-1] == "conftest.py":
             return None, [f"{rel}: shared test infrastructure"]
@@ -341,7 +356,9 @@ def select(
     walked = {t: path_heads(graph.files[t]) for t in tests if _WALKS.search(texts[t])}
     selected: set[str] = set()
     for rel in changed:
-        if rel.endswith(".py") and not is_test_file(rel) and not (root / rel).exists():
+        # Python under PY_TREES is a tree file like any other: nothing here imports it.
+        python = rel.endswith(".py") and tree_of(rel) is None
+        if python and not is_test_file(rel) and not (root / rel).exists():
             # Its importers still import it (or were edited away in the same
             # diff), but the graph is built from the tree that no longer has
             # it, so nothing would select them.
@@ -358,7 +375,7 @@ def select(
             hit.update(t for t, heads in walked.items()
                        if (top in heads if heads is not None
                            else any(word in texts[t] for word in bare)))
-        source = rel.endswith(".py") and not rel.startswith("tests/")
+        source = python and not rel.startswith("tests/")
         if not hit and source and (root / rel).exists():
             return None, [f"{rel}: Python file no test reaches statically"]
         reasons.append(f"{rel}: {len(hit)} test file(s)")
@@ -366,11 +383,24 @@ def select(
     return sorted(selected), reasons
 
 
-#: Trees no Python imports: the TypeScript platform workspace (ADR-032) and the
-#: prose. A Python test can observe a file in them only by reading it.
-TREES = ("platform", "docs", "openspec", "ideas")
+#: Trees no Python imports: the TypeScript platform workspace (ADR-032), the prose,
+#: the workflows, the provider files, and the files beside the scripts that are not
+#: Python. A Python test can observe a file in them only by reading it.
+TREES = ("platform", "docs", "openspec", "ideas", ".github", ".claude", ".agents", "scripts")
 #: The top-level markdown files, as one more such tree.
 TOP_MD = "*.md"
+#: Where the Python that nothing here imports lives. It runs elsewhere: the platform's
+#: under the platform's own tests and hosts, the process's tests in their own leg.
+PY_TREES = ("platform/", "scripts/tests/")
+#: What the import system can load. Anywhere else in a tree such a file is no tree file.
+_IMPORTABLE = (".py", ".pyc", ".pyd", ".pyi", ".pyw", ".so")
+#: What the runner itself reads, outside any test, so no audit can map who depends on
+#: it: the quarantine ledger, the heavy list and the shard packing.
+RUNNER_READS = frozenset({
+    ".github/known-failing-tests.txt",
+    ".github/heavy-test-files.txt",
+    ".github/test-durations.json",
+})
 
 
 def tree_of(rel: str) -> str | None:
@@ -378,7 +408,9 @@ def tree_of(rel: str) -> str | None:
     rel = rel.replace("\\", "/")
     top = rel.split("/", 1)[0]
     if top in TREES:
-        return top
+        python = ((rel.endswith(_IMPORTABLE) or "__pycache__" in rel.split("/"))
+                  and not rel.startswith(PY_TREES))
+        return None if python or rel in RUNNER_READS else top
     return TOP_MD if "/" not in rel and rel.endswith(".md") else None
 
 
@@ -400,15 +432,24 @@ def provable_shape(changed: list[str]) -> str | None:
     ``tests/test_agent_turn_journal.py`` omits all four test modules that
     import it. No digest or coverage check can see an OMISSION.
 
-    The one shape with an argument: every path lies in a tree of ``TREES`` or
-    is a top-level ``.md``, and none is a ``.py`` file. Nothing imports those
-    trees, so a Python test can observe them only by READING them: opening or
-    listing a path in them, or handing one to a child process. Which tests can
-    do that is ``tree_readers``; the runner's audit (``ci_required_tests.py``,
-    ``--ci-tree-audit``, on in every gate run) fails any test that reads a tree
-    the map does not give it. Every diff outside this shape runs the whole
-    surface under that audit, so no test gains an unmapped read without its own
-    change failing there first.
+    The one shape with an argument: every path is a tree file (``tree_of``): it
+    lies in a tree of ``TREES`` or is a top-level ``.md``, and it is nothing the
+    import system can load, except under ``PY_TREES``, whose Python runs
+    elsewhere. Nothing imports a tree file, so a Python test can observe one
+    only by READING it: opening or listing a path, or handing one to a child
+    process. Which tests can do that is ``tree_readers``; the runner's audit
+    (``ci_required_tests.py``, ``--ci-tree-audit``, on in every gate run) fails
+    any test that reads a tree the map does not give it. Every diff outside this
+    shape runs the whole surface under that audit, so no test gains an unmapped
+    read without its own change failing there first.
+
+    ``scripts/`` is a tree of its non-Python files only (probes, shell, data): a
+    change to a ``.py`` there is still everything, because tests import it and
+    the import graph is not sound (above). The workflows are a tree, the gate's
+    own included: a test reads a workflow as text or not at all (``gate_selection``
+    still runs everything for one whose merge deploys the old stack). What the runner
+    reads outside any test (``RUNNER_READS``) is in no tree, since no audit of
+    the tests can say who depends on it.
 
     A ``tests``-only shape was tried and REMOVED in round 3 (2026-10-03). Its
     argument was that a changed ``tests/test_*.py`` can only affect the tests
@@ -433,9 +474,8 @@ def provable_shape(changed: list[str]) -> str | None:
         return None
     trees: set[str] = set()
     for raw in changed:
-        rel = raw.replace("\\", "/")
-        tree = tree_of(rel)
-        if tree is None or rel.endswith(".py"):
+        tree = tree_of(raw)
+        if tree is None:
             return None
         trees.add(tree)
     return "+".join(sorted(trees))
@@ -845,6 +885,38 @@ def tree_readers(graph: Graph, extra_md: tuple[str, ...] = ()
     return readers, shared
 
 
+#: The workflow whose push trigger lists every path that, merged, builds the old stack's
+#: image. `deploy-prod.yml` runs on its completion and waits for no test run, so the merge
+#: group is the last whole-suite run before that commit is deployed.
+DEPLOY_TRIGGER = ".github/workflows/build-image.yml"
+
+
+def deploy_paths(root: Path = REPO_ROOT) -> list[str]:
+    """``DEPLOY_TRIGGER``'s push paths, as GitHub reads them; none once it is deleted."""
+    path = root / DEPLOY_TRIGGER
+    if not path.is_file():
+        return []
+    try:
+        import yaml
+
+        # YAML 1.1 reads the key `on` as True.
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        trigger = doc.get(True, doc.get("on"))
+        if not isinstance(trigger, dict) or "push" not in trigger:
+            return []
+        paths = (trigger["push"] or {}).get("paths")
+    except Exception as exc:
+        raise RuntimeError(f"{DEPLOY_TRIGGER}: its push paths cannot be read: {exc!r}") from exc
+    # No path filter: every merge builds.
+    return ["**"] if paths is None else [str(p) for p in paths if not str(p).startswith("!")]
+
+
+def deploys(rel: str, patterns: list[str]) -> bool:
+    """Whether a merge that changes `rel` starts the old stack's build (over-matching is safe)."""
+    return any(rel.startswith(p[:-2]) if p.endswith("/**") else fnmatch.fnmatchcase(rel, p)
+               for p in patterns)
+
+
 def gate_selection(
     changed: list[str],
     root: Path = REPO_ROOT,
@@ -864,8 +936,16 @@ def gate_selection(
         return None, [
             "no completeness argument covers this diff shape: running the whole suite"
         ]
+    # A tree file can still be one whose merge deploys the old stack: its deploy chain's
+    # workflows. Production then takes this commit, so this commit runs everything.
+    patterns = deploy_paths(root)
+    shipped = sorted(rel for rel in (c.replace("\\", "/") for c in changed)
+                     if deploys(rel, patterns))
+    if shipped:
+        return None, [f"{shipped[0]}: merging it builds and deploys the old stack "
+                      f"({DEPLOY_TRIGGER}): running the whole suite"]
     graph = graph or Graph(root)
-    selected, reasons = select(changed, root, graph, shared)
+    selected, reasons = select(changed, root, graph, shared, mapped=True)
     if selected is None:
         return None, reasons
     readers, conftest_reads = tree_readers(
@@ -934,7 +1014,8 @@ def pr_tier(selected: list[str] | None, root: Path = REPO_ROOT) -> list[str]:
     """
     heavy = {line.split('#', 1)[0].strip() for line in
              (root / '.github/heavy-test-files.txt').read_text().splitlines()}
-    # The required structural job already executes these exact full files.
+    # The structural job executes these exact full files whenever the gate's selection
+    # holds them, and it holds every file this advisory one does (or is ALL).
     # Partial node-ID targets must leave their other cases in the affected tier.
     structural_files = set()
     guard_script = root / 'scripts/ci_structural_guards.py'
