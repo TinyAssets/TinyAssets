@@ -374,7 +374,7 @@ def main(argv=None) -> int:
     if args.prune:
         orphans = {t.node for t in items if not any(rows.get(i) == "current" for i in t.ids)}
         prune(args.root, items, orphans | set(duplicate))
-        body = ["Prune tests against the current OpenSpec shape.", "", "Registry row(s): S8", ""]
+        body = ["Prune tests against the current OpenSpec shape.", ""]
         if orphans:
             body.append(f"Test-Removal: retired -- {len(orphans)} tests name no current shape row.")
         if duplicate:

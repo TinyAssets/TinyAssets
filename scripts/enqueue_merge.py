@@ -12,8 +12,8 @@ This calls ``enqueuePullRequest`` with the merge-attribution token after the
 same receipt ``pr-scope-guard.yml`` requires: a comment by Jonnyton that opens
 with ``Drain-Review-Verdict: APPROVE`` and ``Drain-Review-Head`` for this
 change, cited at the top of the body. Release-critical diffs also need the
-``infra-change`` label, using that workflow's path list and cap. No receipt,
-no label, no enqueue.
+``infra-change`` label, using that workflow's path list. No receipt, no label,
+no enqueue.
 
 A token that cannot call the mutation (missing ``Merge queues: Read and
 write``) logs that sentence and returns success. The job stays green so the
@@ -113,18 +113,15 @@ def checks_green(conclusions: dict[str, str]) -> bool:
     return True
 
 
-def load_scope_policy(text: str) -> tuple[re.Pattern[str], int]:
-    """The scope guard's release-critical pattern and hard cap.
+def load_scope_policy(text: str) -> re.Pattern[str]:
+    """The scope guard's release-critical pattern.
 
     Read from the workflow text so enqueue cannot grow a second list.
     """
     sensitive = re.search(r"^\s*SENSITIVE_RE='([^']+)'", text, re.M)
-    cap = re.search(r"^\s*MAX_SENSITIVE=(\d+)", text, re.M)
-    if sensitive is None or cap is None:
-        raise RuntimeError(
-            "pr-scope-guard.yml has no SENSITIVE_RE or MAX_SENSITIVE"
-        )
-    return re.compile(sensitive.group(1)), int(cap.group(1))
+    if sensitive is None:
+        raise RuntimeError("pr-scope-guard.yml has no SENSITIVE_RE")
+    return re.compile(sensitive.group(1))
 
 
 def label_block(
@@ -132,14 +129,11 @@ def label_block(
     labels: set[str],
     *,
     pattern: re.Pattern[str],
-    cap: int,
 ) -> str | None:
     """None when the label rule is satisfied."""
     hits = [path for path in paths if pattern.search(path)]
     if not hits:
         return None
-    if len(hits) > cap:
-        return f"release-critical cap ({len(hits)} > {cap})"
     if REQUIRED_LABEL not in labels:
         return f"missing {REQUIRED_LABEL} label"
     return None
@@ -486,7 +480,7 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         reason = "queue-attempt cap"
     if reason is None:
         try:
-            pattern, cap = load_scope_policy(_SCOPE_GUARD.read_text(encoding="utf-8"))
+            pattern = load_scope_policy(_SCOPE_GUARD.read_text(encoding="utf-8"))
         except (OSError, RuntimeError) as exc:
             print(f"::error::could not read the scope policy: {exc}", file=sys.stderr)
             return 1
@@ -494,7 +488,7 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         if paths is None:
             reason = "could not read changed files"
         else:
-            reason = label_block(paths, labels or set(), pattern=pattern, cap=cap)
+            reason = label_block(paths, labels or set(), pattern=pattern)
     if reason is None:
         comments = _comments(repo, number)
         if comments is None:

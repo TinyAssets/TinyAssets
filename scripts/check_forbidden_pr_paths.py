@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Refuse a PR whose diff touches a path no PR may change.
+"""Refuse a PR that adds to, edits or moves a path no PR may change.
 
-Not "release-critical" (that is pr-scope-guard's declaration gate, which asks
-for a label). This is the narrower list of files whose per-PR edits are PURE
-COST: every branch appends to them, every append lands in the same region, and
-every landing conflicts. The record they were keeping lives somewhere better.
+Not "release-critical" (that is pr-scope-guard's count, shown to the reviewer).
+This is the narrower list of files whose per-PR edits are PURE COST: every
+branch appends to them, every append lands in the same region, and every
+landing conflicts. The record they were keeping lives somewhere better.
 
-Reads the changed-path list on stdin or from ``--files-from``, one path per
-line, as pr-scope-guard already computes it from the PR files API (which
-includes ``previous_filename`` for renames, so a move out of a forbidden path is
-caught too). Exits 0 when nothing is forbidden, 1 naming each offender and what
-to do instead.
+Deleting one is allowed. A deletion ends the conflict the rule exists for, and
+the cutover deletes these files with the old stack, so a rule that refused it
+would block the very change that retires it. Moving one is still refused: the
+appends would go on at the new path.
+
+With ``--changes``, reads the PR files API's entries on stdin, one per line as
+``status<TAB>filename<TAB>previous_filename`` (the last empty unless renamed),
+as pr-scope-guard fetches them. Without it, reads bare paths, one per line,
+each taken as an edit. Exits 0 when nothing is forbidden, 1 naming each
+offender and what to do instead.
 
 Deliberately NOT a tree check: the file is allowed to exist and allowed to grow
 on ``main``. What is refused is a PR carrying a change to it.
@@ -33,42 +38,68 @@ FORBIDDEN: dict[str, str] = {
     ),
 }
 
+#: The files API's status for a path the PR deletes.
+REMOVED = "removed"
 
-def forbidden_hits(paths: list[str]) -> list[tuple[str, str]]:
-    """Return ``(path, reason)`` for every changed path that is forbidden."""
+
+def _normal(raw: str) -> str:
+    path = raw.strip().replace("\\", "/")
+    # NOT `lstrip("./")`: that strips a CHARACTER SET, so it would eat the
+    # leading dot of ".agents/..." and the rule would never match.
+    if path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def _reason(path: str) -> str | None:
+    for rule, reason in FORBIDDEN.items():
+        if path == rule or (rule.endswith("/") and path.startswith(rule)):
+            return reason
+    return None
+
+
+def forbidden_hits(changes: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
+    """``(path, reason)`` for every forbidden path a change adds to, edits or moves.
+
+    ``changes`` are ``(status, filename, previous_filename)``. A rename touches both
+    of its paths; a deletion touches none.
+    """
     hits = []
-    for raw in paths:
-        path = raw.strip().replace("\\", "/")
-        # NOT `lstrip("./")`: that strips a CHARACTER SET, so it would eat the
-        # leading dot of ".agents/..." and the rule would never match.
-        if path.startswith("./"):
-            path = path[2:]
-        if not path:
-            continue
-        for rule, reason in FORBIDDEN.items():
-            if path == rule or (rule.endswith("/") and path.startswith(rule)):
+    for status, filename, previous in changes:
+        touched = [previous] if status.strip() == REMOVED else [filename, previous]
+        for path in map(_normal, touched):
+            reason = _reason(path) if path else None
+            if reason:
                 hits.append((path, reason))
-                break
     return hits
+
+
+def parse(lines: list[str], *, changes: bool) -> list[tuple[str, str, str]]:
+    out = []
+    for line in lines:
+        line = line.rstrip("\r\n")
+        if not line:
+            continue
+        if changes:
+            status, filename, previous = (line.split("\t") + ["", ""])[:3]
+            out.append((status, filename, previous))
+        else:
+            out.append(("modified", line, ""))
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--files-from",
-        help="File of changed paths, one per line. Default: read stdin.",
+        "--changes",
+        action="store_true",
+        help="Read `status<TAB>filename<TAB>previous_filename` lines, so a deletion is told apart.",
     )
     args = parser.parse_args(argv)
-
-    if args.files_from:
-        with open(args.files_from, encoding="utf-8") as handle:
-            paths = handle.readlines()
-    else:
-        paths = sys.stdin.readlines()
-
-    hits = forbidden_hits(paths)
+    lines = sys.stdin.readlines()
+    hits = forbidden_hits(parse(lines, changes=args.changes))
     if not hits:
-        print(f"forbidden-paths: clean ({len(paths)} changed path(s) checked)")
+        print(f"forbidden-paths: clean ({len(lines)} change(s) checked)")
         return 0
 
     # One line per offender on stderr so the workflow can quote it verbatim
