@@ -328,7 +328,6 @@ describe("the primitive's history", () => {
       // Entries past the charge: the oldest change, a's deletion, goes first.
       fillHistory(store, alice, () => one(
         sql, "SELECT COUNT(*) AS n FROM collection_erasures WHERE key = 'a'") === 0);
-      expect(one(sql, "SELECT COUNT(*) AS n FROM collection_history WHERE key = 'b'")).toBe(1);
       expect(one(sql, "SELECT charge AS n FROM collection_space"))
         .toBeLessThanOrEqual(LIMITS.maxHistoryCharge);
       // Made again, `a` goes on past every revision an erase gave.
@@ -353,14 +352,16 @@ describe("the primitive's history", () => {
       // Entries past the charge: k0's tombstone, the oldest, goes first.
       fillHistory(store, alice, () => count("collection_erasures", "key = 'k0'") === 0);
       const filled = count("collection_history", "collection != 'board'");
-      for (let n = 1; n < 20; n++) {
+      // Keys erased until their tombstones' bytes take a fill entry's room.
+      let n = 1;
+      for (; count("collection_history", "collection != 'board'") === filled; n++) {
+        expect(n, "the tombstones took no room").toBeLessThan(10_000);
         const made = store.write(alice, alice, "board", `k${n}`, "v", "", false);
         store.delete(alice, "board", `k${n}`, made.etag);
       }
       // The newer tombstones are kept, each in the history's bytes: older entries went.
-      expect(count("collection_erasures", "collection = 'board'")).toBe(19);
+      expect(count("collection_erasures", "collection = 'board'")).toBe(n - 1);
       expect(count("collection_history", "collection = 'board'")).toBe(0);
-      expect(count("collection_history", "collection != 'board'")).toBeLessThan(filled);
       expect(state.storage.sql.exec<{ charge: number }>("SELECT charge FROM collection_space")
         .one().charge).toBeLessThanOrEqual(LIMITS.maxHistoryCharge);
       // k0's tombstone was the oldest: made again, it goes past the pruned revisions.

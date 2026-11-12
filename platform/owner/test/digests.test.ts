@@ -268,8 +268,8 @@ describe("a digest's reads", () => {
       // The row made again has the history of its own writes, from its making.
       expect(store.history(bob, "board", "t").entries.map((entry) => entry.op))
         .toEqual(Array<string>(6).fill("write"));
-      // Deleted again, its private deletion is bob's alone, and the public one stays.
-      store.delete(r.owner, "board", "t", etag);
+      // Cleared as bob's, its private deletion is bob's alone, and the public one stays.
+      expect(store.clear(r.owner, "board", bob)).toEqual({ deleted: 1 });
       expect(store.changed("muse", { collection: "board" }, before, 10).rows
         .map((row) => [row.row_id, row.deleted])).toEqual([["t", true]]);
       expect(store.changed(bob, { collection: "board" }, before, 10).rows

@@ -405,7 +405,8 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     // The delete lands while the write waits; the write then begins again and lands.
     await new Promise((resolve) => setTimeout(resolve, 150));
     await sqlIn(stub, "DELETE FROM file_chunks WHERE state = 'deleting'");
-    expect(await again).toMatchObject({ row: { revision: 1 } });
+    // A new key goes on past the revision a's delete gave (`revision_floor`).
+    expect(await again).toMatchObject({ row: { revision: 3 } });
     expect((await stub.collectionGet(as(name), { collection: "board", row_id: "b" })).row!.body)
       .toBe(LARGE);
   });
