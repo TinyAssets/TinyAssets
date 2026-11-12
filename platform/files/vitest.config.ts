@@ -14,7 +14,7 @@ export default defineConfig({
       // Runs in workerd, from the config's own entry, bucket and cipher (`main`), with a
       // keyring made fresh for each run as its one secret: none is read from the host.
       project("files", "workerd", {
-        plugins: [cloudflareTest(once(() => pool(main(join(PLATFORM, "files"), {
+        plugins: [cloudflareTest(once(async () => pool(main(join(PLATFORM, "files"), {
           bindings: { FILES_KEYRING: keyring() } }))))],
       }),
       // Static guards over the source and config, in Node.

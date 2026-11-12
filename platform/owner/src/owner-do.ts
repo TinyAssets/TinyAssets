@@ -109,8 +109,8 @@ import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
   admission, type Admission, admissionDoors, DISCARDED, type DoorClass, doorRefusal,
-  IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, OWNER_ERASED, ownerTier,
-  PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned, workRefusal, writeTombstone,
+  IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, isAdmitted, OWNER_ERASED,
+  ownerTier, PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import {
   agentId, AUTHORITY_CHANGED, MAIN_AGENT, may, NOT_GRANTED, type Stamped,
@@ -588,7 +588,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#storage = storage;
     this.#state = this.#stateOf(env, storage);
     this.#tombstone = tombstoned(storage.sql);
-    const admitted = () => workRefusal(admission(storage)) === null;
+    const admitted = () => isAdmitted(storage);
     this.#policy = new Policy(storage);
     // The files byte quota is the tier's storage (ADR-034 decision 8), as last handed.
     // Retention kept in R2 makes room first at the byte quota: the oldest placed history,
@@ -618,9 +618,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
                                         () => fileLimits(this.#policy.read().document, null));
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
-    this.#ledger = new Ledger(storage, this.#grants, internals.ledgerLimits, admitted,
-                              () => this.#collections.clock(), this.#bodies.adopt,
-                              (needed) => this.#files.fullRefusal(needed));
+    this.#ledger = new Ledger(storage, this.#grants, admitted, () => this.#collections.clock(),
+                              this.#bodies.adopt, (needed) => this.#files.fullRefusal(needed),
+                              internals.ledgerLimits);
     this.#backups = new Backups({
       storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
       log: this.#log,

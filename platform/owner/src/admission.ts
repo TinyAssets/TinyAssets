@@ -92,6 +92,11 @@ export function workRefusal(state: Admission): Refusal | null {
         : new Refusal("owner_suspended", `${OWNER_SUSPENDED} (${state.reasons.join(", ")})`);
 }
 
+/** Whether the owner is admitted now: `require_work` refuses it nothing. A read. */
+export function isAdmitted(storage: OwnerStorage): boolean {
+  return workRefusal(admission(storage)) === null;
+}
+
 /**
  * What a door does, which decides what a suspension leaves it: `work` spends or grows
  * (a message, a launch, a write that adds), `read` only reads (and signs in), `reduce` only

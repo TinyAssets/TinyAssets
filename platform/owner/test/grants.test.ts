@@ -18,7 +18,9 @@ import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { POLICY_LIMITS, policyDigest } from "../../contract/src/policy-document";
 import { Policy } from "../src/policy";
-import { DOT, MCP, MUSE, rig, type Rig, signedIn, subscription } from "./ledger-support";
+import {
+  DOT, ledgerParts, MCP, MUSE, rig, type Rig, signedIn, subscription,
+} from "./ledger-support";
 import { failure } from "./support";
 
 const CHATGPT: Origin = Object.freeze({ client: "1".repeat(64), family: "2".repeat(64) });
@@ -274,7 +276,8 @@ describe("an outside client's grant", () => {
     // still counts that agent, so its row is held, not free.
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
       const grants = new Grants(state.storage, new Policy(state.storage));
-      new Ledger(state.storage, grants).register(DOT, MCP, {
+      const [storage, , ...rest] = ledgerParts(state.storage);
+      new Ledger(storage, grants, ...rest).register(DOT, MCP, {
         command_center_id: "alpha", display_name: "Dot", delivery_method: "pull",
         recipe_id: null });
       grants.admit(DOT.client, "mcp", null, clock());

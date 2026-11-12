@@ -85,7 +85,7 @@ async function doors() {
     workers: [
       // The doors' test Worker, with everything the doors' config gives it (`auxiliary`):
       // its secrets are the test's, none read from the host.
-      auxiliary(DOORS, {
+      await auxiliary(DOORS, {
         bindings: { OWNER_ISSUER: UPSTREAM,
                     ROUTING_MAC_KEY: randomBytes(32).toString("base64url"),
                     WORKOS_API_KEY: "test-client-secret",
@@ -101,11 +101,11 @@ async function doors() {
         outboundService: (request) => request.url === webClient ? mf.dispatchFetch(webClient)
           : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
       }, "test/e2e-entry.ts"),
-      auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: keyring },
-                                             outboundService: providers.name }),
+      await auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: keyring },
+                                                   outboundService: providers.name }),
       // The files Worker: its config's bucket and cipher, and a test keyring.
-      auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: keyring } }),
-      auxiliary(join(PLATFORM, "codemode"), {}),
+      await auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: keyring } }),
+      await auxiliary(join(PLATFORM, "codemode"), {}),
       providers,
       sandbox,
       {
