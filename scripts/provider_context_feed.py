@@ -50,7 +50,6 @@ WORKTREE_PURPOSE_LABEL_PRIORITY: tuple[tuple[str, int], ...] = (
     ("review gate", 4),
     ("memory refs:", 5),
     (".claude/agent-memory/", 5),
-    (".agents/activity.log", 5),
     ("related implications:", 6),
     ("idea feed refs:", 7),
     ("pickup hints:", 8),
@@ -128,7 +127,6 @@ SOURCE_PRIORITY: dict[str, int] = {
     "provider-config": 60,
     "exec-plan": 65,
     "idea-feed": 70,
-    "activity-log": 90,
 }
 
 SIGNAL_PRIORITY: dict[str, int] = {
@@ -176,7 +174,6 @@ def default_specs(root: Path) -> list[SourceSpec]:
         SourceSpec(".cursor", "cursor", "provider-config"),
         SourceSpec(".cursorrules", "cursor", "provider-config", False),
         SourceSpec("CLAUDE.md", "claude", "provider-routing", False),
-        SourceSpec(".agents/activity.log", "shared", "activity-log", False),
         SourceSpec("ideas/INBOX.md", "shared", "idea-feed", False),
         SourceSpec("ideas/PIPELINE.md", "shared", "idea-pipeline", False),
         SourceSpec("pages/concepts", "shared", "brain-concept"),

@@ -1,5 +1,5 @@
 /**
- * pi's code mode sandbox, in the hooks Worker (pi audit F8; pi-codemode's
+ * pi's code mode sandbox, in the codemode Worker (pi audit F8; pi-codemode's
  * "Usage on Cloudflare Workers"): the VM of an owner's code mode script runs here, in a
  * Durable Object of a separately deployed Worker, so a script that computes never holds
  * the owner's object (pi measured 10 s in the session object or a Dynamic Worker it loads,

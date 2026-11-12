@@ -1,14 +1,15 @@
 /**
  * Code mode at the MCP door (slice M): the object's `codeRun`, in workerd with the real
- * hooks Worker behind `HOOKS`. On by default, and refused and hidden from the caller's
- * tools once the owner's policy turns `hooks.codemode` off; served only where the caller's
+ * codemode Worker behind `CODEMODE_VM`. On by default, and refused and hidden from the caller's
+ * tools once the owner's policy turns `codemode.on` off; served only where the caller's
  * profile holds `code`; one script calls several tools, each the caller's own door,
  * admitted again against its grant and the control record's gates (`SwitchedOwnerDO`, its
  * record flipped mid-script); no tool outside the profile and no capability outside the
  * grant; a revoked client and another owner's binding refused; a script past its wall time
- * or its compute stopped (`BoundedOwnerDO`, its bounds small; production's are
- * `CODEMODE_TIMEOUT_MS` and the hooks Worker's interrupt budget), saying which calls
- * landed; output past one answer cut and said so, a value past it refused `answer_too_large`.
+ * stopped (`BoundedOwnerDO`, its bound small; production's is `CODEMODE_TIMEOUT_MS`), saying
+ * which calls landed; output past one answer cut and said so, a value past it refused
+ * `answer_too_large`. A script past its compute is the codemode Worker's to stop
+ * (`codemode/test/`).
  */
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -33,7 +34,8 @@ async function setPolicy(r: Rig, codemode: boolean, custom?: string[]): Promise<
   const { generation, policy } = await r.stub.policyRead(r.bind(null));
   const { tools: _tools, ...rest } = policy as typeof policy & { tools?: unknown };
   await r.stub.policyWrite(r.session(null), { expected_generation: generation, policy: {
-    ...rest, hooks: { codemode }, ...(custom === undefined ? {} : { tools: { custom } }) } });
+    ...rest, codemode: { on: codemode },
+    ...(custom === undefined ? {} : { tools: { custom } }) } });
 }
 
 /** The owner names a client's profile, and its mode and scopes, against its revision. */
@@ -168,14 +170,6 @@ describe("the code door", () => {
     expect(looped.calls.ok).toBeGreaterThan(1);
     // Which writes landed before the stop; the reads are only counted.
     expect(looped.landed).toEqual([{ name: "collection_write", status: "ok", count: 3 }]);
-  });
-
-  it("stops a script past its compute", async () => {
-    const r = await rig(env.BOUNDED as unknown as DurableObjectNamespace<OwnerDO>);
-    await setPolicy(r, true);
-    expect(await r.stub.codeRun(r.bind(null), { script: "let n = 0; for (;;) { n++; }" }))
-      .toMatchObject({ ok: false, error: { kind: "timeout",
-        message: "Execution exceeded its interrupt budget of 2000" } });
   });
 
   it("takes the owner's custom tools only as distinct names of the door's tools", () => {

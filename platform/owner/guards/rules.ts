@@ -19,7 +19,7 @@
  * an unsafe binding) refuses the owner's binding:
  * - `FILES`, the files Worker: its one R2 bucket, its keyring and its cipher var;
  * - `GATEWAY`, the model gateway: no binding at all, and its one secret, the keyring;
- * - `HOOKS`, the hooks Worker (H0, narrowed to code mode by ADR-034): the namespace of its
+ * - `CODEMODE_VM`, the codemode Worker (H0, narrowed to code mode by ADR-034): the namespace of its
  *   own one class, exactly (no `script_name`, so no other Worker's class), made by its
  *   migrations as SQLite, and its `limits` exactly: no `OWNER`, no storage binding and no
  *   Worker Loader, so a script reaches no owner;
@@ -43,7 +43,7 @@
  */
 import { CONFIG as FILES } from "../../files/guards/rules";
 import { CONFIG as GATEWAY } from "../../gateway/guards/rules";
-import { CONFIG as HOOKS } from "../../hooks/guards/rules";
+import { CONFIG as CODEMODE_VM } from "../../codemode/guards/rules";
 import { CONFIG as SANDBOX } from "../../sandbox/guards/rules";
 import { imports, type Owed } from "../../ci/kit/owed";
 
@@ -114,10 +114,10 @@ export const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
                          secrets: FILES.secrets!, vars: Object.keys(FILES.vars!) }),
   GATEWAY: Object.freeze({ service: GATEWAY.name, bindings: Object.freeze({}),
                            secrets: GATEWAY.secrets! }),
-  HOOKS: Object.freeze({ service: HOOKS.name, bindings: Object.freeze({}),
-                         own: { durable_objects: HOOKS.exact!["durable_objects"],
-                                classes: HOOKS.classes! },
-                         limits: HOOKS.exact!["limits"] }),
+  CODEMODE_VM: Object.freeze({ service: CODEMODE_VM.name, bindings: Object.freeze({}),
+                         own: { durable_objects: CODEMODE_VM.exact!["durable_objects"],
+                                classes: CODEMODE_VM.classes! },
+                         limits: CODEMODE_VM.exact!["limits"] }),
   SANDBOX: Object.freeze({ service: SANDBOX.name, bindings: Object.freeze({ kv_namespaces: 1 }),
                            own: { durable_objects: SANDBOX.exact!["durable_objects"],
                                   classes: SANDBOX.classes! },
@@ -133,7 +133,7 @@ export const OWED: readonly Owed[] = Object.freeze([
   // Platform-wide guards in the owner's tree: B8 moves each to its subject.
   ...imports("B8", "platform/owner/guards/rules.ts", [
     "platform/files/guards/rules.ts", "platform/gateway/guards/rules.ts",
-    "platform/hooks/guards/rules.ts", "platform/sandbox/guards/rules.ts"]),
+    "platform/codemode/guards/rules.ts", "platform/sandbox/guards/rules.ts"]),
   ...imports("B8", "platform/owner/guards/starter.test.ts", ["platform/starter/okf-watch.ts"]),
   // The egress memory leg, the doors' and the gateway's, in the owner's tree: B23.
   ...imports("B23", "platform/owner/memory/egress-probe.ts", [

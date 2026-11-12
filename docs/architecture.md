@@ -25,7 +25,7 @@ Why: [ADR-032](decisions/ADR-032-clean-sheet-platform.md),
 | `platform/files/` | The R2 bucket's only binder: owner file bytes as encrypted chunks. |
 | `platform/gateway/` | Sealed credentials, opened per call; the egress meter. |
 | `platform/sandbox/` | The E2B Worker and the in-VM runner; each engine runs there, unmodified. |
-| `platform/hooks/` | Code mode's VMs only (ADR-034 decision 12). |
+| `platform/codemode/` | Code mode's VMs only (ADR-034 decision 12). |
 | `platform/sources/`, `platform/starter/` | Engine and source records as data, with their schema, checker and catalog (`sources/src/`, a contract module); the bubble agent's files. |
 | `platform/plugins/`, `platform/deploy/` | Directory plugins, the deploy kit. |
 | `platform/contract/` | The vocabulary more than one Worker speaks: ids, limits, typed refusals, the control record, the services' RPC contracts. It imports no Worker. |
@@ -200,7 +200,7 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills; outcome evidence and provenance in `outcomes/` and `attribution/` | none; bundled domains and market API deleted; app workflow goals remain in `api/goals.py` | converged | `domain-entry-points`, `check_shapes.py` S18 | C5, C10 |
 | S19 | Built artifacts are not committed | Hosted Claude Code plugin uses the repository folder; `.mcpb` stages its own runtime at pack time | none | converged | `check_mirror_parity.py` rejects tracked plugin runtime files | C4 |
 | S20 | One home per fact (ADR-005, Dir 6) | README Direction, AGENTS.md, this file, ADRs, `openspec/specs`, `openspec/changes`, `docs/concerns`, `docs/reference` | none; C1 removed retired document trees and root clutter, retaining cited incident repros | converged | `doc-homes`: no new file outside a home | C1 |
-| S21 | One queue (AGENTS.md) | `openspec/changes/`, reconciled into one tracking issue | `target-architecture` and `owner-daemon-in-box`, marked superseded by ADR-032 until the cutover archives them | drifted | `superseded-open`; `shape-reconcile.yml` | C2 |
+| S21 | One queue (AGENTS.md) | `openspec/changes/` | `target-architecture` and `owner-daemon-in-box`, marked superseded by ADR-032 until the cutover archives them | drifted | `superseded-open` | C2 |
 | S22 | Command center naming | `command_center` in code and storage | 10 `universe_*` modules outside the two target homes, ~13k mentions | drifted | S22 ceiling on `universe_*` modules + no new `*Universe*` definitions; mentions renamed as each slice touches a file | each slice |
 | S23 | Accumulating state; fail loudly (Facts 5, 8) | `Annotated[list, operator.add]`; a missing dependency is an error | none; graph and provider mock fallbacks are removed | converged | `check_shapes.py` S23, `test_capability_health` | C3 |
 | S24 | One durable send (commit before publish) | `converse` → `owner_door.send` → committed owner row → serialized dispatch | removed browser steering, destructive claims, batch replay and experimental ingress; one browser transport and one box intake | verified | `send-path` (`tests/test_send_path.py`) | C11 |

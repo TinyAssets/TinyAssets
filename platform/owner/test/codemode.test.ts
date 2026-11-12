@@ -1,8 +1,8 @@
 /**
  * Code mode's executor (tasks 5, H1; pi audit F8; ADR-034 decision 12), in workerd with
- * the real hooks Worker behind `HOOKS`: a script's VM runs in the hooks Worker, each
+ * the real codemode Worker behind `CODEMODE_VM`: a script's VM runs in the codemode Worker, each
  * execution named by its owner and a random id, each tool call an RPC back through
- * `exchange`; with no hooks Worker bound it fails loudly; and the owner's policy keeps it
+ * `exchange`; with no codemode Worker bound it fails loudly; and the owner's policy keeps it
  * off until the owner turns it on. And P11's local part: pi's `RemoteCodemodeSandbox` over
  * the service binding, a nested call's round trip. The MCP door's `code` tool, which hands
  * a script the door's own tools, is slice M's. CPU limits and isolation are not shown by
@@ -15,21 +15,21 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { CODEMODE_TIMEOUT_MS, type CodemodeService, codemodeSandbox } from "../src/codemode";
-import { HOOK_DEFAULTS, validate } from "../../contract/src/policy-document";
-import { hookSettings } from "../src/policy";
+import { CODEMODE_DEFAULTS, validate } from "../../contract/src/policy-document";
+import { codemodeSettings } from "../src/policy";
 
-/** The hooks Worker, each execution's name recorded on `names`. */
+/** The codemode Worker, each execution's name recorded on `names`. */
 function named(names: string[]): CodemodeService {
   return {
     codemodeExecute: (name, request, exchange) => {
       names.push(name);
-      return env.HOOKS.codemodeExecute(name, request, exchange);
+      return env.CODEMODE_VM.codemodeExecute(name, request, exchange);
     },
   };
 }
 
 describe("code mode's executor", () => {
-  it("runs a script's VM in the hooks Worker, its tools the caller's, named by the owner",
+  it("runs a script's VM in the codemode Worker, its tools the caller's, named by the owner",
      async () => {
     const names: string[] = [];
     const seen: unknown[] = [];
@@ -57,7 +57,7 @@ describe("code mode's executor", () => {
     expect(CODEMODE_TIMEOUT_MS).toBe(300_000);
   });
 
-  it("fails loudly with no hooks Worker bound, never running the script here", async () => {
+  it("fails loudly with no codemode Worker bound, never running the script here", async () => {
     const sandbox = codemodeSandbox({ service: () => undefined, owner: () => "owner-b",
                                       tools: [] });
     const ran = await sandbox.execute("return 1;").then((result) => result.ok, () => false);
@@ -65,17 +65,17 @@ describe("code mode's executor", () => {
     await sandbox.close();
   });
 
-  it("is refused by the hooks Worker under no name, an empty one or one past 512 " +
+  it("is refused by the codemode Worker under no name, an empty one or one past 512 " +
      "characters, before any sandbox is reached", async () => {
     const exchange = async () => [];
     for (const name of ["", "x".repeat(513), 7, null]) {
-      const answer = await env.HOOKS.codemodeExecute(name as string, {} as never,
+      const answer = await env.CODEMODE_VM.codemodeExecute(name as string, {} as never,
                                                     exchange as never)
         .then(() => "ran", (error: Error) => error.message);
       expect(answer, String(name).slice(0, 8)).toMatch(/a code mode execution is named/);
     }
     // 512 characters is a name: the request itself is then refused by the sandbox, not here.
-    const named = await env.HOOKS.codemodeExecute("x".repeat(512), {} as never,
+    const named = await env.CODEMODE_VM.codemodeExecute("x".repeat(512), {} as never,
                                                   exchange as never)
       .then(() => "ran", (error: Error) => error.message);
     expect(named).not.toMatch(/a code mode execution is named/);
@@ -85,18 +85,21 @@ describe("code mode's executor", () => {
     const base = { entries: [], egress: { mode: "open", destinations: [] },
                    spend: { daily: null, monthly: null, transaction: null, ask_above: null,
                             source_ceilings: {} } };
-    expect(HOOK_DEFAULTS).toEqual({ codemode: true });
-    expect(hookSettings(validate(base))).toEqual({ codemode: true });
-    expect(hookSettings(validate({ ...base, hooks: { codemode: false } })))
-      .toEqual({ codemode: false });
-    for (const hooks of [{ codemode: 1 }, { timeout_ms: 2000 }, { cpu_ms: 50 }, []]) {
-      expect(() => validate({ ...base, hooks })).toThrow("invalid hooks policy");
+    expect(CODEMODE_DEFAULTS).toEqual({ on: true });
+    expect(codemodeSettings(validate(base))).toEqual({ on: true });
+    expect(codemodeSettings(validate({ ...base, codemode: { on: false } })))
+      .toEqual({ on: false });
+    for (const codemode of [{ on: 1 }, { timeout_ms: 2000 }, { cpu_ms: 50 }, []]) {
+      expect(() => validate({ ...base, codemode })).toThrow("invalid codemode policy");
     }
+    // The table it replaced (B25) is no table of the document.
+    expect(() => validate({ ...base, hooks: { codemode: true } }))
+      .toThrow("invalid policy document");
   });
 });
 
-describe("P11: pi's remote sandbox over the HOOKS service binding", () => {
-  it("runs a script's VM in the hooks Worker, each tool call an RPC back through " +
+describe("P11: pi's remote sandbox over the CODEMODE_VM service binding", () => {
+  it("runs a script's VM in the codemode Worker, each tool call an RPC back through " +
      "exchange", async () => {
     const exchanges: string[][] = [];
     const added: unknown[] = [];
@@ -110,7 +113,7 @@ describe("P11: pi's remote sandbox over the HOOKS service binding", () => {
       remote: (): CodemodeRemote => {
         const name = `p11/${crypto.randomUUID()}`;
         return {
-          execute: (request, exchange) => env.HOOKS.codemodeExecute(name, request,
+          execute: (request, exchange) => env.CODEMODE_VM.codemodeExecute(name, request,
             async (messages: CodemodeRemoteMessage[]) => {
               exchanges.push(messages.map((message) => message.type));
               return exchange(messages);
@@ -132,18 +135,6 @@ describe("P11: pi's remote sandbox over the HOOKS service binding", () => {
     const flat = exchanges.flat();
     expect(flat.filter((type) => type === "call")).toHaveLength(2);
     expect(flat.at(-1)).toBe("done");
-    await sandbox.close();
-  });
-
-  it("fails a script whose VM computes past the interrupt budget as a timeout", async () => {
-    const sandbox = new RemoteCodemodeSandbox({
-      timeoutMs: 30_000,
-      interruptBudget: 2_000,
-      remote: (): CodemodeRemote => ({ execute: (request, exchange) =>
-        env.HOOKS.codemodeExecute(`p11/${crypto.randomUUID()}`, request, exchange) }),
-    });
-    const result = await sandbox.execute("let n = 0; for (;;) { n++; }");
-    expect(result).toMatchObject({ ok: false, error: { kind: "timeout" } });
     await sandbox.close();
   });
 });

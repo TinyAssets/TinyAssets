@@ -1,6 +1,6 @@
 // The owner app in a real browser (Chromium, through Playwright), against the doors in
 // workerd: the doors' test Worker (`e2e-entry.ts`: the fake upstream sign-in, the real
-// owner object with a recording sandbox) with the real gateway, hooks and files Workers and
+// owner object with a recording sandbox) with the real gateway, codemode and files Workers and
 // the fake providers, each bundled by wrangler from its own config as `vitest.config.ts`
 // does (`ci/workers.ts`). The files Worker is bound as production binds it: the doors' FILES its upload
 // entrypoint, the owner object's (OWNER_FILES here) its whole service, so a new owner's
@@ -73,7 +73,7 @@ const errors = [];
 
 async function doors() {
   const gateway = workerConfig(join(PLATFORM, "gateway"));
-  const hooks = workerConfig(join(PLATFORM, "hooks"));
+  const codemode = workerConfig(join(PLATFORM, "codemode"));
   const files = workerConfig(join(PLATFORM, "files"));
   const keyring = newKeyring();
   const webClient = `${ORIGIN}/oauth/clients/web.json`;
@@ -88,8 +88,8 @@ async function doors() {
                     WORKOS_API_KEY: "test-client-secret",
                     E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret" },
         durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
-        // HOOKS and OWNER_FILES: the owner object's, in this script for the test.
-        serviceBindings: { HOOKS: hooks.name, PROVIDERS: "fake-providers",
+        // CODEMODE_VM and OWNER_FILES: the owner object's, in this script for the test.
+        serviceBindings: { CODEMODE_VM: codemode.name, PROVIDERS: "fake-providers",
                            OWNER_FILES: files.name },
         // The provider fetches the first-party app's metadata document, as production does
         // over the public internet; nothing else leaves the doors.
@@ -100,7 +100,7 @@ async function doors() {
                                              outboundService: "fake-providers" }),
       // The files Worker: its config's bucket and cipher, and a test keyring.
       auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: keyring } }),
-      auxiliary(join(PLATFORM, "hooks"), {}),
+      auxiliary(join(PLATFORM, "codemode"), {}),
       fake(join(DOORS, "test", "fake-providers.ts")),
       {
         // The two hand-off hosts, each answering the browser's top-level navigation at once.
@@ -840,7 +840,7 @@ test("no cross-site post changes anything (CSRF)", { timeout: 60_000 }, async ()
     contentType: "text/html", body: "<p>hi</p>" }));
   await evil.goto("https://evil.test/");
   const body = JSON.stringify({ expected_generation: generation,
-                                policy: { ...policy.body.policy, hooks: { codemode: true } } });
+                                policy: { ...policy.body.policy, codemode: { on: true } } });
   await evil.evaluate(async ([origin, b]) => {
     for (const init of [
       { mode: "no-cors", credentials: "include", headers: { "Content-Type": "text/plain" } },

@@ -141,7 +141,7 @@ test, cutover.
   `platform/deploy/checklist.md`. It prints its plan and changes nothing without `--yes`;
   creates the three KV namespaces, the bucket and the ring queue when missing; sets each
   Worker's secrets when missing (the routing key on the doors and the owner together or
-  not at all); deploys files, gateway, hooks, sandbox, owner and doors with no route from
+  not at all); deploys files, gateway, codemode, sandbox, owner and doors with no route from
   their checked-in configs with only the ids and the upstream filled (`deploy/guards/deploy.test.ts`);
   writes a closed control record when there is none; registers the WorkOS redirect URI;
   then runs the handles canary. Mode `routes` adds the routes above and the
@@ -1040,7 +1040,7 @@ R, S, M and W.
   `limits-proposed.test.ts` (48.3%), the draft's that do not fit named with the
   structural change each needs (H3); `outside_agents_stamped` restored (M1); code mode's
   switch made slice M's to enforce (M2); the `auto` and notices requirements restored (M3);
-  the audit's classes and missed bounds (M4, M5); the hooks Worker's name check tested
+  the audit's classes and missed bounds (M4, M5); the codemode Worker's name check tested
   (M6); `Files.watch` and `Notices.once` removed, and the stale comments (L1). Mutation:
   the review's 20 and 3 of mine, all 23 killed.
 - [x] E Engine records (`engines-replan.md` §5 row E), data plus its checker, nothing run.
@@ -1559,7 +1559,7 @@ R, S, M and W.
   - Known gap (review round 3, L-c): the route probe traces `connect()` alone. An unconnected
     UDP `sendto` or an io_uring connect would not show; none of the pinned CLIs uses either
     today, and the probe's sandbox denies every outbound address but the resolver anyway.
-- [x] Code mode's VM in the hooks Worker (H0, narrowed by D): `Hooks.codemodeExecute(name,
+- [x] Code mode's VM in the codemode Worker (H0, narrowed by D): `Codemode.codemodeExecute(name,
   request, exchange)` runs one execution in its `CodemodeSandbox` (a
   `CodemodeSandboxDurableObject` subclass with its interrupt budget and memory), handing
   out no stub; the owner's executor (`codemode.ts`) names each `<owner>/<uuid>`. Config
@@ -1606,11 +1606,11 @@ R, S, M and W.
     `authority.ts`'s `EXPLICIT` (code mode is the owner's choice of profile, not a
     capability).
   - **`code`** (`codeRun`): refused `code_mode_off` once the owner's policy turns
-    `hooks.codemode` off (on by default; hidden from the caller's tools while off),
+    `codemode.on` off (on by default; hidden from the caller's tools while off),
     `tool_not_served` unless the caller's profile holds it, and the control record's gate
     (`control-gate.ts`) at its start and at each call: the kill switch for an outside
     client, the maintenance gate for a run or the owner. The executor runs in the owner object (it binds
-    `HOOKS`); a script's tools are the caller's profile's others, each call the tool's own
+    `CODEMODE_VM`); a script's tools are the caller's profile's others, each call the tool's own
     door with the caller's binding, admitted again (grant, run, admission) and held to the
     profile and switch as they stand then. Its wall bound is `CODEMODE_TIMEOUT_MS`
     (`owner/src/codemode.ts`, slice LIM raises it to 300 s there), also checked at each
@@ -1633,18 +1633,18 @@ R, S, M and W.
   - Owner-bound guard: 42.3% (4,232,734,503.75 bytes); with every proposed raise 49.98%
     (4,997,921,365.75), 2.08 MB under half.
   - Tests: `owner/test/code-door.test.ts`, `owner/test/digests.test.ts`, grants' profile,
-    `doors/test/profiles.test.ts` (the real MCP client and hooks Worker), the tool guard's
-    profiles; the doors' tests now run the real hooks Worker behind the object's `HOOKS`.
+    `doors/test/profiles.test.ts` (the real MCP client and codemode Worker), the tool guard's
+    profiles; the doors' tests now run the real codemode Worker behind the object's `CODEMODE_VM`.
   - Owed by slice L (dark deploy), below: H2's probes and the live connector tests.
   - Owed by the owner surface (tasks 2), done in the app slice: `grants/set` names a
     client's profile, and `policy/write` the owner's `tools.custom` and code mode's switch.
 - [ ] H2 live, narrowed to code mode (its probes built by slice L as
   `platform/deploy/h2-probes.ts`, run by `deploy.ts --mode h2 --yes` once the doors are routed
   and two probe owners hold keys; owed to slice L's dark deploy, which needs the
-  founder's OK to deploy the hooks Worker): probe what workerd cannot show: a script past
+  founder's OK to deploy the codemode Worker): probe what workerd cannot show: a script past
   its interrupt budget against the Worker's `cpu_ms`; the blocking isolation (10 s of a
   script's compute against another owner's); whether `exchange` calls count as
-  subrequests of the owner object or the hooks Worker; and whether pi-codemode's own
+  subrequests of the owner object or the codemode Worker; and whether pi-codemode's own
   deadline timer fires in production while a script calls tools back to back (in workerd
   it did not, so the object checks the clock at each call, which stays); and, while a
   script loops tool calls, whether a revoke, an owner app read and the alarm reach the
@@ -1703,7 +1703,7 @@ R, S, M and W.
   by nothing (D3, tested against a fake of the API). Mode `h2` runs the probes alone. The
   founder's run is owed (`platform/deploy/checklist.md`).
 - [x] Code mode's switch (slice M): the MCP door's `code` tool refuses (`code_mode_off`)
-  unless the owner's policy turns `hooks.codemode` on (`owner/test/code-door.test.ts`).
+  unless the owner's policy has `codemode.on` (`owner/test/code-door.test.ts`).
 - [ ] `test_hygiene_gate` reads no platform TypeScript test (slice D review L4): it
   reported "tests added 0, removed 0" for a slice that removed 21 test files, so a lost
   test there is caught only by review. Follow-up for the gate: count `it(` cases under

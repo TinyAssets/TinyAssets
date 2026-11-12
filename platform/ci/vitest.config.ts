@@ -30,7 +30,7 @@ export default defineConfig({
       // config binds the owner, and REAL_OWNER the owner Worker itself; FILES is the files
       // gate, which the owner's own FILES binding reaches too, and REAL_FILES the files
       // Worker itself. The gates' `Control` entrypoints are the test Worker's alone. Every
-      // other binding is the owner's config's own (`auxiliary`), so its gateway, hooks and
+      // other binding is the owner's config's own (`auxiliary`), so its gateway, codemode and
       // sandbox Workers run beside it, each with the secret its config requires; these tests
       // call none of them.
       project("ci", "workerd", {
@@ -56,7 +56,7 @@ export default defineConfig({
                 auxiliary(FILES, { bindings: { FILES_KEYRING: keyring() } }),
                 auxiliary(join(PLATFORM, "gateway"), {
                   bindings: { GATEWAY_KEYRING: keyring() } }),
-                auxiliary(join(PLATFORM, "hooks"), {}),
+                auxiliary(join(PLATFORM, "codemode"), {}),
                 auxiliary(join(PLATFORM, "sandbox"), {
                   bindings: { E2B_API_KEY: "e2b_unused_in_kit_tests" } }),
                 gate("files-gate", methodsOf(join(PLATFORM, "contract", "src", "files.ts"),

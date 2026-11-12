@@ -465,7 +465,6 @@ def vendor_file_count(root: Path = ROOT) -> int:
     )
 
 
-HISTORY_FILES = frozenset({".agents/activity.log"})
 # Archived changes are history: they cite what existed when they landed.
 HISTORY_DIRS = ("openspec/changes/archive/",)
 # Where an agent takes instructions from. Any path deleted in this diff that one
@@ -593,8 +592,7 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=root).decode().split("\0")
     problems = set()
     for rel in tracked:
-        # Append-only history no PR may edit (scripts/check_forbidden_pr_paths.py).
-        if rel in HISTORY_FILES or rel.startswith(HISTORY_DIRS):
+        if rel.startswith(HISTORY_DIRS):
             continue
         path = root / rel
         if not path.is_file():

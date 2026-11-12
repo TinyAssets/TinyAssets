@@ -41,7 +41,7 @@ What makes this more than a find-and-replace:
 **Non-Goals**
 
 - Rewriting dated records: `docs/audits`, `docs/reviews`, dated design notes,
-  `.agents/activity.log`, `archive/`, and archived changes. A rename sweep
+  `archive/`, and archived changes. A rename sweep
   rewrites evidence; they describe what was true when written.
 - The fiction domain's "universe" when it means a story world.
 - Retiring the hidden legacy fat tool `universe`. It is not advertised and its

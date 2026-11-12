@@ -1,9 +1,9 @@
 /**
  * Code mode's executor (pi audit F8; tasks 5, H1; ADR-034 decision 12): one script whose
- * JavaScript calls tools as `await tools.<name>(args)`, its VM in the hooks Worker.
+ * JavaScript calls tools as `await tools.<name>(args)`, its VM in the codemode Worker.
  *
  * - **Where it runs:** pi-codemode's `RemoteCodemodeSandbox`, whose `remote()` reaches the
- *   `HOOKS` binding's `codemodeExecute` (one sandbox object per execution, named by the
+ *   `CODEMODE_VM` binding's `codemodeExecute` (one sandbox object per execution, named by the
  *   owner and a random id), so the VM never computes on the owner's object, and the owner
  *   config still binds only services. The tools, the deadline and the abort stay with the
  *   caller; every tool call comes back over RPC through `exchange`.
@@ -11,11 +11,13 @@
  *   own grant. The MCP door's `code` tool (slice M, the object's `codeRun`) hands it the
  *   caller's profile's other tools, each call the door's own, admitted again against the
  *   caller's grant, its profile and the owner's switch.
- * - **No stub is held:** each execution's `remote()` calls `HOOKS.codemodeExecute` with a
+ * - **No stub is held:** each execution's `remote()` calls `CODEMODE_VM.codemodeExecute` with a
  *   name of its own, which resolves when the VM has stopped.
- * - **When:** only while the owner's policy turns it on (`hooks.codemode`, on by default, `HOOK_DEFAULTS`).
- * - **How long:** `CODEMODE_TIMEOUT_MS` of wall time, tool calls included, and the hooks
- *   Worker's interrupt budget of compute between them; the tests pass smaller bounds.
+ * - **When:** only while the owner's policy turns it on (`codemode.on`, on by default,
+ *   `CODEMODE_DEFAULTS`).
+ * - **How long:** `CODEMODE_TIMEOUT_MS` of wall time, tool calls included, and the
+ *   codemode Worker's interrupt budget of compute between them; the tests pass smaller
+ *   bounds.
  */
 import { randomUUID } from "node:crypto";
 
@@ -34,7 +36,7 @@ import type { Binding } from "../../contract/src/binding";
 import type { Gate } from "./control-gate";
 import type { ProfileName } from "../../contract/src/doors";
 import { Refusal } from "../../contract/src/refusal";
-import type { HooksService } from "../../contract/src/hooks";
+import type { CodemodeWorker } from "../../contract/src/codemode";
 
 /** The tools a script calls, as pi-codemode's sandbox takes them. */
 type CodemodeTools = NonNullable<
@@ -43,20 +45,19 @@ type CodemodeTools = NonNullable<
 /** How long one script may run, in ms; a script past it ends with pi-codemode's `timeout`. */
 export const CODEMODE_TIMEOUT_MS = 300_000;
 
-/** What the hooks Worker serves the owner (`contract/src/hooks.ts`): code mode's VMs. */
-export type CodemodeService = HooksService<CodemodeRemoteRequest, CodemodeRemoteExchange>;
+/** What the codemode Worker serves the owner (`contract/src/codemode.ts`): code mode's VMs. */
+export type CodemodeService = CodemodeWorker<CodemodeRemoteRequest, CodemodeRemoteExchange>;
 
 /**
- * A script's bounds: its wall time (`CODEMODE_TIMEOUT_MS` unless a test passes less) and
- * the interrupt budget it asks the hooks Worker for (the Worker's own, at most, unless a
- * test asks for less).
+ * A script's bounds: its wall time (`CODEMODE_TIMEOUT_MS` unless a test passes less). Its
+ * compute is the codemode Worker's own interrupt budget, which no owner sets
+ * (`codemode/src/codemode.ts`, tested in `codemode/test/`).
  */
 export interface CodemodeBounds {
   readonly timeoutMs?: number;
-  readonly interruptBudget?: number;
 }
 
-/** What code mode's sandbox reaches: the hooks Worker, the owner it runs for, its tools. */
+/** What code mode's sandbox reaches: the codemode Worker, the owner it runs for, its tools. */
 interface CodemodeParts extends CodemodeBounds {
   readonly service: () => CodemodeService | undefined;
   readonly owner: () => string;
@@ -64,18 +65,17 @@ interface CodemodeParts extends CodemodeBounds {
 }
 
 /**
- * A sandbox whose scripts run in the hooks Worker, each execution named
- * `<owner>/<random id>`; with no hooks Worker bound, an execution fails loudly.
+ * A sandbox whose scripts run in the codemode Worker, each execution named
+ * `<owner>/<random id>`; with no codemode Worker bound, an execution fails loudly.
  */
 export function codemodeSandbox(parts: CodemodeParts): RemoteCodemodeSandbox {
   return new RemoteCodemodeSandbox({
     timeoutMs: parts.timeoutMs ?? CODEMODE_TIMEOUT_MS,
-    ...(parts.interruptBudget === undefined ? {} : { interruptBudget: parts.interruptBudget }),
     tools: [...parts.tools],
     remote: (): CodemodeRemote => {
       const service = parts.service();
       if (service === undefined) {
-        throw new Error("no hooks Worker is bound, so code mode cannot run");
+        throw new Error("no codemode Worker is bound, so code mode cannot run");
       }
       const name = `${parts.owner()}/${randomUUID()}`;
       return { execute: (request, exchange) => service.codemodeExecute(name, request,
@@ -185,7 +185,7 @@ export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is pa
   `${PAGE_BYTES} characters one answer holds; return less, or write it with a tool and read ` +
   "it back";
 
-/** What a script runs with: its bounds, the hooks Worker, its owner, and its tools. */
+/** What a script runs with: its bounds, the codemode Worker, its owner, and its tools. */
 interface ScriptParts {
   readonly bounds: CodemodeBounds;
   readonly service: () => CodemodeService | undefined;
@@ -330,7 +330,7 @@ export const codemodeDoors = Object.freeze({
     if (closed !== null) {
       throw new Refusal("refused", closed);
     }
-    return runScript({ bounds: o.codemode, service: () => o.env.HOOKS, owner, script,
+    return runScript({ bounds: o.codemode, service: () => o.env.CODEMODE_VM, owner, script,
                        tools, call: (tool, args) => scripted(o,
                          door.binding, tool, args, () => control.refusal(gate, owner)) });
   },

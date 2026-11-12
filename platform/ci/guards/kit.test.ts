@@ -58,7 +58,7 @@ describe("the guard kit", () => {
       .filter((entry) => entry.isDirectory() && entry.name !== "node_modules")
       .map((entry) => entry.name)
       .filter((name) => readdirSync(join(PLATFORM, name)).includes("src"));
-    expect(workers).toEqual(expect.arrayContaining(["doors", "files", "gateway", "hooks",
+    expect(workers).toEqual(expect.arrayContaining(["codemode", "doors", "files", "gateway",
                                                     "owner", "sandbox"]));
     const files = workers.flatMap((worker) =>
       readdirSync(join(PLATFORM, worker, "src"), { recursive: true, encoding: "utf8" })
@@ -93,7 +93,7 @@ describe("the Worker kit", () => {
     const owner = workerConfig(join(PLATFORM, "owner"));
     expect(objectBindings(owner))
       .toEqual({ OwnerDO: { className: "OwnerDO", useSQLite: true } });
-    expect(objectBindings(workerConfig(join(PLATFORM, "hooks"))))
+    expect(objectBindings(workerConfig(join(PLATFORM, "codemode"))))
       .toEqual({ CODEMODE: { className: "CodemodeSandbox", useSQLite: true } });
     expect(objectBindings(workerConfig(join(PLATFORM, "doors")))).toEqual({
       OWNER: { className: "OwnerDO", scriptName: owner.name, useSQLite: true } });

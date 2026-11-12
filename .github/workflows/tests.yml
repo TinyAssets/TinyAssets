@@ -187,7 +187,7 @@ jobs:
           python -m scripts.ci_structural_guards --selection "$SELECTION"
 
   # The process's own tests: the gates' scripts that outlast the old stack (the review
-  # receipt, the lane check and the Bash guard, the queue-attempt ledger, the rule files'
+  # receipt, the Bash guard, the queue-attempt ledger, the rule files'
   # byte pins, the session sync gate, the platform's setup, main-red's decision). Plain
   # pytest on the runner, on every event: no image, no old-stack package, and no conftest
   # (`tests/conftest.py` loads the old stack). Required through `required-tests`' needs.
@@ -208,7 +208,7 @@ jobs:
           python -m pytest --noconftest -q -p no:cacheprovider
           scripts/tests
           tests/test_review_check.py
-          tests/test_lane_scope_and_bash_guard.py
+          tests/test_bash_guard.py
           tests/test_queue_attempts.py
           tests/test_rulebook_ratchet.py
           tests/test_session_sync_gate.py
@@ -247,8 +247,8 @@ jobs:
             command: npm run test -w files
           - leg: gateway
             command: npm run test -w gateway
-          - leg: hooks
-            command: npm run test -w hooks
+          - leg: codemode
+            command: npm run test -w codemode
           - leg: sandbox
             command: npm run test:workerd -w sandbox
           - leg: runner

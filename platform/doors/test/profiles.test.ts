@@ -1,6 +1,6 @@
 /**
  * The MCP door's tool profiles and code mode (slice M), over the real MCP client SDK and
- * the real hooks Worker: each client is served exactly its own grant's profile (`custom`,
+ * the real codemode Worker: each client is served exactly its own grant's profile (`custom`,
  * the owner's own choice, until the owner names `directory`), `code` while the owner's
  * policy has code mode on, its default; one `code` call runs a script of several tool
  * calls, and its calls stop once outside access is switched off; a revoked client is
@@ -56,7 +56,8 @@ async function signedIn() {
       const { generation, policy } = await stub.policyRead(own);
       const { tools: _tools, ...rest } = policy as typeof policy & { tools?: unknown };
       await stub.policyWrite(session, { expected_generation: generation, policy: {
-        ...rest, hooks: { codemode }, ...(custom === undefined ? {} : { tools: { custom } }) } });
+        ...rest, codemode: { on: codemode },
+        ...(custom === undefined ? {} : { tools: { custom } }) } });
     },
     profile: async (client: string, profile: string) => {
       const row = (await stub.grantList(own)).clients.find((c) => c.client === client)!;

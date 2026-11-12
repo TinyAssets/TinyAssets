@@ -39,7 +39,7 @@ The worktree status tool SHALL combine Git worktree state, branch/upstream state
 
 ### Requirement: Provider Context Is Recovered At Lifecycle Checkpoints
 
-The provider context feed SHALL scan shared ideas, activity, provider memories, brain notes, execution artifacts, and live worktree purpose files, then rank and cap candidates so one noisy file or source type cannot suppress all other sources. It SHALL accept the lifecycle phases `claim`, `plan`, `build`, `review`, `foldback`, and `memory-write`, and SHALL include cross-provider memory during claim orientation while filtering it from narrower phases unless otherwise shared. Purpose files belonging to merged or dead worktree branches SHALL be excluded when branch evidence is available. The feed MUST remain contextual evidence, not authority to add, claim, or implement work.
+The provider context feed SHALL scan shared ideas, provider memories, brain notes, execution artifacts, and live worktree purpose files, then rank and cap candidates so one noisy file or source type cannot suppress all other sources. It SHALL accept the lifecycle phases `claim`, `plan`, `build`, `review`, `foldback`, and `memory-write`, and SHALL include cross-provider memory during claim orientation while filtering it from narrower phases unless otherwise shared. Purpose files belonging to merged or dead worktree branches SHALL be excluded when branch evidence is available. The feed MUST remain contextual evidence, not authority to add, claim, or implement work.
 
 #### Scenario: Claim phase surfaces cross-provider history
 
@@ -308,20 +308,26 @@ after it, so wrapping a reason never fails the gate.
 - **WHEN** a new skipif's reason is wrapped and `# owner=x runs-in=linux-ci` follows it
 - **THEN** the hygiene gate accepts the marker
 
-### Requirement: A pull request stays inside its declared lane
+### Requirement: A pull request that weakens a platform test says why
 
-A pull request whose body declares `Lane: <glob> <dir/> ...` SHALL be refused
-when any changed path (including a rename's previous path) is outside those
-globs. A pull request touching a release-critical path SHALL declare a lane. The
-check SHALL run from the trusted base checkout, before the receipt is read.
+The test hygiene gate SHALL read each platform test file (`*.test.*`, `*.e2e.*`, or a
+platform file that imports a test runner) at the merge base and the head as text, and
+SHALL refuse a pull request whose body has no `Test-Removal:` line when a file holds
+fewer cases or expectations, or more skips, than before. Comments, strings and
+regular-expression literals SHALL NOT count. A rename SHALL be compared with its
+previous path.
 
-#### Scenario: A smuggled lineage is refused
-- **WHEN** a lane declares `Lane: scripts/peer_agent.py` and its diff also carries `deploy/deploy_fail_safe.sh`
-- **THEN** the scope guard refuses it and names `deploy/deploy_fail_safe.sh`
+#### Scenario: A weakened assertion is caught
+- **WHEN** a pull request deletes one `expect(...)` from an existing platform test and its body has no `Test-Removal:` line
+- **THEN** the hygiene gate refuses it and names the file
 
-#### Scenario: A release-critical change must declare a lane
-- **WHEN** a pull request touches `deploy/` and its body has no `Lane:` line
-- **THEN** the scope guard refuses it
+#### Scenario: A skip by a case's options is a skip
+- **WHEN** a pull request gives an existing platform case `{ skip: true }`, `{ todo: true }` or `.fails`
+- **THEN** the hygiene gate counts a new skip
+
+#### Scenario: A renamed file is not a removal
+- **WHEN** a pull request moves a platform test file unchanged to a new path
+- **THEN** the hygiene gate finds nothing
 
 ### Requirement: Agent shell commands that lost time are refused
 

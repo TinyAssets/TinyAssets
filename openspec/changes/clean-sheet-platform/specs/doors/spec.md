@@ -126,7 +126,7 @@ A profile SHALL be data (`contract/profiles.json`) listing table tools in the ta
 - **THEN** exactly one creates it and the other is answered the conflict, and one row exists
 
 ### Requirement: A main agent spends few calls
-`/mcp` SHALL serve `inbox_digest` and `board_digest` (what changed for the caller since its cursor, deletions included, in one read) and `code` (one script calling the caller's other tools as `await tools.<name>(args)`, its VM in the hooks Worker, refused once the owner's policy turns code mode off, on by default, or where the caller's profile lacks it).
+`/mcp` SHALL serve `inbox_digest` and `board_digest` (what changed for the caller since its cursor, deletions included, in one read) and `code` (one script calling the caller's other tools as `await tools.<name>(args)`, its VM in the codemode Worker, refused once the owner's policy turns code mode off, on by default, or where the caller's profile lacks it).
 
 #### Scenario: A script of two calls
 - **WHEN** a new client calls `code` with a script that writes a board row and reads the board digest

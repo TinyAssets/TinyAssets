@@ -30,7 +30,7 @@ export default defineConfig({
       // fetches reach the fake providers (`test/fake-providers.ts`); PROVIDERS is the
       // tests' own way to them, to read back what they received. ROUTING_MAC_KEY, the
       // config's one secret, is the owner Worker's too: here both are this Worker. The
-      // gateway, hooks and files Workers are each bundled from their own config, as a
+      // gateway, codemode and files Workers are each bundled from their own config, as a
       // deploy bundles them. Every Worker here has every binding its config gives it
       // (`main`, `auxiliary`), and the tests state each secret: none is read from the host.
       // The import consumer's tests take a bundle the slice-2 builder made in Node
@@ -44,15 +44,15 @@ export default defineConfig({
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                           WORKOS_API_KEY: "test-client-secret",
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
-              // HOOKS and OWNER_FILES: the owner object's (in this script for the tests), to
-              // the real hooks and files Workers, as the owner config binds them: the owner's
+              // CODEMODE_VM and OWNER_FILES: the owner object's (in this script for the tests), to
+              // the real codemode and files Workers, as the owner config binds them: the owner's
               // FILES is the files Worker's whole service, the doors' its upload entrypoint.
-              serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks",
+              serviceBindings: { PROVIDERS: "fake-providers", CODEMODE_VM: "tinyassets-codemode",
                                  OWNER_FILES: "tinyassets-files" },
               workers: [
                 auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: KEYRING },
                                                        outboundService: "fake-providers" }),
-                auxiliary(join(PLATFORM, "hooks"), {}),
+                auxiliary(join(PLATFORM, "codemode"), {}),
                 fake(join(PLATFORM, "doors", "test", "fake-providers.ts")),
                 auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: KEYRING } }),
               ],
