@@ -2,8 +2,10 @@
  * The guard kit's and the Worker kit's own invariants (`ci/kit/`, `ci/workers.ts`), held once
  * for every workspace that uses them: every config file is found and no dependency's is,
  * every Worker's every source is what the source guards scan, a config that does not parse
- * fails loudly, a fake is built at its Worker's own date, and a job's own sources are the
- * scripts in its folder.
+ * fails loudly, a fake is built at its Worker's own date, an auxiliary Worker has a namespace
+ * of every class it defines, a gate is built from a contract's methods, and a job's own
+ * sources are the scripts in its folder. The gate and the auxiliary Workers run in
+ * `ci/test/gate.test.ts`.
  */
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

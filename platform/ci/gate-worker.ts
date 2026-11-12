@@ -27,7 +27,7 @@ export interface GateSetup {
 }
 
 /** A refusal as it crosses RPC: an error's name and message, and its own fields. */
-export interface InjectedRefusal {
+interface InjectedRefusal {
   readonly code: string;
   readonly message: string;
   readonly name?: string;
@@ -36,7 +36,7 @@ export interface InjectedRefusal {
 }
 
 /** What one arming does to the next matching call. */
-export type Act =
+type Act =
   | { readonly hold: "before" | "after" }
   | { readonly corrupt: true }
   | { readonly refuse: InjectedRefusal };

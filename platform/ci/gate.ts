@@ -21,13 +21,11 @@ import type { Arm, Crossed, GateSetup, Held } from "./gate-worker.ts";
 import { PLATFORM } from "./paths.ts";
 import { transpiled, workerConfig } from "./workers.ts";
 
-export type { Act, Arm, Crossed, Held, InjectedRefusal } from "./gate-worker.ts";
-
 /** The gate Worker's source. */
 const GATE_WORKER = join(PLATFORM, "ci", "gate-worker.ts");
 
 /** What a gate stands in front of: a Worker's service (at an entrypoint), or its objects. */
-export type GateTo =
+type GateTo =
   | { readonly worker: string; readonly entrypoint?: string }
   | { readonly worker: string; readonly className: string };
 

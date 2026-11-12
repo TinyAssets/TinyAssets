@@ -122,7 +122,7 @@ export function bundled(dir: string, entry?: string): Module[] {
 }
 
 /** One Durable Object binding as miniflare takes it: a class, its script's when another's. */
-export interface ObjectBinding {
+interface ObjectBinding {
   readonly className: string;
   readonly scriptName?: string;
   readonly useSQLite: true;
