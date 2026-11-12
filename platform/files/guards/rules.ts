@@ -10,7 +10,6 @@
  * (`workers_dev` and `preview_urls` false, no route). No environment may add anything.
  */
 import type { ConfigRules } from "../../ci/kit/config";
-import { type Owed, refusals } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "files",
@@ -22,10 +21,3 @@ export const CONFIG: ConfigRules = Object.freeze({
   secrets: Object.freeze(["FILES_KEYRING"]),
   buckets: Object.freeze(["BLOBS"]),
 });
-
-/** What the files Worker still owes the platform's guards (`ci/kit/owed.ts`). */
-export const OWED: readonly Owed[] = Object.freeze([
-  // R2's refusal of a chunk's digest, told by its message: B2 (V4).
-  ...refusals("B2", "platform/files/src/index.ts",
-              ["reads a code from a message: BAD_DIGEST.test(String((error as Error)?.message))"]),
-]);
