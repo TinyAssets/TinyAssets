@@ -262,7 +262,10 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
 
 - [ ] E2B resume after days paused: a paused throwaway started now (75 minutes measured,
   `sandbox-probe.md`), then 14 and 30 days, which sets how often an owner signs in again, and a
-  resume with 5–10 GB of scratch (d3 §C8, list3 P15).
+  resume with 5–10 GB of scratch (d3 §C8, list3 P15). The probe is `e2b-pause-probe.yml`
+  (`start` once, `check` at 14 and 30 days, then `cleanup`); ticked at the 30-day result. It
+  runs alongside and does not gate the cutover: the cutover is done when the build is done
+  (the founder, 2026-11-12).
 - [ ] Durable Object regional availability, from Cloudflare's status history (d3 §C8; ADR-032).
 - [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
