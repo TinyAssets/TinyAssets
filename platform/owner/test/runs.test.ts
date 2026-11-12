@@ -1,6 +1,6 @@
 /**
  * Runs in the owner's object (slice R; ADR-034 decision 4), in workerd, with a recording
- * fake behind the `SANDBOX` interface (`sandbox-fake.ts`): admission in one unit (each of its
+ * fake sandbox Worker behind `SANDBOX` (`fake-sandbox.ts`): admission in one unit (each of its
  * refusals with its code), the run row, its grant and the sandbox's lease, the start with the
  * run's whole environment, the settle from the runner's end, the cancel through the sandbox,
  * no sandbox at all, simultaneous runs each on their own connection, a run's calls held to
@@ -25,15 +25,12 @@ import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits
 import { slotBusy } from "../../contract/src/slots";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, type RunHost, Runs, SIGNIN_LAPSED,
          UNATTENDED_REFUSED } from "../src/runs";
-import { SANDBOX_ABSENT } from "../src/sandbox";
 import { keepTiers, PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import {
-  ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding,
-  runnerSandbox, secretOf, startOf, TIERS,
-} from "./runs-support";
-import { drainDue, failure, sqlIn } from "./support";
+import { ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding,
+  runnerSandbox, scripted, secretOf, startOf, TIERS } from "./runs-support";
+import { drainDue, failure } from "./support";
 import type { GatedOwnerDO } from "./worker";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
@@ -222,18 +219,6 @@ describe("admission", () => {
       message: "x", client_send_id: "t-1" }))).message).toBe(TIER_UNREAD);
   });
 
-  it("refuses with no sandbox bound, and no run reaches running", async () => {
-    // The object with no `SANDBOX` bound.
-    const owner = `owner-${crypto.randomUUID()}`;
-    const stub = env.BARE.getByName(owner);
-    const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
-    await defineAgent(stub, bind, "main", SIGNED_IN);
-    expect((await failure(() => stub.agentSubmit({ ...bind, tiers: TIERS }, {
-      message: "x", client_send_id: "n-1" }))).message).toBe(SANDBOX_ABSENT);
-    expect(await sqlIn(stub, "SELECT id FROM runs")).toEqual([]);
-    expect(await sqlIn(stub, "SELECT lease_id FROM sandbox_leases")).toEqual([]);
-  });
-
   it("refuses an unattended run on a source whose record does not allow it", async () => {
     const r = await gated();
     // Codex on the owner's ChatGPT sign-in: its record refuses unattended hosted use.
@@ -348,13 +333,13 @@ describe("a run's settle", () => {
   it("is unknown when the sandbox's start never answered, failed when it refused", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    await r.in((instance) => { instance.recorder.answer = "throw"; });
+    await scripted(r.stub, { answer: "throw" });
     const lost = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
                                           { message: "x", client_send_id: "s-1" });
     expect(lost).toMatchObject({ state: "unknown", code: "start_lost" });
     // In case it did start, it is cancelled too.
     expect((await recorder(r.stub)).cancels.map((cancel) => cancel.run)).toEqual([lost.run_id]);
-    await r.in((instance) => { instance.recorder.answer = { started: false, code: "e2b_down" }; });
+    await scripted(r.stub, { answer: { started: false, code: "e2b_down" } });
     const refused = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
                                              { message: "x", client_send_id: "s-2" });
     expect(refused).toMatchObject({ state: "failed", code: "e2b_down" });
@@ -655,7 +640,7 @@ describe("auto and the owner's sign-ins", () => {
 
 /** A Runs host whose every member is `never`: a test overrides the ones it reaches. */
 function hostOf(never: () => never): RunHost {
-  return { unadmitted: never, tier: never, sandboxBound: never, reachable: never,
+  return { unadmitted: never, tier: never, reachable: never,
            standing: never, caps: never, spent: never, lease: never, leases: never,
            openLease: never, releaseLease: never, renewLease: never, leasesLapsed: never,
            ended: never, answer: never, mailSettled: never, notice: never, stop: never };
@@ -673,8 +658,7 @@ describe("the admission unit", () => {
       const runs = new Runs(gate.storage, {
         ...hostOf(never),
         unadmitted: () => new Refusal("owner_suspended", "owner_suspended: the owner's " +
-                                      "account is suspended (billing)"),
-        sandboxBound: () => true });
+                                      "account is suspended (billing)") });
       return gate.write(() => runs.admit({
         initiator: "schedule", stamp: null, origin: null, agent: "main",
         file: agentFile(JSON.stringify(SIGNED_IN)), conversation: null, request: null,

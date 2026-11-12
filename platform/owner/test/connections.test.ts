@@ -100,22 +100,22 @@ async function calls(r: Gated, many: number): Promise<(EgressOpened | EgressRefu
 }
 
 /**
- * The owner's connections a run may be given now: each one an API-key run on it can be
- * made for (`config` refuses one that is not active and usable).
+ * The owner's connections a run may be given now: each one an API-key run on it is admitted
+ * for (one that is not active and usable is no source for it, `no_source`).
  */
 async function usable(r: Gated): Promise<string[]> {
   const rows = await r.sql("SELECT id FROM connections ORDER BY created_at, id") as
     { id: string }[];
   const given: string[] = [];
   for (const { id } of rows) {
-    const made = await r.in((instance) => instance.sandbox.config({
-      run: `run_${"0".repeat(32)}`, secret: "5e".repeat(32), engine: "pi", credential: "api_key",
-      connection: id })).then(() => true, (error: unknown) => {
-      if (!/active connections/.test(String((error as Error).message))) {
-        throw error;
-      }
-      return false;
-    });
+    const made = await ownerRun(r.stub, r.bind(), { engine: "pi", credential: "api_key",
+                                                    connection: id, scopes: [] })
+      .then(() => true, (error: { code?: string }) => {
+        if (error.code !== "no_source") {
+          throw error;
+        }
+        return false;
+      });
     if (made) {
       given.push(id);
     }

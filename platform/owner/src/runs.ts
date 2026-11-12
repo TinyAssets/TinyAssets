@@ -6,8 +6,8 @@
  * (`runsDoors`, below) relay the events.
  *
  * **Admit, in one gate unit** (`admit`), each refusal a fixed code:
- * 1. the owner is admitted for work (`owner_suspended`, `owner_erased`), and a sandbox is
- *    bound (`SANDBOX_ABSENT`), before anything is written;
+ * 1. the owner is admitted for work (`owner_suspended`, `owner_erased`), before anything
+ *    is written;
  * 2. the agent is enabled (`agent.json`, `AGENT_DISABLED`);
  * 3. the initiator's stamp stands: the owner's own, or a client's grant at the generation it
  *    was stamped with, rechecked (`Grants.standing`; `AUTHORITY_CHANGED`);
@@ -84,7 +84,7 @@ import { nextOccurrence, parseCron } from "./cron";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { periods } from "./money";
-import { SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
+import { SANDBOX_WAITING } from "./sandbox";
 import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF, switchedOn } from "./signins";
 import { TIER_RUNS, tierNumbers } from "./tier";
@@ -190,8 +190,6 @@ export interface RunHost {
   unadmitted(): Refusal | null;
   /** The owner's own tier (`admission.ts`). */
   tier(): TierName;
-  /** Whether a sandbox is bound to start runs in. */
-  sandboxBound(): boolean;
   /** The owner's active connections the sandbox may reach (a stored egress scope), with their models. */
   reachable(): readonly UsableSource[];
   /** A client's grant, standing at its stamp's generation; refused otherwise. */
@@ -654,9 +652,6 @@ export class Runs {
     const unadmitted = this.#host.unadmitted();
     if (unadmitted !== null) {
       throw unadmitted;
-    }
-    if (!this.#host.sandboxBound()) {
-      throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
     }
     if (!ask.file.enabled) {
       throw new Refusal("agent_disabled", AGENT_DISABLED);
@@ -1803,10 +1798,6 @@ export const runsDoors = Object.freeze({
         return { schedule: o.runs.unschedule(r["schedule_id"], client).schedule_id };
       }
       const run = o.runs.receipt(r["run_id"], client).run_id;
-      if (o.env.SANDBOX === undefined && o.runs.grant(run) !== null) {
-        throw new Refusal("sandbox_absent",
-                          SANDBOX_ABSENT);  // no CLI could be stopped: refused, loudly
-      }
       return { run, client, live: o.runs.cancel(run, clock()) };
     });
     if ("schedule" in found) {
@@ -1879,7 +1870,7 @@ export const runsDoors = Object.freeze({
     }
     const waiting = await o.door(() => o.runs.sandboxRung());
     if (waiting === 0) {
-      await o.env.SANDBOX?.unwait(o.owner());
+      await o.env.SANDBOX.unwait(o.owner());
     }
     await o.sync();
     return { waiting };

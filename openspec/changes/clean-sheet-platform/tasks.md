@@ -182,8 +182,8 @@ The window is d3 §D steps 10 to 15, in this order. The deletion list below beco
       import window's credentials"), and the Spaces read key, already asked (d3 §E7);
     - the dead-letter reader's limit noted: a message returns about 100 times before the pull
       consumer's `max_retries` drops it.
-  - [x] 8. Onboarding tells imported owners what came across (#5463). d2 §C moves that text into
-    the importer's README, out of the starter (d2 B20, §10 step 4).
+  - [x] 8. Onboarding tells imported owners what came across (#5463). The text is in the
+    importer's README, out of the starter (d2 B20).
 - [ ] **Step 10. Backup, census, off-site copy.**
   - The old platform's billing is turned off as the window opens (off without its Stripe
     secrets); every open Checkout Session completes or expires and its webhook is applied; then
@@ -301,15 +301,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     in Python until the hold ends (d3 §A7).
   - `sources/chatgpt.json` and the `unwired` field deleted in their own PR, before B17 (d3 §A8,
     §L4).
-  - B20: no workspace file becomes an instruction; the onboarding sentence is generated from the
-    onboarding skill's steps at build time; the import notice promises only what can be done,
-    since no connector is connected again in TinyAssets (d3 §A9, list3 P31).
   - B22: a test of the gateway's deadline before a provider's headers, on real or fake time;
     `resealDoorbell`, so an idle doorbell's blob leaves its kid, and the sweep's doorbell half
     (d3 §I).
   - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10). Its
     platform Workers are entries in the deploy kit's `retired` list (`deploy/platform.json`),
-    the one remover of a platform Worker (d3 §O2).
+    the one remover of a platform Worker (d3 §O2). Its vocabulary rule replaces the doors'
+    check that the agent's definition says nothing of the import
+    (`doors/guards/tools.test.ts`, B20).
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
@@ -325,7 +324,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
     (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 also deletes `SandboxLeases` whole (d3 §O4) and takes T0's nits (d3 §M6).
+  (d3 §K1, §K2). T1 is four PRs, each green on its own:
+  - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
+    required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
+  - [ ] T1b: the ceilings and defaults: every `limits` parameter and defaulted constructor
+    parameter, `Internals.ledgerLimits` and `codemode`, the archive's tests at production
+    ceilings (`b23_research.md` question 3).
+  - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
+    `ERASURES` required with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
+    erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
+    rig admitting by the door, and the doors' entry with no third constructor argument.
+  - [ ] T1d: the owner memory probe driven through the doors.
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and

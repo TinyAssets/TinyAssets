@@ -24,6 +24,7 @@ import { MAX_OPEN_INTENTS } from "../src/files";
 import { IMPORT_NOTICE, type ImportCheckAnswer } from "../src/import";
 import type { OwnerDO } from "../src/owner-do";
 import { DEFAULT_POLICY_DIGEST, policyDigest } from "../../contract/src/policy-document";
+import { recorder } from "./runs-support";
 import { failure, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
@@ -476,7 +477,7 @@ describe("the import's discard", () => {
 
   it("deletes a pending owner's R2 objects and database, with no tombstone, and is repeatable",
      async () => {
-    // The test Worker's object whose erasure queue and sandbox are recording fakes.
+    // The test Worker's object whose erasure queue is a recording fake.
     const { stub, owner, ns } = await imported(undefined,
                                                env.AGENT as unknown as DurableObjectNamespace);
     expect((await left(stub, ns)).objects).toBeGreaterThan(0);
@@ -486,11 +487,9 @@ describe("the import's discard", () => {
     expect(await left(stub, ns)).toEqual({ tables: [], objects: 0 });
     // No erasure: nothing told the doors (whose outside record writes the erased record and
     // deletes the identity at the issuer), and no sandbox erased.
-    expect(await runInDurableObject(stub, (instance: unknown) => {
-      const { erasures, recorder } = instance as { erasures: { sent: unknown[] };
-                                                   recorder: { erasures: unknown[] } };
-      return [erasures.sent, recorder.erasures];
-    })).toEqual([[], []]);
+    expect(await runInDurableObject(stub, (instance: unknown) =>
+      (instance as { erasures: { sent: unknown[] } }).erasures.sent)).toEqual([]);
+    expect((await recorder(stub as never)).erasures).toEqual([]);
     expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
     // Discarded, it still takes the import's binding alone.
     expect((await failure(() => stub.importDiscard(own(owner)))).code).toBe("refused");

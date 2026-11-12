@@ -6,7 +6,7 @@
  * bytes, a listing, the upload of a file past an inline write and the fenced commit; and a
  * stale or forged token reaching no object.
  */
-import { env, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { mintToken } from "../../contract/src/routing-mac";
@@ -15,8 +15,9 @@ import { defineAgent } from "../../owner/test/runs-support";
 import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER, SYNC_HEADER,
 } from "../../contract/src/egress";
-import type { OwnerDO } from "./entry";
-import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } from "./support";
+import {
+  appPost, call, OPEN, recorded, serveFirstPartyDocument, setControl, signInApp,
+} from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 let restore: () => void = () => undefined;
@@ -38,8 +39,7 @@ async function leased() {
   await env.OWNER.getByName(who).fileWrite(binding, {
     path: "/workspace/notes.md", expected_etag: null, content: new TextEncoder().encode("hi") });
   await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "s-1" });
-  const [start] = await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
-    (instance as OwnerDO).recorder.starts) as SandboxStart[];
+  const [start] = (await recorded(who)).starts as SandboxStart[];
   return { who, start: start!, sync: start!.tokens!.sync_token,
            // What every HTTPS call out of the sandbox carries: E2B's transform's headers.
            inside: { [SANDBOX_HEADER]: egressTokenOf(start!.network!.network)!,

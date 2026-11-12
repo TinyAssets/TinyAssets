@@ -4,6 +4,7 @@
  * `sandbox` lane. It limits nothing.
  */
 import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { WriteGate } from "../src/gate";
@@ -13,7 +14,7 @@ import { GRANT_LIMITS } from "../src/grants";
 import { BILLED_KEPT, DAYS_KEPT, LIVE_KEPT, meterRead, SandboxTime } from "../src/sandbox-time";
 import { rig } from "./ledger-support";
 import { gated } from "./gateway-support";
-import { ownerRun, recorder, runnerBinding } from "./runs-support";
+import { ownerRun, runnerBinding, scripted } from "./runs-support";
 import { drainDue, failure, sqlIn } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
@@ -44,8 +45,9 @@ const sandboxMs = (sql: SqlStorage, id: string) =>
 function onMeter<R>(act: (meter: SandboxTime, sql: SqlStorage) => R): Promise<R> {
   return gated().then((r) => runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
     const gate = new WriteGate(state.storage);
-    const meter = new SandboxTime(gate.storage, runMeter(gate.storage.sql),
-                                  { read: () => null, write: gate.write });
+    const meter = new SandboxTime(gate.storage, runMeter(gate.storage.sql), {
+      read: () => Promise.reject(new Error("these tests apply the log by hand")),
+      write: gate.write });
     return gate.write(() => act(meter, gate.storage.sql as SqlStorage));
   }));
 }
@@ -140,8 +142,7 @@ describe("sandbox time", () => {
   it("is read by the object's own lane after a run settles, onto the run's receipt",
      async () => {
     const r = await gated();
-    const sandbox = await recorder(r.stub);
-    sandbox.meterFails = true;  // the first read fails: the lane backs off, nothing is lost
+    await scripted(r.stub, { meterFails: true });  // the first read fails: the lane backs off
     const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
     await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
     await drainDue(r.stub);
@@ -151,10 +152,10 @@ describe("sandbox time", () => {
     const [row] = await sqlIn(r.stub, "SELECT started_at, settled_at FROM runs WHERE id = ?",
                               run.run_id);
     const [from, to] = [row!["started_at"] as number * S, row!["settled_at"] as number * S];
-    sandbox.record("owner", "start", Math.floor(from) - 500);
-    sandbox.record("owner", "pause", Math.floor(from) + 1);
-    sandbox.record("owner", "resume", Math.floor(from) + 2);
-    sandbox.meterFails = false;
+    for (const [kind, at] of [["start", -500], ["pause", 1], ["resume", 2]] as const) {
+      await env.SANDBOX_LOG.event(r.name, "owner", kind, Math.floor(from) + at);
+    }
+    await scripted(r.stub, { meterFails: false });
     await sqlIn(r.stub, "UPDATE sandbox_meter SET retry_at = NULL");
     // Any door that changes a lane's rows re-derives the jobs.
     await r.stub.fileMkdir(r.bind(), { path: `/workspace/d-${crypto.randomUUID()}`,

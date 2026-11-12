@@ -19,6 +19,14 @@ import worker from "./entry";
 import { FAKE_UPSTREAM, fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
 
 export const ORIGIN = PUBLIC_ORIGIN;
+
+/**
+ * What `owner`'s object asked of its sandbox: the owner's fake sandbox Worker, bound by
+ * config to the object these tests host (`vitest.config.ts`), reads it back.
+ */
+export async function recorded(owner: string) {
+  return await env.SANDBOX_LOG.recorded(owner);
+}
 export const doorsEnv = env as unknown as DoorsEnv;
 export { DARK, OPEN, TIERS } from "../../ci/fixtures";
 export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
