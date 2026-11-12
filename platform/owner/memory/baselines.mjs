@@ -26,7 +26,7 @@ for (const name of ["doors", "files"]) {
   const [port, inspector] = await freePorts(2);
   const out = mkdtempSync(join(tmpdir(), `baseline-${name}-`));
   try {
-    const modules = bundle(join(PLATFORM, name), out).map(({ file }) => file);
+    const modules = (await bundle(join(PLATFORM, name), out)).map(({ file }) => file);
     writeFileSync(join(out, "rest.js"), `import * as bundle from "./index.js";
 void bundle;
 export default {

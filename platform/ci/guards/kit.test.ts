@@ -282,7 +282,7 @@ describe("the Worker kit", () => {
           problems.push(`${path} names ${word}`);
         }
         const pools = text.split("cloudflareTest(").length - 1;
-        const checked = text.split("cloudflareTest(once(() => pool(").length - 1;
+        const checked = text.split("cloudflareTest(once(async () => pool(").length - 1;
         if (entry.name === "vitest.config.ts" && pools !== checked) {
           problems.push(`${path} builds a test pool without pool()`);
         }
