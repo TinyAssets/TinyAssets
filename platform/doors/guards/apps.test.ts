@@ -270,7 +270,8 @@ describe("apps.json", () => {
 });
 
 describe("the plugins", () => {
-  it("are current with the starter's skills and the doors' identity (build.mjs --check)", () => {
+  it("are current with the starter's skills and the doors' identity, and so is " +
+     "doors/onboarding.json (build.mjs --check)", () => {
     execFileSync(process.execPath, [join(PLUGINS, "build.mjs"), "--check"], { stdio: "pipe" });
   });
 
