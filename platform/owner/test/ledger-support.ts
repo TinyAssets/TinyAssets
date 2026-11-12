@@ -1,19 +1,23 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { admission, workRefusal } from "../src/admission";
+import { type Adopt, Bodies } from "../src/bodies";
+import { Collections } from "../src/collections";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import {
   Ledger, LEDGER_LIMITS, type LedgerLimits, type Outcome, type WakeTarget,
 } from "../src/ledger";
 import { apiKeyOrigin } from "../../contract/src/binding";
+import type { Refusal } from "../../contract/src/refusal";
 import { clock } from "../src/clock";
 import type { Binding, Origin, Source } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
-import { alarmOf, EVERY_SIGNIN, laneAt, TIERS } from "./support";
+import { alarmOf, collectionParts, EVERY_SIGNIN, filesOn, laneAt, TIERS } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -88,13 +92,32 @@ export interface Post {
 }
 
 /**
- * The ledger on an object's own storage, reading that object's own grants. A test that
- * registers on it directly first admits the agent's outside client, as the object's door
- * admits every outside call before any act: an MCP client is recorded `full`.
+ * The ledger's parts on an object's own storage, as the object builds them (`OwnerDO`): its
+ * grants, the owner's admission, the collections' change cursor, and its files' adoption of
+ * a placed body and their one wall (`filesOn`'s, with no tier named).
+ */
+export type LedgerParts = [storage: DurableObjectStorage, grants: Grants,
+                           admitted: () => boolean, changes: () => number, adopt: Adopt,
+                           wall: (needed: number) => Refusal];
+export function ledgerParts(storage: DurableObjectStorage): LedgerParts {
+  const gate = new WriteGate(storage);
+  const files = filesOn(gate.storage, gate.write);
+  const collections = new Collections(...collectionParts(storage));
+  return [storage, new Grants(storage, new Policy(storage)),
+          () => workRefusal(admission(storage)) === null, () => collections.clock(),
+          new Bodies(files, gate.storage, gate.write).adopt,
+          (needed: number) => files.fullRefusal(needed)];
+}
+
+/**
+ * The ledger on an object's own storage, built as the object builds it (`ledgerParts`). A
+ * test that registers on it directly first admits the agent's outside client, as the
+ * object's door admits every outside call before any act: an MCP client is recorded `full`.
  */
 export function ledgerOn(storage: DurableObjectStorage,
                          limits: Partial<LedgerLimits> = {}): Ledger {
-  const grants = new Grants(storage, new Policy(storage));
+  const parts = ledgerParts(storage);
+  const grants = parts[1];
   return new (class extends Ledger {
     override register(origin: Origin | null, source: unknown,
                       request: Parameters<Ledger["register"]>[2], now?: number) {
@@ -103,7 +126,7 @@ export function ledgerOn(storage: DurableObjectStorage,
       }
       return super.register(origin, source, request, now);
     }
-  })(storage, grants, { ...LEDGER_LIMITS, ...limits });
+  })(...parts, { ...LEDGER_LIMITS, ...limits });
 }
 
 /** Now, in the whole seconds a binder reports a sign-in at. */

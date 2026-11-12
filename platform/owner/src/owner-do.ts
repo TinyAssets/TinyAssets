@@ -619,9 +619,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
                                         () => fileLimits(this.#policy.read().document, null));
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
-    this.#ledger = new Ledger(storage, this.#grants, internals.ledgerLimits, admitted,
-                              () => this.#collections.clock(), this.#bodies.adopt,
-                              (needed) => this.#files.fullRefusal(needed));
+    this.#ledger = new Ledger(storage, this.#grants, admitted, () => this.#collections.clock(),
+                              this.#bodies.adopt, (needed) => this.#files.fullRefusal(needed),
+                              internals.ledgerLimits);
     this.#backups = new Backups({
       storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
       log: this.#log,

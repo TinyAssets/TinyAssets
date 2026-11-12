@@ -1067,15 +1067,18 @@ export class Ledger {
   /** The owner-wide change cursor (`Collections.clock`): what a mail wake is after. */
   readonly #changes: () => number;
 
-  /** How a posting unit adopts a placed body's content (`Bodies.adopt`); none, none placed. */
-  readonly #adopt: Adopt | undefined;
+  /** How a posting unit adopts a placed body's content (`Bodies.adopt`). */
+  readonly #adopt: Adopt;
   /** The one wall's refusal for a post that needs `needed` bytes (`Files.fullRefusal`). */
-  readonly #wall: ((needed: number) => Refusal) | undefined;
+  readonly #wall: (needed: number) => Refusal;
 
-  constructor(storage: OwnerStorage, grants: GrantReader,
-              limits: LedgerLimits = LEDGER_LIMITS, admitted: () => boolean = () => true,
-              changes: () => number = () => 0, adopt?: Adopt,
-              wall?: (needed: number) => Refusal) {
+  /**
+   * `limits` is the archive's object tests' small ceilings until they run production's
+   * (T1b5, which deletes it).
+   */
+  constructor(storage: OwnerStorage, grants: GrantReader, admitted: () => boolean,
+              changes: () => number, adopt: Adopt, wall: (needed: number) => Refusal,
+              limits: LedgerLimits = LEDGER_LIMITS) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = checkLimits(limits);
@@ -2453,7 +2456,7 @@ export class Ledger {
                         "reading and acking mail makes room");
     }
     if (room === "hot") {
-      if (this.#wall !== undefined && this.archiveBlocked()) {
+      if (this.archiveBlocked()) {
         // The one wall, marked as the ceiling's: an inbound app's event is told to send it
         // again (`OwnerDO#inboundRefused`), as at a ceiling that clears by itself.
         const wall = this.#wall(needed);
