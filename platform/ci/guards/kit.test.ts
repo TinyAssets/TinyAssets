@@ -85,12 +85,13 @@ describe("the Worker kit", () => {
 
   it("gives a Worker a namespace of each class it defines that it does not bind itself, and " +
      "binds another script's class by its script name", () => {
-    expect(objectBindings(workerConfig(join(PLATFORM, "owner"))))
+    const owner = workerConfig(join(PLATFORM, "owner"));
+    expect(objectBindings(owner))
       .toEqual({ OwnerDO: { className: "OwnerDO", useSQLite: true } });
     expect(objectBindings(workerConfig(join(PLATFORM, "hooks"))))
       .toEqual({ CODEMODE: { className: "CodemodeSandbox", useSQLite: true } });
     expect(objectBindings(workerConfig(join(PLATFORM, "doors")))).toEqual({
-      OWNER: { className: "OwnerDO", scriptName: "tinyassets-owner", useSQLite: true } });
+      OWNER: { className: "OwnerDO", scriptName: owner.name, useSQLite: true } });
     expect(objectBindings(workerConfig(join(PLATFORM, "files")))).toEqual({});
     const renamed = { name: "x", compatibility_date: "2026-10-23", migrations: [
       { tag: "v2", renamed_classes: [{ from: "A", to: "B" }] }] } as WorkerConfig;
@@ -105,15 +106,17 @@ describe("the Worker kit", () => {
       .toThrow(/declares no interface NoSuch/);
     const files = gate("files-gate", store, { worker: join(PLATFORM, "files"),
                                               entrypoint: "FilesUpload" });
+    const real = workerConfig(join(PLATFORM, "files"));
     expect([files.name, files.compatibilityDate, files.bindings,
             "serviceBindings" in files ? files.serviceBindings : null]).toEqual([
-      "files-gate", workerConfig(join(PLATFORM, "files")).compatibility_date,
+      "files-gate", real.compatibility_date,
       { GATE: JSON.stringify({ methods: store, object: false }) },
-      { REAL: { name: "tinyassets-files", entrypoint: "FilesUpload" } }]);
+      { REAL: { name: real.name, entrypoint: "FilesUpload" } }]);
     const owner = gate("owner-gate", ["policyRead"], { worker: join(PLATFORM, "owner"),
                                                        className: "OwnerDO" });
     expect("durableObjects" in owner ? owner.durableObjects : null).toEqual({
-      REAL: { className: "OwnerDO", scriptName: "tinyassets-owner", useSQLite: true },
+      REAL: { className: "OwnerDO", scriptName: workerConfig(join(PLATFORM, "owner")).name,
+              useSQLite: true },
       OwnerDO: { className: "OwnerDO", useSQLite: true } });
     expect(owner.modules[0]!.contents).toMatch(/export \{ GatedObject as OwnerDO \};\s*$/);
     expect(() => gate("g", [], { worker: join(PLATFORM, "files") })).toThrow(/one or more/);

@@ -6,7 +6,7 @@
  * bytes in flight, and pass a refusal, injected or real, through unchanged.
  */
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { PLATFORM_CALLER } from "../../contract/src/binding";
 import type { ChunkStore } from "../../contract/src/files";
@@ -27,6 +27,13 @@ interface Env {
   readonly OWNER_GATE: GateControl;
 }
 const e = env as unknown as Env;
+
+// A gate's state is module state, which outlives a test: what one test armed, held or
+// recorded is gone before the next.
+afterEach(async () => {
+  await e.FILES_GATE.disarm();
+  await e.OWNER_GATE.disarm();
+});
 
 /**
  * What a call ended with: its answer, or its error's name, message and own fields, less the
@@ -151,6 +158,18 @@ describe("the files gate", () => {
       .toMatchObject({ message: "the gate has no method notAMethod" });
     expect(await outcome(() => (e.FILES as unknown as Untyped)["notAMethod"]!()))
       .toMatchObject({ message: expect.stringMatching(/does not implement the method/) });
+  });
+
+  it("is as it started once disarmed: no arming, no held call, an empty record", async () => {
+    const s = await space();
+    await e.FILES_GATE.arm({ method: "getChunks", hold: "before" });
+    const reading = e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }]);
+    expect(await e.FILES_GATE.held(5_000)).toHaveLength(1);
+    await e.FILES_GATE.arm({ method: "mintKey", refuse: { code: "busy", message: "busy" } });
+    await e.FILES_GATE.disarm();
+    expect(await reading).toEqual([s.bytes]);
+    expect([await e.FILES_GATE.held(), await e.FILES_GATE.seen()]).toEqual([[], []]);
+    expect(await e.FILES.mintKey(fresh())).toHaveProperty("key");
   });
 });
 

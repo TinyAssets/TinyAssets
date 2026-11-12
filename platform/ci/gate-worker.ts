@@ -252,10 +252,15 @@ export class Control extends WorkerEntrypoint {
     }
   }
 
-  /** Every arming dropped and every held call let go. */
+  /**
+   * The gate as it started: every arming dropped, every held call let go and the record
+   * emptied. Module state outlives a test (only a test file gets a fresh copy of the gate),
+   * so a suite calls this after each test.
+   */
   async disarm(): Promise<void> {
     arms.length = 0;
     held.clear();
+    crossed.length = 0;
   }
 
   /** What crossed (for the object `name`, or all), oldest first, taken from the record. */

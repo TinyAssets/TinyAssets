@@ -82,7 +82,7 @@ export interface GateControl {
   held(waitMs?: number): Promise<Held[]>;
   /** The held call `id` let go, or every held call. */
   release(id?: number): Promise<void>;
-  /** Every arming dropped and every held call let go. */
+  /** The gate as it started (no arming, no held call, an empty record), after each test. */
   disarm(): Promise<void>;
   /** What crossed (for the object `name`, or all), oldest first, taken from the record. */
   seen(name?: string): Promise<Crossed[]>;
