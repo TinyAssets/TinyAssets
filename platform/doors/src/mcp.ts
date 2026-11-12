@@ -35,7 +35,7 @@ import { resultText } from "./answers";
 import type { Bound } from "./binder";
 import { refusalOf } from "../../contract/src/refusal";
 
-import type { DoorsEnv } from "./config";
+import type { DoorsEnv } from "./env";
 import { serveEvents } from "./events";
 import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "./instructions";
 import { refusalResponse } from "./refused";

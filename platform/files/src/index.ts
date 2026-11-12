@@ -62,7 +62,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { type Cipher, cipherOf, open, seal } from "./cipher";
-import { chunkName, type KeyringSecret, mint, rewrap, unwrap } from "./datakey";
+import { chunkName, mint, rewrap, unwrap } from "./datakey";
+import type { FilesEnv } from "./env";
 import { base64, fromBase64, hex } from "../../contract/src/envelope";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
@@ -75,14 +76,6 @@ import type {
 } from "../../contract/src/files";
 /** How a binding reports R2's `BadDigest`: the code, or its message. */
 const BAD_DIGEST = /\(10037\)|did not match what we received/;
-
-export interface FilesEnv {
-  readonly BLOBS: R2Bucket;
-  /** The data keys' keyring, a Worker secret read only by `datakey.ts`. */
-  readonly FILES_KEYRING: KeyringSecret;
-  /** How the data key encrypts (`cipher.ts`): the config's var, `ssec` or `aes-gcm`. */
-  readonly FILES_CIPHER: string;
-}
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
 interface StoredRoot {

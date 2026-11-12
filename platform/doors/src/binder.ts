@@ -31,9 +31,9 @@ import { principal } from "../../contract/src/text";
 import type { Vendor } from "../../contract/src/apps";
 import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 
-import {
-  type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE, ownerIssuer,
+import { FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE, ownerIssuer,
 } from "./config";
+import type { DoorsEnv } from "./env";
 import { APP_RESOURCE } from "../../contract/src/identity";
 import { type ControlRead, tiersOf } from "../../contract/src/control";
 import type { Sources } from "../../sources/src/schema";

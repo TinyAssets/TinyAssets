@@ -38,11 +38,9 @@ import {
 import { ringDoorbell, sealDoorbell, verifyDoorbell } from "./doorbell";
 import { codeOf, failureResponse, guarded } from "./failure";
 import { forwardMetered, forwardRead, verify } from "./forward";
-import { binding, type KeyringEnv, open, reseal, seal } from "./keyring";
+import type { GatewayEnv } from "./env";
+import { binding, open, reseal, seal } from "./keyring";
 import { exchange, refresh, revokeAtProvider } from "./oauth";
-
-/** The gateway's one binding: its keyring secret (`wrangler.jsonc`). */
-export type GatewayEnv = KeyringEnv;
 
 /**
  * What the doors Worker (the binder) binds, as the named entrypoint `ConnectGateway`:

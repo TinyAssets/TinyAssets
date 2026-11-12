@@ -33,19 +33,15 @@ import { LEASE_TTL_S } from "../../contract/src/limits";
 import { migrate } from "../../contract/src/migrate";
 
 import { SLOTS_MIGRATIONS } from "./schema";
-
-export interface SlotsEnv {
-  /** The ring queue: `{owner}` to the doors Worker's consumer, which rings that owner. */
-  readonly RING: Queue<{ owner: string }>;
-}
+import type { SandboxEnv } from "./env";
 
 /** The one line's name. */
 export const SLOTS = "slots";
 
-export class SandboxSlots extends DurableObject<SlotsEnv> {
+export class SandboxSlots extends DurableObject<SandboxEnv> {
   readonly #sql: SqlStorage;
 
-  constructor(ctx: DurableObjectState, env: SlotsEnv) {
+  constructor(ctx: DurableObjectState, env: SandboxEnv) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     migrate(ctx.storage, SLOTS_MIGRATIONS);

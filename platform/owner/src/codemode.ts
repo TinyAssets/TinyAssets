@@ -26,16 +26,13 @@ import {
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { PAGE_BYTES } from "./pages";
 
-import {
-  type CodemodeRemote, type CodemodeRemoteExchange, type CodemodeRemoteRequest,
-  RemoteCodemodeSandbox,
-} from "@earendil-works/pi-codemode/portable";
+import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
 import type { Account, Call, Door, OwnerState } from "./owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { Gate } from "./control-gate";
 import type { ProfileName } from "../../contract/src/doors";
 import { Refusal } from "../../contract/src/refusal";
-import type { CodemodeWorker } from "../../contract/src/codemode";
+import type { OwnerEnv } from "./env";
 
 /** The tools a script calls, as pi-codemode's sandbox takes them. */
 type CodemodeTools = NonNullable<
@@ -49,7 +46,7 @@ type CodemodeTools = NonNullable<
 export const CODEMODE_TIMEOUT_MS = 300_000;
 
 /** What the codemode Worker serves the owner (`contract/src/codemode.ts`): code mode's VMs. */
-export type CodemodeService = CodemodeWorker<CodemodeRemoteRequest, CodemodeRemoteExchange>;
+export type CodemodeService = OwnerEnv["CODEMODE_VM"];
 
 /** What code mode's sandbox reaches: the codemode Worker, the owner it runs for, its tools. */
 interface CodemodeParts {

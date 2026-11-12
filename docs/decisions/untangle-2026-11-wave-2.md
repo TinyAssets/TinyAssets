@@ -21,7 +21,7 @@ The listings, and the other working files this log names (`*_research.md`, `*_re
 - the gateway default entry's extras and the unmetered `forward()` (`v2:G-S1`, `G-S2`);
 - `SUPPORTED_APIS` narrowed ~~and `MISTRAL` derived~~ (`MISTRAL` is still a near-copy of `COMPLETIONS`: R5′, lane G's first PR);
 - the files cipher as one strategy ~~, with `FILES_CIPHER` required~~ (still optional: T0b, d3 §M6);
-- ~~the OKF `apply` building the plugins, and~~ `BUNDLED` (`okf-watch apply` still runs only `bundle.mjs`: P-H1, B9);
+- ~~the OKF `apply` building the plugins, and~~ `BUNDLED` (`okf-watch apply` still runs only `bundle.mjs`: P-H1, B9; fixed by C2, #5518: `apply` runs `npm run generate`, and the plugins take their skills from `manifest.json`);
 - the owner's gateway reseal sweep;
 - `appOf` ~~and `signinEventsUrl`~~ deleted (`signinEventsUrl` is kept: B6's `signinUrls(id)`);
 - the E2B hook events in `identity.json`;
@@ -618,7 +618,7 @@ The listings, and the other working files this log names (`*_research.md`, `*_re
 
 **Risk:** low. Release-critical (`okf-watch.yml`, only if its `git add` changes). No live name. **Image:** no.
 
-**As built (V1, decided at its review, 2026-11-12).** d3 §A9 replaces §C3's pointer: the instructions' onboarding steps are the skill's steps' bold leads, written into `doors/onboarding.json` by `plugins/build.mjs` and held by its `--check`. Four departures from the text above:
+**As built (V1, decided at its review, 2026-11-12).** d3 §A9 replaces §C3's pointer: the instructions' onboarding steps are the skill's steps' bold leads, written into `doors/onboarding.json` by `plugins/build.mjs` and held by its `--check` (C2, #5518: `build.mjs` runs as one of `npm run generate`'s generators, the generated-files guard holds `onboarding.json`, and `--check` is deleted). Four departures from the text above:
 - **The pin records upstream's tags (`"tags": []`), not "without `okf.tags`".** `report()` takes `pin.tags` as the tags already seen, so a pin that never records them sees every upstream tag as new on every run and proposes forever.
 - **The publisher's fields are one `PUBLISHER` record in `build.mjs`, not in `manifest.json`.** P-H5′'s problem was the duplication, and none of the manifest's readers (`bundle.mjs`, `okf-watch`, the owner) uses the author, licence or keywords. Putting them there would tie the starter's manifest to the directory listing. The version still comes from the manifest.
 - **The tool-name and vocabulary guard lives in `doors/guards/tools.test.ts` until B8 moves it to `contract/guards`.** `starter/` has no test project, and the guard needs the door table and both instructions. Its vocabulary half is an interim copy of B24's rule, which replaces it.

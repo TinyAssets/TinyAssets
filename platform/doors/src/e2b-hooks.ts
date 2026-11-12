@@ -28,7 +28,7 @@ import { utf8Decoder } from "../../contract/src/text";
 import { createHash, timingSafeEqual } from "node:crypto";
 
 import { ownerObject } from "./binder";
-import type { DoorsEnv } from "./config";
+import type { DoorsEnv } from "./env";
 import type { BilledEvent } from "../../contract/src/owner";
 import { openRoute } from "../../contract/src/routing-mac";
 

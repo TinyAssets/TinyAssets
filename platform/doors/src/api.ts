@@ -15,7 +15,8 @@ import { verifyKey } from "./api-keys";
 import { refusalOf } from "../../contract/src/refusal";
 
 import { jsonObject } from "./body";
-import { API_BODY_MAX, type DoorsEnv } from "./config";
+import { API_BODY_MAX } from "./config";
+import type { DoorsEnv } from "./env";
 import { outsideRead } from "./control";
 import { withTiers } from "./binder";
 import { mediaType } from "./session";

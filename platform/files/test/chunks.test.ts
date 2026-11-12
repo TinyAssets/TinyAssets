@@ -24,8 +24,9 @@ const OLD = JSON.stringify({ active: "k1", keys: { k1: ringKey() } });
 const RING = JSON.stringify({ active: "k2", keys: { ...JSON.parse(OLD).keys, k2: ringKey() } });
 const seen: Presented[] = [];
 
+// `ring` may be what no deploy sets but a secret can still hold: missing, or not a ring.
 const service = (bucket: R2Bucket = ssec(env.BLOBS, seen), ring: unknown = RING) =>
-  new FilesService(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: ring,
+  new FilesService(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: ring as string,
                                                FILES_CIPHER: env.FILES_CIPHER });
 
 const KEYS = new Map<string, Promise<string>>();

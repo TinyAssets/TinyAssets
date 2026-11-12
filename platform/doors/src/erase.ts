@@ -25,7 +25,8 @@ import { refusalOf } from "../../contract/src/refusal";
 import { principal } from "../../contract/src/text";
 
 import { bindPlatformFor, type Bound, FOREIGN } from "./binder";
-import { type DoorsEnv, NOT_CONFIGURED, now } from "./config";
+import { NOT_CONFIGURED, now } from "./config";
+import type { DoorsEnv } from "./env";
 import { deleteKey, deleteRoute, putOwner } from "./directory";
 import { revokeAll } from "./revoke";
 import type { Upstream } from "./upstream";

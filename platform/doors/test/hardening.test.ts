@@ -11,9 +11,10 @@ import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { parseKey } from "../src/api-keys";
 import { mcpClient } from "../src/binder";
 import {
-  ACCESS_TOKEN_TTL_S, API_BODY_MAX, APP_BODY_MAX, type DoorsEnv, MCP_RESOURCE, now,
+  ACCESS_TOKEN_TTL_S, API_BODY_MAX, APP_BODY_MAX, MCP_RESOURCE, now,
   REFRESH_TOKEN_TTL_S, WEB_CLIENT, WEB_REDIRECT,
 } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { APP_RESOURCE } from "../../contract/src/identity";
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
