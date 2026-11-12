@@ -348,7 +348,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     G-H11 and G-SP5 (d3 §O5).
   - Lane R's cipher PR: `files/src/cipher.ts`'s SSE-C premise (d3 §O8).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is six PRs, each green on its own:
+  (d3 §K1, §K2). T1 is seven PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
   - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
@@ -359,12 +359,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     at production's numbers (the collections' fills `large`); `Collections`' `adopt` and
     `shares` required and `DEFAULT_SHARES` gone; code mode's `timeoutMs` gone, its wall time
     tested on the plain owner under a stepping clock.
-  - [ ] T1b3: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
+  - [x] T1b3: the memory probe's archive cases at production's ledger limits, `LegSegments`
+    deleted (d3 §K1); code mode's `CODEMODE_VM` required, its unbound case gone with its test;
+    a test that a halted schedule runs no lane already due (`schedule.ts`'s `onJob`); the
+    memory leg's floor never read high by earlier work's garbage (the pool's observer made
+    outside `run`, the floor read again at the run's start).
+  - [ ] T1b4: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
     `admitted`, `changes`, `adopt` and `wall` required, its decisions as pure functions, the
-    archive's tests at production ceilings, `b23_research.md` question 3), with the memory
-    probe's `LegSegments` at production's ledger limits (d3 §K1); code mode's unbound
-    `CODEMODE_VM` case gone with its test (`codemode.ts`'s optional `service`); a test that a
-    halted schedule runs no lane already due (`schedule.ts`'s `run`).
+    archive's tests at production ceilings, `b23_research.md` question 3).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     the unbound-`ERASURES` throw gone (`owner-do.ts:767-768`; the generated `OwnerEnv` already
     types it required, C2b) with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
