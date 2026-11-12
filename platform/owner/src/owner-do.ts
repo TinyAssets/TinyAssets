@@ -118,7 +118,6 @@ import {
 import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
 import { RUN_ENDED, Runs, type RunSchedule, runsDoors } from "./runs";
 import { PostGate } from "../../contract/src/run-events";
-import type { SandboxService } from "../../contract/src/sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
 import { type ApiKey, Keys, keysDoors } from "./keys";
@@ -131,8 +130,7 @@ import { Collections, collectionsDoors, type History, type Page, type Row } from
 import {
   Connections, connectionsDoors, type ConnectionView, type Prepared,
 } from "./connections";
-import type { ChunkStore } from "../../contract/src/files";
-import type { GatewayService, RingAnswer } from "../../contract/src/gateway";
+import type { RingAnswer } from "../../contract/src/gateway";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import {
  type Change as FileChange, type ChunkRef, type Entry, fileChanged, Files,
@@ -143,7 +141,7 @@ import {
   type Client, type ConnectedApp, type Grant, Grants, grantsDoors, type Scope,
 } from "./grants";
 import {
- type CodemodeBounds, codemodeDoors, type CodemodeService, type CodeRequest, type CodeResult,
+  type CodemodeBounds, codemodeDoors, type CodeRequest, type CodeResult,
 } from "./codemode";
 import {
   type Agent, type ChainMail, Ledger, ledgerDoors, type LedgerLimits, type MailPage,

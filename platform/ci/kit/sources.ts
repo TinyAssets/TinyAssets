@@ -73,6 +73,14 @@ export const KINDS: Readonly<Record<string, ts.ScriptKind>> = Object.freeze({
   ".cjs": ts.ScriptKind.JS, ".jsx": ts.ScriptKind.JSX,
 });
 
+/**
+ * A Worker's env, by path from `platform/`: written by `npm run generate` (`types.ts`), it
+ * declares every binding the Worker's config makes, and reaches none of them.
+ */
+export function envFile(worker: string): string {
+  return `${worker}/src/env.ts`;
+}
+
 /** Every script under each Worker project's `src/`, keyed by path from `platform/`. */
 export function workerSources(root: string = PLATFORM): Map<string, string> {
   const found = new Map<string, string>();

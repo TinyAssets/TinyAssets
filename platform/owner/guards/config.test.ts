@@ -379,7 +379,7 @@ describe("owner Worker config", () => {
     expect(configProblems({ ...config, env: { prod: { kv_namespaces: [] } } },
                           platformConfigs())).toEqual(["env.prod.kv_namespaces is not an allowed key"]);
     expect(OWNER_CONTROL).toEqual([
-      "owner/src/owner-do.ts: OwnerEnv's CONTROL field",
+      "owner/src/env.ts: OwnerEnv's CONTROL field",
       "owner/src/owner-do.ts: this.env.CONTROL, handed to new ControlGate"]);
     expect(storeWrites(SOURCES.get("owner/src/control-gate.ts")!)).toEqual([]);
   });

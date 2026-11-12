@@ -8,6 +8,7 @@
  */
 import type { ConfigRules } from "../../ci/kit/config";
 import type { ImportRules } from "../../ci/kit/imports";
+import { envFile } from "../../ci/kit/sources";
 
 /**
  * Its config: the keys that name the Worker, its entry and its runtime, and `secrets`, which
@@ -36,7 +37,8 @@ export const KEYRING_HOME = "gateway/src/keyring.ts";
 /**
  * Its source, over its whole import closure (what it may import is the layer table's,
  * `ci/kit/layers.ts`: its own source, the contract and the source records):
- * - `GATEWAY_KEYRING` is named only in `src/keyring.ts`; and no source names `process` (an
+ * - `GATEWAY_KEYRING` is named only in `src/keyring.ts` (and declared in the generated
+ *   `src/env.ts`); and no source names `process` (an
  *   identifier, a string such as `globalThis["process"]`, or the `node:process` module), so
  *   the env handed to a call is the only way to the keyring;
  * - no source names `OWNER` or `getByName`: the gateway is handed the owner and never looks
@@ -46,7 +48,8 @@ export const IMPORTS: ImportRules = Object.freeze({
   worker: "gateway",
   called: "the gateway",
   banned: Object.freeze([
-    { pattern: /GATEWAY_KEYRING/, home: KEYRING_HOME, says: "names GATEWAY_KEYRING outside keyring.ts" },
+    { pattern: /GATEWAY_KEYRING/, homes: [KEYRING_HOME, envFile("gateway")],
+      says: "names GATEWAY_KEYRING outside keyring.ts" },
     { pattern: /^(?:process|node:process)$/, says: "names process, whose env the gateway never reads" },
     { pattern: /\bOWNER\b|getByName/, says: "names %s" },
   ]),

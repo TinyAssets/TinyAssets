@@ -19,9 +19,8 @@ import ts from "typescript";
 
 import { PLATFORM } from "../paths.ts";
 import { readWrangler, WRANGLER, workerFolders } from "../workers.ts";
+import { envFile } from "./sources.ts";
 
-/** The generated file, in each Worker's folder. */
-const ENV_FILE = join("src", "env.ts");
 /** The widest line the platform's sources keep. */
 const WIDTH = 100;
 
@@ -133,7 +132,7 @@ export function envSource(worker: string, table: Services = services()): string 
     }
     return folder;
   };
-  const here = dirname(join(PLATFORM, worker, ENV_FILE));
+  const here = dirname(join(PLATFORM, envFile(worker)));
   const contract = relative(here, join(PLATFORM, "contract", "src"));
   const main = `./${relative(here, join(PLATFORM, worker, config["main"] as string))
     .replace(/\.ts$/, "")}`;
@@ -196,7 +195,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     throw new Error(`contract/services.json types queues no Worker sends to: ${unsent.join(", ")}`);
   }
   for (const worker of workerFolders()) {
-    writeFileSync(join(PLATFORM, worker, ENV_FILE), envSource(worker, table));
-    console.log(`platform/${worker}/${ENV_FILE}`);
+    writeFileSync(join(PLATFORM, envFile(worker)), envSource(worker, table));
+    console.log(`platform/${envFile(worker)}`);
   }
 }

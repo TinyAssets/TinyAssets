@@ -27,9 +27,11 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, reporter, workerSources } from "../../ci/kit/sources";
+import { envFile, parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const BINDER = "doors/src/binder.ts";
+/** The doors' generated env, which declares every binding and reaches none. */
+const ENV = envFile("doors");
 /** The owner's object, which names no object. */
 const OWNER_DO = "owner/src/owner-do.ts";
 /** The codemode Worker's entry, which names its own class's objects and nothing else. */
@@ -81,23 +83,23 @@ export function binderProblems(fileName: string, source: string): string[] {
       report(node, "reads the Cookie header outside session.ts");
     }
     if (doors && ts.isIdentifier(node) && node.text === "DIRECTORY" && fileName !== DIRECTORY
-        && fileName !== "doors/src/config.ts") {
+        && fileName !== ENV) {
       report(node, "touches the directory outside directory.ts");
     }
     if (doors && ts.isIdentifier(node) && node.text === "GATEWAY" && fileName !== CONNECT
-        && fileName !== "doors/src/config.ts") {
+        && fileName !== ENV) {
       report(node, "reaches the gateway outside connect.ts");
     }
     if (doors && ts.isIdentifier(node) && node.text === "FILES" && fileName !== FILE_BYTES
-        && fileName !== "doors/src/config.ts") {
+        && fileName !== ENV) {
       report(node, "reaches the files Worker outside file-bytes.ts");
     }
     if (doors && ts.isIdentifier(node) && IMPORT_WINDOW.has(node.text) && fileName !== IMPORT
-        && fileName !== "doors/src/config.ts") {
+        && fileName !== ENV) {
       report(node, `reaches the import window's ${node.text} outside import.ts`);
     }
     if (doors && ts.isIdentifier(node) && node.text === "EGRESS" && fileName !== EGRESS
-        && fileName !== "doors/src/config.ts") {
+        && fileName !== ENV) {
       report(node, "forwards egress outside egress.ts");
     }
     if (doors && fileName !== BINDER && ts.isObjectLiteralExpression(node)

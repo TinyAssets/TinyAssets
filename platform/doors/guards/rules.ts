@@ -86,6 +86,7 @@ export const OWED: readonly Owed[] = Object.freeze([
   // Tests on the owner's internals, not its front door: B23.
   ...imports("B23", "platform/doors/test/api-keys.test.ts", ["platform/owner/src/grants.ts"]),
   ...imports("B23", "platform/doors/test/app-routes.test.ts", ["platform/owner/src/owner-do.ts"]),
+  ...imports("B23", "platform/doors/test/env.d.ts", ["platform/owner/src/owner-do.ts"]),
   ...imports("B23", "platform/doors/test/connect.test.ts", ["platform/owner/src/owner-do.ts"]),
   ...imports("B23", "platform/doors/test/doors-live.test.ts", [
     "platform/owner/src/admission.ts", "platform/owner/src/inbound.ts",
@@ -102,8 +103,6 @@ export const OWED: readonly Owed[] = Object.freeze([
   ...imports("B23", "platform/doors/test/runs.test.ts",
              ["platform/owner/test/runs-support.ts", "platform/owner/src/runs.ts"]),
   ...imports("B23", "platform/doors/test/sync.test.ts", ["platform/owner/test/runs-support.ts"]),
-  // The hand test env, typed from the owner's class: B9 generates it.
-  ...imports("B9", "platform/doors/test/env.d.ts", ["platform/owner/src/owner-do.ts"]),
   // The import window's tests, reaching the importer: B24's cutover layer lists them.
   ...imports("B24", "platform/doors/test/import-setup.ts", [
     "platform/import/bundle.ts", "platform/import/stage.ts", "platform/import/guards/fixture.ts"]),

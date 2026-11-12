@@ -150,6 +150,4 @@ export const OWED: readonly Owed[] = Object.freeze([
              ["platform/files/src/datakey.ts", "platform/files/src/keys.ts"]),
   ...imports("B23", "platform/owner/test/runs-authority.test.ts",
              ["platform/doors/src/binder.ts"]),
-  // The hand test env, typing `GATEWAY` from the gateway's class: B9 generates it.
-  ...imports("B9", "platform/owner/test/env.d.ts", ["platform/gateway/src/index.ts"]),
 ]);

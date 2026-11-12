@@ -1,17 +1,13 @@
-// The doors Worker's bindings, as its wrangler.jsonc declares them (OWNER bound to the
-// test entry's OwnerDO by vitest.config.ts).
+// The doors Worker's bindings, as its generated env types them (`src/env.ts`), but OWNER: the
+// test entry's OwnerDO (vitest.config.ts), whose doors outside the contract the tests still
+// call, and which the owner's own tests bind as OWNER too.
 declare namespace Cloudflare {
-  interface Env {
+  type DoorsBound = import("../src/env").DoorsEnv;
+
+  interface Env extends Pick<DoorsBound, "OAUTH_KV" | "DIRECTORY" | "CONTROL" | "ASSETS"
+                                         | "DCR_ENABLED" | "OWNER_ISSUER" | "FOREIGN_ISSUERS"
+                                         | "ROUTING_MAC_KEY"> {
     OWNER: DurableObjectNamespace<import("../../owner/src/owner-do").OwnerDO>;
-    OAUTH_KV: KVNamespace;
-    DIRECTORY: KVNamespace;
-    CONTROL: KVNamespace;
-    ASSETS: Fetcher;
-    DCR_ENABLED: string;
-    OWNER_ISSUER: string;
-    FOREIGN_ISSUERS: string;
-    /** The one secret, the sandbox tokens' routing key; the owner Worker's too. */
-    ROUTING_MAC_KEY: string;
     /** The fake providers (test/fake-providers.ts), for the tests to read back. */
     PROVIDERS: Fetcher;
     /**
