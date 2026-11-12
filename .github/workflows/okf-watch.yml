@@ -45,8 +45,6 @@ concurrency:
 env:
   UPSTREAM: https://github.com/GoogleCloudPlatform/open-knowledge-format.git
   COOLDOWN_DAYS: '7'
-  # The founder's own login (.github/CODEOWNERS).
-  FOUNDER: Jonnyton
   # Only the watcher's own branches: the close and ready loops touch nothing else.
   PREFIX: okf-watch/
 
@@ -163,7 +161,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      pull-requests: write   # GITHUB_TOKEN's one use: the bot's note to the founder
+      contents: read         # the founder's login, from .github/CODEOWNERS
+      pull-requests: write   # GITHUB_TOKEN's one write: the bot's note to the founder
     steps:
       - name: Require the user token
         env:
@@ -219,12 +218,33 @@ jobs:
             gh pr comment "$number" --body "The cooldown is over: ready for review. Read the spec diff, not the version line; the checks are in the description. It merges only with an approving review receipt."
           done
 
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.due.outputs.founder != ''
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/CODEOWNERS
+          sparse-checkout-cone-mode: false
+
+      # The founder is every path's owner (`*`); a CODEOWNERS that names none fails loudly.
+      - name: Read the founder's login
+        id: founder
+        if: steps.due.outputs.founder != ''
+        run: |
+          set -euo pipefail
+          login=$(awk '$1 == "*" { sub(/^@/, "", $2); print $2; exit }' .github/CODEOWNERS)
+          if [ -z "$login" ]; then
+            echo "::error::.github/CODEOWNERS names no owner of every path (*), so the founder cannot be told."
+            exit 1
+          fi
+          echo "login=$login" >> "$GITHUB_OUTPUT"
+
       - name: Tell the founder (never fails the run)
         id: told
         if: steps.due.outputs.founder != ''
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          FOUNDER: ${{ steps.founder.outputs.login }}
           ASK: ${{ steps.due.outputs.founder }}
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}

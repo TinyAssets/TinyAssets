@@ -30,7 +30,7 @@ import { CHUNK_BYTES, INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
-import starterJson from "../starter/starter.json" with { type: "json" };
+import { carried } from "../owner/src/starter-package";
 
 import { layout, openFile, openStore, quoted, storeUri } from "./backup";
 import { type Archived, type Copy, type Owner, type Problem, type Refusal } from "./survey";
@@ -61,11 +61,6 @@ export type Row =
   | { readonly kind: "policy"; readonly document: unknown }
   | { readonly kind: "collection"; readonly collection: string; readonly row_id: string;
       readonly private: 0 | 1; readonly body: string };
-
-/** The starter's own paths, which it seeds around the imported tree (`starter.ts`). */
-export function starterPaths(): string[] {
-  return (starterJson as { files: { path: string }[] }).files.map((file) => file.path);
-}
 
 /** Path order, parents first: by each component's UTF-8 bytes. */
 function byPath(a: string, b: string): number {
@@ -414,8 +409,9 @@ export interface Fit {
  * each take well under either.
  */
 export function fitOf(owner: Owner, built: Built, tiers: Tiers): Fit {
-  const all = new Set<string>([...built.entries.map((entry) => entry.path), ...starterPaths()]);
-  for (const path of starterPaths()) {
+  const seeded = carried().files.map((file) => file.path);
+  const all = new Set<string>([...built.entries.map((entry) => entry.path), ...seeded]);
+  for (const path of seeded) {
     ancestors(path).forEach((parent) => all.add(parent));
   }
   all.delete(WORKSPACE);

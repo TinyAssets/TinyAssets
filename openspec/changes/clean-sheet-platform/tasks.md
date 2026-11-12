@@ -266,6 +266,11 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
   (`start` once, `check` at 14 and 30 days, then `cleanup`); ticked at the 30-day result. It
   runs alongside and does not gate the cutover: the cutover is done when the build is done
   (the founder, 2026-11-12).
+  - Started 2026-11-12 20:55 UTC (run 43305055943): `small` `ixht089rvnrcl1yty661z`, paused in
+    194 ms; `scratch` `ib3ngrmhs5jv82f0mzj9j`, 5 GiB written in 24 s, paused in 589 ms.
+  - Due: on or after 2026-11-26 20:55 UTC, `check` with `ids: ib3ngrmhs5jv82f0mzj9j` only, so
+    `small` stays paused unbroken; on or after 2026-12-12 20:55 UTC, `check` with no ids, then
+    `cleanup`, and the result into `sandbox-probe.md`.
 - [ ] Durable Object regional availability, from Cloudflare's status history (d3 §C8; ADR-032).
 - [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
@@ -331,24 +336,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     researched first: the line's object lives in the test Worker itself, which the plugin
     names (a gate fronts an object by its Worker's name), the suite runs inside that object
     (`runInDurableObject`), and `SandboxSlots` has no interface for `methodsOf`.
-  - Lane S: `sandbox/src/e2b.ts`'s constructor defaults (the `fetcher` at `:47`, `retryAfter =
-    null` at `:180`; T1b), and `NetworkPlan`'s typed `generation` beside the header the Worker
-    reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `node ci/budgets.mjs` (d3 §I): the large from the Vitest reports the `platform-sizes` legs
     upload, the runner's medium from a local `test:root` report (`platform-tests` uploads none).
-  - Lane C: P-T1, the starter guard's "DID NOT RUN" warning that passes when it cannot check
-    against main, fails instead (V1 and C2 each left it to the other); `contract/src/slots.ts`
-    `SlotPool`'s constructor defaults (T1b).
-  - Lane I: V2-H9, `import/build.ts`'s `starterPaths()` re-deriving the starter's seeding rule
-    beside `owner/src/starter.ts` (V1).
-  - Lane X: `okf-watch.yml`'s `FOUNDER` login, a copy of `.github/CODEOWNERS` (P-H5′'s
-    workflow half; V1).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
   - Lane R's cipher PR: `files/src/cipher.ts`'s SSE-C premise (d3 §O8).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is six PRs, each green on its own:
+  (d3 §K1, §K2). T1 is seven PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
   - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
@@ -359,12 +354,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     at production's numbers (the collections' fills `large`); `Collections`' `adopt` and
     `shares` required and `DEFAULT_SHARES` gone; code mode's `timeoutMs` gone, its wall time
     tested on the plain owner under a stepping clock.
-  - [ ] T1b3: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
+  - [x] T1b3: the memory probe's archive cases at production's ledger limits, `LegSegments`
+    deleted (d3 §K1); code mode's `CODEMODE_VM` required, its unbound case gone with its test;
+    a test that a halted schedule runs no lane already due (`schedule.ts`'s `onJob`); the
+    memory leg's floor never read high by earlier work's garbage (the pool's observer made
+    outside `run`, the floor read again at the run's start).
+  - [ ] T1b4: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
     `admitted`, `changes`, `adopt` and `wall` required, its decisions as pure functions, the
-    archive's tests at production ceilings, `b23_research.md` question 3), with the memory
-    probe's `LegSegments` at production's ledger limits (d3 §K1); code mode's unbound
-    `CODEMODE_VM` case gone with its test (`codemode.ts`'s optional `service`); a test that a
-    halted schedule runs no lane already due (`schedule.ts`'s `run`).
+    archive's tests at production ceilings, `b23_research.md` question 3).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     the unbound-`ERASURES` throw gone (`owner-do.ts:767-768`; the generated `OwnerEnv` already
     types it required, C2b) with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the

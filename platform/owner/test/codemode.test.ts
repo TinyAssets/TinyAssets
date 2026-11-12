@@ -2,11 +2,10 @@
  * Code mode's executor (tasks 5, H1; pi audit F8; ADR-034 decision 12), in workerd with
  * the real codemode Worker behind `CODEMODE_VM`: a script's VM runs in the codemode Worker, each
  * execution named by its owner and a random id, each tool call an RPC back through
- * `exchange`; with no codemode Worker bound it fails loudly; and the owner's policy keeps it
- * off until the owner turns it on. And P11's local part: pi's `RemoteCodemodeSandbox` over
- * the service binding, a nested call's round trip. The MCP door's `code` tool, which hands
- * a script the door's own tools, is slice M's. CPU limits and isolation are not shown by
- * workerd: owed to H2's live probe.
+ * `exchange`; and it is on in the owner's policy until the owner turns it off. And P11's
+ * local part: pi's `RemoteCodemodeSandbox` over the service binding, a nested call's round
+ * trip. The MCP door's `code` tool, which hands a script the door's own tools, is slice M's.
+ * CPU limits and isolation are not shown by workerd: owed to H2's live probe.
  */
 import { env } from "cloudflare:workers";
 import {
@@ -34,7 +33,7 @@ describe("code mode's executor", () => {
     const names: string[] = [];
     const seen: unknown[] = [];
     const sandbox = codemodeSandbox({
-      service: () => named(names), owner: () => "owner-a",
+      service: named(names), owner: () => "owner-a",
       tools: [{ name: "lookup", execute: async (args) => {
         seen.push(args);
         return { found: (args as { key: string }).key.toUpperCase() };
@@ -55,14 +54,6 @@ describe("code mode's executor", () => {
     expect(names[1]).not.toBe(names[0]);
     await sandbox.close();
     expect(CODEMODE_TIMEOUT_MS).toBe(300_000);
-  });
-
-  it("fails loudly with no codemode Worker bound, never running the script here", async () => {
-    const sandbox = codemodeSandbox({ service: () => undefined, owner: () => "owner-b",
-                                      tools: [] });
-    const ran = await sandbox.execute("return 1;").then((result) => result.ok, () => false);
-    expect(ran).toBe(false);
-    await sandbox.close();
   });
 
   it("is refused by the codemode Worker under no name, an empty one or one past 512 " +

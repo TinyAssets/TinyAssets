@@ -185,7 +185,7 @@ interface Asker {
  * A pool of `capacity` units, waits of at most `waitMs`, and `reserve` units only one-unit
  * holds take. At most `waiters` larger holds and `smallWaiters` one-unit holds wait at once,
  * each class its own cap, so larger holds waiting never get a small read refused (each its
- * Worker's own figure; four times the capacity unless it names one). A call may name its
+ * Worker's own figure, `isolatePool`). A call may name its
  * owner (the gateway's calls do; the owner object's isolate is one owner's): within each
  * class the owners waiting take turns (`Turns`), and a full class makes room by refusing the
  * newest waiter of the owner waiting most.
@@ -229,8 +229,8 @@ export class SlotPool {
   readonly #heldBy = new Map<string, number>();
   #peak = 0;
 
-  constructor(capacity: number, waitMs: number = SLOT_WAIT_MS, waiters: number = 4 * capacity,
-              reserve = 0, smallWaiters: number = waiters) {
+  constructor(capacity: number, waitMs: number, waiters: number, reserve: number,
+              smallWaiters: number) {
     if (!Number.isSafeInteger(capacity) || capacity < 1) {
       throw new Error("a pool holds at least one unit");
     }
@@ -638,7 +638,8 @@ export interface Isolate {
 
 /**
  * The isolate's one pool, made on first use in `isolate` with its Worker's `capacity`,
- * `reserve` and waiters' caps; every object and request in the isolate shares it. Asked for
+ * `reserve` and waiters' caps (no reserve and four times the capacity, where it names none),
+ * waiting at most `SLOT_WAIT_MS`; every object and request in the isolate shares it. Asked for
  * another, it is a bug: one Worker, one figure.
  */
 export function isolatePool(isolate: Isolate, capacity: number, reserve = 0,

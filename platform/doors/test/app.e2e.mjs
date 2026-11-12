@@ -190,9 +190,14 @@ after(async () => {
 
 const LEASE_TOKENS = new Map();
 
+/** What E2B's transform sets on every call through the door: the egress token and generation. */
+function stampedOf(opened) {
+  return opened.network.network.rules["egress.tinyassets.io"][0].transform.headers;
+}
+
 /** The lease's egress token: only the network's transform carries it, as E2B sets it. */
 function egressOf(opened) {
-  return opened.network.network.rules["egress.tinyassets.io"][0].transform.headers["x-ta-sandbox"];
+  return stampedOf(opened)["x-ta-sandbox"];
 }
 
 /** The starts the owner's object asked of its recording sandbox. */
@@ -422,8 +427,7 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
     const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
       method: "POST", body: JSON.stringify(body),
       headers: { "Content-Type": "application/json",
-                 "x-ta-sandbox": egressOf(signin),
-                 "x-ta-network-generation": String(signin.network.generation),
+                 ...stampedOf(signin),
                  "x-ta-runner": signin.tokens.runner_token } });
     assert.equal(answer.status, 200, await answer.clone().text());
   };
@@ -512,8 +516,7 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
     const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
       method: "POST", body: JSON.stringify(body),
       headers: { "Content-Type": "application/json",
-                 "x-ta-sandbox": egressOf(signin),
-                 "x-ta-network-generation": String(signin.network.generation),
+                 ...stampedOf(signin),
                  "x-ta-runner": signin.tokens.runner_token } });
     assert.equal(answer.status, 200, await answer.clone().text());
   };
