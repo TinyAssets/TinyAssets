@@ -13,7 +13,7 @@ import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { RowHead } from "../src/pages";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, inObject, ownerObject } from "./support";
+import { failure, fillHistory, inFilled, inObject, ownerObject } from "./support";
 
 type Live = Extract<RowHead, { deleted: false }>;
 
@@ -99,22 +99,21 @@ describe("the inbox digest", () => {
 
 describe("a digest past a pruned deletion (review rvlim N1)", () => {
   it("R1: tells a reader behind a pruned tombstone to read again, never hides the delete",
-     async () => {
+     { tags: ["large"] }, async () => {
     const { stub, name } = ownerObject();
-    await inObject(stub, { maxHistoryCharge: 64 * 1024 }, (store, state) => {
+    await inFilled(stub, (store, state) => {
       const made = store.write(name, name, "board", "gone", "x", "", false);
       const cursor = store.changed(name, { collection: "board" }, 0, 100).cursor;
       store.delete(name, "board", "gone", made.etag);
       const tombstones = () => state.storage.sql.exec<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM collection_history WHERE key = 'gone'").one().n;
+        "SELECT COUNT(*) AS n FROM collection_history WHERE collection = 'board' AND " +
+          "key = 'gone'").one().n;
       expect(tombstones()).toBe(1);
       // A reader past the delete is told it while it is kept.
       expect(store.changed(name, { collection: "board" }, cursor, 100).rows
         .map((row) => [row.row_id, row.deleted])).toEqual([["gone", true]]);
-      for (let n = 0; tombstones() > 0 && n < 5000; n++) {
-        store.write(name, name, "other", `r${n}`, "y".repeat(1000), "", false);
-      }
-      expect(tombstones()).toBe(0);
+      // Entries past the history's charge: the tombstone, the oldest, goes first.
+      fillHistory(store, name, () => tombstones() === 0);
       const seen = store.changed(name, { collection: "board" }, cursor, 100);
       expect(seen).toMatchObject({ rows: [], reset: true });
       const top = state.storage.sql.exec<{ change: number }>(
@@ -249,7 +248,7 @@ describe("a digest's reads", () => {
      async () => {
     const r = await rig();
     const bob = "bob";
-    await inObject(r.stub, {}, (store) => {
+    await inObject(r.stub, (store) => {
       const made = store.write(r.owner, r.owner, "board", "t", "public", "", false);
       const before = store.changed("muse", { collection: "board" }, 0, 10).cursor;
       store.delete(r.owner, "board", "t", made.etag);

@@ -5,7 +5,7 @@ import { TIERS } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
-import { Collections, LIMITS, type Limits, type Shares } from "../src/collections";
+import { Collections, LIMITS } from "../src/collections";
 import { type FileLimits, Files, type Full } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
 import {
@@ -15,6 +15,8 @@ import {
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
+import { PLACE_BYTES } from "../../contract/src/limits";
+import { fileLimits, Policy } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
 import { storageFull, storageFullRefusal } from "../src/storage-full";
 import type { ChunkStore } from "../../contract/src/files";
@@ -354,13 +356,98 @@ export async function failure(call: () => Promise<unknown>): Promise<Failed> {
   throw new Error("expected the call to fail");
 }
 
-/** The primitive on `stub`'s own storage, with some bounds lowered for the test. */
-export function inObject<R>(stub: Stub, limits: Partial<Limits>,
-                            act: (store: Collections, state: DurableObjectState) => R,
-                            shares?: Shares): Promise<R> {
+/**
+ * What the object builds its collections from, over `storage`: the owner's shares are its
+ * files policy's (`policyWrite` sets them), and a test's store is handed no placed body,
+ * since placing one is the door's (`bodies.test.ts`), so an adoption fails loudly.
+ */
+export function collectionParts(storage: DurableObjectStorage):
+    ConstructorParameters<typeof Collections> {
+  const policy = new Policy(storage);
+  return [storage, () => {
+    throw new Error("a test's own store takes inline bodies only");
+  }, () => fileLimits(policy.read().document, null)];
+}
+
+/** The primitive on `stub`'s own storage, as the object builds it. */
+export function inObject<R>(stub: Stub,
+                            act: (store: Collections, state: DurableObjectState) => R): Promise<R> {
   return runInDurableObject(stub, (_instance: OwnerDO, state) =>
-    act(new Collections(state.storage, { ...LIMITS, ...limits }, undefined,
-                        shares === undefined ? undefined : () => shares), state));
+    act(new Collections(...collectionParts(state.storage)), state));
+}
+
+/**
+ * `inObject` for a test that fills a bound (`fillRows`, `fillHistory`), and then the object's
+ * storage let go: a filled object is hundreds of MB on disk, and a test file's objects are
+ * kept until the file ends, so its fills would add up.
+ */
+export async function inFilled<R>(stub: Stub,
+                                  act: (store: Collections, state: DurableObjectState) => R):
+    Promise<R> {
+  try {
+    return await inObject(stub, act);
+  } finally {
+    await runInDurableObject(stub, (_instance: OwnerDO, state) => state.storage.deleteAll());
+  }
+}
+
+/**
+ * What fills a bound in the fewest writes, and so the fewest rows for a recount to read: an
+ * inline body as long as one stays (`PLACE_BYTES`), under a collection, a key and a writer at
+ * the validators' widest (256 and 512 four-byte code points), each counted in the row and its
+ * index entries.
+ */
+const FILLING = Object.freeze({
+  body: "f".repeat(PLACE_BYTES),
+  collection: "\u{1D11E}".repeat(255) + "f",
+  writer: "\u{1D11E}".repeat(512),
+  key: (n: number | string) => "\u{1D11E}".repeat(250) + String(n).padStart(6, "0"),
+});
+
+/**
+ * The owner's rows filled with rows of the owner's own files scope: `FILLING`'s, then empty
+ * ones under short names, until a write is refused past the rows' charge
+ * (`LIMITS.maxRowsCharge`), so less room is left than any one more row takes. The history
+ * passes its own charge on the way. Every filling row is outside the collections a test names.
+ */
+export function fillRows(store: Collections, owner: string): void {
+  const passes = [
+    (n: number) => [FILLING.writer, FILLING.collection, FILLING.key(n), FILLING.body] as const,
+    (n: number) => [owner, "fill", `e${n}`, ""] as const,
+  ];
+  for (const pass of passes) {
+    for (let n = 0; ; n++) {
+      if (n > LIMITS.maxRowsCharge / PLACE_BYTES) {
+        throw new Error("the rows were filled past their charge and nothing was refused");
+      }
+      const [writer, collection, key, body] = pass(n);
+      try {
+        store.write(owner, writer, collection, key, body, "", false);
+      } catch (error) {
+        if ((error as Error).message !== "the owner's collections are full") {
+          throw error;
+        }
+        break;
+      }
+    }
+  }
+}
+
+/**
+ * The history filled with entries of one `FILLING` row written again and again, until
+ * `pruned` holds: past the history's charge (`LIMITS.maxHistoryCharge`), its oldest entries
+ * are let go.
+ */
+export function fillHistory(store: Collections, owner: string, pruned: () => boolean): void {
+  const key = FILLING.key("h");
+  let etag = store.get(FILLING.writer, FILLING.collection, key).row?.etag ?? "";
+  for (let n = 0; !pruned(); n++) {
+    if (n > LIMITS.maxHistoryCharge / PLACE_BYTES) {
+      throw new Error("the history was filled past its charge and nothing was let go");
+    }
+    etag = store.write(owner, FILLING.writer, FILLING.collection, key, FILLING.body, etag,
+                       false).etag;
+  }
 }
 
 export type RowTuple = [string, string, number, number, string, number, string];

@@ -653,7 +653,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#log = new ChangeLog(storage);
     this.#bodies = new Bodies(this.#files, storage, write);
     // An outside writer's share of the collections is the owner's own `client_share`.
-    this.#collections = new Collections(storage, undefined, this.#bodies.adopt,
+    this.#collections = new Collections(storage, this.#bodies.adopt,
                                         () => fileLimits(this.#policy.read().document, null));
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);

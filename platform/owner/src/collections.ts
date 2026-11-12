@@ -58,7 +58,7 @@ import { jsonBytes } from "../../contract/src/encoded";
 import { filerOf, MAIN_AGENT } from "./authority";
 import type { Heads } from "./pages";
 
-export interface Limits {
+interface Limits {
   /** A row body, in UTF-8 bytes: one call through the object whole (`BODY_BYTES_MAX`). */
   readonly maxRowBytes: number;
   /**
@@ -94,8 +94,6 @@ export interface Shares {
   readonly owner_reserve: number;
 }
 
-/** The files policy's defaults, for a primitive built without the owner's policy. */
-const DEFAULT_SHARES: Shares = Object.freeze({ client_share: 25, owner_reserve: 25 });
 /** The owner's own files scope (`manifest.ts`'s `OWNER_SCOPE`). */
 export const OWNER_FILER = "owner";
 
@@ -145,9 +143,9 @@ export interface Page {
  * A row body as a write takes it, or refused: text of at most `maxRowBytes` UTF-8 bytes, and
  * well-formed. The door checks it before it places the body (ADR-035).
  */
-export function checkBody(body: unknown, limits: Limits = LIMITS): string {
-  if (typeof body !== "string" || utf8Bytes(body) > limits.maxRowBytes) {
-    throw new Refusal("invalid", `a row body is text of at most ${limits.maxRowBytes} bytes`);
+export function checkBody(body: unknown): string {
+  if (typeof body !== "string" || utf8Bytes(body) > LIMITS.maxRowBytes) {
+    throw new Refusal("invalid", `a row body is text of at most ${LIMITS.maxRowBytes} bytes`);
   }
   if (LONE_SURROGATE.test(body)) {
     throw new Refusal("invalid", "a row body is well-formed text");
@@ -265,16 +263,13 @@ function now(): number {
 
 export class Collections {
   readonly #storage: OwnerStorage;
-  readonly #limits: Limits;
-  /** How a writing unit adopts a placed body's content (`Bodies.adopt`); none, none placed. */
-  readonly #adopt: Adopt | undefined;
+  /** How a writing unit adopts a placed body's content (`Bodies.adopt`). */
+  readonly #adopt: Adopt;
   /** The owner's shares, read at each write. */
   readonly #shares: () => Shares;
 
-  constructor(storage: OwnerStorage, limits: Limits = LIMITS, adopt?: Adopt,
-              shares: () => Shares = () => DEFAULT_SHARES) {
+  constructor(storage: OwnerStorage, adopt: Adopt, shares: () => Shares) {
     this.#storage = storage;
-    this.#limits = limits;
     this.#adopt = adopt;
     this.#shares = shares;
   }
@@ -300,7 +295,7 @@ export class Collections {
    * The history is bounded on its own, pruned rather than refused.
    */
   #bound(before: { owner: number; mine: number; outside: number }, filer: string): void {
-    const most = this.#limits.maxRowsCharge;
+    const most = LIMITS.maxRowsCharge;
     const after = this.#charges(filer);
     const { client_share: share, owner_reserve: reserve } = this.#shares();
     const over = (key: "owner" | "mine" | "outside", bound: number) =>
@@ -332,7 +327,7 @@ export class Collections {
         placed: Placed | null = null, filer = OWNER_FILER): Row {
     name(collection, "collection");
     name(rowId, "row_id");
-    checkBody(body, this.#limits);
+    checkBody(body);
     if (typeof expectedEtag !== "string" || typeof isPrivate !== "boolean") {
       throw new Refusal("invalid", "invalid collection write");
     }
@@ -413,7 +408,7 @@ export class Collections {
   #prune(): void {
     const sql = this.#sql;
     const over = () => sql.exec<{ charge: number }>("SELECT charge FROM collection_space")
-      .one().charge > this.#limits.maxHistoryCharge;
+      .one().charge > LIMITS.maxHistoryCharge;
     while (over()) {
       const oldest = sql.exec<{ collection: string; key: string; revision: number }>(
         "SELECT collection, key, revision FROM collection_history ORDER BY at, rowid LIMIT ?",
@@ -506,8 +501,8 @@ export class Collections {
       throw new Refusal("invalid", "after is a collection seq");
     }
     if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0
-        || limit > this.#limits.maxPull) {
-      throw new Refusal("invalid", `limit is 1 to ${this.#limits.maxPull}`);
+        || limit > LIMITS.maxPull) {
+      throw new Refusal("invalid", `limit is 1 to ${LIMITS.maxPull}`);
     }
     const top = this.top(collection);
     const found = this.#sql.exec<StoredRow>(
@@ -538,8 +533,8 @@ export class Collections {
       throw new Refusal("invalid", "after is a change cursor");
     }
     if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0
-        || limit > this.#limits.maxPull) {
-      throw new Refusal("invalid", `limit is 1 to ${this.#limits.maxPull}`);
+        || limit > LIMITS.maxPull) {
+      throw new Refusal("invalid", `limit is 1 to ${LIMITS.maxPull}`);
     }
     const space = this.#sql.exec<{ erasure_floor: number }>(
       "SELECT erasure_floor FROM collection_space").one();
@@ -630,9 +625,9 @@ export class Collections {
       "SELECT revision, op, writer, at, body_json, body_bytes, content_id FROM " +
         "collection_history WHERE collection = ? AND key = ? AND revision < ? " +
         "ORDER BY revision DESC LIMIT ?", collection, rowId, before ?? Number.MAX_SAFE_INTEGER,
-      this.#limits.maxPull + 1,
+      LIMITS.maxPull + 1,
     ).toArray();
-    const page = paged(found.slice(0, this.#limits.maxPull), PAGE_BYTES);
+    const page = paged(found.slice(0, LIMITS.maxPull), PAGE_BYTES);
     const more = page.length < found.length;
     return {
       entries: page.reverse().map((e) => ({
