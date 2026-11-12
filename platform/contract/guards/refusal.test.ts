@@ -18,8 +18,9 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { readWrangler } from "../../ci/workers";
+import { MAINTENANCE } from "../src/control";
 import {
-  EGRESS_CODES, ERASING, FAULT_CODES, faultOf, FileFault, GATEWAY_CODES, Refusal, REFUSALS,
+  EGRESS_CODES, ERASING, FAULT_CODES, faultOf, FileFault, Refusal, REFUSALS,
   refusalOf,
 } from "../src/refusal";
 
@@ -80,29 +81,61 @@ describe("a refusal", () => {
 });
 
 describe("a transient refusal", () => {
-  it("is one of the codes that say when to try again, and no other", () => {
+  it("is one of the codes for the moment only, and each that says when is one", () => {
     const transient = Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { transient?: true }).transient === true)
       .map(([code]) => code).sort();
-    expect(transient).toEqual(["busy", "events_busy", "events_raced", "storage_busy"]);
+    expect(transient).toEqual(["busy", "events_busy", "events_raced", "root_changed",
+                               "storage_busy", "unavailable"]);
     expect(Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { retryAfterS?: number }).retryAfterS !== undefined)
-      .map(([code]) => code).sort()).toEqual(transient);
+      .map(([code]) => code).sort())
+      .toEqual(["busy", "events_busy", "events_raced", "storage_busy", "unavailable"]);
     expect([new Refusal("busy").transient, new Refusal("storage_busy").transient,
+            new Refusal("unavailable", MAINTENANCE).transient,
             new Refusal("tier_runs").transient, new Refusal("refused").transient])
-      .toEqual([true, true, false, false]);
+      .toEqual([true, true, true, false, false]);
   });
 });
 
 describe("the code list", () => {
-  it("gives each code one status, and every gateway and egress code one", () => {
+  it("gives each code one status", () => {
     for (const [code, entry] of Object.entries(REFUSALS)) {
       expect(Number.isInteger(entry.status) && entry.status >= 400 && entry.status < 600, code)
         .toBe(true);
     }
-    for (const code of [...GATEWAY_CODES, ...EGRESS_CODES]) {
-      expect(Object.hasOwn(REFUSALS, code), code).toBe(true);
-    }
+  });
+
+  // The one table of what a code is answered with (`d2:N87`): what every door has answered
+  // with each, its status and its `Retry-After`.
+  it.each([
+    ["refused", 403, undefined], ["invalid", 400, undefined],
+    ["message_body", 400, undefined], ["chunk_deleting", 403, undefined],
+    ["file_quota", 403, undefined], ["owner_suspended", 403, undefined],
+    ["storage_full", 507, undefined], ["uploads_open", 409, undefined],
+    ["file_busy", 409, undefined], ["storage_busy", 503, 30], ["busy", 503, 1],
+    ["events_busy", 503, 1], ["events_raced", 503, 1],
+    // The platform gates, closed: the doors' 503 and its minute.
+    ["unavailable", 503, 60],
+    // The doors' own, as the egress door has answered them.
+    ["runner_token_missing", 401, undefined], ["run_secret_missing", 401, undefined],
+    ["sync_token_missing", 401, undefined], ["sync_token_unknown", 401, undefined],
+    ["sync_token_expired", 401, undefined], ["not_found", 404, undefined],
+    ["method_not_allowed", 405, undefined], ["events_too_large", 413, undefined],
+    ["egress_gateway_failed", 502, undefined], ["egress_deadline", 504, undefined],
+    ["egress_aborted", 503, undefined], ["egress_ended", 503, undefined],
+    // A connect to a source not connectable yet, as the connect door has answered it.
+    ["source_unwired", 501, undefined],
+    // The files plane's.
+    ["keyring_unavailable", 500, undefined], ["data_key_refused", 400, undefined],
+    ["root_changed", 409, undefined],
+  ] as const)("answers %s with %i", (code, status, retry) => {
+    const refusal = new Refusal(code);
+    expect([refusal.status, refusal.retryAfter]).toEqual([status, retry]);
+  });
+
+  it("names the egress door's every code, each shown by its code", () => {
+    expect(EGRESS_CODES.filter((code) => !new Refusal(code).named)).toEqual([]);
   });
 });
 
