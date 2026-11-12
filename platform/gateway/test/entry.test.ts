@@ -6,12 +6,13 @@
 import { createExecutionContext } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { builtinCatalog } from "../src/catalog";
 import { learnMeter, meteredRecord } from "../src/meter";
 import { Refusal } from "../../contract/src/refusal";
 import { guarded } from "../src/failure";
+import { IDLE_CUT_MS } from "../src/forward";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { GATEWAY_POOL_SLOTS, gatewaySlots } from "../src/held";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
@@ -51,6 +52,19 @@ async function responsesModel(): Promise<{ id: string }> {
     }
   }
   throw new Error("no metered Responses model in the catalog");
+}
+
+/** An Anthropic Messages model whose output cap pi-ai sets, so its calls can be metered. */
+async function anthropicModel(): Promise<{ id: string }> {
+  const catalog = builtinCatalog();
+  for (const record of catalog.provider("anthropic")!.getModels()
+    .filter((candidate) => candidate.api === "anthropic-messages")) {
+    if (await learnMeter(catalog, ANTHROPIC.upstream, "sk-good", meteredRecord(
+      catalog, ANTHROPIC.upstream, record.id)!) !== null) {
+      return record;
+    }
+  }
+  throw new Error("no metered Messages model in the catalog");
 }
 
 async function until(check: () => boolean): Promise<void> {
@@ -356,6 +370,64 @@ describe("the gateway Worker", () => {
     const wrong = await call(text, other);
     expect([wrong.response.status, await wrong.response.json()])
       .toEqual([500, { error: { code: "internal", message: "internal" } }]);
+  });
+
+  it("cuts a metered answer its provider goes silent on, the provider's request ended",
+     async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await connect.seal("alice", "c2", 1, "sk-good", ANTHROPIC)).blob;
+    const model = await anthropicModel();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const answer = await egress.forward("alice", "c2", 1, blob, posted("/v1/messages",
+        JSON.stringify({ model: model.id, max_tokens: 50, stream: true,
+                         messages: [{ role: "user", content: "hi" }] }),
+        { "x-fake-mode": "stall", "x-fake-id": "idle-metered" }), granting(),
+        new ReadableStream());
+      const reader = answer.response.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+      const next = reader.read().then(() => "read on", (error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(IDLE_CUT_MS);
+      expect(await next).toBe("deadline");
+    } finally {
+      vi.useRealTimers();
+    }
+    // The meter's own reads of the answer end with it: the provider's request is cut.
+    for (let tries = 0; tries < 100; tries++) {
+      const seen = await (await fetch("https://status.test/cancelled?id=idle-metered"))
+        .json() as { cancelled: boolean | null };
+      if (seen.cancelled === true) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error("the provider's request was never cut");
+  });
+
+  it("never cuts a metered answer whose every byte comes inside the idle cut", async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await connect.seal("alice", "c2", 1, "sk-good", ANTHROPIC)).blob;
+    const model = await anthropicModel();
+    const stop = new IdentityTransformStream();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const answer = await egress.forward("alice", "c2", 1, blob, posted("/v1/messages",
+        JSON.stringify({ model: model.id, max_tokens: 50, stream: true,
+                         messages: [{ role: "user", content: "cmd:slow-steady" }] })),
+        granting(), stop.readable);
+      const reader = answer.response.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+      // Three gaps of just under the cut each: past it in all, never within one gap.
+      for (let gap = 0; gap < 3; gap++) {
+        const next = reader.read().then((chunk) => chunk.done ? "done" : "byte",
+                                        (error: Error) => error.message);
+        await vi.advanceTimersByTimeAsync(IDLE_CUT_MS - 1_000);
+        expect(await next).toBe("byte");
+      }
+      await stop.writable.getWriter().close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ends an answer its caller stopped mid-stream cleanly, the provider's request cut",

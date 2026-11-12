@@ -599,7 +599,8 @@ function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
           controller.close();
         } else {
           controller.error(error);
-          reader.cancel().catch(() => undefined);
+          // Through the fetch's signal, so a metered answer's tee (its meter's readers) ends too.
+          cancelled.abort();
         }
       } finally {
         clearTimeout(timer);
