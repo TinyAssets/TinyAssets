@@ -1,12 +1,17 @@
-"""Run repository-wide structural guards before queue admission.
+"""Run the old stack's structural guards before queue admission.
 
-Run with ``python -m scripts.ci_structural_guards``. No quarantine, selection,
-or skip allowance: these checks must execute on every PR, including docs-only
-changes. Repair advice is attached to setup, collection and assertion failures.
+Run with ``python -m scripts.ci_structural_guards``: every guard. With
+``--selection FILE`` (the merge gate's selection of the diff, ``affected_tests.py
+--gate --out FILE``) only the guards whose test file the selection holds run, and
+every guard when it is ALL: a guard a diff cannot reach does not run. No quarantine
+and no skip allowance. Repair advice is attached to setup, collection and assertion
+failures.
 """
 from __future__ import annotations
 
+import argparse
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -219,9 +224,34 @@ class GuardResults:
             terminalreporter.write_line(f"{nodeid}: {repair(nodeid)}")
 
 
+def selected_targets(selection: list[str] | None) -> list[str]:
+    """The guards a selection holds, by test file; ``None`` is the whole surface."""
+    if selection is None:
+        return targets()
+    return [target for target in targets() if target.split("::", 1)[0] in set(selection)]
+
+
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--selection", metavar="FILE",
+                    help="the run's selection: test paths, or the single word ALL")
+    args, unread = ap.parse_known_args()
+    if unread:
+        print(f"ignored, as this script always has: {' '.join(unread)}", file=sys.stderr)
+    chosen = targets()
+    if args.selection:
+        # The runner's own reader, so the guards and the shards read one selection alike.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from ci_required_tests import selection_entries
+
+        chosen = selected_targets(selection_entries(Path(args.selection)))
+    if not chosen:
+        # pytest with no target would collect the whole of tests/.
+        print("No structural guard's test file is in this run's selection; nothing to run.")
+        return 0
+    print(f"structural guards: {len(chosen)} of {len(targets())} target(s)")
     results = GuardResults()
-    code = pytest.main(["-q", "--tb=short", "--durations=10", *targets()], plugins=[results])
+    code = pytest.main(["-q", "--tb=short", "--durations=10", *chosen], plugins=[results])
     return int(code) or int(bool(results.problems))
 
 
