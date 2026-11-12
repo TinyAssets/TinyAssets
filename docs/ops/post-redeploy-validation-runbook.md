@@ -316,8 +316,9 @@ Mara's session.
 runs action=inspect run_id=ae8d92f18907459e
 ```
 
-(That's Mara's failed `extract_claims` run of 2026-04-24. If host has cleaned it up, file a fresh failing run by
-binding a branch to a missing-provider config and triggering a run.)
+(That's Mara's failed `extract_claims` run of 2026-04-24. If host has
+cleaned it up, file a fresh failing run by binding a branch to a
+missing-provider config and triggering a run.)
 
 **Green criteria (in the failure payload):**
 - `failure_class` field present with a string value (e.g.,
