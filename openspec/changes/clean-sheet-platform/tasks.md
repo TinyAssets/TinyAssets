@@ -325,9 +325,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `ci/budgets.mjs --write` (d3 §I).
-  - Lane C's first PR: the tools' own layer row (d2 §G14, d3 §O6).
-  - T1b4: the `platform-sizes` legs upload their Vitest JSON report, then `budgets.json` is
-    re-derived from it with `ci/budgets.mjs --write` (no CI job uploads one today).
   - Lane C: P-T1, the starter guard's "DID NOT RUN" warning that passes when it cannot check
     against main, fails instead (V1 and C2 each left it to the other); `contract/src/slots.ts`
     `SlotPool`'s constructor defaults (T1b).
@@ -335,12 +332,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     beside `owner/src/starter.ts` (V1).
   - Lane X: `okf-watch.yml`'s `FOUNDER` login, a copy of `.github/CODEOWNERS` (P-H5′'s
     workflow half; V1).
+  - T1b4: the `platform-sizes` legs upload their Vitest JSON report, then `budgets.json` is
+    re-derived from it with `ci/budgets.mjs --write` (no CI job uploads one today).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
     (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is seven PRs, each green on its own:
+  (d3 §K1, §K2). T1 is eight PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
   - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
@@ -356,9 +355,15 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     a test that a halted schedule runs no lane already due (`schedule.ts`'s `onJob`); the
     memory leg's floor never read high by earlier work's garbage (the pool's observer made
     outside `run`, the floor read again at the run's start).
-  - [ ] T1b4: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
-    `admitted`, `changes`, `adopt` and `wall` required, its decisions as pure functions, the
-    archive's tests at production ceilings, `b23_research.md` question 3).
+  - [ ] T1b4: the ledger's decisions as pure functions tested with small numbers (`sealable`,
+    `archiveDue`, `hotFull`, `postRoom`, `moveTake`); `admitted`, `changes`, `adopt` and `wall`
+    required; `ledger-bounds` and `agent-mail`'s identity bounds at production's ceilings; the
+    memory probe's measured move production's largest segment (d3 §K1).
+  - [ ] T1b5: the archive's object tests at production ceilings (`archive-mail.test.ts`), then
+    the ledger's `limits` parameter, `Internals.ledgerLimits`, `BigArchivingOwnerDO` and the
+    other three classes' ceilings deleted, `LEDGER_LIMITS` checked once at module load, and a
+    test of the purge queue's ceiling (`ledger.ts` `remove`, `maxAgentRows` purges waiting),
+    which none holds today (`b23_research.md` question 3).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     the unbound-`ERASURES` throw gone (`owner-do.ts:767-768`; the generated `OwnerEnv` already
     types it required, C2b) with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the

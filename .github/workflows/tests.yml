@@ -282,9 +282,7 @@ jobs:
   # than the medium legs' critical path. Required through `required-tests`' needs, on every
   # event: the PR's builder sees a production-size failure before anyone stamps it, and the
   # queue and the hourly run hold main to it. Every workspace with a large test has its
-  # `test:sizes` here, every shard (platform/ci/guards/legs.test.ts). Each leg uploads the
-  # Vitest JSON report its `test:sizes` writes, which `node ci/budgets.mjs` reads to
-  # re-derive platform/ci/budgets.json.
+  # `test:sizes` here, every shard (platform/ci/guards/legs.test.ts).
   #
   # timeout-minutes is a watchdog: about 3 x the slowest shard's measured time (owner 2/2,
   # 178 s in one local run, 2026-11-04; re-derive from the first CI run's shard times).
@@ -321,11 +319,6 @@ jobs:
           cache-dependency-path: platform/package-lock.json
       - run: npm ci
       - run: ${{ matrix.command }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sizes-report-${{ strategy.job-index }}
-          path: platform/*/sizes-report.json
-          if-no-files-found: error
 
   # The owner app in a real browser (slice APP): Chromium at the Playwright version the
   # platform lockfile pins, against the doors in workerd. Required through

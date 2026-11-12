@@ -1,4 +1,2 @@
 node_modules/
 .wrangler/
-# Each test:sizes run's Vitest report: platform-sizes uploads it for ci/budgets.mjs.
-sizes-report.json
