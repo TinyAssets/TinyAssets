@@ -1,8 +1,8 @@
-// The hooks Worker (ADR-032 §4; pi audit F8; narrowed to code mode by ADR-034 decision 12):
+// The codemode Worker (ADR-032 §4; pi audit F8; narrowed to code mode by ADR-034 decision 12):
 // code mode's VMs, each execution in its own `CodemodeSandbox`. It binds the namespace of
 // its own class (no `script_name`), and nothing else: no `OWNER`, no bucket, no other
 // service, no Worker Loader, so no script reaches an owner's object, ledger or policy. It
-// serves no URL (no route, no workers.dev or preview URL): only the owner Worker's `HOOKS`
+// serves no URL (no route, no workers.dev or preview URL): only the owner Worker's `CODEMODE_VM`
 // service binding reaches it (guards/config.test.ts).
 // - compatibility_date: the owner Worker's.
 // - disable_ctx_exports: no way to the Worker's own namespaces but its bindings.
@@ -12,7 +12,7 @@
 // The class is SQLite-backed and never uses its storage.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
-  "name": "tinyassets-hooks",
+  "name": "tinyassets-codemode",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-23",
   "compatibility_flags": ["disable_ctx_exports"],

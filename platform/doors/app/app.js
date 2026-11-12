@@ -749,7 +749,7 @@ async function apps(arg = null) {
     call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
     call("agent/doorbell/kinds")]);
   const document_ = policy.policy;
-  const codemode = h("input", { type: "checkbox", checked: document_.hooks?.codemode !== false });
+  const codemode = h("input", { type: "checkbox", checked: document_.codemode?.on !== false });
   const custom = document_.tools?.custom ?? null;
   const every = h("input", { type: "checkbox", checked: custom === null });
   const picks = tools.map((tool) => h("label", {},
@@ -782,8 +782,8 @@ async function apps(arg = null) {
          h("h2", {}, "Code mode"),
          h("label", {}, codemode, " Let connected apps run one script of many tool calls"),
          h("p", { class: "muted" }, "Each call in a script is held to what that app may do."),
-         action("Save", () => write({ ...document_,
-                                      hooks: { ...(document_.hooks ?? {}), codemode: codemode.checked } }),
+         action("Save", () => write({ ...document_, codemode: {
+                                        ...(document_.codemode ?? {}), on: codemode.checked } }),
                 report)),
        h("section", {},
          h("h2", {}, "Tools your connected apps see"),

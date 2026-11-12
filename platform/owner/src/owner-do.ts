@@ -24,7 +24,7 @@
  * Every other door refuses the pair.
  *
  * Its code cannot reach another owner's object: no service the Worker binds reaches an
- * object (`wrangler.jsonc`, held by the config guard; code mode's VMs run in `HOOKS`,
+ * object (`wrangler.jsonc`, held by the config guard; code mode's VMs run in `CODEMODE_VM`,
  * never here); it binds no Durable Object namespace; the runtime hands it no
  * `ctx.exports` (`disable_ctx_exports`); and its source never names `exports` or imports
  * `env` (the config and self-reach guards). The owner's file bytes reach the bucket only
@@ -79,7 +79,7 @@
  * A main agent spends few calls (slice M): `inboxDigest` and `boardDigest` answer what
  * changed for it since its cursor in one read, held to its grant; `codeRun` is code mode at
  * the MCP door, one script calling the caller's other tools (`codemode.ts`), refused unless
- * the owner's policy turns `hooks.codemode` on and the caller's profile holds `code`; and
+ * the owner's policy has `codemode.on` and the caller's profile holds `code`; and
  * `toolProfile` answers the doors which tools a caller is served (`contract/profiles.json`:
  * its grant's profile, or a run's).
  *
@@ -255,15 +255,15 @@ export interface GrantRequest {
 /**
  * The object's environment: four service bindings, `FILES`, to the files Worker, which
  * binds no Durable Object and no service, `GATEWAY`, to the model gateway, which binds
- * nothing, `HOOKS`, to the hooks Worker, which binds only its own class, and `SANDBOX`, to
- * the sandbox Worker (slice S), which binds only its own class and the directory and
- * reaches nothing but E2B (the config guard checks every config); and no Durable Object
- * namespace.
+ * nothing, `CODEMODE_VM`, to the codemode Worker, which binds only its own class, and
+ * `SANDBOX`, to the sandbox Worker (slice S), which binds only its own class and the
+ * directory and reaches nothing but E2B (the config guard checks every config); and no
+ * Durable Object namespace.
  */
 export interface OwnerEnv {
   readonly FILES: ChunkStore;
   readonly GATEWAY: GatewayService;
-  readonly HOOKS: CodemodeService;
+  readonly CODEMODE_VM: CodemodeService;
   /**
    * The platform's control record alone (`c:control`, the doors' too), read by code mode's
    * calls for the gates the door read (`control-gate.ts`); never written here.
@@ -2013,8 +2013,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   /**
    * Code mode at the MCP door: one script calling the caller's profile's other tools as
-   * `tools.<name>(args)`, its VM in the hooks Worker (`codemode.ts`), its wall time
-   * `CODEMODE_TIMEOUT_MS`. Refused unless the owner's policy has `hooks.codemode` on (its
+   * `tools.<name>(args)`, its VM in the codemode Worker (`codemode.ts`), its wall time
+   * `CODEMODE_TIMEOUT_MS`. Refused unless the owner's policy has `codemode.on` (its
    * default) and the caller's profile holds `code`. Each call is the tool's own door with
    * the caller's binding, admitted again (grant, run, admission), held to the caller's
    * profile and the switch as they stand then, and to the platform's gates the door read

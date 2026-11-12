@@ -29,9 +29,9 @@
  *   research §4): per-run requests, tokens and cost (held per sandbox run at the egress
  *   door, `egress.ts`), and owner-wide and per-source daily and monthly cost ceilings.
  *   The Python's per-turn limits were code constants; here they are policy.
- * - The optional `hooks` table holds one switch: whether code mode scripts may run
- *   (`codemode`, on unless the owner turns it off; `HOOK_DEFAULTS`), their VMs in the
- *   hooks Worker. The MCP door's `code` tool refuses while it is off (slice M).
+ * - The optional `codemode` table holds one switch: whether code mode scripts may run
+ *   (`on`, on unless the owner turns it off; `CODEMODE_DEFAULTS`), their VMs in the
+ *   codemode Worker. The MCP door's `code` tool refuses while it is off (slice M).
  * - The optional `tools` table is the owner's own tool profile (`custom`, slice M): the
  *   MCP door's tools a client whose grant names `custom` is served, each a tool of the
  *   table, none twice. Left out, `custom` is every tool (`contract/profiles.json`).
@@ -70,7 +70,7 @@
  */
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import {
-  canonical, DEFAULT_POLICY_DIGEST, type FileSettings, HOOK_DEFAULTS, keys, MODEL_DEFAULTS,
+  canonical, CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, type FileSettings, keys, MODEL_DEFAULTS,
   plain, policyDigest, type PolicyDocument, type PolicyLimits, POLICY_LIMITS, type SourceCeilings,
   validate, whole,
 } from "../../contract/src/policy-document";
@@ -105,9 +105,9 @@ export function fileLimits(document: PolicyDocument, storage: number | null):
     : Math.min(storage, settings.max_bytes ?? storage) };
 }
 
-/** The hook settings a document leaves in force: its own, and the defaults for the rest. */
-export function hookSettings(document: PolicyDocument): { readonly codemode: boolean } {
-  return { ...HOOK_DEFAULTS, ...document.hooks };
+/** The code mode settings a document leaves in force: its own, and the defaults for the rest. */
+export function codemodeSettings(document: PolicyDocument): { readonly on: boolean } {
+  return { ...CODEMODE_DEFAULTS, ...document.codemode };
 }
 
 /** The tools the owner's `custom` profile serves: its own choice, else every tool. */
@@ -236,9 +236,9 @@ export class Policy {
     return customTools(this.read().document);
   }
 
-  /** Whether code mode is on (`hooks.codemode`, its default on). */
+  /** Whether code mode is on (`codemode.on`, its default on). */
   codemode(): boolean {
-    return hookSettings(this.read().document).codemode;
+    return codemodeSettings(this.read().document).on;
   }
 
   /** The model policy's settings, its caps among them (`modelSettings`). */

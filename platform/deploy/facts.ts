@@ -79,6 +79,22 @@ function named(field: (config: Config) => readonly string[]): readonly string[] 
   return Object.freeze([...new Set(WORKERS.flatMap((worker) => field(configOf(worker))))]);
 }
 
+/** `retired`, the scripts the kit deletes, when none is a Worker this tree deploys (`names`). */
+export function retiredWorkers(retired: readonly string[],
+                               names: Readonly<Record<string, string>>): readonly string[] {
+  const kept = retired.filter((name) => Object.values(names).includes(name));
+  if (kept.length > 0) {
+    throw new Error(`platform.json retires ${kept.join(", ")}, which a config still names`);
+  }
+  return Object.freeze([...retired]);
+}
+
+/**
+ * The Workers the platform no longer has, by script name (`platform.json`): the kit deletes
+ * each the account still holds.
+ */
+export const RETIRED = retiredWorkers(platform.retired.workers, NAMES);
+
 /** The R2 buckets the kit makes: the ones the Workers bind, then the unbound (`platform.json`). */
 export const BUCKETS: readonly string[] = Object.freeze([...new Set([
   ...named((config) =>

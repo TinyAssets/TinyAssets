@@ -1,5 +1,5 @@
 /**
- * The hooks Worker's source reaches no owner and no storage (agent research §6.4): its banned
+ * The codemode Worker's source reaches no owner and no storage (agent research §6.4): its banned
  * names (`rules.ts`), held over its whole import closure by the platform's isolation checker
  * (`ci/kit/imports.ts`). What it may import is the layer table's (`ci/kit/layers.ts`).
  */
@@ -21,7 +21,7 @@ isolationTests(IMPORTS, {
     ["a type import by path", "export type T = import('../../owner/src/owner-do').OwnerDO;"],
   ],
   allows: [
-    ["the runtime, code mode's portable types and sibling sources", "hooks/src/probe.ts", [
+    ["the runtime, code mode's portable types and sibling sources", "codemode/src/probe.ts", [
       "import { WorkerEntrypoint } from 'cloudflare:workers';",
       "import type { CodemodeRemote } from '@earendil-works/pi-codemode/portable';",
       "import { CodemodeSandbox } from './codemode';",
@@ -29,9 +29,9 @@ isolationTests(IMPORTS, {
   ],
 });
 
-describe("hooks isolation guards", () => {
-  it("reach only the hooks Worker's own two sources and its contract", () => {
-    expect([...closure("hooks").keys()].sort())
-      .toEqual(["contract/src/hooks.ts", "hooks/src/codemode.ts", "hooks/src/index.ts"]);
+describe("codemode isolation guards", () => {
+  it("reach only the codemode Worker's own two sources and its contract", () => {
+    expect([...closure("codemode").keys()].sort())
+      .toEqual(["codemode/src/codemode.ts", "codemode/src/index.ts", "contract/src/codemode.ts"]);
   });
 });

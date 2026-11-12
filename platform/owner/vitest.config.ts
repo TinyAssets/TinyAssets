@@ -24,7 +24,7 @@ export default defineConfig({
       // Runs in workerd. The owner object's namespaces are bound for the tests only
       // (`test/namespaces.ts`, each a class of the test Worker, `test/worker.ts`):
       // wrangler.jsonc gives the Worker no binding to its own namespace. FILES, GATEWAY,
-      // HOOKS and SANDBOX are the config's own bindings, to the real files, gateway, hooks
+      // CODEMODE_VM and SANDBOX are the config's own bindings, to the real files, gateway, codemode
       // and sandbox Workers run beside it, each bundled from its own config as a deploy
       // bundles it. TEST_KEYRING is the gateway's keyring, so a test can seal under an older
       // kid, and FILES_TEST_RING the files Worker's, so a test can wrap a data key under its
@@ -55,7 +55,7 @@ export default defineConfig({
                 auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: FILES_RING } }),
                 auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: KEYRING },
                                                        outboundService: "fake-upstream" }),
-                auxiliary(join(PLATFORM, "hooks"), {}),
+                auxiliary(join(PLATFORM, "codemode"), {}),
                 auxiliary(join(PLATFORM, "sandbox"), {
                   bindings: { E2B_API_KEY: "e2b_unused_in_owner_tests", E2B_TEMPLATE: "none" },
                   kvNamespaces: ["DIRECTORY"], outboundService: "fake-upstream" }),

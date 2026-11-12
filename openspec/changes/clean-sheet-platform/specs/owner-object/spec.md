@@ -97,7 +97,7 @@ A service binding the owner Worker holds SHALL be only to a Worker the config gu
 
 #### Scenario: The bindings today
 - **WHEN** the owner Worker's config is checked
-- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry and declaring only its data keys' ring secret (`FILES_KEYRING`) by name, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class; one store, `CONTROL`, the doors' namespace of the platform's control record alone, which only `control-gate.ts` reads; and no Durable Object namespace; `SANDBOX`, the sandbox Worker the runs call (`sandbox.ts`), is unbound until slice S adds that Worker and its allow-list entry, so every run is refused `sandbox_absent` meanwhile
+- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry and declaring only its data keys' ring secret (`FILES_KEYRING`) by name, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `CODEMODE_VM`, to the codemode Worker binding only its own `CodemodeSandbox` class; one store, `CONTROL`, the doors' namespace of the platform's control record alone, which only `control-gate.ts` reads; and no Durable Object namespace; `SANDBOX`, the sandbox Worker the runs call (`sandbox.ts`), is unbound until slice S adds that Worker and its allow-list entry, so every run is refused `sandbox_absent` meanwhile
 
 #### Scenario: The bound Worker gains a way on
 - **WHEN** the files Worker's config gains a Durable Object namespace, a service, a queue producer, a workflow, a dispatch namespace, a Worker loader, an unsafe binding, a tail consumer, a KV namespace, a D1 database or a second bucket, at top level or in an environment
@@ -384,7 +384,7 @@ An MCP client's grant row SHALL keep the vendor its sign-in named (`vendor`, an 
 - **THEN** `agents_list.apps` shows Claude connected and verified, Muse and the others not connected, each with its connect_url
 
 ### Requirement: A grant names its tool profile
-Each outside client's grant SHALL name its tool profile (`contract/profiles.json`): `custom` until the owner names `directory` in its session; a free row SHALL name `custom`. The object SHALL answer a caller's tools (`toolProfile`): a run's, the `run` profile; a client's, its grant's, where `custom` is the owner's policy's `tools.custom` (distinct names of the MCP door's tools), or every tool when the policy names none; `code` only while the owner's policy has `hooks.codemode` on, its default. Code mode SHALL be no capability: the profile and the switch are the owner's choice of it.
+Each outside client's grant SHALL name its tool profile (`contract/profiles.json`): `custom` until the owner names `directory` in its session; a free row SHALL name `custom`. The object SHALL answer a caller's tools (`toolProfile`): a run's, the `run` profile; a client's, its grant's, where `custom` is the owner's policy's `tools.custom` (distinct names of the MCP door's tools), or every tool when the policy names none; `code` only while the owner's policy has `codemode.on`, its default. Code mode SHALL be no capability: the profile and the switch are the owner's choice of it.
 
 #### Scenario: A new client
 - **WHEN** an MCP client's first verified call records its grant
@@ -895,15 +895,15 @@ The object SHALL hold one admission row: pending, admitted, suspended for billin
 - **WHEN** the owner, an outside client or a session sends `admissionSet`, or the platform's caller calls any other door
 - **THEN** each is refused, and the admission is unchanged
 
-### Requirement: The hooks Worker reaches no owner
-The `tinyassets-hooks` Worker SHALL bind the namespace of its own `CodemodeSandbox` class only (no Worker Loader), serve no URL, and never use its objects' storage. The owner config guard SHALL admit `HOOKS` only to such a Worker. User hooks are the engine's own, run in the sandbox (ADR-034 decision 11), never here.
+### Requirement: The codemode Worker reaches no owner
+The `tinyassets-codemode` Worker SHALL bind the namespace of its own `CodemodeSandbox` class only (no Worker Loader), serve no URL, and never use its objects' storage. The owner config guard SHALL admit `CODEMODE_VM` only to such a Worker. User hooks are the engine's own, run in the sandbox (ADR-034 decision 11), never here.
 
-#### Scenario: The hooks Worker gains a binding
-- **WHEN** the hooks Worker's config binds `OWNER`, a bucket, a Worker Loader or another Worker's class
-- **THEN** the owner config guard refuses the owner's `HOOKS` binding
+#### Scenario: The codemode Worker gains a binding
+- **WHEN** the codemode Worker's config binds `OWNER`, a bucket, a Worker Loader or another Worker's class
+- **THEN** the owner config guard refuses the owner's `CODEMODE_VM` binding
 
-### Requirement: Code mode's VM runs in the hooks Worker
-Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner and a random id; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no hooks Worker bound it SHALL fail loudly. The MCP door's `code` tool SHALL reach it only through `codeRun`, which SHALL refuse (`code_mode_off`) once the owner's policy turns `hooks.codemode` off (on by default), and (`tool_not_served`) unless the caller's profile holds `code`. A script's tools SHALL be the caller's profile's other tools, each call that tool's own door with the caller's binding, admitted again and held to the caller's profile, the switch, and the control record's gates the door read (the kill switch for an outside client, the maintenance gate for a run or the owner; one read serving at most a second of calls) as they stand at that call. A script SHALL end `timeout` past `CODEMODE_TIMEOUT_MS` of wall time, checked at each tool call as well as by pi-codemode's timer, or past the hooks Worker's interrupt budget of compute; its answer counts its calls by outcome and lists the calls of tools that change something in order (`landed`, a run of one tool and outcome as one entry), and an answer past `CODE_ANSWER_MAX` (31 MiB as V8 serializes it: a string two bytes a unit when any unit is past Latin-1; within Workers RPC's 32 MiB) SHALL be refused `answer_too_large`, its value and output dropped, its calls kept.
+### Requirement: Code mode's VM runs in the codemode Worker
+Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `CODEMODE_VM` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner and a random id; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no codemode Worker bound it SHALL fail loudly. The MCP door's `code` tool SHALL reach it only through `codeRun`, which SHALL refuse (`code_mode_off`) once the owner's policy turns `codemode.on` off (on by default), and (`tool_not_served`) unless the caller's profile holds `code`. A script's tools SHALL be the caller's profile's other tools, each call that tool's own door with the caller's binding, admitted again and held to the caller's profile, the switch, and the control record's gates the door read (the kill switch for an outside client, the maintenance gate for a run or the owner; one read serving at most a second of calls) as they stand at that call. A script SHALL end `timeout` past `CODEMODE_TIMEOUT_MS` of wall time, checked at each tool call as well as by pi-codemode's timer, or past the codemode Worker's interrupt budget of compute; its answer counts its calls by outcome and lists the calls of tools that change something in order (`landed`, a run of one tool and outcome as one entry), and an answer past `CODE_ANSWER_MAX` (31 MiB as V8 serializes it: a string two bytes a unit when any unit is past Latin-1; within Workers RPC's 32 MiB) SHALL be refused `answer_too_large`, its value and output dropped, its calls kept.
 
 #### Scenario: Code mode off
 - **WHEN** an outside client whose profile holds `code` calls `codeRun` after the owner's policy turns code mode off
@@ -923,14 +923,14 @@ Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox`
 
 #### Scenario: A script's tool calls
 - **WHEN** a script calls two of the tools its caller handed it
-- **THEN** each call is an RPC back through `exchange`, and the VM runs in the hooks Worker
+- **THEN** each call is an RPC back through `exchange`, and the VM runs in the codemode Worker
 
-#### Scenario: No hooks Worker
-- **WHEN** a script is run with no hooks Worker bound
+#### Scenario: No codemode Worker
+- **WHEN** a script is run with no codemode Worker bound
 - **THEN** it fails, and nothing of it runs in the owner's object
 
 #### Scenario: An execution with no name
-- **WHEN** the hooks Worker is asked to run an execution named `""`, or by 513 characters, or by no string
+- **WHEN** the codemode Worker is asked to run an execution named `""`, or by 513 characters, or by no string
 - **THEN** it refuses "a code mode execution is named" before any sandbox is reached
 
 ### Requirement: Each sandbox egress call is admitted at open and charged at its reserve

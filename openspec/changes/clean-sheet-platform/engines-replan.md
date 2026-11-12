@@ -142,7 +142,7 @@ Counts are lines on `origin/main` (`wc -l`). Every verdict assumes the new desig
 | `model-record.ts` | 197 | Keep | Model records price the egress reservation. |
 | `oauth.ts` | 368 | Keep | Covers RFC 6749 sources (OpenRouter). The Sign in with ChatGPT `refresh_with: provider` path is parked with `chatgpt.json` (§1.5). |
 
-### 1.4 `platform/hooks/src` and `platform/files/src`
+### 1.4 The code mode Worker's source (now `platform/codemode/src`) and `platform/files/src`
 
 | File | Lines | Verdict | Reason |
 |---|---|---|---|

@@ -11,7 +11,7 @@
  * first-party token) and TA_PROBE_KEY_ID (the id of TA_PROBE_KEY, which that probe
  * revokes, so it runs last).
  *
- * 1. A script past its interrupt budget, against the hooks Worker's `cpu_ms`: when and how
+ * 1. A script past its interrupt budget, against the codemode Worker's `cpu_ms`: when and how
  *    it is stopped.
  * 2. The blocking isolation: 10 s of A's compute, and B's one call meanwhile.
  * 3. Whether `exchange` calls count as subrequests: 1,100 tool calls in one script.
