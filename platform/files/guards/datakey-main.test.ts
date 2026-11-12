@@ -12,15 +12,24 @@
  *   refusal, by `unwrap`, `rewrap` and `mint` alike.
  * - No blob the gateway sealed opens here as a data key, under the very same ring, even
  *   one of a data key's size sealed for this namespace as its owner.
+ * - Every object main's cipher sealed (B21: `files/src/cipher.ts`, now the envelope's
+ *   per-object seal) opens byte for byte under today's, and every object sealed today opens
+ *   on main's; neither opens at another object key, under another data key, or changed.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { type Tree, treeAt } from "../../ci/history";
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
-import { hex, parseRing, sealBlob } from "../../contract/src/envelope";
+import {
+  base64, fromBase64, hex, openObject, parseRing, sealBlob, sealObject,
+} from "../../contract/src/envelope";
 import * as datakey from "../src/datakey";
 
 type Datakey = typeof datakey;
+interface Cipher {
+  seal(dataKey: ArrayBuffer, objectKey: string, plain: Uint8Array): Promise<Uint8Array>;
+  open(dataKey: ArrayBuffer, objectKey: string, stored: Uint8Array): Promise<Uint8Array>;
+}
 
 const { k1, k2 } = VECTORS.keys;
 const OLD = JSON.stringify({ active: "k1", keys: { k1 } });
@@ -31,10 +40,12 @@ const { k1: OLDER, k2: NEWER, rewrapped: REWRAPPED } = VECTORS.files;
 
 let tree: Tree;
 let main: Datakey;
+let mainCipher: Cipher;
 
 beforeAll(async () => {
   tree = treeAt(VECTORS.commit, ["platform/contract", "platform/files/src"]);
   main = await tree.load("platform/files/src/datakey.ts");
+  mainCipher = await tree.load("platform/files/src/cipher.ts");
 });
 
 afterAll(() => {
@@ -83,6 +94,14 @@ describe("today's keys", () => {
     expect(await keyOf(main, ROTATED, minted)).toBe(await keyOf(datakey, ROTATED, minted));
     const rewrapped = await datakey.rewrap(ROTATED, NS, OLDER.wrapped);
     expect(await keyOf(main, RETIRED, rewrapped)).toBe(OLDER.key);
+  });
+
+  it("under the longest kid, at a wrapped key's most characters, open on both", async () => {
+    const kid = "k".repeat(32);
+    const longest = JSON.stringify({ active: kid, keys: { [kid]: k1 } });
+    const minted = await datakey.mint(longest, NS);
+    expect(minted).toHaveLength(117);
+    expect(await keyOf(datakey, longest, minted)).toBe(await keyOf(main, longest, minted));
   });
 
   it("and main's fresh keys open on today's", async () => {
@@ -165,6 +184,49 @@ describe("every refusal is main's", () => {
       }
       expect(await outcome(() => datakey.mint(ring, NS)))
         .toBe(await outcome(() => main.mint(ring, NS)));
+    }
+  });
+});
+
+describe("main's golden objects", () => {
+  const bytesOf = (text: string) =>
+    Uint8Array.from(text.match(/../g)!, (pair) => parseInt(pair, 16)).buffer;
+  const dataKey = bytesOf(OLDER.key);
+  const other = bytesOf(NEWER.key);
+  const OBJECTS = VECTORS.files.objects.map(({ key, plain, stored }) =>
+    ({ key, plain: fromBase64(plain), stored: fromBase64(stored) }));
+  const opened = async (stored: Uint8Array, key: string, under: ArrayBuffer) =>
+    (await openObject(under, key, stored)) ?? "refused";
+  const mainOpened = (stored: Uint8Array, key: string, under: ArrayBuffer) =>
+    mainCipher.open(under, key, stored).then((plain) => plain, () => "refused");
+
+  it("are main's: its own cipher opens them", async () => {
+    expect(OBJECTS).toHaveLength(3);
+    for (const { key, plain, stored } of OBJECTS) {
+      expect(await mainOpened(stored, key, dataKey)).toEqual(plain);
+    }
+  });
+
+  it("open byte for byte under today's seal, and today's objects open on main's", async () => {
+    for (const { key, plain, stored } of OBJECTS) {
+      expect(base64(await openObject(dataKey, key, stored) ?? new Uint8Array(0)))
+        .toBe(base64(plain));
+      const today = await sealObject(dataKey, key, plain);
+      expect(today.byteLength).toBe(stored.byteLength);
+      expect(await mainOpened(today, key, dataKey)).toEqual(plain);
+    }
+  });
+
+  it("open nowhere else: another object key, another data key, a changed byte", async () => {
+    const [chunk, part] = [OBJECTS[0]!, OBJECTS[1]!];
+    const flipped = chunk.stored.slice();
+    flipped[flipped.length - 1] = flipped[flipped.length - 1]! ^ 1;
+    const cases: [Uint8Array, string, ArrayBuffer][] = [
+      [chunk.stored, part.key, dataKey], [chunk.stored, chunk.key, other],
+      [flipped, chunk.key, dataKey], [chunk.stored.subarray(0, 27), chunk.key, dataKey]];
+    for (const [stored, key, under] of cases) {
+      expect(await opened(stored, key, under)).toBe("refused");
+      expect(await mainOpened(stored, key, under)).toBe("refused");
     }
   });
 });

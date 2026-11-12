@@ -6,6 +6,5 @@
 
 export interface FilesEnv {
   readonly BLOBS: R2Bucket;
-  readonly FILES_CIPHER: string;
   readonly FILES_KEYRING: string;
 }

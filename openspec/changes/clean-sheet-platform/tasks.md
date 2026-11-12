@@ -266,6 +266,11 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
   (`start` once, `check` at 14 and 30 days, then `cleanup`); ticked at the 30-day result. It
   runs alongside and does not gate the cutover: the cutover is done when the build is done
   (the founder, 2026-11-12).
+  - Started 2026-11-12 20:55 UTC (run 43305055943): `small` `ixht089rvnrcl1yty661z`, paused in
+    194 ms; `scratch` `ib3ngrmhs5jv82f0mzj9j`, 5 GiB written in 24 s, paused in 589 ms.
+  - Due: on or after 2026-11-26 20:55 UTC, `check` with `ids: ib3ngrmhs5jv82f0mzj9j` only, so
+    `small` stays paused unbroken; on or after 2026-12-12 20:55 UTC, `check` with no ids, then
+    `cleanup`, and the result into `sandbox-probe.md`.
 - [ ] Durable Object regional availability, from Cloudflare's status history (d3 §C8; ADR-032).
 - [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
@@ -289,6 +294,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2).
   - B6: the queue names generated from the Worker configs into the contract (d3 §A3).
+  - B6 (V2): `files/src/index.ts` `getChunks` charges a verified range its length but fetches
+    and opens its whole chunk, so a batch of ranges of many chunks holds more than
+    `BATCH_BYTES` (older than R1: under SSE-C a verified range was read whole too). With
+    `verify` required, the budget bounds what a batch holds, not only what it returns (R1's
+    review).
   - B8: the compatibility date is a kit check that the six configs agree (d3 §A4).
   - B11: a Worker's existence from `Cloudflare.workers`, never from its secret listing: the
     `workers` and `doors deployed` steps, which read a secret listing for it
@@ -343,7 +353,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     G-H11 and G-SP5 (d3 §O5).
   - Lane R's cipher PR: `files/src/cipher.ts`'s SSE-C premise (d3 §O8).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is six PRs, each green on its own:
+  (d3 §K1, §K2). T1 is seven PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
   - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
@@ -354,12 +364,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     at production's numbers (the collections' fills `large`); `Collections`' `adopt` and
     `shares` required and `DEFAULT_SHARES` gone; code mode's `timeoutMs` gone, its wall time
     tested on the plain owner under a stepping clock.
-  - [ ] T1b3: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
+  - [x] T1b3: the memory probe's archive cases at production's ledger limits, `LegSegments`
+    deleted (d3 §K1); code mode's `CODEMODE_VM` required, its unbound case gone with its test;
+    a test that a halted schedule runs no lane already due (`schedule.ts`'s `onJob`); the
+    memory leg's floor never read high by earlier work's garbage (the pool's observer made
+    outside `run`, the floor read again at the run's start).
+  - [ ] T1b4: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
     `admitted`, `changes`, `adopt` and `wall` required, its decisions as pure functions, the
-    archive's tests at production ceilings, `b23_research.md` question 3), with the memory
-    probe's `LegSegments` at production's ledger limits (d3 §K1); code mode's unbound
-    `CODEMODE_VM` case gone with its test (`codemode.ts`'s optional `service`); a test that a
-    halted schedule runs no lane already due (`schedule.ts`'s `run`).
+    archive's tests at production ceilings, `b23_research.md` question 3).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     the unbound-`ERASURES` throw gone (`owner-do.ts:767-768`; the generated `OwnerEnv` already
     types it required, C2b) with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
@@ -444,8 +456,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     run's next model call through `egress.tinyassets.io` is answered, not refused 409; the
     sandbox's network, read from E2B, carries generation 2 and the same `x-ta-sandbox`; a host
     the policy dropped is unreachable from the sandbox;
-  - the files Worker's create-once put on the live bucket (`onlyIf: { etagDoesNotMatch: "*" }`,
-    and which R2 checks first when the bytes miss the `sha256`; `files/test/chunks.test.ts`);
+  - the files Worker's create-once put of sealed bytes on the live bucket (`onlyIf:
+    { etagDoesNotMatch: "*" }` with the sealed bytes' own `sha256`; `files/test/chunks.test.ts`),
+    and the files bucket listed empty first: no object stored before the one cipher opens under
+    it (d3 §G);
   - R5's (d3 §N9): Claude's `defer` with several tool calls in one turn; managed settings
     against an organization's server-managed settings; Codex, Gemini and pi loading our
     root-owned hooks unattended; the delay one decision adds; a census of non-default rules,

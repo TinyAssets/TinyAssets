@@ -85,6 +85,8 @@ interface Probe {
   readonly lanes: Record<string, ScriptedLane>;
   /** The schedule's clock, in seconds; tests move it. */
   now: number;
+  /** Whether the lanes' owner is being erased; tests set it. */
+  halted: boolean;
   /** The schedule's jobs by lane: due time, and the lane work time each was set for. */
   jobs(): Record<string, { time: number; due: unknown }>;
   /** A statement on the object's own storage, as a direct change would make. */
@@ -117,6 +119,7 @@ function probe(state: DurableObjectState, names: string[]): Probe {
   const lanes = Object.fromEntries(names.map((name) => [name, new ScriptedLane()]));
   const p: Probe = {
     alarms, alarmFault: null, lanes, storage: state.storage, now: Date.now() / 1000,
+    halted: false,
     alarm: () => p.lifecycle.alarm(),
     sql: (statement, ...params) => void state.storage.sql.exec(statement, ...params).toArray(),
     read: (statement, ...params) => state.storage.sql.exec(statement, ...params).toArray(),
@@ -130,9 +133,8 @@ function probe(state: DurableObjectState, names: string[]): Probe {
       due: row.payload === null ? null : (JSON.parse(row.payload) as { due?: unknown }).due,
     }])),
   };
-  // Never halted: these lanes' owner is not being erased.
   const schedule = new Schedule(lanes, () => p.now, new WriteGate(state.storage).write,
-                                () => false);
+                                () => p.halted);
   const host = { ctx, constructor: { name: "ProbeHost" } } as unknown as OwnerDO;
   return Object.assign(p, { schedule, lifecycle: new Lifecycle(host).use(schedule) });
 }
@@ -346,6 +348,19 @@ describe("a lane's run", () => {
     const before = p.jobs()["a"];
     expect((await failure(() => p.alarm())).message).toMatch(/code was updated/);
     expect([a.runs, p.jobs()["a"]]).toEqual([1, before]);
+  }));
+
+  it("never runs once halted, even a lane already due: its job completes, and none is set",
+     () => withProbe(["a"], async (p) => {
+    const a = p.lanes["a"]!;
+    a.due = p.now - 10;
+    a.after = p.now - 10;
+    await p.schedule.sync();
+    expect(p.jobs()["a"]).toEqual(at(p.now));
+    p.halted = true;  // the owner's erasure began after the job was set
+    await p.alarm();
+    await p.schedule.sync();
+    expect([a.runs, p.jobs()]).toEqual([0, {}]);
   }));
 
   it("of a job no lane names completes it without running a lane",

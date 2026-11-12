@@ -160,6 +160,9 @@ describe("the codec", () => {
     expect(base64url(new Uint8Array([0xfb]))).toBe("-w");
     expect(hex(new Uint8Array([0, 1, 0xab, 0xff]))).toBe("0001abff");
     expect(KID.test("k_-1")).toBe(true);
+    // KID's literal bound is KID_MAX, which blobMax's longest kid reads: 32, not 33.
+    expect(KID.test("k".repeat(32))).toBe(true);
+    expect(KID.test("k".repeat(33))).toBe(false);
   });
 });
 

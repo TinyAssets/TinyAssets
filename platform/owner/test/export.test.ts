@@ -800,7 +800,7 @@ describe("the nightly manifest", () => {
     await runInDurableObject(o.stub, (instance: OwnerDO) =>
       (instance as unknown as FauxOwnerDO).erasure.erase());
     // No manifest, and no object row, holds the owner's wrapped key any more: a chunk the
-    // bucket still keeps is unreadable (the files Worker's SSE-C tests hold that).
+    // bucket still keeps is unreadable (the files Worker's sealed-object tests hold that).
     expect(await bucket().getManifestRoot(ns, gen)).toBeNull();
     expect(await sqlIn(o.stub, "SELECT name FROM sqlite_master WHERE name = 'file_space'"))
       .toEqual([]);

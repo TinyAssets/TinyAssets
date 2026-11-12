@@ -109,7 +109,7 @@ export interface Bound {
 /** The service bindings the owner Worker may hold, by binding name. */
 export const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
   FILES: Object.freeze({ service: FILES.name, bindings: Object.freeze({ r2_buckets: 1 }),
-                         secrets: FILES.secrets!, vars: Object.keys(FILES.vars!) }),
+                         secrets: FILES.secrets! }),
   GATEWAY: Object.freeze({ service: GATEWAY.name, bindings: Object.freeze({}),
                            secrets: GATEWAY.secrets! }),
   CODEMODE_VM: Object.freeze({ service: CODEMODE_VM.name, bindings: Object.freeze({}),
