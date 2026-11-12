@@ -472,11 +472,15 @@ export function etags(stub: Stub): Promise<Record<string, string>> {
 
 export type HistoryTuple = [string, string, number, string, string, string];
 
-/** The stored history as `(collection, key, revision, op, body_json, writer)`. */
+/**
+ * The stored history as `(collection, key, revision, op, body_json, writer)`: the writes'
+ * entries and the deletions', a deletion's body empty.
+ */
 export function history(stub: Stub): Promise<HistoryTuple[]> {
   return runInDurableObject(stub, (_instance: OwnerDO, state) =>
     state.storage.sql.exec<Record<string, string | number>>(
       "SELECT collection, key, revision, op, body_json, writer FROM collection_history " +
+        "UNION ALL SELECT collection, key, revision, op, '', writer FROM collection_erasures " +
         "ORDER BY collection, key, revision",
     ).toArray().map((r) => [r["collection"], r["key"], r["revision"], r["op"], r["body_json"],
                             r["writer"]] as HistoryTuple));

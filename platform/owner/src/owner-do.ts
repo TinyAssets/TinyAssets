@@ -2322,7 +2322,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   /**
    * A row's kept history, fitted to one answer, newest first: when entries are left `more`
-   * and `before_revision` name the older ones; `body_offset` reads the page's newest
+   * and `before` name the older ones; `body_offset` reads the page's newest
    * entry's body from that byte.
    */
   collectionHistory(binding: Binding, request: HistoryRequest): Promise<History> {
