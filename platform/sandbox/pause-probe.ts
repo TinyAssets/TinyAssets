@@ -20,8 +20,10 @@ import { E2b, type E2bNetwork, type Handle } from "./src/e2b";
 import { pinned } from "./template/checks";
 
 /** The probe's sandboxes carry `ta_probe=long-pause`, and nothing else does. */
-export const PROBE = { key: "ta_probe", value: "long-pause" } as const;
-const LABELS = ["small", "scratch"] as const;
+const PROBE = { key: "ta_probe", value: "long-pause" } as const;
+/** The two sandboxes, by their `ta_label`: one with scratch written, one without. */
+const SANDBOXES = [{ label: "small", scratched: false },
+                   { label: "scratch", scratched: true }] as const;
 
 const DIR = "/var/tmp/ta-probe";
 const KNOWN = `${DIR}/known.bin`;
@@ -77,7 +79,7 @@ if [ -e ${SCRATCH} ]; then
 fi
 `;
 
-export type Facts = Readonly<Record<string, string>>;
+type Facts = Readonly<Record<string, string>>;
 
 /** The inspection's `key=value` lines; a value keeps any `=` after the first. */
 export function facts(stdout: string): Facts {
@@ -157,8 +159,7 @@ export function scratchBytes(free: number): { bytes: number; note: string | null
                               `B free and keeps ${HEADROOM} B` };
 }
 
-/** `ms` as hours and days. */
-export function span(ms: number): string {
+function span(ms: number): string {
   return `${(ms / 3_600_000).toFixed(1)} h (${(ms / 86_400_000).toFixed(2)} d)`;
 }
 
@@ -217,7 +218,8 @@ async function pause(e2b: E2b, box: Handle): Promise<string> {
 
 /** One sandbox made and filled, its record written and verified, then paused: its row. */
 async function startOne(e2b: E2b, template: string, started: string,
-                        label: (typeof LABELS)[number], made: string[]): Promise<string> {
+                        { label, scratched }: (typeof SANDBOXES)[number], made: string[]):
+    Promise<string> {
   const box = await e2b.create({ template, timeoutS: SETUP_S, network: CLOSED,
                                  metadata: { [PROBE.key]: PROBE.value, ta_label: label,
                                              ta_started: started } });
@@ -229,7 +231,7 @@ async function startOne(e2b: E2b, template: string, started: string,
   await e2b.upload(box, KNOWN, known);
   let scratch: Held["scratch"] = null;
   let written = "none";
-  if (label === "scratch") {
+  if (scratched) {
     const free = Number((await sh(e2b, box, `df -B1 --output=avail ${DIR} | tail -1`)).trim());
     const size = scratchBytes(free);
     const at = Date.now();
@@ -240,6 +242,9 @@ async function startOne(e2b: E2b, template: string, started: string,
       : ` (${size.note})`}`;
   }
   const pid = Number((await sh(e2b, box, `cat ${DIR}/pid`)).trim());
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`${box.sandboxID} (${label}): the ticker wrote no pid`);
+  }
   const record: Held = { known_sha256: knownSha, pid, scratch };
   await e2b.upload(box, RECORD, new TextEncoder().encode(JSON.stringify(record)));
   const failures = verdict((await inspect(e2b, box)).seen);
@@ -265,8 +270,8 @@ async function start(e2b: E2b, summary: Summary): Promise<void> {
   summary.line("|---|---|---|---|---|---|");
   const made: string[] = [];
   try {
-    for (const label of LABELS) {
-      summary.line(await startOne(e2b, template, started, label, made));
+    for (const each of SANDBOXES) {
+      summary.line(await startOne(e2b, template, started, each, made));
     }
   } catch (error) {
     const unkilled: string[] = [];
@@ -366,7 +371,7 @@ async function cleanup(e2b: E2b, summary: Summary): Promise<void> {
 
 const USAGE = "pause-probe.ts start|check|cleanup [--ids <ids>] [--summary <file>]";
 
-export async function main(argv: readonly string[]): Promise<number> {
+async function main(argv: readonly string[]): Promise<number> {
   const [mode, ...rest] = argv;
   const options = new Map<string, string>();
   for (let i = 0; i < rest.length; i += 2) {
