@@ -133,6 +133,8 @@ Each joins the lane named. None blocks its u3 PR.
 - **B22:** the gateway deadline before a provider's headers is untested since the test-only parameter went; it gets a test that drives real time or B23's fake time. `owner/src/egress.ts:71` still says "5-minute".
 - **After merge of u3-services:** the runner and probes bundles move (`2cf8172d`, `079923e2`), so the next deploy needs a pair check and the pin PR. No template build.
 - **Engines' idle cuts:** the 300 s cut follows Claude Code's and Codex's own. Gemini CLI's and pi's were not researched; that research rides the live stage's engine checks.
+- **Lane S, from S3 (B16):** the run `lchown`s only the top of a conversation directory (`runner.ts`), and the route probe gives it whole (`probes.ts`), so the probe does not judge the run's handover there. Research which one is right (a later run may take another pool user than the one that wrote the files), then the session owns the one way, for both. And a run whose CLI exited while a child of it holds its output stays live until a cancel (S3's review; before S3 the cancel did not reach it either): decide whether a run ends at its CLI's own exit.
+- **The live stage's engine checks, from S3:** a sign-in's credential files are its user's (0600), a run's root's (0644). Whether Gemini CLI's login writes its `settings.json` is unmeasured; measure it, then settle the sign-in's mode.
 
 - (doors review, 2026-11-12) When u3-cross and u3-services merge main after u3-doors: they conflict in text on one doors spec sentence, and u3-cross on `platform/tsconfig.json`. Take the sibling side in each. With the doors F1 fix (7ce8da937) all three merges typecheck.
 
