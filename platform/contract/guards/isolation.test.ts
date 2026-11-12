@@ -1,9 +1,9 @@
 /**
- * The contract depends on nothing that depends on it: its rules (`rules.ts`), held over its
- * whole import closure by the platform's isolation checker (`ci/kit/imports.ts`). And every
+ * The contract names none of the runtime's I/O: its banned names (`rules.ts`), held over its
+ * whole import closure by the platform's isolation checker (`ci/kit/imports.ts`); that it
+ * depends on nothing that depends on it is the layer table's (`ci/kit/layers.ts`). And every
  * Worker speaks it: each one's source reaches it. Its source records' module
- * (`sources/src/`) is held the same way, reaching the contract and its record files alone,
- * and the Workers that read records reach it there.
+ * (`sources/src/`) is held the same way, and the Workers that read records reach it there.
  */
 import { describe, expect, it } from "vitest";
 
@@ -14,14 +14,6 @@ import { IMPORTS, SOURCES_IMPORTS } from "./rules";
 
 isolationTests(IMPORTS, {
   sees: [
-    ["a Worker's module", "import { OwnerDO } from '../../owner/src/a-module';"],
-    ["a Worker's module, re-exported", "export { x } from '../../doors/src/a-module';"],
-    ["a path out and back", "import { x } from '../src/../../gateway/src/a-module';"],
-    ["the source records", "import { catalogOf } from '../../sources/src/catalog';"],
-    ["a record file", "import groq from '../../sources/groq.json';"],
-    ["the runtime's module", "import { DurableObject } from 'cloudflare:workers';"],
-    ["a package", "import { x } from '@earendil-works/pi-ai';"],
-    ["a Node module the Workers runtime lacks", "import { readFileSync } from 'node:fs';"],
     ["a fetch", "export const f = () => fetch('https://x.test');"],
     ["storage", "export const s = (ctx: { storage: unknown }) => ctx.storage;"],
     ["process", "export const p = () => process.env;"],
@@ -42,14 +34,6 @@ isolationTests(IMPORTS, {
 
 isolationTests(SOURCES_IMPORTS, {
   sees: [
-    ["a Worker's module", "import { serve } from '../../doors/src/a-module';"],
-    ["a Worker's module, by a path out and back",
-     "import { x } from '../../contract/src/../../owner/src/a-module';"],
-    ["a file beside the records that is not one", "import x from '../locks/pi/package.json';"],
-    ["a contract module that is not there", "import { x } from '../../contract/src/nothing';"],
-    ["the runtime's module", "import { DurableObject } from 'cloudflare:workers';"],
-    ["a package", "import { builtinProviders } from '@earendil-works/pi-ai/providers/all';"],
-    ["a Node module the Workers runtime lacks", "import { readdirSync } from 'node:fs';"],
     ["a fetch", "export const f = () => fetch('https://x.test');"],
     ["process", "export const p = () => process.env;"],
     ["a dynamic import", "export const f = (id: string) => import(`../${id}.json`);"],
