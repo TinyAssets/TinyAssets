@@ -40,6 +40,7 @@
  *   egress door's request and its settle comes at once.
  */
 import type { ConfigRules } from "../../ci/kit/config";
+import { imports, type Owed } from "../../ci/kit/owed";
 
 /**
  * The import window's bindings (`src/import.ts`), each named once here: deleted at the
@@ -77,3 +78,35 @@ export const CONFIG: ConfigRules = Object.freeze({
                           IMPORT_WINDOW.consumer] },
   }),
 });
+
+/**
+ * What the doors' tests still owe the platform's guards (`ci/kit/owed.ts`): another
+ * workspace's internals, each until the fix named removes the reach.
+ */
+export const OWED: readonly Owed[] = Object.freeze([
+  // Tests on the owner's internals, not its front door: B23.
+  ...imports("B23", "platform/doors/test/api-keys.test.ts", ["platform/owner/src/grants.ts"]),
+  ...imports("B23", "platform/doors/test/app-routes.test.ts", ["platform/owner/src/owner-do.ts"]),
+  ...imports("B23", "platform/doors/test/connect.test.ts", ["platform/owner/src/owner-do.ts"]),
+  ...imports("B23", "platform/doors/test/doors-live.test.ts", [
+    "platform/owner/src/admission.ts", "platform/owner/src/inbound.ts",
+    "platform/owner/src/erasure.ts", "platform/owner/src/ledger.ts",
+    "platform/owner/test/runs-support.ts", "platform/owner/test/support.ts"]),
+  ...imports("B23", "platform/doors/test/e2b-hooks.test.ts",
+             ["platform/owner/src/sandbox-time.ts"]),
+  ...imports("B23", "platform/doors/test/egress.test.ts", ["platform/owner/test/runs-support.ts"]),
+  ...imports("B23", "platform/doors/test/entry.ts", [
+    "platform/owner/src/launch.ts", "platform/owner/src/owner-do.ts",
+    "platform/owner/test/erasure-fake.ts", "platform/owner/test/sandbox-fake.ts"]),
+  ...imports("B23", "platform/doors/test/events.test.ts", ["platform/owner/src/owner-do.ts"]),
+  ...imports("B23", "platform/doors/test/hardening.test.ts", ["platform/owner/src/bodies.ts"]),
+  ...imports("B23", "platform/doors/test/runs.test.ts",
+             ["platform/owner/test/runs-support.ts", "platform/owner/src/runs.ts"]),
+  ...imports("B23", "platform/doors/test/sync.test.ts", ["platform/owner/test/runs-support.ts"]),
+  // The hand test env, typed from the owner's class: B9 generates it.
+  ...imports("B9", "platform/doors/test/env.d.ts", ["platform/owner/src/owner-do.ts"]),
+  // The import window's tests, reaching the importer: B24's cutover layer lists them.
+  ...imports("B24", "platform/doors/test/import-setup.ts", [
+    "platform/import/bundle.ts", "platform/import/stage.ts", "platform/import/guards/fixture.ts"]),
+  ...imports("B24", "platform/doors/test/import.test.ts", ["platform/import/check.ts"]),
+]);

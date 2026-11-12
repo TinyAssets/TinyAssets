@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
-"""React to a red required-test run on main: re-run once, then revert or alarm.
+"""React to a red required-test run on main: re-run once, then alarm.
 
-Lean-CI lever L1 (docs/decisions/ADR-020-lean-ci-successor.md)
-moves the full required suite out of the merge-group gate and onto the
-post-merge run on main. That is only safe if a red main is acted on at once,
-so this runs after every Tests run on main (.github/workflows/main-red.yml):
+The merge gate runs only what a diff can reach, so the whole surface runs on main
+(every push, and the hourly schedule). A red main is acted on at once, so this runs
+after every Tests run on main (.github/workflows/main-red.yml):
 
 * Only the REQUIRED surface counts: the `required-tests` aggregate job, which
   already excludes the heavy files (red baseline, `heavy-tests`) and applies the
   quarantine ledger, including its `flaky` lines. A red `heavy-tests` job never
   triggers anything here.
-* First red attempt: re-run the failed jobs once. A flake costs one re-run,
-  never a revert.
-* Still red with failing test IDs on a push run whose PARENT commit was green:
-  that merge is a candidate cause. Open a revert PR (not auto-armed; it needs a
-  receipt like every PR) and raise the alarm issue.
-* Still red otherwise (the parent's state is unknown or red, a scheduled run, a
-  revert commit): alarm only. Reverting without knowing the culprit reverts
-  the wrong change.
+* First red attempt: re-run the failed jobs once. A flake costs one re-run.
+* Still red: raise the alarm. Nothing is reverted. The only failing test IDs a run
+  names are the old stack's Python suite's, and that stack takes fixes only: it is
+  fixed forward, or reverted by a person who has read the failure.
 * Green on main's current head: close the alarm.
 
 The alarm is one open issue labelled `main-red`, with a plain comment per event:
@@ -28,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -41,54 +35,32 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 REQUIRED_JOB = "required-tests"
 LABEL = "main-red"
-REVERT_PREFIX = "auto-revert/"
 GH_TIMEOUT = 120
 
 
 # ---- the decision (pure) -----------------------------------------------------
 
 
-def decide(*, event: str, attempt: int, required: str | None, parent_required: str | None,
-           head_is_main_tip: bool, is_revert_commit: bool) -> str:
-    """One of: none, close-alarm, rerun, revert, alarm."""
+def decide(*, attempt: int, required: str | None, head_is_main_tip: bool) -> str:
+    """One of: none, close-alarm, rerun, alarm."""
     if required == "success":
         return "close-alarm" if head_is_main_tip else "none"
     if required not in ("failure", "timed_out"):
         # cancelled / skipped / missing: no verdict about the code. A cancelled
         # required check is the re-run workflow's business, not a red main.
         return "none"
-    if attempt < 2:
-        return "rerun"
-    if (required == "failure" and event == "push" and parent_required == "success"
-            and not is_revert_commit):
-        return "revert"
-    return "alarm"
+    return "rerun" if attempt < 2 else "alarm"
 
 
-def revert_title(subject: str) -> str:
-    return f"Revert \"{subject}\" (required tests red on main)"
-
-
-def render_body(*, sha: str, subject: str, run_url: str, failures: list[str],
-                action: str) -> str:
+def render_body(*, sha: str, subject: str, run_url: str, failures: list[str]) -> str:
     lines = [
         f"<!-- main-red:{sha} -->",
         f"The required tests went red on main at `{sha[:12]}` ({subject}) and stayed red "
         f"after one re-run: {run_url}",
         "",
+        "The cause is not established, and nothing is reverted automatically. Fix it "
+        "forward, or revert by hand once the failure has been read.",
     ]
-    if action == "revert":
-        lines += [
-            "Its parent was green and failing test IDs were reported; this merge is a "
-            "candidate cause.",
-            "This PR reverts it. It is not armed: it needs a Drain-Review receipt like "
-            "every PR. Re-land the change with a fix once main is green.",
-        ]
-    else:
-        lines += [
-            "The cause is not established. Infrastructure or unavailable test evidence "
-            "may explain the failure; nothing was reverted automatically.",
-        ]
     if failures:
         lines += ["", "New failures (outside the quarantine ledger):"]
         lines += [f"- `{t}`" for t in failures[:40]]
@@ -100,18 +72,14 @@ def render_body(*, sha: str, subject: str, run_url: str, failures: list[str],
 # ---- I/O ---------------------------------------------------------------------
 
 
-def _run(*cmd: str, check: bool = True, env: dict | None = None,
-         cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, cwd=cwd or REPO_ROOT, capture_output=True, text=True,
+def _run(*cmd: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=check,
-                          timeout=GH_TIMEOUT, env=env)
+                          timeout=GH_TIMEOUT)
 
 
-def _gh(*args: str, token: str | None = None) -> str:
-    env = None
-    if token:
-        env = {**os.environ, "GH_TOKEN": token}
-    return _run("gh", *args, env=env).stdout
+def _gh(*args: str) -> str:
+    return _run("gh", *args).stdout
 
 
 def required_conclusion(repo: str, run_id: int, attempt: int) -> str | None:
@@ -123,10 +91,10 @@ def required_conclusion(repo: str, run_id: int, attempt: int) -> str | None:
     return found[-1] if found else None
 
 
-def parent_conclusion(repo: str, parent: str) -> str | None:
-    """`required-tests` on the newest completed main run (push/schedule) of ``parent``."""
+def tip_conclusion(repo: str, tip: str) -> str | None:
+    """`required-tests` on the newest completed main run (push/schedule) of ``tip``."""
     runs = json.loads(_gh(
-        "api", f"repos/{repo}/actions/workflows/tests.yml/runs?head_sha={parent}"
+        "api", f"repos/{repo}/actions/workflows/tests.yml/runs?head_sha={tip}"
         "&status=completed&per_page=20", "--jq",
         '[.workflow_runs[] | select(.head_branch == "main" and '
         '(.event == "push" or .event == "schedule")) | {id, run_attempt}]'))
@@ -195,28 +163,8 @@ def _close_alarm(repo: str, sha: str, run_url: str) -> None:
             f"Required tests are green on main again at `{sha[:12]}`: {run_url}")
 
 
-def _open_revert(repo: str, sha: str, subject: str, body: str, token: str) -> str | None:
-    """Push auto-revert/<sha12> and open the PR with a user token (so CI runs on it)."""
-    branch = f"{REVERT_PREFIX}{sha[:12]}"
-    existing = _gh("pr", "list", "-R", repo, "--head", branch, "--state", "all",
-                   "--json", "url", "--jq", ".[].url", token=token).strip()
-    if existing:
-        return existing.splitlines()[0]
-    git = ["git", "-c", "user.name=main-red", "-c", "user.email=main-red@users.noreply.github.com"]
-    _run("git", "fetch", "-q", "origin", "main")
-    _run("git", "checkout", "-q", "-B", branch, "origin/main")
-    if _run(*git, "revert", "--no-edit", sha, check=False).returncode:
-        _run("git", "revert", "--abort", check=False)
-        return None
-    remote = f"https://x-access-token:{token}@github.com/{repo}.git"
-    _run("git", "push", "-q", remote, f"HEAD:refs/heads/{branch}")
-    return _gh("pr", "create", "-R", repo, "--base", "main", "--head", branch,
-               "--title", revert_title(subject), "--body", body, "--label", LABEL,
-               token=token).strip()
-
-
 def handle(repo: str, run_id: int, sha: str, event: str, attempt: int, run_url: str,
-           revert_token: str | None, dry_run: bool = False) -> str:
+           dry_run: bool = False) -> str:
     latest = json.loads(_gh("api", f"repos/{repo}/actions/runs/{run_id}"))
     if latest["run_attempt"] > attempt:
         # The newer completion will deliver its own event. Do not rerun again
@@ -224,53 +172,27 @@ def handle(repo: str, run_id: int, sha: str, event: str, attempt: int, run_url: 
         return "defer" if latest["status"] != "completed" else "none"
     required = required_conclusion(repo, run_id, attempt)
     main_tip = _run("git", "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
-    if sha != main_tip and parent_conclusion(repo, main_tip) == "success":
+    if sha != main_tip and tip_conclusion(repo, main_tip) == "success":
         return "none"
-    subject = _run("git", "log", "-1", "--format=%s", sha, check=False).stdout.strip() or sha
-    parents = _run("git", "rev-list", "--parents", "-n", "1", sha,
-                   check=False).stdout.split()[1:]
-    parent_required = parent_conclusion(repo, parents[0]) if len(parents) == 1 else None
-    action = decide(event=event, attempt=attempt, required=required,
-                    parent_required=parent_required, head_is_main_tip=(sha == main_tip),
-                    is_revert_commit=subject.startswith("Revert \""))
-    failures: list[str] = []
-    detail_note = ""
-    if action in ("revert", "alarm"):
-        try:
-            failures = new_failures(repo, run_id, attempt)
-        except Exception:
-            # Do not include exception text: git/gh errors can contain the PAT.
-            detail_note = "Failure details could not be collected."
-            if action == "revert":
-                detail_note += " The revert could not be opened."
-        if not failures:
-            action = "alarm"
-    print(f"run {run_id} ({event}, attempt {attempt}) on {sha[:12]}: required={required}, "
-          f"parent={parent_required} -> {action}")
+    action = decide(attempt=attempt, required=required, head_is_main_tip=(sha == main_tip))
+    print(f"run {run_id} ({event}, attempt {attempt}) on {sha[:12]}: required={required} "
+          f"-> {action}")
     if dry_run:
         return action
     if action == "close-alarm":
         _close_alarm(repo, sha, run_url)
     elif action == "rerun":
         _gh("run", "rerun", str(run_id), "-R", repo, "--failed")
-    elif action in ("revert", "alarm"):
-        body = render_body(sha=sha, subject=subject, run_url=run_url, failures=failures,
-                           action="alarm")
-        if detail_note:
-            body += f"\n{detail_note}\n"
-        if action == "revert":
-            try:
-                pr_body = render_body(sha=sha, subject=subject, run_url=run_url,
-                                      failures=failures, action="revert")
-                url = (_open_revert(repo, sha, subject, pr_body, revert_token)
-                       if revert_token else None)
-            except Exception:
-                url = None
-            note = (f"Revert PR (UNARMED): {url}" if url else
-                    "The revert could not be opened; investigate and revert by hand "
-                    "if appropriate.")
-            body += f"\n{note}\n"
-        _alarm(repo, body, sha)
+    elif action == "alarm":
+        subject = _run("git", "log", "-1", "--format=%s", sha, check=False).stdout.strip() or sha
+        try:
+            failures = new_failures(repo, run_id, attempt)
+            note = ""
+        except Exception:
+            # Do not include exception text: gh errors can carry the token.
+            failures, note = [], "\nFailure details could not be collected.\n"
+        _alarm(repo, render_body(sha=sha, subject=subject, run_url=run_url,
+                                 failures=failures) + note, sha)
     return action
 
 
@@ -285,7 +207,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="decide and print; act on nothing")
     args = ap.parse_args()
     handle(args.repo, args.run_id, args.sha, args.event, args.attempt, args.run_url,
-           os.environ.get("REVERT_TOKEN") or None, args.dry_run)
+           args.dry_run)
     return 0
 
 

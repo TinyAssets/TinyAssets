@@ -9,6 +9,7 @@
  * imported as data.
  */
 import type { ConfigRules } from "../../ci/kit/config";
+import { imports, type Owed } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "sandbox",
@@ -39,3 +40,19 @@ export const CONFIG: ConfigRules = Object.freeze({
     queues: { producers: [{ binding: "RING", queue: "tinyassets-sandbox-ring" }] },
   }),
 });
+
+/**
+ * What the sandbox still owes the platform's guards (`ci/kit/owed.ts`), each until the fix
+ * named removes it.
+ */
+export const OWED: readonly Owed[] = Object.freeze([
+  // The migration lock, in the owner's guards: B8 moves it to `ci/kit/locks.ts`.
+  ...imports("B8", "platform/sandbox/guards/migrations.test.ts",
+             ["platform/owner/guards/lock.ts"]),
+  // The template's checks on the Worker's runtime client: B11 puts the E2B calls the template
+  // makes, its install of a bundle among them, in `sandbox/e2b/`.
+  ...imports("B11", "platform/sandbox/template/checks.ts",
+             ["platform/sandbox/src/e2b.ts", "platform/sandbox/src/install.ts"]),
+  // The template's pin, read through the test kit: B18 gives it one reader in `pair.ts`.
+  ...imports("B18", "platform/sandbox/template/checks.ts", ["platform/ci/workers.ts"]),
+]);

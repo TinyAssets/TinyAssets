@@ -245,15 +245,16 @@ const MISTRAL: ApiRules = Object.freeze({
   free: Object.freeze([]),
 });
 
-/** The rules for each API a sandbox call may be metered on; any other is never metered. */
+/**
+ * The rules for each API a sandbox call may be metered on, and so each API a credential may
+ * be sealed for (`SUPPORTED_APIS`): every one some source record speaks.
+ */
 const RULES: Readonly<Record<string, ApiRules>> = Object.freeze({
   "anthropic-messages": ANTHROPIC,
   "openai-completions": COMPLETIONS,
   "mistral-conversations": MISTRAL,
   "openai-responses": RESPONSES,
-  "azure-openai-responses": RESPONSES,
   "google-generative-ai": GOOGLE,
-  "google-vertex": GOOGLE,
 });
 
 /** Every API a sandbox call may be metered on: the ids the rules are keyed by. */
@@ -326,11 +327,6 @@ export function paidTool(rules: ApiRules, body: unknown): boolean {
     }
     return false;
   });
-}
-
-/** Whether the request streams its answer: its flag, or the API's streaming path. */
-export function streams(rules: ApiRules, body: unknown): boolean {
-  return rules.stream === null || valueAt(body, rules.stream) === true;
 }
 
 /** Whether the request lists fallback models, any of which may serve it. */

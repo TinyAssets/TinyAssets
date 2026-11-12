@@ -1,7 +1,8 @@
 /**
  * The gateway's source keeps its key in one place and reaches no owner (research §1.4): its
- * rules (`rules.ts`), held over its whole import closure by the platform's isolation checker
- * (`ci/kit/imports.ts`).
+ * banned names (`rules.ts`), held over its whole import closure by the platform's isolation
+ * checker (`ci/kit/imports.ts`). What it may import is the layer table's
+ * (`ci/kit/layers.ts`, `ci/guards/isolation.test.ts`).
  */
 import { describe, expect, it } from "vitest";
 
@@ -20,10 +21,6 @@ isolationTests(IMPORTS, {
     ["an OWNER binding", "export function f(env: { OWNER: unknown }) { return env.OWNER; }"],
     ["getByName", "export function f(ns: { getByName(n: string): unknown }) { return ns.getByName('a'); }"],
     ["a string getByName", "export function f(ns: Record<string, unknown>) { return ns['getByName']; }"],
-    ["the owner object's module", "import { OwnerDO } from '../../owner/src/owner-do';"],
-    ["another Worker's module", "export { x } from '../../files/src/keys';"],
-    ["a dot-slash path out", "import { OwnerDO } from './../../owner/src/owner-do';"],
-    ["a path out and back", "import { x } from '../src/../../owner/src/owner-do';"],
     ["a dynamic import", "export async function f() { return import('../../owner/src/owner-do'); }"],
     ["a dynamic import of the grammar", "export async function f() { return import('../../contract/src/text'); }"],
     ["require", "export const x = require('node:fs');"],
@@ -32,8 +29,6 @@ isolationTests(IMPORTS, {
     ["globalThis['process']", "export const k = () => (globalThis as never)['process'];"],
     ["an absolute specifier", "import { x } from '/platform/owner/src/owner-do';"],
     ["a URL specifier", "import { x } from 'https://example.com/x.js';"],
-    ["another package", "import { x } from 'openai';"],
-    ["node:async_hooks outside egress.ts", "import { AsyncLocalStorage } from 'node:async_hooks';"],
     ["a type import by path", "export type T = import('../../owner/src/owner-do').OwnerDO;"],
   ],
   allows: [
@@ -44,8 +39,6 @@ isolationTests(IMPORTS, {
       "import { open } from './keyring';",
       "import { principal } from './../../contract/src/text';",
     ].join("\n")],
-    ["node:async_hooks in egress.ts", "gateway/src/egress.ts",
-     "import { AsyncLocalStorage } from 'node:async_hooks';"],
     ["the keyring in keyring.ts", KEYRING_HOME,
      "export function f(env: { GATEWAY_KEYRING?: unknown }) { return env.GATEWAY_KEYRING; }"],
     ["the owner grammar import beside the word owner", "gateway/src/probe.ts",
@@ -67,16 +60,16 @@ describe("gateway isolation guards", () => {
     const all = new Map([
       ["gateway/src/probe.ts", "import { x } from '../../contract/src/wake-records';"],
       ["contract/src/wake-records.ts",
-       "import { createHash } from 'node:crypto';\nimport { y } from './owner-do';"],
-      ["contract/src/owner-do.ts", "export const y = 1;"],
+       "export const x = () => process.env;\nimport { y } from './owner-do';"],
+      ["contract/src/owner-do.ts", "export const y = 'getByName';"],
     ]);
     const reached = closure("gateway", all);
     expect([...reached.keys()].sort()).toEqual(
       ["contract/src/owner-do.ts", "contract/src/wake-records.ts", "gateway/src/probe.ts"]);
     expect([...reached].flatMap(([path, source]) => isolationProblems(IMPORTS, path, source)))
       .toEqual([
-        "contract/src/wake-records.ts:1: imports node:crypto, not a module the gateway may use",
-        "contract/src/wake-records.ts:2: imports ./owner-do (contract/src/owner-do), outside the gateway",
+        "contract/src/wake-records.ts:1: names process, whose env the gateway never reads",
+        "contract/src/owner-do.ts:1: names getByName",
       ]);
   });
 });

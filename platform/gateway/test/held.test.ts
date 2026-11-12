@@ -17,13 +17,14 @@ import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import {
   GATEWAY_POOL_SLOTS, gatewaySlots, Hold, heldDeadlineMs, readHeld, Tokens,
 } from "../src/held";
-import Gateway, { EgressGateway } from "../src/index";
+import { ConnectGateway, EgressGateway } from "../src/index";
 import { learnMeter, meteredRecord } from "../src/meter";
 import { SlotPool } from "../../contract/src/slots";
 import { GOOGLE, OPENAI } from "./support";
 import type { Reserve } from "../../contract/src/gateway";
 
-const gateway = (exports as unknown as { default: Service<Gateway> }).default;
+/** The doors' connect entrypoint (the doors and owner suites reach it over a real binding). */
+const connect = new ConnectGateway(createExecutionContext(), env);
 
 async function responsesModel(): Promise<{ id: string }> {
   const catalog = builtinCatalog();
@@ -81,7 +82,7 @@ describe("a key past ASCII, or a body model where the path names it (M1, M2)", (
 
   it("never sends the long-s cap: the call is refused before any reserve", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const asked: unknown[] = [];
     const answer = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses",
@@ -96,7 +97,7 @@ describe("a key past ASCII, or a body model where the path names it (M1, M2)", (
 
   it("refuses a Google call whose body names a model beside its path's", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", GOOGLE)).blob;
+    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", GOOGLE)).blob;
     const catalog = builtinCatalog();
     let path: string | null = null;
     for (const record of catalog.provider("google")!.getModels()
@@ -120,7 +121,7 @@ describe("a key past ASCII, or a body model where the path names it (M1, M2)", (
 describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
   it("refuses a body shorter than its Content-Length, before any reserve", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const text = JSON.stringify({ model: model.id, input: "hi" });
     const asked: unknown[] = [];
@@ -136,7 +137,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
 
   it("refuses a body whose tree would weigh more than the pool, before its parse", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     // 4 MiB of empty objects: 11.67 times its bytes once parsed, measured.
     const items = "{},".repeat(Math.floor(4 * 1024 * 1024 / 3));
@@ -153,9 +154,9 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
   it("lets every slot go at the caller's stop of a stalled body, another owner's call landing",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
-    const mallory = (await gateway.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const mallory = (await connect.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
     const pool = gatewaySlots();
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
     // One sandbox declares the bound and sends 10 bytes, then nothing.
@@ -185,7 +186,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
 
   it("refuses a body stalled past its deadline, its slots let go", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const stalled = new ReadableStream<Uint8Array>({ start(controller) {
       controller.enqueue(new TextEncoder().encode('{"model":"'));
     } });
@@ -202,7 +203,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
 
   it("stops a reserve its caller stopped, its slots let go, nothing sent", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const stop = new IdentityTransformStream();
     let asked = false;
@@ -222,7 +223,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
 
   it("settles `failed`, never `unknown`, a call it threw on after the reserve", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     // The reserve's RPC failed after the owner's commit: the gateway sent nothing.
     const reserve: Reserve = async () => {
@@ -250,8 +251,8 @@ describe("the verification's cases (rveg2)", () => {
   it("lets every one of 16 silent calls go at its unit's deadline: another owner lands (V-H2)",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const alice = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
-    const mallory = (await gateway.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const alice = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const mallory = (await connect.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const pool = gatewaySlots();
     const hogs = Array.from({ length: GATEWAY_POOL_SLOTS }, () => egress.forward(
@@ -276,7 +277,7 @@ describe("the verification's cases (rveg2)", () => {
     const pool = new SlotPool(3, 12_000);
     const blocker = await pool.acquire(2, "x");
     const text = JSON.stringify({ input: "a".repeat(2 * 1024 * 1024) });
-    const hold = new Hold("a", new AbortController().signal, pool);
+    const hold = new Hold(pool, "a", new AbortController().signal);
     setTimeout(() => blocker.release(), 11_000);
     const started = Date.now();
     const read = await readHeld(posted("/x", text), new TextEncoder().encode(text).byteLength,
@@ -289,7 +290,7 @@ describe("the verification's cases (rveg2)", () => {
   it("refuses a body that cannot fit as soon as its weight passes the pool, not after it",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     // 4 MiB declared, of which 3.5 MiB of empty objects is sent (past the pool's weight by
     // its 2.6th MiB), then nothing.
     const head = '{"model":"m","input":[' + "{},".repeat(3.5 * 1024 * 1024 / 3);
@@ -312,7 +313,7 @@ describe("wait-die under load (rveg2 V-M1)", () => {
   /** One call: its read grows a unit at a time to `read`, then it tops up to `weight`. */
   async function call(pool: SlotPool, owner: string, read: number, weight: number,
                       holdMs: number): Promise<"done" | "busy"> {
-    const hold = new Hold(owner, new AbortController().signal, pool);
+    const hold = new Hold(pool, owner, new AbortController().signal);
     try {
       for (let units = 1; units <= read; units++) {
         await hold.grow(units);

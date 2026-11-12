@@ -32,7 +32,7 @@ def template(stage, spec):
                   # npm extracted over another is broken.
                   f"rm -rf {usr}/lib/node_modules/npm {usr}/bin/npm {usr}/bin/npx "
                   f"{usr}/bin/corepack {usr}/include/node && "
-                  # Owned by root, whatever uid the tarball names (1001, the first engine
+                  # Owned by root, whatever uid the tarball names (1001, the first run
                   # user's, would own the runner's own Node), and written by root alone.
                   f"tar -xzf {tarball} -C {usr} --strip-components=1 --no-same-owner "
                   f"&& rm {tarball} && chown -R root:root {usr} && "

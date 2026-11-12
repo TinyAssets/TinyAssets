@@ -65,6 +65,20 @@ describe("the doorbell's seal", () => {
     expect(answer).toEqual({ state: "refused" });
   });
 
+  it("refuses a blob that does not open, and fails loudly on a keyring the config lost",
+     async () => {
+    const env = ring("k1");
+    const { blob } = await sealDoorbell(env, OWNER, SUB, 1, CLAUDE);
+    const { sent, send } = recorder();
+    expect(await ringDoorbell(env, OWNER, "not-a-subscription", 1, blob, null, REQUEST, send))
+      .toEqual({ state: "refused" });
+    expect(await ringDoorbell(env, OWNER, SUB, 1, blob.slice(0, -2), null, REQUEST, send))
+      .toEqual({ state: "refused" });
+    expect(await code(() => ringDoorbell({ GATEWAY_KEYRING: "{}" }, OWNER, SUB, 1, blob, null,
+                                         REQUEST, send))).toBe("keyring_unavailable");
+    expect(sent).toEqual([]);
+  });
+
   it("refuses a token or URL its record does not admit, before any seal", async () => {
     const env = ring("k1");
     for (const input of [{ ...CLAUDE, url: "https://evil.example/v1/claude_code/routines/t/fire" },

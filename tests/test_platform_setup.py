@@ -300,8 +300,12 @@ def test_only_production_jobs_read_the_retired_repository_copies() -> None:
     """The second step deletes the repository copies: every job that reads one must be one
     the `production` copy reaches."""
     guard = _production_guard()
+    files = guard._workflow_files()
+    # The guard walks this checkout's workflows. Named here as a path, so the merge gate's
+    # reader map gives this file the workflows it reads through the guard.
+    assert files and {path.parent for path in files} == {ROOT / ".github" / "workflows"}
     readers = []
-    for path in guard._workflow_files():
+    for path in files:
         for name, job in (guard._load(path).get("jobs") or {}).items():
             if set(setup.WORKOS_REPO_COPIES) & guard._secret_names(json.dumps(job)):
                 readers.append((path.name, name, job.get("environment")))
