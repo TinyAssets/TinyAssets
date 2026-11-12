@@ -331,7 +331,7 @@ C2 built B9's `npm run generate` and its staleness guard, and stopped at the `En
 - A binding to another Worker is typed by its contract interface, through a table in the contract.
 - The output has no global augmentation.
 - The hand `Env` interfaces and `envProblems` are deleted.
-- `SANDBOX` and `ERASURES` become required in the same change.
+- `ERASURES` becomes required in the same change. `SANDBOX` already is: T1a made it required (#5515), so only `ERASURES` was still optional (`owner/src/owner-do.ts:282` at C2).
 
 **Not (b), one tsconfig per Worker:** it types bindings by implementation, which the layer table refuses.
 
