@@ -1363,13 +1363,13 @@ _NON_CODE_WORKFLOWS = frozenset({
 
 
 def test_comment_and_label_events_do_not_start_tests() -> None:
-    """A receipt comment or an infra-change label must not rerun Tests.
+    """A receipt comment or a label must not rerun Tests.
 
     Measured 2026-10-12: Tests listened to edited/labeled/unlabeled with
     cancel-in-progress, and 140 of 331 PR runs were cancelled. The check is
     per head SHA. Those events leave the SHA alone, so the run already
     reported for it stays. pr-scope-guard.yml is the small job that re-reads
-    the receipt and the label.
+    the receipt.
     """
     triggers = _triggers(_load())
     types = set(triggers["pull_request"]["types"])

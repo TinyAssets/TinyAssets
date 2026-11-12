@@ -343,6 +343,8 @@ describe("the OKF watcher", () => {
     expect(body).toContain("U+200B at 4:");
     expect(body).toContain("needs-founder");
     expect(body).toContain("never merged on a version number");
+    // A pull request's body carries no ritual line for a gate to read (P3).
+    expect(body).not.toMatch(/^(Registry row|Net core lines|Lane)/m);
   });
 
   it("flags the blank letters and separators too (review L5)", () => {

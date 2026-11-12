@@ -293,7 +293,7 @@ def test_orphan(): assert True
     ]
     assert "Test-Removal: retired" in body.read_text()
     assert "Test-Removal: consolidated" in body.read_text()
-    assert "Registry row(s): S8" in body.read_text()
+    assert "Registry row" not in body.read_text()
     assert json.loads(report.read_text())["duplicates"] == {
         "tests/test_x.py::test_b": "tests/test_x.py::test_a"
     }

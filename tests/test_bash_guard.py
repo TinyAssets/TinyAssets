@@ -1,14 +1,11 @@
-"""A PR stays inside its declared lane; shell commands that lost time are refused."""
+"""Shell commands that lost time are refused."""
 
 import importlib.util
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-
-from scripts import drain_review_gate as review
 
 _ROOT = Path(__file__).resolve().parents[1]
 _ENV = {
@@ -27,38 +24,6 @@ def _guard():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def _lane_cli(tmp_path, body, paths, *flags):
-    body_file = tmp_path / "body.md"
-    body_file.write_text(body, encoding="utf-8")
-    return subprocess.run(
-        [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--lane-scope",
-         "--body-file", str(body_file), *flags],
-        input="\n".join(paths) + "\n", capture_output=True, text=True,
-    )
-
-
-@pytest.mark.verifies(
-    "development-coordination-runtime:A pull request stays inside its declared lane"
-)
-def test_a_smuggled_lineage_is_refused(tmp_path):
-    body = "Drain-Review-Verdict: APPROVE\n\nLane: `scripts/peer_agent.py`, tests/\n"
-    assert review.declared_lane(body) == ["scripts/peer_agent.py", "tests/"]
-    ok = _lane_cli(tmp_path, body, ["scripts/peer_agent.py", "tests/test_peer_agent.py"])
-    assert ok.returncode == 0, ok.stderr
-    out = _lane_cli(tmp_path, body, ["scripts/peer_agent.py", "deploy/deploy_fail_safe.sh"])
-    assert out.returncode == 2
-    assert "deploy/deploy_fail_safe.sh" in out.stderr and "scripts/peer_agent.py" not in out.stderr
-
-
-@pytest.mark.verifies(
-    "development-coordination-runtime:A pull request stays inside its declared lane"
-)
-def test_a_release_critical_change_must_declare_a_lane(tmp_path):
-    refused = _lane_cli(tmp_path, "no lane here", ["deploy/deploy_fail_safe.sh"], "--require")
-    assert refused.returncode == 2
-    assert _lane_cli(tmp_path, "no lane here", ["scripts/peer_agent.py"]).returncode == 0
 
 
 @pytest.mark.verifies(
