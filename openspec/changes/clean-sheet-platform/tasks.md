@@ -279,7 +279,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 4. The lanes, lane T, lane R, R5, the comments and tests passes, the re-check
 
-- [ ] The wave-2 lanes as d2 §D orders them (C2–C5, S2–S8, O1–O5, D1–D4, V1–V4, X1–X5, I1–I2),
+- [ ] The wave-2 lanes as d2 §D orders them (C2–C5, S3–S8, O1–O5, D1–D4, V1–V4, X1–X5, I1–I2),
   with d3 §A's changes:
   - B3 after T1, on the cleaned constructors (d3 §A2, §K1).
   - B4: the door table generates the prototype methods at module load (d3 §K4).
@@ -316,9 +316,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     depth (Fact 15; the coordinator, 2026-11-12, below).
   - B2: `owner/src/wakes.ts`'s swallowed doorbell open failure surfaces, rather than settling
     the wake `unknown` (Fact 8; d3 §I).
-  - S2: `#forget`'s `unreserve` is never swallowed and is retried by the alarm until it lands,
-    with a test; an unreadable boot id never matches; B7's runner items N23, N30 and N33
-    (d3 §L1–§L3). A later S PR: S13's `lease_id` half (d3 §L5).
+  - A later S PR: S13's `lease_id` half (d3 §L5).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `ci/budgets.mjs --write` (d3 §I).
   - Lane C's first PR: the tools' own layer row (d2 §G14, d3 §O6).

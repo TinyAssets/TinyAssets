@@ -19,10 +19,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/migrate";
-import { INCOMING, PROTOCOL, SPEAKS } from "../runner/protocol";
+import { inboxCode, inboxDoc, INBOX, INCOMING, LEASE_FILE, PROTOCOL,
+         SPEAKS } from "../runner/protocol";
+import { PROTOCOLS, shapeProblems } from "../runner/test/state-shape";
 import { runnerBytes, runnerDigest } from "../src/runner-bytes";
 import { CONTROL_MIGRATIONS, SLOTS_MIGRATIONS } from "../src/schema";
-import { SLOTS } from "../src/slots";
+import { SandboxSlots, SLOTS } from "../src/slots";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 const OPEN = OPEN_GATES;
@@ -183,11 +185,15 @@ describe("a start", () => {
     expect(state.commands.every((command) => command.user === "root")).toBe(true);
     // The lease's secrets in the root-only state directory; the start document without them.
     // Only the two tokens the runner reads: the egress token never enters the VM.
-    const leaseFile = state.files[`${box.id}:/var/lib/ta/lease.json`]!;
+    const leaseFile = state.files[`${box.id}:${LEASE_FILE}`]!;
     const lease = JSON.parse(leaseFile);
     expect(lease.tokens).toEqual({ runner_token: hex(64, "d"), sync_token: "sync" });
     expect(leaseFile).not.toContain(EGRESS_TOKEN);
-    const doc = state.files[`${box.id}:/var/lib/ta/inbox/${RUN}.json`]!;
+    const doc = state.files[`${box.id}:${inboxDoc(RUN)}`]!;
+    // Both are the documents the runner protocol records, field for field.
+    const documents = PROTOCOLS[String(PROTOCOL)]!.documents;
+    expect(shapeProblems(lease, documents.lease)).toEqual([]);
+    expect(shapeProblems(JSON.parse(doc), documents.start)).toEqual([]);
     expect(doc).not.toContain(hex(64, "d"));
     expect(JSON.parse(doc)).not.toHaveProperty("tokens");
     expect(JSON.parse(doc)).not.toHaveProperty("network");
@@ -217,7 +223,7 @@ describe("a start", () => {
     expect(state.commands.map((command) => command.argv[1]))
       .toEqual(["install", "prepare", "signin-check"]);
     // The check comes first: no start document waits in the inbox for a run refused.
-    expect(Object.keys(state.files).filter((path) => path.includes("/var/lib/ta/inbox/")))
+    expect(Object.keys(state.files).filter((path) => path.includes(`${INBOX}/`)))
       .toEqual([]);
   });
 
@@ -231,7 +237,7 @@ describe("a start", () => {
     expect(state.commands.map((command) => command.argv[1]))
       .toEqual(["install", "prepare", "launch"]);
     // No scratch retention in the record: the runner deletes no agent's scratch by age.
-    const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${RUN}.json`]!;
+    const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(RUN)}`]!;
     expect(JSON.parse(doc).scratch_retention_days).toBeNull();
   });
 
@@ -241,7 +247,7 @@ describe("a start", () => {
     expect(await stub(who).start(who, start({ credential: "api_key" })))
       .toEqual({ started: true });
     const state = await seen();
-    const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${RUN}.json`]!;
+    const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(RUN)}`]!;
     expect(JSON.parse(doc).scratch_retention_days).toBe(30);
   });
 
@@ -257,7 +263,7 @@ describe("a start", () => {
                                              tokens: null, network: null })))
       .toEqual({ started: true });
     const state = await seen();
-    const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${second}.json`]!;
+    const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(second)}`]!;
     expect(JSON.parse(doc).scratch_retention_days).toBe(30);
   });
 
@@ -287,7 +293,7 @@ describe("a start", () => {
                                                tokens: null, network: null })))
         .toEqual({ started: true });
       const state = await seen();
-      const doc = state.files[`${state.sandboxes.at(-1)!.id}:/var/lib/ta/inbox/${third}.json`]!;
+      const doc = state.files[`${state.sandboxes.at(-1)!.id}:${inboxDoc(third)}`]!;
       expect(JSON.parse(doc).scratch_retention_days).toBe(30);
     });
   }
@@ -776,6 +782,40 @@ describe("the look before the runtime ceiling", () => {
     await rung(waiter);
   });
 
+  it("gives a gone renewal's slot back to the line at the next look when the line failed " +
+     "to take it", async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
+    const who = owner();
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+    // The renewal's pause lands and its resume is refused: its slot held in the line.
+    await e2b("/script", { others: 1, refuseResume: true });
+    await runDurableObjectAlarm(stub(who));
+    const reserved = async () => (await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved;
+    expect(await reserved()).toBe(1);
+    // Its sandbox is gone from E2B, and the line refuses the first give-back.
+    await e2b("/gone", { id });
+    const unreserve = SandboxSlots.prototype.unreserve;
+    let refused = 0;
+    SandboxSlots.prototype.unreserve = async function (this: SandboxSlots, sandboxId: string) {
+      if (refused === 0) {
+        refused += 1;
+        throw new Error("the line is unreachable");
+      }
+      return unreserve.call(this, sandboxId);
+    };
+    try {
+      await runDurableObjectAlarm(stub(who));  // the sandbox forgotten; its give-back refused
+      expect(refused).toBe(1);
+      await runDurableObjectAlarm(stub(who));  // asked again: the line takes it
+      expect(await reserved()).toBe(0);
+    } finally {
+      SandboxSlots.prototype.unreserve = unreserve;
+    }
+  });
+
   it("leaves a paused, idle sandbox alone, with no alarm", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
     const who = owner();
@@ -1050,11 +1090,12 @@ describe("a sign-in", () => {
     expect(box.metadata["ta_route"]).toBe(ROUTE);
     expect(state.commands.map((command) => command.argv.slice(1, 3))).toEqual([
       ["install", await runnerDigest()], ["prepare", "1.1.1.1"], ["login-launch", SI]]);
-    const doc = JSON.parse(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.json`]!);
+    const doc = JSON.parse(state.files[`${box.id}:${inboxDoc(SI)}`]!);
     expect(doc).toEqual({ id: SI, engine: "kimi", region: "global", mode: "in",
                           authority: "owner", urls: signin().urls });
+    expect(shapeProblems(doc, PROTOCOLS[String(PROTOCOL)]!.documents.signin)).toEqual([]);
     // A sign-in's start that opens the lease hands the runner the same two tokens, no more.
-    const leaseFile = state.files[`${box.id}:/var/lib/ta/lease.json`]!;
+    const leaseFile = state.files[`${box.id}:${LEASE_FILE}`]!;
     expect(JSON.parse(leaseFile).tokens).toEqual({ runner_token: "d".repeat(64),
                                                    sync_token: "sync" });
     expect(leaseFile).not.toContain(EGRESS_TOKEN);
@@ -1069,7 +1110,7 @@ describe("a sign-in", () => {
       .toEqual({ delivered: true });
     const state = await seen();
     const box = state.sandboxes[0]!;
-    expect(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.code`]).toBe("abc#d");
+    expect(state.files[`${box.id}:${inboxCode(SI)}`]).toBe("abc#d");
     expect(state.commands.at(-1)!.argv.slice(1)).toEqual(["login-input", SI]);
     expect(await stub(who).signinCancel({ authority: "owner", id: SI }))
       .toEqual({ cancelled: true });

@@ -307,9 +307,8 @@ function startDocument(start: SandboxStart, retentionDays: number | null): Start
     credential: start.credential, model: start.model, session_id: start.session_id,
     prompt: start.prompt, unattended: start.unattended, authority: start.authority,
     lease: { lease_id: lease.lease_id, epoch: lease.epoch },
-    config: { generation: config.generation,
-              egress: { destinations: config.egress.destinations, mode: config.egress.mode },
-              env: config.env, inherit: config.inherit },
+    config: { generation: config.generation, egress: config.egress, env: config.env,
+              inherit: config.inherit },
     urls: { mcp: urls.mcp, mcp_bare: urls.mcp_bare, events: urls.events, signin: urls.signin },
     scratch_retention_days: retentionDays,
   };
