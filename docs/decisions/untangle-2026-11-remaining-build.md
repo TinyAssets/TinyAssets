@@ -338,3 +338,10 @@ C2 built B9's `npm run generate` and its staleness guard, and stopped at the `En
 **Not (c), keeping wrangler's files excluded beside the hand interfaces:** it keeps hand copies held only by a name check, the hidden link the untangle removes.
 
 It builds as its own PR, **C2b**, right after C2.
+
+**As built (C2b):**
+- Each Worker's env is `<worker>/src/env.ts`. Wrangler's `worker-configuration.d.ts` is no longer committed.
+- The table is `contract/services.json`. It also types the queues' messages, with `OwnerMessage` (`contract/src/queues.ts`) for the ring and the erasure. The services guard reads the same table in place of its own list.
+- The guards that hold a binding to its one module now take the generated env as that binding's declaration (`ci/kit/sources.ts` `envFile`).
+- Every test env but the doors' `OWNER` is a `Pick` of its Worker's generated env. The doors' tests still call owner doors outside `OwnerDoors`, so that binding stays typed from `OwnerDO`, owed to T2 (B23).
+- `SANDBOX` is required, as T1a made it. `ERASURES` is required in the type because the config binds it; the code's check for an unbound one goes with T1c.
