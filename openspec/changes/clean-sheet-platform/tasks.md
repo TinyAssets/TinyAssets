@@ -353,9 +353,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`); the fake sandbox
     `implements SandboxService` and imports `METER_BATCH` (`owner/test/fake-sandbox.ts`); the
     `fake-sandbox`, `sandbox-gate` and `CONNECT` Worker names taken from `fake()` and
-    `workerConfig`, not written out (`owner/vitest.config.ts`, `doors/vitest.config.ts`,
-    `doors/test/app.e2e.mjs`) (list 6, items 6j, 8 and 10).
+    `workerConfig`, not written out (`owner/vitest.config.ts`) (list 6, items 6j, 8 and 10).
   - [ ] T1d: the owner memory probe driven through the doors.
+  - T2, with the doors on their real entry: the doors' copies of the `fake-sandbox`,
+    `sandbox-gate` and `CONNECT` Worker names taken from `fake()` and `workerConfig`, not
+    written out (`doors/vitest.config.ts`, `doors/test/app.e2e.mjs`) (list 6, item 10).
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
