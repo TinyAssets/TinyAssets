@@ -27,7 +27,9 @@ export interface WorkerConfig {
   readonly compatibility_flags?: readonly string[];
   readonly r2_buckets?: readonly { readonly binding: string }[];
   readonly durable_objects?: { readonly bindings: readonly { readonly name: string;
-                                                              readonly class_name: string }[] };
+                                                              readonly class_name: string;
+                                                              readonly script_name?: string }[] };
+  readonly migrations?: readonly Readonly<Record<string, unknown>>[];
   readonly rules?: readonly { readonly type: string; readonly globs: readonly string[] }[];
 }
 
@@ -119,14 +121,55 @@ export function bundled(dir: string, entry?: string): Module[] {
   }
 }
 
+/** One Durable Object binding as miniflare takes it: a class, its script's when another's. */
+export interface ObjectBinding {
+  readonly className: string;
+  readonly scriptName?: string;
+  readonly useSQLite: true;
+}
+
+/**
+ * The Durable Object namespaces a Worker's config gives it in miniflare: each of its
+ * bindings (another script's class by its `script_name`), and a namespace of each class it
+ * defines (`migrations[].new_sqlite_classes`) that no binding of its own names, bound by the
+ * class's name. workerd defines a class only through a namespace of the Worker that holds it,
+ * so a Worker whose class only other Workers bind (the owner's, which the doors bind by
+ * `script_name`) does not start without one; its code never reads that binding. A migration
+ * that does more than add SQLite classes fails loudly: these are the only fields read.
+ */
+export function objectBindings(config: WorkerConfig): Record<string, ObjectBinding> {
+  const bindings = config.durable_objects?.bindings ?? [];
+  const own = new Set(bindings.filter((binding) => binding.script_name === undefined)
+    .map((binding) => binding.class_name));
+  const classes = (config.migrations ?? []).flatMap((migration) => {
+    const other = Object.keys(migration).filter((key) => !["tag", "new_sqlite_classes"]
+      .includes(key));
+    if (other.length > 0) {
+      throw new Error(`${config.name}: migration ${String(migration["tag"])} has ` +
+                      `${other.join(", ")}; the Worker kit reads only new_sqlite_classes`);
+    }
+    return (migration["new_sqlite_classes"] ?? []) as readonly string[];
+  });
+  return {
+    ...Object.fromEntries(bindings.map((binding) => [binding.name, {
+      className: binding.class_name,
+      ...(binding.script_name === undefined ? {} : { scriptName: binding.script_name }),
+      useSQLite: true as const }])),
+    ...Object.fromEntries(classes.filter((name) => !own.has(name))
+      .map((name) => [name, { className: name, useSQLite: true as const }])),
+  };
+}
+
 /**
  * The real Worker at `dir`, as an auxiliary Worker beside a test's own: bundled from its own
- * config, with its own name, runtime and flags, its own classes' namespaces (SQLite) and its
- * own buckets. Its secrets and anything a test changes are the caller's `extra`.
+ * config and entry, as a deploy bundles it, with its own name, runtime and flags, its
+ * namespaces (`objectBindings`: so a test binds its classes by `scriptName`, as other
+ * Workers' configs do) and its own buckets. Its secrets and anything a test changes are the
+ * caller's `extra`.
  */
 export function auxiliary<Extra extends object>(dir: string, extra: Extra) {
   const config = workerConfig(dir);
-  const objects = config.durable_objects?.bindings ?? [];
+  const objects = objectBindings(config);
   const buckets = config.r2_buckets ?? [];
   return {
     name: config.name,
@@ -134,8 +177,7 @@ export function auxiliary<Extra extends object>(dir: string, extra: Extra) {
     modules: bundled(dir),
     compatibilityDate: config.compatibility_date,
     compatibilityFlags: [...(config.compatibility_flags ?? [])],
-    ...(objects.length === 0 ? {} : { durableObjects: Object.fromEntries(objects.map(
-      (binding) => [binding.name, { className: binding.class_name, useSQLite: true }])) }),
+    ...(Object.keys(objects).length === 0 ? {} : { durableObjects: objects }),
     ...(buckets.length === 0 ? {} : { r2Buckets: buckets.map((bucket) => bucket.binding) }),
     ...extra,
   };
