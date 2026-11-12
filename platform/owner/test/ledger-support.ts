@@ -1,7 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import { admission, workRefusal } from "../src/admission";
+import { isAdmitted } from "../src/admission";
 import { type Adopt, Bodies } from "../src/bodies";
 import { Collections } from "../src/collections";
 import { WriteGate } from "../src/gate";
@@ -92,9 +92,10 @@ export interface Post {
 }
 
 /**
- * The ledger's parts on an object's own storage, as the object builds them (`OwnerDO`): its
+ * The ledger's parts on an object's own storage, a copy of the object's wiring (`OwnerDO`): its
  * grants, the owner's admission, the collections' change cursor, and its files' adoption of
- * a placed body and their one wall (`filesOn`'s, with no tier named).
+ * a placed body and their one wall (`filesOn`'s, with no tier named). It goes when the tests
+ * reach the ledger only by the object's doors (T1c).
  */
 export type LedgerParts = [storage: DurableObjectStorage, grants: Grants,
                            admitted: () => boolean, changes: () => number, adopt: Adopt,
@@ -104,7 +105,7 @@ export function ledgerParts(storage: DurableObjectStorage): LedgerParts {
   const files = filesOn(gate.storage, gate.write);
   const collections = new Collections(...collectionParts(storage));
   return [storage, new Grants(storage, new Policy(storage)),
-          () => workRefusal(admission(storage)) === null, () => collections.clock(),
+          () => isAdmitted(storage), () => collections.clock(),
           new Bodies(files, gate.storage, gate.write).adopt,
           (needed: number) => files.fullRefusal(needed)];
 }

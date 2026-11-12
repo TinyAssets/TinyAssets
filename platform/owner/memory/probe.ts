@@ -38,7 +38,7 @@ import { TIERS } from "../../ci/fixtures";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
 import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
-import { admission, workRefusal } from "../src/admission";
+import { isAdmitted } from "../src/admission";
 import { Backups } from "../src/backup";
 import { Bodies, type Located } from "../src/bodies";
 import { ChangeLog } from "../src/changelog";
@@ -483,8 +483,9 @@ export class LegArchive extends OwnerDO {
   }
 
   /**
-   * The ledger on the object's storage, as the object builds it: the owner's admission, the
-   * collections' change cursor, and the leg's own files' adoption and wall (`legFiles`).
+   * The ledger on the object's storage, a copy of the object's wiring: the owner's admission,
+   * the collections' change cursor, and the leg's own files' adoption and wall (`legFiles`).
+   * It goes when the probe reaches the ledger only by the doors (T1d).
    */
   #ledger(grants = new Grants(this.#state.storage, new Policy(this.#state.storage))): Ledger {
     const storage = this.#state.storage;
@@ -493,7 +494,7 @@ export class LegArchive extends OwnerDO {
     const bodies = new Bodies(files, gate.storage, gate.write);
     const collections = new Collections(storage, bodies.adopt, () =>
       fileLimits(new Policy(storage).read().document, null));
-    return new Ledger(storage, grants, () => workRefusal(admission(storage)) === null,
+    return new Ledger(storage, grants, () => isAdmitted(storage),
                       () => collections.clock(), bodies.adopt,
                       (needed) => files.fullRefusal(needed));
   }

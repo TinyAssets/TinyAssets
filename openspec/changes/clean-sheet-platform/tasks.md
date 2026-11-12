@@ -363,7 +363,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     the ledger's `limits` parameter, `Internals.ledgerLimits`, `BigArchivingOwnerDO` and the
     other three classes' ceilings deleted, `LEDGER_LIMITS` checked once at module load, and a
     test of the purge queue's ceiling (`ledger.ts` `remove`, `maxAgentRows` purges waiting),
-    which none holds today (`b23_research.md` question 3).
+    which none holds today (`b23_research.md` question 3), and one that a lone straggler makes
+    the lane due (no test fails today if `Ledger.archiveDue` asks `archiveDue` no straggler).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     the unbound-`ERASURES` throw gone (`owner-do.ts:767-768`; the generated `OwnerEnv` already
     types it required, C2b) with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
@@ -373,8 +374,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`); the fake sandbox
     `implements SandboxService` and imports `METER_BATCH` (`owner/test/fake-sandbox.ts`); the
     `fake-sandbox`, `sandbox-gate` and `CONNECT` Worker names taken from `fake()` and
-    `workerConfig`, not written out (`owner/vitest.config.ts`) (list 6, items 6j, 8 and 10).
-  - [ ] T1d: the owner memory probe driven through the doors.
+    `workerConfig`, not written out (`owner/vitest.config.ts`) (list 6, items 6j, 8 and 10);
+    the object's `admitted` held by a test (no test fails today if the object passes the ledger
+    `() => true`: a suspension between a wakes pass's claims, the `GATEWAY` gate holding its
+    send); `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted.
+  - [ ] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
+    copy of the object's wiring, deleted.
   - T2, with the doors on their real entry: the doors' copies of the `fake-sandbox`,
     `sandbox-gate` and `CONNECT` Worker names taken from `fake()` and `workerConfig`, not
     written out (`doors/vitest.config.ts`, `doors/test/app.e2e.mjs`) (list 6, item 10).

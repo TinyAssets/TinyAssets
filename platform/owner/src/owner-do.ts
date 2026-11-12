@@ -109,8 +109,8 @@ import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
   admission, type Admission, admissionDoors, DISCARDED, type DoorClass, doorRefusal,
-  IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, OWNER_ERASED, ownerTier,
-  PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned, workRefusal, writeTombstone,
+  IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, isAdmitted, OWNER_ERASED,
+  ownerTier, PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import {
   agentId, AUTHORITY_CHANGED, MAIN_AGENT, may, NOT_GRANTED, type Stamped,
@@ -589,7 +589,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#storage = storage;
     this.#state = this.#stateOf(env, storage);
     this.#tombstone = tombstoned(storage.sql);
-    const admitted = () => workRefusal(admission(storage)) === null;
+    const admitted = () => isAdmitted(storage);
     this.#policy = new Policy(storage);
     // The files byte quota is the tier's storage (ADR-034 decision 8), as last handed.
     // Retention kept in R2 makes room first at the byte quota: the oldest placed history,
