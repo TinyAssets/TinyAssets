@@ -70,6 +70,8 @@ async function rung(owner: string): Promise<void> {
 const hex = (n: number, c = "a") => c.repeat(n);
 const RUN = `run_${hex(32, "1")}`;
 const LEASE = { lease_id: hex(32, "b"), epoch: 1 };
+/** The lease's egress token, a marker: E2B's transform alone carries it, never the VM. */
+const EGRESS_TOKEN = "egress-token-0f1e2d3c4b5a";
 const NETWORK = {
   network: { allowOut: ["github.com", "egress.tinyassets.io"], denyOut: ["0.0.0.0/0"],
              dnsServers: ["1.1.1.1"],
@@ -83,7 +85,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
     credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
     unattended: false, authority: "owner", lease: LEASE, route: "r".repeat(64),
-    tokens: { egress_token: "egress", sync_token: "sync", runner_token: hex(64, "d") },
+    tokens: { egress_token: EGRESS_TOKEN, sync_token: "sync", runner_token: hex(64, "d") },
     network: NETWORK as never,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
               env: { HOME: "{home}" }, inherit: ["PATH"] },
@@ -180,8 +182,11 @@ describe("a start", () => {
       .toBe(`sha256:${digest} bytes:${runnerBytes().byteLength}`);
     expect(state.commands.every((command) => command.user === "root")).toBe(true);
     // The lease's secrets in the root-only state directory; the start document without them.
-    const lease = JSON.parse(state.files[`${box.id}:/var/lib/ta/lease.json`]!);
-    expect(lease.tokens.runner_token).toBe(hex(64, "d"));
+    // Only the two tokens the runner reads: the egress token never enters the VM.
+    const leaseFile = state.files[`${box.id}:/var/lib/ta/lease.json`]!;
+    const lease = JSON.parse(leaseFile);
+    expect(lease.tokens).toEqual({ runner_token: hex(64, "d"), sync_token: "sync" });
+    expect(leaseFile).not.toContain(EGRESS_TOKEN);
     const doc = state.files[`${box.id}:/var/lib/ta/inbox/${RUN}.json`]!;
     expect(doc).not.toContain(hex(64, "d"));
     expect(JSON.parse(doc)).not.toHaveProperty("tokens");
@@ -1048,8 +1053,11 @@ describe("a sign-in", () => {
     const doc = JSON.parse(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.json`]!);
     expect(doc).toEqual({ id: SI, engine: "kimi", region: "global", mode: "in",
                           authority: "owner", urls: signin().urls });
-    expect(JSON.parse(state.files[`${box.id}:/var/lib/ta/lease.json`]!).tokens.runner_token)
-      .toBe("d".repeat(64));
+    // A sign-in's start that opens the lease hands the runner the same two tokens, no more.
+    const leaseFile = state.files[`${box.id}:/var/lib/ta/lease.json`]!;
+    expect(JSON.parse(leaseFile).tokens).toEqual({ runner_token: "d".repeat(64),
+                                                   sync_token: "sync" });
+    expect(leaseFile).not.toContain(EGRESS_TOKEN);
     // A sign-in in progress keeps the sandbox leased: its look is the idle one, not a reap.
     expect(await alarmOf(who)).not.toBeNull();
   });
