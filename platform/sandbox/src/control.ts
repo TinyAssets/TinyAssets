@@ -61,13 +61,14 @@
  * The alarm is armed again on every path, a failed look included (backing off from the
  * measured request time, never past the soonest edge), so no run dies at the ceiling.
  */
+import { sha256Hex } from "../../contract/src/digest";
 import { HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
 import { readControl, type SandboxCeilings } from "../../contract/src/control";
 import { bundledSources, engineHosts } from "../../sources/src/catalog";
 import { LEASE_TTL_S } from "../../contract/src/limits";
-import { allowList, DNS_SERVERS, EGRESS_HOST } from "../../contract/src/egress";
+import { allowList, EGRESS_HOST } from "../../contract/src/egress";
 import { migrate } from "../../contract/src/migrate";
 import {
   METER_BATCH, type MeterEvent, type SandboxSignin, type SandboxStart, type Started,
@@ -84,7 +85,7 @@ import { CONTROL_MIGRATIONS } from "./schema";
 import { SLOTS, type SandboxSlots } from "./slots";
 
 /** The start's fixed answers, beside `started: true`. */
-export const CODES = Object.freeze({
+const CODES = Object.freeze({
   waiting: "sandbox_waiting",
   signin: "signin_required",
   unconfigured: "sandbox_unconfigured",
@@ -127,7 +128,7 @@ const PREPARE_MS = 7_000;
  * runner's `renewing`, then the longest pause). One that lands late anyway is paused by
  * E2B's own timeout with its memory (probed), and the next look resumes it.
  */
-export const RENEW_EDGE_MS = RENEWING_MS + PAUSE_MAX_MS;
+const RENEW_EDGE_MS = RENEWING_MS + PAUSE_MAX_MS;
 /** A whole renewal past its quiet moment: renewing, pause, resume, prepare, renewed. */
 const RENEWAL_MS = RENEWING_MS + PAUSE_MAX_MS + RESUME_MAX_MS + PREPARE_MS + RENEWING_MS;
 /**
@@ -143,7 +144,7 @@ const RETRY_BASE_MS = 480;
 const RETRY_MAX_MS = LEASE_TTL_S * 1000;
 
 /** The wait before the `tries`-th retry: doubling from the measured request time. */
-export function backoff(tries: number): number {
+function backoff(tries: number): number {
   return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, tries - 1), RETRY_MAX_MS);
 }
 
@@ -225,7 +226,7 @@ function e2bNetwork(network: unknown): E2bNetwork {
  * The network widened to `hosts` (a signed-in engine's vendor hosts): unchanged when it
  * already lets every name out (`*`) or lists them all; the egress door stays listed last.
  */
-export function widened(network: E2bNetwork, hosts: readonly string[]): E2bNetwork | null {
+function widened(network: E2bNetwork, hosts: readonly string[]): E2bNetwork | null {
   if (network.allowOut.includes("*") || hosts.every((host) => network.allowOut.includes(host))) {
     return null;
   }
@@ -306,16 +307,12 @@ function answerOf<T>(out: string, fields: Readonly<Record<keyof T, "number" | "b
 const QUIET: Readonly<Record<keyof QuietAnswer, "number" | "boolean">> =
   Object.freeze({ live: "number", quiet: "boolean" });
 
-/** A hex SHA-256 of `text`, its first 32 characters: an opaque name in E2B's metadata. */
-async function opaque(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")
-    .slice(0, 32);
-}
-
-/** The metadata naming an owner's sandboxes, so an erasure finds strays the rows lost. */
-export async function ownerTag(owner: string): Promise<string> {
-  return opaque(`ta_owner\n${owner}`);
+/**
+ * The metadata naming an owner's sandboxes, so an erasure finds strays the rows lost: an
+ * opaque name, the first 32 hex of a SHA-256.
+ */
+function ownerTag(owner: string): string {
+  return sha256Hex(`ta_owner\n${owner}`).slice(0, 32);
 }
 
 function handleOf(found: SandboxInfo, row: { runner: string }): Box | null {
@@ -332,7 +329,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   #chain: Promise<unknown> = Promise.resolve();
   readonly #e2b: () => E2b;
   /** The digest of the runner this Worker ships, computed once an instance. */
-  readonly #digest: Promise<string>;
+  readonly #digest: string;
 
   constructor(ctx: DurableObjectState, env: SandboxEnv) {
     super(ctx, env);
@@ -454,7 +451,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async #run(box: Box, argv: readonly [WorkerCommand, ...string[]], timeoutMs = COMMAND_MS):
       Promise<{ code: number; out: string }> {
     let done = await this.#e2b().exec(box, [LOADER, box.runner, ...argv], { timeoutMs });
-    if (done.exitCode === EXIT.absent && box.runner === await this.#digest) {
+    if (done.exitCode === EXIT.absent && box.runner === this.#digest) {
       await this.#install(box);
       done = await this.#e2b().exec(box, [LOADER, box.runner, ...argv], { timeoutMs });
     }
@@ -473,7 +470,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   /** This Worker's runner uploaded into the sandbox and installed by the loader. */
   async #install(handle: Handle): Promise<void> {
-    await install(this.#e2b(), handle, runnerBytes(), await this.#digest, COMMAND_MS);
+    await install(this.#e2b(), handle, runnerBytes(), this.#digest, COMMAND_MS);
   }
 
   /**
@@ -486,7 +483,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * thrown. Whether it adopted.
    */
   async #adopt(authority: string, box: Box): Promise<{ box: Box; adopted: boolean }> {
-    const digest = await this.#digest;
+    const digest = this.#digest;
     if (box.runner === digest) {
       return { box, adopted: false };
     }
@@ -522,8 +519,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   /** A sandbox just running: its resolver pinned, `/proc` hidden, its lockdown re-checked. */
   async #prepare(box: Box, network: E2bNetwork): Promise<void> {
-    const servers = network.dnsServers.length > 0 ? network.dnsServers : DNS_SERVERS;
-    await this.#run(box, [COMMAND.prepare, ...servers]);
+    await this.#run(box, [COMMAND.prepare, ...network.dnsServers]);
   }
 
   /**
@@ -633,14 +629,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const created = await e2b.create({
         template: this.env.E2B_TEMPLATE, timeoutS: ceilings.runtime_ceiling_s,
         network: network!,
-        // Opaque names, so E2B's own list shows whose it is to us and to no one else.
-        metadata: { ta_sandbox: await opaque(`${owner}\n${authority}`),
-                    ta_owner: await ownerTag(owner),
+        // An opaque name, so E2B's own list shows whose it is to us and to no one else.
+        metadata: { ta_owner: ownerTag(owner),
                     // Sealed, so only the doors open it: the route of E2B's lifecycle events.
                     ta_route: route },
       });
       const info = await e2b.info(created.sandboxID);
-      const digest = await this.#digest;
+      const digest = this.#digest;
       this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner) " +
                        "VALUES (?, ?, NULL, ?, ?) ON CONFLICT (authority) DO UPDATE SET " +
                        "sandbox_id = excluded.sandbox_id, lease_id = NULL, end_at = " +
@@ -792,7 +787,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * between the two leaves it to the runner's `prepare` at the resume, which deletes every
    * code left in the inbox before anything else reads it: a code never rests on disk.
    */
-  async signinInput(_owner: string, request: { authority: string; id: string; code: string }):
+  async signinInput(request: { authority: string; id: string; code: string }):
       Promise<{ delivered: boolean }> {
     if (!SIGNIN_ID.test(request.id) || !AUTHORITY.test(request.authority)
         || typeof request.code !== "string" || /[\r\n]/.test(request.code)) {
@@ -816,7 +811,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /** A live sign-in stopped (`login-cancel`). */
-  async signinCancel(_owner: string, request: { authority: string; id: string }):
+  async signinCancel(request: { authority: string; id: string }):
       Promise<{ cancelled: boolean }> {
     if (!SIGNIN_ID.test(request.id) || !AUTHORITY.test(request.authority)) {
       throw new Error("a sign-in's cancel names its sign-in");
@@ -835,7 +830,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     return this.#find(at === undefined ? null : this.#row(at.authority));
   }
 
-  async cancel(_owner: string, request: { run: string; lease_id: string }):
+  async cancel(request: { run: string; lease_id: string }):
       Promise<{ cancelled: boolean }> {
     if (!RUN_ID.test(request.run)) {
       throw new Error("a cancel names its run");
@@ -851,7 +846,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     });
   }
 
-  async status(_owner: string, request: { run: string; lease_id: string }):
+  async status(request: { run: string; lease_id: string }):
       Promise<{ state: "running" | "exited" | "gone" }> {
     if (!RUN_ID.test(request.run)) {
       throw new Error("a status names its run");
@@ -874,7 +869,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * does not land now (E2B busy, or unreachable) is kept asked (`releasing`) and the look
    * takes it again, backing off: an idle sandbox is reaped, never left to its ceiling.
    */
-  async release(_owner: string, request: { lease_id: string }): Promise<{ paused: boolean }> {
+  async release(request: { lease_id: string }): Promise<{ paused: boolean }> {
     if (!LEASE.test(request.lease_id)) {
       throw new Error("a release names its lease");
     }
@@ -1223,9 +1218,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * `METER_BATCH` entries and the cursor past them. What the cursor passed is dropped: the
    * owner's object read it.
    */
-  async meter(_owner: string, request: { after: number }):
+  async meter(request: { after: number }):
       Promise<{ events: MeterEvent[]; next: number }> {
-    const after = request?.after;
+    const after = request.after;
     if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
       throw new Error("a meter read names its cursor");
     }
@@ -1245,7 +1240,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     return this.#serial(async () => {
       const e2b = this.#e2b();
       const ids = new Set(this.#rows().map((row) => row.sandbox_id));
-      for (const id of await e2b.list("ta_owner", await ownerTag(owner))) {
+      for (const id of await e2b.list("ta_owner", ownerTag(owner))) {
         ids.add(id);
       }
       for (const id of ids) {

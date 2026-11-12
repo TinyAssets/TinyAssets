@@ -15,6 +15,7 @@
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
+import { HEARTBEAT_MS } from "./frames";
 import { tryLock, unlock } from "./pid-lock";
 
 export interface Identity {
@@ -71,7 +72,7 @@ export function take(state: string): Identity {
     if (!tryLock(`${dir}/${candidate.name}`)) {
       continue;  // a live run's
     }
-    killAll(candidate.uid);
+    killAll(candidate);
     return candidate;
   }
   throw new Error("every run user of the template is taken");
@@ -79,7 +80,7 @@ export function take(state: string): Identity {
 
 /** The user given back, once every process of it is gone. */
 export function give(state: string, taken: Identity): void {
-  killAll(taken.uid);
+  killAll(taken);
   unlock(`${state}/pool/${taken.name}`);
 }
 
@@ -97,19 +98,20 @@ export function processesOf(uid: number): number[] {
 }
 
 /**
- * The longest a user's processes may outlive their SIGKILL: the runner's heartbeat
- * (`HEARTBEAT_MS`, 20 s, which `guards/config.test.ts` holds equal), so a run's end is
- * held no longer than one more heartbeat. A process still there after it is stuck in the
- * kernel (uninterruptible sleep): the user is not given back, loudly.
+ * The longest a user's processes may outlive their SIGKILL: the runner's heartbeat, so a
+ * run's end is held no longer than one more heartbeat. A process still there after it is
+ * stuck in the kernel (uninterruptible sleep): the user is not given back, loudly.
  */
-export const KILL_WITHIN_MS = 20_000;
+const KILL_WITHIN_MS = HEARTBEAT_MS;
 
 /**
- * Every process of `uid` killed, until none is left: `kill -9 -1` run as that user (which
- * signals all of its processes at once, so a process forking as it dies is caught too),
- * then each one `/proc` still shows; any left past `KILL_WITHIN_MS` fails.
+ * Every process of `who` killed, until none is left: `kill -9 -1` run as that user, its own
+ * uid and gid from the template's `/etc/passwd` (which signals all of its processes at
+ * once, so a process forking as it dies is caught too), then each one `/proc` still shows;
+ * any left past `KILL_WITHIN_MS` fails.
  */
-export function killAll(uid: number): void {
+export function killAll(who: Identity): void {
+  const { uid } = who;
   if (uid === 0) {
     throw new Error("root's processes are never killed by uid");
   }
@@ -122,7 +124,7 @@ export function killAll(uid: number): void {
     if (Date.now() > deadline) {
       throw new Error(`processes of uid ${uid} outlived their kill: ${left.join(" ")}`);
     }
-    spawnSync("setpriv", [`--reuid=${uid}`, `--regid=${uid}`, "--clear-groups", "--",
+    spawnSync("setpriv", [`--reuid=${uid}`, `--regid=${who.gid}`, "--clear-groups", "--",
                           "/bin/kill", "-9", "-1"], { stdio: "ignore" });
     for (const pid of left) {
       try {

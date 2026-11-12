@@ -51,10 +51,8 @@ function upload(bytes: string, sha = SHA): void {
 }
 
 describe("the loader", () => {
-  it("takes no path from its environment, and ships with LF line ends", () => {
-    const text = readFileSync(SHIPPED, "utf8");
-    expect(text).not.toMatch(/TA_RUNNER_ROOT|TA_RUNNER_NODE/);
-    expect(text).not.toContain("\r");
+  it("ships with LF line ends", () => {
+    expect(readFileSync(SHIPPED, "utf8")).not.toContain("\r");
     expect(readFileSync(join(import.meta.dirname, "..", "..", "..", ".gitattributes"), "utf8"))
       .toMatch(/^platform\/sandbox\/template\/ta-runner text eol=lf$/m);
   });

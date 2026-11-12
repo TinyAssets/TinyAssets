@@ -59,7 +59,7 @@ export function fill(text: string, values: Readonly<Record<string, string>>,
 }
 
 /** The run's own secret, as its MCP URL's path carries it (`/r/<run>/<secret>/mcp`). */
-export function runSecret(mcpUrl: string): string {
+function runSecret(mcpUrl: string): string {
   const secret = MCP_DOOR.exec(new URL(mcpUrl).pathname)?.[2];
   if (secret === undefined) {
     throw new Error("a run's MCP URL carries its secret");
@@ -72,7 +72,7 @@ export function runSecret(mcpUrl: string): string {
  * whose base-URL variable the run's environment sets (`<PROVIDER>_BASE_URL`, as
  * `sandboxEnv` names it), and that URL.
  */
-export function keyProvider(cli: CliSpec, env: Readonly<Record<string, string>>):
+function keyProvider(cli: CliSpec, env: Readonly<Record<string, string>>):
     { provider: string; base_url: string } | null {
   const found = Object.keys(cli.api_key_env ?? {}).filter((provider) =>
     Object.hasOwn(env, `${envStem(provider)}_BASE_URL`));
@@ -91,7 +91,7 @@ export function keyProvider(cli: CliSpec, env: Readonly<Record<string, string>>)
  * value is never read as a flag; a placeholder not after an option is refused when its
  * value could be read as one.
  */
-export function modelArgs(template: readonly string[], values: Readonly<Record<string, string>>):
+function modelArgs(template: readonly string[], values: Readonly<Record<string, string>>):
     string[] {
   const out: string[] = [];
   for (let i = 0; i < template.length; i += 1) {

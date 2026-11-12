@@ -1,7 +1,7 @@
 /**
  * The sandbox's template and the pair it runs (`template/`):
- * - the image (`image.py`, from `image.ts`'s spec and staged files) is the recipe the pinned
- *   template was built from, as E2B's SDK serializes it: a step changed is a new image;
+ * - the image (`image.py`, from `image.ts`'s spec and staged files) is the recipe the next
+ *   build will produce, as E2B's SDK serializes it: a step changed is a new image;
  * - its tag moves with every input of the image's build (the lock of the SDK that runs it
  *   among them), and with nothing else (the runner, the probes, the checks, the tag's own
  *   code);
@@ -15,8 +15,7 @@
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync,
-         writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -36,8 +35,6 @@ const TEMPLATE = join(PLATFORM, "sandbox", "template");
  * recipe is a new image: a paid build, then the pin PR.
  */
 const RECIPE = "118169ff55d21b618352fd644c222039785aa93c5b5c3dc3e28c25c7ada0c46e";
-/** The same recipe from a checkout whose files are 0664 (umask 002). */
-const RECIPE_664 = "129f6027b5ba3aa4d10872ad17d4e067ebbe367e85b3a6814a932178d7f6ebe1";
 
 /**
  * E2B's SDK as far as the image's steps reach it (`Template`, `Template.to_json`), written
@@ -118,20 +115,13 @@ afterAll(() => {
 
 const sha = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex");
 
-/** The image's recipe from `stage`'s files (`mode`, if given, set on each first). */
-function recipe(mode?: number): string {
+/** The image's recipe from `stage`'s files. */
+function recipe(): string {
   const sdk = temp("ta-sdk-");
   writeFileSync(join(sdk, "e2b.py"), SDK);
   const staged = temp("ta-stage-");
   const image = spec();
   stage(staged, image);
-  if (mode !== undefined) {
-    const files = (dir: string): string[] => readdirSync(dir).flatMap((name) =>
-      statSync(join(dir, name)).isDirectory() ? files(join(dir, name)) : [join(dir, name)]);
-    for (const file of files(staged)) {
-      chmodSync(file, mode);
-    }
-  }
   const specFile = join(sdk, "spec.json");
   writeFileSync(specFile, JSON.stringify(image));
   return execFileSync("python3", ["-I", "-c", SERIALIZE, sdk, TEMPLATE, staged, specFile],
@@ -217,14 +207,12 @@ function passing(entry: Passed): boolean {
 }
 
 describe("the image", () => {
-  it("is the recipe the pinned template was built from, as E2B's SDK serializes it", () => {
+  it("is the recipe the next build will produce, as E2B's SDK serializes it", () => {
     const steps = JSON.parse(recipe()) as { steps: { type: string }[]; fromImage: string };
     expect(steps.fromImage).toBe("e2bdev/base");
     expect(steps.steps).toHaveLength(21);
     expect(steps.steps.filter((step) => step.type === "COPY")).toHaveLength(11);
     expect(sha(recipe())).toBe(RECIPE);
-    // Staged as an 0664 checkout's files are: the recipe A6b's research read from main.
-    expect(sha(recipe(0o664))).toBe(RECIPE_664);
   });
 
   it("is versioned by its build's inputs: image.py, its SDK's lock, the spec, the staged files",

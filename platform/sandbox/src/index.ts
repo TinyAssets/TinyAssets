@@ -44,16 +44,16 @@ export class Sandbox extends WorkerEntrypoint<Env> implements SandboxService {
 
   async cancel(owner: string, request: { run: string; lease_id: string }):
       Promise<{ cancelled: boolean }> {
-    return this.#owner(owner).cancel(owner, request);
+    return this.#owner(owner).cancel(request);
   }
 
   async status(owner: string, request: { run: string; lease_id: string }):
       Promise<{ state: "running" | "exited" | "gone" }> {
-    return this.#owner(owner).status(owner, request);
+    return this.#owner(owner).status(request);
   }
 
   async release(owner: string, request: { lease_id: string }): Promise<{ paused: boolean }> {
-    return this.#owner(owner).release(owner, request);
+    return this.#owner(owner).release(request);
   }
 
   async signin(owner: string, signin: SandboxSignin): Promise<Started> {
@@ -62,12 +62,12 @@ export class Sandbox extends WorkerEntrypoint<Env> implements SandboxService {
 
   async signinInput(owner: string, request: { authority: string; id: string; code: string }):
       Promise<{ delivered: boolean }> {
-    return this.#owner(owner).signinInput(owner, request);
+    return this.#owner(owner).signinInput(request);
   }
 
   async signinCancel(owner: string, request: { authority: string; id: string }):
       Promise<{ cancelled: boolean }> {
-    return this.#owner(owner).signinCancel(owner, request);
+    return this.#owner(owner).signinCancel(request);
   }
 
   async unwait(owner: string): Promise<void> {
@@ -80,7 +80,7 @@ export class Sandbox extends WorkerEntrypoint<Env> implements SandboxService {
 
   async meter(owner: string, request: { after: number }):
       Promise<{ events: MeterEvent[]; next: number }> {
-    return this.#owner(owner).meter(owner, request);
+    return this.#owner(owner).meter(request);
   }
 }
 
