@@ -193,6 +193,12 @@ export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER
     /** The ledger on this object's own storage, with some bounds changed. */
     inLedger: <R>(limits: Partial<LedgerLimits>, act: (ledger: Ledger) => R): Promise<R> =>
       runInDurableObject(stub, (_i: OwnerDO, state) => act(ledgerOn(state.storage, limits))),
+    /**
+     * The object's storage let go, after a test that filled it to a ceiling: a filled object
+     * is tens of MB on disk, kept until the test file ends (`inFilled`'s reason).
+     */
+    letGo: (): Promise<void> => runInDurableObject(stub, (_i: OwnerDO, state) =>
+      state.storage.deleteAll()),
     /** One alarm pass at `now`, with the scripted doorbell. */
     tick: (now: number = clock()): Promise<number | typeof CLOSED> =>
       runInDurableObject(stub, (_i: OwnerDO, state) =>
@@ -229,13 +235,13 @@ export async function counters(r: Rig): Promise<[Row, Row]> {
       "FROM ledger_usage",
   );
   const [actual] = await r.sql(
-    "SELECT (SELECT COUNT(*) FROM outside_agents) AS agents, " +
-      "(SELECT COUNT(*) FROM outside_agents WHERE disabled_reason IS NULL) AS enabled_agents, " +
+    "SELECT (SELECT COUNT(*) FROM outside_agents) + (SELECT COUNT(*) FROM native_agents) " +
+      "AS agents, (SELECT COUNT(*) FROM outside_agents WHERE disabled_reason IS NULL) + " +
+      "(SELECT COUNT(*) FROM native_agents WHERE retired_at IS NULL) AS enabled_agents, " +
       "(SELECT COUNT(*) FROM ledger_messages) AS messages, " +
       "(SELECT COUNT(*) FROM ledger_messages WHERE unacked > 0) AS unacked, " +
       "(SELECT coalesce(SUM(line_bytes), 0) FROM ledger_messages WHERE unacked = 0) " +
       "AS acked_bytes, " +
-
       "(SELECT COUNT(*) FROM ledger_wakes WHERE settled_at IS NOT NULL) AS settled_wakes, " +
       "(SELECT json_group_object(agent_id, n) FROM (SELECT r.agent_id, " +
       "COUNT(*) AS n FROM ledger_recipients r JOIN ledger_messages m " +

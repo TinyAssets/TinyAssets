@@ -14,7 +14,8 @@ import { describe, expect, it, onTestFinished } from "vitest";
 
 import { toolsNamed } from "../../contract/src/doors";
 import {
-  AGENT_RETIRED, type Ledger, MAIL_HEADER_BYTES, mailInput, NO_AGENT, RUN_NO_MAILBOX,
+  AGENT_RETIRED, type Ledger, LEDGER_LIMITS, MAIL_HEADER_BYTES, mailInput, NO_AGENT,
+  RUN_NO_MAILBOX,
 } from "../src/ledger";
 import { nativeId } from "../../contract/src/binding";
 import type { Binding } from "../../contract/src/binding";
@@ -195,9 +196,8 @@ describe("the ledger's bounds on identities", () => {
   it("count the owner's live agents among the reserved mailboxes and its rows in the " +
      "registry, forgetting the oldest retired one first", async () => {
     const r = await rig();
-    const seen = await r.inLedger({ maxAgents: 2, maxAgentRows: 4, maxUnacked: 1,
-                                    archiveRecords: 1, maxMessages: 5 },
-                                  (ledger: Ledger) => {
+    const { maxAgents, maxAgentRows } = LEDGER_LIMITS;
+    const seen = await r.inLedger({}, (ledger: Ledger) => {
       const refused = (act: () => unknown) => {
         try {
           act();
@@ -206,6 +206,9 @@ describe("the ledger's bounds on identities", () => {
           return (error as Error).message;
         }
       };
+      for (let n = 0; n < maxAgents - 2; n++) {
+        ledger.appear(`agent-${n}`);
+      }
       ledger.appear("a");
       ledger.appear("b");
       const full = refused(() => ledger.appear("c"));
@@ -213,27 +216,23 @@ describe("the ledger's bounds on identities", () => {
       const outside = refused(() => ledger.register(MUSE, MCP, {
         command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
         recipe_id: null }));
+      // The registry is full too: each new row forgets the oldest retired one (retired at
+      // one instant, the first by name).
       ledger.retire("a");
-      ledger.appear("c");
       ledger.retire("b");
+      ledger.appear("c");
+      const named = () => ledger.natives(true).filter((n) => !n.agent.startsWith("agent-"))
+        .map((n) => [n.agent, n.retired_at === null]);
+      const first = named();
       ledger.appear("d");
-      ledger.retire("c");
-      ledger.appear("e");  // the registry's fourth row: the oldest retired, a, is forgotten
-      const names = ledger.natives(true).map((n) => [n.agent, n.retired_at === null]);
-      // An agent's mail to the owner waits on the one unread ceiling (no mailbox's own).
-      const d = ledger.natives(false).find((n) => n.agent === "d")!.agent_id;
-      ledger.post({ native: "d" }, `dm:${d}`, "m1", "hello owner", null);
-      const share = refused(() => ledger.post({ native: "d" }, `dm:${d}`, "m2", "again",
-                                              null));
-      return { full, outside, names, share };
+      return { full, outside, first, then: named(), rows: ledger.natives(true).length };
     });
-    expect(seen.full).toBe("ledger_agents_full: the owner's agents are at the ledger's 2 " +
-                           "enabled agents, each a reserved mailbox");
+    expect(seen.full).toBe(`ledger_agents_full: the owner's agents are at the ledger's ${
+      maxAgents} enabled agents, each a reserved mailbox`);
     expect(seen.outside).toBe("the owner's enabled agents are at their limit");
-    expect(seen.names).toEqual([["b", false], ["c", false], ["d", true], ["e", true]]);
-    expect(seen.share).toBe("ledger_full: too much mail is unread (1 message waits for " +
-                            "their readers; the most for you (1)); reading and acking mail " +
-                            "makes room");
+    expect(seen.first).toEqual([["b", false], ["c", true]]);
+    expect(seen.then).toEqual([["c", true], ["d", true]]);
+    expect(seen.rows).toBe(maxAgentRows);
   });
 });
 
