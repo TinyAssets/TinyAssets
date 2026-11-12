@@ -217,8 +217,8 @@ function objectAt(body: Record<string, unknown>, path: readonly string[]): Recor
  * so a call's request is held once (egress shape research §2), never copied.
  */
 export function clamped(meter: Meter, body: Record<string, unknown>, cap: number,
-                        api?: string): Record<string, unknown> {
-  const rules = api === undefined ? null : apiRules(api);
+                        api: string): Record<string, unknown> {
+  const rules = apiRules(api);
   const aliases = [meter.output_field,
                    ...(rules?.outputs ?? []).filter((path) =>
                      path.join("\0") !== meter.output_field.join("\0"))];

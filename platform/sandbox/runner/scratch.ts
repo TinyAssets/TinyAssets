@@ -41,7 +41,7 @@ export const RESERVE_BYTES = 256 * 1024 * 1024;
  * chosen threshold (`limits-audit.md`), refusing nothing: room for a run's working files
  * (a tenth of 14.4 GB, about 1.4 GB, holds a large clone and its build) before it starts.
  */
-export const LOW_WATER_SHARE = 0.1;
+const LOW_WATER_SHARE = 0.1;
 const DAY_MS = 86_400_000;
 
 /** The tools' caches, pointed into an agent's scratch (their own names, as data). */

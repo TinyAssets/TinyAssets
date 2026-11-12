@@ -15,9 +15,10 @@
  *
  * The image holds no runner: the sandbox Worker ships it and names it by its digest. The
  * tag is the digest of everything the image's build reads, and of nothing else: `image.py`,
- * the spec, and every file staged for it (the loader, the engines' locks), each by its path
- * and mode. So a change to the runner, the probes, the checks or this file's own code moves
- * no tag, and any change to the image's inputs does (`guards/template.test.ts`).
+ * the hashed lock of the E2B SDK that runs it (`requirements.txt`), the spec, and every file
+ * staged for it (the loader, the engines' locks), each by its path and mode. So a change to
+ * the runner, the probes, the checks or this file's own code moves no tag, and any change to
+ * the image's inputs does (`guards/template.test.ts`).
  *
  *   node <pair.ts tsTool("image.ts")> [--stage <dir> --spec <file>]
  *
@@ -31,6 +32,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { RUNS_CEILING } from "../../contract/src/control";
+import { sha256Hex } from "../../contract/src/digest";
 import { bundledSources } from "../../sources/src/catalog";
 import { binPath, ENGINE_ROOT, WORKSPACE } from "../runner/engine";
 import { INBOX, INCOMING, LOADER, RUNNERS, STATE_DIR } from "../runner/protocol";
@@ -120,7 +122,7 @@ function engines(): ImageEngine[] {
     if (install === undefined || record.unwired !== undefined || install.manager !== "npm") {
       continue;
     }
-    const digest = createHash("sha256").update(readFileSync(lock(id))).digest("hex");
+    const digest = sha256Hex(readFileSync(lock(id)));
     if (digest !== install.lock_sha256) {
       throw new Error(`${id}: its lock is not the record's (${digest})`);
     }
@@ -177,6 +179,8 @@ export function tag(image: ImageSpec = spec()): string {
     digest.update(createHash("sha256").update(data).digest());
   };
   part("image.py", readFileSync(join(TEMPLATE, "image.py")));
+  // The SDK turns `image.py`'s steps into the build, so another SDK may make another image.
+  part("requirements.txt", readFileSync(join(TEMPLATE, "requirements.txt")));
   part("spec", canonical(image));
   for (const file of staged(image)) {
     part(`${file.rel}\0${file.mode.toString(8)}`, readFileSync(file.from));

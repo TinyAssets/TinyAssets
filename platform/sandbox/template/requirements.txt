@@ -1,6 +1,7 @@
 # The E2B SDK the image build runs (image.py), every dependency pinned
 # with its hashes: `pip install --require-hashes -r` this. Made with pip-tools from
-# `e2b==2.62.0` (`pip-compile --generate-hashes`, Python 3.13).
+# `e2b==2.62.0` (`pip-compile --generate-hashes`, Python 3.13). This file is in the
+# image's tag (image.ts): another SDK is a new image, a paid build.
 anyio==4.16.0 \
     --hash=sha256:59bb03251907983d1603d27c3087ddb1e93299ea2163adcdba37899a4fb12ffb \
     --hash=sha256:c66ae634e0b8228396b801741beb3294326d4b6102f7bba4041c0dfb58c29026
@@ -26,7 +27,6 @@ connectrpc==0.12.1 \
 e2b==2.62.0 \
     --hash=sha256:480c447f26c8a3bd6340eef9f3cdbcf78764fddff574aa3270db84e3891ee6a9 \
     --hash=sha256:8773c829f2537c7543fbcc83610f5b7f295f5db1e02805d92036186880585158
-    # via -r /home/user/ta-work/dg_req.in
 e2b-dockerfile-utils==0.1.1 \
     --hash=sha256:c1d4179bae6f3131fe0bbb1e6787ffb07c6c6dca8bdb3399abb3de9056b2a08f \
     --hash=sha256:c648ecf56b3ffdb6d91469580850f4691f019cb2c925405e776ad36b761204f1

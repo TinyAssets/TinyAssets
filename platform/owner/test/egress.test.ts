@@ -1245,7 +1245,7 @@ describe("the owner's erasure", () => {
     const prepared = await stub.connectionPrepare(session, {
       source: "anthropic", kind: "api_key", display_name: "Key", provider: "anthropic",
       revocable: false });
-    const sealed = await env.GATEWAY.seal(owner, prepared.connection, 1, "sk-good", ANTHROPIC);
+    const sealed = await env.CONNECT.seal(owner, prepared.connection, 1, "sk-good", ANTHROPIC);
     await stub.connectionCommit(session, {
       connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid,
       models: await catalog(ANTHROPIC), egress: await scopeOf(ANTHROPIC) });

@@ -28,7 +28,7 @@ import { incoming, inboxDoc, INSTALL, LEASE_FILE, type LeaseFile, LOADER, RUNNER
          type SigninDoc, type StartDoc } from "../protocol";
 import { DIRS, EGRESS_CA, GROUPS, NODE, USERS } from "./layout";
 
-export { POOL_UIDS, SYNC_UID, TA_GID } from "./layout";
+export { POOL_GIDS, POOL_UIDS, SYNC_UID, TA_GID } from "./layout";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SANDBOX = join(HERE, "..", "..");
@@ -838,7 +838,7 @@ export class Sandbox extends Box {
   start(start: StartDoc, authority = "owner"): void {
     writeFileSync(this.path(inboxDoc(start.run)), JSON.stringify(start));
     const lease: LeaseFile = { lease: start.lease, authority,
-      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } };
+      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token" } };
     writeFileSync(this.path(LEASE_FILE), JSON.stringify(lease));
   }
 
@@ -853,7 +853,7 @@ export class Sandbox extends Box {
     writeFileSync(this.path(inboxDoc(doc.id)), JSON.stringify(signin));
     const lease: LeaseFile = { lease: { lease_id: "b".repeat(32), epoch: 1 },
       authority: doc.authority ?? "owner",
-      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } };
+      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token" } };
     writeFileSync(this.path(LEASE_FILE), JSON.stringify(lease));
   }
 }

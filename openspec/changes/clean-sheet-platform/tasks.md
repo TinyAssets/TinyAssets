@@ -375,7 +375,7 @@ account and no deploy.
   `keyring.ts` (the only reader of the secret: AES-256-GCM under HKDF-SHA256(root[kid],
   owner), AAD owner, connection, version and kid; a blob under an older kid also comes back
   resealed at the next version), `envelope.ts` (`x-ta-envelope`, the owner grammar of
-  `owner/src/text.ts`), `messages.ts` and `encode.ts` (`POST /v1/messages` in pi-messages,
+  `contract/src/text.ts`), `messages.ts` and `encode.ts` (`POST /v1/messages` in pi-messages,
   pi-ai's built-in provider or a declared custom endpoint, the origin check, the clamp,
   `streamSimple` through an endpoint-guarding fetch that never follows a redirect, and the
   inverse of pi-ai's own client), `forward.ts` (raw egress and the setup check
@@ -836,7 +836,7 @@ account and no deploy.
   `SandboxLeases.open` as `deadline` for each run, at most `RUN_DEADLINE_S`, a day, which
   is also the default);
   256 random bits; and HMAC-SHA-256 under the routing key over the token's kind, owner,
-  expiry and secret (`doors/src/routing-mac.ts`, the one module both Workers use). Past
+  expiry and secret (`contract/src/routing-mac.ts`, the one module both Workers use). Past
   its expiry the door refuses a token `egress_token_expired` without reaching any object. The routing key,
   `ROUTING_MAC_KEY`, is a Worker secret of the owner Worker (which mints) and the doors
   Worker (which verifies), 32 random bytes generated at deploy, declared in both configs
@@ -898,7 +898,7 @@ account and no deploy.
   `egress_aliased_key`; a call asking several choices (`n`, `candidateCount`)
   is refused `egress_multiple_choices`, and one enabling a server-side tool the provider
   bills beyond tokens (a web search, code execution, a hosted MCP connector, a plugin) is
-  refused `egress_unmetered_tool`, by each API's data (`gateway/src/api-rules.ts`). **Price
+  refused `egress_unmetered_tool`, by each API's data (`contract/src/api-rules.ts`). **Price
   beyond tokens**, per field, by whether pi-ai prices it: the Responses API's
   `service_tier`, which pi-ai prices from the answer, is reserved at the most pi-ai
   applies for its value (`priority` and `auto` ×2.5, `default` and `flex` ×1, any other
@@ -957,7 +957,8 @@ account and no deploy.
   door's outcome and bytes, and the charge `succeeded` at pi-ai's cost, `failed` (nothing
   sent, or the provider refused before any output) or `unknown` (a cut, an abort, an
   answer pi-ai cannot read), which keeps the whole charge; one never settled is `lost`
-  past six minutes, its charge `unknown`. Every stop (the object's end signal, the
+  three missed beats on (`LOST_AFTER_S`, 180 s), or past the day's deadline, its charge
+  `unknown`. Every stop (the object's end signal, the
   deadline, the client leaving) aborts the provider's request through a stop stream the
   gateway watches. **Ends**: a policy write, a suspension, the connection's revoke, the
   lease's close or a successor lease, and the erasure end the streams they cover (research
@@ -1778,7 +1779,7 @@ R, S, M and W.
     by matches, its worst case measured (`guards/search-cpu.test.ts`: 766 ms of CPU at
     5,000 matching 4 KiB files and a 1 MiB query) (M3); the rooms skill says how mail
     between agents is answered (M4); the OKF watcher opens, readies and labels with
-    `MERGE_ATTRIBUTION_TOKEN` as `main-red.yml` does (fails loudly without it), asks the
+    `MERGE_ATTRIBUTION_TOKEN`, a user token (fails loudly without it), asks the
     founder's login, quotes upstream text escaped inside a fence, checks it for hidden
     characters, and holds least permissions with pinned actions (M5, L6); a retired path's
     deletion is kept (L1), an unadopted proposal stays one (L2), a door that needs an agent
@@ -2122,7 +2123,7 @@ R, S, M and W.
 ## 7. Wakes and outside agents
 
 - [x] Alarms, doorbells for ChatGPT and Claude, the board with the W8 decisions. Built in
-  slice W and its review: wake kinds are data (`owner/wake-kinds.json`, `wake-kinds.ts`),
+  slice W and its review: wake kinds are data (`contract/wake-kinds.json`, `wake-kinds.ts`),
   each record citing its vendor's page and limits: ChatGPT MCP Events (the client
   subscribes; Standard Webhooks), Claude `/fire` and Grok webhook routines (the owner
   pastes the vendor's URL and token in its session, the owner app's `agent/doorbell`;
@@ -2402,8 +2403,8 @@ R, S, M and W.
     another Worker's or holds an address record, which wrangler's deploy would replace. That
     listing takes DNS Read or DNS Write, and the handback's cleanup takes DNS Write. The
     token is recorded with DNS Edit, and a run has shown it reading DNS, so nothing new is
-    owed (the checklist says how to check). Mode
-    `handback --record <id>` first holds the zone to the record and stops, naming it, on any
+    owed (the checklist says how to check). `--mode handback --record <id>` first holds
+    the zone to the record and stops, naming it, on any
     route changed since `routes`. Then it undoes `routes` in reverse: the hook disabled, the
     custom domain detached (each unless the record has it so before), then the zone's routes
     as the record has them, and last the DNS record the attach made, deleted if the detach
@@ -2494,7 +2495,7 @@ R, S, M and W.
   1. **Record.** Mode `routes` keeps its route record before any change. Its job summary
      names the record's id, which is the run's.
   2. **`routes`.** The same run hands the doors' routes over.
-  3. **Verify.** First the handback's plan job (`handback --record <id>`, read-only) shows
+  3. **Verify.** First the handback's plan job (`--mode handback --record <id>`, read-only) shows
      what a handback would change. The `routes` run's own canary has run the new side's
      unkeyed checks (`--side new --unkeyed`: the doors answer `/mcp` and its resource
      document), and owes the handle set. So, in this order:
@@ -2508,7 +2509,7 @@ R, S, M and W.
      - dispatch `handles-canary.yml` with `side` `new`, verify's handle-set check;
      - then every imported owner's check.
   4. **The handback, if verify fails,** at any point before the hold ends, in this order:
-     - `handback --record <id>`. Before any change, it holds the zone to the record and
+     - `--mode handback --record <id>`. Before any change, it holds the zone to the record and
        stops, naming any route changed since `routes`. Then it disables the lifecycle webhook
        and detaches the egress domain, each as the record has it before. It puts the zone's
        routes back as recorded, so the doors' patterns go back to `tinyassets-mcp-proxy`,
@@ -2584,9 +2585,16 @@ R, S, M and W.
   quarantined or rewritten to pass. A test that also reaches kept code keeps its cases
   for that code. A listed structural guard (`scripts/ci_structural_guards.py` `GUARDS`)
   is deleted only once this line names the platform guard that replaces it, or the
-  recorded decision that retires its principle. Until then, each runs whenever a Python change could reach it, and never
-  for a `platform/` or prose change it cannot read (the merge gate's tree selection,
-  `affected_tests.provable_shape`).
+  recorded decision that retires its principle. Until then, each runs when the run's
+  selection holds its test file: for every change to the old stack, and for a change to a
+  tree it reads (the merge gate's tree selection, `affected_tests.provable_shape`).
+  The same change deletes the old stack's jobs from `tests.yml` (`select`,
+  `structural-guards`, `required-tests-shard`, `affected-tests`, `heavy-tests`,
+  `slow-tests`) and the steps of `required-tests` that read them. `required-tests` keeps
+  its name and its lasting needs: `platform-tests`, `platform-sizes`, `platform-app` and
+  `process`. `slow-tests` is a required context of its own, so it leaves the ruleset and the
+  branch protection first (the founder, in the window), or every later pull request waits
+  on a check that never reports.
 
 - [ ] **The founder's and the canary's owners start fresh** (the founder's ruling, 2026-11-04):
   the founder's main account and every canary owner account begin on the new platform with

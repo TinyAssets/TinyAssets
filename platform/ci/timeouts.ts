@@ -19,10 +19,6 @@ const HOOKS = new Set(["beforeAll", "beforeEach", "afterAll", "afterEach"]);
 export interface TimeoutLiteral {
   readonly line: number;
   readonly text: string;
-  /** The call's own text span, for a fixer. */
-  readonly call: ts.CallExpression | null;
-  /** The argument or property that sets the timeout. */
-  readonly node: ts.Node;
 }
 
 /**
@@ -60,16 +56,16 @@ function isTimeoutKey(name: ts.PropertyName | undefined): boolean {
 export function timeoutLiterals(source: string, file = "test.ts"): TimeoutLiteral[] {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const found: TimeoutLiteral[] = [];
-  const at = (call: ts.CallExpression | null, node: ts.Node) => {
+  const at = (node: ts.Node) => {
     found.push({ line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
-                 text: node.getText(sf), call, node });
+                 text: node.getText(sf) });
   };
   const visit = (node: ts.Node): void => {
     if ((ts.isVariableDeclaration(node) || ts.isBinaryExpression(node))) {
       const value = ts.isVariableDeclaration(node) ? node.initializer : node.right;
       if (value && (ts.isIdentifier(value) || ts.isPropertyAccessExpression(value))
           && HOOKS.has(rootName(value) ?? "")) {
-        at(null, node);
+        at(node);
       }
     }
     if (ts.isCallExpression(node)) {
@@ -77,26 +73,26 @@ export function timeoutLiterals(source: string, file = "test.ts"): TimeoutLitera
       if (ts.isPropertyAccessExpression(callee) && callee.name.text === "setConfig"
           && ts.isIdentifier(callee.expression)
           && ["vi", "vitest"].includes(callee.expression.text)) {
-        at(node, node);
+        at(node);
       }
       const name = rootName(callee);
       const args = node.arguments;
       if (name !== null && HOOKS.has(name) && args.length > 1) {
-        at(node, args[args.length - 1]!);
+        at(args[args.length - 1]!);
       }
       if (name !== null && TESTS.has(name)) {
         const fn = args.findIndex(isFunction);
         const last = args[args.length - 1];
         if (fn !== -1 && fn < args.length - 1) {
-          at(node, last!);
+          at(last!);
         } else if (args.length > 2 && last !== undefined && ts.isNumericLiteral(last)) {
-          at(node, last);
+          at(last);
         }
         for (const arg of args) {
           if (ts.isObjectLiteralExpression(arg)) {
             for (const prop of arg.properties) {
               if (isTimeoutKey(prop.name)) {
-                at(node, prop);
+                at(prop);
               }
             }
           }

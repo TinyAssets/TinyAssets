@@ -29,7 +29,7 @@ The research and reviews (`memory_research.md`, `memshape_research.md`, `rpcreta
 
 1. **The rule.** What an isolate holds live is a sum of counts the code enforces times costs the code constructs. Nothing is estimated at run time.
    - Large data moves as streams or 4 MiB chunks (`UNIT_BYTES`, the files plane's chunk).
-   - A path takes units of its isolate's one pool (`owner/src/slots.ts`) only while its bytes are in hand: a step's units are taken before the bytes it brings arrive, held while it sends them, and released once they are gone. No step holds units across another step, the begin or commit of a write, or any wait that holds none of its bytes. A chunk-wise edit takes and releases them per chunk read and per chunk made and put.
+   - A path takes units of its isolate's one pool (`contract/src/slots.ts`) only while its bytes are in hand: a step's units are taken before the bytes it brings arrive, held while it sends them, and released once they are gone. No step holds units across another step, the begin or commit of a write, or any wait that holds none of its bytes. A chunk-wise edit takes and releases them per chunk read and per chunk made and put.
    - A hold is weighted by what it holds, in units: a body window one, an edit's making step, an append, a whole body's read each its declared cost (`owner/src/holds.ts`).
    - A pool counts units, never bytes. Its capacity, its reserve and its waiters are its Worker's own figures.
    - Units not free are waited for, first come first served within a hold's size class, for up to `SLOT_WAIT_MS`, with a bounded number waiting in each class. Past either the call is refused `busy` before it changes anything; the doors answer `503` with `Retry-After: 1`.

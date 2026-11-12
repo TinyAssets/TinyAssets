@@ -7,6 +7,8 @@
  * state: each call reads the import afresh (`SandboxControl` keeps its digest once an
  * instance).
  */
+import { sha256Hex } from "../../contract/src/digest";
+
 import bundle from "../dist/runner.mjs";
 
 /** The runner's bytes, a copy of their own: nothing a caller does reaches the import. */
@@ -15,7 +17,6 @@ export function runnerBytes(): Uint8Array {
 }
 
 /** The runner's SHA-256, lower-case hex: the name the sandbox's loader runs it by. */
-export async function runnerDigest(): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", bundle);
-  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+export function runnerDigest(): string {
+  return sha256Hex(new Uint8Array(bundle));
 }

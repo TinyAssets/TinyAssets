@@ -19,7 +19,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/migrate";
-import { backoff, CODES, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
 import { INCOMING, PROTOCOL, SPEAKS } from "../runner/protocol";
 import { runnerBytes, runnerDigest } from "../src/runner-bytes";
 import { CONTROL_MIGRATIONS, SLOTS_MIGRATIONS } from "../src/schema";
@@ -71,6 +70,8 @@ async function rung(owner: string): Promise<void> {
 const hex = (n: number, c = "a") => c.repeat(n);
 const RUN = `run_${hex(32, "1")}`;
 const LEASE = { lease_id: hex(32, "b"), epoch: 1 };
+/** The lease's egress token, a marker: E2B's transform alone carries it, never the VM. */
+const EGRESS_TOKEN = "egress-token-0f1e2d3c4b5a";
 const NETWORK = {
   network: { allowOut: ["github.com", "egress.tinyassets.io"], denyOut: ["0.0.0.0/0"],
              dnsServers: ["1.1.1.1"],
@@ -84,7 +85,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
     credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
     unattended: false, authority: "owner", lease: LEASE, route: "r".repeat(64),
-    tokens: { egress_token: "egress", sync_token: "sync", runner_token: hex(64, "d") },
+    tokens: { egress_token: EGRESS_TOKEN, sync_token: "sync", runner_token: hex(64, "d") },
     network: NETWORK as never,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
               env: { HOME: "{home}" }, inherit: ["PATH"] },
@@ -111,8 +112,13 @@ const alarmOf = (who: string) => runInDurableObject(stub(who), (_instance, state
  * (`e2b-resume-measurement.md`), doubling after, and never longer than a lease's TTL
  * (a run the owner has not heard from in `LEASE_TTL_S` is settled lost).
  */
-const RETRY_SCHEDULE_MS = [480, 960, 1_920, 3_840] as const;
-const RETRY_CEILING_MS = 60_000;
+const RETRY_SCHEDULE_MS = [480, 960, 1_920, 3_840, 7_680, 15_360, 30_720, 60_000, 60_000] as const;
+
+/**
+ * The renewal's edge as the design states it: the runner's `renewing` (252 ms) and then the
+ * longest pause (705 ms), both measured (`sandbox-probe.md`, `e2b-resume-measurement.md`).
+ */
+const RENEW_EDGE_MS = 252 + 705;
 
 /**
  * What `act` armed, against the delay the code means: an alarm `delay` on from the moment
@@ -153,8 +159,9 @@ describe("a start", () => {
     // The plan's runtime ceiling as its timeout; the template the config names.
     expect(box.timeout).toBe(CEILING);
     expect(box.template).toBe(env.E2B_TEMPLATE);
-    expect(box.metadata["ta_sandbox"]).toMatch(/^[0-9a-f]{32}$/);
-    expect(box.metadata["ta_owner"]).toBe(await ownerTag(who));
+    // One opaque name, the owner's tag, beside the sealed route.
+    expect(Object.keys(box.metadata).sort()).toEqual(["ta_owner", "ta_route"]);
+    expect(box.metadata["ta_owner"]).toMatch(/^[0-9a-f]{32}$/);
     expect(JSON.stringify(box.metadata)).not.toContain(who);
     // A signed-in engine's vendor hosts are let out, the egress door kept last.
     expect(box.network.allowOut.at(-1)).toBe("egress.tinyassets.io");
@@ -175,8 +182,11 @@ describe("a start", () => {
       .toBe(`sha256:${digest} bytes:${runnerBytes().byteLength}`);
     expect(state.commands.every((command) => command.user === "root")).toBe(true);
     // The lease's secrets in the root-only state directory; the start document without them.
-    const lease = JSON.parse(state.files[`${box.id}:/var/lib/ta/lease.json`]!);
-    expect(lease.tokens.runner_token).toBe(hex(64, "d"));
+    // Only the two tokens the runner reads: the egress token never enters the VM.
+    const leaseFile = state.files[`${box.id}:/var/lib/ta/lease.json`]!;
+    const lease = JSON.parse(leaseFile);
+    expect(lease.tokens).toEqual({ runner_token: hex(64, "d"), sync_token: "sync" });
+    expect(leaseFile).not.toContain(EGRESS_TOKEN);
     const doc = state.files[`${box.id}:/var/lib/ta/inbox/${RUN}.json`]!;
     expect(doc).not.toContain(hex(64, "d"));
     expect(JSON.parse(doc)).not.toHaveProperty("tokens");
@@ -202,7 +212,7 @@ describe("a start", () => {
 
   it("answers signin_required, and launches nothing, where no login is in that sandbox", async () => {
     const who = owner();
-    expect(await stub(who).start(who, start())).toEqual({ started: false, code: CODES.signin });
+    expect(await stub(who).start(who, start())).toEqual({ started: false, code: "signin_required" });
     const state = await seen();
     expect(state.commands.map((command) => command.argv[1]))
       .toEqual(["install", "prepare", "signin-check"]);
@@ -257,7 +267,7 @@ describe("a start", () => {
     ["a start refused at its sign-in", async (who: string) => {
       expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, tokens: null,
                                                network: null })))
-        .toEqual({ started: false, code: CODES.signin });
+        .toEqual({ started: false, code: "signin_required" });
     }],
     ["a renewal look", async (who: string) => {
       await e2b("/age", { id: (await seen()).sandboxes[0]!.id, s: CEILING - WINDOW + 5 });
@@ -303,7 +313,7 @@ describe("a start", () => {
   it("answers sandbox_lost when a joining run finds no sandbox to run in", async () => {
     const who = owner();
     expect(await stub(who).start(who, start({ tokens: null, network: null })))
-      .toEqual({ started: false, code: CODES.lost });
+      .toEqual({ started: false, code: "sandbox_lost" });
     expect((await seen()).sandboxes).toHaveLength(0);
   });
 
@@ -311,10 +321,10 @@ describe("a start", () => {
     await control(OPEN);
     const who = owner();
     expect(await stub(who).start(who, start())).toEqual({ started: false,
-                                                          code: CODES.unconfigured });
+                                                          code: "sandbox_unconfigured" });
     await control(null);
     expect(await stub(who).start(who, start())).toEqual({ started: false,
-                                                          code: CODES.unconfigured });
+                                                          code: "sandbox_unconfigured" });
     expect((await seen()).calls).toEqual([]);
   });
 
@@ -326,7 +336,7 @@ describe("a start", () => {
     await control(OPEN);
     expect(await stub(who).start(who, start({ run: `run_${hex(32, "4")}`, credential: "api_key",
                                              tokens: null, network: null })))
-      .toEqual({ started: false, code: CODES.unconfigured });
+      .toEqual({ started: false, code: "sandbox_unconfigured" });
   });
 
   it("starts on the last numbers read when the record cannot be read", async () => {
@@ -342,7 +352,7 @@ describe("a start", () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
     const who = owner();
     await stub(who).start(who, start());
-    expect(await stub(who).release(who, { lease_id: LEASE.lease_id })).toEqual({ paused: true });
+    expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: true });
     expect((await seen()).sandboxes[0]!.state).toBe("paused");
     const next = { lease_id: hex(32, "f"), epoch: 2 };
     expect(await stub(who).start(who, start({ run: `run_${hex(32, "3")}`, lease: next })))
@@ -363,7 +373,7 @@ describe("a start", () => {
                            pauseMode: "filesystem" });
     const who = owner();
     await stub(who).start(who, start());
-    await stub(who).release(who, { lease_id: LEASE.lease_id });
+    await stub(who).release({ lease_id: LEASE.lease_id });
     await stub(who).start(who, start({ run: `run_${hex(32, "3")}`,
                                        lease: { lease_id: hex(32, "f"), epoch: 2 } }));
     expect((await seen()).commands.map((command) => command.argv[1]))
@@ -376,7 +386,7 @@ describe("the platform's line", () => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 3 });
     await e2b("/script", { others: 3 });
     const who = owner();
-    expect(await stub(who).start(who, start())).toEqual({ started: false, code: CODES.waiting });
+    expect(await stub(who).start(who, start())).toEqual({ started: false, code: "sandbox_waiting" });
     expect((await seen()).sandboxes).toHaveLength(0);
     expect(await line()).toEqual([who]);
     // Raised in the record, no deploy: the same start goes, and leaves the line.
@@ -389,7 +399,7 @@ describe("the platform's line", () => {
   it("makes a run wait when E2B itself refuses for room", async () => {
     await e2b("/script", { full: true });
     const who = owner();
-    expect(await stub(who).start(who, start())).toEqual({ started: false, code: CODES.waiting });
+    expect(await stub(who).start(who, start())).toEqual({ started: false, code: "sandbox_waiting" });
     expect(await line()).toEqual([who]);
   });
 
@@ -401,7 +411,7 @@ describe("the platform's line", () => {
     await e2b("/script", { full: true });
     const other = owner();
     expect(await stub(other).start(other, start())).toEqual({ started: false,
-                                                              code: CODES.waiting });
+                                                              code: "sandbox_waiting" });
   });
 
   it("keeps the order: a newcomer waits behind an owner that waited longer, whatever the room",
@@ -413,7 +423,7 @@ describe("the platform's line", () => {
     await e2b("/script", { full: false });
     // Room now, but the first in line has not had its turn.
     expect(await stub(second).start(second, start())).toEqual({ started: false,
-                                                                code: CODES.waiting });
+                                                                code: "sandbox_waiting" });
     expect(await line()).toEqual([first, second]);
     expect(await stub(first).start(first, start())).toEqual({ started: true });
     // The first took its sandbox and left; the next is rung.
@@ -431,7 +441,7 @@ describe("the platform's line", () => {
     const waiter = owner();
     await stub(waiter).start(waiter, start());
     expect((await seen()).rings).toEqual([]);
-    expect(await stub(holder).release(holder, { lease_id: LEASE.lease_id }))
+    expect(await stub(holder).release({ lease_id: LEASE.lease_id }))
       .toEqual({ paused: true });
     await rung(waiter);
   });
@@ -470,12 +480,12 @@ describe("cancel, status and release", () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const who = owner();
     await stub(who).start(who, start());
-    expect(await stub(who).cancel(who, { run: RUN, lease_id: LEASE.lease_id }))
+    expect(await stub(who).cancel({ run: RUN, lease_id: LEASE.lease_id }))
       .toEqual({ cancelled: true });
     expect((await seen()).commands.at(-1)!.argv.slice(1)).toEqual(["cancel", RUN]);
-    expect(await stub(who).status(who, { run: RUN, lease_id: LEASE.lease_id }))
+    expect(await stub(who).status({ run: RUN, lease_id: LEASE.lease_id }))
       .toEqual({ state: "running" });
-    expect(await stub(who).status(who, { run: `run_${hex(32, "9")}`, lease_id: LEASE.lease_id }))
+    expect(await stub(who).status({ run: `run_${hex(32, "9")}`, lease_id: LEASE.lease_id }))
       .toEqual({ state: "gone" });
   });
 
@@ -484,12 +494,12 @@ describe("cancel, status and release", () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     const who = owner();
     await stub(who).start(who, start());
-    expect(await stub(who).release(who, { lease_id: LEASE.lease_id })).toEqual({ paused: false });
-    expect(await stub(who).release(who, { lease_id: hex(32, "0") })).toEqual({ paused: false });
+    expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: false });
+    expect(await stub(who).release({ lease_id: hex(32, "0") })).toEqual({ paused: false });
     await e2b("/script", { state: { live: 0, quiet: true } });
     const second = { lease_id: hex(32, "e"), epoch: 2 };
     await stub(who).start(who, start({ run: `run_${hex(32, "6")}`, lease: second }));
-    expect(await stub(who).release(who, { lease_id: second.lease_id })).toEqual({ paused: true });
+    expect(await stub(who).release({ lease_id: second.lease_id })).toEqual({ paused: true });
     const pauses = (await seen()).calls.filter((call) => call.path.endsWith("/pause"));
     expect(pauses).toHaveLength(1);
     expect(pauses[0]!.body).toEqual({ memory: true });
@@ -520,7 +530,7 @@ describe("cancel, status and release", () => {
                            busy: 1 });
     const who = owner();
     await stub(who).start(who, start());
-    expect(await stub(who).release(who, { lease_id: LEASE.lease_id })).toEqual({ paused: false });
+    expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: false });
     // The look comes back at once, not at the renewal window (or the runtime ran it already).
     const at = await alarmOf(who);
     expect(at === null || at < Date.now() + 5_000).toBe(true);
@@ -585,16 +595,24 @@ describe("the look before the runtime ceiling", () => {
     const box = (await seen()).sandboxes.find((each) => each.id === id)!;
     expect(Number(look.argv[2])).toBeLessThanOrEqual(Date.now() + WINDOW * 1000);
     expect(box.state).toBe("running");
-    expect(await stub(who).status(who, { run: RUN, lease_id: LEASE.lease_id }))
+    expect(await stub(who).status({ run: RUN, lease_id: LEASE.lease_id }))
       .toEqual({ state: "running" });
   });
 
   it("is forced at the ceiling's edge, quiet or not", async () => {
-    const { calls, commands } = await aged(CEILING - RENEW_EDGE_MS / 1000 + 0.5,
+    // 200 ms inside the edge: renewed, however the look's own calls take.
+    const { calls, commands } = await aged(CEILING - (RENEW_EDGE_MS - 200) / 1000,
                                            { live: 1, quiet: false });
     expect(calls.filter((call) => call.path.endsWith("/pause"))).toHaveLength(1);
     expect(calls.filter((call) => call.path.endsWith("/connect"))).toHaveLength(1);
     expect(commands.at(-1)).toBe("renewed");
+  });
+
+  it("is not forced before the edge, while the CLIs are busy", async () => {
+    const { calls, box } = await aged(CEILING - (RENEW_EDGE_MS + 2_000) / 1000,
+                                      { live: 1, quiet: false });
+    expect(calls.filter((call) => call.path.endsWith("/pause"))).toEqual([]);
+    expect(box.state).toBe("running");
   });
 
   it("pauses a sandbox with no live run instead, and rings the line", async () => {
@@ -669,7 +687,7 @@ describe("the look before the runtime ceiling", () => {
     await e2b("/script", { others: 1000 });
     const waiter = owner();
     expect(await stub(waiter).start(waiter, start())).toEqual({ started: false,
-                                                               code: CODES.waiting });
+                                                               code: "sandbox_waiting" });
     await runDurableObjectAlarm(stub(who));
     const state = await seen();
     expect(state.sandboxes.find((box) => box.id === id)!.state).toBe("running");
@@ -704,13 +722,10 @@ describe("the look before the runtime ceiling", () => {
     await e2b("/age", { id, s: CEILING + 5 });  // past its edge: E2B's own timeout's now
     await e2b("/script", { down: 1_000_000 });
     // Each try arms the next at the schedule's wait, read against the clock around the
-    // alarm, never time passed since; the code's own back-off is held to the same schedule.
-    for (const [index, wait] of RETRY_SCHEDULE_MS.entries()) {
-      expect(backoff(index + 1)).toBe(wait);
+    // alarm, never time passed since.
+    for (const wait of RETRY_SCHEDULE_MS) {
       await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who), wait);
     }
-    expect(backoff(8)).toBe(RETRY_CEILING_MS);
-    expect(backoff(1_000)).toBe(RETRY_CEILING_MS);
     await e2b("/script", { down: 0 });
   });
 
@@ -723,13 +738,10 @@ describe("the look before the runtime ceiling", () => {
     await e2b("/pause", { id });
     await e2b("/script", { refuseResume: true });
     // Each try arms the next at the schedule's wait, read against the clock around the
-    // alarm, never time passed since; the code's own back-off is held to the same schedule.
-    for (const [index, wait] of RETRY_SCHEDULE_MS.entries()) {
-      expect(backoff(index + 1)).toBe(wait);
+    // alarm, never time passed since.
+    for (const wait of RETRY_SCHEDULE_MS) {
       await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who), wait);
     }
-    expect(backoff(8)).toBe(RETRY_CEILING_MS);
-    expect(backoff(1_000)).toBe(RETRY_CEILING_MS);
     await e2b("/script", { refuseResume: false });
     await runDurableObjectAlarm(stub(who));
     expect((await seen()).sandboxes[0]!.state).toBe("running");
@@ -753,7 +765,7 @@ describe("the look before the runtime ceiling", () => {
                                                 && call.method === "POST").length;
     const waiter = owner();
     expect(await stub(waiter).start(waiter, start())).toEqual({ started: false,
-                                                               code: CODES.waiting });
+                                                               code: "sandbox_waiting" });
     expect((await seen()).calls.filter((call) => call.path === "/v2/sandboxes"
                                        && call.method === "POST")).toHaveLength(creates);
     // The resume goes: the slot is given back and the line rung.
@@ -768,7 +780,7 @@ describe("the look before the runtime ceiling", () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
     const who = owner();
     await stub(who).start(who, start());
-    await stub(who).release(who, { lease_id: LEASE.lease_id });
+    await stub(who).release({ lease_id: LEASE.lease_id });
     expect(await alarmOf(who)).toBeNull();
   });
 });
@@ -780,17 +792,17 @@ describe("the meter's log (slice P)", () => {
     const who = owner();
     const before = Date.now();
     await stub(who).start(who, start());
-    await stub(who).release(who, { lease_id: LEASE.lease_id });
+    await stub(who).release({ lease_id: LEASE.lease_id });
     await stub(who).start(who, start({ run: `run_${hex(32, "3")}`,
                                        lease: { lease_id: hex(32, "f"), epoch: 2 } }));
-    const read = await stub(who).meter(who, { after: 0 });
+    const read = await stub(who).meter({ after: 0 });
     expect(read.events.map((event) => [event.authority, event.kind]))
       .toEqual([["owner", "start"], ["owner", "pause"], ["owner", "resume"]]);
     expect(read.events.every((event) => event.at >= before && event.at <= Date.now()))
       .toBe(true);
     expect(read.next).toBe(read.events.at(-1)!.seq);
     // Read past: dropped, and nothing new.
-    expect(await stub(who).meter(who, { after: read.next }))
+    expect(await stub(who).meter({ after: read.next }))
       .toEqual({ events: [], next: read.next });
   });
 });
@@ -820,7 +832,7 @@ describe("the runner, by digest", () => {
     const who = owner();
     await stub(who).start(who, start());
     const id = (await seen()).sandboxes[0]!.id;
-    await stub(who).release(who, { lease_id: LEASE.lease_id });
+    await stub(who).release({ lease_id: LEASE.lease_id });
     const before = await seen();
     expect(before.sandboxes[0]!.state).toBe("paused");
     await stub(who).start(who, start({ run: `run_${hex(32, "2")}` }));
@@ -839,7 +851,7 @@ describe("the runner, by digest", () => {
     const id = (await seen()).sandboxes[0]!.id;
     await e2b("/runners", { id, runners: [] });
     const before = (await seen()).commands.length;
-    expect(await stub(who).cancel(who, { run: RUN, lease_id: LEASE.lease_id }))
+    expect(await stub(who).cancel({ run: RUN, lease_id: LEASE.lease_id }))
       .toEqual({ cancelled: true });
     expect((await seen()).commands.slice(before).map((command) => command.argv[1]))
       .toEqual(["cancel", "install", "cancel"]);
@@ -957,7 +969,7 @@ describe("the runner, by digest", () => {
     const old = "0".repeat(64);
     await bornUnder(who, old);
     await e2b("/script", { state: { live: 0, quiet: true } });
-    await stub(who).release(who, { lease_id: LEASE.lease_id });
+    await stub(who).release({ lease_id: LEASE.lease_id });
     expect((await seen()).sandboxes[0]!.state).toBe("paused");
     const before = (await seen()).commands.length;
     await stub(who).start(who, start({ run: `run_${hex(32, "3")}` }));
@@ -1041,8 +1053,11 @@ describe("a sign-in", () => {
     const doc = JSON.parse(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.json`]!);
     expect(doc).toEqual({ id: SI, engine: "kimi", region: "global", mode: "in",
                           authority: "owner", urls: signin().urls });
-    expect(JSON.parse(state.files[`${box.id}:/var/lib/ta/lease.json`]!).tokens.runner_token)
-      .toBe("d".repeat(64));
+    // A sign-in's start that opens the lease hands the runner the same two tokens, no more.
+    const leaseFile = state.files[`${box.id}:/var/lib/ta/lease.json`]!;
+    expect(JSON.parse(leaseFile).tokens).toEqual({ runner_token: "d".repeat(64),
+                                                   sync_token: "sync" });
+    expect(leaseFile).not.toContain(EGRESS_TOKEN);
     // A sign-in in progress keeps the sandbox leased: its look is the idle one, not a reap.
     expect(await alarmOf(who)).not.toBeNull();
   });
@@ -1050,17 +1065,17 @@ describe("a sign-in", () => {
   it("hands a pasted code to the live sign-in, and stops it", async () => {
     const who = owner();
     await stub(who).signin(who, signin({ engine: "claude-code", region: null }) as never);
-    expect(await stub(who).signinInput(who, { authority: "owner", id: SI, code: "abc#d" }))
+    expect(await stub(who).signinInput({ authority: "owner", id: SI, code: "abc#d" }))
       .toEqual({ delivered: true });
     const state = await seen();
     const box = state.sandboxes[0]!;
     expect(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.code`]).toBe("abc#d");
     expect(state.commands.at(-1)!.argv.slice(1)).toEqual(["login-input", SI]);
-    expect(await stub(who).signinCancel(who, { authority: "owner", id: SI }))
+    expect(await stub(who).signinCancel({ authority: "owner", id: SI }))
       .toEqual({ cancelled: true });
     expect((await seen()).commands.at(-1)!.argv.slice(1)).toEqual(["login-cancel", SI]);
     // No sandbox running in a client's name: nothing to hand a code to.
-    expect(await stub(who).signinInput(who, { authority: "c".repeat(64), id: SI, code: "x" }))
+    expect(await stub(who).signinInput({ authority: "c".repeat(64), id: SI, code: "x" }))
       .toEqual({ delivered: false });
   });
 
@@ -1069,7 +1084,7 @@ describe("a sign-in", () => {
     const who = owner();
     await stub(who).signin(who, signin({ engine: "claude-code", region: null }) as never);
     await e2b("/script", { broken: "login-input" });
-    const failed = await stub(who).signinInput(who, { authority: "owner", id: SI, code: "abc#d" })
+    const failed = await stub(who).signinInput({ authority: "owner", id: SI, code: "abc#d" })
       .then(() => null, (error: unknown) => error);
     expect(failed).toBeInstanceOf(Error);
     expect((await seen()).commands.slice(-2).map((command) => command.argv.slice(1)))
@@ -1080,7 +1095,7 @@ describe("a sign-in", () => {
     await e2b("/script", { full: true });
     const who = owner();
     expect(await stub(who).signin(who, signin() as never)).toEqual({ started: false,
-                                                                     code: CODES.waiting });
+                                                                     code: "sandbox_waiting" });
     expect(await line()).toEqual([who]);
   });
 
@@ -1107,8 +1122,11 @@ describe("an erasure", () => {
     const client = hex(64, "c");
     await stub(who).start(who, start({ run: `run_${hex(32, "7")}`, authority: client,
                                        lease: { lease_id: hex(32, "7"), epoch: 1 } }));
-    await stub(who).release(who, { lease_id: LEASE.lease_id });
-    const stray = await e2b("/stray", { metadata: { ta_owner: await ownerTag(who) } });
+    await stub(who).release({ lease_id: LEASE.lease_id });
+    // Both authorities' sandboxes carry the owner's one tag, and a stray under it is theirs.
+    const tags = new Set((await seen()).sandboxes.map((box) => box.metadata["ta_owner"]));
+    expect(tags.size).toBe(1);
+    const stray = await e2b("/stray", { metadata: { ta_owner: [...tags][0]! } });
     const other = owner();
     await stub(other).start(other, start());
     await e2b("/script", { full: true });
@@ -1152,12 +1170,42 @@ describe("the schema (S25)", () => {
 });
 
 describe("the network", () => {
-  it("is widened to vendor hosts only when it lists names, the egress door last", () => {
-    const base = NETWORK.network as never;
-    expect(widened(base, ["claude.ai", "github.com"])!.allowOut)
-      .toEqual(["claude.ai", "github.com", "egress.tinyassets.io"]);
-    expect(widened(base, ["github.com"])).toBeNull();
-    expect(widened({ ...NETWORK.network, allowOut: ["*", "egress.tinyassets.io"] } as never,
-                   ["claude.ai"])).toBeNull();
+  const updates = async () => (await seen()).calls
+    .filter((call) => call.method === "PUT" && call.path.endsWith("/network")).length;
+
+  it("is widened to vendor hosts only when it lists names, the egress door last", async () => {
+    await e2b("/script", { signin: { "claude-code": 0, gemini: 0 } });
+    const who = owner();
+    expect(await stub(who).start(who, start())).toEqual({ started: true });
+    const hosts = (await seen()).sandboxes[0]!.network.allowOut;
+    expect(hosts.at(-1)).toBe("egress.tinyassets.io");
+    expect(hosts).toEqual(expect.arrayContaining(["claude.ai", "github.com"]));
+    // A joining run whose vendor's hosts are listed already leaves the network as it is.
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, tokens: null,
+                                             network: null }))).toEqual({ started: true });
+    expect(await updates()).toBe(0);
+  });
+
+  it("is left as it is when it lets every name out", async () => {
+    await e2b("/script", { signin: { "claude-code": 0, gemini: 0 } });
+    const open = { ...NETWORK, network: { ...NETWORK.network,
+                                          allowOut: ["*", "egress.tinyassets.io"] } };
+    const who = owner();
+    expect(await stub(who).start(who, start({ network: open as never })))
+      .toEqual({ started: true });
+    expect((await seen()).sandboxes[0]!.network.allowOut)
+      .toEqual(["*", "egress.tinyassets.io"]);
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, engine: "gemini",
+                                             tokens: null, network: null })))
+      .toEqual({ started: true });
+    expect(await updates()).toBe(0);
+  });
+
+  it("hands prepare the network's own resolvers, and none it made up", async () => {
+    const who = owner();
+    const none = { ...NETWORK, network: { ...NETWORK.network, dnsServers: [] } };
+    await stub(who).start(who, start({ credential: "api_key", network: none as never }));
+    const prepare = (await seen()).commands.find((command) => command.argv[1] === "prepare")!;
+    expect(prepare.argv.slice(1)).toEqual(["prepare"]);
   });
 });

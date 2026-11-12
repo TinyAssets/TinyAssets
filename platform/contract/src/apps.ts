@@ -207,11 +207,6 @@ export function appList(): readonly App[] {
   return checkedApps().apps;
 }
 
-/** The app with `id`, or null. */
-export function appOf(id: string, apps: readonly App[] = appList()): App | null {
-  return apps.find((app) => app.id === id) ?? null;
-}
-
 /** The public connect page's place for an app: its current steps. */
 export function connectUrl(id: string): string {
   return `${checkedApps().page}#${id}`;

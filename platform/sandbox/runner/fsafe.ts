@@ -333,7 +333,7 @@ function* entries(dir: string, sorted: boolean): Generator<Buffer> {
  * A name's bytes as text a person reads: printable ASCII as itself (a backslash doubled),
  * every other byte `\xNN`.
  */
-export function escapedName(raw: Buffer): string {
+function escapedName(raw: Buffer): string {
   let out = "";
   for (const b of raw) {
     out += b === 92 ? "\\\\" : b >= 32 && b < 127 ? String.fromCharCode(b)

@@ -15,9 +15,8 @@ name: okf-watch
 # for the review every pull request needs; a change that could widen what agents do (hidden
 # text, `needs-founder`) stays a draft and the founder is told.
 #
-# The pull request is pushed, opened and readied with MERGE_ATTRIBUTION_TOKEN, a user token,
-# as main-red.yml opens its revert pull requests: events GITHUB_TOKEN causes start no
-# workflow, so its checks and enrolment would never run. The token is in scope only for the
+# The pull request is pushed, opened and readied with MERGE_ATTRIBUTION_TOKEN, a user token:
+# events GITHUB_TOKEN causes start no workflow, so its checks and enrolment would never run. The token is in scope only for the
 # steps that push or call `gh`. With the secret unset, the job fails loudly and nothing is
 # proposed (fail loudly, never fall back to GITHUB_TOKEN). That token is the founder's own
 # (ADR-004), so the founder is the pull request's author and is
