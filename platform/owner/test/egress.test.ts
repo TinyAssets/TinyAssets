@@ -16,7 +16,7 @@ import { verifyToken } from "../../contract/src/routing-mac";
 import type { Metering } from "../../contract/src/gateway";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
-import { EGRESS_BEAT_S, egressTokenOf } from "../../contract/src/egress";
+import { EGRESS_BEAT_S, egressTokenOf, generationOf } from "../../contract/src/egress";
 import {
   EGRESS_LIMITS, egressPrice,
   LOST_AFTER_S,
@@ -33,6 +33,7 @@ import {
 import { signedIn } from "./ledger-support";
 import { drainDue, failure, TIERS } from "./support";
 import { NETWORK_RETRY_S, type SandboxRun } from "../src/launch";
+import { LANE_CALL_MS } from "../src/schedule";
 import {
   defineAgent, hashed, ownerRun, recorder, runnerSandbox, secretOf,
 } from "./runs-support";
@@ -1593,8 +1594,8 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
                                  lease: { lease_id: lease.lease_id, epoch: lease.epoch },
                                  network: { generation: 2, mode: "allowlist" } });
     // Its plan sets the new generation and no egress token: the Worker keeps the live one.
-    expect(sent!.network.network.rules).toEqual({ "egress.tinyassets.io": [
-      { transform: { headers: { "x-ta-network-generation": "2" } } }] });
+    expect([generationOf(sent!.network.network), egressTokenOf(sent!.network.network)])
+      .toEqual([2, null]);
     const call = during() as EgressOpened | EgressRefusal | null;
     expect(call === null || call.ok || call.code).toBe(true);  // its code, were it refused
     expect(call).toMatchObject({ ok: true, generation: 2 });
@@ -1637,6 +1638,10 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
                                            tried: 0 }]);
     expect(await r.stub.egressOpen(lease.as(3), request(connection)))
       .toMatchObject({ ok: true, generation: 3 });
+  });
+
+  it("never sends a re-apply again while one is out: its retry outlasts a call's bound", () => {
+    expect(NETWORK_RETRY_S * 1000).toBeGreaterThan(LANE_CALL_MS);
   });
 
   it("is kept out for a paused sandbox, applied as it resumes, and sent again until it " +

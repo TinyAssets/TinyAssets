@@ -55,9 +55,11 @@ import type { CredentialKind, NetworkPlan } from "../../contract/src/sandbox";
 
 /**
  * How long a live lease's re-apply waits before the lane sends it again, after it was sent
- * with no answer yet, failed, or was kept for its paused sandbox: long enough that a lane
- * pass does not loop on a sandbox Worker that keeps failing, short enough that a model call
- * refused for a stale network is answered within a minute of the Worker taking it again.
+ * with no answer yet, failed, or was kept for its paused sandbox: longer than a call's bound
+ * (`LANE_CALL_MS`), so it is never sent again while a send is out (a test holds the two
+ * apart), and a lane pass does not loop on a sandbox Worker that keeps failing; short enough
+ * that a model call refused for a stale network is answered within a minute of the Worker
+ * taking it again.
  */
 export const NETWORK_RETRY_S = 30;
 
@@ -768,8 +770,7 @@ export class Launcher implements RunHost {
    * In a unit: the live leases whose network is behind the current egress generation (an
    * egress policy write since their start), each with its re-apply's due time: at once
    * when none was tried under the current generation, else `NETWORK_RETRY_S` after the
-   * last was sent or failed (longer than a call's bound, `LANE_CALL_MS`, so never while
-   * one is out).
+   * last was sent or failed.
    */
   #behind(now: number): { lease: SandboxLease; due: number }[] {
     const generation = this.#o.policy.egressGeneration();

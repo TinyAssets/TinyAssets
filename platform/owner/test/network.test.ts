@@ -16,7 +16,7 @@ import { EGRESS_IP_LITERAL } from "../../contract/src/policy-document";
 import { BOUNDARY_NOTE, networkDocument } from "../src/network";
 import {
   ALL_TRAFFIC, DNS_SERVERS, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
-  SANDBOX_HEADER, sandboxEnv, withEgressToken,
+  generationOf, SANDBOX_HEADER, sandboxEnv, withEgressToken,
 } from "../../contract/src/egress";
 
 const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.2000000000.${"T".repeat(43)}.${
@@ -115,7 +115,7 @@ describe("the network document", () => {
      "transform only", () => {
     const { network } = networkDocument({ mode: "allowlist", destinations: DESTINATIONS }, 9);
     expect(network.rules).toEqual(transform(9));
-    expect(egressTokenOf(network)).toBeNull();
+    expect([generationOf(network), egressTokenOf(network)]).toEqual([9, null]);
     const opened = withEgressToken(network, TOKEN);
     expect(opened.rules).toEqual({ [EGRESS_HOST]: [{ transform: { headers: {
       [GENERATION_HEADER]: "9", [SANDBOX_HEADER]: TOKEN } } }] });

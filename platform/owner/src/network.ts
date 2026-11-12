@@ -52,12 +52,10 @@
  *   a platform secret with the token's custody.
  *
  */
-import {
-  closedNetwork, EGRESS_HOST as DOOR_HOST, GENERATION_HEADER,
-} from "../../contract/src/egress";
+import { closedNetwork, withGeneration } from "../../contract/src/egress";
 import { checkDestination } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
-import type { NetworkPlan, NetworkRule, Unexpressed } from "../../contract/src/sandbox";
+import type { NetworkPlan, Unexpressed } from "../../contract/src/sandbox";
 
 /** What the owner is told of an allowlist: not a data boundary in v1 (above). */
 export const BOUNDARY_NOTE = "An egress allowlist keeps the sandbox's tools to the listed " +
@@ -75,18 +73,15 @@ export interface EgressPolicy {
 
 /**
  * E2B's network configuration for the owner's egress policy at egress `generation`, its
- * door's transform setting the generation and no egress token: the start that opens a
- * lease adds the lease's (`withEgressToken`), and a re-apply's goes as it is, the sandbox
- * Worker setting the live sandbox's own (`NetworkReapply`), since the object holds only
- * its hash.
+ * door's transform setting the generation (`withGeneration`) and no egress token: the start
+ * that opens a lease adds the lease's (`withEgressToken`), and a re-apply's goes as it is,
+ * the sandbox Worker setting the live sandbox's own (`NetworkReapply`), since the object
+ * holds only its hash.
  */
 export function networkDocument(egress: EgressPolicy, generation: number): NetworkPlan {
   const mode = egress.mode;
   if (mode !== "open" && mode !== "allowlist" && mode !== "ask") {
     throw new Refusal("invalid", "invalid egress policy");
-  }
-  if (!Number.isSafeInteger(generation) || generation < 1) {
-    throw new Refusal("invalid", "a policy generation is a whole number from 1");
   }
   const allowed = new Set<string>();
   const unexpressed: Unexpressed[] = [];
@@ -99,18 +94,13 @@ export function networkDocument(egress: EgressPolicy, generation: number): Netwo
     }
   }
   // `open` lets every name out (`*`); either way the door is listed, last (`allowList`).
-  const closed = closedNetwork(mode === "open" ? ["*"] : allowed);
-  const headers: Record<string, string> = {};
-  headers[GENERATION_HEADER] = String(generation);
-  const rules: Record<string, readonly NetworkRule[]> = {};
-  rules[DOOR_HOST] = Object.freeze([Object.freeze({
-    transform: Object.freeze({ headers: Object.freeze(headers) }) })]);
+  const closed = withGeneration(closedNetwork(mode === "open" ? ["*"] : allowed), generation);
   return Object.freeze({
     network: Object.freeze({
       allowOut: Object.freeze(closed.allowOut),
       denyOut: Object.freeze(closed.denyOut),
       dnsServers: Object.freeze(closed.dnsServers),
-      rules: Object.freeze(rules),
+      rules: Object.freeze(closed.rules),
     }),
     mode,
     generation,

@@ -48,7 +48,7 @@ import {
   type MeterOutcome, outcomeOf, type Reservation,
 } from "../../contract/src/gateway";
 import {
-  EGRESS_BEAT_S, EGRESS_ORIGIN, EVENTS_DOOR, GENERATION_HEADER, MCP_DOOR,
+  EGRESS_BEAT_S, EGRESS_ORIGIN, EVENTS_DOOR, GENERATION_HEADER, generationIn, MCP_DOOR,
   MODEL_DOOR, type Outcome, RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
   SIGNIN_DOOR, SIGNIN_EVENTS_DOOR, SYNC_DOOR, SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
@@ -75,7 +75,6 @@ function secretOf(request: Request, inPath: string | undefined): string | undefi
   return header !== null && HEX64.test(header) ? header : undefined;
 }
 
-const GENERATION = /^[1-9][0-9]{0,14}$/;
 const LENGTH = /^[0-9]{1,15}$/;
 export const EGRESS_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
 /** How long a completed answer's metered outcome is waited for before it is `unknown`. */
@@ -160,15 +159,15 @@ async function sandboxToken(request: Request, env: DoorsEnv):
   if (parsed.expires !== LEASE_LIVED && parsed.expires <= Date.now() / 1000) {
     return refused("egress_token_expired", 401);
   }
-  const generation = request.headers.get(GENERATION_HEADER) ?? "";
-  if (!GENERATION.test(generation)) {
+  const generation = generationIn(request.headers.get(GENERATION_HEADER));
+  if (generation === null) {
     return refused("egress_policy_stale", 409);
   }
   const gated = await ownerGate(env, parsed.owner);
   if (gated !== null) {
     return gated;
   }
-  return { owner: parsed.owner, hash: parsed.hash, generation: Number(generation) };
+  return { owner: parsed.owner, hash: parsed.hash, generation };
 }
 
 /** The runner's secret its call presents, or the refusal: none, or not 64 hex. */
