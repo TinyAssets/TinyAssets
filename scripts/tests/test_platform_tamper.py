@@ -116,7 +116,7 @@ def test_a_platform_test_is_counted_as_code_not_as_text() -> None:
         'it("an it( a test( an expect(", () => {\n'
         "  /* it( expect( */ // test( expect(\n"
         "  expect(`a ${f(`b ${\"}\"}`)} expect(`).toBe(1);\n"
-        "  expect(/it'(/.test(s)).toBe(true);\n"
+        "  expect(/it'(/.test(s)).toBe(true); expect(t).toMatch(/test(s)? expect(/);\n"
         "  const half = a / b / c; expect(half).toBe(2);\n"
         "  assert.equal(n, 1); expect.any(Number);\n"
         "});\n"
@@ -126,7 +126,7 @@ def test_a_platform_test_is_counted_as_code_not_as_text() -> None:
     )
     code = platform_tests.code_only(text)
     assert len(code) == len(text) and code.count("\n") == text.count("\n")
-    assert platform_tests.counts(text) == platform_tests.Counts(cases=4, expects=5, skips=3)
+    assert platform_tests.counts(text) == platform_tests.Counts(cases=4, expects=6, skips=3)
 
 
 def test_every_platform_test_here_reads_as_cases_and_expectations() -> None:
