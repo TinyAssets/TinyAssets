@@ -114,6 +114,7 @@ describe("a digest past a pruned deletion (review rvlim N1)", () => {
         .map((row) => [row.row_id, row.deleted])).toEqual([["gone", true]]);
       // Entries past the history's charge: the tombstone, the oldest, goes first.
       fillHistory(store, name, () => tombstones() === 0);
+      expect(tombstones()).toBe(0);
       const seen = store.changed(name, { collection: "board" }, cursor, 100);
       expect(seen).toMatchObject({ rows: [], reset: true });
       const top = state.storage.sql.exec<{ change: number }>(
