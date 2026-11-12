@@ -307,8 +307,11 @@ describe("the primitive's history", () => {
                                          [room, "b", 2, "clear", "", alice]]);
     expect((await put("a", "again")).revision).toBe(4); // never a revision the row had
     expect(b.revision).toBe(1);
-    const erase = await failure(() => put("c", "1", "", "bob", "delete"));
-    expect(erase.message).toMatch(/history_op/);
+    // A deletion is told by its table, not its op: a write named `delete` is a write.
+    await put("c", "1", "", "bob", "delete");
+    expect((await inObject(stub, (store) => store.changed(alice, { collection: room }, 0, 10)))
+      .rows.map((row) => [row.row_id, row.deleted]))
+      .toEqual([["a", true], ["b", true], ["a", false], ["c", false]]);
   });
 
   it("is bounded in bytes, oldest first, and a key with no entry left repeats no revision",
@@ -389,10 +392,10 @@ describe("the primitive's history", () => {
         last = store.write(alice, alice, "board", "t", body, last.etag, false);
       }
       const first = store.history("bob", "board", "t");
-      expect([first.entries.map((e) => e.body), first.more, first.before_revision])
-        .toEqual([bodies.slice(2), true, 3]);
-      const older = store.history("bob", "board", "t", 3);
-      expect([older.entries.map((e) => e.body), older.more, older.before_revision])
+      expect([first.entries.map((e) => e.body), first.more, first.before])
+        .toEqual([bodies.slice(2), true, first.entries[0]!.change]);
+      const older = store.history("bob", "board", "t", first.before);
+      expect([older.entries.map((e) => e.body), older.more, older.before])
         .toEqual([["v0", "v1"], false, null]);
       expect(store.write(alice, alice, "board", "t", "again", last.etag, false).revision)
         .toBe(page + 3);

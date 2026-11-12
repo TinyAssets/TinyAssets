@@ -195,14 +195,14 @@
           "row_id": { "type": "string", "description": "The row's id" }
         },
         "optional": {
-          "before_revision": { "type": "integer", "description": "Entries before this revision" },
+          "before": { "type": "integer", "description": "Entries before this change: the before an answer gave" },
           "body_offset": { "type": "integer", "description": "The first item's body from this byte: a body_next_offset an answer gave (0 when omitted)" }
         }
       },
       "tool": {
         "name": "collection_history", "title": "Collection row history", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
-        "description": "Read the kept history of one collection row, newest first by page; pass before_revision for the older entries when the answer says more. A newest entry whose body does not fit one answer is cut (truncated true): call again with the same before_revision and body_offset set to its body_next_offset."
+        "description": "Read the kept history of one collection row since it was made, newest first by page; pass the before it gives for the older entries when the answer says more. A newest entry whose body does not fit one answer is cut (truncated true): call again with the same before and body_offset set to its body_next_offset."
       }
     },
     {

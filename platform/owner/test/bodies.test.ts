@@ -382,11 +382,11 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       etag = done.row.etag;
     }
     const first = await stub.collectionHistory(as(name), { collection: "board", row_id: "r" });
-    expect([first.entries.map((e) => e.revision), first.more, first.before_revision])
-      .toEqual([[3, 4], true, 3]);
+    expect([first.entries.map((e) => e.revision), first.more, first.before])
+      .toEqual([[3, 4], true, first.entries[0]!.change]);
     const older = await stub.collectionHistory(as(name), { collection: "board", row_id: "r",
-                                                           before_revision: 3 });
-    expect([older.entries.map((e) => e.body[0]), older.more, older.before_revision])
+                                                           before: first.before! });
+    expect([older.entries.map((e) => e.body[0]), older.more, older.before])
       .toEqual([["a", "b"], false, null]);
   });
 
