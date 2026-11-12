@@ -1,6 +1,7 @@
 // The owner app in a real browser (Chromium, through Playwright), against the doors in
 // workerd: the doors' test Worker (`e2e-entry.ts`: the fake upstream sign-in, the real
-// owner object with a recording sandbox) with the real gateway, codemode and files Workers and
+// owner object, its sandbox the owner suite's fake sandbox Worker) with the real gateway,
+// codemode and files Workers and
 // the fake providers, each bundled by wrangler from its own config as `vitest.config.ts`
 // does (`ci/workers.ts`). The files Worker is bound as production binds it: the doors' FILES its upload
 // entrypoint, the owner object's (OWNER_FILES here) its whole service, so a new owner's
@@ -88,9 +89,11 @@ async function doors() {
                     WORKOS_API_KEY: "test-client-secret",
                     E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret" },
         durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
-        // CODEMODE_VM and OWNER_FILES: the owner object's, in this script for the test.
+        // CODEMODE_VM, OWNER_FILES and SANDBOX: the owner object's, in this script for the
+        // test; SANDBOX the owner suite's fake sandbox Worker, which SANDBOX_LOG reads back.
         serviceBindings: { CODEMODE_VM: codemode.name, PROVIDERS: "fake-providers",
-                           OWNER_FILES: files.name },
+                           OWNER_FILES: files.name, SANDBOX: "fake-sandbox",
+                           SANDBOX_LOG: { name: "fake-sandbox", entrypoint: "Log" } },
         // The provider fetches the first-party app's metadata document, as production does
         // over the public internet; nothing else leaves the doors.
         outboundService: (request) => request.url === webClient ? mf.dispatchFetch(webClient)
@@ -102,6 +105,7 @@ async function doors() {
       auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: keyring } }),
       auxiliary(join(PLATFORM, "codemode"), {}),
       fake(join(DOORS, "test", "fake-providers.ts")),
+      fake(join(PLATFORM, "owner", "test", "fake-sandbox.ts")),
       {
         // The two hand-off hosts, each answering the browser's top-level navigation at once.
         name: "hand-off", routes: ["upstream.test/*", "auth.test/*"],

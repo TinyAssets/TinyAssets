@@ -6,7 +6,6 @@
  */
 import { createHash } from "node:crypto";
 
-import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
@@ -14,9 +13,9 @@ import { type DoorsEnv, E2B_HOOK_PATH } from "../src/config";
 import { BILLED_WINDOW_S } from "../../owner/src/sandbox-time";
 import { HOOK_BODY_MAX, lifecycleEvent, signed } from "../src/e2b-hooks";
 import { openRoute, sealRoute } from "../../contract/src/routing-mac";
-import type { OwnerDO } from "./entry";
 import {
-  admitOwner, appPost, call, doorsEnv, OPEN, serveFirstPartyDocument, setControl, signInApp, url,
+  admitOwner, appPost, call, doorsEnv, OPEN, recorded, serveFirstPartyDocument, setControl,
+  signInApp, url,
 } from "./support";
 import type { SandboxSignin } from "../../contract/src/sandbox";
 
@@ -193,8 +192,7 @@ describe("E2B's lifecycle webhook", () => {
       const app = await signInApp({ owner: who });
       expect((await appPost("signin/start", app.access_token, null,
                             { engine: "claude-code" })).status).toBe(200);
-      const [asked] = await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
-        (instance as OwnerDO).recorder.signins) as SandboxSignin[];
+      const [asked] = (await recorded(who)).signins as SandboxSignin[];
       expect(openRoute(env.ROUTING_MAC_KEY, asked!.route)).toEqual({ owner: who,
                                                                      authority: "owner" });
       const paused = event(who);

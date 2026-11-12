@@ -5,15 +5,15 @@
  * the runner's secret, the prompt it posts reaching the owner's sign-in list; and the past
  * runs' route.
  */
-import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
-import type { OwnerDO } from "./entry";
-import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } from "./support";
+import {
+  appPost, call, OPEN, recorded, serveFirstPartyDocument, setControl, signInApp,
+} from "./support";
 import type { SandboxSignin } from "../../contract/src/sandbox";
 
 let restore: () => void = () => undefined;
@@ -46,8 +46,7 @@ describe("the sign-in routes and door", () => {
     expect(started.status).toBe(200);
     const view = await started.json() as { id: string; state: string };
     expect(view.state).toBe("starting");
-    const [asked] = await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
-      (instance as OwnerDO).recorder.signins) as SandboxSignin[];
+    const [asked] = (await recorded(who)).signins as SandboxSignin[];
     const inside = { [SANDBOX_HEADER]: egressTokenOf(asked!.network!.network)!,
                      [GENERATION_HEADER]: String(asked!.network!.generation),
                      "x-ta-runner": asked!.tokens!.runner_token };
@@ -74,8 +73,7 @@ describe("the sign-in routes and door", () => {
     const { who, app } = await signedIn();
     const view = await (await appPost("signin/start", app.access_token, null,
                                       { engine: "claude-code" })).json() as { id: string };
-    const [asked] = await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
-      (instance as OwnerDO).recorder.signins) as SandboxSignin[];
+    const [asked] = (await recorded(who)).signins as SandboxSignin[];
     const body = JSON.stringify({ frames: [] });
     const at = `${EGRESS_ORIGIN}/signin/${view.id}/events`;
     for (const headers of [

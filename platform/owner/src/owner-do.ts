@@ -118,7 +118,6 @@ import {
 import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
 import { RUN_ENDED, Runs, type RunSchedule, runsDoors } from "./runs";
 import { PostGate } from "../../contract/src/run-events";
-import { SANDBOX_ABSENT } from "./sandbox";
 import type { SandboxService } from "../../contract/src/sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
@@ -171,7 +170,7 @@ import {
 import { type Card, Registrations, registrationsDoors } from "./registrations";
 import { Schedule } from "./schedule";
 import { ABILITY_TREES, AGENTS_DIR, within } from "../../contract/src/paths";
-import { Launcher, type SandboxLeases } from "./launch";
+import { Launcher } from "./launch";
 import {
  Egress, egressDoors, type EgressReceipt, sandboxBinding,
 } from "./egress";
@@ -274,11 +273,8 @@ export interface OwnerEnv {
    * Worker secret the doors Worker holds too; a lease is never opened without it.
    */
   readonly ROUTING_MAC_KEY: string;
-  /**
-   * The sandbox Worker (`sandbox.ts`, `platform/sandbox`). Absent (a config without it, a
-   * test's), every run is refused (`SANDBOX_ABSENT`) and none reaches `running`.
-   */
-  readonly SANDBOX?: SandboxService;
+  /** The sandbox Worker (`sandbox.ts`, `platform/sandbox`), where every run starts. */
+  readonly SANDBOX: SandboxService;
   /**
    * The erasure queue's producer (slice L): `{owner}`, which the doors consume to make the
    * erasure's outside record (`doors/src/erase.ts`). Absent, an erasure fails loudly.
@@ -413,8 +409,6 @@ export interface Internals {
   readonly eraseRetryMs?: number;
   /** The erasure's wait for a put begun before its mark (`PUT_GRACE_MS`), for the tests. */
   readonly putGraceMs?: number;
-  /** The sandbox's lease API, which the sandbox slice reaches in the object (`SandboxLeases`). */
-  readonly sandbox?: (internal: SandboxLeases) => void;
   /** Code mode's bounds, smaller in a test than production's (`codemode.ts`). */
   readonly codemode?: CodemodeBounds;
   /** How long a script's read of the control record serves its calls (`control-gate.ts`). */
@@ -599,8 +593,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   readonly #controlFreshMs: number;
   /** The owner this object is named by (`ctx.id.name`), refused when it has none. */
   readonly #ownerName: () => string;
-  /** The sandbox's lease, owner-internal: the runs slice calls it in process. */
-  readonly #sandbox: SandboxLeases;
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
   /** The archive: its moves and rewrites, and reads of archived mail (`archive.ts`). */
@@ -625,7 +617,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   #discarded: { readonly ns: string | null } | null = null;
   /**
    * The runtime constructs it with `ctx` and `env` alone; the workerd tests take the
-   * erasure's and the sandbox lease's internal paths (`internals`), which no door reaches.
+   * erasure's internal path (`internals`), which no door reaches.
    */
   constructor(ctx: DurableObjectState, env: OwnerEnv, internals: Internals = {}) {
     super(ctx, env);
@@ -757,11 +749,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#launcher = new Launcher(this.#state);
     this.#runs = this.#launcher.runs;
     this.#sandboxTime = new SandboxTime(storage, this.#runs.meter(), {
-      read: (after) => {
-        const owner = ctx.id.name;
-        return env.SANDBOX === undefined || owner === undefined ? null
-          : env.SANDBOX.meter(owner, { after });
-      },
+      read: (after) => env.SANDBOX.meter(this.#ownerName(), { after }),
       write,
     });
     this.#relay = new Relay({
@@ -800,11 +788,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       },
       // Every sandbox of the owner killed, paused ones included, and the sandbox Worker's
       // state of them deleted (slice S review H-6).
-      // A config with no sandbox bound fails the erasure loudly, never skips it.
       sandboxes: async () => {
-        if (this.env.SANDBOX === undefined) {
-          throw new Error("the erasure cannot reach the sandbox Worker: SANDBOX is not bound");
-        }
         await this.env.SANDBOX.erase(this.#ownerName());
       },
       // The outside record: the doors told through the erasure queue until they confirm.
@@ -840,8 +824,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
     internals.erasure?.(this.#erasure);
-    this.#sandbox = this.#launcher.sandboxLeases();
-    internals.sandbox?.(this.#sandbox);
     this.#codemode = internals.codemode ?? {};
     this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
@@ -1340,11 +1322,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         if (registrant(binding.source, account.origin).kind !== "mcp") {
           throw new Refusal("refused",
                             "an API key's agent registers from the owner's browser with the key");
-        }
-        return;
-      case "sandbox":
-        if (this.env.SANDBOX === undefined) {
-          throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
         }
         return;
     }
@@ -2882,7 +2859,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   // token and its epoch the fencing number, for the sync commits and the egress alike, and
   // it holds the hashes of its two tokens' secrets, the egress token (E2B's transform alone
   // carries it) and the sync token (the in-VM sync agent's). The lease itself is owner-
-  // internal (`SandboxLeases`): no door reaches it. The egress doors take the egress
+  // internal (`launch.ts`): no door reaches it. The egress doors take the egress
   // token's binding, the sync doors the sync token's, and no other door takes either.
 
   /** The owner's own admission for `door`, as a binding check reads it, for internal calls. */

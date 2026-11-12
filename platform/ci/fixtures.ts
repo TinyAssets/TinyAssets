@@ -16,6 +16,13 @@ export const TIERS = Object.freeze({
   paid: Object.freeze({ runs: 10, storage_bytes: 250_000_000_000 }),
 });
 
+/**
+ * How long a test waits for a call to reach a gate (`ci/gate.ts` `GateControl.held`): well
+ * inside a test's budget, so a hold the code never reaches fails as an empty list, not as a
+ * test timeout.
+ */
+export const HELD_WAIT_MS = 2_000;
+
 /** The control record's gates with every door open: everyone outside, no canary list. */
 export const OPEN_GATES = Object.freeze({ outside: "on", ordinary: "all", canary: [],
                                           inbound: false });

@@ -15,8 +15,9 @@ import { WriteGate } from "../src/gate";
 import { NO_CODE_WANTED, SIGNIN_LIVE, SIGNIN_OFF, Signins } from "../src/signins";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, startOf,
-         TIERS } from "./runs-support";
+import {
+  defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf, TIERS,
+} from "./runs-support";
 import { drainDue, failure } from "./support";
 import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 
@@ -203,9 +204,7 @@ describe("a sign-in", () => {
     expect(await r.stub.signinCancel(r.bind(), { id })).toEqual({ cancelled: true });
     expect((await recorder(r.stub)).signinCancels).toEqual([{ authority: "owner", id }]);
     const s = await gated();
-    await s.in((instance) => {
-      instance.recorder.signinAnswer = { started: false, code: "sandbox_waiting" };
-    });
+    await scripted(s.stub, { signinAnswer: { started: false, code: "sandbox_waiting" } });
     expect(await s.stub.signinStart(s.bind(), { engine: "codex" }))
       .toEqual({ started: false, code: "sandbox_waiting" });
     expect((await s.stub.signinList(s.bind())).signins).toEqual([]);

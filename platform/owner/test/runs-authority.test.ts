@@ -19,15 +19,12 @@ import { AGENTS_OWNER_ONLY } from "../src/paths";
 import {
   EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate,
 } from "../../contract/src/run-events";
-import { SANDBOX_ABSENT } from "../src/sandbox";
 import { TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated } from "./gateway-support";
 import { ledgerOn, MCP, MUSE, signedIn } from "./ledger-support";
-import {
-  ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding, runnerSandbox,
-  sandboxOf, secretOf, startOf, syncOf, TIERS,
-} from "./runs-support";
-import { drainDue, failure, laneAt, sqlIn } from "./support";
+import { ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding,
+  runnerSandbox, sandboxOf, scripted, secretOf, startOf, syncOf, TIERS } from "./runs-support";
+import { drainDue, failure, laneAt } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
@@ -310,9 +307,7 @@ describe("a sandbox's own sign-ins (review round 2, H; ADR-031 decision 2)", () 
     const client = await fullClient(r);
     // A cold client sandbox: the named agent is admitted (its sign-in unknown, as the
     // owner's own path admits one), and the sandbox's start finds no login there.
-    await r.in((instance) => {
-      instance.recorder.answer = { started: false, code: SIGNIN_REQUIRED };
-    });
+    await scripted(r.stub, { answer: { started: false, code: SIGNIN_REQUIRED } });
     const cold = await r.stub.agentSubmit({ ...client, tiers: TIERS }, {
       message: "hi", client_send_id: "p-0", agent_id: "plan" });
     expect(cold).toMatchObject({ state: "failed", code: SIGNIN_REQUIRED,
@@ -322,9 +317,7 @@ describe("a sandbox's own sign-ins (review round 2, H; ADR-031 decision 2)", () 
                                        "sandbox, through the vendor's own flow");
     expect(await r.sql("SELECT authority FROM sandbox_leases WHERE authority != 'owner'"))
       .toEqual([]);
-    await r.in((instance) => {
-      instance.recorder.answer = { started: true };
-    });
+    await scripted(r.stub, { answer: { started: true } });
     const viaAuto = await r.stub.agentSubmit({ ...client, tiers: TIERS }, {
       message: "hi", client_send_id: "a-1", agent_id: "auto" });
     expect(viaAuto).toMatchObject({ state: "running", credential: "api_key" });
@@ -368,9 +361,7 @@ describe("a sandbox's own sign-ins (review round 2, H; ADR-031 decision 2)", () 
     expect(await notices(r)).toContain(
       `claude-code: sign in again inside ${MUSE.client}'s sandbox`);
     expect(await submit("auto", "a-3")).toMatchObject({ credential: "api_key" });
-    await r.in((instance) => {
-      instance.recorder.answer = { started: false, code: SIGNIN_REQUIRED };
-    });
+    await scripted(r.stub, { answer: { started: false, code: SIGNIN_REQUIRED } });
     expect(await submit("plan", "p-2"))
       .toMatchObject({ state: "failed", code: SIGNIN_REQUIRED });
   });
@@ -913,22 +904,4 @@ describe("the reviewer's untested cases (review M-6)", () => {
     expect(await r.sql("SELECT COUNT(*) AS n FROM socket_tickets")).toEqual([{ n: 1 }]);
   });
 
-  it("refuses a cancel loudly when no sandbox is bound to stop the run", async () => {
-    // The object with no `SANDBOX` bound.
-    const owner = `owner-${crypto.randomUUID()}`;
-    const stub = env.BARE.getByName(owner);
-    const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
-    await defineAgent(stub, bind, "main", SIGNED_IN);
-    const run = `run_${"a".repeat(32)}`;
-    await sqlIn(stub, "INSERT INTO runs (id, agent, conversation, source, credential, state, " +
-                  "initiator, unattended, created_at, lease_id, epoch, beat_at) VALUES (?, " +
-                  "'main', ?, 'claude-code', 'vendor_login_in_sandbox', 'running', 'owner', 0, " +
-                  "1, ?, 1, 1)", run, `cv_${"a".repeat(32)}`, "a".repeat(32));
-    await sqlIn(stub, "INSERT INTO run_grants (run, secret, scopes, created_at) VALUES " +
-                  "(?, ?, '[]', 1)", run, "b".repeat(64));
-    expect((await failure(() => stub.agentCancel(bind, { run_id: run }))).message)
-      .toBe(SANDBOX_ABSENT);
-    expect(await sqlIn(stub, "SELECT cancel_requested FROM runs")).toEqual([
-      { cancel_requested: 0 }]);
-  });
 });

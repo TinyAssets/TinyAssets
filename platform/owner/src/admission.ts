@@ -18,7 +18,7 @@
  *   a billing suspension refuses `work` (spend and growth) and leaves the owner its reads,
  *   sign-in and what only lowers risk or storage; an abuse suspension refuses every door.
  *   Work is refused where it is enforced, not only where it starts: every authority check
- *   (`Authority`), every sandbox lease and egress call (`OwnerDO`'s `SandboxLeases`,
+ *   (`Authority`), every sandbox lease and egress call (`Launcher.openLease`,
  *   `egressOpen`), and every lane with the Python's `require_work` semantics in its own
  *   unit: the `wakes` lane's claim (`ledger.ts`), whose lane then has no job for its open
  *   rows. A suspension also ends the sandbox's in-flight egress streams, the prompt stop;
