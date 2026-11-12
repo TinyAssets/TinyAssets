@@ -30,6 +30,8 @@ const KNOWN = `${DIR}/known.bin`;
 const SCRATCH = `${DIR}/scratch.bin`;
 const RECORD = `${DIR}/record.json`;
 const PAUSED_AT = `${DIR}/paused_at`;
+const PID = `${DIR}/pid`;
+const TICK = `${DIR}/tick`;
 export const TICKER = `${DIR}/ticker.sh`;
 
 const GIB = 2 ** 30;
@@ -56,23 +58,23 @@ interface Held {
 }
 
 /** The ticker: its pid in `pid`, then a count every 30 s, until it is killed. */
-const TICKER_SH = `echo $$ > ${DIR}/pid
+const TICKER_SH = `echo $$ > ${PID}
 n=0
-while :; do n=$((n+1)); echo "$n $(date -u +%FT%TZ)" > ${DIR}/tick; sleep 30; done
+while :; do n=$((n+1)); echo "$n $(date -u +%FT%TZ)" > ${TICK}; sleep 30; done
 `;
 
 /** What the sandbox holds now, one `key=value` a line (`facts`). */
 const INSPECT = `echo "record=$(cat ${RECORD} 2>/dev/null)"
 echo "paused_at=$(cat ${PAUSED_AT} 2>/dev/null)"
 echo "known_sha256=$(sha256sum ${KNOWN} 2>/dev/null | cut -d' ' -f1)"
-pid=$(cat ${DIR}/pid 2>/dev/null)
+pid=$(cat ${PID} 2>/dev/null)
 echo "pid=$pid"
 case "$pid" in
   ''|*[!0-9]*) ;;
   *) echo "pid_state=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)"
      echo "pid_cmd=$(tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" ;;
 esac
-echo "tick=$(cat ${DIR}/tick 2>/dev/null)"
+echo "tick=$(cat ${TICK} 2>/dev/null)"
 if [ -e ${SCRATCH} ]; then
   echo "scratch_bytes=$(stat -c %s ${SCRATCH})"
   echo "scratch_sha256=$(sha256sum ${SCRATCH} | cut -d' ' -f1)"
@@ -241,7 +243,7 @@ async function startOne(e2b: E2b, template: string, started: string,
     written = `${size.bytes} B in ${Date.now() - at} ms${size.note === null ? ""
       : ` (${size.note})`}`;
   }
-  const pid = Number((await sh(e2b, box, `cat ${DIR}/pid`)).trim());
+  const pid = Number((await sh(e2b, box, `cat ${PID}`)).trim());
   if (!Number.isInteger(pid) || pid <= 0) {
     throw new Error(`${box.sandboxID} (${label}): the ticker wrote no pid`);
   }
@@ -286,8 +288,12 @@ async function start(e2b: E2b, summary: Summary): Promise<void> {
                `to find them by \`${PROBE.key}=${PROBE.value}\`.`);
 }
 
-/** One sandbox resumed, timed and verified, then paused again: its row's cells, its failures. */
-async function checkOne(e2b: E2b, id: string): Promise<{ cells: string[]; failures: string[] }> {
+/**
+ * One sandbox resumed, timed and verified, then paused again: its row's cells, its failures.
+ * A sandbox without the probe's tag is refused before any resume, whoever passed its id.
+ */
+export async function checkOne(e2b: E2b, id: string):
+    Promise<{ cells: string[]; failures: string[] }> {
   const listed = await e2b.info(id);
   if (listed === null) {
     return { cells: [], failures: ["E2B holds no such sandbox: dropped while paused, or killed"] };
@@ -315,12 +321,14 @@ async function checkOne(e2b: E2b, id: string): Promise<{ cells: string[]; failur
     const since = (iso: string | undefined) => iso ? span(resumed - Date.parse(iso)) : "?";
     cells.push(since(started), since(seen["paused_at"]), `${connected} ms`, `${firstByte} ms`,
                `${ms} ms`, seen["tick"] || "?");
-  } finally {
-    try {
-      cells.push(await pause(e2b, box));
-    } catch (error) {
-      failures.push(reason(error));
-    }
+  } catch (error) {
+    failures.push(reason(error));  // its cells left blank, and it is paused again all the same
+    cells.push(...Array<string>(6).fill(""));
+  }
+  try {
+    cells.push(await pause(e2b, box));
+  } catch (error) {
+    failures.push(reason(error));
   }
   return { cells, failures };
 }

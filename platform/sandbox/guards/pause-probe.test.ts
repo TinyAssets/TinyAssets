@@ -1,12 +1,14 @@
 /**
  * The long-pause probe's judgement (`pause-probe.ts`, run by `e2b-pause-probe.yml`): what a
  * resumed sandbox's inspection must show for it to have held its known file, its process and
- * its scratch, and how much scratch a disk takes. No E2B call is made here.
+ * its scratch, how much scratch a disk takes, and which sandbox `check` may resume. No E2B
+ * call leaves the test: E2B's answers are given to the client's own fetch.
  */
 import { describe, expect, it } from "vitest";
 
-import { facts, HEADROOM, SCRATCH_FLOOR, SCRATCH_TARGET, scratchBytes, TICKER, verdict }
-  from "../pause-probe";
+import { checkOne, facts, HEADROOM, SCRATCH_FLOOR, SCRATCH_TARGET, scratchBytes, TICKER,
+  verdict } from "../pause-probe";
+import { E2b } from "../src/e2b";
 
 const KNOWN = "a".repeat(64);
 const SCRATCH = "b".repeat(64);
@@ -72,5 +74,38 @@ describe("the scratch a disk takes", () => {
   it("refuses a disk too small to measure a scratch resume", () => {
     expect(() => scratchBytes(SCRATCH_FLOOR + HEADROOM - 1)).toThrow(/too little/);
     expect(() => scratchBytes(Number.NaN)).toThrow(/too little/);
+  });
+});
+
+/** E2B, to the client: one paused sandbox with `metadata`, in which every process fails. */
+function e2b(metadata: Record<string, string>): { client: E2b; calls: string[] } {
+  const calls: string[] = [];
+  const client = new E2b("test-key", async (url, init) => {
+    const path = new URL(url).pathname;
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    return path === "/sandboxes/box1" ? Response.json({ sandboxID: "box1", state: "paused",
+                                                         startedAt: "", endAt: "", metadata,
+                                                         pauseMode: "full" })
+      : path.endsWith("/connect") ? Response.json({ sandboxID: "box1", envdAccessToken: "t" })
+      : new Response(null, { status: path.endsWith("/pause") ? 204
+                                     : path === "/files" ? 200 : 502 });
+  });
+  return { client, calls };
+}
+
+describe("check's resume", () => {
+  it("refuses a sandbox without the probe's tag, an owner's, before any resume", async () => {
+    const { client, calls } = e2b({ ta_owner: "o1" });
+    expect((await checkOne(client, "box1")).failures)
+      .toEqual(["not a long-pause probe sandbox: refused, not resumed"]);
+    expect(calls).toEqual(["GET /sandboxes/box1"]);
+  });
+
+  it("is paused again, in its own cell, when a command fails after the resume", async () => {
+    const { client, calls } = e2b({ ta_probe: "long-pause", ta_label: "small" });
+    expect(await checkOne(client, "box1")).toEqual({
+      cells: ["small", "", "", "", "", "", "", expect.stringMatching(/ms, full$/)],
+      failures: ["envd's process start answered 502"] });
+    expect(calls).toContain("POST /sandboxes/box1/pause");
   });
 });
