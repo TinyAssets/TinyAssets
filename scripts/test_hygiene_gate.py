@@ -25,7 +25,8 @@ scope guard) and fails when:
    <why>`` line. With that line it still fails if the PR is also a feature
    (adds lines outside tests/), unless the reason is ``retired``: retiring a
    behaviour legitimately deletes its code and its tests together.
-   A platform test (``platform/**/*.test.ts``) is read as text by
+   A platform test (``platform/**/*.test.ts``, or a platform file that imports a
+   test runner) is read as text by
    ``platform_tests.py``: a file that loses cases or expectations, or gains a
    skip, needs the same line. Only the line: the platform's refactors move and
    rewrite tests beside their code on purpose;
@@ -605,14 +606,16 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
     # A platform test file is compared whole, base against head (a rename is
     # paired by git); a file that stops being a platform test loses everything.
     for _s, old, new in changes:
-        old_test = old if platform_tests.is_platform_test(old) else None
-        new_test = new if platform_tests.is_platform_test(new) else None
+        old_text = _show(base, old, root) if platform_tests.is_platform_source(old) else None
+        new_text = _show(head, new, root) if platform_tests.is_platform_source(new) else None
+        old_test = platform_tests.is_platform_test(old, old_text)
+        new_test = platform_tests.is_platform_test(new, new_text)
         if not (old_test or new_test):
             continue
-        before = platform_tests.counts(_show(base, old_test, root) if old_test else None)
-        after = platform_tests.counts(_show(head, new_test, root) if new_test else None)
+        before = platform_tests.counts(old_text if old_test else None)
+        after = platform_tests.counts(new_text if new_test else None)
         for what in platform_tests.tampering(before, after):
-            delta.platform_tampering.append(Finding(new_test or old_test or "", what))
+            delta.platform_tampering.append(Finding((new if new_test else old) or "", what))
 
     before_ledger, after_ledger = (
         _ledger(_show(base, LEDGER, root)),
@@ -696,6 +699,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     for n in delta.notes:
         print(f"note (not blocking) {n.where}: {n.what}")
+    # Listed even when the body says why, so the review reads which files lost what.
+    for f in delta.platform_tampering:
+        print(f"platform test {f.where}: {f.what}")
     failures = evaluate(delta, body)
     for f in failures:
         print(f"FAIL {f}")

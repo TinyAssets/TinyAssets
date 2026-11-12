@@ -91,11 +91,37 @@ def test_a_weakened_platform_assertion_is_caught(repo) -> None:
     # An assertion turned into a comment is gone, though its text is still there.
     (lambda t: t.replace("    expect(add(0, 0))", "    // expect(add(0, 0))"),
      "expectations loosened (3 -> 2)"),
+    # A skip by the case's options, and a case that passes by failing.
+    (lambda t: t.replace('it("refuses a string", ', 'it("refuses a string", { skip: true }, '),
+     "new skip or todo (0 -> 1)"),
+    (lambda t: t.replace('it("refuses a string", ', 'it("refuses a string", { todo: true }, '),
+     "new skip or todo (0 -> 1)"),
+    (lambda t: t.replace('it("refuses a string", ', 'it("refuses a string", { fails: true }, '),
+     "new skip or todo (0 -> 1)"),
+    (lambda t: t.replace('  it("refuses a string"', '  it.fails("refuses a string"'),
+     "new skip or todo (0 -> 1)"),
 ])
 def test_a_skipped_removed_or_deleted_platform_test_is_caught(repo, edit, what) -> None:
     root, base = repo
     failures = _failures(root, base, {_FILE: edit(_TEST)})
     assert len(failures) == 1 and what in failures[0], failures
+
+
+@pytest.mark.parametrize("path", [
+    "platform/doors/test/app.e2e.mjs",  # node's runner, by its name
+    "platform/ci/kit/config.ts",  # a kit that makes cases for other files, by its import
+])
+def test_a_case_removed_from_any_file_a_runner_reads_is_caught(repo, path) -> None:
+    root, base = repo
+    base = _commit(root, {path: _TEST})
+    failures = _failures(root, base, {path: _TEST[:_TEST.index('  it("refuses a string"')] + "});\n"})
+    assert len(failures) == 1 and path in failures[0] and "cases removed (2 -> 1)" in failures[0]
+
+
+def test_a_product_file_is_not_a_test() -> None:
+    assert not platform_tests.is_platform_test("platform/owner/src/files.ts", "x.test(y);\n")
+    assert not platform_tests.is_platform_test("tests/x.test.ts", _TEST)
+    assert platform_tests.is_platform_test("platform/ci/kit/config.ts", _TEST)
 
 
 def test_a_move_a_new_case_or_a_comment_is_not_tampering(repo) -> None:
@@ -135,11 +161,16 @@ def test_every_platform_test_here_reads_as_cases_and_expectations() -> None:
     root = _SCRIPTS.parent
     listed = subprocess.run(["git", "-C", str(root), "ls-files", "platform"],
                             capture_output=True, text=True, check=True).stdout.split()
-    files = [path for path in listed if platform_tests.is_platform_test(path)]
-    assert len(files) > 100
+    texts = {path: (root / path).read_text(encoding="utf-8")
+             for path in listed if platform_tests.is_platform_source(path)}
+    files = [path for path, text in texts.items() if platform_tests.is_platform_test(path, text)]
+    assert {"platform/doors/test/app.e2e.mjs", "platform/ci/kit/config.ts"} <= set(files)
+    # The kits and helpers a runner reads are counted too; it is the tests that must be seen.
+    named = [path for path in files if platform_tests.PLATFORM_TEST.match(path)]
+    assert len(named) > 100
     unseen = []
-    for path in files:
-        counted = platform_tests.counts((root / path).read_text(encoding="utf-8"))
+    for path in named:
+        counted = platform_tests.counts(texts[path])
         if counted.cases == 0 or counted.expects == 0:
             unseen.append(path)
     assert unseen == ["platform/files/guards/config.test.ts",

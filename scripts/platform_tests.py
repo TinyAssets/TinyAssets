@@ -11,12 +11,15 @@ a template's ``${...}`` stays code.
 * An expectation is a call of ``expect`` (``expect.soft`` too) or of node's
   ``assert`` (``assert(...)``, ``assert.equal(...)``). ``expect.any(...)`` and the
   other asymmetric matchers are not expectations.
-* A skip is ``.skip``, ``.todo``, ``.skipIf`` or ``.runIf`` on ``it``, ``test`` or
-  ``describe``, or a ``skip(...)`` call on a test's context.
+* A skip is ``.skip``, ``.todo``, ``.skipIf``, ``.runIf`` or ``.fails`` on ``it``,
+  ``test`` or ``describe``, a ``skip``/``todo`` option or ``fails: true``, or a
+  ``skip(...)`` call on a test's context.
 
-A method of the same name (``/re/.test(s)``, ``x.it(...)``) is not counted. Cases a
-shared kit makes from a table (``configTests(...)``) are not seen in the file that calls
-it: a row taken from that table is for the review to read.
+A file is counted when its name is a test's (``*.test.*``, ``*.e2e.*``) or it imports a
+test runner (``vitest``, ``node:test``), so the kits that make cases for other files are
+counted too. A method of the same name (``/re/.test(s)``, ``x.it(...)``) is not counted.
+Not seen, so for the review to read: a row taken from a kit's table (``configTests(...)``)
+or an ``it.each`` table, and a matcher or an argument changed inside an expectation.
 """
 
 from __future__ import annotations
@@ -24,23 +27,35 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-#: The files counted: every platform test, whatever its runner.
-PLATFORM_TEST = re.compile(r"^platform/(?:[^/]+/)*[^/]+\.test\.(?:ts|mts|mjs|js)$")
+#: A platform source a test runner could read.
+PLATFORM_SOURCE = re.compile(r"^platform/(?:[^/]+/)*[^/]+\.(?:ts|mts|mjs|js)$")
+#: A platform test by its name, whatever its runner.
+PLATFORM_TEST = re.compile(r"^platform/(?:[^/]+/)*[^/]+\.(?:test|e2e)\.(?:ts|mts|mjs|js)$")
+#: An import of a test runner, read from the raw text (its module name is a string).
+_RUNNER = re.compile(r"""^\s*import\b[^;]*?["'](?:vitest|node:test)["']""", re.M)
 
 _NOT_AFTER = r"(?<![\w.$])"
 _CASE = re.compile(_NOT_AFTER + r"(?:it|test)\b(?:\s*\.\s*\w+)*\s*[(`]")
 _EXPECT = re.compile(_NOT_AFTER + r"(?:expect(?:\s*\.\s*soft)?|assert(?:\s*\.\s*\w+)?)\s*\(")
 _SKIP = re.compile(
-    _NOT_AFTER + r"(?:it|test|describe)(?:\s*\.\s*\w+)*?\s*\.\s*(?:skip|todo|skipIf|runIf)\b"
+    _NOT_AFTER + r"(?:it|test|describe)(?:\s*\.\s*\w+)*?\s*\.\s*(?:skip|todo|skipIf|runIf|fails)\b"
     r"|\.\s*skip\s*\("
+    r"|" + _NOT_AFTER + r"(?:(?:skip|todo)\s*:|fails\s*:\s*true\b)"
 )
 #: After one of these (or at the start), a `/` opens a regular expression, not a division.
 _REGEX_BEFORE = set("(,=:[!&|?{};+-*%<>~^")
 _REGEX_WORDS = ("return", "typeof", "case", "do", "else", "in", "of", "void", "yield", "await")
 
 
-def is_platform_test(path: str | None) -> bool:
-    return bool(path) and PLATFORM_TEST.match(path) is not None
+def is_platform_source(path: str | None) -> bool:
+    return bool(path) and PLATFORM_SOURCE.match(path) is not None
+
+
+def is_platform_test(path: str | None, text: str | None) -> bool:
+    """A platform test by its name, or a platform source that imports a test runner."""
+    if not is_platform_source(path):
+        return False
+    return PLATFORM_TEST.match(path) is not None or bool(text and _RUNNER.search(text))
 
 
 def code_only(text: str) -> str:

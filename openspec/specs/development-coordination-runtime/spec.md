@@ -310,15 +310,20 @@ after it, so wrapping a reason never fails the gate.
 
 ### Requirement: A pull request that weakens a platform test says why
 
-The test hygiene gate SHALL read each platform test file (`platform/**/*.test.ts`)
-at the merge base and the head as text, and SHALL refuse a pull request whose
-body has no `Test-Removal:` line when a file holds fewer cases or expectations,
-or more skips, than before. Comments, strings and regular-expression literals
-SHALL NOT count. A rename SHALL be compared with its previous path.
+The test hygiene gate SHALL read each platform test file (`*.test.*`, `*.e2e.*`, or a
+platform file that imports a test runner) at the merge base and the head as text, and
+SHALL refuse a pull request whose body has no `Test-Removal:` line when a file holds
+fewer cases or expectations, or more skips, than before. Comments, strings and
+regular-expression literals SHALL NOT count. A rename SHALL be compared with its
+previous path.
 
 #### Scenario: A weakened assertion is caught
 - **WHEN** a pull request deletes one `expect(...)` from an existing platform test and its body has no `Test-Removal:` line
 - **THEN** the hygiene gate refuses it and names the file
+
+#### Scenario: A skip by a case's options is a skip
+- **WHEN** a pull request gives an existing platform case `{ skip: true }`, `{ todo: true }` or `.fails`
+- **THEN** the hygiene gate counts a new skip
 
 #### Scenario: A renamed file is not a removal
 - **WHEN** a pull request moves a platform test file unchanged to a new path

@@ -237,6 +237,43 @@ jobs:
           HITS="$(classify "$SENSITIVE_RE" "")" || exit 1
           HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 
+          # The count is for the reviewer, so it is written before the receipt is
+          # read: the run that waits for the review shows it.
+          # Breadth is the reviewer's to judge, not a cap's. #1491 carried 16
+          # release-critical files while claiming to be a two-file auth fix,
+          # because its branch dragged an unmerged lineage; the receipt below is
+          # what stops that now, since every PR's diff is reviewed against main.
+          # A hard cap of 8 would also refuse the cutover's deletion, which is
+          # meant to be that broad, and this file runs from the base, so no PR
+          # could lift it for itself (docs/reference/executable-gates.md).
+          REVIEW_NOTE_SENSITIVE=8
+          LARGE_TOTAL=150
+          {
+            echo "### PR scope guard"
+            echo ""
+            echo "Files changed vs merge-base: **${TOTAL}**"
+            echo "Release-critical files touched: **${HIT_COUNT}**"
+            echo ""
+            if [ "$HIT_COUNT" -eq 0 ]; then
+              echo "No release-critical paths touched."
+            else
+              echo "<details><summary>Release-critical files</summary>"
+              echo ""
+              # shellcheck disable=SC2016  # the $ is sed's end-of-line anchor, not a variable
+              printf '%s\n' "$HITS" | sed 's/^/- `/; s/$/`/'
+              echo ""
+              echo "</details>"
+            fi
+            if [ "$HIT_COUNT" -gt "$REVIEW_NOTE_SENSITIVE" ]; then
+              echo ""
+              echo "Note for the reviewer: ${HIT_COUNT} release-critical files. Past ${REVIEW_NOTE_SENSITIVE}, check the branch is not carrying an unmerged lineage."
+            fi
+            if [ "$TOTAL" -gt "$LARGE_TOTAL" ]; then
+              echo ""
+              echo "Note: ${TOTAL} files changed (advisory threshold ${LARGE_TOTAL})."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
           # EVERY PR needs a review receipt (2026-10-02). This used to be a
           # narrow set -- gate-defining files plus an authority-path regex, with AST and
           # deletion-only-ledger exemptions -- on the reasoning that a blanket
@@ -304,7 +341,6 @@ jobs:
               --review-comments-file "$COMMENTS_FILE" \
               2> "$RUNNER_TEMP/receipt-why.txt"; then
             {
-              echo "### PR scope guard"
               echo ""
               echo "**Blocked — no Drain-Review receipt for head \`${HEAD_OID}\`${DIFF_KEY:+ (diff key \`${DIFF_KEY}\`)}.**"
               echo ""
@@ -356,47 +392,7 @@ jobs:
           fi
           cat "$RUNNER_TEMP/receipt-why.txt" || true
 
-          echo "### PR scope guard" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Files changed vs merge-base: **${TOTAL}**" >> "$GITHUB_STEP_SUMMARY"
-          echo "Release-critical files touched: **${HIT_COUNT}**" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$HIT_COUNT" -eq 0 ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "No release-critical paths touched." >> "$GITHUB_STEP_SUMMARY"
-            echo "scope guard: clean (${TOTAL} files, none release-critical)"
-            exit 0
-          fi
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "<details><summary>Release-critical files</summary>" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          # shellcheck disable=SC2016  # the $ is sed's end-of-line anchor, not a variable
-          printf '%s\n' "$HITS" | sed 's/^/- `/; s/$/`/' >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
-
-          # Breadth is the reviewer's to judge, not a cap's. #1491 carried 16
-          # release-critical files while claiming to be a two-file auth fix,
-          # because its branch dragged an unmerged lineage; the receipt above is
-          # what stops that now, since every PR's diff is reviewed against main.
-          # A hard cap of 8 would also refuse the cutover's deletion, which is
-          # meant to be that broad, and this file runs from the base, so no PR
-          # could lift it for itself. The count stays as a note for the reviewer
-          # (docs/reference/executable-gates.md).
-          REVIEW_NOTE_SENSITIVE=8
-          if [ "$HIT_COUNT" -gt "$REVIEW_NOTE_SENSITIVE" ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Note for the reviewer: ${HIT_COUNT} release-critical files. Past ${REVIEW_NOTE_SENSITIVE}, check the branch is not carrying an unmerged lineage." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          LARGE_TOTAL=150
-          if [ "$TOTAL" -gt "$LARGE_TOTAL" ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Note: ${TOTAL} files changed (advisory threshold ${LARGE_TOTAL})." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          echo "scope guard: ${HIT_COUNT} release-critical file(s), receipted"
+          echo "scope guard: ${TOTAL} files, ${HIT_COUNT} release-critical, receipted"
           exit 0
 
 # Honesty note
