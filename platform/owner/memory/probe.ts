@@ -759,8 +759,8 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // bodies and nothing else, as production seals them (`archivePick`). For the move, two
       // of `mib` MiB: under the seal each, together in one segment; at 8 MiB, the body cap,
       // each its own, since one reaches the seal alone. For the rewrite, the largest segment
-      // one can meet: the muse's body the largest that does not seal alone, then Dot's at
-      // `mib` (the cap), one segment of about 16 MiB; then Dot is deleted.
+      // one can meet: the muse's body, within bytes, the largest that does not seal alone,
+      // then Dot's at `mib` (the cap), one segment of about 16 MiB; then Dot is deleted.
       const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
       const post = async (on: DurableObjectStub<LegArchive>, k: number, bytes: number,
@@ -771,12 +771,14 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       let kept = mib * MIB;
       if (path === "rewrite") {
         // A record's own bytes past its body's, read from a message of the same shape on an
-        // object of its own: the kept body is then one byte short of the seal alone.
+        // object of its own. Its three rows each write its post's `clock()`, whole seconds to
+        // three decimals, so another post's record is up to `TIMES_SLACK` longer: the kept
+        // body is then at most that and a byte short of the seal alone, and never reaches it.
         const sizing = await archiveObject(env, `${name}-sizing`);
         const its = await sizing.legAgents();
         const overhead = await sizing.legOverhead(
           await post(sizing, 0, SEGMENT_MIN_BYTES / 2, owner(`${name}-sizing`), its));
-        kept = SEGMENT_MIN_BYTES - 1 - (overhead - RECORD_TRAILER_BYTES);
+        kept = SEGMENT_MIN_BYTES - 1 - TIMES_SLACK - (overhead - RECORD_TRAILER_BYTES);
       }
       await stub.legAck(0, await post(stub, 0, kept));
       await stub.legAck(1, await post(stub, 1, mib * MIB));
@@ -820,6 +822,13 @@ async function ring(stub: DurableObjectStub<LegArchive>, who: Binding, agent: st
   await stub.roomPost(who, { room_id: `dm:${agent}`, client_message_id: cmid, body: "ring",
                              parent_id: null });
 }
+
+/**
+ * The most two posts' records of one shape differ by: each of a record's three rows (the
+ * message, its body, its recipient) writes the post's `clock()`, `Date.now() / 1000`, as
+ * whole seconds up to three decimals, so 4 characters a row (`".123"`).
+ */
+const TIMES_SLACK = 3 * ".123".length;
 
 /** How often a case looks at its archive object's lane, and how many looks it waits at most. */
 const LANE_POLL_MS = 10;
