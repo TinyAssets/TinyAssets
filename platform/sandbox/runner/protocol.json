@@ -4,6 +4,56 @@
                  "login-launch", "login-probe", "login-run", "matcher-probe", "prepare",
                  "quiet-wait", "recover", "renew-wait", "renewed", "route-probe", "run",
                  "signin-check", "state", "status", "sync"],
-    "state": ["live", "protocol", "quiet"]
+    "exit": { "ok": 0, "usage": 2, "no": 3, "fenced": 4, "absent": 24, "mismatch": 25 },
+    "paths": {
+      "loader": "/usr/local/bin/ta-runner",
+      "install": "install",
+      "runners": "/opt/ta/runner",
+      "state": "/var/lib/ta",
+      "incoming": "/var/lib/ta/incoming/<digest>",
+      "inbox_doc": "/var/lib/ta/inbox/<id>.json",
+      "inbox_code": "/var/lib/ta/inbox/<id>.code",
+      "lease": "/var/lib/ta/lease.json"
+    },
+    "documents": {
+      "start": {
+        "run": "string",
+        "agent": "string",
+        "conversation": "string",
+        "engine": "string",
+        "credential": "string",
+        "model": "string|null",
+        "session_id": "string|null",
+        "prompt": "string",
+        "unattended": "boolean",
+        "authority": "string",
+        "lease": { "lease_id": "string", "epoch": "number" },
+        "config": {
+          "generation": "number",
+          "egress": { "mode": "string", "destinations": "array" },
+          "env": "object",
+          "inherit": "array"
+        },
+        "urls": { "mcp": "string", "mcp_bare": "string", "events": "string", "signin": "string" },
+        "scratch_retention_days": "number|null"
+      },
+      "signin": {
+        "id": "string",
+        "engine": "string",
+        "region": "string|null",
+        "mode": "string",
+        "authority": "string",
+        "urls": { "events": "string", "signin": "string" }
+      },
+      "lease": {
+        "lease": { "lease_id": "string", "epoch": "number" },
+        "authority": "string",
+        "tokens": { "sync_token": "string", "runner_token": "string" }
+      }
+    },
+    "answers": {
+      "state": { "live": "number", "quiet": "boolean", "protocol": "number" },
+      "quiet-wait": { "live": "number", "quiet": "boolean" }
+    }
   }
 }

@@ -2,8 +2,9 @@
  * The one lock the runner takes (an engine's store, a pool user, the sync agent's turn): a
  * file naming its holder, `<pid> <boot>`, made whole beside its name and linked into place,
  * so no lock is ever seen half made. A lock is taken over once its holder is gone: its
- * process dead, or of another boot (a pid repeats after a reboot, which a lock on disk
- * outlives), by one taker alone (`takeOver`). A wait sleeps, so the waiter's event loop goes
+ * process dead, or of another boot or an unknown one (a pid repeats after a reboot, which a
+ * lock on disk outlives), by one taker alone (`takeOver`). A taker that cannot read its own
+ * boot's id takes nothing and fails loudly. A wait sleeps, so the waiter's event loop goes
  * on (a run's heartbeats), at `FIRST_MS` and backing off to at most its caller's longest
  * sleep, and fails loudly past its bound.
  */
@@ -35,16 +36,22 @@ export function alive(pid: number | null): boolean {
   }
 }
 
-/** This boot's id: a pid names a process only within the boot it was taken in. */
+/**
+ * This boot's id: a pid names a process only within the boot it was taken in. Unreadable or
+ * empty, it throws: without it no lock tells a live holder of this boot from a gone one.
+ */
 export function bootId(): string {
-  try {
-    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-  } catch {
-    return "";
+  const id = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  if (id === "") {
+    throw new Error("this boot's id reads empty: no lock can be taken without it");
   }
+  return id;
 }
 
-/** Whether the lock at `path` has a holder still there (none, or one gone, is free). */
+/**
+ * Whether the lock at `path` has a holder still there (none, or one gone, is free). A holder
+ * of another boot, or of one its lock does not name, is gone.
+ */
 function held(path: string, boot: string): boolean {
   let text: string;
   try {
@@ -56,7 +63,7 @@ function held(path: string, boot: string): boolean {
     throw error;
   }
   const [pid, of] = text.split(" ");
-  return alive(Number(pid)) && (of === undefined || of === "" || boot === "" || of === boot);
+  return of === boot && alive(Number(pid));
 }
 
 /** The identity of the file at `path` (its inode), or null when there is none. */

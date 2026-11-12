@@ -60,7 +60,9 @@
  * a release that never reached this Worker leaves no sandbox running to its ceiling.
  *
  * The alarm is armed again on every path, a failed look included (backing off from the
- * measured request time, never past the soonest edge), so no run dies at the ceiling.
+ * measured request time, never past the soonest edge), so no run dies at the ceiling. Each
+ * look ends by giving the line back every slot this object owes it (a renewal's, its sandbox
+ * running again or gone), so one the line did not take is asked again until it lands.
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
@@ -80,9 +82,10 @@ import {
 } from "../../contract/src/sandbox";
 
 import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
-import { COMMAND, EXIT, inboxCode, inboxDoc, type JobKind, JOBS, LEASE_FILE,
-         type LeaseFile, LOADER, type QuietAnswer, type SigninDoc, SPEAKS, type StartDoc,
-         type StateAnswer, type WorkerCommand } from "../runner/protocol";
+import { type AnswerFields, ANSWERS, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc,
+         type JobKind, JOBS, LEASE_FILE, type LeaseFile, LOADER, type QuietAnswer, SPEAKS,
+         type SigninDoc, type StartDoc, type StateAnswer,
+         type WorkerCommand } from "../runner/protocol";
 
 import { install } from "./install";
 import { runnerBytes, runnerDigest } from "./runner-bytes";
@@ -114,12 +117,6 @@ class RunnerRefused extends Error {
   override readonly name = "RunnerRefused";
 }
 
-/**
- * A runner command's deadline: the lease's TTL. The owner's object settles a run whose
- * runner it has not heard from in `LEASE_TTL_S`, so a command that takes longer has lost
- * its run regardless.
- */
-const COMMAND_MS = LEASE_TTL_S * 1000;
 /** Measured: the longest pause, 705 ms (`e2b-resume-measurement.md`, 40 cycles). */
 const PAUSE_MAX_MS = 705;
 /** Measured: the longest resume call, 895 ms to the first byte (the same 40 cycles). */
@@ -303,18 +300,42 @@ function httpsDoors(urls: Readonly<Record<string, string>>): boolean {
 }
 
 /**
- * The start's document as the runner reads it: everything but the lease's own secrets, and
- * the control record's scratch retention (`scratch_retention_days`, null when it names none).
+ * The start's document as the runner reads it (the protocol's own, field by field): the
+ * start but the lease's secrets, its network and its sealed route, with the control
+ * record's scratch retention (`scratch_retention_days`, null when it names none).
  */
 function startDocument(start: SandboxStart, retentionDays: number | null): StartDoc {
-  const { tokens: _tokens, network: _network, route: _route, ...rest } = start;
-  return { ...rest, scratch_retention_days: retentionDays };
+  const { config, lease, urls } = start;
+  return {
+    run: start.run, agent: start.agent, conversation: start.conversation, engine: start.engine,
+    credential: start.credential, model: start.model, session_id: start.session_id,
+    prompt: start.prompt, unattended: start.unattended, authority: start.authority,
+    lease: { lease_id: lease.lease_id, epoch: lease.epoch },
+    config: { generation: config.generation, egress: config.egress, env: config.env,
+              inherit: config.inherit },
+    urls: { mcp: urls.mcp, mcp_bare: urls.mcp_bare, events: urls.events, signin: urls.signin },
+    scratch_retention_days: retentionDays,
+  };
 }
 
-/** A sign-in's document as the runner reads it: everything but the lease and its secrets. */
+/** A sign-in's document as the runner reads it: the sign-in but its lease and its secrets. */
 function signinDocument(signin: SandboxSignin): SigninDoc {
-  const { tokens: _tokens, network: _network, lease: _lease, route: _route, ...doc } = signin;
-  return doc;
+  return { id: signin.id, engine: signin.engine, region: signin.region, mode: signin.mode,
+           authority: signin.authority,
+           urls: { events: signin.urls.events, signin: signin.urls.signin } };
+}
+
+/**
+ * The lease file a start or sign-in that opened its lease hands the runner (null for one
+ * that joins it): the lease and the runner's two tokens alone. The egress token stays in
+ * E2B's transform, outside.
+ */
+function leaseFile(request: SandboxStart | SandboxSignin): LeaseFile | null {
+  const { tokens } = request;
+  return tokens === null ? null
+    : { lease: { lease_id: request.lease.lease_id, epoch: request.lease.epoch },
+        authority: request.authority,
+        tokens: { sync_token: tokens.sync_token, runner_token: tokens.runner_token } };
 }
 
 /** What a start or a sign-in hands its job's launch (`#launch`). */
@@ -331,7 +352,7 @@ interface Launch {
 }
 
 /** A runner's answer: its JSON, held to the fields the protocol says it has. */
-function answerOf<T>(out: string, fields: Readonly<Record<keyof T, "number" | "boolean">>): T {
+function answerOf<T>(out: string, fields: AnswerFields<T>): T {
   const parsed = JSON.parse(out) as Record<string, unknown>;
   for (const [field, type] of Object.entries(fields)) {
     if (typeof parsed[field] !== type) {
@@ -340,10 +361,6 @@ function answerOf<T>(out: string, fields: Readonly<Record<keyof T, "number" | "b
   }
   return Object.fromEntries(Object.keys(fields).map((field) => [field, parsed[field]])) as T;
 }
-
-/** `quiet-wait`'s answer, and the live and quiet of `state`'s. */
-const QUIET: Readonly<Record<keyof QuietAnswer, "number" | "boolean">> =
-  Object.freeze({ live: "number", quiet: "boolean" });
 
 /**
  * The metadata naming an owner's sandboxes, so an erasure finds strays the rows lost: an
@@ -416,6 +433,25 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   #slots(): DurableObjectStub<SandboxSlots> {
     return this.env.SLOTS.getByName(SLOTS);
+  }
+
+  /**
+   * A slot this object holds in the line (a renewal's, `reserve`) owed back, its sandbox
+   * running again or gone. It stays owed until the line takes it (`#giveBack`): one the line
+   * did not take is asked again by the look, armed at once while any is owed, never lost.
+   */
+  #owe(sandboxId: string): void {
+    this.#sql.exec("INSERT INTO owed (sandbox_id) VALUES (?) ON CONFLICT DO NOTHING", sandboxId);
+  }
+
+  /** Every slot owed given back to the line, each kept owed until it is: the first refusal thrown. */
+  async #giveBack(): Promise<void> {
+    const slots = this.#slots();
+    for (const { sandbox_id } of this.#sql.exec<{ sandbox_id: string }>(
+      "SELECT sandbox_id FROM owed").toArray()) {
+      await slots.unreserve(sandbox_id);
+      this.#sql.exec("DELETE FROM owed WHERE sandbox_id = ?", sandbox_id);
+    }
   }
 
   /** A sandbox of the platform's paused or ended: the line's first is rung (logged on fault). */
@@ -631,7 +667,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                      "end_at = ? WHERE authority = ?",
                    after === null ? Date.now() : Date.parse(after.endAt), row.authority);
     // A renewal's slot, held across its pause, given back to the line.
-    await this.#slots().unreserve(resumed.sandboxID);
+    this.#owe(resumed.sandboxID);
+    await this.#giveBack();
     return handle;
   }
 
@@ -809,11 +846,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return { started: false, code: CODES.lost };
       }
       const { handle } = got;
-      if (request.tokens !== null) {
-        // The runner's two tokens alone: the egress token stays in E2B's transform, outside.
-        const { sync_token, runner_token } = request.tokens;
-        const lease: LeaseFile = { lease: request.lease, authority: request.authority,
-                                   tokens: { sync_token, runner_token } };
+      const lease = leaseFile(request);
+      if (lease !== null) {
         await e2b.upload(handle, LEASE_FILE, json(lease));
         // The lease's own network is on it now: a re-apply kept for an earlier one is moot.
         this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0, network_due = NULL " +
@@ -1061,15 +1095,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       this.#log(authority, "kill");  // gone while it ran: its time ended here at the latest
     }
     if (row !== null) {
-      // A renewal's slot it held is the line's again.
-      this.ctx.waitUntil(this.#slots().unreserve(row.sandbox_id).catch(() => undefined));
+      this.#owe(row.sandbox_id);  // a renewal's slot it held: the line's again, at the look
     }
     this.#sql.exec("DELETE FROM sandboxes WHERE authority = ?", authority);
     this.#sql.exec("DELETE FROM launched WHERE authority = ?", authority);
   }
 
   /** The runner's state, from a runner speaking a protocol this Worker speaks. */
-  async #runnerState(handle: Box): Promise<QuietAnswer> {
+  async #runnerState(handle: Box): Promise<StateAnswer> {
     const out = (await this.#run(handle, [COMMAND.state])).out;
     const protocol = (JSON.parse(out) as Partial<Record<keyof StateAnswer, unknown>>).protocol;
     if (typeof protocol !== "number" || !SPEAKS.includes(protocol)) {
@@ -1079,7 +1112,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       console.error(message);
       throw new RunnerRefused(message);
     }
-    return answerOf<QuietAnswer>(out, QUIET);
+    return answerOf<StateAnswer>(out, ANSWERS[COMMAND.state]);
   }
 
   /**
@@ -1099,11 +1132,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /**
    * The alarm at the soonest thing a row needs: a renewal look (`end_at` less the window),
    * a resume (a paused sandbox a lease runs in, or a renewing one), a reap (a release whose
-   * pause did not land). A paused, idle sandbox needs nothing. None, no alarm.
+   * pause did not land); and at once while a slot is owed the line. A paused, idle sandbox
+   * needs nothing. None, no alarm.
    */
   async #arm(at = Number.POSITIVE_INFINITY): Promise<void> {
     const ceilings = this.#known();
-    let soonest = at;
+    let soonest = this.#sql.exec("SELECT 1 FROM owed LIMIT 1").toArray().length > 0
+      ? Math.min(at, Date.now()) : at;
     for (const row of this.#rows()) {
       if (row.renewing === 1 || row.releasing === 1
           || (row.paused === 1 && this.#leased(row.authority))) {
@@ -1134,7 +1169,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const began = Date.now();
     let next: number;
     try {
-      next = await this.#look(began);
+      // What is owed is given back whatever the look found: no slot waits on another sandbox.
+      next = await this.#look(began).finally(() => this.#giveBack());
       this.#sql.exec("UPDATE known SET failures = 0");
     } catch (error) {
       // E2B unreachable, or answering out of shape: asked again, backing off from the
@@ -1189,7 +1225,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         }
         throw error;
       }
-      quiet.set(row.authority, answerOf<QuietAnswer>(out, QUIET).quiet);
+      quiet.set(row.authority, answerOf<QuietAnswer>(out, ANSWERS[COMMAND.quietWait]).quiet);
     }));
     return this.#serial(async () => {
       let soonest = Number.POSITIVE_INFINITY;
@@ -1369,6 +1405,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         await e2b.kill(id);
         await this.#slots().unreserve(id);
       }
+      await this.#giveBack();
       await this.#slots().leave(owner);
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();

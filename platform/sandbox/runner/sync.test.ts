@@ -649,6 +649,22 @@ describe("a name with a backslash", () => {
   });
 });
 
+describe("the engines' sessions in the workspace", () => {
+  it("are never offered as the owner's files: the sessions tree is the store's to send",
+     async () => {
+    const { place: p, local } = place();
+    mkdirSync(join(local, ".sessions", "owner", "claude-code"), { recursive: true });
+    writeFileSync(join(local, ".sessions", "owner", "claude-code", "s.jsonl"), "a session");
+    mkdirSync(join(local, "notes", ".sessions"), { recursive: true });
+    writeFileSync(join(local, "notes", ".sessions", "kept.md"), "a file of the owner's");
+    const sent: string[] = [];
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body, sent)
+      : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
+    expect(sent.filter((path) => path !== SYNC_IGNORE))
+      .toEqual(["/workspace/notes/.sessions/kept.md"]);
+  });
+});
+
 describe("a list larger than the sandbox's heap would hold whole", () => {
   it("is cut at `LIST_BYTES` in a sync agent given the sandbox's heap, which completes", { tags: ["large"] }, () => {
     // The sync, bundled as the template bundles the runner, run in a Node given the heap a

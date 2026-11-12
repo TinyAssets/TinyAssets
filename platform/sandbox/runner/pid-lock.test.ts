@@ -1,7 +1,7 @@
 /**
  * The runner's one lock (`pid-lock.ts`): held by a live holder of this boot alone; taken
- * over from a holder that is gone (dead, or of another boot), by one taker alone however
- * many race for it; waited for, sleeping, and refused loudly past the wait's bound.
+ * over from a holder that is gone (dead, or of another or an unnamed boot), by one taker
+ * alone however many race for it; waited for, sleeping, and refused loudly past the wait's bound.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -50,6 +50,31 @@ describe("the runner's lock", () => {
     expect(tryLock(lock)).toBe(true);
     writeFileSync(lock, `1 ${bootId()}`);  // pid 1 of this boot: held
     expect(tryLock(lock)).toBe(false);
+  });
+
+  it("is taken over from a holder whose lock names no boot", () => {
+    const lock = lockPath();
+    writeFileSync(lock, "1 ");  // pid 1, alive, its boot left empty
+    expect(tryLock(lock)).toBe(true);
+    writeFileSync(lock, "1");  // no boot named at all
+    expect(tryLock(lock)).toBe(true);
+  });
+
+  it("is refused loudly, taking nothing over, by a taker that cannot read its boot id", () => {
+    const lock = lockPath();
+    writeFileSync(lock, `1 ${bootId()}`);  // a live holder of this boot
+    // The taker in a mount namespace of its own, its boot id hidden under a tmpfs.
+    const taker = "const { tryLock } = await import(process.argv[1]); tryLock(process.argv[2]);";
+    const done = spawnSync("unshare", [
+      "--mount", "--propagation", "private", "--", "/bin/sh", "-c",
+      'mount -t tmpfs tmpfs /proc/sys/kernel/random && exec "$0" --input-type=module -e "$1" ' +
+        '"$2" "$3"',
+      process.execPath, taker, join(import.meta.dirname, "pid-lock.ts"), lock,
+    ], { encoding: "utf8" });
+    expect(done.status, done.stderr).not.toBe(0);
+    expect(done.stderr).toContain("boot_id");
+    expect(readFileSync(lock, "utf8")).toBe(`1 ${bootId()}`);
+    expect(readdirSync(join(lock, ".."))).toEqual(["lock"]);
   });
 
   it("is waited for while held, and refused loudly past the wait's bound", async () => {

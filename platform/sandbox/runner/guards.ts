@@ -70,13 +70,23 @@ function settingsNames(text: string): { env: string[]; helpers: string[] } | nul
   return { env, helpers };
 }
 
+/**
+ * Whether a path, from a directory the env-file scan reads (the agent's, or one of the cwd's
+ * ancestors), is within its reach: a dot entry at the top, or anything one dot directory
+ * down. A CLI looks for its env and settings files there and no deeper.
+ */
+export function envScanReach(relative: string): boolean {
+  const parts = relative.split("/");
+  return parts.length <= 2 && parts[0]!.startsWith(".");
+}
+
 /** Whether a path, from the agent's directory, is one the scan reads. */
 export function projectEnvFile(relative: string): "dotenv" | "settings" | null {
-  const parts = relative.split("/");
-  const name = parts.at(-1)!;
-  if (parts.length > 2 || (parts.length === 2 && !parts[0]!.startsWith("."))) {
+  if (!envScanReach(relative)) {
     return null;
   }
+  const parts = relative.split("/");
+  const name = parts.at(-1)!;
   if (name === ".env" || name.startsWith(".env.")) {
     return "dotenv";
   }
@@ -144,12 +154,9 @@ export function homeEnvFile(relative: string): "dotenv" | "settings" | null {
  * ancestor's own `.env` files, and those one dot directory down.
  */
 export function ancestorEnvFile(relative: string): "dotenv" | null {
-  const parts = relative.split("/");
-  const name = parts.at(-1)!;
-  if (parts.length > 2 || (parts.length === 2 && !parts[0]!.startsWith("."))) {
-    return null;
-  }
-  return name === ".env" || name.startsWith(".env.") ? "dotenv" : null;
+  const name = relative.split("/").at(-1)!;
+  return envScanReach(relative) && (name === ".env" || name.startsWith(".env.")) ? "dotenv"
+    : null;
 }
 
 /** A secret file's atoms: its JSON string values or its lines, long enough to be one. */

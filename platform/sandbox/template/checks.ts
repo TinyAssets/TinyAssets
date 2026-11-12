@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 import { readWrangler } from "../../ci/workers";
 import { E2b, type Handle } from "../src/e2b";
 import { install } from "../src/install";
-import { LOADER } from "../runner/protocol";
+import { COMMAND, EXIT, LOADER } from "../runner/protocol";
 import type { Plan, PlanSandbox, PlanStep } from "../runner/probes";
 
 import { NAME, spec, stage, tag } from "./image";
@@ -104,9 +104,10 @@ async function sandbox(e2b: E2b, template: string, plan: Plan, each: PlanSandbox
           done.exitCode}: ${done.stderr}`);
       }
     }
-    const prepared = await e2b.exec(box, [LOADER, runner.sha, "prepare", ...plan.resolvers],
+    const prepared = await e2b.exec(box, [LOADER, runner.sha, COMMAND.prepare,
+                                          ...plan.resolvers],
                                     { timeoutMs: plan.prepare_s * 1000, keepalive: true });
-    if (prepared.exitCode !== 0) {
+    if (prepared.exitCode !== EXIT.ok) {
       throw new Error(`the runner's prepare exited ${prepared.exitCode} in the ${each.name} ` +
                       `sandbox: ${prepared.stderr}`);
     }
@@ -121,7 +122,7 @@ async function sandbox(e2b: E2b, template: string, plan: Plan, each: PlanSandbox
       const done = await e2b.exec(box, [LOADER, probes.sha, ...step.argv],
                                   { timeoutMs: step.timeout_s * 1000, keepalive: true });
       const result = answer(done.stdout);
-      const outcome = { step, ok: done.exitCode === 0 && result["ok"] === true, result };
+      const outcome = { step, ok: done.exitCode === EXIT.ok && result["ok"] === true, result };
       outcomes.push(outcome);
       log({ check: step.check, argv: step.argv, exit: done.exitCode, result });
     }
