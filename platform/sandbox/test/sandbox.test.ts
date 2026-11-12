@@ -18,8 +18,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import {
-  closedNetwork, EGRESS_HOST, egressTokenOf, generationOf, runUrls, signinEventsUrl,
-  withEgressToken, withGeneration,
+  closedNetwork, EGRESS_HOST, egressTokenOf, GENERATION_HEADER, generationOf, runUrls,
+  signinEventsUrl, withEgressToken, withGeneration,
 } from "../../contract/src/egress";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/migrate";
@@ -1237,8 +1237,8 @@ describe("a live lease's network re-applied (E2)", () => {
     expect(network.allowOut.at(-1)).toBe(EGRESS_HOST);
   });
 
-  it("answers lost for a lease it has no sandbox of, and refuses a plan with a token",
-     async () => {
+  it("answers lost for a lease it has no sandbox of, and refuses a plan with a token or " +
+     "no generation", async () => {
     const who = owner();
     expect(await stub(who).network(reapply())).toEqual({ state: "lost" });
     await stub(who).start(who, start({ credential: "api_key" }));
@@ -1248,7 +1248,22 @@ describe("a live lease's network re-applied (E2)", () => {
     const refused = await stub(who).network(reapply({ network: tokened }))
       .then(() => null, (error: unknown) => error);
     expect(String(refused)).toMatch(/no token/);
+    // A plan whose transform names no generation is refused, never applied as "not newer".
+    const unnamed = { ...PLAN, network: { ...PLAN.network, rules: { [EGRESS_HOST]: [
+      { transform: { headers: { [GENERATION_HEADER]: "x" } } }] } } };
+    expect(String(await stub(who).network(reapply({ network: unnamed }))
+      .then(() => null, (error: unknown) => error))).toMatch(/generation header/);
     expect((await networkOf()).generation).toBe(1);
+  });
+
+  it("fails loudly on a live network that carries no generation", async () => {
+    const who = owner();
+    const bare = { ...NETWORK, network: withEgressToken(closedNetwork(["github.com"]),
+                                                        EGRESS_TOKEN) };
+    await stub(who).start(who, start({ credential: "api_key", network: bare as never }));
+    expect(String(await stub(who).network(reapply()).then(() => null, (error: unknown) => error)))
+      .toMatch(/the egress generation it was made under/);
+    expect((await networkOf()).generation).toBeNull();
   });
 
   it("keeps it for a paused sandbox, applied as the sandbox resumes", async () => {
