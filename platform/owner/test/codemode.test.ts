@@ -4,8 +4,8 @@
  * execution named by its owner and a random id, each tool call an RPC back through
  * `exchange`; and it is on in the owner's policy until the owner turns it off. And P11's
  * local part: pi's `RemoteCodemodeSandbox` over the service binding, a nested call's round
- * trip. The MCP door's `code` tool, which hands a script the door's own tools, is slice M's. CPU limits and isolation are not shown by
- * workerd: owed to H2's live probe.
+ * trip. The MCP door's `code` tool, which hands a script the door's own tools, is slice M's.
+ * CPU limits and isolation are not shown by workerd: owed to H2's live probe.
  */
 import { env } from "cloudflare:workers";
 import {
