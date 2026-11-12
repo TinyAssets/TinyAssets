@@ -20,8 +20,8 @@
  *
  * - `putChunks` checks each chunk's bytes against its hash, seals them, and puts the sealed
  *   bytes create-once (`etagDoesNotMatch: "*"`) with their own hash as R2's `put` `sha256`
- *   option, which verifies them in transit (a mismatch is R2's `BadDigest`, refused here as
- *   invalid). It relies on the binding's check, never on S3 checksum headers (R2's S3 API
+ *   option, which verifies them in transit (a mismatch is R2's `BadDigest`, a transfer fault
+ *   left loud as R2 raised it, never refused as the caller's bytes). It relies on the binding's check, never on S3 checksum headers (R2's S3 API
  *   lists SHA-256 as a composite checksum only). An existing key is a no-op only when it
  *   opens to exactly these bytes; anything else under a hash key fails loudly instead of
  *   counting as a deduplicated hit.

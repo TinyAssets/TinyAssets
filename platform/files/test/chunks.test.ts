@@ -618,6 +618,25 @@ describe("sealed objects", () => {
       .message).toBe("a stored object does not open under its owner's key");
   });
 
+  it("opens no object moved from another owner, or from another generation", async () => {
+    const [alice, bob] = [ns(), ns()];
+    const body = bytes("the same bytes, two owners");
+    const hash = await sha(body);
+    await put(alice, body);
+    await put(bob, body);
+    const raw = async (at: string) => (await env.BLOBS.get(at))!.arrayBuffer();
+    await env.BLOBS.put(await named(bob, hash), await raw(await named(alice, hash)));
+    expect((await failure(() => files().getChunks(bob, [{ sha256: hash }]))).message)
+      .toBe("a stored object does not open under its owner's key");
+    const key = await keyOf(alice);
+    const [older, newer] = ["1111111111111111", "2222222222222222"];
+    const part = await service().putManifestPart(alice, key, older, 0, bytes("night one"));
+    await service().putManifestPart(alice, key, newer, 0, bytes("night one"));
+    await env.BLOBS.put(manifestKey(alice, newer, 0), await raw(manifestKey(alice, older, 0)));
+    expect((await failure(() => service().getManifestPart(alice, key, newer, 0, part.sha256)))
+      .message).toBe("a stored object does not open under its owner's key");
+  });
+
   it("charges an unverified range a whole chunk, which it opens whole: a batch pulls no more",
      async () => {
     const space = ns();
