@@ -5,10 +5,13 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { physicalId, rankOf, ranked } from "../src/auto";
+import { type Candidate, rankOf, ranked } from "../src/auto";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Usable } from "../src/connections";
 import ranking from "../src/model-ranking.json" with { type: "json" };
+
+/** A candidate as `connection/model`. */
+const named = (candidate: Candidate) => `${candidate.connection}/${candidate.model.id}`;
 
 function model(id: string, output = 1): ModelRecord {
   return { id, name: id, reasoning: true, input: ["text"], contextWindow: 100_000,
@@ -39,7 +42,7 @@ describe("the ranking", () => {
 
   it("orders the earliest entry first, newer ids first in an entry, then unmatched by " +
      "output price", () => {
-    expect(ranked(CONNECTED).map(physicalId)).toEqual([
+    expect(ranked(CONNECTED).map(named)).toEqual([
       "c-a/claude-fable-5-1", "c-a/claude-fable-5", "c-g/gemini-4-argon",
       "c-o/anthropic/claude-opus-5", "c-a/claude-sonnet-4-5", "c-o/vendor/unranked-y",
       "c-o/vendor/unranked-x"]);
@@ -61,13 +64,13 @@ describe("the ranking", () => {
   it("breaks a tie by the older connection", () => {
     const twice = [usable("c-new", "anthropic", 9, model("claude-fable-5")),
                    usable("c-old", "anthropic", 1, model("claude-fable-5"))];
-    expect(ranked(twice).map(physicalId)).toEqual(["c-old/claude-fable-5", "c-new/claude-fable-5"]);
+    expect(ranked(twice).map(named)).toEqual(["c-old/claude-fable-5", "c-new/claude-fable-5"]);
   });
 });
 
 describe("the strongest connected model", () => {
   it("is the first ranked, and none with nothing connected", () => {
-    expect(physicalId(ranked(CONNECTED)[0]!)).toBe("c-a/claude-fable-5-1");
+    expect(named(ranked(CONNECTED)[0]!)).toBe("c-a/claude-fable-5-1");
     expect(ranked([])).toEqual([]);
     expect(ranked([usable("c-e", "anthropic", 1)])).toEqual([]);
   });

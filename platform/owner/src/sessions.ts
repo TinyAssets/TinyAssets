@@ -45,7 +45,7 @@ import { codePoints } from "../../contract/src/text";
 import type { Call, Door, OwnerState } from "./owner-do";
 import { clock } from "./clock";
 
-export interface SessionLimits {
+interface SessionLimits {
   /** A session's life from its sign-in or its last renewal: the Python's 28,800 s. */
   readonly ttlS: number;
   readonly maxSessions: number;
@@ -62,7 +62,7 @@ export const SESSION_LIMITS: SessionLimits = Object.freeze({
   clockMarginS: 5,
 });
 
-export const SESSION_REQUIRED = "interactive owner session required";
+const SESSION_REQUIRED = "interactive owner session required";
 
 /** A cookie the browser presented: 32 to 512 characters, as the Python's. */
 function proofOf(value: unknown): string | null {

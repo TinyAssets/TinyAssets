@@ -88,9 +88,10 @@ function leases<R>(owner: string, act: (leases: OwnerDO["sandbox"]) => Promise<R
 
 /**
  * A signed-in owner with a Groq key connected, its sandbox's lease open and its network
- * applied; the owner's caps roomy unless `models` sets them, its spend table as `spend`.
+ * marked as the start that opened it was dispatched; the owner's caps roomy unless
+ * `models` sets them, its spend table as `spend`.
  */
-async function sandbox(apply = true, models: Record<string, unknown> = {
+async function sandbox(models: Record<string, unknown> = {
   turn_requests: 10_000, turn_tokens: 1_000_000_000, turn_cost: 1_000_000_000_000 },
                        spend: Record<string, unknown> = {}): Promise<Sandbox> {
   const owner = `user_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -118,11 +119,6 @@ async function sandbox(apply = true, models: Record<string, unknown> = {
   const opened: Opened = { egress_token: start.tokens!.egress_token,
                            sync_token: start.tokens!.sync_token, lease: start.lease,
                            network: start.network!, env: start.config.env };
-  if (apply) {
-    await leases(owner, (sandbox) => sandbox.networkApplied({
-      lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
-      generation: opened.network.generation }));
-  }
   return { owner, session: app.session, token: opened.egress_token, app: app.access_token,
            connection, model: ids[0]!, bound, opened, key, run, secret: secretOf(start) };
 }
@@ -499,7 +495,7 @@ describe("the egress door", () => {
 
   it("holds a call to the model policy's caps alone: a purchase threshold refuses nothing",
      async () => {
-    const box = await sandbox(true, { turn_requests: 10_000, turn_tokens: 1_000_000_000,
+    const box = await sandbox({ turn_requests: 10_000, turn_tokens: 1_000_000_000,
                                       turn_cost: 1_000_000_000_000 }, { ask_above: 100 });
     const response = await send(egressRequest(box));
     expect(response.status).toBe(200);
@@ -554,7 +550,7 @@ describe("the egress door", () => {
 
   it("hands the sandbox slice two tokens, its network and its clients' environment once",
      async () => {
-    const box = await sandbox(false);
+    const box = await sandbox();
     expect(verifyToken(env.ROUTING_MAC_KEY, "egress", box.opened.egress_token))
       .toMatchObject({ owner: box.owner });
     expect(verifyToken(env.ROUTING_MAC_KEY, "sync", box.opened.sync_token))
@@ -690,7 +686,7 @@ describe("a refused call", () => {
 
   it("past the owner's spend caps is refused before any forward, its receipt kept",
      async () => {
-    const box = await sandbox(true, { turn_cost: 1 });
+    const box = await sandbox({ turn_cost: 1 });
     const response = await send(egressRequest(box));
     expect([response.status, await codeOf(response)]).toEqual([402, "egress_spend_refused"]);
     expect(await spends(box.owner)).toMatchObject([{ state: "refused", rule: "run_cost" }]);
@@ -711,14 +707,16 @@ describe("a refused call", () => {
     expect(await forwarded()).toEqual([]);
   });
 
-  it("under a stale egress generation, or before its network is applied", async () => {
-    const box = await sandbox(false);
-    const unapplied = await send(egressRequest(box));
-    expect([unapplied.status, await codeOf(unapplied)]).toEqual([409, "egress_network_stale"]);
+  it("under a stale egress generation, or a network older than the policy's", async () => {
+    const box = await sandbox();
     for (const generation of [null, "0", "2", "x"]) {
       const stale = await send(egressRequest(box, COMPLETIONS, { generation }));
       expect([stale.status, await codeOf(stale)]).toEqual([409, "egress_policy_stale"]);
     }
+    // An egress write since the start: the network it applied is generation 1's.
+    expect(await writeEgress(box)).toBe(2);
+    const unapplied = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
+    expect([unapplied.status, await codeOf(unapplied)]).toEqual([409, "egress_network_stale"]);
     expect(await forwarded()).toEqual([]);
   });
 
@@ -778,11 +776,6 @@ describe("a policy write mid-stream", () => {
     expect([old.status, await codeOf(old)]).toEqual([409, "egress_policy_stale"]);
     const waiting = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
     expect([waiting.status, await codeOf(waiting)]).toEqual([409, "egress_network_stale"]);
-    await leases(box.owner, (sandbox) => sandbox.networkApplied({
-      lease_id: box.opened.lease.lease_id, epoch: box.opened.lease.epoch, generation: 2 }));
-    const applied = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
-    expect(applied.status).toBe(200);
-    expect(await applied.text()).toBe(EGRESS_CHUNKS.join(""));
   });
 });
 

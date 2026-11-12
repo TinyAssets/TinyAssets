@@ -41,7 +41,7 @@ export const SEARCH_SCAN = 5000;
  * at most `MAX_PATH_BYTES`, as base64url: four characters each three bytes, 5,462, which a
  * test holds to `MAX_PATH_BYTES`), `note`, and the keys.
  */
-export const SEARCH_ENVELOPE_BYTES = 5_462 + 2 + 1024;
+const SEARCH_ENVELOPE_BYTES = 5_462 + 2 + 1024;
 /**
  * The most bytes of results, as JSON, one answer holds: one tool answer (`PAGE_BYTES`,
  * `pages.ts`, answered once as text) less `SEARCH_ENVELOPE_BYTES`. A search counts each
@@ -60,7 +60,7 @@ export const SEARCH_QUERY_BYTES = 1024 * 1024;
 export const READ_DEFAULT_BYTES = 65_536;
 
 /** A file's frontmatter keys the search and fetch read. */
-export interface Front {
+interface Front {
   readonly type?: string;
   readonly title?: string;
   readonly description?: string;
@@ -123,7 +123,7 @@ export function frontmatter(text: string): Front {
  * An OKF index's entry lines (`* [Title](target) - description`): each link's target as
  * written, with its title and description. Outside URLs are left out.
  */
-export function indexLines(text: string): { target: string; text: string }[] {
+function indexLines(text: string): { target: string; text: string }[] {
   const found: { target: string; text: string }[] = [];
   for (const line of text.split("\n")) {
     const entry = /^\s*[*-]\s+\[([^\]]*)\]\(([^)\s]+)\)\s*(?:[-:]\s*(.*))?$/.exec(line);
@@ -153,7 +153,7 @@ export function target(dir: string, written: string, root: string | null): strin
 }
 
 /** Whether an index's text declares an OKF bundle root (`okf_version` in its frontmatter). */
-export function bundleRoot(text: string): boolean {
+function bundleRoot(text: string): boolean {
   if (!text.startsWith("---\n")) {
     return false;
   }
@@ -173,7 +173,7 @@ export interface Field {
 }
 
 /** A file's words, each with the best weight of the fields holding it: split once a field. */
-export function wordWeights(fields: readonly Field[]): Map<string, number> {
+function wordWeights(fields: readonly Field[]): Map<string, number> {
   const found = new Map<string, number>();
   for (const field of fields) {
     for (const word of words(field.text)) {
@@ -220,7 +220,7 @@ export interface Scanned {
 }
 
 /** One page of a search: its results, best first, and where the next page resumes. */
-export interface SearchPage {
+interface SearchPage {
   /** Each match; one whose title was cut to fit one answer says so (`title_cut`). */
   readonly results: readonly { id: string; title: string; url: string; title_cut?: true }[];
   /** The path the next page resumes after, or null when the entries read were all. */

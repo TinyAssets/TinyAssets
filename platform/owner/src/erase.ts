@@ -35,7 +35,7 @@ const ERASE_FN = "erase";
 const ERASE_JOB = `${ERASURE}/${ERASE_FN}`;
 
 /** What the erasure runs on: the object's gate, the work it ends, and its wipe. */
-export interface ErasureParts {
+interface ErasureParts {
   readonly storage: OwnerStorage;
   readonly write: Write;
   readonly clock: () => number;

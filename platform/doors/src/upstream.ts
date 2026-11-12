@@ -41,7 +41,7 @@ export interface Upstream {
   forget(subject: string): Promise<void>;
 }
 
-export const UNWIRED_MESSAGE = "the upstream sign-in is not wired yet (tasks 2: AuthKit)";
+const UNWIRED_MESSAGE = "the upstream sign-in is not wired yet";
 
 /** No live upstream: every sign-in fails loudly, never a fallback. */
 export const UNWIRED: Upstream = Object.freeze({

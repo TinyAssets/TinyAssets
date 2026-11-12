@@ -145,11 +145,16 @@ export type StartDoc = Omit<SandboxStart, "tokens" | "network" | "route"> & {
 /** A sign-in's document: the Worker's sign-in but its lease, secrets, network and route. */
 export type SigninDoc = Omit<SandboxSignin, "tokens" | "network" | "lease" | "route">;
 
-/** The lease's secrets, as a start or sign-in that opened the lease hands them. */
+/**
+ * The lease's secrets, as a start or sign-in that opened the lease hands them: the two the
+ * runner reads alone, the sync token (its sync agent's) and the runner's own secret (its
+ * event and sign-in posts). The egress token never enters the VM: E2B's transform carries
+ * it, outside (`owner/src/network.ts`).
+ */
 export interface LeaseFile {
   readonly lease: SandboxStart["lease"];
   readonly authority: string;
-  readonly tokens: NonNullable<SandboxStart["tokens"]>;
+  readonly tokens: Pick<NonNullable<SandboxStart["tokens"]>, "sync_token" | "runner_token">;
 }
 
 /** `state`'s answer: how many jobs live, whether every live run's CLI is quiet, the protocol. */

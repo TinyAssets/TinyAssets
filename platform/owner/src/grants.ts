@@ -99,8 +99,8 @@ import type {
 } from "./owner-do";
 import { clock } from "./clock";
 
-export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
-export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
+const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
+const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
 /** Clients one owner forget names at most. */
 const MAX_FORGET = 100;
 
@@ -112,7 +112,7 @@ const MAX_FORGET = 100;
  * clients re-register often (dynamic client registration), and a free row costs nothing
  * to record again. `maxOwnerClients`: rows the owner has set, far past a real owner's.
  */
-export interface GrantLimits {
+interface GrantLimits {
   readonly maxFreeClients: number;
   readonly maxOwnerClients: number;
   /** The scopes' JSON, in UTF-8 bytes, as the row keeps it: their only bound. */
@@ -200,7 +200,7 @@ export interface ConnectedApp {
   readonly connect_url: string | null;
 }
 
-export interface GrantChange {
+interface GrantChange {
   readonly client: unknown;
   readonly source: unknown;
   readonly mode: unknown;

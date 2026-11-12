@@ -58,7 +58,7 @@ const IMPORT_DOORS = doorTable().filter((row) => row.class === "import").map((ro
 const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
   .filter((door) => !["constructor", "alarm", "admissionSet", "tierSet", "fetch",
                       "webSocketMessage", "webSocketClose", "webSocketError",
-                      "sandboxRung", "sandboxBilled", "dataKeyRewrap", "erasureOutside", "erasureOutsideDone",
+                      "sandboxRung", "sandboxBilled", "dataKeyRewrap", "gatewayReseal", "erasureOutside", "erasureOutsideDone",
                       ...IMPORT_DOORS].includes(door));
 const call = (r: Rig, door: string, binding: Binding) =>
   (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(

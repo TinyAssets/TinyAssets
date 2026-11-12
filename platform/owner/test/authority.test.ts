@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_DIR, agentId, Authority, AUTHORITY_CHANGED, authorityOf, NO_AUTHORITY, NOT_GRANTED,
-  NOT_OWNER, OWNER_ONLY, type Stamped, stamped, stampOf,
+  NOT_OWNER, OWNER_ONLY, type Stamped, stamped,
 } from "../src/authority";
 import { Refusal } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
@@ -48,12 +48,9 @@ describe("a stamp", () => {
     }
   });
 
-  it("is the work's authority, the owner's none, and read back only as a client's", () => {
+  it("is the work's authority: the owner's, or a client's stamp", () => {
     expect(authorityOf(null)).toEqual({ by: "owner" });
     expect(authorityOf(STAMP)).toEqual(CLIENT);
-    expect(stampOf(authorityOf(STAMP))).toEqual(STAMP);
-    expect([stampOf({ by: "owner" }), stampOf({ by: "none" }), stampOf(undefined)])
-      .toEqual([null, null, null]);
   });
 
   it("names an agent by its directory's name", () => {

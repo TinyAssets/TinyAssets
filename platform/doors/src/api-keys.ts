@@ -31,7 +31,6 @@
  * limits.
  */
 import { HEX16 } from "../../contract/src/ids";
-import { MAX_KEYS } from "../../contract/src/limits";
 
 import { bindApiKey, type Bound } from "./binder";
 import { apiKeyOrigin } from "../../contract/src/binding";
@@ -40,8 +39,6 @@ import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
 
 export const PREFIX = "ta_key_";
 const KEY = /^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
-/** The live keys an owner holds at most: the object's count (`owner/src/keys.ts`). */
-export const MAX_KEYS_PER_OWNER = MAX_KEYS;
 
 export class KeyRefused extends Error {
   override readonly name = "KeyRefused";
@@ -116,7 +113,7 @@ async function ownEntry(env: DoorsEnv, owner: string, id: string): Promise<KeyEn
   return entry;
 }
 
-export interface Minted {
+interface Minted {
   readonly key: string;
   readonly key_id: string;
   readonly name: string;
@@ -143,11 +140,6 @@ export async function mintKey(env: DoorsEnv, { binding, stub }: Bound, request: 
                { o: binding.owner, h: await secretHash(minted.secret), c: row.created_at });
   return { key: minted.key, key_id: minted.keyId, name: row.name, created_at: row.created_at,
            scopes: row.scopes };
-}
-
-/** The owner's keys as its object keeps them: id, name, mint time, last use and revoke. */
-export async function listKeys({ binding, stub }: Bound): Promise<unknown> {
-  return stub.keyList(binding);
 }
 
 /** Revoke the owner's key: the object first, then the directory entry. */

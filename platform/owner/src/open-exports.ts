@@ -13,7 +13,7 @@ import type { OwnerStorage } from "./gate";
 const EXPORT_ID = HEX32;
 
 /** An open export: its id, when (s) it ends, and the generation it reads. */
-export interface OpenExport {
+interface OpenExport {
   readonly export_id: string;
   readonly ends_at: number;
   readonly gen: string;

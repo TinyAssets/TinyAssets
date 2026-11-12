@@ -9,7 +9,7 @@
  */
 import { principal } from "../../contract/src/text";
 
-import { ringOwner } from "./binder";
+import { ownerObject } from "./binder";
 import type { DoorsEnv } from "./config";
 
 export interface Ring {
@@ -31,7 +31,7 @@ export async function ringQueue(batch: MessageBatch<unknown>, env: DoorsEnv): Pr
       continue;
     }
     try {
-      await ringOwner(env, owner).sandboxRung();
+      await ownerObject(env, owner).sandboxRung();
       message.ack();
     } catch (error) {
       console.error("a sandbox ring did not reach its owner; the queue tries again", error);

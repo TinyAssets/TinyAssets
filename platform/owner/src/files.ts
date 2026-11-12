@@ -147,7 +147,7 @@ export const GC_RETRY_S = 300;
 /** The owner's own work's sandbox: the authority every run the owner started holds. */
 export const OWNER_AUTHORITY = "owner";
 /** A temporary directory's life. */
-export const TEMP_TTL_S = 7 * 86_400;
+const TEMP_TTL_S = 7 * 86_400;
 /**
  * How late housekeeping may run after it is due, so one alarm takes everything due in
  * an hour rather than each prune or delete arming its own.
@@ -159,7 +159,7 @@ export const HOUSEKEEPING_SLACK_S = 3600;
  */
 export const DELETE_FLOOR_MS = 1000;
 /** Rows one alarm run prunes or expires per kind, and paths it re-marks for retention. */
-export const HOUSEKEEPING_BATCH = 500;
+const HOUSEKEEPING_BATCH = 500;
 /** Open upload intents, and the chunks they hold in all. */
 export const MAX_OPEN_INTENTS = 64;
 export const MAX_HELD_CHUNKS = 20_000;
@@ -187,12 +187,12 @@ export interface FileLimits {
 }
 
 /** `bound`'s part at `percent`. */
-export function shareOf(bound: number, percent: number): number {
+function shareOf(bound: number, percent: number): number {
   return Math.floor(bound * percent / 100);
 }
 
 /** Whether a writer is an outside client, whose changes count against its share. */
-export function isClient(writer: string | null): writer is string {
+function isClient(writer: string | null): writer is string {
   return writer !== null && writer.startsWith("client:");
 }
 
@@ -200,7 +200,7 @@ export function isClient(writer: string | null): writer is string {
  * The scopes a writer's rows count in, its own last: an outside client's all clients'
  * and its own, anyone else's the owner's.
  */
-export function scopesOf(writer: string): readonly string[] {
+function scopesOf(writer: string): readonly string[] {
   return isClient(writer) ? [CLIENTS, writer] : [OWNER_SCOPE];
 }
 
@@ -217,7 +217,7 @@ export interface ChunkSpace {
  * false when none
  * is left. Run in the change's own unit, before its quota is checked.
  */
-export type Reclaim = (filer: string) => boolean;
+type Reclaim = (filer: string) => boolean;
 
 /**
  * The refusal at the owner's storage figure: its message from what is stored (open uploads
@@ -233,7 +233,7 @@ export type Changed = (path: string, present: boolean, now: number,
 
 export type Full = (stored: number, needed: number, held: number, limit: number) => Refusal;
 
-export type FileKind = "file" | "dir";
+type FileKind = "file" | "dir";
 
 /** A path as it stands. */
 export interface Entry {
@@ -328,7 +328,7 @@ export interface SandboxLease {
  * The three tokens' hashes a lease is bound to. They live while the lease does: no deadline
  * of their own, the lease's renewal (its heartbeat) is their life.
  */
-export interface LeaseTokens {
+interface LeaseTokens {
   readonly egress: string;
   readonly sync: string;
   readonly runner: string;
@@ -513,11 +513,11 @@ export function batches<T extends { size: number }>(items: readonly T[]): T[][] 
  * An upload names a chunk the sweep is deleting this moment: refused, nothing held, so its
  * writer begins again once the delete lands (a placed body's door does so itself).
  */
-export const CHUNK_DELETING = "a chunk of this upload is being deleted; begin again";
+const CHUNK_DELETING = "a chunk of this upload is being deleted; begin again";
 /** A chunk an export names that the owner no longer stores (or never did). */
 export const CHUNK_GONE = "no such chunk: it is gone from the bucket; begin the export again";
 
-export function conflictName(name: string, epoch: number, n: number): string {
+function conflictName(name: string, epoch: number, n: number): string {
   const suffix = `.ta-conflict-${epoch}${n > 1 ? `-${n}` : ""}`;
   const points = [...name];
   while (utf8Bytes(points.join("")) + suffix.length > MAX_NAME_BYTES) {
@@ -2057,8 +2057,8 @@ export class Files {
    * next epoch, bound to the SHA-256 hex of its three tokens' secrets (`egress`, `sync` and
    * the runner's; the secrets never stay in the object) and their deadline. Lapsed leases go
    * first (a lease is taken only after the runs under a lapsed one were settled), so the
-   * leases are never more than the live runs. Its network is not yet applied
-   * (`network_generation` null), so egress waits until the sandbox slice applies it.
+   * leases are never more than the live runs. Its network is not yet marked
+   * (`network_generation` null) until `leaseNetwork`, in the same unit.
    */
   leaseAcquire(authority: unknown, holder: unknown, tokens: LeaseTokens): Lease {
     if (typeof authority !== "string"
@@ -2123,17 +2123,14 @@ export class Files {
   }
 
   /**
-   * The sandbox's network applied under egress `generation` (the sandbox slice's
-   * `updateNetwork` returned), fenced by the lease: egress opens again only when that is
-   * the current egress generation (`egress.ts`).
+   * The egress `generation` of the network the start that opens the lease carries, set in
+   * the unit that took it (`Launcher.openLease`): egress opens only while that is the
+   * current egress generation (`egress.ts`).
    */
-  networkApplied(leaseId: unknown, epoch: unknown, generation: number): Lease {
-    return this.#change(null, (now) => {
-      const lease = this.#fenced(leaseId, epoch, now);
+  leaseNetwork(leaseId: string, generation: number): void {
+    this.#change(null, () => {
       this.#sql.exec("UPDATE sandbox_leases SET network_generation = ? WHERE lease_id = ?",
-                     generation, lease.lease_id);
-      return { lease_id: lease.lease_id, epoch: lease.epoch, expires_at: lease.lease_expires,
-               base: this.#space().seq };
+                     generation, leaseId);
     });
   }
 
@@ -2636,7 +2633,7 @@ export class Files {
 
 
 /** Who a file change is by, in its history: the owner, or the outside client it came through. */
-export function fileWriter(account: Account): string {
+function fileWriter(account: Account): string {
   return account.origin === null ? "owner" : `client:${account.origin.client}`;
 }
 
@@ -2661,11 +2658,11 @@ export function whole(value: unknown, what: string, fallback: number, high: numb
  * opaque token at most 5,462 characters with nothing to escape, so a path of escaped
  * characters never makes an answer too wide to go on.
  */
-export function pathCursor(path: string): string {
+function pathCursor(path: string): string {
   return Buffer.from(path, "utf8").toString("base64url");
 }
 
-export function cursorPath(cursor: unknown): string {
+function cursorPath(cursor: unknown): string {
   if (typeof cursor !== "string" || !/^[A-Za-z0-9_-]{1,5462}$/.test(cursor)) {
     throw new Refusal("invalid", "a cursor is a next_cursor a search answered");
   }
@@ -2696,7 +2693,7 @@ export const UNREAD_CHANGE = "expected_etag is the entry's current etag, or \"\"
   "is none: read it first (file_stat, fetch or file_read)";
 
 /** A change by an outside client or a run names the etag it read; the owner's app need not. */
-export function heldToRead(account: Account, asked: unknown): void {
+function heldToRead(account: Account, asked: unknown): void {
   if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
     throw new Refusal("invalid", UNREAD_CHANGE);
   }
@@ -2706,7 +2703,7 @@ export function heldToRead(account: Account, asked: unknown): void {
 export const UNREAD_WRITE = "expected_etag is the file's current etag, or \"\" to create it " +
   "only when absent: read the file first (fetch, file_read or file_stat)";
 
-export function fileConflicted<T>(act: () => T): T | FileConflicted {
+function fileConflicted<T>(act: () => T): T | FileConflicted {
   try {
     return act();
   } catch (error) {
@@ -2717,7 +2714,7 @@ export function fileConflicted<T>(act: () => T): T | FileConflicted {
   }
 }
 
-export async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileConflicted> {
+async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileConflicted> {
   try {
     return await act();
   } catch (error) {
@@ -2745,7 +2742,7 @@ export const EDIT_BYTES_MAX = 500 * CHUNK_BYTES;
  * An edit's output small enough to keep inline (at most `INLINE_BYTES`, under one chunk):
  * its one chunk made, in a making step (`hold`).
  */
-export function inlineOf(plan: Edited, hold: <T>(work: () => Promise<T>) => Promise<T>):
+function inlineOf(plan: Edited, hold: <T>(work: () => Promise<T>) => Promise<T>):
     Promise<Uint8Array> {
   if (plan.sizes.length !== 1) {
     throw new Error("an inline edit's output is one chunk");
@@ -2761,13 +2758,13 @@ export function flag(value: unknown, what: string): boolean {
 }
 
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
-export const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
+const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
 
 /**
  * What a sync commit's write of the sync-ignore list says of the files it holds back, as its
  * sync agent counted them (`sync.ts`): the kept files its lines name, and those with changes.
  */
-export function heldBackOf(ops: unknown): { kept: number; changed: number } | null {
+function heldBackOf(ops: unknown): { kept: number; changed: number } | null {
   const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
     ? value as number : null;
   for (const op of Array.isArray(ops) ? ops as unknown[] : []) {
@@ -2923,7 +2920,7 @@ export interface ChangesRequest {
   readonly after: number;
   readonly limit: number;
 }
-export interface LeaseRequest {
+interface LeaseRequest {
   readonly lease_id: string;
   readonly epoch: number;
 }

@@ -37,7 +37,7 @@ import { Refusal } from "../../contract/src/refusal";
 import type { HooksService } from "../../contract/src/hooks";
 
 /** The tools a script calls, as pi-codemode's sandbox takes them. */
-export type CodemodeTools = NonNullable<
+type CodemodeTools = NonNullable<
   ConstructorParameters<typeof RemoteCodemodeSandbox>[0]["tools"]>;
 
 /** How long one script may run, in ms; a script past it ends with pi-codemode's `timeout`. */
@@ -57,7 +57,7 @@ export interface CodemodeBounds {
 }
 
 /** What code mode's sandbox reaches: the hooks Worker, the owner it runs for, its tools. */
-export interface CodemodeParts extends CodemodeBounds {
+interface CodemodeParts extends CodemodeBounds {
   readonly service: () => CodemodeService | undefined;
   readonly owner: () => string;
   readonly tools: CodemodeTools;
@@ -108,32 +108,32 @@ export type CodeResult =
  * A script's output cut to fit one answer (review M6), said so: how many items it had, and
  * how many the answer keeps whole (the next one, a text, cut at a character after them).
  */
-export interface OutputCut {
+interface OutputCut {
   readonly items: number;
   readonly kept: number;
 }
 
 /** A run of one tool's calls with one outcome, in a script's order. */
-export interface Landed {
+interface Landed {
   readonly name: string;
   readonly status: "ok" | "error" | "cancelled";
   readonly count: number;
 }
 
 /** A script's value: JSON, as pi-codemode hands it back (an object or array, untyped). */
-export type JsonValue = null | boolean | number | string | object;
+type JsonValue = null | boolean | number | string | object;
 /** One item of a script's output: its text, or an image. */
-export type CodeOutput = { readonly type: "text"; readonly text: string; readonly console?: true }
+type CodeOutput = { readonly type: "text"; readonly text: string; readonly console?: true }
   | { readonly type: "image"; readonly data: string; readonly mimeType: string };
 /** A script's tool calls, counted by how each ended. */
-export interface CodeCalls {
+interface CodeCalls {
   readonly ok: number;
   readonly error: number;
   readonly cancelled: number;
 }
 
 /** Code mode's own tool's name, as its door's row names it (`codeRun`). */
-export function codeTool(): string {
+function codeTool(): string {
   return doorRow("codeRun").tool!.name;
 }
 
@@ -151,7 +151,7 @@ const CODE_TIMED_OUT = "the script is past its time";
  * (`output_cut`). A value that alone passes one answer is refused `answer_too_large`, its
  * calls and what landed kept, so nothing is lost silently.
  */
-export function fittedCode(answer: CodeResult): CodeResult {
+function fittedCode(answer: CodeResult): CodeResult {
   if (jsonBytes(answer) <= PAGE_BYTES) {
     return answer;
   }
@@ -186,7 +186,7 @@ export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is pa
   "it back";
 
 /** What a script runs with: its bounds, the hooks Worker, its owner, and its tools. */
-export interface ScriptParts {
+interface ScriptParts {
   readonly bounds: CodemodeBounds;
   readonly service: () => CodemodeService | undefined;
   readonly owner: string;
@@ -201,7 +201,7 @@ export interface ScriptParts {
  * how each ended, the writes that landed in order, a script past its wall time ended as a
  * `timeout`, and the answer fitted to one tool answer (`fittedCode`).
  */
-export async function runScript(parts: ScriptParts): Promise<CodeResult> {
+async function runScript(parts: ScriptParts): Promise<CodeResult> {
   // The wall bound, held here too: pi-codemode's own deadline is a timer, which a script
   // calling tools back to back starved in workerd, so each call checks the clock, which
   // moves with every call's I/O, and ends the execution past it.

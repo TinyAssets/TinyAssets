@@ -2,7 +2,7 @@
  * The connect doors (gateway research §7.2, §7.3; tasks 4 G3): an owner connects a model
  * source by pasting a key or by OAuth, revokes one, and lists them. The only source that
  * reaches `GATEWAY`, and only its `ConnectGateway` entrypoint (`seal`, `exchange`,
- * `verify`).
+ * `verify`, and a doorbell's `sealDoorbell` and `verifyDoorbell`).
  *
  * **No plaintext reaches the owner's object.** A pasted key exists only in this request
  * and in the gateway: it goes to `GATEWAY.seal` alone, never to an object call, a log, an
@@ -75,7 +75,7 @@ export class ConnectRefused extends Error {
 }
 
 /** What a connect route takes beside the owner's binding. */
-export interface ConnectContext {
+interface ConnectContext {
   readonly env: DoorsEnv;
   readonly bound: Bound;
   readonly body: Record<string, unknown>;
@@ -133,7 +133,7 @@ function displayName(value: unknown, record: SourceRecord): string {
 }
 
 /** The source's own redirect URI: its flows return there, and only its flows. */
-export function redirectFor(record: SourceRecord): string {
+function redirectFor(record: SourceRecord): string {
   return `${CONNECT_CALLBACK}/${record.id}`;
 }
 
@@ -408,12 +408,15 @@ async function list({ bound: { binding, stub }, body }: ConnectContext): Promise
  * A wake's secret, handed straight to the gateway (slice W, ruling H1), as a pasted model
  * key is: the owner's pasted `/fire` or routine token sealed (`sealDoorbell`), or an MCP
  * Events callback verified by its signed challenge and sealed (`verifyDoorbell`). The
- * doors keep neither; the owner's object stores only the blob.
+ * doors keep neither; the owner's object stores only the blob, under `DOORBELL_VERSION`,
+ * which the gateway opens it by.
  */
+export const DOORBELL_VERSION = 1;
+
 export async function sealDoorbell(env: DoorsEnv, owner: string, subscription: string,
                                    input: { record: string; url: string; secret: string }) {
   try {
-    return await env.GATEWAY.sealDoorbell(owner, subscription, 1, input);
+    return await env.GATEWAY.sealDoorbell(owner, subscription, DOORBELL_VERSION, input);
   } catch (error) {
     throw gatewayFault(error);
   }
@@ -422,7 +425,7 @@ export async function sealDoorbell(env: DoorsEnv, owner: string, subscription: s
 export async function verifyDoorbell(env: DoorsEnv, owner: string, subscription: string,
                                      input: { record: string; url: string; secret: string }) {
   try {
-    return await env.GATEWAY.verifyDoorbell(owner, subscription, 1, input);
+    return await env.GATEWAY.verifyDoorbell(owner, subscription, DOORBELL_VERSION, input);
   } catch (error) {
     throw gatewayFault(error);
   }

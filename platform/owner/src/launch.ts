@@ -14,8 +14,9 @@
  * - **a mail's reply** (`answer`): a run's result posted as its agent's reply to that mail, in
  *   the settle's unit, its body placed in R2 first when long (`beginReply`, `withReply`);
  * - **the sandbox's leases** (`openLease`, `sandboxLeases`): an authority's lease opened with its
- *   tokens and network, given back, and paused through the sandbox Worker once no run holds it
- *   (`leaseFreed`); one run's whole environment (`#runConfig`).
+ *   tokens and network, that network marked on it at the generation it was made under, given
+ *   back, and paused through the sandbox Worker once no run holds it (`leaseFreed`); one
+ *   run's whole environment (`#runConfig`).
  *
  * It reaches the owner's other modules only through the object's state it is handed
  * (`OwnerState`), each read or write in the unit it is called in.
@@ -57,7 +58,7 @@ export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was a
  * The bytes a mail's run's input takes in the waiting inputs' queue: none, since its row
  * keeps only the mail's reference (ADR-035); the queue's rows bound it.
  */
-export const MAIL_INPUT_BYTES = 0;
+const MAIL_INPUT_BYTES = 0;
 
 /**
  * One engine run's environment's inputs: the run itself (its base URLs carry it), the CLI
@@ -76,7 +77,7 @@ export interface SandboxRun {
 }
 
 /** What the sandbox slice sets up a sandbox from (`network.ts`). */
-export interface SandboxConfig {
+interface SandboxConfig {
   readonly generation: number;
   readonly egress: EgressPolicy;
   /**
@@ -106,9 +107,6 @@ export interface SandboxLeases {
    * still live under it settled `unknown` (its runner is gone with it).
    */
   close(request: { lease_id: string; epoch: number }): Promise<{ released: boolean }>;
-  /** The network applied under egress `generation` (8b's `updateNetwork` returned). */
-  networkApplied(request: { lease_id: string; epoch: number; generation: number }):
-    Promise<Lease>;
   /** The network document for the current egress policy, with the egress token. */
   network(egressToken: string): Promise<NetworkPlan>;
   /** Whether a live lease's network is older than the egress policy: 8b re-applies it. */
@@ -708,6 +706,18 @@ export class Launcher implements RunHost {
    * by its heartbeat, with no deadline of their own, `LEASE_LIVED`, so no run meets a fixed
    * one) and the runner's own secret, and the owner's network made with the egress token in
    * its transform. A lease that lapsed is replaced: its streams and tokens end with it.
+   *
+   * The lease's network is marked in this same unit, at the generation this network is made
+   * under, never a later one: the unit that dispatches the start (a run's admission, a
+   * sign-in's first unit). That start applies it before anything in the sandbox can call
+   * out with this lease's egress token, which only that network's transform carries: E2B
+   * takes the network with the create, or replaces it on a running or resumed sandbox, before
+   * the runner launches anything (`sandbox/src/control.ts`, `#ensure` and `#launch`). So a
+   * call bearing the token was made through the network, and a run's first model call is
+   * admitted however soon it comes, before its start's answer is recorded. A policy write
+   * while the start is out leaves the newer generation stale (`egress_network_stale`), and a
+   * start that fails gives the lease back, so a mark on it admits nothing. In `ask` mode the
+   * owner gets a refusal receipt for each network made (`network.ts`).
    */
   openLease(now: number, authority: string):
       { lease: Lease; tokens: OpenedTokens; network: NetworkPlan } {
@@ -719,10 +729,17 @@ export class Launcher implements RunHost {
     const live = new Set(this.#o.files.liveLeases(now).map((each) => each.lease_id));
     this.#o.egress.end("lease", (stream) => !live.has(stream.lease));
     const { document } = this.#o.policy.read();
+    const network = networkDocument(document.egress, this.#o.policy.egressGeneration(),
+                                    egress.token);
+    this.#o.files.leaseNetwork(lease.lease_id, network.generation);
+    if (network.receipt) {
+      this.#o.policy.refusal("sandbox_network", { mode: network.mode,
+                                                  generation: network.generation },
+                             clock(), "egress.ask");
+    }
     return { lease, tokens: { egress_token: egress.token, sync_token: sync.token,
                               runner_token: runner },
-             network: networkDocument(document.egress, this.#o.policy.egressGeneration(),
-                                      egress.token) };
+             network };
   }
 
   /**
@@ -781,21 +798,6 @@ export class Launcher implements RunHost {
           }
         }
         return { released };
-      }),
-      networkApplied: (request) => this.#o.door(() => {
-        this.#o.admitted("work");
-        const generation = this.#o.policy.egressGeneration();
-        if (request.generation !== generation) {
-          throw new Refusal("egress_policy_stale",
-                            "egress_policy_stale: the network was made under another egress " +
-                            "generation");
-        }
-        const lease = this.#o.files.networkApplied(request.lease_id, request.epoch, generation);
-        if (this.#o.policy.read().document.egress.mode === "ask") {
-          this.#o.policy.refusal("sandbox_network", { mode: "ask", generation }, clock(),
-                                 "egress.ask");
-        }
-        return lease;
       }),
       network: (egressToken) => this.#o.door(() => {
         this.#o.admitted("read");
