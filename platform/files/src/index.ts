@@ -18,15 +18,17 @@
  * 2026-10-29). One call moves up to `BATCH_BYTES` (two chunks), well under the 32 MiB a
  * serialized RPC may carry.
  *
- * - `putChunks` is create-once (`etagDoesNotMatch: "*"`) and passes each hash to R2's
- *   `put` `sha256` option, which verifies the bytes (a mismatch is R2's `BadDigest`,
- *   refused here as invalid). It relies on the binding's check, never on S3 checksum
- *   headers (R2's S3 API lists SHA-256 as a composite checksum only). An existing key is
- *   a no-op only when it holds exactly these bytes; anything else under a hash key fails
- *   loudly instead of counting as a deduplicated hit.
- * - `getChunks` reads chunks whole, rechecking each hash, or byte ranges of them: a range
- *   read with `verify` reads its whole chunk, rechecks its hash and answers the range alone,
- *   so the caller holds only the range and still reads verified bytes.
+ * - `putChunks` checks each chunk's bytes against its hash, seals them, and puts the sealed
+ *   bytes create-once (`etagDoesNotMatch: "*"`) with their own hash as R2's `put` `sha256`
+ *   option, which verifies them in transit (a mismatch is R2's `BadDigest`, refused here as
+ *   invalid). It relies on the binding's check, never on S3 checksum headers (R2's S3 API
+ *   lists SHA-256 as a composite checksum only). An existing key is a no-op only when it
+ *   opens to exactly these bytes; anything else under a hash key fails loudly instead of
+ *   counting as a deduplicated hit.
+ * - `getChunks` reads chunks whole, rechecking each hash, or byte ranges of them. Every read
+ *   fetches and opens its whole chunk (GCM authenticates the whole) and answers the range
+ *   alone; with `verify` it rechecks the chunk's hash too, so the caller holds only the range
+ *   and still reads verified bytes.
  * - `deleteChunks` removes up to 1,000 chunks in one call (R2's batch limit), named by their
  *   hashes under the owner's key; the owner object's garbage collection is its only caller,
  *   for keys in its own chunk table.
@@ -35,36 +37,36 @@
  *   whose put landed late, goes with the rest. It is the only list of the bucket, and only
  *   ever of one namespace's prefix.
  *
- * Every chunk is put and read under its owner's data key (SSE-C, R2's `ssecKey`;
- * `datakey.ts`): each call presents the owner's wrapped key, which this Worker opens with
- * its own keyring (`FILES_KEYRING`) for that call alone and never keeps. A put or get with
- * no key, or a key that does not open for the namespace, is refused before R2 is reached.
- * A delete by hash presents it too (the key names the chunk); the prefix delete needs none.
- * So the bytes of an erased owner, whose wrapped key went with their object, are unreadable
- * wherever a chunk outlived the prefix delete, and their names say nothing.
+ * Every object is sealed in this Worker under its owner's data key (`datakey.ts`), by the
+ * envelope's per-object seal (`contract/src/envelope.ts` `sealObject`: AES-256-GCM, the
+ * object's own R2 key as additional data), so the bucket holds only ciphertext, and bytes
+ * moved under another key or namespace fail to open. Each call presents the owner's wrapped
+ * key, which this Worker opens with its own keyring (`FILES_KEYRING`) for that call alone and
+ * never keeps. A put or get with no key, or a key that does not open for the namespace, is
+ * refused before R2 is reached. A delete by hash presents it too (the key names the chunk);
+ * the prefix delete needs none. So the bytes of an erased owner, whose wrapped key went with
+ * their object, are unreadable wherever a chunk outlived the prefix delete, and their names
+ * say nothing. And a copy of the bucket is a byte copy: it needs no key and sees no
+ * plaintext, which is what lets an off-account copy exist (d3 §G).
  *
  * The nightly manifest (`owner/src/backup.ts`) is the only other kind of object: its parts
  * (`o/<ns>/m/<gen>/<n>`) and log segments (`o/<ns>/m/<gen>/l/<a>-<b>`), under the same data
  * key, and its root (`o/<ns>/m/<gen>`), a small
  * JSON carrying the owner's wrapped key, always under the ring's active kid, and the parts'
- * hashes and sizes sealed under the data key (AES-256-GCM, the root's own R2 key as
- * additional data), so a recovery needs no object state but the keyring, and the bucket
+ * hashes and sizes sealed under the data key (the same seal, at the root's own R2 key), so
+ * a recovery needs no object state but the keyring, and the bucket
  * alone says nothing of the parts. The root is written last, after every part. A key's
  * rotation re-wraps it in place (`rewrapManifestRoot`): the data key is the same, so no part
  * and no sealed list changes.
  *
  * It serves no HTTP: no fetch handler, no `workers.dev` or preview URL, no route. Owner
- * objects reach it by the `FILES` service binding alone, which adds no request fee. Owed
- * live (slice L): the probe of `ssecKey` with `onlyIf` and `sha256` on a put, and of a
- * get with another key or none on an SSE-C object (miniflare ignores `ssecKey`, so the
- * tests hold this Worker to R2's documented answers through `test/ssec.ts`).
+ * objects reach it by the `FILES` service binding alone, which adds no request fee.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { type Cipher, cipherOf, open, seal } from "./cipher";
 import { chunkName, mint, rewrap, unwrap } from "./datakey";
 import type { FilesEnv } from "./env";
-import { base64, fromBase64, hex } from "../../contract/src/envelope";
+import { base64, fromBase64, hex, openObject, sealObject } from "../../contract/src/envelope";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedManifest, type ManifestAt,
@@ -74,8 +76,6 @@ import { Refusal } from "../../contract/src/refusal";
 import type {
   ChunkGet, ChunkPut, ChunkStore, ChunkUpload, ManifestObject, ManifestRoot, ManifestSegment,
 } from "../../contract/src/files";
-/** How a binding reports R2's `BadDigest`: the code, or its message. */
-const BAD_DIGEST = /\(10037\)|did not match what we received/;
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
 interface StoredRoot {
@@ -113,6 +113,23 @@ function rootBytes(text: string): Uint8Array {
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+}
+
+/** `plain` sealed for the object at `objectKey`, and the sealed bytes' hash, which R2 checks. */
+async function sealed(dataKey: ArrayBuffer, objectKey: string, plain: Uint8Array):
+    Promise<{ body: Uint8Array; sha256: string }> {
+  const body = await sealObject(dataKey, objectKey, plain);
+  return { body, sha256: await sha256Hex(body) };
+}
+
+/** The plain bytes of `stored`, the object at `objectKey`; any other key or byte fails loudly. */
+async function opened(dataKey: ArrayBuffer, objectKey: string,
+                      stored: Uint8Array): Promise<Uint8Array> {
+  const plain = await openObject(dataKey, objectKey, stored);
+  if (plain === null) {
+    throw new Error("a stored object does not open under its owner's key");
+  }
+  return plain;
 }
 
 function list<T>(value: unknown, what: string): T[] {
@@ -160,44 +177,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     return unwrap(this.env.FILES_KEYRING, namespace(ns), key);
   }
 
-  #cipher(): Cipher {
-    return cipherOf(this.env.FILES_CIPHER);
-  }
-
-
-  /**
-   * What a put of `plain` to `objectKey` stores, and its options: the plain bytes under the
-   * SSE-C key, R2 checking their hash; or the sealed bytes, R2 checking theirs.
-   */
-  async #stored(dataKey: ArrayBuffer, objectKey: string, plain: Uint8Array, sha256: string):
-      Promise<{ body: Uint8Array; options: R2PutOptions }> {
-    if (this.#cipher() === "ssec") {
-      return { body: plain, options: { sha256, ssecKey: dataKey } };
-    }
-    const body = await seal(dataKey, objectKey, plain);
-    return { body, options: { sha256: await sha256Hex(body) } };
-  }
-
-  /** A get's options: the SSE-C key and the range; sealed objects are read whole. */
-  #reading(dataKey: ArrayBuffer, at?: { offset: number; length: number }): R2GetOptions {
-    if (this.#cipher() === "ssec") {
-      return at === undefined ? { ssecKey: dataKey } : { ssecKey: dataKey, range: at };
-    }
-    return {};
-  }
-
-  /** The plain bytes a get answered: as they came, or opened and sliced to the range. */
-  async #plain(dataKey: ArrayBuffer, objectKey: string, object: R2ObjectBody,
-               at?: { offset: number; length: number }): Promise<Uint8Array> {
-    const bytes = new Uint8Array(await object.arrayBuffer());
-    if (this.#cipher() === "ssec") {
-      return bytes;
-    }
-    const plain = await open(dataKey, objectKey, bytes);
-    return at === undefined ? plain : plain.slice(at.offset, at.offset + at.length);
-  }
-
-  /** Store chunks under their hashes, each verified by R2; `created` counts the new ones. */
+  /** Store chunks under their hashes, each checked here; `created` counts the new ones. */
   async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
     namespace(ns);
     const puts = list<ChunkPut>(chunks, "a put").map((chunk) => {
@@ -219,37 +199,25 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
 
   async #put(ns: string, dataKey: ArrayBuffer, sha256: string, bytes: Uint8Array):
       Promise<boolean> {
-    let put: R2Object | null;
-    if (this.#cipher() === "aes-gcm" && await sha256Hex(bytes) !== sha256) {
-      throw new Refusal("invalid",
-                        "the chunk's bytes do not match its sha256");  // R2 sees sealed bytes
-    }
-    const name = await chunkName(dataKey, sha256);
-    const stored = await this.#stored(dataKey, chunkKey(ns, name), bytes, sha256);
-    try {
-      put = await this.env.BLOBS.put(chunkKey(ns, name), stored.body,
-                                     { ...stored.options, onlyIf: { etagDoesNotMatch: "*" } });
-    } catch (error) {
-      if (BAD_DIGEST.test(String((error as Error)?.message))) {
-        throw new Refusal("invalid", "the chunk's bytes do not match its sha256");
-      }
-      throw error;
-    }
-    if (put !== null) {
-      return true;
-    }
-    // The key exists. Every put here is verified, so it holds these bytes, unless
-    // something wrote around this Worker: that fails loudly, never as a dedup hit. It is
-    // read back under the owner's key (what a keyless `head` of an SSE-C object answers is
-    // unprobed), so bytes put under another key, or none, fail here too.
     if (await sha256Hex(bytes) !== sha256) {
       throw new Refusal("invalid", "the chunk's bytes do not match its sha256");
     }
+    const name = await chunkName(dataKey, sha256);
+    const stored = await sealed(dataKey, chunkKey(ns, name), bytes);
+    const put = await this.env.BLOBS.put(chunkKey(ns, name), stored.body,
+                                         { sha256: stored.sha256,
+                                           onlyIf: { etagDoesNotMatch: "*" } });
+    if (put !== null) {
+      return true;
+    }
+    // The key exists. Every put here was checked and sealed, so it opens to these bytes,
+    // unless something wrote around this Worker: that fails loudly, never as a dedup hit.
+    // Bytes sealed under another key, or none, fail to open, so they fail here too.
     let held: Uint8Array;
     try {
-      const object = await this.env.BLOBS.get(chunkKey(ns, name), this.#reading(dataKey));
+      const object = await this.env.BLOBS.get(chunkKey(ns, name));
       held = object === null ? new Uint8Array(0)
-        : await this.#plain(dataKey, chunkKey(ns, name), object);
+        : await opened(dataKey, chunkKey(ns, name), new Uint8Array(await object.arrayBuffer()));
     } catch {
       throw new Error("a chunk key holds bytes this Worker did not verify");
     }
@@ -260,14 +228,12 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
   }
 
   /**
-   * Chunks' bytes, in order: each whole (its hash rechecked) or a range of it. A range costs
-   * its length under SSE-C, which R2 slices; under `aes-gcm` it costs a whole chunk, which
-   * this Worker fetches and opens before it slices, so a batch never pulls more than
-   * `BATCH_BYTES` into the isolate.
+   * Chunks' bytes, in order: each whole (its hash rechecked) or a range of it. Each read
+   * fetches and opens its whole chunk; an unverified range costs a whole chunk, a verified
+   * one its length, which is all it moves to the caller.
    */
   async getChunks(ns: string, key: string, reads: ChunkGet[]): Promise<Uint8Array[]> {
     namespace(ns);
-    const whole = this.#cipher() !== "ssec";
     const gets = list<ChunkGet>(reads, "a get").map((read) => {
       if (typeof read !== "object" || read === null) {
         throw new Refusal("invalid", "a get is a hash and an optional range");
@@ -276,9 +242,9 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       if (read.verify !== undefined && typeof read.verify !== "boolean") {
         throw new Refusal("invalid", "a get's verify is true or false");
       }
-      // A verified range moves only its length to the caller (the whole chunk is held here).
-      return { sha256: chunkHash(read.sha256), ...at, verify: read.verify === true,
-               budget: whole && read.verify !== true ? CHUNK_BYTES : at.budget };
+      const verify = read.verify === true;
+      return { sha256: chunkHash(read.sha256), ...at, verify,
+               budget: verify ? at.budget : CHUNK_BYTES };
     });
     if (gets.reduce((sum, get) => sum + get.budget, 0) > BATCH_BYTES) {
       throw new Refusal("invalid", `a get moves at most ${BATCH_BYTES} bytes`);
@@ -286,18 +252,17 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     const dataKey = await this.#key(ns, key);
     return Promise.all(gets.map(async (get) => {
       const name = await chunkName(dataKey, get.sha256);
-      const ranged = get.verify ? undefined : get.range;
-      const object = await this.env.BLOBS.get(chunkKey(ns, name),
-                                              this.#reading(dataKey, ranged));
+      const object = await this.env.BLOBS.get(chunkKey(ns, name));
       if (object === null) {
         throw new Error("a chunk the manifest holds is missing from the bucket");
       }
-      const bytes = await this.#plain(dataKey, chunkKey(ns, name), object, ranged);
-      if (ranged === undefined && await sha256Hex(bytes) !== get.sha256) {
+      const bytes = await opened(dataKey, chunkKey(ns, name),
+                                 new Uint8Array(await object.arrayBuffer()));
+      if ((get.range === undefined || get.verify) && await sha256Hex(bytes) !== get.sha256) {
         throw new Error("a chunk's bytes no longer match its hash");
       }
-      return get.verify && get.range !== undefined
-        ? bytes.slice(get.range.offset, get.range.offset + get.range.length) : bytes;
+      return get.range === undefined ? bytes
+        : bytes.slice(get.range.offset, get.range.offset + get.range.length);
     }));
   }
 
@@ -346,26 +311,27 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     return { deleted: hashes.length };
   }
 
-  /** A generation's object's bytes put under the owner's key at `at`, verified by R2. */
+  /** A generation's object's bytes sealed under the owner's key at `at`, verified by R2. */
   async #putObject(ns: string, key: string, gen: string, at: ManifestAt, bytes: Uint8Array):
       Promise<ManifestObject> {
     const body = chunkBytes(bytes);
-    const sha256 = await sha256Hex(body);
     const dataKey = await this.#key(ns, key);
-    const stored = await this.#stored(dataKey, manifestObjectKey(ns, gen, at), body, sha256);
-    await this.env.BLOBS.put(manifestObjectKey(ns, gen, at), stored.body, stored.options);
-    return { sha256, size: body.byteLength };
+    const stored = await sealed(dataKey, manifestObjectKey(ns, gen, at), body);
+    await this.env.BLOBS.put(manifestObjectKey(ns, gen, at), stored.body,
+                             { sha256: stored.sha256 });
+    return { sha256: await sha256Hex(body), size: body.byteLength };
   }
 
   /** A generation's object's bytes read under the key `key` (the object's, or the root's). */
   async #getObject(ns: string, key: string, gen: string, at: ManifestAt, sha256: string):
       Promise<Uint8Array> {
     const dataKey = await this.#key(ns, key);
-    const object = await this.env.BLOBS.get(manifestObjectKey(ns, gen, at), this.#reading(dataKey));
+    const object = await this.env.BLOBS.get(manifestObjectKey(ns, gen, at));
     if (object === null) {
       throw new Error("a manifest object its root names is missing from the bucket");
     }
-    const bytes = await this.#plain(dataKey, manifestObjectKey(ns, gen, at), object);
+    const bytes = await opened(dataKey, manifestObjectKey(ns, gen, at),
+                               new Uint8Array(await object.arrayBuffer()));
     if (await sha256Hex(bytes) !== chunkHash(sha256)) {
       throw new Error("a manifest object's bytes no longer match its hash");
     }
@@ -422,9 +388,9 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
         return { a, b, sha256: chunkHash(segment.sha256), size: segment.size };
       }),
       s: span.s, e: span.e, at: Date.now() });
-    const sealed = await seal(dataKey, manifestKey(ns, gen), new TextEncoder().encode(listed));
+    const lists = await sealObject(dataKey, manifestKey(ns, gen), new TextEncoder().encode(listed));
     const root: StoredRoot = { format: "tinyassets-manifest", version: 2, gen: generation(gen),
-                               key: wrapped, sealed: base64(sealed) };
+                               key: wrapped, sealed: base64(lists) };
     await this.env.BLOBS.put(manifestKey(ns, gen), JSON.stringify(root));
   }
 
@@ -436,7 +402,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     }
     const root = storedRoot(await object.text(), gen);
     const dataKey = await this.#key(ns, root.key);
-    const listed = JSON.parse(new TextDecoder().decode(await open(
+    const listed = JSON.parse(new TextDecoder().decode(await opened(
       dataKey, manifestKey(ns, gen), rootBytes(root.sealed)))) as
       Pick<ManifestRoot, "parts" | "segments" | "s" | "e" | "at">;
     return { format: root.format, version: root.version, gen: root.gen, key: root.key,

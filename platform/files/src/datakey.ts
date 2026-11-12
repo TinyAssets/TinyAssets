@@ -1,7 +1,6 @@
 /**
- * Each owner's data key: the SSE-C key every chunk of theirs is put and read under (R2's
- * `ssecKey` on `put` and `get`; developers.cloudflare.com/r2/examples/ssec and the Workers
- * API reference, read 2026-11-03).
+ * Each owner's data key: the key every object of theirs is sealed under, in this Worker, by
+ * the envelope's per-object seal (`contract/src/envelope.ts` `sealObject`).
  *
  * `FILES_KEYRING` is a Worker secret on this Worker alone, and this module is the only code
  * that reads it (`guards/r2-keys.test.ts`). It is a ring in the sealed envelope's versioned
@@ -13,8 +12,8 @@
  *
  * Envelope (NIST SP 800-57 §6.1.1's key-wrapping key and data key):
  * - the **data key** is 32 random bytes, made by `mint` for one namespace, and never
- *   stored in plaintext anywhere: R2 receives it per request as the SSE-C key, and keeps
- *   only its MD5 (to identify it, not to decrypt);
+ *   stored in plaintext anywhere: this Worker holds it for one call alone, and R2 sees only
+ *   what it sealed;
  * - it is kept **wrapped**, in the owner's object (`file_space.data_key`), sealed in the
  *   envelope under the namespace's own wrapping key,
  *   HKDF-SHA256(IKM = ring[kid], salt = "tinyassets/files/v1", info = "dek\0" + ns),
@@ -28,12 +27,11 @@
  * **Crypto-erasure.** The erasure wipes the owner's object, and with it the only wrapped
  * copy the object kept; it deletes the owner's nightly manifests (which carry one, for
  * recovery: `owner/src/backup.ts`) first. A chunk that outlives the prefix delete (a put
- * in flight past it) is then unreadable: no one holds the key it was put under, and R2
- * keeps none.
+ * in flight past it) is then unreadable: no one holds the key it was sealed under.
  *
  * **Rotation** (`rewrap`): `unwrap` accepts every kid in the ring, and `rewrap` opens a wrapped
  * key under its kid and wraps the same data key under the active one (the data key never
- * changes, so no chunk or part is rewritten). Each owner's sweep re-wraps its object's copy
+ * changes, so no chunk or part is resealed). Each owner's sweep re-wraps its object's copy
  * and every manifest root's (`owner/src/files.ts` `rewrap`); a kid leaves the ring only
  * after every owner's sweep has run (tasks.md).
  *
@@ -43,7 +41,7 @@
  * call, turns one into the other.
  */
 import {
-  type Domain, hex, KEY_BYTES, openBlob, type Opened, parseRing, type Ring, sealBlob,
+  blobMax, type Domain, hex, KEY_BYTES, openBlob, type Opened, parseRing, type Ring, sealBlob,
 } from "../../contract/src/envelope";
 import { Refusal } from "../../contract/src/refusal";
 import { namespace } from "./keys";
@@ -52,8 +50,8 @@ import { namespace } from "./keys";
 export type KeyringSecret = unknown;
 
 const SALT = "tinyassets/files/v1";
-/** A wrapped key's most characters: "v1." + a kid + a nonce + 48 bytes, base64url. */
-const WRAPPED_MAX = 3 + 32 + 1 + 16 + 1 + 64;
+/** A wrapped key's most characters: a blob over a data key's bytes. */
+const WRAPPED_MAX = blobMax(KEY_BYTES);
 
 /** What every refusal of a ring says; it names no kid and no part of it. */
 export const KEYRING_UNAVAILABLE = "files_keyring_unavailable";
@@ -117,7 +115,7 @@ export async function chunkName(dataKey: ArrayBuffer, sha256: string): Promise<s
 }
 
 /**
- * The data key `wrapped` holds for `ns`, as R2's `ssecKey` takes it. Any mismatch (another
+ * The data key `wrapped` holds for `ns`, as the per-object seal takes it. Any mismatch (another
  * namespace, a changed byte, a kid the ring no longer holds) is refused as `KEY_REFUSED`,
  * with no detail of which.
  */

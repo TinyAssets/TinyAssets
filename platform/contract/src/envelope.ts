@@ -23,13 +23,26 @@
  * does any changed byte. Rotation is the bindings': a blob opens under any kid its ring
  * holds, and each binding reseals one whose kid is not the active one.
  *
+ * An **object** is what the files Worker stores (`files/src/index.ts`): a chunk, a manifest
+ * part or segment, or a root's sealed list. It is sealed with AES-256-GCM directly under its
+ * owner's 32-byte data key (which that ring wraps as a blob), with a fresh 96-bit nonce and a
+ * 128-bit tag, and its additional data binds the object's own R2 key:
+ *
+ *     aad    = "ta-object/v1\0" + key
+ *     object = nonce + ciphertext and tag        (raw bytes, `OBJECT_OVERHEAD` past the plain)
+ *
+ * So bytes moved under another key, or into another owner's namespace, fail their tag, and a
+ * copy of the bucket is ciphertext that a copier moves without any key (d3 §G).
+ *
  * Pure: it takes the ring's text, and so the key bytes, as input, holds no state and uses
  * only WebCrypto and the standard text codecs. It imports nothing, so the deploy kit runs
  * it under Node's type stripping just as the Workers bundle it.
  */
 
+/** A kid's most characters. */
+const KID_MAX = 32;
 /** A kid, as a ring names it and a blob carries it. */
-export const KID = /^[A-Za-z0-9_-]{1,32}$/;
+export const KID = new RegExp(`^[A-Za-z0-9_-]{1,${KID_MAX}}$`);
 /** A key's bytes: AES-256's, and HKDF's input. */
 export const KEY_BYTES = 32;
 
@@ -77,6 +90,16 @@ export function base64(bytes: Uint8Array): string {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary);
+}
+
+/** What a sealed object holds past its plaintext: its nonce and its tag. */
+export const OBJECT_OVERHEAD = NONCE_BYTES + TAG_BYTES;
+
+/** The most characters a blob over `plainBytes` of plaintext is: under the longest kid. */
+export function blobMax(plainBytes: number): number {
+  const encoded = (bytes: number) => Math.ceil((bytes * 4) / 3);
+  return VERSION.length + 1 + KID_MAX + 1 + encoded(NONCE_BYTES) + 1
+    + encoded(plainBytes + TAG_BYTES);
 }
 
 /** The bytes of padded base64 `text`; throws on text that is not base64. */
@@ -232,6 +255,53 @@ export async function openBlob(ring: Ring, domain: Domain, blob: unknown,
         tagLength: TAG_BYTES * 8 },
       await derived(root, domain), parts.sealed);
     return Object.freeze({ plain: new Uint8Array(plain), kid: parts.kid });
+  } catch {
+    return null;
+  }
+}
+
+function objectAad(objectKey: string): Uint8Array {
+  return new TextEncoder().encode(`ta-object/v1\0${objectKey}`);
+}
+
+/** A data key as AES-256-GCM takes it; anything but 32 bytes fails loudly. */
+function objectCipher(dataKey: ArrayBuffer): Promise<CryptoKey> {
+  if (dataKey.byteLength !== KEY_BYTES) {
+    throw new Error("a data key is 32 bytes");
+  }
+  return crypto.subtle.importKey("raw", dataKey, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+/** `plain` sealed under `dataKey` for the object at `objectKey`: nonce, ciphertext and tag. */
+export async function sealObject(dataKey: ArrayBuffer, objectKey: string, plain: Uint8Array):
+    Promise<Uint8Array<ArrayBuffer>> {
+  const key = await objectCipher(dataKey);
+  const nonce = crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
+  const sealed = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: objectAad(objectKey),
+      tagLength: TAG_BYTES * 8 }, key, plain);
+  const out = new Uint8Array(NONCE_BYTES + sealed.byteLength);
+  out.set(nonce);
+  out.set(new Uint8Array(sealed), NONCE_BYTES);
+  return out;
+}
+
+/**
+ * The plaintext of an object sealed under `dataKey` for `objectKey`, or null for any mismatch
+ * (another data key or object key, a changed byte, fewer bytes than a nonce and tag), with no
+ * detail of which.
+ */
+export async function openObject(dataKey: ArrayBuffer, objectKey: string,
+                                 stored: Uint8Array): Promise<Uint8Array<ArrayBuffer> | null> {
+  const key = await objectCipher(dataKey);
+  if (stored.byteLength < OBJECT_OVERHEAD) {
+    return null;
+  }
+  try {
+    return new Uint8Array(await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: stored.subarray(0, NONCE_BYTES),
+        additionalData: objectAad(objectKey), tagLength: TAG_BYTES * 8 },
+      key, stored.subarray(NONCE_BYTES)));
   } catch {
     return null;
   }

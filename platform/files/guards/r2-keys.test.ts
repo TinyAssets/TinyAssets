@@ -41,8 +41,6 @@ const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey", "segme
 const PREFIXES: ReadonlySet<string> = new Set(["chunkPrefix", "manifestPrefix"]);
 /** The one other field of `this.env` the Worker reads, and the calls it may go to. */
 const RING = "FILES_KEYRING";
-/** The cipher's choice, read only by `cipherOf`. */
-const CIPHER = "FILES_CIPHER";
 const RING_READERS: ReadonlySet<string> = new Set(["mint", "unwrap", "rewrap"]);
 
 function thisEnv(node: ts.Node): boolean {
@@ -117,15 +115,12 @@ export function keyProblems(fileName: string, source: string): string[] {
       const ring = ts.isPropertyAccessExpression(parent) && parent.name.text === RING
         && call !== undefined && ts.isCallExpression(call) && call.arguments[0] === parent
         && ts.isIdentifier(call.expression) && RING_READERS.has(call.expression.text);
-      const cipher = ts.isPropertyAccessExpression(parent) && parent.name.text === CIPHER
-        && call !== undefined && ts.isCallExpression(call) && call.arguments[0] === parent
-        && ts.isIdentifier(call.expression) && call.expression.text === "cipherOf";
       // The doors' upload entrypoint hands its env whole to the service it narrows, this
       // file's own class, which this guard holds as it holds the rest (review M5-1).
       const service = ts.isNewExpression(parent) && ts.isIdentifier(parent.expression)
         && parent.expression.text === "FilesService";
       if (!service && (!ts.isPropertyAccessExpression(parent) || parent.expression !== node
-          || (parent.name.text !== "BLOBS" && !ring && !cipher))) {
+          || (parent.name.text !== "BLOBS" && !ring))) {
         report(node, "reads this.env for other than BLOBS and the ring's own module");
       }
     }

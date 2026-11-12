@@ -436,8 +436,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     run's next model call through `egress.tinyassets.io` is answered, not refused 409; the
     sandbox's network, read from E2B, carries generation 2 and the same `x-ta-sandbox`; a host
     the policy dropped is unreachable from the sandbox;
-  - the files Worker's create-once put on the live bucket (`onlyIf: { etagDoesNotMatch: "*" }`,
-    and which R2 checks first when the bytes miss the `sha256`; `files/test/chunks.test.ts`);
+  - the files Worker's create-once put of sealed bytes on the live bucket (`onlyIf:
+    { etagDoesNotMatch: "*" }` with the sealed bytes' own `sha256`; `files/test/chunks.test.ts`),
+    and the files bucket listed empty first: no object stored before the one cipher opens under
+    it (d3 §G);
   - R5's (d3 §N9): Claude's `defer` with several tool calls in one turn; managed settings
     against an organization's server-managed settings; Codex, Gemini and pi loading our
     root-owned hooks unattended; the delay one decision adds; a census of non-default rules,
