@@ -1,9 +1,9 @@
 /**
- * The sandbox Worker's RPC contract (`tinyassets-sandbox`, `decisions.md` A1): the
- * `SANDBOX` interface the owner's object binds (ADR-034 decision 4.2; `engines-replan.md`
- * §2.1 step 3), and the values that cross it. The sandbox Worker implements it
- * (`sandbox/src/index.ts`) and the owner's object calls it (`owner/src/sandbox.ts`, which
- * says what each call does), so neither imports the other's source.
+ * The sandbox Worker's RPC contract (`tinyassets-sandbox`,
+ * `docs/decisions/untangle-2026-11-wave-1.md` A1): the `SANDBOX` interface the owner's object
+ * binds (ADR-034 decision 4.2; `engines-replan.md` §2.1 step 3), and the values that cross it.
+ * The sandbox Worker implements it (`sandbox/src/index.ts`) and the owner's object calls it
+ * (`owner/src/sandbox.ts`, which says what each call does), so neither imports the other's source.
  *
  * - a run's start (`SandboxStart`) and a vendor sign-in's (`SandboxSignin`), each answered
  *   `Started`; the network the start that opens a lease configures (`NetworkPlan`, made by
