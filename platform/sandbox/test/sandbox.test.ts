@@ -17,6 +17,10 @@ import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
+import {
+  closedNetwork, EGRESS_HOST, egressTokenOf, GENERATION_HEADER, generationOf, runUrls,
+  signinEventsUrl, withEgressToken, withGeneration,
+} from "../../contract/src/egress";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/migrate";
 import { INCOMING, PROTOCOL, SPEAKS } from "../runner/protocol";
@@ -73,10 +77,7 @@ const LEASE = { lease_id: hex(32, "b"), epoch: 1 };
 /** The lease's egress token, a marker: only the network's transform carries it. */
 const EGRESS_TOKEN = "egress-token-0f1e2d3c4b5a";
 const NETWORK = {
-  network: { allowOut: ["github.com", "egress.tinyassets.io"], denyOut: ["0.0.0.0/0"],
-             dnsServers: ["1.1.1.1"],
-             rules: { "egress.tinyassets.io": [{ transform: { headers: {
-               "x-ta-sandbox": EGRESS_TOKEN, "x-ta-network-generation": "1" } } }] } },
+  network: withEgressToken(withGeneration(closedNetwork(["github.com"]), 1), EGRESS_TOKEN),
   mode: "allowlist", generation: 1, unexpressed: [], receipt: false, boundary: false, note: "",
 };
 
@@ -89,10 +90,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
     network: NETWORK as never,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
               env: { HOME: "{home}" }, inherit: ["PATH"] },
-    urls: { mcp: `https://egress.tinyassets.io/r/${RUN}/${hex(64, "e")}/mcp`,
-            mcp_bare: `https://egress.tinyassets.io/r/${RUN}/mcp`,
-            events: `https://egress.tinyassets.io/r/${RUN}/events`,
-            signin: "https://egress.tinyassets.io/signin" },
+    urls: runUrls(RUN, hex(64, "e")),
     ...over,
   };
 }
@@ -164,7 +162,7 @@ describe("a start", () => {
     expect(box.metadata["ta_owner"]).toMatch(/^[0-9a-f]{32}$/);
     expect(JSON.stringify(box.metadata)).not.toContain(who);
     // A signed-in engine's vendor hosts are let out, the egress door kept last.
-    expect(box.network.allowOut.at(-1)).toBe("egress.tinyassets.io");
+    expect(box.network.allowOut.at(-1)).toBe(EGRESS_HOST);
     expect(box.network.allowOut).toEqual(expect.arrayContaining(["claude.ai",
                                                                  "api.anthropic.com"]));
     const create = state.calls.find((call) => call.path === "/v2/sandboxes"
@@ -200,9 +198,9 @@ describe("a start", () => {
 
   it("refuses a run whose doors are not https on the egress host", async () => {
     const who = owner();
-    for (const url of [`http://egress.tinyassets.io/r/${RUN}/events`,
+    for (const url of [`http://${EGRESS_HOST}/r/${RUN}/events`,
                        `https://elsewhere.example/r/${RUN}/events`,
-                       `https://egress.tinyassets.io:8443/r/${RUN}/events`]) {
+                       `https://${EGRESS_HOST}:8443/r/${RUN}/events`]) {
       const refused = await stub(who).start(who, start({ urls: { ...start().urls, events: url } }))
         .then(() => null, (error: unknown) => error);
       expect(String(refused)).toMatch(/https doors/);
@@ -226,8 +224,7 @@ describe("a start", () => {
     expect(await stub(who).start(who, start({ credential: "api_key" })))
       .toEqual({ started: true });
     const state = await seen();
-    expect(state.sandboxes[0]!.network.allowOut).toEqual(["github.com",
-                                                          "egress.tinyassets.io"]);
+    expect(state.sandboxes[0]!.network.allowOut).toEqual(["github.com", EGRESS_HOST]);
     expect(state.commands.map((command) => command.argv[1]))
       .toEqual(["install", "prepare", "launch"]);
     // No scratch retention in the record: the runner deletes no agent's scratch by age.
@@ -1033,8 +1030,7 @@ describe("a sign-in", () => {
   function signin(over: Record<string, unknown> = {}) {
     return { id: SI, engine: "kimi", region: "global", mode: "in" as const, authority: "owner",
              lease: LEASE, tokens: start().tokens, network: NETWORK as never, route: ROUTE,
-             urls: { events: `https://egress.tinyassets.io/signin/${SI}/events`,
-                     signin: "https://egress.tinyassets.io/signin" }, ...over };
+             urls: { events: signinEventsUrl(SI), signin: start().urls.signin }, ...over };
   }
 
   it("starts the record's login in the authority's sandbox, its region's hosts let out",
@@ -1103,8 +1099,8 @@ describe("a sign-in", () => {
     const who = owner();
     for (const bad of [signin({ id: "run_x" }), signin({ region: "moon" }),
                        signin({ route: undefined }), signin({ route: "short" }),
-                       signin({ urls: { events: "http://egress.tinyassets.io/x",
-                                        signin: "https://egress.tinyassets.io/signin" } })]) {
+                       signin({ urls: { events: `http://${EGRESS_HOST}/x`,
+                                        signin: start().urls.signin } })]) {
       const refused = await stub(who).signin(who, bad as never)
         .then(() => null, (error: unknown) => error);
       expect(refused).not.toBeNull();
@@ -1179,7 +1175,7 @@ describe("the network", () => {
     const who = owner();
     expect(await stub(who).start(who, start())).toEqual({ started: true });
     const hosts = (await seen()).sandboxes[0]!.network.allowOut;
-    expect(hosts.at(-1)).toBe("egress.tinyassets.io");
+    expect(hosts.at(-1)).toBe(EGRESS_HOST);
     expect(hosts).toEqual(expect.arrayContaining(["claude.ai", "github.com"]));
     // A joining run whose vendor's hosts are listed already leaves the network as it is.
     expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, tokens: null,
@@ -1189,13 +1185,12 @@ describe("the network", () => {
 
   it("is left as it is when it lets every name out", async () => {
     await e2b("/script", { signin: { "claude-code": 0, gemini: 0 } });
-    const open = { ...NETWORK, network: { ...NETWORK.network,
-                                          allowOut: ["*", "egress.tinyassets.io"] } };
+    const open = { ...NETWORK, network: { ...NETWORK.network, allowOut: ["*", EGRESS_HOST] } };
     const who = owner();
     expect(await stub(who).start(who, start({ network: open as never })))
       .toEqual({ started: true });
     expect((await seen()).sandboxes[0]!.network.allowOut)
-      .toEqual(["*", "egress.tinyassets.io"]);
+      .toEqual(["*", EGRESS_HOST]);
     expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, engine: "gemini",
                                              tokens: null, network: null })))
       .toEqual({ started: true });
@@ -1212,20 +1207,17 @@ describe("the network", () => {
 });
 
 describe("a live lease's network re-applied (E2)", () => {
-  /** A re-apply's plan under generation 2: the policy's network, its transform's generation, no token. */
-  const PLAN = { ...NETWORK, generation: 2, network: {
-    allowOut: ["egress.tinyassets.io"], denyOut: ["0.0.0.0/0"], dnsServers: ["1.1.1.1"],
-    rules: { "egress.tinyassets.io": [{ transform: { headers: {
-      "x-ta-network-generation": "2" } } }] } } };
+  /** A re-apply's plan under `generation`: the policy's `hosts`, its generation, no token. */
+  const at = (generation: number, hosts: string[] = []) =>
+    ({ ...NETWORK, generation, network: withGeneration(closedNetwork(hosts), generation) });
+  const PLAN = at(2);
   const reapply = (over: Record<string, unknown> = {}) =>
     ({ authority: "owner", lease: LEASE, network: PLAN, ...over }) as never;
-  /** A sandbox's network as the fake E2B holds it: its names and its door's headers. */
+  /** A sandbox's network as the fake E2B holds it: its names, its token and its generation. */
   const networkOf = async (index = 0) => {
-    const box = (await seen()).sandboxes[index]! as unknown as {
-      network: { allowOut: string[];
-                 rules: Record<string, { transform: { headers: Record<string, string> } }[]> } };
-    return { allowOut: box.network.allowOut,
-             headers: box.network.rules["egress.tinyassets.io"]![0]!.transform.headers };
+    const { network } = (await seen()).sandboxes[index]!;
+    return { allowOut: network.allowOut, token: egressTokenOf(network),
+             generation: generationOf(network) };
   };
 
   it("replaces a running sandbox's network whole, keeping its live egress token and every " +
@@ -1238,28 +1230,40 @@ describe("a live lease's network re-applied (E2)", () => {
                                        tokens: null, network: null }));
     expect(await stub(who).network(reapply())).toEqual({ state: "applied" });
     const network = await networkOf();
-    expect(network.headers).toEqual({ "x-ta-sandbox": EGRESS_TOKEN,
-                                      "x-ta-network-generation": "2" });
+    expect([network.token, network.generation]).toEqual([EGRESS_TOKEN, 2]);
     // The policy's own names are the plan's (`github.com` is gone); the jobs' vendors stay.
     expect(network.allowOut).not.toContain("github.com");
     expect(network.allowOut).toEqual(expect.arrayContaining(["claude.ai", "accounts.google.com"]));
-    expect(network.allowOut.at(-1)).toBe("egress.tinyassets.io");
+    expect(network.allowOut.at(-1)).toBe(EGRESS_HOST);
   });
 
-  it("answers lost for a lease it has no sandbox of, and refuses a plan with a token",
-     async () => {
+  it("answers lost for a lease it has no sandbox of, and refuses a plan with a token or " +
+     "no generation", async () => {
     const who = owner();
     expect(await stub(who).network(reapply())).toEqual({ state: "lost" });
     await stub(who).start(who, start({ credential: "api_key" }));
     expect(await stub(who).network(reapply({ lease: { lease_id: hex(32, "9"), epoch: 2 } })))
       .toEqual({ state: "lost" });
-    const tokened = { ...PLAN, network: { ...PLAN.network, rules: {
-      "egress.tinyassets.io": [{ transform: { headers: { "x-ta-sandbox": "forged",
-                                                          "x-ta-network-generation": "2" } } }] } } };
+    const tokened = { ...PLAN, network: withEgressToken(PLAN.network, "forged") };
     const refused = await stub(who).network(reapply({ network: tokened }))
       .then(() => null, (error: unknown) => error);
     expect(String(refused)).toMatch(/no token/);
-    expect((await networkOf()).headers["x-ta-network-generation"]).toBe("1");
+    // A plan whose transform names no generation is refused, never applied as "not newer".
+    const unnamed = { ...PLAN, network: { ...PLAN.network, rules: { [EGRESS_HOST]: [
+      { transform: { headers: { [GENERATION_HEADER]: "x" } } }] } } };
+    expect(String(await stub(who).network(reapply({ network: unnamed }))
+      .then(() => null, (error: unknown) => error))).toMatch(/generation header/);
+    expect((await networkOf()).generation).toBe(1);
+  });
+
+  it("fails loudly on a live network that carries no generation", async () => {
+    const who = owner();
+    const bare = { ...NETWORK, network: withEgressToken(closedNetwork(["github.com"]),
+                                                        EGRESS_TOKEN) };
+    await stub(who).start(who, start({ credential: "api_key", network: bare as never }));
+    expect(String(await stub(who).network(reapply()).then(() => null, (error: unknown) => error)))
+      .toMatch(/the egress generation it was made under/);
+    expect((await networkOf()).generation).toBeNull();
   });
 
   it("keeps it for a paused sandbox, applied as the sandbox resumes", async () => {
@@ -1270,12 +1274,11 @@ describe("a live lease's network re-applied (E2)", () => {
     await e2b("/pause", { id });
     expect(await stub(who).network(reapply())).toEqual({ state: "at_resume" });
     // Nothing is sent to a paused sandbox: E2B holds its old network until it resumes.
-    expect((await networkOf()).headers["x-ta-network-generation"]).toBe("1");
+    expect((await networkOf()).generation).toBe(1);
     await runDurableObjectAlarm(stub(who));
     expect((await seen()).sandboxes[0]!.state).toBe("running");
     const network = await networkOf();
-    expect(network.headers).toEqual({ "x-ta-sandbox": EGRESS_TOKEN,
-                                      "x-ta-network-generation": "2" });
+    expect([network.token, network.generation]).toEqual([EGRESS_TOKEN, 2]);
     expect(network.allowOut).toEqual(expect.arrayContaining(["claude.ai"]));
     expect(network.allowOut).not.toContain("github.com");
   });
@@ -1301,29 +1304,25 @@ describe("a live lease's network re-applied (E2)", () => {
 
   it("never puts an older generation's network over a newer one's, running or paused",
      async () => {
-    const at = (generation: number, allowOut: string[]) => ({ ...PLAN, generation, network: {
-      ...PLAN.network, allowOut,
-      rules: { "egress.tinyassets.io": [{ transform: { headers: {
-        "x-ta-network-generation": String(generation) } } }] } } });
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
     const who = owner();
     await stub(who).start(who, start());
     // Generation 3's re-apply lands first; generation 2's, sent before it, arrives after.
-    expect(await stub(who).network(reapply({ network: at(3, ["egress.tinyassets.io"]) })))
+    expect(await stub(who).network(reapply({ network: at(3) })))
       .toEqual({ state: "applied" });
     expect(await stub(who).network(reapply({
-      network: at(2, ["old.example", "egress.tinyassets.io"]) }))).toEqual({ state: "applied" });
-    expect((await networkOf()).headers["x-ta-network-generation"]).toBe("3");
+      network: at(2, ["old.example"]) }))).toEqual({ state: "applied" });
+    expect((await networkOf()).generation).toBe(3);
     expect((await networkOf()).allowOut).not.toContain("old.example");
     // Paused: the newer kept plan stays kept.
     const id = (await seen()).sandboxes[0]!.id;
     await e2b("/pause", { id });
-    expect(await stub(who).network(reapply({ network: at(4, ["egress.tinyassets.io"]) })))
+    expect(await stub(who).network(reapply({ network: at(4) })))
       .toEqual({ state: "at_resume" });
     expect(await stub(who).network(reapply({
-      network: at(2, ["old.example", "egress.tinyassets.io"]) }))).toEqual({ state: "applied" });
+      network: at(2, ["old.example"]) }))).toEqual({ state: "applied" });
     await runDurableObjectAlarm(stub(who));
-    expect((await networkOf()).headers["x-ta-network-generation"]).toBe("4");
+    expect((await networkOf()).generation).toBe(4);
     expect((await networkOf()).allowOut).not.toContain("old.example");
   });
 });
