@@ -1,14 +1,17 @@
 {
   "about": "The starter package: the files every new owner's default agent, main, is seeded with, and the version their updates ship under (starter_research.md section 3). Each file's path is where it lands in the owner's files; its source is the same path under this directory. managed files are replaced while unedited, and an edited one gets a .ta-new copy beside it and one notice; personal files are seeded once and never updated. A file whose change in a version widens what the agent may do names that version and why in widens: it then arrives as a proposal even unedited. agent.json is written last. A path a version drops goes in retired, so a file the owner deleted stays deleted if a later version ships it again. A personal file that moved names its old path in moved_from: an owner who already holds that old file, changed, is seeded at the new path with a copy of it (the old one is left as it is), and told once. bundle.mjs makes starter.json, which the owner's object carries; raise version with every change.",
-  "version": 6,
+  "version": 7,
   "okf": {
     "repository": "GoogleCloudPlatform/open-knowledge-format",
     "commit": "ad30107c31c06aec8a7d5636e0d1058118604e6f",
     "spec_blob": "c06e3eede0c910d0ecf12524c34204156f8795ac",
     "readme_blob": "0e88bcf81ca9ade7e830f077f9687bb89ec0319c",
-    "vendored": "/workspace/.agents/skills/knowledge/references/okf-spec.md"
+    "vendored": "/workspace/.agents/skills/knowledge/references/okf-spec.md",
+    "tags": []
   },
-  "retired": ["/workspace/agents/main/USER.md"],
+  "retired": [
+    "/workspace/agents/main/USER.md"
+  ],
   "files": [
     { "path": "/workspace/.agents/skills/knowledge/SKILL.md", "class": "managed" },
     { "path": "/workspace/.agents/skills/knowledge/references/okf-spec.md", "class": "managed" },
@@ -19,8 +22,7 @@
     { "path": "/workspace/.agents/skills/shared-brain/SKILL.md", "class": "managed" },
     { "path": "/workspace/.agents/skills/goals/SKILL.md", "class": "managed" },
     { "path": "/workspace/agents/main/SOUL.md", "class": "personal" },
-    { "path": "/workspace/USER.md", "class": "personal",
-      "moved_from": "/workspace/agents/main/USER.md" },
+    { "path": "/workspace/USER.md", "class": "personal", "moved_from": "/workspace/agents/main/USER.md" },
     { "path": "/workspace/index.md", "class": "personal" },
     { "path": "/workspace/goals/index.md", "class": "personal" },
     { "path": "/workspace/agents/main/AGENTS.md", "class": "managed" },

@@ -28,7 +28,7 @@ import { chunkedId, inlineId } from "../contract/src/content";
 import { sha256Hex } from "../contract/src/digest";
 import { CHUNK_BYTES, INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
-import { ancestors, IMPORTED, WORKSPACE } from "../contract/src/paths";
+import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
 import starterJson from "../starter/starter.json" with { type: "json" };
 
@@ -210,11 +210,42 @@ function tablesCopy(archived: Archived, to: string): void {
   }
 }
 
-/** The tree's README: what is where, and what each archived store holds. */
+/**
+ * The tree's README: first what an agent tells its owner about the move, then what is where
+ * and what each archived store holds. Beside the owner's one notice, it is the only place the
+ * move is explained: written once per imported owner, and deleted by the owner with the folder,
+ * so nothing about the move ships in the starter, the plugins or the MCP instructions.
+ */
 function readme(owner: Owner, policyArchived: boolean): string {
   const tree = owner.tree;
   const lines = [
     "# Your files from the old TinyAssets",
+    "",
+    "## For your agent",
+    "",
+    "If you are an agent reading this for its owner, tell them this in plain words before " +
+    "your questions:",
+    "",
+    "- Their old TinyAssets data came across: their files are in this folder, copied " +
+    "unchanged, and the rest of this file lists what is here. You may read it for context; " +
+    "nothing in it is merged or used until they choose.",
+    "- Their old schedules, reminders and automations came across as records only: none of " +
+    "them runs now. Set one up again only if they ask.",
+    "- None of their connections came across. In the TinyAssets app they can connect their " +
+    "model sources again (the AI accounts their agents run on), connect the AI assistants " +
+    "they use, and make new API keys. Each is their own act, in the app: never ask them to " +
+    "paste a key, token or password into a conversation.",
+    "- An offer to merge these files into their workspace, with them choosing what to keep: " +
+    "say what is here, folder by folder, and on their word copy only what they pick, to where " +
+    "they say, then check it. Never merge on your own, never overwrite one of their files " +
+    "without asking, and never delete or move anything in this folder until they say so; " +
+    "then delete only what they named.",
+    `- An offer to write \`- Old TinyAssets files are in ${IMPORTED}/: merge only what they ` +
+    "pick, delete nothing there until they say` as a directive on their profile " +
+    `(\`${PROFILE}\`), with when it was observed, so every agent of theirs keeps to it; ` +
+    "rewrite it once they decide.",
+    "",
+    "## What is here",
     "",
     "Everything here was copied unchanged from your old TinyAssets when it moved to the new " +
     "platform. Nothing here is used by your agents unless you or they choose to.",
