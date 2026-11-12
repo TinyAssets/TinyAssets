@@ -47,8 +47,6 @@ import { Refusal } from "../../contract/src/refusal";
 import { namespace } from "./keys";
 
 const SALT = "tinyassets/files/v1";
-/** A wrapped key's most characters: a blob over a data key's bytes. */
-const WRAPPED_MAX = blobMax(KEY_BYTES);
 
 /** What every refusal of a ring says; it names no kid and no part of it. */
 export const KEYRING_UNAVAILABLE = "files_keyring_unavailable";
@@ -123,7 +121,8 @@ export async function unwrap(secret: unknown, ns: string, wrapped: unknown):
 
 /** `wrapped` opened for `ns`: a data key's 32 bytes, or `KEY_REFUSED`. */
 async function opened(keys: Ring, ns: string, wrapped: unknown): Promise<Opened> {
-  const open = await openBlob(keys, domain(ns), wrapped, WRAPPED_MAX);
+  // A wrapped key's most characters: a blob over a data key's bytes.
+  const open = await openBlob(keys, domain(ns), wrapped, blobMax(KEY_BYTES));
   if (open === null || open.plain.byteLength !== KEY_BYTES) {
     throw new Refusal("data_key_refused", KEY_REFUSED);
   }

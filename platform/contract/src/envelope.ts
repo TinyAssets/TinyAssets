@@ -41,8 +41,8 @@
 
 /** A kid's most characters. */
 const KID_MAX = 32;
-/** A kid, as a ring names it and a blob carries it. */
-export const KID = new RegExp(`^[A-Za-z0-9_-]{1,${KID_MAX}}$`);
+/** A kid, as a ring names it and a blob carries it: at most `KID_MAX` characters. */
+export const KID = /^[A-Za-z0-9_-]{1,32}$/;
 /** A key's bytes: AES-256's, and HKDF's input. */
 export const KEY_BYTES = 32;
 
