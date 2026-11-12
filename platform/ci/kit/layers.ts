@@ -74,8 +74,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     // A Worker's own data beside its config (`doors/shared-apps.json`) and its build's
     // output (the sandbox's `dist/runner.mjs`, imported as data) are its own folder's.
     name: "a Worker's source",
-    files: ["platform/<worker>/src/**", "platform/<worker>/worker-configuration.d.ts",
-            ...NOT_TESTS],
+    files: ["platform/<worker>/src/**", ...NOT_TESTS],
     may: ["platform/<worker>/src/**", "platform/<worker>/*.json", "platform/<worker>/dist/**",
           ...CONTRACT, ...SOURCES, ...NOT_TESTS],
     also: {
@@ -147,7 +146,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     // A workspace's tools are the scripts at its top (its test config, its generators).
     name: "a workspace's tests, memory legs and tools",
     files: ["platform/<ws>/*.{ts,mts,cts,js,mjs,cjs}", "!platform/{ci,deploy,import}/*",
-            "!platform/*/worker-configuration.d.ts", "platform/{deploy,import}/vitest.config.ts",
+            "platform/{deploy,import}/vitest.config.ts",
             "platform/<ws>/**/test/**", "platform/<ws>/**/*.test.*",
             "platform/<ws>/memory/**", "!platform/<ws>/guards/**", "!platform/ci/**"],
     may: TESTS_MAY,

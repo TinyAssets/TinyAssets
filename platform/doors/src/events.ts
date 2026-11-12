@@ -32,7 +32,7 @@ import { follows, subscriptionId } from "../../contract/src/wake-kinds";
 import { refusalOf } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
-import type { DoorsEnv } from "./config";
+import type { DoorsEnv } from "./env";
 import { DOORBELL_VERSION, verifyDoorbell } from "./connect";
 
 

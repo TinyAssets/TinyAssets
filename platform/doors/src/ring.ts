@@ -10,7 +10,7 @@
 import { principal } from "../../contract/src/text";
 
 import { ownerObject } from "./binder";
-import type { DoorsEnv } from "./config";
+import type { DoorsEnv } from "./env";
 
 export interface Ring {
   readonly owner: string;

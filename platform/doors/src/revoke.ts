@@ -22,7 +22,8 @@ import type { GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provi
 
 import { type Bound, installationOf, loopback, mcpClient } from "./binder";
 import { apiKeyOrigin } from "../../contract/src/binding";
-import { type DoorsEnv, MCP_RESOURCE } from "./config";
+import { MCP_RESOURCE } from "./config";
+import type { DoorsEnv } from "./env";
 import { deleteKey } from "./directory";
 import { authorizationServer } from "./oauth";
 

@@ -17,7 +17,8 @@
  * script, style, font or image (`CSP`), and no inline script, so the return pages' own first
  * script is the first to run (it clears the code from the address bar before anything else).
  */
-import { type DoorsEnv, PUBLIC_HOST } from "./config";
+import { PUBLIC_HOST } from "./config";
+import type { DoorsEnv } from "./env";
 
 /** The pages, by path: each is its file. */
 const PAGES: Readonly<Record<string, string>> = Object.freeze({

@@ -10,7 +10,7 @@ import { writeControl } from "../../ci/fixtures";
 import {
   CONTROL_KEY, type Control, outsideOpen, ownerOpen, parseControl,
 } from "../../contract/src/control";
-import type { DoorsEnv } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { mintKeyFor } from "./keys";
 import {
   appCallback, appPost, authorizeMcp, call, connect, doorsEnv, legacyPost, OPEN, reached,

@@ -5,13 +5,16 @@
  * script_name in production) is bound to the real object in one script
  * (vitest.config.ts).
  */
-import type { DoorsEnv } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { serve } from "../src/doors";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
 import type { SandboxLeases } from "../../owner/src/launch";
-import { type OwnerEnv, OwnerDO as RealOwnerDO } from "../../owner/src/owner-do";
+import { OwnerDO as RealOwnerDO } from "../../owner/src/owner-do";
+
+/** The owner object's env, as its class takes it. */
+type OwnerEnv = ConstructorParameters<typeof RealOwnerDO>[1];
 import type { Refusal } from "../../contract/src/refusal";
 import { RecordingErasures } from "../../owner/test/erasure-fake";
 import { RecordingSandbox } from "../../owner/test/sandbox-fake";

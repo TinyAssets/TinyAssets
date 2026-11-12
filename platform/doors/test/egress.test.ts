@@ -21,7 +21,7 @@ import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
-import { type DoorsEnv } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
 import worker, { type OwnerDO } from "./entry";

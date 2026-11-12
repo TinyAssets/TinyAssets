@@ -21,16 +21,12 @@ import type {
 
 import type { CodemodeWorker } from "../../contract/src/codemode";
 
-import type { CodemodeSandbox } from "./codemode";
+import type { CodemodeEnv } from "./env";
 
 export { CodemodeSandbox } from "./codemode";
 
 /** The most characters an execution's name takes: the owner's name, a slash and a UUID. */
 const NAME_MAX = 512;
-
-export interface CodemodeEnv {
-  readonly CODEMODE: DurableObjectNamespace<CodemodeSandbox>;
-}
 
 function named(value: unknown): value is string {
   return typeof value === "string" && value !== "" && value.length <= NAME_MAX;

@@ -37,9 +37,9 @@ import apps from "../shared-apps.json" with { type: "json" };
 
 import { bindInbound, type Bound, withTiers } from "./binder";
 import { boundedBytes } from "./body";
-import {
-  type DoorsEnv, INBOUND_BODY_MAX, INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN,
+import { INBOUND_BODY_MAX, INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN,
 } from "./config";
+import type { DoorsEnv } from "./env";
 import { inboundGate, ordinaryAdmits, readControl } from "../../contract/src/control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { shownCode } from "./refused";

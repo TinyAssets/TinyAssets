@@ -7,7 +7,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { DoorsEnv } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { ringQueue } from "../src/ring";
 import type { OwnerDO } from "./entry";
 

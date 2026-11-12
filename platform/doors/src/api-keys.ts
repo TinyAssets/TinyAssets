@@ -34,7 +34,7 @@ import { HEX16 } from "../../contract/src/ids";
 
 import { bindApiKey, type Bound } from "./binder";
 import { apiKeyOrigin } from "../../contract/src/binding";
-import type { DoorsEnv } from "./config";
+import type { DoorsEnv } from "./env";
 import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
 
 export const PREFIX = "ta_key_";

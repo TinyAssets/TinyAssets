@@ -8,7 +8,7 @@
  * `/starter/<owner>`, its starter seed as the owner reads it: the version reconciled, its
  * agents, whether the starter's own files are there, and each failure it was told.
  */
-import type { DoorsEnv } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import worker, { OwnerDO as TestOwnerDO } from "./entry";
 import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 

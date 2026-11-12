@@ -19,7 +19,7 @@ import {
   answerName, doneName, importMac, type ImportMessage, NO_ROWS, rehearsalName, rowsSum,
 } from "../../contract/src/import-message";
 import { type Answers, clean, differences, expectedOf } from "../../import/check";
-import type { DoorsEnv } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { putOwner, readOwner } from "../src/directory";
 import { IMPORT_HOLD_BYTES, importQueue, type SliceBounds } from "../src/import";
 import { CHUNK_BYTES } from "../../contract/src/limits";

@@ -15,7 +15,8 @@ import { GRANT_LIMITS } from "../../owner/src/grants";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { newKey, parseKey, secretHash } from "../src/api-keys";
 import { MAX_KEYS } from "../../contract/src/limits";
-import { type DoorsEnv, now } from "../src/config";
+import { now } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { DEFAULT_PROFILE, profileNames } from "../../contract/src/doors";
 import {
   appPost, call, connect, doorsEnv, legacyPost, OPEN, reached, registerClient,

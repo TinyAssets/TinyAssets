@@ -12,7 +12,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { type DoorsEnv, now, UPSTREAM_CALLBACK } from "../src/config";
+import { now, UPSTREAM_CALLBACK } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { upstreamOf } from "../src/index";
 import { oidcUpstream, upstreamConfig, type UpstreamConfig, verifiedAccessToken } from "../src/oidc";
 import { UNWIRED } from "../src/upstream";
