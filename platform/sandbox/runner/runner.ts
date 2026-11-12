@@ -29,7 +29,7 @@
  *   of its cwd), the CLI as that user from the record, its events framed and posted (a batch
  *   at least every `HEARTBEAT_MS`); at its end every process of the user killed, the kept
  *   paths back into the store, the files synced out, the user given back, then the end.
- * - `cancel <run>`: SIGTERM to the CLI, a kill after `CANCEL_GRACE_MS`; 3 when not live.
+ * - `cancel <run>`: SIGTERM to the CLI, a kill after `KILL_GRACE_MS`; 3 when not live.
  * - `status <run>`: 0 while its runner runs, else 3.
  * - `state`: the live runs, whether every CLI is quiet, and the protocol (`StateAnswer`).
  * - `quiet-wait <until_ms>`: until every live CLI is quiet (between turns, as its events
@@ -57,11 +57,10 @@
  * It takes no probe: the template's standing checks are a bundle of their own (`probes.ts`),
  * which nothing here imports.
  */
-import { sha256Hex } from "../../contract/src/digest";
 import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync,
-         readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { closeSync, existsSync, lchownSync, mkdirSync, openSync, readdirSync, readFileSync,
+         renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
@@ -74,11 +73,11 @@ import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
-import { binPath, HOMES, invocation, isKept, keptPaths, SYSTEM } from "./engine";
+import { binPath, HOMES, invocation, isKept, keptPaths } from "./engine";
 import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
-import { remove, safeDirs, safeRead, safeWrite, walkFiles } from "./fsafe";
+import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
-import { ancestorEnvFile, envScanReach, heldSecret, homeEnvFile, projectEnvFile,
+import { ancestorEnvFile, envScanReach, homeEnvFile, projectEnvFile,
          projectEnvRefusal, secretAtoms } from "./guards";
 import { project } from "./project";
 import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
@@ -89,35 +88,28 @@ import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
-  openMirror, RACY_MS, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport,
+  openMirror, SESSIONS_SEEN, stageSessions, SyncClient, SyncFenced, syncIn, syncOut,
+  type SyncReport,
 } from "./sync";
 import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc, JOB_FILES,
          type JobKind, JOBS, INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer,
          RUNNERS, type SigninDoc, type StartDoc, type StateAnswer,
          STATE_DIR } from "./protocol";
-import { CONVERSATIONS, configOwned, dropHome, engineEnv, giveTree, keepHome,
-         makeHome, nextGeneration, readJson, record, RECORDS, shared, sortedWalk, STORE,
-         withStore } from "./session";
+import { type Bounded, CONVERSATIONS, dropHome, engineEnv, homeOf, keepHome, KILLED_BY_TERM,
+         loginFiles, nextGeneration, readJson, record, RECORDS, shared, sortedWalk,
+         spawnBounded, STORE, systemOf, withRunUser, withStore } from "./session";
 import { checkFormat, dropRunners } from "./state-format";
-import { asUser, E2B_USER, give, type Identity, killAll, POOL_PREFIX, SYNC_HOME, SYNC_USER,
-         take, user } from "./users";
+import { asUser, E2B_USER, killAll, POOL_PREFIX, SYNC_HOME, SYNC_USER, user } from "./users";
 
 const STATE = STATE_DIR;
 /** Each agent's stamp of its scratch's last use (`scratch.ts`), and the runner's reserve. */
 const SCRATCH_INDEX = `${STATE}/scratch-used`;
 const RESERVE = `${STATE}/reserve`;
-/** The engines' sessions as last hashed, so an unchanged one is not read again a run. */
-const SESSIONS_SEEN = `${STATE}/sessions-seen.json`;
 /** What the runner keeps that is a cache alone, discarded when its format changes. */
 const CACHES: readonly string[] = Object.freeze([SESSIONS_SEEN]);
 
 /** How often the runner flushes what its CLI wrote: the frames' own cadence (§2.2). */
 const FLUSH_MS = 250;
-/**
- * A cancelled CLI's grace before the kill: one heartbeat, so its end reaches the object
- * well inside the lease's TTL (`LEASE_TTL_MS`), its runner's last post included.
- */
-const CANCEL_GRACE_MS = HEARTBEAT_MS;
 const OK = EXIT.ok;
 const NO = EXIT.no;
 const FENCED = EXIT.fenced;
@@ -219,9 +211,10 @@ function launchJob(kind: JobKind, id: string): number {
 function startJob(kind: JobKind, id: string, extra: readonly string[]): number {
   const dir = jobDir(kind, id);
   const log = openSync(`${dir}/${JOB_FILES.log}`, "a", 0o600);
-  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, JOBS[kind].own,
-                                         id, ...extra],
-                      { detached: true, stdio: ["ignore", log, log], env: process.env });
+  const { child } = spawnBounded([process.execPath, ...process.execArgv, process.argv[1]!,
+                                  JOBS[kind].own, id, ...extra],
+                                 { stdio: ["ignore", log, log], env: process.env },
+                                 Number.POSITIVE_INFINITY);
   closeSync(log);
   child.unref();
   writeJson(`${dir}/${JOB_FILES.state}`, KINDS[kind].started(() => jobState(kind, id),
@@ -313,9 +306,9 @@ class Job {
   readonly dir: string;
   readonly outbox: Outbox;
   readonly poster: Poster;
-  child: ChildProcess | null = null;
+  /** The CLI it runs, once started. */
+  cli: Bounded | null = null;
   stopped = false;
-  #kill: ReturnType<typeof setTimeout> | null = null;
   #pump: ReturnType<typeof setInterval> | null = null;
   #channel: Server | null = null;
 
@@ -326,33 +319,10 @@ class Job {
     process.on("SIGTERM", () => this.stop());
   }
 
-  /** SIGTERM to the CLI's process group, then a kill after its grace. */
+  /** The CLI stopped (`spawnBounded`'s stop), and none started after. */
   stop(): void {
     this.stopped = true;
-    const child = this.child;
-    if (child !== null && child.exitCode === null && child.pid !== undefined) {
-      const pid = child.pid;
-      try {
-        process.kill(-pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-      this.#kill ??= setTimeout(() => {
-        try {
-          process.kill(-pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      }, CANCEL_GRACE_MS);
-    }
-  }
-
-  /** The CLI closed: its group gone, so no late kill may reach a group that reused its id. */
-  closed(): void {
-    if (this.#kill !== null) {
-      clearTimeout(this.#kill);
-      this.#kill = null;
-    }
+    this.cli?.stop();
   }
 
   /** Whether the job was cancelled (`cancelJob`'s mark). */
@@ -406,24 +376,6 @@ class Job {
   unlisten(): void {
     this.#channel?.close();
     this.#channel = null;
-  }
-}
-
-/** A session in an engine's store as last hashed: its identity, and a secret refusal's. */
-interface SeenSession {
-  readonly size: number;
-  readonly mtime_ms: number;
-  readonly sha256: string;
-  /** The digest of the secrets it was refused against, when it held one's bytes. */
-  readonly refused?: string;
-}
-
-/** The engines' sessions as last hashed (`SESSIONS_SEEN`), or none. */
-function readSeen(): Record<string, SeenSession> {
-  try {
-    return existsSync(SESSIONS_SEEN) ? readJson<Record<string, SeenSession>>(SESSIONS_SEEN) : {};
-  } catch {
-    return {};  // unreadable: every session is hashed again, nothing skipped
   }
 }
 
@@ -483,32 +435,28 @@ async function signedIn(rec: SourceRecord): Promise<boolean> {
         : null;
     });
   }
-  const name = `check-${rec.id}-${process.pid}`;
-  const as = take(STATE);
-  const home = await makeHome(name, rec);
-  try {
-    giveTree(home, as);
-    const argv = asUser(as, [shared()], login.status_argv.map((arg) =>
-      arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home)));
-    const done = spawnSync(argv[0]!, argv.slice(1), {
-      env: engineEnv(rec, home), cwd: home, timeout: COMMAND_MS, encoding: "utf8" });
-    if (done.status !== 0) {
+  const argvOf = login.status_argv;
+  const equals = login.status_equals;
+  return withRunUser(rec, `check-${rec.id}-${process.pid}`, { signedIn: true, keeps: false },
+                     async ({ as, home }) => {
+    const check = spawnBounded(asUser(as, [shared()], argvOf.map((arg) =>
+      arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home))), {
+      env: engineEnv(rec, home), cwd: home, stdio: ["ignore", "pipe", "ignore"] }, COMMAND_MS);
+    const out: Buffer[] = [];
+    check.child.stdout!.on("data", (chunk: Buffer) => { out.push(chunk); });
+    if (await check.exit !== 0) {
       return false;
     }
-    if (login.status_equals === undefined) {
+    if (equals === undefined) {
       return true;
     }
     try {
-      const status = JSON.parse(done.stdout) as Record<string, unknown>;
-      return Object.entries(login.status_equals).every(([key, value]) => status[key] === value);
+      const status = JSON.parse(Buffer.concat(out).toString("utf8")) as Record<string, unknown>;
+      return Object.entries(equals).every(([key, value]) => status[key] === value);
     } catch {
       return false;
     }
-  } finally {
-    killAll(as);
-    dropHome(home);
-    give(STATE, as);
-  }
+  });
 }
 
 // -- prepare --------------------------------------------------------------------------
@@ -778,7 +726,10 @@ async function syncAgent(job: SyncJob):
       env[name] = process.env[name]!;
     }
   }
-  const child = spawn(argv[0]!, argv.slice(1), { env, stdio: ["pipe", "pipe", "pipe"] });
+  // However long a sync takes: the run's heartbeats renew its lease meanwhile.
+  const agent = spawnBounded(argv, { env, stdio: ["pipe", "pipe", "pipe"] },
+                             Number.POSITIVE_INFINITY);
+  const { child } = agent;
   const out: Buffer[] = [];
   const err: Buffer[] = [];
   child.stdout!.on("data", (chunk: Buffer) => { out.push(chunk); });
@@ -787,10 +738,7 @@ async function syncAgent(job: SyncJob):
   // write's EPIPE is let go here, and the child's exit status says what happened.
   child.stdin!.on("error", () => undefined);
   child.stdin!.end(JSON.stringify(job));
-  const status = await new Promise<number | null>((resolve, reject) => {
-    child.on("error", reject);
-    child.on("close", (code) => { resolve(code); });
-  });
+  const status = await agent.exit;
   // Its report whole, however many paths.
   const done = { status, stdout: Buffer.concat(out).toString("utf8"),
                  stderr: Buffer.concat(err).toString("utf8") };
@@ -1028,15 +976,18 @@ class RunRefused extends Error {
   override readonly name = "RunRefused";
 }
 
-/** The env files a CLI would load: its home's, its cwd's, and each ancestor's of its cwd. */
-function envFiles(home: string, cwd: string): { home: Map<string, string>;
-                                                 project: Map<string, string>;
-                                                 above: Map<string, string> } {
+/**
+ * The env files a CLI would load: its home's (but the run's own config files, `own`, which
+ * root wrote), its cwd's, and each ancestor's of its cwd.
+ */
+function envFiles(home: string, cwd: string, own: ReadonlyMap<string, string>):
+    { home: Map<string, string>; project: Map<string, string>; above: Map<string, string> } {
   const read = (base: string, rel: string) => safeRead(base, join(base, rel))?.toString("utf8");
   const out = { home: new Map<string, string>(), project: new Map<string, string>(),
                 above: new Map<string, string>() };
   for (const rel of sortedWalk(home)) {
-    const text = homeEnvFile(rel) === null ? undefined : read(home, rel);
+    const text = homeEnvFile(rel) === null || own.has(join(home, rel)) ? undefined
+      : read(home, rel);
     if (text !== undefined) {
       out.home.set(rel, text);
     }
@@ -1062,11 +1013,15 @@ function envFiles(home: string, cwd: string): { home: Map<string, string>;
   return out;
 }
 
-/** Files a run's user left in the shared scratch directories, removed (links as links). */
-function cleanScratch(uid: number): void {
-  for (const dir of ["/tmp", "/var/tmp", "/dev/shm"]) {
-    spawnSync("find", [dir, "-xdev", "-mindepth", "1", "-user", String(uid),
-                       "-delete"], { stdio: "ignore" });
+/**
+ * A full disk: ext4 keeps root's own blocks (probed: root still wrote at 0 free), but a run's
+ * end copies its changed sessions back and stages the unsent ones, and the sync agent is its
+ * own user, so the runner's reserve goes first when the disk is short of it, and both have
+ * their room (`scratch.ts`).
+ */
+function roomForEnd(): void {
+  if (diskOf(STATE).free_bytes < RESERVE_BYTES) {
+    rmSync(RESERVE, { force: true });
   }
 }
 
@@ -1129,7 +1084,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     } else if (verb === VERB.renewed) {
       poster.holding = false;
       state.renewing = false;
-      renewed = work.child !== null && work.child.exitCode === null;
+      renewed = work.cli !== null && work.cli.child.exitCode === null;
       outbox.push({ type: "ta.renewed" });
       save();
     }
@@ -1141,9 +1096,6 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   // TTL of its admission is settled lost.
   await work.begin();
   let exitCode = 1;
-  let as: Identity | null = null;
-  let home: string | null = null;
-  const system = `${SYSTEM}/${run}`;
   const job = (direction: SyncJob["direction"], secrets: readonly string[] = []): SyncJob => ({
     direction, origin: new URL(start.urls.events).origin, token: lease.tokens.sync_token,
     lease: lease.lease, authority: start.authority, agent: start.agent, engine: start.engine,
@@ -1159,12 +1111,6 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     }
     synced = true;
     importSessions();
-    as = take(STATE);
-    home = await makeHome(run, rec, start.credential === "vendor_login_in_sandbox");
-    safeDirs("/", SYSTEM, 0o755);
-    remove(system);
-    mkdirSync(system, { mode: 0o750 });
-    chownSync(system, 0, as.gid);
     const agentDir = `${AGENTS_DIR}/${start.agent}`;
     if (!existsSync(`${agentDir}/agent.json`)) {
       throw new Error(`the agent ${start.agent} has no definition in the sandbox`);
@@ -1173,13 +1119,14 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     if (scratch.notice !== null) {
       outbox.push(scratch.notice);
     }
+    const home = homeOf(run);
+    const system = systemOf(run);
     let conversationDir: string | undefined;
     let continued = false;
     if (cli.engine.resume === "continue_in_cwd") {
       conversationDir = `${CONVERSATIONS}/${rec.id}/${start.conversation}`;
       continued = existsSync(conversationDir);
       safeDirs("/", conversationDir, 0o700);
-      lchownSync(conversationDir, as.uid, as.gid);
     }
     let call = invocation(rec, start, process.env, {
       continued, home, system,
@@ -1189,89 +1136,86 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       throw new RunRefused("recover_unresumable: the run's session is unknown, so the " +
                            "rebooted sandbox cannot continue it");
     }
-    // The env files the CLI would load: never one that sets what the run's own
-    // environment does not take.
-    const forbid = cli.per_credential?.[start.credential]?.forbid_env ?? [];
-    const found = envFiles(home, call.cwd);
-    const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
-      ?? projectEnvRefusal(found.project, forbid)
-      ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
-    if (refusal !== null) {
-      outbox.push({ type: "ta.refused", ...refusal });
-      throw new RunRefused(refusal.code);
-    }
-    for (const [path, text] of call.files) {
-      const inSystem = path.startsWith(`${system}/`);
-      safeWrite(inSystem ? system : home, path, new TextEncoder().encode(text),
-                inSystem ? 0o640 : 0o644, undefined, inSystem ? 0o750 : 0o755);
-    }
-    giveTree(home, as);
-    configOwned(rec, home, system, call.files.keys(), as);
-    const events = cli.engine.events;
-    for (let attempt = 0; ; attempt += 1) {
-      renewed = false;
-      const argv = asUser(as, [shared()], call.argv);
-      const runHome = home;
-      exitCode = await new Promise<number>((resolve, reject) => {
-        if (work.stopped) {
-          resolve(128 + 15);
-          return;
+    await withRunUser(rec, run, { signedIn: start.credential === "vendor_login_in_sandbox",
+                                  keeps: true, files: call.files }, async ({ as }) => {
+      try {
+        if (conversationDir !== undefined) {
+          lchownSync(conversationDir, as.uid, as.gid);
         }
-        process.umask(0o002);
-        const child = spawn(argv[0]!, argv.slice(1), {
-          cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp"),
-                                ...scratchEnv(scratch.dir) }, detached: true,
-          stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] });
-        work.child = child;
-        child.on("error", reject);
-        state.cli_pid = child.pid ?? null;
-        save();
-        if (call.stdin !== null) {
-          child.stdin!.end(call.stdin);
+        // The env files the CLI would load: never one that sets what the run's own
+        // environment does not take.
+        const forbid = cli.per_credential?.[start.credential]?.forbid_env ?? [];
+        const found = envFiles(home, call.cwd, call.files);
+        const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
+          ?? projectEnvRefusal(found.project, forbid)
+          ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
+        if (refusal !== null) {
+          outbox.push({ type: "ta.refused", ...refusal });
+          throw new RunRefused(refusal.code);
         }
-        let stderr = "";
-        child.stderr!.on("data", (data: Buffer) => {
-          // Its tail, as much as one frame shows (`FRAME_UNITS_MAX`; the frame cuts the rest).
-          stderr = (stderr + data.toString("utf8")).slice(-FRAME_UNITS_MAX);
-        });
-        createInterface({ input: child.stdout! }).on("line", (line) => {
-          if (line.trim() === "") {
-            return;
+        const events = cli.engine.events;
+        for (let attempt = 0; ; attempt += 1) {
+          renewed = false;
+          if (work.stopped) {
+            exitCode = KILLED_BY_TERM;
+            break;
           }
-          const event = lineEvent(line);
-          outbox.push(event);
-          const read = readEvent(events, event);
-          if (read.session_id !== null) {
-            state.session_id = read.session_id;
-          }
-          state.last_kind = read.kind;
-          state.seq = outbox.seq;
+          process.umask(0o002);
+          const cliRun = spawnBounded(asUser(as, [shared()], call.argv), {
+            cwd: call.cwd, env: { ...call.env, TMPDIR: join(home, "tmp"),
+                                  ...scratchEnv(scratch.dir) },
+            stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] },
+          Number.POSITIVE_INFINITY);
+          const { child } = cliRun;
+          work.cli = cliRun;
+          state.cli_pid = child.pid ?? null;
           save();
-        });
-        child.on("close", (code, signal) => {
-          work.closed();
-          if (code !== 0 && stderr !== "") {
+          if (call.stdin !== null) {
+            child.stdin!.end(call.stdin);
+          }
+          let stderr = "";
+          child.stderr!.on("data", (data: Buffer) => {
+            // Its tail, as much as one frame shows (`FRAME_UNITS_MAX`; the frame cuts the rest).
+            stderr = (stderr + data.toString("utf8")).slice(-FRAME_UNITS_MAX);
+          });
+          createInterface({ input: child.stdout! }).on("line", (line) => {
+            if (line.trim() === "") {
+              return;
+            }
+            const event = lineEvent(line);
+            outbox.push(event);
+            const read = readEvent(events, event);
+            if (read.session_id !== null) {
+              state.session_id = read.session_id;
+            }
+            state.last_kind = read.kind;
+            state.seq = outbox.seq;
+            save();
+          });
+          exitCode = await cliRun.exit;
+          if (exitCode !== 0 && stderr !== "") {
             outbox.push({ type: "ta.stderr", text: stderr });
           }
-          resolve(code ?? (signal === null ? 1 : 128 + 15));
-        });
-      });
-      state.cli_pid = null;
-      save();
-      // A CLI that failed across a renewal (its model call cut by the pause) is resumed
-      // from its session, once; a cancel never is.
-      if (exitCode === 0 || attempt > 0 || work.stopped || work.cancelled() || !renewed) {
-        break;
+          state.cli_pid = null;
+          save();
+          // A CLI that failed across a renewal (its model call cut by the pause) is resumed
+          // from its session, once; a cancel never is.
+          if (exitCode === 0 || attempt > 0 || work.stopped || work.cancelled() || !renewed) {
+            break;
+          }
+          await killAll(as);
+          call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
+            continued: true, home, system, prompt: CONTINUE_PROMPT,
+            ...(conversationDir === undefined ? {} : { conversationDir }) });
+          if (!call.resumed) {
+            break;
+          }
+          outbox.push({ type: "ta.resumed", after: "renewal" });
+        }
+      } finally {
+        roomForEnd();
       }
-      killAll(as);
-      call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
-        continued: true, home, system, prompt: CONTINUE_PROMPT,
-        ...(conversationDir === undefined ? {} : { conversationDir }) });
-      if (!call.resumed) {
-        break;
-      }
-      outbox.push({ type: "ta.resumed", after: "renewal" });
-    }
+    });
   } catch (error) {
     if (error instanceof SyncFenced) {
       outbox.push({ type: "ta.sync_fenced" });
@@ -1281,87 +1225,17 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     exitCode = exitCode === 0 ? 1 : exitCode;
   } finally {
     try {
-      // A full disk: ext4 keeps root's own blocks (probed: root still wrote at 0 free), but
-      // what follows copies the run's changed sessions back and stages the unsent ones, and
-      // the sync agent is its own user, so the runner's reserve goes first when the disk is
-      // short of it, and both have their room (`scratch.ts`).
-      if (diskOf(STATE).free_bytes < RESERVE_BYTES) {
-        rmSync(RESERVE, { force: true });
-      }
-      if (as !== null) {
-        // Every process the run's user left is gone before its home is read.
-        killAll(as);
-        cleanScratch(as.uid);
-        if (home !== null) {
-          await keepHome(home, rec);
-        }
-      }
+      roomForEnd();
       if (synced) {
         const secrets = atoms();
-        const out = `${SYNC_HOME}/out/${run}`;
-        remove(out);
-        // Every engine's session the owner's files do not hold as it is now (the sync
-        // mirror's hash of its path, read under the sync agent's lock) is staged: this run's,
-        // and any an earlier sync-out left unsent (refused at a full storage, changed while
-        // sent, fenced, cut short), so each is offered again until it lands, whether or not
-        // a later run touches it. A session the files hold already is never copied.
-        // A session's hash is read again only when its size or change time moved since it
-        // was last hashed (or that time was too recent to trust, `RACY_MS`); one refused for
-        // a secret's bytes is said once, until it or the secrets change.
-        const seen = readSeen();
-        const next: Record<string, SeenSession> = {};
-        const against = sha256Hex(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
-        const sessions: { rec: SourceRecord; rel: string; path: string; digest: string }[] = [];
-        for (const each of RECORDS.values()) {
-          const store = `${STORE}/${each.id}`;
-          for (const rel of walkFiles(store)) {
-            if (!isKept(keptPaths(each).sessions, rel)) {
-              continue;
-            }
-            const path = `${SESSIONS}/${start.authority}/${each.id}/${rel}`;
-            const at = Date.now();
-            const stat = lstatSync(join(store, rel));
-            const was = seen[path];
-            let sha = was !== undefined && was.size === stat.size && was.mtime_ms === stat.mtimeMs
-              && stat.mtimeMs < at - RACY_MS ? was.sha256 : null;
-            if (sha === null) {
-              const bytes = safeRead(store, join(store, rel));
-              if (bytes === null) {
-                continue;
-              }
-              sha = sha256Hex(bytes);
-            }
-            next[path] = { size: stat.size, mtime_ms: stat.mtimeMs, sha256: sha,
-                           ...(was?.sha256 === sha && was.refused !== undefined
-                             ? { refused: was.refused } : {}) };
-            sessions.push({ rec: each, rel, digest: sha, path });
-          }
+        const refused = await stageSessions(start.authority, run, secrets, async (paths) =>
+          ((await syncAgent({ ...job("known"), paths })).report?.["known"] ?? {}) as
+            Record<string, string | null>);
+        for (const path of refused) {
+          outbox.push({ type: "ta.sync_refused", path, code: "secret_bytes" });
         }
-        const held = sessions.length === 0 ? {}
-          : ((await syncAgent({ ...job("known"), paths: sessions.map((each) => each.path) }))
-            .report?.["known"] ?? {}) as Record<string, string | null>;
-        for (const session of sessions) {
-          if (held[session.path] === session.digest
-              || next[session.path]!.refused === against) {
-            continue;
-          }
-          const store = `${STORE}/${session.rec.id}`;
-          const bytes = safeRead(store, join(store, session.rel));
-          if (bytes === null) {
-            continue;
-          }
-          if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
-            outbox.push({ type: "ta.sync_refused", path: `{home}/${session.rel}`,
-                          code: "secret_bytes" });
-            next[session.path] = { ...next[session.path]!, refused: against };
-            continue;
-          }
-          safeWrite(SYNC_HOME, join(out, session.rec.id, session.rel), bytes, 0o644, undefined,
-                    0o755);
-        }
-        safeWrite(STATE, SESSIONS_SEEN, new TextEncoder().encode(JSON.stringify(next)), 0o600);
         const done = await syncAgent(job("out", secrets));
-        remove(out);
+        remove(`${SYNC_HOME}/out/${run}`);
         if (done.code === FENCED) {
           outbox.push({ type: "ta.sync_fenced" });
         } else {
@@ -1372,13 +1246,6 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       outbox.push({ type: "ta.runner_error", message: String(error) });
       exitCode = exitCode === 0 ? 1 : exitCode;
     } finally {
-      if (home !== null) {
-        dropHome(home);
-      }
-      remove(system);
-      if (as !== null) {
-        give(STATE, as);
-      }
       // The heartbeat went on through sync-out, so a long sync kept its lease.
       await work.finish(exitCode);
       state.ended = true;
@@ -1472,8 +1339,6 @@ async function loginRun(id: string): Promise<number> {
   await work.begin();  // the sign-in's first heartbeat: it holds the lease
   let end = "failed";
   let reason: SigninRefusal | null = null;
-  let as: Identity | null = null;
-  let home: string | null = null;
   let watch: ReturnType<typeof setInterval> | null = null;
   let expiry: ReturnType<typeof setTimeout> | null = null;
   let expired = false;
@@ -1493,14 +1358,12 @@ async function loginRun(id: string): Promise<number> {
       // The vendor's own sign-out first, which may revoke the login on the vendor's side.
       const logout = login.logout_argv;
       if (logout !== undefined) {
-        as = take(STATE);
-        home = await makeHome(id, rec);
-        giveTree(home, as);
-        const madeHome = home;
-        const argv = asUser(as, [shared()], logout.map((arg) => arg.replaceAll("{bin}", binPath(rec))
-          .replaceAll("{home}", madeHome)));
-        spawnSync(argv[0]!, argv.slice(1), { env: engineEnv(rec, madeHome), cwd: madeHome,
-                                             timeout: COMMAND_MS, stdio: "ignore" });
+        await withRunUser(rec, id, { signedIn: true, keeps: false }, async ({ as, home }) => {
+          const argv = asUser(as, [shared()], logout.map((arg) =>
+            arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home)));
+          await spawnBounded(argv, { env: engineEnv(rec, home), cwd: home, stdio: "ignore" },
+                             COMMAND_MS).exit;
+        });
       }
       // Its secrets gone from the store: no later run's home carries the sign-in.
       const store = `${STORE}/${rec.id}`;
@@ -1513,27 +1376,20 @@ async function loginRun(id: string): Promise<number> {
       });
       end = "signed_out";
     } else {
-      as = take(STATE);
-      home = await makeHome(id, rec);
-      const madeHome = home;
-      const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
-      for (const [path, text] of Object.entries(files)) {
-        safeWrite(madeHome, path.replaceAll("{home}", madeHome), new TextEncoder().encode(text),
-                  0o600);
-      }
-      giveTree(madeHome, as);
-      const command = loginArgv(login, binPath(rec), doc.region);
-      // Always on a terminal of its own: some CLIs prompt only on one.
-      const argv = asUser(as, [shared()], onTerminal(command));
-      const secrets = atoms();
-      let shown: Prompt = { url: null, code: null };
-      let text = "";
-      let complete = false;
-      const exit = await new Promise<number>((resolve) => {
-        const child = spawn(argv[0]!, argv.slice(1), {
-          env: engineEnv(rec, madeHome), cwd: madeHome, detached: true,
-          stdio: ["pipe", "pipe", "pipe"] });
-        work.child = child;
+      end = await withRunUser(rec, id, { signedIn: true, keeps: false }, async (session) => {
+        const { as, home } = session;
+        loginFiles(rec, session);
+        const command = loginArgv(login, binPath(rec), doc.region);
+        const secrets = atoms();
+        let shown: Prompt = { url: null, code: null };
+        let text = "";
+        let complete = false;
+        // Always on a terminal of its own: some CLIs prompt only on one.
+        const cliRun = spawnBounded(asUser(as, [shared()], onTerminal(command)), {
+          env: engineEnv(rec, home), cwd: home, stdio: ["pipe", "pipe", "pipe"] },
+        Number.POSITIVE_INFINITY);
+        const { child } = cliRun;
+        work.cli = cliRun;
         // Only the record's patterns' groups leave the VM, and none credential-shaped.
         const read = (data: Buffer) => {
           // Its tail, as much as one frame shows: a prompt is a line of it.
@@ -1559,11 +1415,6 @@ async function loginRun(id: string): Promise<number> {
         child.stdout!.on("data", read);
         child.stderr!.on("data", read);
         child.stdin!.on("error", () => undefined);
-        child.on("close", (code) => {
-          work.closed();
-          resolve(code ?? 128 + 15);
-        });
-        child.on("error", () => resolve(127));
         // A pasted code comes on the sign-in's channel, a socket in its root-only directory,
         // straight to the CLI's stdin: never on disk, never logged. Open while the CLI runs.
         work.listen(VERB.code.length + 1 + SIGNIN_PASTE_MAX + 2, (verb, pasted) => {
@@ -1588,31 +1439,30 @@ async function loginRun(id: string): Promise<number> {
             work.stop();
           }
           if (login.complete_on_state === true && !complete && statesHold(login, (path) =>
-            safeRead(madeHome, path.replaceAll("{home}", madeHome))?.toString("utf8") ?? null)) {
+            safeRead(home, path.replaceAll("{home}", home))?.toString("utf8") ?? null)) {
             complete = true;  // signed in: a CLI that stays up after is stopped
             work.stop();
           }
         }, FLUSH_MS);
-      });
-      clearInterval(watch!);
-      watch = null;
-      work.unlisten();
-      if (expiry !== null) {
+        const exit = await cliRun.exit;
+        clearInterval(watch);
+        watch = null;
+        work.unlisten();
         clearTimeout(expiry);
-      }
-      killAll(as);
-      // Only a sign-in that completed keeps what it wrote, as the owner's new login (which
-      // moves the store's generation on); one refused, stopped, expired or failed keeps
-      // nothing, so it never discards a live run's refresh (review N2).
-      const stopped = reason !== null || (work.cancelled() && !complete)
-        || (expired && !complete);
-      if (!stopped && (exit === 0 || complete)) {
-        await keepHome(madeHome, rec, true);
-      }
-      end = reason !== null ? "refused"
-        : work.cancelled() && !complete ? "cancelled"
-          : expired && !complete ? "expired"
-            : (exit === 0 || complete) && await safeSignedIn(rec) ? "signed_in" : "failed";
+        await killAll(as);
+        // Only a sign-in that completed keeps what it wrote, as the owner's new login (which
+        // moves the store's generation on); one refused, stopped, expired or failed keeps
+        // nothing, so it never discards a live run's refresh (review N2).
+        const stopped = reason !== null || (work.cancelled() && !complete)
+          || (expired && !complete);
+        if (!stopped && (exit === 0 || complete)) {
+          await keepHome(home, rec, true);
+        }
+        return reason !== null ? "refused"
+          : work.cancelled() && !complete ? "cancelled"
+            : expired && !complete ? "expired"
+              : (exit === 0 || complete) && await safeSignedIn(rec) ? "signed_in" : "failed";
+      });
     }
   } catch (error) {
     // Its why stays in the VM (this sign-in's own root-only log), never in a frame.
@@ -1623,18 +1473,12 @@ async function loginRun(id: string): Promise<number> {
     if (watch !== null) {
       clearInterval(watch);
     }
+    if (expiry !== null) {
+      clearTimeout(expiry);
+    }
+    work.unlisten();
     // A pasted code that came after the login ended is never left at rest.
     remove(inboxCode(id));
-    if (as !== null) {
-      try {
-        killAll(as);
-      } finally {
-        if (home !== null) {
-          dropHome(home);
-        }
-        give(STATE, as);
-      }
-    }
   }
   await postSignins(doc.urls.signin, lease, [{ engine: rec.id,
                                                signed_in: await safeSignedIn(rec) }]);

@@ -1,0 +1,76 @@
+name: E2B pause probe (manual)
+
+# How E2B resumes a sandbox of the pinned template (`E2B_TEMPLATE`) after days paused,
+# which sets how often an owner signs in again (tasks.md §10 step 2; the 75-minute reading is
+# sandbox-probe.md's). platform/sandbox/pause-probe.ts does the work, through the sandbox
+# Worker's own E2B client:
+#   start   - two sandboxes tagged ta_probe=long-pause, `small` and `scratch` (about 5 GB of
+#             scratch, less if the disk is tighter, and the summary says so), each with a
+#             known file and its SHA-256 and a long-lived process, checked once, then paused
+#             with memory. Refused while any long-pause sandbox exists; a failed start kills
+#             what it made.
+#   check   - each one (the ids given, or every long-pause sandbox): resumed, timed to its
+#             first byte, its file, process and scratch verified, then paused again, so a
+#             14-day check leaves the 30-day one standing.
+#   cleanup - kills every long-pause sandbox, then lists 0 left.
+# Run start once, check at 14 and 30 days, then cleanup. It runs beside the remaining work
+# and gates nothing: the cutover is done when the build is done (the founder, 2026-11-12).
+#
+# Each run spends a few sandbox-minutes running, at the template's size; between runs the two
+# stay paused. Its one secret, the E2B key, comes from the main-only `production` environment's
+# store, so a branch's copy of this file never reaches it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'start | check | cleanup'
+        required: true
+        default: check
+        type: choice
+        options: [start, check, cleanup]
+      ids:
+        description: 'check: the sandbox ids, space-separated (empty: every ta_probe=long-pause sandbox)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2b-pause-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MODE: ${{ inputs.mode }}
+      IDS: ${{ inputs.ids }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Install the platform's pinned tools
+        working-directory: platform
+        run: npm ci
+
+      # The one step that holds the E2B key. Its results, and any failure's reason, go to
+      # the job summary.
+      - name: The probe
+        env:
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+        run: >-
+          node --experimental-strip-types --no-warnings
+          --import ./platform/sandbox/template/resolve.mjs
+          platform/sandbox/pause-probe.ts "${MODE}" --ids "${IDS}"
+          --summary "${GITHUB_STEP_SUMMARY}"

@@ -707,6 +707,19 @@ describe("the vendor's own sign-in", () => {
     expect(box.runner("login-cancel", id).code).toBe(3);  // nothing live to cancel
   });
 
+  it("leaves nothing of its user in the shared scratch, as a run's end does", async () => {
+    box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
+                                                 writes: { "/tmp/signin-left": "x" } } });
+    const id = signinId();
+    box.login({ id, engine: "claude-code" }, doors);
+    box.runner("login-launch", id);
+    await frameWhere(id, (frame) => frame["state"] === "open");
+    expect(existsSync(box.path("/tmp/signin-left"))).toBe(true);  // its CLI made it
+    expect(box.runner("login-cancel", id).code).toBe(0);
+    await doors.ended_(25_000, id);
+    expect(existsSync(box.path("/tmp/signin-left"))).toBe(false);
+  });
+
   it("signs out by the vendor's own logout first, then deletes the secrets", async () => {
     box.write("/var/lib/ta/store/claude-code/.claude/.credentials.json", "{}");
     box.cli("claude-code", { lines: [] });
@@ -902,40 +915,6 @@ describe("the store's generation and its lock (review round 2: N2, N3)", () => {
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 0 });
     expect(box.ran("kimi")).toHaveLength(1);
-  });
-
-  it("asks for a store's lock again every 20 ms, flat: a lock let go is taken at once",
-     async () => {
-    const lock = box.path("/var/lib/ta/locks/kimi.lock");
-    mkdirSync(dirname(lock), { recursive: true });
-    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    const holder = box.live();
-    writeFileSync(lock, `${holder} ${boot}`);  // a process of the box's: alive, this boot
-    const start = await liveKimi(0, {});
-    const poll = async (check: () => boolean) => {
-      for (const until = Date.now() + 20_000; !check();) {
-        if (Date.now() > until) {
-          throw new Error("timed out");
-        }
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-    };
-    try {
-      // The run's home is made just before its store's lock is asked for.
-      await poll(() => existsSync(box.path(`/var/lib/ta-homes/${start.run}`)));
-      // Held past where a backed-off wait asks a second apart (20 ms doubling to 1 s: it
-      // asks at 1.26 s and next at 2.26 s), then let go.
-      await new Promise((resolve) => setTimeout(resolve, 1_300));
-      rmSync(lock);
-      const freed = Date.now();
-      // The home's snapshot is written as soon as the lock was taken.
-      await poll(() => existsSync(box.path(`/var/lib/ta/kept/${start.run}.json`)));
-      expect(Date.now() - freed).toBeLessThan(400);
-      const end = await doors.ended_(25_000, start.run);
-      expect(end.body["end"]).toEqual({ exit_code: 0 });
-    } finally {
-      box.kill(holder);
-    }
   });
 
   it("waits a bounded time on a lock its live holder keeps, heartbeating, then fails loudly",
@@ -1770,6 +1749,24 @@ describe("cancel and the runner's state", () => {
     expect(end.body["end"]).toEqual({ exit_code: 143 });
     await waitFor(() => box.runner("status", start.run).code === 3);
     expect(box.runner("cancel", start.run).code).toBe(3);
+  });
+
+  it("stops the CLI's group, not only its own process: a child left holding its output",
+     async () => {
+    box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
+                             heir: true });
+    const start = startDoc(doors, "claude-code", { config: config("claude-code") });
+    box.start(start);
+    box.runner("launch", start.run);
+    const state = () => JSON.parse(readFileSync(
+      box.path(`/var/lib/ta/runs/${start.run}/state.json`), "utf8")) as { cli_pid: number | null };
+    await waitFor(() => (state().cli_pid ?? 0) > 0);
+    const pid = state().cli_pid!;
+    // Its own process gone, and reaped (a pid of the box's own namespace).
+    await waitFor(() => box.exec(["kill", "-0", String(pid)]).status !== 0);
+    expect(box.runner("cancel", start.run).code).toBe(0);  // live: its output still open
+    // Inside the grace: the SIGTERM reached the child, so the end needs no group's kill.
+    await doors.ended_(10_000, start.run);
   });
 
   it("adopts this runner only when nothing lives: its format held, nothing deleted",

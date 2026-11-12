@@ -262,7 +262,10 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
 
 - [ ] E2B resume after days paused: a paused throwaway started now (75 minutes measured,
   `sandbox-probe.md`), then 14 and 30 days, which sets how often an owner signs in again, and a
-  resume with 5–10 GB of scratch (d3 §C8, list3 P15).
+  resume with 5–10 GB of scratch (d3 §C8, list3 P15). The probe is `e2b-pause-probe.yml`
+  (`start` once, `check` at 14 and 30 days, then `cleanup`); ticked at the 30-day result. It
+  runs alongside and does not gate the cutover: the cutover is done when the build is done
+  (the founder, 2026-11-12).
 - [ ] Durable Object regional availability, from Cloudflare's status history (d3 §C8; ADR-032).
 - [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
@@ -319,16 +322,19 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - A later S PR: a slot reserved again (`#lookAt`, `#renew`) deletes its stale owed row
     first, so a renewal's fresh hold is never given back (d3 §L9), with a gate in front of
     `SLOTS` (`ci/gate.ts`), used by both slot tests, in place of the prototype patch at
-    `sandbox/test/sandbox.test.ts:797`.
+    `sandbox/test/sandbox.test.ts:797`. The kit cannot front `SLOTS` yet, so its design is
+    researched first: the line's object lives in the test Worker itself, which the plugin
+    names (a gate fronts an object by its Worker's name), the suite runs inside that object
+    (`runInDurableObject`), and `SandboxSlots` has no interface for `methodsOf`.
   - Lane S: `sandbox/src/e2b.ts`'s constructor defaults (the `fetcher` at `:47`, `retryAfter =
     null` at `:180`; T1b), and `NetworkPlan`'s typed `generation` beside the header the Worker
     reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
-    `ci/budgets.mjs --write` (d3 §I).
+    `node ci/budgets.mjs` (d3 §I): the large from the Vitest reports the `platform-sizes` legs
+    upload, the runner's medium from a local `test:root` report (`platform-tests` uploads none).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
-  - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
-    (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
+  - Lane R's cipher PR: `files/src/cipher.ts`'s SSE-C premise (d3 §O8).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
   (d3 §K1, §K2). T1 is six PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
@@ -353,11 +359,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
     rig admitting by the door, the doors' entry with no third constructor argument, and
     `BackupParts`' test-only `sizes?` and `pool?` gone; the owner suite's lease clock under the
-    fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`); the fake sandbox
-    `implements SandboxService` and imports `METER_BATCH` (`owner/test/fake-sandbox.ts`); the
-    `fake-sandbox`, `sandbox-gate` and `CONNECT` Worker names taken from `fake()` and
-    `workerConfig`, not written out (`owner/vitest.config.ts`, `doors/vitest.config.ts`,
-    `doors/test/app.e2e.mjs`) (list 6, items 6j, 8 and 10).
+    fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`) (list 6, item 6j).
   - [ ] T1d: the owner memory probe driven through the doors.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
@@ -373,7 +375,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
   tests pass takes the two older tests that make a call refuse by patching a class's prototype
   (`owner/test/runs-authority.test.ts:857` `Files.prototype.open`,
-  `owner/test/erasure.test.ts:83` `Lifecycle.prototype.disableAlarms`; list 6, item 9).
+  `owner/test/erasure.test.ts:83` `Lifecycle.prototype.disableAlarms`; list 6, item 9). The
+  two patched calls are in-process (the owner's own SQLite; the agents library's
+  `Lifecycle`), but each test's fault has a front door through `FILES`, so both move to a
+  gate in front of it in the owner suite (`methodsOf` `ChunkStore`, as the ci suite's
+  `files-gate`; B23): an `agent.json` over `INLINE_BYTES` read while its `getChunks` is held
+  and the file is rewritten through the doors; the erasure's `deleteNamespace` refused once,
+  for an owner with files, so it stops at step 2 before the wipe.
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
