@@ -30,7 +30,7 @@ import { CHUNK_BYTES } from "../../contract/src/limits";
 import { refusalOf } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
-import type { DoorsEnv } from "./config";
+import type { DoorsEnv } from "./env";
 import { refusalResponse } from "./refused";
 
 const CHUNK_PATH = /^([0-9a-f]{32})\/(0|[1-9][0-9]{0,5})$/;

@@ -90,6 +90,7 @@ import { type AnswerFields, ANSWERS, COMMAND, COMMAND_MS, EXIT, inboxCode, inbox
 import { install } from "./install";
 import { runnerBytes, runnerDigest } from "./runner-bytes";
 import { CONTROL_MIGRATIONS } from "./schema";
+import type { SandboxEnv } from "./env";
 import { SLOTS, type SandboxSlots } from "./slots";
 
 /** The start's fixed answers, beside `started: true`. */
@@ -155,16 +156,6 @@ function backoff(tries: number): number {
  * moment ends inside it with room for the renewals after, and the next alarm looks on.
  */
 const ALARM_WALL_MS = 15 * 60_000;
-
-export interface SandboxEnv {
-  readonly E2B_API_KEY: string;
-  /** The versioned template, `name:tag` (`template/image.ts` prints this tree's). */
-  readonly E2B_TEMPLATE: string;
-  /** The platform's control record's namespace, read for its sandbox part (`#control`). */
-  readonly CONTROL: KVNamespace;
-  /** The platform's line for one more running sandbox (`slots.ts`). */
-  readonly SLOTS: DurableObjectNamespace<SandboxSlots>;
-}
 
 /** The control record's sandbox part, as one read gave it (`#control`). */
 interface SandboxPart {

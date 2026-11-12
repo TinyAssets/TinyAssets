@@ -67,7 +67,8 @@ import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
 import { refusalOf } from "../../contract/src/refusal";
 
 import { bindImport, bindPlatformFor, type Bound } from "./binder";
-import { type DoorsEnv, namedSecret, now } from "./config";
+import { namedSecret, now } from "./config";
+import type { DoorsEnv } from "./env";
 import { importTiers } from "./control";
 import { putOwner, readOwner } from "./directory";
 import { putImportChunk } from "./file-bytes";

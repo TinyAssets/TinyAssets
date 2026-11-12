@@ -279,16 +279,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 4. The lanes, lane T, lane R, R5, the comments and tests passes, the re-check
 
-- [ ] The wave-2 lanes as d2 §D orders them (C2–C5, S3–S8, O1–O5, D1–D4, V1–V4, X1–X5, I1–I2),
+- [ ] The wave-2 lanes as d2 §D orders them (C3–C5, S3–S8, O1–O5, D1–D4, V2–V4, X1–X5, I1–I2),
   with d3 §A's changes:
   - B3 after T1, on the cleaned constructors (d3 §A2, §K1).
-  - B4: the door table generates the prototype methods at module load (d3 §K4).
+  - B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
+    reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
+    goes (lane O; C2).
   - B6: the queue names generated from the Worker configs into the contract (d3 §A3).
   - B8: the compatibility date is a kit check that the six configs agree (d3 §A4).
-  - C2b, B9's `Env` half (d3 §R): `ci/kit/types.ts` writes each `<Worker>Env` from wrangler's
-    binding list, a binding to another Worker typed by its contract through a contract table,
-    with no global augmentation; the hand `Env`s and `envProblems` deleted; `SANDBOX` and
-    `ERASURES` required. Right after C2.
   - B11: a Worker's existence from `Cloudflare.workers`, never from its secret listing: the
     `workers` and `doors deployed` steps, which read a secret listing for it
     (`deploy/deploy.ts:1231-1236`, `:1394-1396`) (d3 §O2).
@@ -319,10 +317,21 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     the wake `unknown` (Fact 8; d3 §I).
   - A later S PR: S13's `lease_id` half (d3 §L5).
   - A later S PR: a slot reserved again (`#lookAt`, `#renew`) deletes its stale owed row
-    first, so a renewal's fresh hold is never given back (d3 §L9).
+    first, so a renewal's fresh hold is never given back (d3 §L9), with a gate in front of
+    `SLOTS` (`ci/gate.ts`), used by both slot tests, in place of the prototype patch at
+    `sandbox/test/sandbox.test.ts:797`.
+  - Lane S: `sandbox/src/e2b.ts`'s constructor defaults (the `fetcher` at `:47`, `retryAfter =
+    null` at `:180`; T1b), and `NetworkPlan`'s typed `generation` beside the header the Worker
+    reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `ci/budgets.mjs --write` (d3 §I).
-  - Lane C's first PR: the tools' own layer row (d2 §G14, d3 §O6).
+  - Lane C: P-T1, the starter guard's "DID NOT RUN" warning that passes when it cannot check
+    against main, fails instead (V1 and C2 each left it to the other); `contract/src/slots.ts`
+    `SlotPool`'s constructor defaults (T1b).
+  - Lane I: V2-H9, `import/build.ts`'s `starterPaths()` re-deriving the starter's seeding rule
+    beside `owner/src/starter.ts` (V1).
+  - Lane X: `okf-watch.yml`'s `FOUNDER` login, a copy of `.github/CODEOWNERS` (P-H5′'s
+    workflow half; V1).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
@@ -346,7 +355,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `CODEMODE_VM` case gone with its test (`codemode.ts`'s optional `service`); a test that a
     halted schedule runs no lane already due (`schedule.ts`'s `run`).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
-    `ERASURES` required with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
+    the unbound-`ERASURES` throw gone (`owner-do.ts:767-768`; the generated `OwnerEnv` already
+    types it required, C2b) with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
     rig admitting by the door, the doors' entry with no third constructor argument, and
     `BackupParts`' test-only `sizes?` and `pool?` gone; the owner suite's lease clock under the
@@ -367,7 +377,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] Process (d3 §B): P2 in order: reviews posted as the App's `review` check reads them and
   seen green on a real PR, then `review` required, then the receipt half deleted (d3 §F4);
   P6–P9 after the lanes.
-- [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5).
+- [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
+  tests pass takes the two older tests that make a call refuse by patching a class's prototype
+  (`owner/test/runs-authority.test.ts:857` `Files.prototype.open`,
+  `owner/test/erasure.test.ts:83` `Lifecycle.prototype.disableAlarms`; list 6, item 9).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
@@ -404,13 +417,15 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 
 - [ ] The engines' locks refreshed, then the one paid template build after the re-check loop,
-  then the pin PR (d3 §A12, list3 P19). The runner and probes bundles moved in u3-services, so
-  the next deploy needs a pair check and the pin PR (d3 §I).
+  then the pin PR (d3 §A12, list3 P19). The runner and probes bundles moved in u3-services and
+  again in S2 (#5517), so the next deploy needs a pair check of the merged pair and the pin PR
+  (d3 §I).
 
 ### Step 7. The dark redeploy of the untangled build
 
-- [x] The migration locks pin E2's owner 5 and SandboxControl 2 first: the kit's `locks` step
-  refuses every mode until they do (`deploy/checklist.md` § The migration locks; #5511).
+- [x] The migration locks pin E2's owner 5 and SandboxControl 2, and S2's SandboxControl 3
+  (#5519), first: the kit's `locks` step refuses every mode until they do (`deploy/checklist.md`
+  § The migration locks; #5511).
 - [ ] `dark` with the untangled build, the sandbox Worker included (the first `dark` stopped
   there), its ring queue and control namespace. Checked live at it:
   - the deploy workflow's `pair` job, live;
@@ -532,6 +547,9 @@ Moved before the window, into lane R (d3 §F3, §G).
 
 - [ ] The deploy path's compatibility rule: Workers deploy one after another, so a contract
   change between two needs an order or a window (`platform/deploy/checklist.md`; list3 P44).
+- [ ] A wrangler version bump reruns T0b's main-against-head comparison of the test Workers'
+  bindings: `ci/workers.ts` `configBindings` restates wrangler 4.154.0's conversion (list 5
+  item 22).
 - [ ] The engine build cadence: one template a week, canaried, for vendor-forced minimum
   versions (`engines-replan.md`), with a standing spend approval (list3 P19).
 
@@ -630,6 +648,8 @@ Open questions, from the as-built record:
 4. When the directory submission is made: should the listing get its own MCP door, with grants
    pinned to the `directory` profile, against Direction 2's "one MCP door"? The old stack built
    and retired `/mcp-directory`.
+5. The published plugins say `license: "Proprietary"` (`platform/plugins/build.mjs`
+   `PUBLISHER`), but the repository is MIT. Which should the plugins carry (list 6, item 6d)?
 
 The coordinator's to decide (no spending, irreversible or outward-facing act), from the
 as-built record, and decided (the coordinator, 2026-11-12):

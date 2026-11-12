@@ -8,17 +8,14 @@
  * back-off.
  */
 import { principal } from "../../contract/src/text";
+import type { OwnerMessage } from "../../contract/src/queues";
 
 import { ownerObject } from "./binder";
-import type { DoorsEnv } from "./config";
-
-export interface Ring {
-  readonly owner: string;
-}
+import type { DoorsEnv } from "./env";
 
 export async function ringQueue(batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> {
   for (const message of batch.messages) {
-    const body = message.body as Partial<Ring> | null;
+    const body = message.body as Partial<OwnerMessage> | null;
     let owner: string;
     try {
       if (typeof body !== "object" || body === null || Object.keys(body).join() !== "owner") {

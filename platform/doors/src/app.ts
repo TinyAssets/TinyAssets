@@ -96,7 +96,8 @@ import {
   socketRequest, withTiers,
 } from "./binder";
 import { jsonObject } from "./body";
-import { APP_BODY_MAX, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
+import { APP_BODY_MAX, FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
+import type { DoorsEnv } from "./env";
 import { APP_RESOURCE } from "../../contract/src/identity";
 import type { ControlRead } from "../../contract/src/control";
 import type { JsonBody } from "../../contract/src/owner";

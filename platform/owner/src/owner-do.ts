@@ -118,7 +118,6 @@ import {
 import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
 import { RUN_ENDED, Runs, type RunSchedule, runsDoors } from "./runs";
 import { PostGate } from "../../contract/src/run-events";
-import type { SandboxService } from "../../contract/src/sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
 import { type ApiKey, Keys, keysDoors } from "./keys";
@@ -131,8 +130,7 @@ import { Collections, collectionsDoors, type History, type Page, type Row } from
 import {
   Connections, connectionsDoors, type ConnectionView, type Prepared,
 } from "./connections";
-import type { ChunkStore } from "../../contract/src/files";
-import type { GatewayService, RingAnswer } from "../../contract/src/gateway";
+import type { RingAnswer } from "../../contract/src/gateway";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import {
  type Change as FileChange, type ChunkRef, type Entry, fileChanged, Files,
@@ -143,13 +141,14 @@ import {
   type Client, type ConnectedApp, type Grant, Grants, grantsDoors, type Scope,
 } from "./grants";
 import {
-  codemodeDoors, type CodemodeService, type CodeRequest, type CodeResult,
+  codemodeDoors, type CodeRequest, type CodeResult,
 } from "./codemode";
 import {
   type Agent, type ChainMail, Ledger, ledgerDoors, type LedgerLimits, type MailPage,
   type NativeAgent, outsideOrigin, type Posted, READ_TRIES, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock } from "./clock";
+import type { OwnerEnv } from "./env";
 import {
   type Binding, type InboundAnswer, type Origin, PLATFORM_CALLER,
 } from "../../contract/src/binding";
@@ -249,37 +248,6 @@ export interface GrantRequest {
   readonly name: string;
   /** The tool profile (`directory` or `custom`); omitted, the grant keeps its own. */
   readonly profile?: string;
-}
-
-/**
- * The object's environment: four service bindings, `FILES`, to the files Worker, which
- * binds no Durable Object and no service, `GATEWAY`, to the model gateway, which binds
- * nothing, `CODEMODE_VM`, to the codemode Worker, which binds only its own class, and
- * `SANDBOX`, to the sandbox Worker (slice S), which binds only its own class and the
- * directory and reaches nothing but E2B (the config guard checks every config); and no
- * Durable Object namespace.
- */
-export interface OwnerEnv {
-  readonly FILES: ChunkStore;
-  readonly GATEWAY: GatewayService;
-  readonly CODEMODE_VM: CodemodeService;
-  /**
-   * The platform's control record alone (`c:control`, the doors' too), read by code mode's
-   * calls for the gates the door read (`control-gate.ts`); never written here.
-   */
-  readonly CONTROL: KVNamespace;
-  /**
-   * The routing key the sandbox tokens are MAC'd under (`contract/src/routing-mac.ts`), a
-   * Worker secret the doors Worker holds too; a lease is never opened without it.
-   */
-  readonly ROUTING_MAC_KEY: string;
-  /** The sandbox Worker (`sandbox.ts`, `platform/sandbox`), where every run starts. */
-  readonly SANDBOX: SandboxService;
-  /**
-   * The erasure queue's producer (slice L): `{owner}`, which the doors consume to make the
-   * erasure's outside record (`doors/src/erase.ts`). Absent, an erasure fails loudly.
-   */
-  readonly ERASURES?: { send(message: { owner: string }): Promise<void> };
 }
 
 /** What a call is bound to: its owner and caller, its outside client and that client's grant. */

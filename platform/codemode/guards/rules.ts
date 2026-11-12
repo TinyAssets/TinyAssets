@@ -21,7 +21,6 @@ import type { Config } from "../../ci/kit/sources";
  */
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "codemode",
-  env: Object.freeze(["src/index.ts#CodemodeEnv"]),
   name: "tinyassets-codemode",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",

@@ -3,8 +3,10 @@
  * the files Worker's, the codemode Worker's, the sandbox Worker's and the owner object's doors as
  * the doors call them (`contract/src/{gateway,files,codemode,sandbox,owner}.ts`).
  *
- * - Each service implements its contract: every entrypoint class names its interface
- *   (`implements`), so `tsc` holds the two to each other.
+ * - Each service implements its contract: every class `contract/services.json` lists names
+ *   its interface (`implements`), so `tsc` holds the two to each other, and the class a
+ *   binding with no entrypoint reaches is its Worker's default export. A Worker binding
+ *   another is typed by the same table (`ci/kit/types.ts`).
  * - No Worker keeps a copy: no Worker source declares a name a service contract exports, nor
  *   an object type of exactly the members one does under another name, so a type that
  *   crosses a service is spelled once, in the contract.
@@ -13,25 +15,33 @@
  *   takes one, by the row's own fields where it lists them (`Asked` or `Handed` of the door,
  *   from `requests.ts`, which `npm run generate` writes from the table).
  */
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 import ts from "typescript";
 
 import { parse, workerSources } from "../../ci/kit/sources";
+import { services } from "../../ci/kit/types";
+import { PLATFORM } from "../../ci/paths";
+import { readWrangler } from "../../ci/workers";
 import { doorRow, takesRequest, UNBOUND_DOORS } from "../src/doors";
 
 /** The service contracts, by their module. */
-const CONTRACTS = Object.freeze(["gateway", "files", "codemode", "sandbox", "owner", "requests"]
-  .map((name) => `contract/src/${name}.ts`));
+const CONTRACTS = Object.freeze(["gateway", "files", "codemode", "sandbox", "owner", "requests",
+                                 "queues"].map((name) => `contract/src/${name}.ts`));
 
-/** Each service's entrypoint classes, by source, and the contract interface each implements. */
-const IMPLEMENTS: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
-  "gateway/src/index.ts": { ConnectGateway: "ConnectService", EgressGateway: "EgressService",
-                            Gateway: "GatewayService" },
-  "files/src/index.ts": { FilesService: "ChunkStore", FilesUpload: "ChunkUpload" },
-  "codemode/src/index.ts": { Codemode: "CodemodeWorker" },
-  "sandbox/src/index.ts": { Sandbox: "SandboxService" },
-  "owner/src/owner-do.ts": { OwnerDO: "OwnerDoors" },
-});
+const table = services();
+
+/** Each service's classes, by source, and the contract interface each implements. */
+const IMPLEMENTS = Object.entries(table.workers).flatMap(([worker, entry]) =>
+  Object.entries(entry.classes)
+    .map(([name, { source, contract }]) => ({ path: `${worker}/${source}`, name, contract })));
+
+/** Each Worker's default entrypoint, as the table names it, by the Worker's main module. */
+const DEFAULTS = Object.entries(table.workers).flatMap(([worker, entry]) =>
+  entry.default === undefined ? []
+    : [{ path: `${worker}/${String(readWrangler(join(PLATFORM, worker))["main"])}`,
+         name: entry.default }]);
 
 function exported(node: ts.Node): boolean {
   return ts.canHaveModifiers(node)
@@ -171,11 +181,18 @@ describe("the services' contracts", () => {
   const sources = workerSources();
 
   it("are each implemented by its service's entrypoints", () => {
-    for (const [path, classes] of Object.entries(IMPLEMENTS)) {
-      const found = implemented(path, sources.get(path)!);
-      for (const [name, contract] of Object.entries(classes)) {
-        expect(found.get(name), `${path} ${name}`).toContain(contract);
-      }
+    expect(IMPLEMENTS.length).toBeGreaterThan(0);
+    for (const { path, name, contract } of IMPLEMENTS) {
+      expect(implemented(path, sources.get(path)!).get(name), `${path} ${name}`)
+        .toContain(contract);
+    }
+  });
+
+  it("name each Worker's default export as the class an unnamed entrypoint reaches", () => {
+    expect(DEFAULTS.length).toBeGreaterThan(0);
+    for (const { path, name } of DEFAULTS) {
+      expect(sources.get(path), path).toMatch(
+        new RegExp(`^export default (?:class ${name}\\b|${name};)`, "m"));
     }
   });
 

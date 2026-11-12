@@ -11,7 +11,7 @@ import {
   type ControlRead, MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen, readControl, tiersOf,
 } from "../../contract/src/control";
 
-import type { DoorsEnv } from "./config";
+import type { DoorsEnv } from "./env";
 
 /** The outside gate, read once: its refusal, or the record it admitted the call on. */
 export async function outsideRead(env: DoorsEnv, owner: string): Promise<Response | ControlRead> {

@@ -9,7 +9,8 @@ import { createHash } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { type DoorsEnv, E2B_HOOK_PATH } from "../src/config";
+import { E2B_HOOK_PATH } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { BILLED_WINDOW_S } from "../../owner/src/sandbox-time";
 import { HOOK_BODY_MAX, lifecycleEvent, signed } from "../src/e2b-hooks";
 import { openRoute, sealRoute } from "../../contract/src/routing-mac";

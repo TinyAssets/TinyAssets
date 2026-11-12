@@ -14,10 +14,8 @@
  * ships is built from that file, so it changes only with a new template pair.
  */
 import identity from "../../contract/identity.json" with { type: "json" };
-import type { ChunkUpload } from "../../contract/src/files";
-import type { ConnectService, EgressService } from "../../contract/src/gateway";
-import type { OwnerDoors } from "../../contract/src/owner";
-import type { ImportMessage } from "../../contract/src/import-message";
+
+import type { DoorsEnv } from "./env";
 
 // Each fact of the identity is read as text (a template), so this module holds strings
 // alone, never the shared file object (`owner/guards/module-state.test.ts`).
@@ -105,83 +103,6 @@ export const INBOUND_BODY_MAX = API_BODY_MAX;
  * (`index.ts`), so `guards/config.test.ts` holds this name to the configs.
  */
 export const ERASURE_QUEUE = "tinyassets-erasure";
-
-/**
- * What `wrangler.jsonc` binds, exactly (the config guard). The Workers it binds are typed by
- * their contracts (`contract/src/owner.ts`, `gateway.ts`, `files.ts`).
- */
-export interface DoorsEnv {
-  /** The owner Worker's namespace, by `script_name`; reached only in `binder.ts`. */
-  readonly OWNER: DurableObjectNamespace<OwnerDoors>;
-  /**
-   * The gateway's connect entrypoint (`ConnectGateway`): the connect steps alone, no model
-   * call, no egress forwarding, no keyring; reached only in `connect.ts`.
-   */
-  readonly GATEWAY: ConnectService;
-  /**
-   * The gateway's egress entrypoint (`EgressGateway`), which serves only `forward`; reached
-   * only in `egress.ts`.
-   */
-  readonly EGRESS: EgressService;
-  /**
-   * The routing key sandbox tokens are MAC'd under (`routing-mac.ts`), a Worker secret the
-   * owner Worker holds too: the egress door verifies a token by it before any stub call.
-   */
-  readonly ROUTING_MAC_KEY: string;
-  /**
-   * E2B's lifecycle webhook's signature secret (`e2b-hooks.ts`), a Worker secret slice L's
-   * deploy kit sets and registers with E2B (`secrets.required`: no deploy without it); one
-   * shorter than 16 characters refuses every delivery `503`.
-   */
-  readonly E2B_WEBHOOK_SECRET: string;
-  /** The OAuth provider's own store (its schema; never ours). */
-  readonly OAUTH_KV: KVNamespace;
-  /** The owner directory: routing hints (`directory.ts`). */
-  readonly DIRECTORY: KVNamespace;
-  /** The platform's control record alone (`contract/src/control.ts`), the owner Worker's too. */
-  readonly CONTROL: KVNamespace;
-  /** The owner app's own files (`app/`), served only through `pages.ts`. */
-  readonly ASSETS: Fetcher;
-  /** Dynamic client registration, the deprecated fallback: exactly "true" or "false". */
-  readonly DCR_ENABLED: string;
-  /**
-   * The upstream issuer whose subjects are owner ids as they stand (AuthKit's, so today's
-   * owners keep theirs); every other issuer's subjects are namespaced (`binder.ts`).
-   */
-  readonly OWNER_ISSUER: string;
-  /**
-   * The other upstream issuers whose sign-ins name namespaced owners, as a JSON array:
-   * each named by the slice that adds its provider (Sign in with ChatGPT, S10). Empty
-   * today. Any issuer neither here nor `OWNER_ISSUER` is refused.
-   */
-  readonly FOREIGN_ISSUERS: string;
-  /**
-   * The owner issuer's sign-in endpoints, client and token issuer, as JSON (`oidc.ts`'s
-   * `UpstreamConfig`): `not-configured` until the deploy writes it (`upstreamFrom`: User
-   * Management's endpoints, and the JWKS from the issuer's live discovery).
-   */
-  readonly UPSTREAM: string;
-  /**
-   * The upstream's client secret (WorkOS's API key: the code exchange and the identity's
-   * deletion need it), set in the Worker's secrets by the deploy kit from the production
-   * environment's secret store (`secrets.required`: no deploy without it); an empty one
-   * fails every sign-in loudly.
-   */
-  readonly WORKOS_API_KEY: string;
-  /**
-   * The files Worker's upload entrypoint (`FilesUpload`): only `file-bytes.ts` reaches it, the
-   * binder streaming an upload.
-   */
-  readonly FILES: ChunkUpload;
-  /**
-   * The cutover's import window (`import.ts`), deleted at the cutover: the staging bucket the
-   * importer's job writes each owner's bundle to, which the import consumer alone reads, and
-   * the import queue's producer, by which that consumer sends its own continuation. The
-   * window's `IMPORT_KEY` is an optional secret (`namedSecret`), set only for the window.
-   */
-  readonly IMPORT_STAGING: R2Bucket;
-  readonly IMPORTS: Queue<ImportMessage>;
-}
 
 /**
  * A secret a data record names (a shared app's signing secret, `shared-apps.json`), or

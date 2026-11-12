@@ -60,7 +60,7 @@ import { faultOf, type Refusal, REFUSALS, refusalOf } from "../../contract/src/r
 
 import { type Bound, bindRun, bindSandbox, bindSync, type Presented, rebound } from "./binder";
 import { jsonObject } from "./body";
-import type { DoorsEnv } from "./config";
+import type { DoorsEnv } from "./env";
 import { ownerGate } from "./control";
 import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 import { serveMcp } from "./mcp";

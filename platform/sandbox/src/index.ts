@@ -24,17 +24,14 @@ import type {
   Started,
 } from "../../contract/src/sandbox";
 
-import type { SandboxControl, SandboxEnv } from "./control";
+import type { SandboxControl } from "./control";
+import type { SandboxEnv } from "./env";
 import { SLOTS } from "./slots";
 
 export { SandboxControl } from "./control";
 export { SandboxSlots } from "./slots";
 
-export interface Env extends SandboxEnv {
-  readonly SANDBOXES: DurableObjectNamespace<SandboxControl>;
-}
-
-export class Sandbox extends WorkerEntrypoint<Env> implements SandboxService {
+export class Sandbox extends WorkerEntrypoint<SandboxEnv> implements SandboxService {
   #owner(owner: string): DurableObjectStub<SandboxControl> {
     return this.env.SANDBOXES.getByName(principal(owner));
   }

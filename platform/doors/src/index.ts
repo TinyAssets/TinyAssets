@@ -6,9 +6,9 @@
  * owner issuer's (`oidc.ts`), or `UNWIRED` until the deploy configures it, so a sign-in
  * fails loudly.
  */
-import {
-  type DoorsEnv, ERASURE_QUEUE, NOT_CONFIGURED,
+import { ERASURE_QUEUE, NOT_CONFIGURED,
 } from "./config";
+import type { DoorsEnv } from "./env";
 import { serve } from "./doors";
 import { oidcUpstream, upstreamConfig } from "./oidc";
 import { ringQueue } from "./ring";
