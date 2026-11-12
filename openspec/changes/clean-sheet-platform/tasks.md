@@ -379,9 +379,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
   tests pass takes the two older tests that make a call refuse by patching a class's prototype
   (`owner/test/runs-authority.test.ts:857` `Files.prototype.open`,
-  `owner/test/erasure.test.ts:83` `Lifecycle.prototype.disableAlarms`; list 6, item 9). No
-  binding fronts either, so no gate can take them: `Files.open` reads the owner's own SQLite,
-  and `disableAlarms` is the agents library's in-process `Lifecycle`.
+  `owner/test/erasure.test.ts:83` `Lifecycle.prototype.disableAlarms`; list 6, item 9). The
+  two patched calls are in-process (the owner's own SQLite; the agents library's
+  `Lifecycle`), but each test's fault has a front door through `FILES`, so both move to a
+  gate in front of it in the owner suite (`methodsOf` `ChunkStore`, as the ci suite's
+  `files-gate`; B23): an `agent.json` over `INLINE_BYTES` read while its `getChunks` is held
+  and the file is rewritten through the doors; the erasure's `deleteNamespace` refused once,
+  for an owner with files, so it stops at step 2 before the wipe.
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
