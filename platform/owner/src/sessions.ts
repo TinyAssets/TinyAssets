@@ -72,11 +72,9 @@ function proofOf(value: unknown): string | null {
 
 export class Sessions {
   readonly #storage: OwnerStorage;
-  readonly #limits: SessionLimits;
 
-  constructor(storage: OwnerStorage, limits: SessionLimits = SESSION_LIMITS) {
+  constructor(storage: OwnerStorage) {
     this.#storage = storage;
-    this.#limits = limits;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -88,7 +86,7 @@ export class Sessions {
    * returned once and never stored, and when it expires.
    */
   open(authenticatedAt: unknown, now: number): { session: string; expires_at: number } {
-    const limits = this.#limits;
+    const limits = SESSION_LIMITS;
     if (typeof authenticatedAt !== "number" || !Number.isSafeInteger(authenticatedAt)
         || authenticatedAt < now - limits.signInMaxAgeS
         || authenticatedAt > now + limits.clockMarginS) {
@@ -127,7 +125,7 @@ export class Sessions {
 
   /** Slide a live session while its own browser keeps renewing. */
   extend(proof: unknown, now: number): { expires_at: number } {
-    const expiresAt = now + this.#limits.ttlS;
+    const expiresAt = now + SESSION_LIMITS.ttlS;
     return this.#storage.transactionSync(() => {
       const id = this.live(proof, now);
       this.#sql.exec("UPDATE owner_sessions SET expires_at = ? WHERE session_hash = ?",

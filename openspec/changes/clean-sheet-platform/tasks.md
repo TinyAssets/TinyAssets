@@ -330,9 +330,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (d3 §K1, §K2). T1 is four PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
-  - [ ] T1b: the ceilings and defaults: every `limits` parameter and defaulted constructor
-    parameter, `Internals.ledgerLimits` and `codemode`, the archive's tests at production
-    ceilings (`b23_research.md` question 3).
+  - [x] T1b: the ceilings of `Policy`, `ModelUsage`, `Sessions`, `Egress` and
+    `Connections` read where they are defined, their tests at production's numbers;
+    `Schedule`'s `passMs` gone and `halted` required; `Files`' `reclaim`, `changed` and
+    `manifested` required; `Connections`' unbound `GATEWAY` case gone.
+  - [ ] T1b2: the rest of the ceilings and defaults: `Grants`, `Registrations` and
+    `Collections` (with `DEFAULT_SHARES`), the ledger's (`Internals.ledgerLimits`, its decisions
+    as pure functions, the archive's tests at production ceilings, `b23_research.md` question
+    3), and code mode's `timeoutMs`.
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     `ERASURES` required with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the

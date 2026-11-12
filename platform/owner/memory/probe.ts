@@ -289,7 +289,9 @@ export class LegOwner extends OwnerDO {
     this.#gate = new WriteGate(state.storage);
     const bodyFiles = new Files(this.#gate.storage, files,
                             () => ({ ...FILE_DEFAULTS, max_bytes: 25_000_000_000 }),
-                            this.#gate.write, () => new Refusal("storage_full"));
+                            this.#gate.write, () => new Refusal("storage_full"),
+                            // The leg measures bodies alone: nothing to reclaim, tell or keep.
+                            () => false, () => {}, () => null);
     this.#bodies = new Bodies(bodyFiles, this.#gate.storage, this.#gate.write);
     this.#files = bodyFiles;
   }

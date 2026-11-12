@@ -71,7 +71,7 @@
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import {
   canonical, CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, type FileSettings, keys, MODEL_DEFAULTS,
-  plain, policyDigest, type PolicyDocument, type PolicyLimits, POLICY_LIMITS, type SourceCeilings,
+  plain, policyDigest, type PolicyDocument, POLICY_LIMITS, type SourceCeilings,
   validate, whole,
 } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
@@ -203,11 +203,9 @@ function expected(value: unknown): number {
 
 export class Policy {
   readonly #storage: OwnerStorage;
-  readonly #limits: PolicyLimits;
 
-  constructor(storage: OwnerStorage, limits: PolicyLimits = POLICY_LIMITS) {
+  constructor(storage: OwnerStorage) {
     this.#storage = storage;
-    this.#limits = limits;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -270,7 +268,7 @@ export class Policy {
       throw new Error("policy digest mismatch");
     }
     return { generation: row.generation, digest: row.digest,
-             document: validate(document, this.#limits) };
+             document: validate(document, POLICY_LIMITS) };
   }
 
   projection(owner: string): Projection {
@@ -291,7 +289,7 @@ export class Policy {
       fields.generation ?? this.#generation(), fields.rule ?? null,
       fields.decision ?? null, fields.outcome ?? null,
     );
-    const over = this.#usage()[`${into}_receipts`] - this.#limits.receiptsPerBucket;
+    const over = this.#usage()[`${into}_receipts`] - POLICY_LIMITS.receiptsPerBucket;
     if (over > 0) {
       sql.exec("DELETE FROM policy_receipts WHERE seq IN (SELECT seq FROM policy_receipts " +
                  "WHERE bucket = ? ORDER BY seq LIMIT ?)", into, over);
@@ -303,7 +301,7 @@ export class Policy {
     const listed = BUCKETS.flatMap((from) => this.#sql.exec<Receipt & { seq: number }>(
       "SELECT seq, at, kind, old_digest, new_digest, request_digest, generation, rule, " +
         "decision, outcome FROM policy_receipts WHERE bucket = ? ORDER BY seq DESC LIMIT ?",
-      from, this.#limits.receiptsListed,
+      from, POLICY_LIMITS.receiptsListed,
     ).toArray());
     return listed.sort((a, b) => b.seq - a.seq).map(({ seq: _seq, ...receipt }) => receipt);
   }
@@ -316,7 +314,7 @@ export class Policy {
    */
   write(sessionId: string, expectedGeneration: unknown, document: unknown,
         proposal: unknown, now: number): PolicyState {
-    validate(document, this.#limits);
+    validate(document, POLICY_LIMITS);
     const generation = expected(expectedGeneration);
     if (proposal !== null && (!plain(proposal) || !keys(proposal, ["request_id", "digest"])
                               || !cardId(proposal["request_id"])
@@ -333,7 +331,7 @@ export class Policy {
         const held = sql.exec<{ digest: string; document: string }>(
           "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
             "AND applied_at IS NULL AND at > ?",
-          proposal["request_id"] as string, now - this.#limits.proposalTtlS,
+          proposal["request_id"] as string, now - POLICY_LIMITS.proposalTtlS,
         ).toArray()[0];
         const change: unknown = held === undefined ? {} : JSON.parse(held.document);
         if (held === undefined || held.digest !== proposal["digest"] || !plain(change)
@@ -366,7 +364,7 @@ export class Policy {
    * loudly (`conflict`). Deleted at the cutover with the import doors.
    */
   imported(document: unknown, now: number): boolean {
-    validate(document, this.#limits);
+    validate(document, POLICY_LIMITS);
     const row = this.#stored();
     if (row.digest === policyDigest(document)) {
       return false;
@@ -409,7 +407,7 @@ export class Policy {
    */
   propose(change: unknown, requestId: unknown, proposer: string, now: number):
       { request_digest: string; generation: number } {
-    if (!plain(change) || codePoints(canonical(change)) > this.#limits.maxChange) {
+    if (!plain(change) || codePoints(canonical(change)) > POLICY_LIMITS.maxChange) {
       throw new Refusal("invalid", "invalid policy proposal");
     }
     if (requestId !== null && !cardId(requestId)) {
@@ -420,8 +418,8 @@ export class Policy {
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       if (requestId !== null) {
-        sql.exec("DELETE FROM policy_proposals WHERE at < ?", now - this.#limits.proposalTtlS);
-        const over = this.#usage().applied_proposals - this.#limits.appliedProposals;
+        sql.exec("DELETE FROM policy_proposals WHERE at < ?", now - POLICY_LIMITS.proposalTtlS);
+        const over = this.#usage().applied_proposals - POLICY_LIMITS.appliedProposals;
         if (over > 0) {
           sql.exec("DELETE FROM policy_proposals WHERE request_id IN (SELECT request_id " +
                      "FROM policy_proposals WHERE applied_at IS NOT NULL " +
@@ -434,13 +432,13 @@ export class Policy {
           throw new Refusal("refused", "a proposal is already held for this card");
         }
         if (held === undefined) {
-          if (this.#usage().pending_proposals >= this.#limits.pendingProposals) {
+          if (this.#usage().pending_proposals >= POLICY_LIMITS.pendingProposals) {
             throw new Refusal("refused", "too many pending policy proposals");
           }
           const share = sql.exec<{ pending: number }>(
             "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
           ).toArray()[0]?.pending ?? 0;
-          if (proposer !== "owner" && share >= this.#limits.pendingPerClient) {
+          if (proposer !== "owner" && share >= POLICY_LIMITS.pendingPerClient) {
             throw new Refusal("refused",
                               "this client's pending policy proposals are at their limit");
           }
@@ -469,7 +467,7 @@ export class Policy {
     const held = this.#sql.exec<{ digest: string; document: string }>(
       "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
         "AND applied_at IS NULL AND at > ?",
-      proposal["request_id"] as string, now - this.#limits.proposalTtlS,
+      proposal["request_id"] as string, now - POLICY_LIMITS.proposalTtlS,
     ).toArray()[0];
     const change: unknown = held === undefined ? {} : JSON.parse(held.document);
     if (held === undefined || held.digest !== proposal["digest"] || !plain(change)
@@ -488,7 +486,7 @@ export class Policy {
     }
     const row = this.#sql.exec<{ digest: string; document: string }>(
       "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-        "AND applied_at IS NULL AND at > ?", requestId, now - this.#limits.proposalTtlS,
+        "AND applied_at IS NULL AND at > ?", requestId, now - POLICY_LIMITS.proposalTtlS,
     ).toArray()[0];
     return row === undefined ? null
       : { change: JSON.parse(row.document) as Change, digest: row.digest };

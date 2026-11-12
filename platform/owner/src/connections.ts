@@ -283,27 +283,24 @@ function view(row: Row): ConnectionView {
 export class Connections {
   readonly #storage: OwnerStorage;
   readonly #write: Write;
-  readonly #gateway: () => GatewayService | undefined;
+  readonly #gateway: () => GatewayService;
   readonly #owner: () => string;
   readonly #notices: Notices;
   readonly #clock: () => number;
-  readonly #limits: ConnectionLimits;
   /** The refreshes this instance runs, by connection: what concurrent callers wait on. */
   readonly #refreshing = new Map<string, Promise<void>>();
   /** Bumped by every unit that changes a connection, so `usable` re-reads only then. */
   #revision = 0;
   #usable: { revision: number; usable: readonly Usable[] } | null = null;
 
-  constructor(storage: OwnerStorage, write: Write, gateway: () => GatewayService | undefined,
-              owner: () => string, notices: Notices, clock: () => number,
-              limits: ConnectionLimits = CONNECTION_LIMITS) {
+  constructor(storage: OwnerStorage, write: Write, gateway: () => GatewayService,
+              owner: () => string, notices: Notices, clock: () => number) {
     this.#storage = storage;
     this.#write = write;
     this.#gateway = gateway;
     this.#owner = owner;
     this.#notices = notices;
     this.#clock = clock;
-    this.#limits = limits;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -319,11 +316,7 @@ export class Connections {
   }
 
   #service(): GatewayService {
-    const gateway = this.#gateway();
-    if (gateway === undefined) {
-      throw new Error("the GATEWAY service is not bound");  // a config fault: loud
-    }
-    return gateway;
+    return this.#gateway();
   }
 
   // -- the doors' bodies, each run inside the door's unit ---------------------------
@@ -354,19 +347,20 @@ export class Connections {
     const name = text(r["display_name"], 128, "display_name");
     const live = this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM connections WHERE status != 'revoked'").one().n;
-    if (live >= this.#limits.maxConnections) {
+    if (live >= CONNECTION_LIMITS.maxConnections) {
       throw new Refusal("refused", "the owner's connections are at their limit");
     }
     if (redirect !== null) {
       const flows = this.#sql.exec<{ open: number; rows: number }>(
         "SELECT COALESCE(SUM(status = 'open' AND expires_at > ?), 0) AS open, " +
           "COUNT(*) AS rows FROM connection_flows", now).one();
-      if (flows.open >= this.#limits.maxOpenFlows || flows.rows >= this.#limits.maxFlowRows) {
+      if (flows.open >= CONNECTION_LIMITS.maxOpenFlows
+          || flows.rows >= CONNECTION_LIMITS.maxFlowRows) {
         throw new Refusal("refused", "too many connection flows; finish or wait for one");
       }
     }
     const id = `c${randomHex(12)}`;
-    const until = now + this.#limits.pendingTtlS;
+    const until = now + CONNECTION_LIMITS.pendingTtlS;
     this.#sql.exec("INSERT INTO connections (id, source, kind, display_name, provider, " +
                      "status, version, created_at, pending_until, revocable) " +
                      "VALUES (?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?)",
@@ -390,7 +384,7 @@ export class Connections {
     const kid = grammar(r["kid"], KID, "kid");
     const blob = blobOf(r["blob"], kid);
     const models = r["models"];
-    if (!Array.isArray(models) || models.length > this.#limits.maxModels) {
+    if (!Array.isArray(models) || models.length > CONNECTION_LIMITS.maxModels) {
       throw new Refusal("invalid", "invalid connection models");
     }
     const checked = models.map(modelInfo);
@@ -510,7 +504,8 @@ export class Connections {
   #pruneRevoked(): void {
     this.#sql.exec("DELETE FROM connections WHERE id IN (SELECT id FROM connections " +
                      "WHERE status = 'revoked' AND revoke_due IS NULL " +
-                     "ORDER BY revoked_at DESC LIMIT -1 OFFSET ?)", this.#limits.maxRevokedKept);
+                     "ORDER BY revoked_at DESC LIMIT -1 OFFSET ?)",
+                   CONNECTION_LIMITS.maxRevokedKept);
   }
 
   /** Every connection, newest first, without its blob. */
@@ -529,7 +524,7 @@ export class Connections {
     const state = base64url(randomBytes(32));
     const verifier = base64url(randomBytes(32));
     const challenge = createHash("sha256").update(verifier, "ascii").digest("base64url");
-    const until = now + this.#limits.flowTtlS;
+    const until = now + CONNECTION_LIMITS.flowTtlS;
     this.#sql.exec("INSERT INTO connection_flows (flow, connection_id, session_id, verifier, " +
                      "redirect_uri, created_at, expires_at, status) " +
                      "VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
@@ -693,7 +688,7 @@ export class Connections {
   #expiring(id: string, nowMs: number): boolean {
     const row = this.#row(id);
     return row !== undefined && row.kind === "oauth2" && row.expires_at !== null
-      && row.expires_at - nowMs <= this.#limits.refreshMarginMs;
+      && row.expires_at - nowMs <= CONNECTION_LIMITS.refreshMarginMs;
   }
 
   /**
@@ -706,7 +701,7 @@ export class Connections {
       { credential: Credential; settle: (error: unknown) => void } | "busy" | null {
     const row = this.#row(id);
     if (row === undefined || row.status !== "active" || row.kind !== "oauth2"
-        || row.expires_at === null || row.expires_at - nowMs > this.#limits.refreshMarginMs) {
+        || row.expires_at === null || row.expires_at - nowMs > CONNECTION_LIMITS.refreshMarginMs) {
       return null;
     }
     if (this.#refreshing.has(id)) {
@@ -719,7 +714,7 @@ export class Connections {
       return null;
     }
     this.#sql.exec("UPDATE connections SET lease_id = ?, lease_until = ? WHERE id = ?",
-                   holder, nowMs + this.#limits.leaseMs, id);
+                   holder, nowMs + CONNECTION_LIMITS.leaseMs, id);
     let settle!: (error: unknown) => void;
     const done = new Promise<void>((resolve, reject) => {
       settle = (error) => (error === undefined ? resolve() : reject(error));
@@ -912,7 +907,7 @@ export class Connections {
       try {
         const revoking = this.#service().revokeAtProvider(this.#owner(), id, owed.version,
                                                           owed.blob);
-        const answer = await inTime(revoking, this.#limits.revokeMs);
+        const answer = await inTime(revoking, CONNECTION_LIMITS.revokeMs);
         if (answer === "late") {
           revoking.catch(() => undefined);
         } else {
@@ -943,7 +938,7 @@ export class Connections {
   #dueRevokes(now: number): string[] {
     return this.#sql.exec<{ id: string }>(
       "SELECT id FROM connections WHERE revoke_due IS NOT NULL AND revoke_due <= ? " +
-        "ORDER BY revoke_due LIMIT ?", now, this.#limits.revokesPerPass).toArray()
+        "ORDER BY revoke_due LIMIT ?", now, CONNECTION_LIMITS.revokesPerPass).toArray()
       .map((row) => row.id);
   }
 
@@ -969,9 +964,9 @@ export class Connections {
       return;
     }
     const tries = row.revoke_tries + 1;
-    if (outcome === "failed" && tries < this.#limits.revokeTries) {
+    if (outcome === "failed" && tries < CONNECTION_LIMITS.revokeTries) {
       this.#sql.exec("UPDATE connections SET revoke_tries = ?, revoke_due = ? WHERE id = ?",
-                     tries, now + this.#limits.revokeRetryS * tries, id);
+                     tries, now + CONNECTION_LIMITS.revokeRetryS * tries, id);
       return;
     }
     this.#storage.transactionSync(() => {

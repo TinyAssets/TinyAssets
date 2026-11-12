@@ -776,7 +776,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       wakes: this.#sender, files: this.#files, connections: this.#connections,
       runs: this.#launcher, manifest: this.#backups, sandbox: this.#sandboxTime,
       archive: this.#archive, starter: this.#starter,
-    }, clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
+    }, clock, write, () => wiped(storage.sql) || erasing(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
       storage, write, clock, lifecycle,
