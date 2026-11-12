@@ -28,6 +28,9 @@ Why: [ADR-032](decisions/ADR-032-clean-sheet-platform.md),
 | `platform/hooks/` | Code mode's VMs only (ADR-034 decision 12). |
 | `platform/sources/`, `platform/starter/` | Engine and source records as data, with their schema, checker and catalog (`sources/src/`, a contract module); the bubble agent's files. |
 | `platform/plugins/`, `platform/deploy/` | Directory plugins, the deploy kit. |
+| `platform/contract/` | The vocabulary more than one Worker speaks: ids, limits, typed refusals, the control record, the services' RPC contracts. It imports no Worker. |
+| `platform/ci/` | The size-class test budgets, the shared test and guard kit, and the CI guards. |
+| `platform/import/` | The cutover's one-time import of existing owners, deleted after it. |
 
 Everything below is the **retiring stack** (`tinyassets/`, `deploy/`, the
 droplet): fixes only, no new feature, deleted at the cutover.

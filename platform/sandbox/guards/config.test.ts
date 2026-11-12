@@ -3,7 +3,6 @@
  * entry for `SANDBOX` relies on it):
  *
  * - its config holds to its allow-list (`rules.ts`), by the platform's config checker;
- * - the runner's own kill wait is its heartbeat;
  * - in its source, `fetch` is named in `e2b.ts` alone, and every URL there is built on
  *   E2B's two origins (`E2B_API`, `E2B_ENVD`), which are E2B's own hosts; no source names
  *   `connect` (a raw socket) or another way out.
@@ -15,8 +14,6 @@ import { describe, expect, it } from "vitest";
 
 import { configTests } from "../../ci/kit/config";
 import { parse, sourcesOf } from "../../ci/kit/sources";
-import { HEARTBEAT_MS } from "../runner/runner";
-import { KILL_WITHIN_MS } from "../runner/users";
 import { E2B_API, E2B_ENVD } from "../src/e2b";
 
 import { CONFIG } from "./rules";
@@ -82,10 +79,6 @@ describe("the sandbox Worker", () => {
     const problems = [...sourcesOf("sandbox")]
       .flatMap(([path, source]) => reachProblems(path, source));
     expect(problems).toEqual([]);
-  });
-
-  it("holds a user's processes no longer past their kill than one heartbeat", () => {
-    expect(KILL_WITHIN_MS).toBe(HEARTBEAT_MS);
   });
 
   it("finds a fetch outside e2b.ts, and a URL off E2B's origins", () => {

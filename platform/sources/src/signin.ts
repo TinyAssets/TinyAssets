@@ -25,7 +25,6 @@ export function signinHosts(rec: SourceRecord, region: string | null): string[] 
 export const SIGNIN_STATES = Object.freeze(["starting", "open", "code_sent", "signed_in",
                                             "signed_out", "failed", "cancelled", "refused",
                                             "expired"] as const);
-export type SigninState = (typeof SIGNIN_STATES)[number];
 
 /**
  * Why a sign-in was refused, each in plain words (review L6): the reason a refusal carries,

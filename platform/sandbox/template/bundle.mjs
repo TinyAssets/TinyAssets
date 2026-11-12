@@ -19,8 +19,8 @@ const require = createRequire(join(platform, "package.json"));
 const esbuild = require("esbuild");
 
 /** Each bundle's entry, by its output's name. */
-export const ENTRIES = Object.freeze({ "runner.mjs": "sandbox/runner/runner.ts",
-                                       "probes.mjs": "sandbox/runner/probes.ts" });
+const ENTRIES = Object.freeze({ "runner.mjs": "sandbox/runner/runner.ts",
+                                "probes.mjs": "sandbox/runner/probes.ts" });
 
 /** One bundle's build: the same options for both, `define` the probes' runner digest. */
 async function one(root, entry, define) {

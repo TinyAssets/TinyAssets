@@ -4,7 +4,7 @@
  * a Worker bundled as a deploy bundles it and handed to miniflare as an auxiliary Worker,
  * and a test fake transpiled into one.
  *
- * Node runs this file as it is (type stripping): `budgets.mjs`, `doors/test/app.e2e.mjs` and
+ * Node runs this file as it is (type stripping): `deploy/facts.ts`, `doors/test/app.e2e.mjs` and
  * `owner/memory/baselines.mjs` import it, so its own imports name their `.ts` files.
  */
 import { execFileSync } from "node:child_process";
@@ -61,7 +61,7 @@ export function workerFolders(): string[] {
 }
 
 /** The wrangler package the platform installs (hoisted to `platform/node_modules`). */
-export const WRANGLER_PACKAGE = dirname(createRequire(join(PLATFORM, "package.json"))
+const WRANGLER_PACKAGE = dirname(createRequire(join(PLATFORM, "package.json"))
   .resolve("wrangler/package.json"));
 /** Its command line, run with Node. */
 export const WRANGLER = join(WRANGLER_PACKAGE, "bin", "wrangler.js");
