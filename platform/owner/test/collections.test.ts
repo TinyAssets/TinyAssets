@@ -670,17 +670,22 @@ describe("the history keys' migration (untangle H1)", () => {
           "VALUES ('board', ?, ?, ?, 'e', ?, ?, ?, 1, ?, ?, ?, 'owner', ?)", key, revision,
         change, writer, writer === owner ? 0 : 1, content === null ? `${key}${revision}` : "",
         writer, content === null ? 2 : 5000, content, change);
+      // The keys' entries interleave; `b`'s fourth was written as the wall clock went back, so
+      // only the write order (`rowid`) keeps each key's entries in revision order; `e` cleared.
       entry("a", 1, 1);
       entry("a", 2, 2);
-      entry("a", 3, 3);
-      live("a", 3, 3);
       entry("b", 2, 5, 5, "delete");
       entry("b", 3, 6);
-      live("b", 3, 6, "bob");
+      entry("b", 4, 4);
+      entry("a", 3, 3);
+      live("a", 3, 3);
+      entry("b", 5, 7);
+      live("b", 5, 7, "bob");
       entry("c", 2, 8, 8, "delete", "bob");
       entry("d", 1, 9, null, "write", null, placed);
       live("d", 1, 9, owner, placed);
-      sql.exec("UPDATE collection_clock SET change = 9");
+      entry("e", 4, 10, 10, "clear");
+      sql.exec("UPDATE collection_clock SET change = 10");
       const kept = () => sql.exec("SELECT (SELECT refs FROM file_contents WHERE content_id = ?) " +
         "AS refs, (SELECT body_bytes FROM file_space) AS inline, (SELECT change FROM " +
         "collection_clock) AS clock", placed).one();
@@ -695,21 +700,27 @@ describe("the history keys' migration (untangle H1)", () => {
         erasures: sql.exec("SELECT change, key, revision, private_writer, prev FROM " +
                            "collection_erasures ORDER BY change").toArray()
           .map((row) => Object.values(row)),
-        read: new Collections(...collectionParts(state.storage)).history(owner, "board", "a")
-          .entries.map((each) => [each.change, each.body]),
+        read: ([[owner, "a", null], ["bob", "b", null], [owner, "a", -3]] as const).map(
+          ([who, key, at]) => new Collections(...collectionParts(state.storage))
+            .history(who, "board", key, at).entries.map((each) => [each.change, each.body])),
       };
     });
     // Each live row's newest entry takes its row's change; older ones negative keys in the
     // order they were written; each names the entry it follows.
-    expect(migrated.history).toEqual([[-2, "a", 1, null], [-1, "a", 2, -2], [3, "a", 3, -1],
-                                      [6, "b", 3, null], [9, "d", 1, null]]);
-    expect(migrated.erasures).toEqual([[5, "b", 2, null, null], [8, "c", 2, "bob", null]]);
-    expect(migrated.read).toEqual([[-2, "a1"], [-1, "a2"], [3, "a3"]]);
-    // A key made again goes past every revision a deletion gave; nothing else moved.
-    expect(migrated.space.revision_floor).toBe(2);
+    expect(migrated.history).toEqual([[-4, "a", 1, null], [-3, "a", 2, -4], [-2, "b", 3, null],
+                                      [-1, "b", 4, -2], [3, "a", 3, -3], [7, "b", 5, -1],
+                                      [9, "d", 1, null]]);
+    expect(migrated.erasures).toEqual([[5, "b", 2, null, null], [8, "c", 2, "bob", null],
+                                       [10, "e", 4, null, null]]);
+    // A row made again reads from its making; a page before a negative key reads on.
+    expect(migrated.read).toEqual([[[-4, "a1"], [-3, "a2"], [3, "a3"]],
+                                   [[-2, "b3"], [-1, "b4"], [7, "b5"]], [[-4, "a1"]]]);
+    // A key made again goes past every revision a deletion gave, a clear's among them;
+    // nothing else moved.
+    expect(migrated.space.revision_floor).toBe(4);
     expect(migrated.space.charge).toBe(migrated.recount);
     expect(migrated.after).toEqual(migrated.before);
-    expect(migrated.after).toMatchObject({ refs: 2, clock: 9 });
+    expect(migrated.after).toMatchObject({ refs: 2, clock: 10 });
   });
 });
 
