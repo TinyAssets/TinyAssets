@@ -302,6 +302,8 @@ jobs:
             command: npm run test:sizes -w sandbox
           - leg: deploy
             command: npm run test:sizes -w deploy
+          - leg: ci
+            command: npm run test:sizes -w ci
     defaults:
       run:
         working-directory: platform

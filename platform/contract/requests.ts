@@ -5,8 +5,8 @@
  * OwnerDoors`, `contract/src/owner.ts`).
  *
  * A JSON module's types cannot name them: its strings widen to `string`, so no row can be
- * picked by its door. So `node contract/requests.ts` writes `contract/src/requests.ts`, and the
- * services guard (`contract/guards/services.test.ts`) holds that file to what this makes now.
+ * picked by its door. So this writes `contract/src/requests.ts`, one of `npm run generate`'s
+ * generators, which `ci/guards/generated.test.ts` holds current.
  * Node runs this file as it is (type stripping).
  *
  * Each row with a field list is one entry: its required fields, then its optional ones, as
@@ -23,7 +23,7 @@ import type { Args, DoorRow } from "./src/doors.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The file this writes. */
-export const REQUESTS_FILE = join(HERE, "src", "requests.ts");
+const REQUESTS_FILE = join(HERE, "src", "requests.ts");
 
 /** The widest line the platform's sources keep. */
 const WIDTH = 100;
@@ -66,7 +66,7 @@ function entry(lead: string, type: string): string {
 }
 
 /** The source of `contract/src/requests.ts`, from `rows`. */
-export function requestsSource(rows: readonly DoorRow[]): string {
+function requestsSource(rows: readonly DoorRow[]): string {
   const entries = rows.flatMap((row) => {
     const args = row.args;
     if (args === "none" || args === "loose") {
@@ -83,8 +83,8 @@ export function requestsSource(rows: readonly DoorRow[]): string {
   return [
     "/**",
     " * Each owner door's request whose row lists its fields, by door: written by",
-    " * `node contract/requests.ts` from the door table (`doors.json`), which says what each",
-    " * means. Edit the table, never this file; the services guard holds the two together.",
+    " * `npm run generate` from the door table (`doors.json`), which says what each means.",
+    " * Edit the table, never this file.",
     " */",
     "",
     "/** A request of exactly the `Required` fields and any of the `Optional` ones. */",
@@ -99,7 +99,7 @@ export function requestsSource(rows: readonly DoorRow[]): string {
 }
 
 /** The table's rows, read as the file holds them. */
-export function tableRows(): readonly DoorRow[] {
+function tableRows(): readonly DoorRow[] {
   return (JSON.parse(readFileSync(join(HERE, "doors.json"), "utf8")) as
     { doors: readonly DoorRow[] }).doors;
 }

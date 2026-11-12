@@ -1,7 +1,7 @@
 /**
  * Each owner door's request whose row lists its fields, by door: written by
- * `node contract/requests.ts` from the door table (`doors.json`), which says what each
- * means. Edit the table, never this file; the services guard holds the two together.
+ * `npm run generate` from the door table (`doors.json`), which says what each means.
+ * Edit the table, never this file.
  */
 
 /** A request of exactly the `Required` fields and any of the `Optional` ones. */

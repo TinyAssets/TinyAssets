@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import { readWrangler, wranglerKeys } from "../workers.ts";
 import { PLATFORM } from "../paths.ts";
 import { type Config, configFiles, platformConfigs } from "./sources.ts";
-import { envProblems, staleTypes } from "./types.ts";
+import { envProblems } from "./types.ts";
 
 /** The flag that keeps a Worker's own namespaces out of its `ctx.exports`. */
 export const NO_EXPORTS = "disable_ctx_exports";
@@ -182,13 +182,11 @@ export function configProblems(config: Config, rules: ConfigRules,
 }
 
 /**
- * The test that `worker`'s committed binding types are what `wrangler types` makes from its
- * config now, and that its env interfaces (`env`) name exactly those bindings.
+ * The test that `worker`'s env interfaces (`env`) name exactly the bindings its committed
+ * binding types do (`npm run generate` writes those from its config).
  */
 export function bindingTypesTest(worker: string, env: readonly string[]): void {
-  it("has its binding types as wrangler types makes them now, its env naming each binding",
-     () => {
-    expect(staleTypes(worker)).toBeNull();
+  it("has its env naming each binding its config makes", () => {
     expect(envProblems(worker, env)).toEqual([]);
   });
 }

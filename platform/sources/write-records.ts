@@ -1,9 +1,7 @@
 // The catalog's list of record files (`src/records.ts`), written from this folder: every
 // `*.json` beside this script is a record, imported in name order. A Worker's bundle has no
-// filesystem, so the list is code; the sources guard (`contract/guards/sources-records.test.ts`)
-// fails while it is not the folder's, so a record added without it is never left out.
-//
-//   node platform/sources/write-records.ts
+// filesystem, so the list is code. One of `npm run generate`'s generators, which
+// `ci/guards/generated.test.ts` holds current, so a record added is never left out.
 import { readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +9,7 @@ import { fileURLToPath } from "node:url";
 /** This folder: the records. */
 export const SOURCES = dirname(fileURLToPath(import.meta.url));
 /** The list the catalog reads. */
-export const RECORDS_FILE = join(SOURCES, "src", "records.ts");
+const RECORDS_FILE = join(SOURCES, "src", "records.ts");
 
 /** A record file's binding: its name in camel case (`claude-code.json` is `claudeCode`). */
 function binding(file: string): string {
@@ -24,8 +22,8 @@ function binding(file: string): string {
 export function recordsText(dir: string = SOURCES): string {
   const files = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
   return [
-    "// Written by `node platform/sources/write-records.ts` from the record files beside",
-    "// `src/`, and held to them by `contract/guards/sources-records.test.ts`: never by hand.",
+    "// Written by `npm run generate` (`write-records.ts`) from the record files beside",
+    "// `src/`: never by hand.",
     ...files.map((file) => `import ${binding(file)} from "../${file}";`),
     "",
     "/**",

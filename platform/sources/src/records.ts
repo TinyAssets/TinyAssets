@@ -1,5 +1,5 @@
-// Written by `node platform/sources/write-records.ts` from the record files beside
-// `src/`, and held to them by `contract/guards/sources-records.test.ts`: never by hand.
+// Written by `npm run generate` (`write-records.ts`) from the record files beside
+// `src/`: never by hand.
 import anthropic from "../anthropic.json";
 import cerebras from "../cerebras.json";
 import chatgpt from "../chatgpt.json";

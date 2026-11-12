@@ -283,8 +283,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B4: the door table generates the prototype methods at module load (d3 §K4).
   - B6: the queue names generated from the Worker configs into the contract (d3 §A3).
   - B8: the compatibility date is a kit check that the six configs agree (d3 §A4).
-  - B9: `okf-watch apply` runs `npm run generate`, and its workflow adds `platform/plugins`
-    (d3 §O5).
+  - B9's `Env` half: each Worker's `Env` generated, the hand ones and `envProblems` deleted,
+    `SANDBOX` and `ERASURES` required. Waits on a decision: wrangler's types can't be included
+    as d2 B9 says, and type another Worker's binding by its `src`, not its contract (C2's report).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H). The `apply` job runs
     the plan it was approved on: the plan passes as an artifact, and `apply` stops on any
