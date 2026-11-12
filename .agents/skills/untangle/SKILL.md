@@ -12,18 +12,18 @@ tokens searching, break less without noticing, and find root causes faster.
 
 ## How this project uses it
 
-- **Every builder** runs steps 2 to 5 on its own change: step 2 on the code it
-  touches and the code that calls it, before building; steps 3 and 4 while
-  building; step 5 on its own diff before pushing. Fix the problems inside the
-  change's scope, and never add one: no shim, alias, copy of a value,
-  one-caller parameter, test-only hook, optional binding or special case.
-- **The PR body** carries an **Untangle check** section: what you found, what
-  you fixed, what you left and why, and that the diff adds no new problem of
-  any of the four kinds: hidden link, needless link, surplus or special case.
-- **Every reviewer** runs step 5 on the PR and checks each claim in the
-  Untangle check section; a missing section is a finding. A new problem the PR
-  adds is blocking, and so is one it leaves in its own scope with no stated
-  reason.
+- **Every builder** runs step 2 on the code it touches and its callers before
+  building, 3 and 4 while building, 5 on its diff before pushing. It fixes
+  problems in scope and adds none: no shim, alias, copy of a value, one-caller
+  parameter, test-only hook, optional binding or special case.
+- **The PR body** is the one document. Its **Untangle check** says what was
+  found, fixed and left (and why), and that the diff adds none of the four kinds.
+- **Every reviewer** runs step 5 on the PR and checks that section; a missing
+  one is a finding. A problem the PR adds or leaves in scope unexplained
+  blocks. It commits its own fixes of up to 50 lines and approves that head.
+- CI is the one full run: run only what the diff can break, one mutation per
+  declared change. Read only what applies. One PR in flight per lane, never
+  stacked. Known fixes and process cuts go at once, as small PRs.
 
 ## 1. Scope
 
