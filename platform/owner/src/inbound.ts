@@ -56,11 +56,11 @@ import { sha256Hex } from "../../contract/src/digest";
 export const MAX_BINDINGS = 1_000;
 /** A shared app's failures that trip its breaker, and the window they are counted in. */
 export const BREAKER_FAILURES = 3;
-export const BREAKER_WINDOW_S = 60;
+const BREAKER_WINDOW_S = 60;
 
-export const NOT_CONFIGURED = "binding_not_configured: no such inbound binding";
-export const WITHDRAWN = "binding_withdrawn: the inbound binding was changed or withdrawn";
-export const PROOF_INVALID = "inbound_proof_invalid: the event's proof does not verify";
+const NOT_CONFIGURED = "binding_not_configured: no such inbound binding";
+const WITHDRAWN = "binding_withdrawn: the inbound binding was changed or withdrawn";
+const PROOF_INVALID = "inbound_proof_invalid: the event's proof does not verify";
 export const INSTALL_PROOF = "install_proof_required: a shared app's installation is made by " +
   "its install flow alone";
 
@@ -68,7 +68,7 @@ const BINDING_ID = HEX32;
 const ROUTE = /^(?:h:[0-9a-f]{64}|i:[a-z][a-z0-9_]{0,31}:(?:workspace|enterprise):[0-9a-f]{64})$/;
 const AGENT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
-export type BindingKind = "capability" | "shared";
+type BindingKind = "capability" | "shared";
 
 /** A binding as the owner is shown it: never its secret. */
 export interface InboundBinding {
@@ -291,7 +291,7 @@ export class Inbound {
 }
 
 /** The proof an owner's capability binding holds, and its secret, or null. */
-export function ownerProof(row: Row): { profile: Profile; secret: string | null } | null {
+function ownerProof(row: Row): { profile: Profile; secret: string | null } | null {
   return row.profile === null ? null
     : { profile: JSON.parse(row.profile) as Profile, secret: row.secret };
 }

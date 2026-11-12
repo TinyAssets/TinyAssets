@@ -45,7 +45,7 @@ import { isPrintable } from "../../contract/src/text";
 import type {
   Call, Door, OwnerState,
 } from "./owner-do";
-import { EGRESS_ORIGIN, runUrls } from "../../contract/src/egress";
+import { EGRESS_ORIGIN, SIGNIN_DOOR, signinEventsUrl } from "../../contract/src/egress";
 import { FRAME_VERSION } from "../../contract/src/run-events";
 import { SANDBOX_ABSENT, started } from "./sandbox";
 import { clock } from "./clock";
@@ -59,16 +59,16 @@ import type { SigninEventsRequest } from "../../contract/src/owner";
 
 /** A live sign-in is the authority's one at a time. */
 export const SIGNIN_LIVE = "signin_live: a sign-in is already in progress in that sandbox";
-export const NO_SIGNIN = "no such sign-in";
+const NO_SIGNIN = "no such sign-in";
 /** A source whose sign-in the platform's control record has switched off. */
 export const SIGNIN_OFF = "signin_off: signing in to this source inside a sandbox is switched " +
   "off until its vendor's terms for hosted use are verified";
 /** A pasted code for a sign-in not now asking for one. */
 export const NO_CODE_WANTED = "this sign-in is not asking for a pasted code now";
 
-export type SigninMode = "in" | "out";
+type SigninMode = "in" | "out";
 
-export interface SigninRow {
+interface SigninRow {
   readonly id: string;
   readonly authority: string;
   readonly engine: string;
@@ -101,7 +101,7 @@ export interface SigninView {
   readonly expires_at: number;
 }
 
-export function signinView(row: SigninRow): SigninView {
+function signinView(row: SigninRow): SigninView {
   return { id: row.id, authority: row.authority, engine: row.engine, mode: row.mode,
            state: row.state, url: row.url, host: row.url === null ? null : new URL(row.url).hostname,
            code: row.code,
@@ -308,7 +308,7 @@ export class Signins {
 }
 
 /** A pasted code: the vendor's own, one line of printable text, a terminal line at most. */
-export function pastedCode(value: unknown): string {
+function pastedCode(value: unknown): string {
   if (typeof value !== "string" || value.trim() === "" || /[\r\n]/.test(value)
       || !isPrintable(value) || value.trim().length > SIGNIN_PASTE_MAX) {
     throw new Refusal("invalid", `a pasted code is one line of printable text, at most ${
@@ -350,7 +350,7 @@ export function switchedOn(storage: OwnerStorage, handed: unknown, now: number):
 }
 
 /** The authority a sign-in is for: the owner's own sandbox, or one client's. */
-export function signinAuthority(value: unknown): string {
+function signinAuthority(value: unknown): string {
   if (value === undefined || value === OWNER_AUTHORITY) {
     return OWNER_AUTHORITY;
   }
@@ -459,8 +459,8 @@ export const signinsDoors = Object.freeze({
         tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
         route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
                                                      authority: begun.row.authority }),
-        urls: { events: `${EGRESS_ORIGIN}/signin/${begun.row.id}/events`,
-                signin: runUrls(`run_${"0".repeat(32)}`, "0".repeat(64)).signin } }));
+        urls: { events: signinEventsUrl(begun.row.id),
+                signin: `${EGRESS_ORIGIN}${SIGNIN_DOOR}` } }));
     } catch {
       console.error("a sign-in's start had no answer");
       answer = null;

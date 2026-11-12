@@ -57,8 +57,6 @@ import { costMicros, largestFitting, periods } from "./money";
 import type { Call, OwnerState } from "./owner-do";
 import { clock } from "./clock";
 
-export { costMicros, largestFitting, periods };
-
 export interface UsageLimits {
   /** Reservation rows kept, as receipts; no cap reads them. */
   readonly receiptsKept: number;
@@ -91,7 +89,7 @@ export interface ModelCaps {
 }
 
 /** The owner's model policy as a reservation reads it, in the reservation's unit. */
-export interface UsagePolicy {
+interface UsagePolicy {
   readonly generation: number;
   readonly settings: ModelCaps;
 }

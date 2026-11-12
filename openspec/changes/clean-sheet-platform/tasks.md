@@ -1992,6 +1992,15 @@ R, S, M and W.
 - [ ] Owed by slice L's admin path, at the first rotation: add the new kid as active, call
   `dataKeyRewrap` for every owner, and remove a kid from `FILES_KEYRING` only after every
   owner's call has answered (the object's key and each manifest root under the new kid).
+- [x] The gateway keyring's sweep (`v:S3`): the owner's `gatewayReseal` (the platform's door,
+  as `dataKeyRewrap`) hands every connection blob it holds to `GATEWAY.reseal` and stores
+  each one resealed under a newer kid by the reseal's compare-and-swap, answering how many
+  it resealed and how many a refresh held (`left`).
+- [ ] Owed by the gateway (`resealDoorbell`) and then the sweep: a doorbell subscription's
+  blob, which the gateway reseals only when it rings, so an idle one stays under its kid.
+- [ ] Owed by slice L's admin path, at a gateway rotation: add the new kid as active, call
+  `gatewayReseal` for every owner until each answers `left` 0, and only then remove the kid
+  from `GATEWAY_KEYRING`.
 - [x] The owner export and the nightly manifest (slice P), one artifact: a generation
   (`backup_shape_research.md` (d); `owner/src/backup.ts`, `changelog.ts`), format
   `tinyassets-export` version 2 (`export.ts`). A fuzzy base copy of every row of every

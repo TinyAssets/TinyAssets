@@ -54,7 +54,7 @@ export const SUSPENSIONS: readonly string[] = Object.freeze(["abuse", "billing"]
 export const OWNER_SUSPENDED = "owner_suspended: the owner's account is suspended";
 export const OWNER_ERASED = "owner_erased: the owner's account was erased";
 export const OWNER_UNADMITTED = "owner_unadmitted: the platform has not admitted this owner";
-export const NEVER_ADMITTED = "an owner the platform never admitted is not suspended";
+const NEVER_ADMITTED = "an owner the platform never admitted is not suspended";
 export const PLATFORM_ONLY = "only the platform sets an owner's admission";
 export const PLATFORM_RESERVED = "the platform caller reaches no owner door but admission";
 /** The import doors' refusals (`import.ts`): their caller, their binding, the owner's state. */
@@ -114,14 +114,6 @@ export function doorRefusal(state: Admission, door: DoorClass): Refusal | null {
   return workRefusal(state);
 }
 
-/** The Python's `require_work`: refused loudly unless the owner is admitted. A read. */
-export function requireWork(storage: OwnerStorage): void {
-  const refusal = workRefusal(admission(storage));
-  if (refusal !== null) {
-    throw refusal;
-  }
-}
-
 /**
  * In a unit: the platform admits a pending owner (`{admit: true}`, at sign-up; an owner
  * admitted or suspended already is left as it stands, so a repeated sign-up admits nothing
@@ -131,7 +123,7 @@ export function requireWork(storage: OwnerStorage): void {
  * owner never reaches here: its object holds only the tombstone, which the binding check
  * refuses before any door acts.
  */
-export function setAdmission(storage: OwnerStorage, request: unknown): Admission {
+function setAdmission(storage: OwnerStorage, request: unknown): Admission {
   if (typeof request !== "object" || request === null || Array.isArray(request)) {
     throw new Refusal("invalid", CHANGE);
   }

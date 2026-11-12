@@ -67,8 +67,8 @@ import { signinOwned } from "./signins";
 
 type Connection = Parameters<NonNullable<WebSocketHandlers["onConnect"]>>[0];
 
-export const RELAY = "ta-relay";
-export const EXPIRY_JOB = "socket-expiry";
+const RELAY = "ta-relay";
+const EXPIRY_JOB = "socket-expiry";
 const EXPIRE_FN = "expire";
 
 /** App sockets an owner holds open at once: a technical ceiling of the isolate's memory. */
@@ -82,14 +82,14 @@ export const TAIL_UNITS = 4_194_304;
 /** A frame longer than this, in UTF-16 code units, is relayed but never kept in the tail. */
 export const TAIL_FRAME_UNITS = 262_144;
 /** The longest frame a client may send, in UTF-16 code units. */
-export const CLIENT_FRAME_MAX = 1024;
+const CLIENT_FRAME_MAX = 1024;
 /** Told sign-outs held at once; past it the oldest goes (its tickets are gone already). */
 export const SIGNED_OUT_KEPT = 64;
 /** How long a told sign-out is held, for the attaches it raced, in ms. */
 const ENDED_HELD_MS = 60_000;
 
 export const NOT_BINDER_SHAPE = "only the binder's upgrade reaches the object's socket door";
-export const SOCKETS_FULL = "sockets_full: the owner has as many app sockets open as it may";
+const SOCKETS_FULL = "sockets_full: the owner has as many app sockets open as it may";
 export const OWNERS_SOCKET = "an app socket is the owner's own";
 
 export type CloseKind = "expired" | "signedOut" | "suspended" | "erased" | "frame" | "lost";
@@ -113,7 +113,7 @@ export interface SocketState {
   readonly binding: Readonly<Record<string, unknown>>;
 }
 
-export interface RelayParts {
+interface RelayParts {
   /** In a unit: the attach's account, the owner's conversation, the ticket consumed. */
   admit(binding: unknown, conversation: string, ticketHash: string): Promise<SocketState>;
   /** In a unit: why the attachment no longer holds, as its close; null if it does. */
@@ -129,7 +129,7 @@ function tag(conversation: string): string {
 }
 
 /** The binder's upgrade's binding, conversation and ticket hash; anything else refused. */
-export function socketShape(request: Request):
+function socketShape(request: Request):
     { binding: unknown; conversation: string; ticket: string } {
   const upgrade = request.headers.get("upgrade");
   if (request.method !== "GET" || request.url !== SOCKET_URL

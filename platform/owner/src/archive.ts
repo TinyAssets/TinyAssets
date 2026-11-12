@@ -236,7 +236,7 @@ export interface ArchiveMoveSeen {
 export type ChainStep = "fenced" | "hot";
 
 /** What the archive works through: the object's gate and stores, and a test's seams. */
-export interface ArchiveParts {
+interface ArchiveParts {
   readonly storage: OwnerStorage;
   /** One unit of the object's write gate (`gate.ts`). */
   readonly door: <T>(act: () => T) => Promise<T>;
@@ -255,7 +255,7 @@ export interface ArchiveParts {
 }
 
 /** A chain read's call (`mailChain`), checked again in each of its units. */
-export interface ChainDoor {
+interface ChainDoor {
   check(): { readonly r: Record<string, unknown> };
 }
 

@@ -16,9 +16,9 @@ import {
   HOUR_S, type Ledger, type Outcome, outcome, retryAfter, WAKE_LEASE_S, type WakeTarget,
 } from "../src/ledger";
 import { clock } from "../src/clock";
-import { LANE_HUNG_S, LANE_PASS_S } from "../src/schedule";
+import { LANE_CALL_MS } from "../src/schedule";
 import {
-  runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM,
+  runWakes, WAKE_RETRY_S, type WakeSender, WAKES_PER_ALARM,
 } from "../src/wakes";
 import type { OwnerDO } from "../src/owner-do";
 import {
@@ -573,7 +573,7 @@ describe("the wakes lane of the object's one schedule", () => {
       const ledger = ledgerOn(state.storage);
       const muse = ringing(ledger);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
-      expect(await runWakes(ledger, r.sender, () => t, gateOf(state), 16, WAKE_SEND_MS,
+      expect(await runWakes(ledger, r.sender, () => t, gateOf(state), 16, LANE_CALL_MS,
                             Date.now() - 1))
         .toBe(0);
       return ledger.dueOpen(t, 16).length;
@@ -583,7 +583,6 @@ describe("the wakes lane of the object's one schedule", () => {
 
   it("bounds each send itself: a late one is marked, left to its lease, never sent again " +
      "(slice 5 N2)", async () => {
-    expect(WAKE_SEND_MS).toBe((LANE_HUNG_S - LANE_PASS_S) * 1000);
     const r = await rig();
     const t = clock();
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {

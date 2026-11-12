@@ -4,7 +4,7 @@
  * `contract/src/binding.ts`), and refuses that name at every other door and as an owner. So
  * no source may spell the name but where it is defined, and no source but the binder, which
  * sends it (the sign-up's explicit admit, slice L), and the owner's object, which reads it,
- * may name the constant; the platform's admin path (`admin/`, none today) may too.
+ * may name the constant.
  *
  * In every Worker source, this guard finds the name spelled as a string (a literal, a
  * template with no substitution, or the obvious split spellings: literals joined by `+`, a
@@ -34,9 +34,8 @@ const NAME = ["plat", "form"].join("");
 const CONSTANT = "PLATFORM_CALLER";
 const DEFINED = "contract/src/binding.ts";
 const READER = "owner/src/owner-do.ts";
-/** The binder, which sends it, and the platform's admin sources, which may (none today). */
+/** The binder, which sends it. */
 const SENDER = "doors/src/binder.ts";
-const ADMIN = "admin/";
 
 /** A string expression's value when every part of it is literal, else undefined. */
 function literal(node: ts.Node): string | undefined {
@@ -88,9 +87,6 @@ export function callerReach(fileName: string, source: string): string[] {
   const file = parse(fileName, source);
   const problems: string[] = [];
   const report = reporter(file, problems);
-  if (fileName.startsWith(ADMIN)) {
-    return problems;
-  }
   let definitions = 0;
   const visit = (node: ts.Node): void => {
     const value = ts.isExpression(node) ? literal(node) : undefined;
@@ -189,9 +185,5 @@ describe("admission caller guard", () => {
       .toBe(true);
     // The caller's constant is the binding check's, and its sender the binder's import too.
     expect(workerSources().get(SENDER)).toContain("export function bindImport(");
-  });
-
-  it("lets the admin path send it", () => {
-    expect(callerReach("admin/src/suspend.ts", `export const c = "${NAME}";`)).toEqual([]);
   });
 });

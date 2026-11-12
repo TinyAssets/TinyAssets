@@ -100,7 +100,7 @@ import { clock } from "./clock";
  * each open call a row the owner-bound guard costs at the most runs a tier may give; and
  * the newest 2,000 admitted and 500 refused rows kept as receipts.
  */
-export interface EgressLimits {
+interface EgressLimits {
   readonly openPerRun: number;
   readonly receiptsKept: number;
   readonly refusalsKept: number;
@@ -124,17 +124,17 @@ export const LOST_AFTER_S = 3 * EGRESS_BEAT_S;
 const PATH = /^\/[\x21-\x7e]*$/;
 
 /** Why the object ended a stream. */
-export type EndedBy = "policy" | "lease" | "connection" | "admission" | "erasure" | "run";
+type EndedBy = "policy" | "lease" | "connection" | "admission" | "erasure" | "run";
 
 /** What an open stream covers, as `end` selects them. */
-export interface LiveStream {
+interface LiveStream {
   readonly connection: string;
   readonly lease: string;
   readonly run: string;
 }
 
 
-export interface SettleRequest {
+interface SettleRequest {
   readonly reservation: string;
   readonly outcome: Outcome;
   readonly status: number | null;
@@ -175,7 +175,7 @@ export interface EgressReceipt {
  * table's per-turn limits), and the owner's and the call's source's day and month. No
  * more and no less: the spend table is the agent's purchases', not model calls'.
  */
-export interface EgressCaps {
+interface EgressCaps {
   /** The owner's own per-run caps, each null (none) unless the owner's policy sets it. */
   readonly run_requests: number | null;
   readonly run_tokens: number | null;
@@ -215,11 +215,11 @@ export function egressPrice(models: readonly ModelRecord[], input: number, outpu
 }
 
 /** A model's µ$ for `input` and `output` tokens at its catalog rates. */
-export type ModelCost = (model: ModelRecord, input: number, output: number) => number;
+type ModelCost = (model: ModelRecord, input: number, output: number) => number;
 
 
 /** What `open` reads beside its own rows, each at the open's unit. */
-export interface EgressDeps {
+interface EgressDeps {
   /** The live lease whose egress token's hash is `token`, or null. */
   readonly lease: (token: string, now: number) => SandboxLease | null;
   /**
@@ -255,7 +255,7 @@ export interface EgressDeps {
 }
 
 /** The fewest output tokens a sandbox model call is worth reserving, as a loop call's. */
-export const MIN_OUTPUT = 1_024;
+const MIN_OUTPUT = 1_024;
 
 const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", "PATCH",
                                                   "DELETE"]);
@@ -310,7 +310,7 @@ export function egressRequest(value: unknown): EgressRequest {
 }
 
 /** A reserve's fields, exactly, or `invalid`. */
-export function reserveRequest(value: unknown): ReserveRequest {
+function reserveRequest(value: unknown): ReserveRequest {
   if (!plain(value, "model,reservation,tier")) {
     throw new Refusal("invalid", "invalid egress reserve");
   }
@@ -374,7 +374,7 @@ function spendOutcome(value: unknown): MeterOutcome {
 }
 
 /** The settle's fields, exactly, or `invalid`. */
-export function settleRequest(value: unknown): SettleRequest {
+function settleRequest(value: unknown): SettleRequest {
   if (!plain(value, "bytes,outcome,reservation,spend,status")) {
     throw new Refusal("invalid", "invalid egress settle");
   }

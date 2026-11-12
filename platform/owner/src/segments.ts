@@ -220,7 +220,7 @@ export interface Planned {
 }
 
 /** The records a plan places, in key order, by their index (`MoveTable`'s, or a list's). */
-export interface PlanRecords {
+interface PlanRecords {
   readonly count: number;
   key(n: number): number;
   chain(n: number): string | null;
@@ -655,7 +655,7 @@ export function parseTrailer(text: string): Trailer {
 }
 
 /** A parsed record's row: as `SegmentRow`, a raw row's bytes one view. */
-export type ParsedRow = [table: string, row: Record<string, unknown>, raw?: [Uint8Array]];
+type ParsedRow = [table: string, row: Record<string, unknown>, raw?: [Uint8Array]];
 
 /**
  * A record's bytes, parsed: each row by its table, a raw row with its raw bytes as a view of
