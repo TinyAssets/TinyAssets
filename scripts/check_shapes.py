@@ -494,8 +494,8 @@ def instruction_text(rel: str, source: str, superseded: set[str] = frozenset()) 
     """The part of ``rel`` that instructs an agent, or None when it is not an instruction file."""
     if rel.startswith(".github/workflows/"):
         return "\n".join(line for line in source.splitlines() if line.lstrip().startswith("#"))
-    if re.fullmatch(r"docs/decisions/ADR-\d+[\w.-]*\.md", rel):
-        return None  # an ADR body is a dated record (ADR-005)
+    if rel.startswith("docs/decisions/"):
+        return None  # an ADR or a decision log is a dated record (ADR-005)
     if rel.startswith("openspec/changes/") and rel.split("/")[2] in superseded:
         return None  # kept only for its evidence; nobody builds from it
     if (
@@ -548,7 +548,8 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
 
     A deleted ``docs/`` path fails wherever the tracked tree cites it. Any other
     deleted path, or a folder the diff emptied, fails where an instruction file
-    cites it (``instruction_text``). Archived and superseded changes are history.
+    cites it (``instruction_text``). Archived and superseded changes are history, and so
+    is ``docs/decisions/``.
 
     It does not see: a path in a workflow's ``run:`` lines (only comments are
     instructions there); a path inside a URL (``.../blob/main/CODEX.md``); and a

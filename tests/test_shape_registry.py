@@ -564,6 +564,12 @@ def test_an_instruction_citing_any_deleted_path_goes_red(tmp_path: Path):
                  "# Old plan\n\n**Superseded by ADR-032.**\n", "sup")
     _commit_file(repo, "openspec/changes/old-plan/tasks.md", "Run scripts/old_tool.py.\n", "sup2")
     _commit_file(repo, "deploy/x.sh", "x\n", "a folder named like a prose word")
+    # Dated records: an ADR and a decision log may cite a deleted path, but not a deleted doc.
+    _commit_file(repo, "docs/decisions/ADR-099-test.md",
+                 "Run scripts/old_tool.py; see `tinyassets/attribution/`.\n", "adr")
+    _commit_file(repo, "docs/decisions/untangle-log.md",
+                 "Run scripts/old_tool.py; see `tinyassets/attribution/` and docs/ops/gone.md.\n",
+                 "log")
     base = _commit_file(repo, "docs/ops/gone.md", "x\n", "doc")
     _git(repo, "update-ref", "refs/remotes/origin/main", base)
     _git(repo, "rm", "-q", "-r", "tinyassets/attribution", ".agents/skills/s/references",
@@ -572,6 +578,7 @@ def test_an_instruction_citing_any_deleted_path_goes_red(tmp_path: Path):
     _git(repo, "commit", "-q", "-m", "head")
 
     assert check_shapes.deleted_doc_references(repo) == [
+        "deleted-doc-reference: docs/decisions/untangle-log.md cites docs/ops/gone.md",
         "deleted-path-reference: .agents/skills/s/SKILL.md cites "
         ".agents/skills/s/references/gone.md",
         "deleted-path-reference: .github/workflows/w.yml cites tinyassets/attribution/core.py",
