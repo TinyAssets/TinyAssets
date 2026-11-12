@@ -1379,14 +1379,19 @@ describe("the sandbox's lease", () => {
     expect(first.egress).not.toBe(next.egress);
   });
 
-  it("receipts an ask-mode network's refusal of what it does not list, once at its apply",
+  it("receipts an ask-mode network's refusal of what it does not list, once as its lease opens",
      async () => {
     const r = await gated();
+    const asked = async () => (await r.stub.policyReceipts(r.bind())).receipts
+      .filter((receipt) => receipt.rule === "egress.ask");
+    // A lease opened under another mode receipts nothing.
+    const before = await leased(r);
+    expect(before.opened.network).toMatchObject({ generation: 1, receipt: false });
+    expect(await asked()).toEqual([]);
+    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
     const { generation, policy } = await r.stub.policyRead(r.bind());
     await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
       ...policy, egress: { mode: "ask", destinations: [{ host: "pypi.org", port: 443 }] } } });
-    const asked = async () => (await r.stub.policyReceipts(r.bind())).receipts
-      .filter((receipt) => receipt.rule === "egress.ask");
     expect(await asked()).toEqual([]);
     const lease = await leased(r);
     expect(lease.opened.network).toMatchObject({ mode: "ask", generation: 2, receipt: true });
@@ -1464,7 +1469,7 @@ describe("a sandbox's network (E1)", () => {
     kind: "egress", token: hashOf("egress", start.tokens!.egress_token), generation,
     secret: hashed(secretOf(start)) } });
 
-  it("is applied by the start that carried it, answered started: the run's first model " +
+  it("is marked by the unit that dispatches the start carrying it: the run's first model " +
      "call is admitted, with nothing else marking it", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");

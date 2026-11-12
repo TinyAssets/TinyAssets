@@ -88,7 +88,7 @@ function leases<R>(owner: string, act: (leases: OwnerDO["sandbox"]) => Promise<R
 
 /**
  * A signed-in owner with a Groq key connected, its sandbox's lease open and its network
- * applied by the start that opened it (answered started); the owner's caps roomy unless
+ * marked as the start that opened it was dispatched; the owner's caps roomy unless
  * `models` sets them, its spend table as `spend`.
  */
 async function sandbox(models: Record<string, unknown> = {
