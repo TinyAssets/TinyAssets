@@ -1,11 +1,11 @@
 /**
  * Starting runs in the tests as the owner's app does: an agent's `agent.json` written by
  * the owner's file doors, then the run door with the control record's tier numbers in the
- * binding, as the binder hands them, and the start the recording sandbox saw.
+ * binding, as the binder hands them, and the start the fake sandbox Worker saw
+ * (`fake-sandbox.ts`, bound by config behind its gate).
  */
 import { createHash } from "node:crypto";
 
-import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { verifyToken } from "../../contract/src/routing-mac";
@@ -14,7 +14,8 @@ import { egressTokenOf } from "../../contract/src/egress";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { RunReceipt } from "../src/runs";
-import type { RecordingSandbox } from "./sandbox-fake";
+import { HELD_WAIT_MS } from "../../ci/fixtures";
+import type { Recorded, Script } from "./fake-sandbox";
 
 import { TIERS } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
@@ -25,8 +26,6 @@ export { TIERS };
 export const ALL_SCOPES = Object.freeze(["read_graph", "write_graph", "propose_policy",
                                          "read_files", "write_files", "converse",
                                          "run_graph"]);
-
-type Recorded = OwnerDO & { readonly recorder: RecordingSandbox };
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
@@ -63,9 +62,44 @@ export async function defineAgent(stub: DurableObjectStub<OwnerDO>, owner: Bindi
   }
 }
 
-/** The starts, cancels and answer of the object's recording sandbox. */
-export function recorder(stub: DurableObjectStub<OwnerDO>): Promise<RecordingSandbox> {
-  return runInDurableObject(stub, (instance: OwnerDO) => (instance as Recorded).recorder);
+/** The owner `stub` is named by. */
+function ownerOf(stub: DurableObjectStub<OwnerDO>): string {
+  if (stub.name === undefined) {
+    throw new Error("the fake sandbox keeps its record by owner: reach the object by its name");
+  }
+  return stub.name;
+}
+
+/** What `stub`'s object asked of the sandbox so far: its starts, cancels, sign-ins and more. */
+export async function recorder(stub: DurableObjectStub<OwnerDO>): Promise<Recorded> {
+  return await env.SANDBOX_LOG.recorded(ownerOf(stub)) as Recorded;
+}
+
+/** How the sandbox answers `stub`'s object from now on: what `script` names, the rest kept. */
+export async function scripted(stub: DurableObjectStub<OwnerDO>, script: Partial<Script>):
+    Promise<void> {
+  await env.SANDBOX_LOG.script(ownerOf(stub), script);
+}
+
+/**
+ * `call`, with `act` done while its next call of the sandbox's `method` is out: the sandbox
+ * has taken it (its record holds it) and its answer is held at the gate until `act` is
+ * done, as a sandbox answers late. What `call` answered.
+ */
+export async function whileOut<R>(method: "start" | "network", call: () => Promise<R>,
+                                  act: () => Promise<void>): Promise<R> {
+  await env.SANDBOX_GATE.arm({ method, hold: "after" });
+  const answered = call();
+  const [held] = await env.SANDBOX_GATE.held(HELD_WAIT_MS);
+  if (held === undefined) {
+    throw new Error(`no ${method} reached the sandbox`);
+  }
+  try {
+    await act();
+  } finally {
+    await env.SANDBOX_GATE.release(held.id);
+  }
+  return answered;
 }
 
 /** A run's own secret, as its start's MCP URL carries it (`/r/<run>/<secret>/mcp`). */

@@ -22,11 +22,10 @@ import { RUN_INSTRUCTIONS } from "../src/instructions";
 import { profileNames } from "../../contract/src/doors";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
 import { SESSION_REFUSED } from "../../owner/src/runs";
-import { type OwnerDO, refuseOnce } from "./entry";
+import { refuseOnce } from "./entry";
 import {
-  appPost, call, connect, OPEN, reached, registerClient, rpcBody, serveFirstPartyDocument,
-  setControl, signInApp, sqlIn, type Tokens, url,
-  answerOf,
+  answerOf, appPost, call, connect, OPEN, reached, recorded, registerClient, rpcBody,
+  serveFirstPartyDocument, setControl, signInApp, sqlIn, type Tokens, url,
 } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
@@ -80,9 +79,8 @@ async function ownedOnKey() {
 }
 
 /** The recorded starts of `who`'s object. */
-function starts(who: string): Promise<SandboxStart[]> {
-  return runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
-    (instance as OwnerDO).recorder.starts);
+async function starts(who: string): Promise<SandboxStart[]> {
+  return (await recorded(who)).starts;
 }
 
 /** Each lease's egress token and runner secret, as the start that opened it got them. */
@@ -194,8 +192,7 @@ describe("the owner's /app/api/agent/* routes", () => {
     expect(await status.json()).toMatchObject({ run_id: run.run_id, state: "running" });
     const cancel = await appPost("agent/cancel", app.access_token, null, { run_id: run.run_id });
     expect(cancel.status).toBe(200);
-    expect(await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
-      (instance as OwnerDO).recorder.cancels.map((each) => each.run))).toEqual([run.run_id]);
+    expect((await recorded(who)).cancels.map((each) => each.run)).toEqual([run.run_id]);
     const scheduled = await appPost("agent/run", app.access_token, null, {
       agent: "main", input: "nightly", cron: "0 3 * * *" });
     expect(await scheduled.json()).toMatchObject({ agent: "main", trigger: "cron" });

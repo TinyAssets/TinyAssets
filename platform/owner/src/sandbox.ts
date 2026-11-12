@@ -38,13 +38,8 @@
  *   resumed and killed, each with its authority and time, after a cursor; the object reads
  *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
  *   passed. It limits nothing: the founder's cost view.
- *
- * Absent, nothing reaches `running`: admission refuses before it writes anything
- * (`SANDBOX_ABSENT`). Tests put a recording fake behind the interface, in tests only.
  */
 import type { Started } from "../../contract/src/sandbox";
-
-export const SANDBOX_ABSENT = "sandbox_absent: no sandbox is bound, so no run can start";
 
 /**
  * The start's answer when the E2B team runs as many sandboxes as its plan allows (the

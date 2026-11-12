@@ -18,17 +18,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import {
-  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, SANDBOX_HEADER,
+  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, RUNNER_HEADER,
+  SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import type { DoorsEnv } from "../src/env";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
-import worker, { type OwnerDO } from "./entry";
+import worker from "./entry";
 import { EGRESS_CHUNKS, EGRESS_USAGE } from "./fake-providers";
 import {
-  appPost, call, doorsEnv, OPEN, reached, serveFirstPartyDocument, setControl, signInApp, sqlIn,
-  url,
+  appPost, call, doorsEnv, OPEN, reached, recorded, serveFirstPartyDocument, setControl,
+  signInApp, sqlIn, url,
 } from "./support";
 import type { NetworkApplied, NetworkPlan } from "../../contract/src/sandbox";
 import type {
@@ -57,6 +58,7 @@ interface Sandbox {
 interface Opened {
   readonly egress_token: string;
   readonly sync_token: string;
+  readonly runner_token: string;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
   readonly network: NetworkPlan;
   readonly env: Readonly<Record<string, string>>;
@@ -84,10 +86,16 @@ function sessionOf(sandbox: Sandbox): Binding {
   return { owner: sandbox.owner, caller: sandbox.owner, origin: null, session: sandbox.session };
 }
 
-/** The owner object's own sandbox lease API, as 8b's `exec` reaches it in the object. */
-function leases<R>(owner: string, act: (leases: OwnerDO["sandbox"]) => Promise<R>): Promise<R> {
-  return runInDurableObject(env.OWNER.getByName(owner), (instance: unknown) =>
-    act((instance as OwnerDO).sandbox));
+/**
+ * The sandbox's run ended, as its runner reports its CLI's exit on its event door: the run
+ * settles, and its lease, with no run left under it, is given back.
+ */
+async function over(box: Sandbox): Promise<void> {
+  const ended = await call(new Request(`${EGRESS_ORIGIN}/r/${box.run}/events`, {
+    method: "POST", body: JSON.stringify({ frames: [], end: { exit_code: 0 } }),
+    headers: { "Content-Type": "application/json", [SANDBOX_HEADER]: box.token,
+               [GENERATION_HEADER]: "1", [RUNNER_HEADER]: box.opened.runner_token } }));
+  expect(ended.status).toBe(200);
 }
 
 /**
@@ -118,10 +126,10 @@ async function sandbox(models: Record<string, unknown> = {
                                   { message: "go", client_send_id: "s-1" });
   expect(submitted.status).toBe(200);
   const { run_id: run } = await submitted.json<{ run_id: string }>();
-  const start = await runInDurableObject(env.OWNER.getByName(owner), (instance: unknown) =>
-    (instance as OwnerDO).recorder.starts.find((each) => each.run === run)!);
+  const start = (await recorded(owner)).starts.find((each) => each.run === run)!;
   const opened: Opened = { egress_token: egressTokenOf(start.network!.network)!,
-                           sync_token: start.tokens!.sync_token, lease: start.lease,
+                           sync_token: start.tokens!.sync_token,
+                           runner_token: start.tokens!.runner_token, lease: start.lease,
                            network: start.network!, env: start.config.env };
   return { owner, session: app.session, token: opened.egress_token, app: app.access_token,
            connection, model: ids[0]!, bound, opened, key, run, secret: secretOf(start) };
@@ -231,18 +239,12 @@ async function settledOf(owner: string): Promise<void> {
  * re-applied as the write commits, the sandbox answering `reapplied` (`applied` unless said).
  */
 async function writeEgress(box: Sandbox,
-                           reapplied: NetworkApplied = { state: "applied" }): Promise<number> {
-  await runInDurableObject(env.OWNER.getByName(box.owner), (instance: unknown) => {
-    (instance as OwnerDO).recorder.networkAnswer = reapplied;
-  });
+                           reapplied: NetworkApplied = { state: "applied" }): Promise<void> {
+  await env.SANDBOX_LOG.script(box.owner, { networkAnswer: reapplied });
   const { generation, policy } = await box.bound.stub.policyRead(box.bound.binding);
   await box.bound.stub.policyWrite(sessionOf(box), {
     expected_generation: generation,
     policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
-  return (await leases(box.owner, (sandbox) => sandbox.config({
-    run: box.run, secret: "5e".repeat(32), engine: "pi", credential: "api_key",
-    connection: box.connection })))
-    .generation;
 }
 
 let restore: () => void = () => undefined;
@@ -463,7 +465,7 @@ describe("the egress door", () => {
         called = true;
         return { response: new Response("ok"), outcome: new ReadableStream() };
       } } };
-    await leases(box.owner, (sandbox) => sandbox.close(box.opened.lease));
+    await over(box);
     const counted = new ReadableStream<Uint8Array>({
       pull(controller) {
         pulled++;
@@ -668,7 +670,7 @@ describe("a refused call", () => {
     const lapsed = await send(egressRequest(box));
     expect([lapsed.status, await codeOf(lapsed)]).toEqual([401, "egress_lease_closed"]);
     const other = await sandbox();
-    await leases(other.owner, (sandbox) => sandbox.close(other.opened.lease));
+    await over(other);
     const closed = await send(egressRequest(other));
     expect([closed.status, await codeOf(closed)]).toEqual([401, "egress_lease_closed"]);
     expect(await forwarded()).toEqual([]);
@@ -726,7 +728,7 @@ describe("a refused call", () => {
     }
     // An egress write since the start, whose re-apply finds no sandbox: the network it
     // applied is generation 1's still.
-    expect(await writeEgress(box, { state: "lost" })).toBe(2);
+    await writeEgress(box, { state: "lost" });
     const unapplied = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
     expect([unapplied.status, await codeOf(unapplied)]).toEqual([409, "egress_network_stale"]);
     expect(await forwarded()).toEqual([]);
@@ -775,8 +777,7 @@ describe("a policy write mid-stream", () => {
     // The gateway holds back a secret's length less one, in case a secret spans chunks.
     const first = (await reader.read()).value!.byteLength;
     expect(first).toBeGreaterThan(0);
-    const generation = await writeEgress(box);
-    expect(generation).toBe(2);
+    await writeEgress(box);
     await settledOf(box.owner);
     expect(await drained(reader)).toBe("egress_ended");
     expect(await reservations(box.owner)).toMatchObject([{
@@ -789,8 +790,7 @@ describe("a policy write mid-stream", () => {
     // The `runs` lane the write woke re-applied the lease's network under generation 2 (the
     // sandbox Worker's `network`), so a call through it is answered.
     await runDurableObjectAlarm(env.OWNER.getByName(box.owner));
-    const asked = await runInDurableObject(env.OWNER.getByName(box.owner), (instance: unknown) =>
-      (instance as OwnerDO).recorder.networks);
+    const asked = (await recorded(box.owner)).networks;
     expect(asked).toMatchObject([{ lease: box.opened.lease, network: { generation: 2 } }]);
     const applied = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
     expect(applied.status).toBe(200);
@@ -885,7 +885,7 @@ describe("settlement", () => {
     const pending = send(egressRequest(box), holding);
     await until(async () => (await reservations(box.owner)).length === 1, "the open");
     expect(stopped).toBe(false);
-    await leases(box.owner, (sandbox) => sandbox.close(box.opened.lease));
+    await over(box);
     const response = await pending;
     expect([response.status, await codeOf(response)]).toEqual([503, "egress_ended"]);
     await until(async () => stopped, "the stop");
@@ -908,7 +908,7 @@ describe("settlement", () => {
       } } };
     const pending = send(egressRequest(box), holding);
     await until(async () => (await reservations(box.owner)).length === 1, "the open");
-    await leases(box.owner, (sandbox) => sandbox.close(box.opened.lease));
+    await over(box);
     const response = await pending;
     expect([response.status, await codeOf(response)]).toEqual([503, "egress_ended"]);
     await until(async () => late !== null, "the late reserve");
@@ -963,16 +963,16 @@ describe("settlement", () => {
     await until(() => upstreamCancelled("deadline"), "the upstream cancel");
   });
 
-  it("ends a stream when its lease closes, or its connection is revoked", async () => {
+  it("ends a stream when its run ends, or its connection is revoked", async () => {
     const box = await sandbox();
     const first = await send(egressRequest(box, COMPLETIONS, {
       headers: { "x-fake-egress": "slow-close" } }));
     const reader = first.body!.getReader();
     await reader.read();
-    await leases(box.owner, (sandbox) => sandbox.close(box.opened.lease));
+    await over(box);
     await settledOf(box.owner);
     expect(await drained(reader)).toBe("egress_ended");
-    expect(await reservations(box.owner)).toMatchObject([{ ended: "lease", outcome: "ended" }]);
+    expect(await reservations(box.owner)).toMatchObject([{ ended: "run", outcome: "ended" }]);
 
     const again = await sandbox();
     const second = await send(egressRequest(again, COMPLETIONS, {

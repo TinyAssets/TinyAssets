@@ -12,7 +12,7 @@ import { PLATFORM_CALLER } from "../../contract/src/binding";
 import type { ChunkStore } from "../../contract/src/files";
 import type { OwnerDoors } from "../../contract/src/owner";
 import { refusalOf } from "../../contract/src/refusal";
-import { TIERS } from "../fixtures";
+import { HELD_WAIT_MS, TIERS } from "../fixtures";
 import type { GateControl } from "../gate";
 
 /** A binding called by a name its type does not have. */
@@ -105,7 +105,7 @@ describe("the files gate", () => {
       await e.FILES_GATE.arm({ method: "getChunks", hold: at });
       const reading = e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }]);
       const read = watched(reading);
-      const held = await e.FILES_GATE.held(5_000);
+      const held = await e.FILES_GATE.held(HELD_WAIT_MS);
       expect(held).toEqual([{ id: expect.any(Number), method: "getChunks", name: null, at }]);
       await e.FILES.mintKey(fresh());
       expect(read.settled()).toBe(false);
@@ -160,11 +160,22 @@ describe("the files gate", () => {
       .toMatchObject({ message: expect.stringMatching(/does not implement the method/) });
   });
 
+  it("refuses an arming that would never act", async () => {
+    const never = [{ method: "getChunks" }, { method: "getChunks", hold: "during" },
+                   { method: "getChunks", hold: "before", corrupt: true },
+                   { method: "getChunks", name: "an-object", hold: "before" }];
+    for (const arm of never) {
+      expect(await outcome(() => e.FILES_GATE.arm(arm as never)))
+        .toMatchObject({ message: expect.stringMatching(/^an arming holds|never act$/) });
+    }
+    expect(await e.FILES_GATE.held()).toEqual([]);
+  });
+
   it("is as it started once disarmed: no arming, no held call, an empty record", async () => {
     const s = await space();
     await e.FILES_GATE.arm({ method: "getChunks", hold: "before" });
     const reading = e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }]);
-    expect(await e.FILES_GATE.held(5_000)).toHaveLength(1);
+    expect(await e.FILES_GATE.held(HELD_WAIT_MS)).toHaveLength(1);
     await e.FILES_GATE.arm({ method: "mintKey", refuse: { code: "busy", message: "busy" } });
     await e.FILES_GATE.disarm();
     expect(await reading).toEqual([s.bytes]);
@@ -222,7 +233,7 @@ describe("the owner Worker as an auxiliary, behind the owner gate", () => {
                                                        expected_etag: "",
                                                        content: "x".repeat(8_192) });
     const write = watched(writing);
-    const held = await e.FILES_GATE.held(5_000);
+    const held = await e.FILES_GATE.held(HELD_WAIT_MS);
     expect(held.map((call) => call.method)).toEqual(["putChunks"]);
     await direct(o.name).policyRead(o.base);
     expect(write.settled()).toBe(false);

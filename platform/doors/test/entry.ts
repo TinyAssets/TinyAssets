@@ -3,27 +3,20 @@
  * source records plus one test OAuth source (`TEST_OAUTH`, an RFC 6749 server the fake
  * providers run), and the real `OwnerDO` beside them, so the config's OWNER (by
  * script_name in production) is bound to the real object in one script
- * (vitest.config.ts).
+ * (vitest.config.ts), which binds its SANDBOX to the owner's fake sandbox Worker.
  */
 import type { DoorsEnv } from "../src/env";
 import { serve } from "../src/doors";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
-import type { SandboxLeases } from "../../owner/src/launch";
 import { OwnerDO as RealOwnerDO } from "../../owner/src/owner-do";
+import type { Refusal } from "../../contract/src/refusal";
+import { RecordingErasures } from "../../owner/test/erasure-fake";
 
 /** The owner object's env, as its class takes it. */
 type OwnerEnv = ConstructorParameters<typeof RealOwnerDO>[1];
-import type { Refusal } from "../../contract/src/refusal";
-import { RecordingErasures } from "../../owner/test/erasure-fake";
-import { RecordingSandbox } from "../../owner/test/sandbox-fake";
 
-/**
- * The real owner object, with its sandbox's lease API (owner-internal) in the tests' reach,
- * and a recording fake behind its `SANDBOX` binding (tests only: slice S binds the real
- * sandbox Worker).
- */
 /** The doors a test may have refused once, as the object's own. */
 type Refusable = "outsideAgents" | "toolProfile" | "fileUploadTarget" | "erasureOutside"
   | "runEvents";
@@ -78,23 +71,16 @@ export class OwnerDO extends RealOwnerDO {
     return refusal !== undefined ? Promise.reject(refusal) : super.fileUploadTarget(...args);
   }
 
-  readonly sandbox: SandboxLeases;
-  readonly recorder: RecordingSandbox;
   /** The erasure queue, recording only: the tests run the doors' consumer on what it sent. */
   readonly erasures: RecordingErasures;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const made: { sandbox?: SandboxLeases } = {};
-    const recorder = new RecordingSandbox();
     const erasures = new RecordingErasures();
     // The owner Worker's FILES, the files Worker's whole service: this script's FILES is the
     // doors', its upload entrypoint alone (review M5-1).
     const files = (env as unknown as { OWNER_FILES: OwnerEnv["FILES"] }).OWNER_FILES;
-    super(ctx, { ...env, FILES: files, SANDBOX: recorder, ERASURES: erasures },
-          { sandbox: (leases) => { made.sandbox = leases; }, putGraceMs: 0, eraseRetryMs: 500 });
+    super(ctx, { ...env, FILES: files, ERASURES: erasures }, { putGraceMs: 0, eraseRetryMs: 500 });
     this.erasures = erasures;
-    this.sandbox = made.sandbox!;
-    this.recorder = recorder;
   }
 }
 

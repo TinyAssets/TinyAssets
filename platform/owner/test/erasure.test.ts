@@ -7,7 +7,7 @@
  * crash at each step; and a stale `getByName` of an erased owner is refused forever.
  */
 import {
-  evictDurableObject, runDurableObjectAlarm, runInDurableObject,
+  runDurableObjectAlarm, runInDurableObject,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { Lifecycle } from "agents/lifecycle";
@@ -27,6 +27,7 @@ import { OwnerDO } from "../src/owner-do";
 import { doorTable } from "../../contract/src/doors";
 import { Policy } from "../src/policy";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
+import { recorder } from "./runs-support";
 import { alarmOf, failure, sqlIn, TIERS } from "./support";
 import type { FauxOwnerDO } from "./worker";
 
@@ -209,10 +210,10 @@ describe("the owner's erasure", () => {
     await r.in(async (instance) => {
       await instance.erasure.erase();
       expect(instance.erasure.erased).toBe(true);
-      // Every sandbox of the owner's killed and the sandbox Worker's state of it deleted,
-      // in the erasure's step 2 (slice S review H-6).
-      expect(instance.recorder.erasures).toEqual([r.owner]);
     });
+    // Every sandbox of the owner killed and the sandbox Worker's state of it deleted, in the
+    // erasure's step 2 (slice S review H-6).
+    expect((await recorder(r.stub())).erasures).toEqual([r.owner]);
     // A ring of the line reaches an erased owner and does nothing.
     expect(await r.stub().sandboxRung()).toEqual({ waiting: 0 });
     expect(await tables(r)).toEqual([{ name: "owner_admission" }]);
@@ -246,7 +247,7 @@ describe("the owner's erasure", () => {
       await r.in((_instance, state) => state.storage.sql.exec(
         "INSERT INTO owner_erasure (only, started_at, step) VALUES (1, 1, ?)", step));
       expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
-      await evictDurableObject(r.stub());
+      await crash(r);
       // The new instance's start resumes it from the step it recorded, and refuses meanwhile
       // (erasing, or erased once the resumed wipe is done).
       expect([ERASING, OWNER_ERASED]).toContain(
@@ -379,14 +380,14 @@ describe("the owner's erasure", () => {
 
 describe("the erasure's tombstone", () => {
   it("leaves exactly one erased admission row; a stale getByName is then refused, migrating " +
-     "nothing and starting no Lifecycle, across evictions", async () => {
+     "nothing and starting no Lifecycle, across restarts", async () => {
     const r = await rig();
     await r.in((instance) => instance.erasure.erase());
     expect(await tables(r)).toEqual([{ name: "owner_admission" }]);
     expect(await sqlIn(r.stub(), "SELECT only, state, reasons FROM owner_admission"))
       .toEqual([{ only: 1, state: "erased", reasons: "[]" }]);
     for (let round = 0; round < 2; round++) {
-      await evictDurableObject(r.stub());
+      await crash(r);
       for (const refused of [() => r.stub().policyRead(r.bind(null)),
                              () => r.stub().sessionOpen(r.bind(null, { authenticated_at: r.at })),
                              () => r.stub().admissionSet(r.platform, { reason: "billing",

@@ -89,9 +89,9 @@ export const UNBOUND_DOORS: readonly string[] = Object.freeze(["sandboxBilled", 
 /**
  * A check of the caller after its account: a run reads no mailbox (`no_mailbox`); a visitor
  * changes no row it may not (`owner_rows`, `action`: what); only an MCP client files its own
- * card (`own_card`); a door that reaches the sandbox needs one bound (`sandbox`).
+ * card (`own_card`).
  */
-export const GUARDS = Object.freeze(["no_mailbox", "owner_rows", "own_card", "sandbox"] as const);
+export const GUARDS = Object.freeze(["no_mailbox", "owner_rows", "own_card"] as const);
 export type Guard = (typeof GUARDS)[number];
 
 /** How a door's handler runs in the object's write gate (`gate.ts`). */

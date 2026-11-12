@@ -14,5 +14,10 @@ declare namespace Cloudflare {
     ROUTING_MAC_KEY: string;
     /** The fake providers (test/fake-providers.ts), for the tests to read back. */
     PROVIDERS: Fetcher;
+    /**
+     * The owner object's fake sandbox Worker's record, by owner: the object hosted here
+     * reaches that Worker as its SANDBOX (`owner/test/fake-sandbox.ts`).
+     */
+    SANDBOX_LOG: Service<import("../../owner/test/fake-sandbox").Log>;
   }
 }

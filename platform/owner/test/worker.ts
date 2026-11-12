@@ -1,20 +1,16 @@
 /**
- * The workerd tests' Worker: the owner Worker's own export (its `SANDBOX` the real sandbox
- * Worker, run beside it against no E2B), and three test classes of the same object: two
- * with a recording fake behind `SANDBOX` (`sandbox-fake.ts`), one with its owner-internal
- * paths in the tests' reach (`FauxOwnerDO`: the erasure, which no door reaches yet, and the
- * sandbox's lease API), and one with its GATEWAY calls watched and faulted
- * (`GatedOwnerDO`); and one with no `SANDBOX` at all (`UnboundOwnerDO`), whose every run is
- * refused (`SANDBOX_ABSENT`).
+ * The workerd tests' Worker: test classes of the owner object, each as production builds it
+ * but for what its tests reach past the doors: its starter package, its erasure
+ * (`FauxOwnerDO`, which no door reaches yet), its GATEWAY calls watched and faulted
+ * (`GatedOwnerDO`), and the rest below. Every one reaches the fake sandbox Worker the
+ * config binds as `SANDBOX` (`fake-sandbox.ts`).
  */
 import type { ChainStep } from "../src/archive";
 import { OPEN_GATES } from "../../ci/fixtures";
 import type { Erasure } from "../src/erase";
-import type { SandboxLeases } from "../src/launch";
 import type { OwnerEnv } from "../src/env";
 import { type Internals, OwnerDO as ProductionOwnerDO } from "../src/owner-do";
 import { RecordingErasures } from "./erasure-fake";
-import { RecordingSandbox } from "./sandbox-fake";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { LEDGER_LIMITS } from "../src/ledger";
 import type { GatewayService, Resealed } from "../../contract/src/gateway";
@@ -30,44 +26,22 @@ export class OwnerDO extends ProductionOwnerDO {
   }
 }
 
-/**
- * The owner object exactly as production builds it, starter package and all, with a
- * recording fake behind its `SANDBOX` binding and its lease API in reach (`starter.test.ts`).
- */
-export class SeededOwnerDO extends ProductionOwnerDO {
-  readonly sandbox: SandboxLeases;
-  readonly recorder: RecordingSandbox;
+/** The owner object exactly as production builds it, starter package and all. */
+export class SeededOwnerDO extends ProductionOwnerDO {}
 
-  constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const made: { sandbox?: SandboxLeases } = {};
-    const recorder = new RecordingSandbox();
-    super(ctx, { ...env, SANDBOX: recorder }, { sandbox: (leases) => { made.sandbox = leases; } });
-    this.sandbox = made.sandbox!;
-    this.recorder = recorder;
-  }
-}
-
-/** The owner object, its erasure and its sandbox's lease API in the tests' reach. */
+/** The owner object, its erasure in the tests' reach. */
 export class FauxOwnerDO extends OwnerDO {
   /** The owner's erasure, the internal path no door reaches yet. */
   readonly erasure: Erasure;
-  /** The sandbox's lease API, owner-internal (`SandboxLeases`). */
-  readonly sandbox: SandboxLeases;
-  /** The recording fake behind its `SANDBOX` binding. */
-  readonly recorder: RecordingSandbox;
   /** The erasure queue, recording, confirming the outside record as the doors would. */
   readonly erasures: RecordingErasures;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const made: { erasure?: Erasure; sandbox?: SandboxLeases } = {};
-    const recorder = new RecordingSandbox();
+    const made: { erasure?: Erasure } = {};
     const erasures = new RecordingErasures();
-    super(ctx, { ...env, SANDBOX: recorder, ERASURES: erasures },
-          { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500, putGraceMs: 0,
-            sandbox: (leases) => { made.sandbox = leases; } });
+    super(ctx, { ...env, ERASURES: erasures },
+          { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500, putGraceMs: 0 });
     this.erasure = made.erasure!;
-    this.sandbox = made.sandbox!;
-    this.recorder = recorder;
     this.erasures = erasures;
     erasures.confirm = (owner) => this.erasureOutsideDone(
       { owner, caller: PLATFORM_CALLER, origin: null });
@@ -315,38 +289,22 @@ function faulted(files: OwnerEnv["FILES"], faults: () => GatewayFaults | undefin
 }
 
 /**
- * The owner object as production builds it, its GATEWAY calls watched, the faults a test
- * sets on them and on its chunk reads, and its sandbox's lease API in reach.
+ * The owner object as production builds it, its GATEWAY calls watched, and the faults a test
+ * sets on them and on its chunk reads.
  */
 export class GatedOwnerDO extends OwnerDO {
-  /** The sandbox's lease API, owner-internal (`SandboxLeases`). */
-  readonly sandbox: SandboxLeases;
-  /** The recording fake behind its `SANDBOX` binding. */
-  readonly recorder: RecordingSandbox;
   calls: GatewayCall[] = [];
   readonly faults: GatewayFaults = { refreshGate: null, refreshed: null, revokeGate: null,
                                       resealGate: null, chunkRead: null };
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const made: { self?: GatedOwnerDO; sandbox?: SandboxLeases } = {};
+    const made: { self?: GatedOwnerDO } = {};
     const pending: GatewayCall[] = [];
-    const recorder = new RecordingSandbox();
     super(ctx, { ...env, GATEWAY: watched(env.GATEWAY, () => made.self?.calls ?? pending,
                                           () => made.self?.faults),
-                 FILES: faulted(env.FILES, () => made.self?.faults), SANDBOX: recorder },
-          { sandbox: (leases) => { made.sandbox = leases; } });
+                 FILES: faulted(env.FILES, () => made.self?.faults) });
     made.self = this;
-    this.sandbox = made.sandbox!;
-    this.recorder = recorder;
     this.calls.push(...pending);
-  }
-}
-
-/** The owner object with no `SANDBOX` bound: every run refused, every cancel too. */
-export class UnboundOwnerDO extends OwnerDO {
-  constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const { SANDBOX: _sandbox, ...rest } = env;
-    super(ctx, rest);
   }
 }
 

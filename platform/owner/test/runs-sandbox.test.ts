@@ -1,6 +1,6 @@
 /**
  * What slice S's sandbox Worker answers changes in the owner's object, in workerd with the
- * recording fake behind `SANDBOX` (`sandbox-fake.ts`):
+ * fake sandbox Worker behind `SANDBOX` (`fake-sandbox.ts`):
  *
  * - a start the sandbox has no room for (`sandbox_waiting`: E2B runs as many sandboxes as
  *   its plan allows) puts the run back to `waiting`, never refused, its lease given back and
@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import { SANDBOX_WAITING } from "../src/sandbox";
 import { gated } from "./gateway-support";
-import { defineAgent, recorder, runnerBinding, startOf, TIERS } from "./runs-support";
+import { defineAgent, recorder, runnerBinding, scripted, startOf, TIERS } from "./runs-support";
 import { drainDue } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
@@ -25,9 +25,8 @@ describe("a run the sandbox has no room for", () => {
      async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    await r.in((instance) => {
-      instance.recorder.answer = [{ started: false, code: SANDBOX_WAITING }, { started: true }];
-    });
+    await scripted(r.stub, { answer: [{ started: false, code: SANDBOX_WAITING },
+                                      { started: true }] });
     const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
                                          { message: "the input", client_send_id: "w-1" });
     expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });

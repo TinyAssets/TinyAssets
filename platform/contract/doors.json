@@ -1024,7 +1024,7 @@
     },
     {
       "door": "signinStart", "class": "work", "caller": "owner",
-      "action": "sign in inside a sandbox", "guard": "sandbox", "capability": null,
+      "action": "sign in inside a sandbox", "capability": null,
       "handler": "signins", "gate": "units",
       "args": {
         "refused": "invalid run request", "required": { "engine": {} },

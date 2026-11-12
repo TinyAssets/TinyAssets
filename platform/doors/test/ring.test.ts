@@ -4,12 +4,12 @@
  * whose object, with no run waiting, leaves the line; a ring out of shape is dropped, never
  * guessed at, and acknowledged so the queue does not retry it.
  */
-import { env, runInDurableObject } from "cloudflare:test";
+import { recorded } from "./support";
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import type { DoorsEnv } from "../src/env";
 import { ringQueue } from "../src/ring";
-import type { OwnerDO } from "./entry";
 
 function batch(bodies: unknown[]) {
   const acked: number[] = [];
@@ -29,8 +29,7 @@ describe("the ring queue's consumer", () => {
     const rung = batch([{ owner: who }]);
     await ringQueue(rung.batch, env as unknown as DoorsEnv);
     expect(rung.acked).toEqual([0]);
-    const unwaits = await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
-      (instance as OwnerDO).recorder.unwaits);
+    const unwaits = (await recorded(who)).unwaits;
     expect(unwaits).toEqual([who]);
   });
 
