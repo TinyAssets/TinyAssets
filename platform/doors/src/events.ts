@@ -33,7 +33,7 @@ import { refusalOf } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
-import { verifyDoorbell } from "./connect";
+import { DOORBELL_VERSION, verifyDoorbell } from "./connect";
 
 
 /** The design sketch's codes (`-32023` to `-32026`); the verification's is the record's. */
@@ -224,7 +224,7 @@ export function serveEvents(mcp: McpServer, bound: Bound, env: DoorsEnv): void {
       await bound.stub.wakeSubscribe(bound.binding, {
         subscription_id: id, name: kind.push.events!.name,
         arguments: args as { command_center_id: string },
-        blob: verified.sealed.blob, kid: verified.sealed.kid, version: 1,
+        blob: verified.sealed.blob, kid: verified.sealed.kid, version: DOORBELL_VERSION,
         expires_at: expiresAt,
       });
     } catch (error) {

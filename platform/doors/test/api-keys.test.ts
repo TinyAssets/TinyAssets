@@ -13,9 +13,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { GRANT_LIMITS } from "../../owner/src/grants";
 import { apiKeyOrigin } from "../../contract/src/binding";
-import {
-  MAX_KEYS_PER_OWNER, newKey, parseKey, secretHash,
-} from "../src/api-keys";
+import { newKey, parseKey, secretHash } from "../src/api-keys";
+import { MAX_KEYS } from "../../contract/src/limits";
 import { type DoorsEnv, now } from "../src/config";
 import { DEFAULT_PROFILE, profileNames } from "../../contract/src/doors";
 import {
@@ -277,13 +276,13 @@ describe("a mint", () => {
                 "SELECT printf('%016x', x), printf('%064x', x), 'k', 0, " +
                 "CASE WHEN x = 1 THEN 1 ELSE NULL END FROM (WITH RECURSIVE c(x) AS " +
                 "(SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?) SELECT x FROM c)",
-                MAX_KEYS_PER_OWNER);
+                MAX_KEYS);
     const before = await sqlIn(o.owner, "SELECT COUNT(*) AS n FROM outside_clients");
     const over = await appPost("keys", o.token, o.session, { name: "one more", scopes: SCOPES });
     expect(over.status).toBe(403);
     expect(await over.json()).toEqual({ error: "too many live API keys; revoke one first" });
     expect(await sqlIn(o.owner, "SELECT COUNT(*) AS n FROM outside_clients")).toEqual(before);
-    expect(MAX_KEYS_PER_OWNER).toBe(GRANT_LIMITS.maxOwnerClients);
+    expect(MAX_KEYS).toBe(GRANT_LIMITS.maxOwnerClients);
   });
 });
 

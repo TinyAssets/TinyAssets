@@ -39,7 +39,7 @@ export interface KeyEntry {
  * `o:<owner>`: the platform's record of an owner: admitted at sign-up (`admitted`), or
  * erased (`erased`), with when. An owner with no record has never signed up.
  */
-export interface OwnerEntry {
+interface OwnerEntry {
   readonly s: "admitted" | "erased";
   readonly t: number;
 }

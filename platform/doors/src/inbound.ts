@@ -52,7 +52,7 @@ const HEADERS_MAX = 64;
 const HEADER_VALUE_MAX = 8 * 1024;
 
 /** A shared app, as `shared-apps.json` declares it. */
-export interface SharedApp {
+interface SharedApp {
   readonly id: string;
   readonly endpoint: string;
   readonly secret: string;
@@ -99,10 +99,6 @@ export function sharedApps(declared: unknown = apps): readonly SharedApp[] {
 function answer(status: number, body: unknown, retry = false): Response {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store",
                                                   ...(retry ? { "Retry-After": "5" } : {}) } });
-}
-
-function sha256(text: string): string {
-  return sha256Hex(text);
 }
 
 /** The request's headers for the object: lowercase names, bounded (its `Cookie` is gone). */
@@ -191,7 +187,7 @@ function sharedEvent(app: SharedApp, request: Request, body: Uint8Array,
                                                      error: "event_identity_required" }) };
   }
   return { kind: "event", shared: true, eventId, eventAt,
-           route: `i:${app.id}:${enterprise ? "enterprise" : "workspace"}:${sha256(identity)}` };
+           route: `i:${app.id}:${enterprise ? "enterprise" : "workspace"}:${sha256Hex(identity)}` };
 }
 
 /** A capability URL's request: its token's route and the event's identity headers. */
@@ -202,7 +198,7 @@ function capabilityEvent(token: string, request: Request): Routed {
     return { kind: "answer", response: answer(400, { error: "event_identity_required" }) };
   }
   return { kind: "event", shared: false, eventId, eventAt: Number(stamp),
-           route: `h:${sha256(token)}` };
+           route: `h:${sha256Hex(token)}` };
 }
 
 /** The object's answer as the sender gets it: a shared app's never spends its budget. */
@@ -291,7 +287,7 @@ export const HOOK_ROUTES: Readonly<Record<string, (env: DoorsEnv, bound: Bound,
                                                    Promise<unknown>>> = Object.freeze({
   "hooks/create": async (env, { binding, stub }, request) => {
     const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
-    const route = `h:${sha256(token)}`;
+    const route = `h:${sha256Hex(token)}`;
     const made = await stub.inboundCreate(binding, { ...request, kind: "capability",
                                                      route });
     await putRoute(env, made.route, { o: binding.owner, b: made.binding_id, r: made.revision });

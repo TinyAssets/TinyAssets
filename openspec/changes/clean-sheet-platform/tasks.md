@@ -36,7 +36,7 @@ test, cutover.
   (`max_age=0`) on every sign-in, consent never remembered, `authenticated_at` in the grant's props and never
   moved by a refresh), the stateless MCP door on SDK v2's `createMcpHandler` 2.3.1 for
   2026-07-28 and 2025-11-25, one tool per outside-callable owner door with all four
-  hints (`tools.ts`), `/api` keys in the Python's format, the owner surface
+  hints (`contract/doors.json`), `/api` keys in the Python's format, the owner surface
   `/app/api/*` with the session cookie and CSRF rules, and the owner directory's `k:`
   entries and fail-closed `c:control` record. Guards: the binder, the tool table, the
   config; the platform's module-state and self-reach guards scan it. Declared
@@ -107,7 +107,7 @@ test, cutover.
   admit**: a fresh object is `pending` (migration 10's row; the admission guard's pin
   updated in place, nothing deployed) and every door and lane refuses it
   (`owner_unadmitted`) until `admissionSet {admit: true}` from the reserved caller, which
-  the sign-in callback sends (`binder.ts`'s `bindPlatform`, the contract's `PLATFORM_CALLER`,
+  the sign-in callback sends (`binder.ts`'s `bindPlatformFor`, the contract's `PLATFORM_CALLER`,
   `contract/src/binding.ts`) when the directory holds no `o:` record of the owner, then writes
   `o:<owner>` admitted. An owner marked erasing or erased refuses the admit, and the
   callback refuses the sign-in. Owners migrated at cutover are admitted by the import
@@ -204,7 +204,7 @@ test, cutover.
   step (`platform/deploy/checklist.md`).
 - [x] The agent tools: `run_graph` and `converse` as tools and scope capabilities, with
   the agent's doors (5, A4): `converse`, `run_graph`, `run_status` and `run_cancel` in
-  `tools.ts` (the first two destructive, not idempotent and open world, the agent acting
+  `contract/doors.json` (the first two destructive, not idempotent and open world, the agent acting
   on outside services; `run_status` a read; `run_cancel` destructive and idempotent), on
   `/mcp` and `/api/tools/*`; `converse` and `run_graph` in the object's `CAPABILITIES`;
   the tool guard holds open world to those two doors alone; the owner's own
@@ -706,11 +706,9 @@ account and no deploy.
   a prefix, and matched exactly by the provider (RFC 9700 §4.1); OpenRouter's key exchange
   takes any callback: `.../callback/openrouter_user_models_v1/<state>`; Sign in with
   ChatGPT's hosted client and registration once OpenAI approves (founder), which then
-  drops its record's `unwired`. Slice L: as data, one registration a source in
-  `doors/redirect-registrations.json` (`exact` at its own callback, or a key exchange's
-  `any_callback` with its state's segment), kept apart from the source records the sandbox
-  runner bundles, held by a guard to the URI the doors derive (`redirectOf`), listed for
-  the founder in `platform/deploy/checklist.md`. Owed: the
+  drops its record's `unwired`. Slice L: each source's callback is the one the doors
+  derive (`connect.ts`, `redirectFor`), listed for the founder in
+  `platform/deploy/checklist.md`. Owed: the
   registrations at the providers themselves (only `chatgpt`, parked, needs one today).
 - [x] The key exchange's residual mix-up, before any uncurated source: a source on an
   authorization server the platform does not curate (an MCP server, or a source from an

@@ -476,9 +476,9 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (verified instanceof Response) {
     return verified;
   }
+  const secret = secretOf(request, route[2]);
   const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
-                            secretOf(request, route[2]) === undefined ? {}
-                              : { secret: secretOf(request, route[2])! });
+                            secret === undefined ? {} : { secret });
   const { binding, stub } = bound;
   const run = route[1]!;
   const connection = route[3]!;

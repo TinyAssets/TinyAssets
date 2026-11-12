@@ -36,7 +36,7 @@ const STATIC: Readonly<Record<string, string>> = Object.freeze({
   "app.css": "text/css; charset=utf-8",
 });
 
-export const APP_PREFIX = "/app";
+const APP_PREFIX = "/app";
 const STATIC_PREFIX = "/app/static/";
 
 /**
@@ -47,7 +47,7 @@ export const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img
   `connect-src 'self' wss://${PUBLIC_HOST}; base-uri 'none'; form-action 'none'; ` +
   "frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
 
-export const HEADERS: Readonly<Record<string, string>> = Object.freeze({
+const HEADERS: Readonly<Record<string, string>> = Object.freeze({
   "Content-Security-Policy": CSP,
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",

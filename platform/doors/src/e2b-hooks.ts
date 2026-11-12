@@ -4,12 +4,12 @@
  * bills by the second while a sandbox runs. The sandbox Worker's own log stays the estimate
  * on each run's receipt, and the fallback (`owner/src/sandbox-time.ts`).
  *
- * `POST /hooks/e2b/lifecycle`, the one hook this door serves (the rest of `/hooks/*` is the
- * inbound door slice L owes):
+ * `POST /hooks/e2b/lifecycle`, the one hook this door serves (`/hooks/inbound/*` is
+ * `inbound.ts`'s):
  * 1. **Verified first.** The `e2b-signature` header is E2B's: base64 of SHA-256 over the
  *    registration's signature secret and the raw body, its padding stripped. It is
  *    compared in constant time against `E2B_WEBHOOK_SECRET` (a Worker secret, set and
- *    registered with E2B by slice L's deploy kit); no secret, and every delivery is refused
+ *    registered with E2B by the deploy kit); no secret, and every delivery is refused
  *    `503`. It is tamper evidence over E2B's own scheme, not an HMAC.
  * 2. **Parsed strictly.** The body is read through a byte count that stops at
  *    `HOOK_BODY_MAX`, whatever `Content-Length` says or omits (an unauthenticated path reads
@@ -27,7 +27,7 @@
 import { utf8Decoder } from "../../contract/src/text";
 import { createHash, timingSafeEqual } from "node:crypto";
 
-import { sandboxHookOwner } from "./binder";
+import { ownerObject } from "./binder";
 import type { DoorsEnv } from "./config";
 import type { BilledEvent } from "../../contract/src/owner";
 import { openRoute } from "../../contract/src/routing-mac";
@@ -109,7 +109,7 @@ export function lifecycleEvent(body: string):
  * The request's body as text, read through a byte count that stops past `most`: null once
  * it has more bytes than that, or bytes that are not UTF-8. Nothing past `most` is read.
  */
-export async function cappedText(request: Request, most: number): Promise<string | null> {
+async function cappedText(request: Request, most: number): Promise<string | null> {
   if (request.body === null) {
     return "";
   }
@@ -179,6 +179,6 @@ export async function e2bLifecycle(request: Request, env: DoorsEnv): Promise<Res
     return answer(200, { unrouted: true });
   }
   const { route: _route, ...billed } = event;
-  return answer(200, await sandboxHookOwner(env, route.owner).sandboxBilled(
+  return answer(200, await ownerObject(env, route.owner).sandboxBilled(
     { ...billed, authority: route.authority }));
 }

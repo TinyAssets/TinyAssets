@@ -7,7 +7,7 @@
  * fails loudly.
  */
 import {
-  type DoorsEnv, ERASURE_QUEUE, ISSUER_NOT_CONFIGURED, UPSTREAM_NOT_CONFIGURED,
+  type DoorsEnv, ERASURE_QUEUE, NOT_CONFIGURED,
 } from "./config";
 import { serve } from "./doors";
 import { oidcUpstream, upstreamConfig } from "./oidc";
@@ -24,8 +24,8 @@ import { bundledSources } from "../../sources/src/catalog";
  * other, or the secret is missing (a half-configured deploy fails loudly, never signs in).
  */
 export function upstreamOf(env: DoorsEnv): Upstream {
-  const issuer = env.OWNER_ISSUER === ISSUER_NOT_CONFIGURED;
-  const record = env.UPSTREAM === UPSTREAM_NOT_CONFIGURED;
+  const issuer = env.OWNER_ISSUER === NOT_CONFIGURED;
+  const record = env.UPSTREAM === NOT_CONFIGURED;
   if (issuer && record) {
     return UNWIRED;
   }
