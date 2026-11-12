@@ -1,5 +1,5 @@
 {
-  "about": "Golden blobs sealed by main's own keyring code (gateway/src/keyring.ts, files/src/datakey.ts) at commit, under the throwaway keys k1 and k2 (never a production key); the doorbell value's secret is the test's own, left out here. Each must open, byte for byte, under every later envelope (contract/src/envelope.ts).",
+  "about": "Golden blobs sealed by main's own keyring code (gateway/src/keyring.ts, files/src/datakey.ts) at commit, and golden objects sealed there by files/src/cipher.ts under the data key files.k1.key, under the throwaway keys k1 and k2 (never a production key); the doorbell value's secret is the test's own, left out here. Each must open, byte for byte, under every later envelope (contract/src/envelope.ts).",
   "commit": "e115a123ea0c7c566ff474bbe70a246e6a3ec70e",
   "keys": {
     "k1": "XkqkHvgB5RAAmIbDDsJ5H5iok5KKpuArH48K+c+Jixo=",
@@ -78,6 +78,23 @@
       "wrapped": "v1.k2.vpPKvRyV70GpjzLN.AMhPAzd-bt3J3n7-jy6YqSPLPxWVWgpSqjZ6tBR3VnzvmvsmH4-yfUVVG7GK-XxJ",
       "key": "9cc1dbbcfdadfc09db15d2c84e06bdf1deeb836eadabb4c1b185b83029595b95"
     },
-    "rewrapped": "v1.k2.j86SY6lTxv-gZPfo.q7fUivPc7aPJnMR5Qdu_kg45HUG7U5yxYKnP0oxBskTZz3lt5cYxm2fvPztz_RKj"
+    "rewrapped": "v1.k2.j86SY6lTxv-gZPfo.q7fUivPc7aPJnMR5Qdu_kg45HUG7U5yxYKnP0oxBskTZz3lt5cYxm2fvPztz_RKj",
+    "objects": [
+      {
+        "key": "o/0123456789abcdef0123456789abcdef/c/5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+        "plain": "YSBjaHVuayBtYWluIHNlYWxlZA==",
+        "stored": "s9Fg/n34rgK+cGFGCpKDHtgwyAzQ1HNhQJnLz1r84vCkYUvuNah6fSJOYg5NFVo="
+      },
+      {
+        "key": "o/0123456789abcdef0123456789abcdef/m/0123456789abcdef/0",
+        "plain": "AAcOFRwjKjE4P0ZNVFtiaXB3foWMk5qhqK+2vcTL0tng5+71/AMKERgfJi00O0JJUFdeZWxzeoGIj5adpKuyucDHztXc4+rx+P8GDRQbIikwNz5FTFNaYWhvdn2Ei5KZoKeutbzDytHY3+bt9PsCCRAXHiUsMzpBSE9WXWRrcnmAh46VnKOqsbi/xs3U2+Lp8Pf+BQwTGiEoLzY9REtSWWBnbnV8g4qRmJ+mrbS7wsnQ197l7PP6AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOaoaivtr3Ey9LZ4Ofu9fwDChEYHyYt",
+        "stored": "ee05hQ8LVq6iPhTXjWlzNHYWJ/0jlyCtEmjZ5DVRHjidlWUSefW2kLtXGv0o0T/NX/37feHLxGwyySNolHuR+kObIOazP/b9kALbDKL1uuZXvoyFrXTY1Ti5gYeGgOQLVFAZ9974Ev6m/5VaZj0ktZ8N+1p6ODMaE7GCJNjJayMjJe2LrICgApDun6wdJJuYch4AaI6trLKQViAD2WE/TUmvZn0QSKbWyJrnYE3usxZNMtUD7GYffzrwem5Ep9XUgKZeMANjgP7iMdSEth4FpeEHiA/FPKVh6r2KF8sWhkirGno3bUlFu1CH7mTKhDb+6/b1O7gwuSQ6ytmsoSLphOKmhurCdSOpAXXY/vO9PyW6iSEmeL9WEnnpU8QFIIIK2ya8Gw6WsdAmy6eP3I8xUr64QbAIPEBcQuTM+em8hYwn3tiasC0rKA=="
+      },
+      {
+        "key": "o/0123456789abcdef0123456789abcdef/m/0123456789abcdef",
+        "plain": "eyJwYXJ0cyI6W10sInNlZ21lbnRzIjpbXX0=",
+        "stored": "kNuLl3CMZVSsCNsJV6K75iA8p7JHqQb/La8RqmbtaJ5yFXBlJJC110iTN6RKZj53g2GCV2qu"
+      }
+    ]
   }
 }

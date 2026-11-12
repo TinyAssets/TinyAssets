@@ -7,6 +7,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { sealObject } from "../../contract/src/envelope";
 import { chunkName, unwrap } from "../../files/src/datakey";
 import { chunkKey } from "../../files/src/keys";
 import { planEdit, type Source } from "../src/edit";
@@ -110,10 +111,12 @@ describe("the owner's holds", () => {
     const [row] = await sqlIn(o.stub, "SELECT c.sha256 FROM file_entries e JOIN " +
       "file_content_chunks c ON c.content_id = e.content_id WHERE e.name = ?", "tampered.md");
     const space = await inFiles(o.stub, {}, (files) => files.space());
-    const name = await chunkName(await unwrap(env.FILES_TEST_RING, space.ns, space.key),
-                                 row!["sha256"] as string);
-    await env.BLOBS.put(chunkKey(space.ns, name), new TextEncoder().encode(
-      content.replace("0123456789", "0123456780")));
+    // Sealed as the files Worker seals, so it opens: the bytes, not the key, changed.
+    const dataKey = await unwrap(env.FILES_TEST_RING, space.ns, space.key);
+    const name = await chunkName(dataKey, row!["sha256"] as string);
+    await env.BLOBS.put(chunkKey(space.ns, name), await sealObject(
+      dataKey, chunkKey(space.ns, name),
+      new TextEncoder().encode(content.replace("0123456789", "0123456780"))));
     expect((await failure(() => o.stub.fileText(o.bind(), { path, offset: 5000,
                                                               max_bytes: 10 }))).message)
       .toMatch(/a chunk's bytes no longer match its hash/);

@@ -262,7 +262,10 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
 
 - [ ] E2B resume after days paused: a paused throwaway started now (75 minutes measured,
   `sandbox-probe.md`), then 14 and 30 days, which sets how often an owner signs in again, and a
-  resume with 5–10 GB of scratch (d3 §C8, list3 P15).
+  resume with 5–10 GB of scratch (d3 §C8, list3 P15). The probe is `e2b-pause-probe.yml`
+  (`start` once, `check` at 14 and 30 days, then `cleanup`); ticked at the 30-day result. It
+  runs alongside and does not gate the cutover: the cutover is done when the build is done
+  (the founder, 2026-11-12).
 - [ ] Durable Object regional availability, from Cloudflare's status history (d3 §C8; ADR-032).
 - [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
@@ -286,6 +289,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2).
   - B6: the queue names generated from the Worker configs into the contract (d3 §A3).
+  - B6 (V2): `files/src/index.ts` `getChunks` charges a verified range its length but fetches
+    and opens its whole chunk, so a batch of ranges of many chunks holds more than
+    `BATCH_BYTES` (older than R1: under SSE-C a verified range was read whole too). With
+    `verify` required, the budget bounds what a batch holds, not only what it returns (R1's
+    review).
   - B8: the compatibility date is a kit check that the six configs agree (d3 §A4).
   - B11: a Worker's existence from `Cloudflare.workers`, never from its secret listing: the
     `workers` and `doors deployed` steps, which read a secret listing for it
@@ -319,12 +327,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - A later S PR: a slot reserved again (`#lookAt`, `#renew`) deletes its stale owed row
     first, so a renewal's fresh hold is never given back (d3 §L9), with a gate in front of
     `SLOTS` (`ci/gate.ts`), used by both slot tests, in place of the prototype patch at
-    `sandbox/test/sandbox.test.ts:797`.
+    `sandbox/test/sandbox.test.ts:797`. The kit cannot front `SLOTS` yet, so its design is
+    researched first: the line's object lives in the test Worker itself, which the plugin
+    names (a gate fronts an object by its Worker's name), the suite runs inside that object
+    (`runInDurableObject`), and `SandboxSlots` has no interface for `methodsOf`.
   - Lane S: `sandbox/src/e2b.ts`'s constructor defaults (the `fetcher` at `:47`, `retryAfter =
     null` at `:180`; T1b), and `NetworkPlan`'s typed `generation` beside the header the Worker
     reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
-    `ci/budgets.mjs --write` (d3 §I).
+    `node ci/budgets.mjs` (d3 §I): the large from the Vitest reports the `platform-sizes` legs
+    upload, the runner's medium from a local `test:root` report (`platform-tests` uploads none).
   - Lane C: P-T1, the starter guard's "DID NOT RUN" warning that passes when it cannot check
     against main, fails instead (V1 and C2 each left it to the other); `contract/src/slots.ts`
     `SlotPool`'s constructor defaults (T1b).
@@ -332,12 +344,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     beside `owner/src/starter.ts` (V1).
   - Lane X: `okf-watch.yml`'s `FOUNDER` login, a copy of `.github/CODEOWNERS` (P-H5′'s
     workflow half; V1).
-  - T1b4: the `platform-sizes` legs upload their Vitest JSON report, then `budgets.json` is
-    re-derived from it with `ci/budgets.mjs --write` (no CI job uploads one today).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
-  - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
-    (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
+  - Lane R's cipher PR: `files/src/cipher.ts`'s SSE-C premise (d3 §O8).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
   (d3 §K1, §K2). T1 is eight PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
@@ -371,18 +380,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
     rig admitting by the door, the doors' entry with no third constructor argument, and
     `BackupParts`' test-only `sizes?` and `pool?` gone; the owner suite's lease clock under the
-    fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`); the fake sandbox
-    `implements SandboxService` and imports `METER_BATCH` (`owner/test/fake-sandbox.ts`); the
-    `fake-sandbox`, `sandbox-gate` and `CONNECT` Worker names taken from `fake()` and
-    `workerConfig`, not written out (`owner/vitest.config.ts`) (list 6, items 6j, 8 and 10);
+    fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`) (list 6, item 6j);
     the object's `admitted` held by a test (no test fails today if the object passes the ledger
     `() => true`: a suspension between a wakes pass's claims, the `GATEWAY` gate holding its
     send); `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted.
   - [ ] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
     copy of the object's wiring, deleted.
-  - T2, with the doors on their real entry: the doors' copies of the `fake-sandbox`,
-    `sandbox-gate` and `CONNECT` Worker names taken from `fake()` and `workerConfig`, not
-    written out (`doors/vitest.config.ts`, `doors/test/app.e2e.mjs`) (list 6, item 10).
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
@@ -397,7 +400,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
   tests pass takes the two older tests that make a call refuse by patching a class's prototype
   (`owner/test/runs-authority.test.ts:857` `Files.prototype.open`,
-  `owner/test/erasure.test.ts:83` `Lifecycle.prototype.disableAlarms`; list 6, item 9).
+  `owner/test/erasure.test.ts:83` `Lifecycle.prototype.disableAlarms`; list 6, item 9). The
+  two patched calls are in-process (the owner's own SQLite; the agents library's
+  `Lifecycle`), but each test's fault has a front door through `FILES`, so both move to a
+  gate in front of it in the owner suite (`methodsOf` `ChunkStore`, as the ci suite's
+  `files-gate`; B23): an `agent.json` over `INLINE_BYTES` read while its `getChunks` is held
+  and the file is rewritten through the doors; the erasure's `deleteNamespace` refused once,
+  for an owner with files, so it stops at step 2 before the wipe.
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
@@ -453,8 +462,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     run's next model call through `egress.tinyassets.io` is answered, not refused 409; the
     sandbox's network, read from E2B, carries generation 2 and the same `x-ta-sandbox`; a host
     the policy dropped is unreachable from the sandbox;
-  - the files Worker's create-once put on the live bucket (`onlyIf: { etagDoesNotMatch: "*" }`,
-    and which R2 checks first when the bytes miss the `sha256`; `files/test/chunks.test.ts`);
+  - the files Worker's create-once put of sealed bytes on the live bucket (`onlyIf:
+    { etagDoesNotMatch: "*" }` with the sealed bytes' own `sha256`; `files/test/chunks.test.ts`),
+    and the files bucket listed empty first: no object stored before the one cipher opens under
+    it (d3 §G);
   - R5's (d3 §N9): Claude's `defer` with several tool calls in one turn; managed settings
     against an organization's server-managed settings; Codex, Gemini and pi loading our
     root-owned hooks unattended; the delay one decision adds; a census of non-default rules,

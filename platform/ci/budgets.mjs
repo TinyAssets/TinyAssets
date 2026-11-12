@@ -10,7 +10,7 @@
  * tests count; a failed or skipped one measures nothing.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PROJECTS as FOLDERS } from "./classes.ts";
@@ -20,13 +20,27 @@ const CI = dirname(fileURLToPath(import.meta.url));
 const BUDGETS = join(CI, "budgets.json");
 /** Each project's name, by the folder its tests are in. */
 const PROJECTS = Object.fromEntries(Object.entries(FOLDERS).map(([name, folder]) => [folder, name]));
+const BELOW = `/${basename(PLATFORM)}/`;
+
+/**
+ * A test file's path below the platform folder of the checkout that ran it: a report from CI
+ * (the `platform-sizes` legs' artifacts) names the runner's checkout, not this one.
+ */
+function fromPlatform(name) {
+  const path = name.split("\\").join("/");
+  const at = path.lastIndexOf(BELOW);
+  if (at === -1) {
+    throw new Error(`${name}: not under a ${BELOW} folder`);
+  }
+  return path.slice(at + BELOW.length);
+}
 
 /** Every passed test in `reports` as { project, test, ms, large }. */
 export function measured(reports) {
   const out = [];
   for (const report of reports) {
     for (const file of report.testResults ?? []) {
-      const rel = relative(PLATFORM, file.name).split("\\").join("/");
+      const rel = fromPlatform(file.name);
       const [workspace, dir] = rel.split("/");
       const project = PROJECTS[dir];
       if (project === undefined) {
