@@ -166,6 +166,7 @@ Each joins the lane named. None blocks its u3 PR.
      - `Internals`, the 11 test subclasses and every defaulted constructor parameter are deleted;
      - production ceilings, and the one-file starter package by a Vite alias;
      - the memory probe is driven through the doors.
+     - (the coordinator, 2026-11-12) The ledger's `limits` parameter is deleted outright, with no test-only parameter or second constructor. The memory probe's `LegSegments` moves to production's ledger limits, as `LegArchive` did, its leg seeded so production's own seal rule makes the segment it measures, with large bodies. The ledger's ceilings come before T1d, since T1d needs T1c's real entry and T1c needs the ledger's ceilings.
    - **B3**, on the cleaned constructors.
    - **T2, the doors, after D3:**
      - the doors run on their real entry, with the owner as an auxiliary Worker;

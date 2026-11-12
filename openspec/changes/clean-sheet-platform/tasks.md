@@ -333,10 +333,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `Connections` read where they are defined, their tests at production's numbers;
     `Schedule`'s `passMs` gone and `halted` required; `Files`' `reclaim`, `changed` and
     `manifested` required; `Connections`' unbound `GATEWAY` case gone.
-  - [ ] T1b2: the rest of the ceilings and defaults: `Grants`, `Registrations` and
-    `Collections` (with `DEFAULT_SHARES`), the ledger's (`Internals.ledgerLimits`, its decisions
-    as pure functions, the archive's tests at production ceilings, `b23_research.md` question
-    3), and code mode's `timeoutMs`.
+  - [x] T1b2: `Grants`, `Registrations` and `Collections` read their own ceilings, their tests
+    at production's numbers (the collections' fills `large`); `Collections`' `adopt` and
+    `shares` required and `DEFAULT_SHARES` gone; code mode's `timeoutMs` gone, its wall time
+    tested on the plain owner under a stepping clock.
+  - [ ] T1b3: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
+    `admitted`, `changes`, `adopt` and `wall` required, its decisions as pure functions, the
+    archive's tests at production ceilings, `b23_research.md` question 3), with the memory
+    probe's `LegSegments` at production's ledger limits (d3 §K1).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     `ERASURES` required with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
