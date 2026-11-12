@@ -25,7 +25,7 @@ Why: [ADR-032](decisions/ADR-032-clean-sheet-platform.md),
 | `platform/files/` | The R2 bucket's only binder: owner file bytes as encrypted chunks. |
 | `platform/gateway/` | Sealed credentials, opened per call; the egress meter. |
 | `platform/sandbox/` | The E2B Worker and the in-VM runner; each engine runs there, unmodified. |
-| `platform/hooks/` | Code mode's VMs only (ADR-034 decision 12). |
+| `platform/codemode/` | Code mode's VMs only (ADR-034 decision 12). |
 | `platform/sources/`, `platform/starter/` | Engine and source records as data, with their schema, checker and catalog (`sources/src/`, a contract module); the bubble agent's files. |
 | `platform/plugins/`, `platform/deploy/` | Directory plugins, the deploy kit. |
 | `platform/contract/` | The vocabulary more than one Worker speaks: ids, limits, typed refusals, the control record, the services' RPC contracts. It imports no Worker. |

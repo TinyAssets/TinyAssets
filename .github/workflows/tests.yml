@@ -247,8 +247,8 @@ jobs:
             command: npm run test -w files
           - leg: gateway
             command: npm run test -w gateway
-          - leg: hooks
-            command: npm run test -w hooks
+          - leg: codemode
+            command: npm run test -w codemode
           - leg: sandbox
             command: npm run test:workerd -w sandbox
           - leg: runner

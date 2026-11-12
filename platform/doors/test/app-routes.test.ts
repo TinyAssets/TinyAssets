@@ -111,13 +111,13 @@ describe("the owner app's settings routes", () => {
     const read = await answered(await appPost("policy", app.access_token, null, {}));
     const policy = read["policy"] as Record<string, unknown>;
     const change = { expected_generation: read["generation"],
-                     policy: { ...policy, hooks: { codemode: false },
+                     policy: { ...policy, codemode: { on: false },
                                tools: { custom: ["agents_list"] } } };
     expect(await answered(await appPost("policy/write", app.access_token, null, change), 403))
       .toEqual({ error: "interactive owner session required" });
     const written = await answered(await appPost("policy/write", app.access_token, app.session,
                                                  change));
-    expect(written["policy"]).toMatchObject({ hooks: { codemode: false },
+    expect(written["policy"]).toMatchObject({ codemode: { on: false },
                                               tools: { custom: ["agents_list"] } });
     expect((await answered(await appPost("policy", app.access_token, null, {})))["generation"])
       .toBe(written["generation"]);

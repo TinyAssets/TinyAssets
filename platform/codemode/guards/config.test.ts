@@ -1,5 +1,5 @@
 /**
- * The hooks Worker's config binds its own one class and serves no URL: its allow-list
+ * The codemode Worker's config binds its own one class and serves no URL: its allow-list
  * (`rules.ts`), held by the platform's config checker (`ci/kit/config.ts`).
  */
 import { describe, expect, it } from "vitest";
@@ -38,13 +38,13 @@ const config = configTests(CONFIG, {
   ],
 });
 
-describe("hooks Worker config", () => {
+describe("codemode Worker config", () => {
   it("is at the owner Worker's date", () => {
     expect(config["compatibility_date"])
       .toBe(platformConfigs().get("tinyassets-owner")?.["compatibility_date"]);
   });
 
-  it("sees the owner Worker's date move without the hooks Worker's", () => {
+  it("sees the owner Worker's date move without the codemode Worker's", () => {
     const platform = platformConfigs();
     platform.set("tinyassets-owner", { ...platform.get("tinyassets-owner"),
                                        compatibility_date: "2027-01-01" });

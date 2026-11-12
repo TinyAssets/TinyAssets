@@ -67,7 +67,7 @@ describe("the contract", () => {
     for (const worker of ["owner", "doors", "sandbox"]) {
       expect(closure(worker, sources).has("sources/src/catalog.ts"), worker).toBe(true);
     }
-    for (const worker of ["gateway", "files", "hooks"]) {
+    for (const worker of ["gateway", "files", "codemode"]) {
       expect([...closure(worker, sources).keys()]
         .some((path) => path.startsWith("sources/")), worker).toBe(false);
     }

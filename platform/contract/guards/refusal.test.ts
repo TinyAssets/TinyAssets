@@ -40,7 +40,7 @@ describe("the Workers' runtime", () => {
     .map((entry) => entry.name).sort();
 
   it("carries a refusal's own fields across RPC in every Worker", () => {
-    expect(workers).toEqual(["doors", "files", "gateway", "hooks", "owner", "sandbox"]);
+    expect(workers).toEqual(["codemode", "doors", "files", "gateway", "owner", "sandbox"]);
     for (const worker of workers) {
       const config = readWrangler(join(PLATFORM, worker));
       expect(String(config["compatibility_date"]) >= ENHANCED_SINCE, worker).toBe(true);

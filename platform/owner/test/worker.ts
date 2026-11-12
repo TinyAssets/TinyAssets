@@ -74,17 +74,16 @@ export class FauxOwnerDO extends OwnerDO {
 }
 
 /**
- * The owner object as production builds it but for code mode's bounds, which are small
- * here (production's are `CODEMODE_TIMEOUT_MS` and the hooks Worker's own budget), so a
- * test sees a script stopped past each.
+ * The owner object as production builds it but for code mode's wall time, which is small
+ * here (production's is `CODEMODE_TIMEOUT_MS`), so a test sees a script stopped past it.
+ * Its compute is the codemode Worker's, tested there (`codemode/test/`).
  */
 /** `BoundedOwnerDO`'s code mode wall time, which its tests hold the stop to. */
 export const BOUNDED_TIMEOUT_MS = 2_000;
 
 export class BoundedOwnerDO extends OwnerDO {
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    super(ctx, env, { codemode: { timeoutMs: BOUNDED_TIMEOUT_MS,
-                                  interruptBudget: BOUNDED_TIMEOUT_MS } });
+    super(ctx, env, { codemode: { timeoutMs: BOUNDED_TIMEOUT_MS } });
   }
 }
 

@@ -49,7 +49,8 @@ import {
 import { bundles, pairTag, treeImage } from "../../sandbox/template/pair";
 import {
   boundBy, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES,
-  NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, ZONE,
+  NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers, ROUTES, SECRET_INPUTS,
+  SECRETS, WORKERS, ZONE,
 } from "../facts";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
 import platform from "../platform.json" with { type: "json" };
@@ -147,6 +148,10 @@ interface WorldOptions {
   readonly refusingDns?: boolean;
   /** The R2 buckets and queues the account lists, in place of none (fresh) or all (held). */
   readonly listed?: { readonly buckets: readonly string[]; readonly queues: readonly string[] };
+  /** The account still holds the retired Workers (`platform.json`). */
+  readonly retired?: boolean;
+  /** Cloudflare refuses a Worker's delete: another Worker still references it. */
+  readonly refusingDelete?: boolean;
 }
 
 /** The world's clock. */
@@ -170,7 +175,10 @@ function world(options: WorldOptions = {}) {
   const secrets = new Map<string, string[]>(held ? Object.entries(SECRETS).map(([worker, names]) =>
     [NAMES[worker]!, [...names]]) : []);
   if (held) {
-    secrets.set(NAMES["hooks"]!, []);
+    secrets.set(NAMES["codemode"]!, []);
+  }
+  for (const name of options.retired === true ? RETIRED : []) {
+    secrets.set(name, []);
   }
   const routes = new Map((options.probed === true || held
     ? [...LIVE, { id: "p1", pattern: "tinyassets.io/authorize*", script: DOORS },
@@ -266,6 +274,17 @@ function world(options: WorldOptions = {}) {
       }
       tables.push([...routes.values()].map((each) => ({ ...each })));
       return json({ success: true, result: {} });
+    }
+    if (/^\/accounts\/a+\/workers\/scripts$/.test(path)) {
+      return json({ success: true, result: [...secrets.keys()].map((id) => ({ id })) });
+    }
+    const script = /^\/accounts\/a+\/workers\/scripts\/([a-z-]+)$/.exec(path);
+    if (script !== null && method === "DELETE") {
+      if (options.refusingDelete === true) {
+        return json({ success: false, errors: [{ code: 10064 }] }, 400);
+      }
+      secrets.delete(script[1]!);
+      return json({ success: true, result: null });
     }
     const listing = /^\/accounts\/a+\/workers\/scripts\/([a-z-]+)\/secrets$/.exec(path);
     if (listing !== null) {
@@ -464,7 +483,7 @@ describe("the deploy kit's facts", () => {
   it("deploys every Worker the platform holds, each after every Worker it binds", () => {
     // The Workers the production deploy takes, pinned on purpose: a folder with a config of
     // its own joins the deploy only once this list is changed in a reviewed change.
-    expect(workerFolders()).toEqual(["doors", "files", "gateway", "hooks", "owner", "sandbox"]);
+    expect(workerFolders()).toEqual(["codemode", "doors", "files", "gateway", "owner", "sandbox"]);
     expect([...WORKERS].sort()).toEqual(workerFolders());
     for (const worker of WORKERS) {
       for (const bound of boundBy(worker)) {
@@ -474,6 +493,12 @@ describe("the deploy kit's facts", () => {
     }
     // The doors bind the owner by its objects' script alone: the order holds it too.
     expect(boundBy("doors")).toContain("owner");
+  });
+
+  it("retires only a Worker no config names", () => {
+    expect(retiredWorkers(["tinyassets-old"], NAMES)).toEqual(["tinyassets-old"]);
+    expect(() => retiredWorkers(["tinyassets-old", NAMES["owner"]!], NAMES))
+      .toThrow("platform.json retires tinyassets-owner, which a config still names");
   });
 
   it("holds only what no config says, and that for exactly what the configs declare", () => {
@@ -687,6 +712,47 @@ describe("a dark run", () => {
     expect(w.secretsPut).toEqual(expected);
   });
 
+  it("deletes each retired Worker the account's Workers listing holds once every Worker is " +
+     "deployed, never forced, and plans it without --yes", async () => {
+    const line = (name: string) => `delete the retired Worker ${name} and its Durable ` +
+      "Objects (no Worker of this tree binds it)";
+    const deleting = (name: string) => `cf DELETE /accounts/${ACCOUNT}/workers/scripts/${name}`;
+    const retiring = (plan: readonly string[]) =>
+      plan.filter((each) => each.startsWith("delete the retired Worker "));
+    const planned = world({ retired: true });
+    expect(retiring((await runMode(planned, "plan")).plan)).toEqual(RETIRED.map(line));
+    expect(planned.events.filter((event) => event.startsWith("cf DELETE"))).toEqual([]);
+    const w = world({ retired: true });
+    const work = await runMode(w, "dark", ["--yes"]);
+    expect(retiring(work.plan)).toEqual(RETIRED.map(line));
+    expect(w.events.filter((event) => event.startsWith("cf DELETE")))
+      .toEqual(RETIRED.map(deleting));
+    const deployed = Math.max(...w.events.map((event, at) =>
+      /^wrangler (deploy|versions deploy) /.test(event) ? at : -1));
+    const control = w.events.findIndex((event) => event.startsWith("cf PUT"));
+    for (const name of RETIRED) {
+      expect(w.events.indexOf(deleting(name))).toBeGreaterThan(deployed);
+      expect(w.events.indexOf(deleting(name))).toBeLessThan(control);
+      // Its existence is the account's Workers listing, never its secrets.
+      expect(w.events).not.toContain(
+        `cf GET /accounts/${ACCOUNT}/workers/scripts/${name}/secrets`);
+    }
+    // Gone, the next run plans none; a fresh account never held them.
+    expect(retiring((await runMode(w, "dark", ["--yes"])).plan)).toEqual([]);
+    expect(retiring((await runMode(world(), "plan")).plan)).toEqual([]);
+  });
+
+  it("stops loudly when Cloudflare refuses a retired Worker's delete, before the control " +
+     "record", async () => {
+    const w = world({ retired: true, refusingDelete: true });
+    const ran = await runMode(w, "dark", ["--yes"]).then(() => "ran",
+                                                           (error: Error) => error.message);
+    // With nothing retired there is nothing to refuse, and the run goes on.
+    expect(ran).toBe(RETIRED.length === 0 ? "ran"
+      : `deleting the Worker ${RETIRED[0]} failed (400, [10064])`);
+    expect(w.events.some((event) => event.startsWith("cf PUT"))).toBe(RETIRED.length === 0);
+  });
+
   it("plans the same steps without --yes, and changes nothing", async () => {
     const w = world();
     const work = await runMode(w, "plan");
@@ -722,7 +788,7 @@ describe("a dark run", () => {
     await runMode(w, "dark", ["--yes", "--migrate", "owner"]);
     expect(w.events.filter((event) => event.startsWith("wrangler deploy")
       || event.startsWith("wrangler versions upload"))).toEqual([
-      ...["files", "gateway", "hooks", "sandbox"].map((worker) =>
+      ...["codemode", "files", "gateway", "sandbox"].map((worker) =>
         `wrangler versions upload --config ${worker}/wrangler.json`),
       "wrangler deploy --config owner/wrangler.json",
       "wrangler versions upload --config doors/wrangler.json"]);
@@ -1704,6 +1770,28 @@ describe("the parts of a run", () => {
     }
     const lock = { "sandbox/migrations/SandboxSlots.json": code };
     expect(codeDigests("sandbox", reporting(lock))).toEqual(lock);
+  });
+
+  it("lists the account's Workers, and deletes one unforced, never reading a failure as " +
+     "done", async () => {
+    const listing = "/accounts/a/workers/scripts";
+    const script = "/accounts/a/workers/scripts/tinyassets-old";
+    expect(await new Cloudflare(api({ [listing]: ok([{ id: "tinyassets-old" }, { id: "x" }]) }))
+      .workers("a")).toEqual(["tinyassets-old", "x"]);
+    const deleted = api({ [script]: ok(null) });
+    await new Cloudflare(deleted).deleteWorker("a", "tinyassets-old");
+    expect(deleted.calls).toEqual([`DELETE ${script}`]);
+    for (const answer of [
+      { status: 500, body: {} }, { status: 403, body: { success: false, errors: [{ code: 10000 }] } },
+      { status: 200, body: { success: false } },
+    ] as CfAnswer[]) {
+      await expect(new Cloudflare(api({ [listing]: answer })).workers("a"))
+        .rejects.toThrow(/the Workers listing failed/);
+      await expect(new Cloudflare(api({ [script]: answer })).deleteWorker("a", "tinyassets-old"))
+        .rejects.toThrow(/deleting the Worker tinyassets-old failed/);
+    }
+    await expect(new Cloudflare(api({ [listing]: ok({}) })).workers("a"))
+      .rejects.toThrow(/the Workers listing failed/);
   });
 
   it("never reads a failed secret listing as no secrets", async () => {

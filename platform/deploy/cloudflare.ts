@@ -294,6 +294,34 @@ export class Cloudflare {
   }
 
   /**
+   * The account's Worker scripts, by name (the Workers scripts listing, which takes no
+   * page); any answer but success throws.
+   */
+  async workers(account: string): Promise<string[]> {
+    const answer = await this.#api(`/accounts/${account}/workers/scripts`);
+    if (answer.status !== 200 || answer.body.success !== true
+        || !Array.isArray(answer.body.result)) {
+      throw new Error(`the Workers listing failed (${answer.status}, ${
+        JSON.stringify(codes(answer))})`);
+    }
+    return (answer.body.result as { id?: unknown }[]).map((script) => String(script.id));
+  }
+
+  /**
+   * The Worker `script` deleted, with the Durable Object namespaces it implements. Never
+   * forced: Cloudflare refuses while another Worker still references it, and any answer but
+   * success throws.
+   */
+  async deleteWorker(account: string, script: string): Promise<void> {
+    const answer = await this.#api(`/accounts/${account}/workers/scripts/${script}`,
+                                   { method: "DELETE" });
+    if (answer.status !== 200 || answer.body.success !== true) {
+      throw new Error(`deleting the Worker ${script} failed (${answer.status}, ${
+        JSON.stringify(codes(answer))})`);
+    }
+  }
+
+  /**
    * A KV key's value, as JSON (`{}` when it is not JSON), or undefined only when the API
    * answers that it is absent (404 with Cloudflare's 10009, "key not found"); any other
    * answer throws.
