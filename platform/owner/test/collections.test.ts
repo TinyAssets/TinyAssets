@@ -390,6 +390,8 @@ describe("the primitive's history", () => {
     const page = LIMITS.maxPull;
     const bodies = Array.from({ length: page + 2 }, (_, n) => `v${n}`);
     await inObject(stub, (store) => {
+      // Another row's write first, so an entry's change is not its revision.
+      store.write(alice, alice, "board", "u", "x", "", false);
       let last = { etag: "" };
       for (const body of bodies) {
         last = store.write(alice, alice, "board", "t", body, last.etag, false);
@@ -403,7 +405,7 @@ describe("the primitive's history", () => {
       expect(store.write(alice, alice, "board", "t", "again", last.etag, false).revision)
         .toBe(page + 3);
     });
-    expect((await history(stub)).length).toBe(page + 3);
+    expect((await history(stub)).length).toBe(page + 4);
   });
 
   it("is visible as its row is", async () => {
