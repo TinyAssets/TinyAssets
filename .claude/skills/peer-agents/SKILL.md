@@ -39,8 +39,8 @@ HARD CONSTRAINTS ON HOW YOU WORK:
 - Do NOT run the full suite. No scripts/ci_required_tests.py, no
   `pytest -m "not slow"`. Run at most the one test file you need.
 - Budget ~10 minutes. Read the diff and the cited files and reason.
-- Run the untangle skill (`.agents/skills/untangle/SKILL.md`): a builder
-  on its change, a reviewer its step 5 on the PR.
+- Do the untangle skill's searches (Fact 16) yourself, inside this block's
+  limits: no subagents.
 - Lanes are not capped, but they are RECONCILED: if this brief collides with
   another open lane (shared files or overlapping intent), or the design direction
   it assumes has changed, say so and stop rather than working around it. The lead

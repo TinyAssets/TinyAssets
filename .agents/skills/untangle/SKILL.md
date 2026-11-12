@@ -19,7 +19,7 @@ tokens searching, break less without noticing, and find root causes faster.
   one-caller parameter, test-only hook, optional binding or special case.
 - **The PR body** carries an **Untangle check** section: what you found, what
   you fixed, what you left and why, and that the diff adds no new problem of
-  any of the four kinds.
+  any of the four kinds: hidden link, needless link, surplus or special case.
 - **Every reviewer** runs step 5 on the PR and checks each claim in the
   Untangle check section; a missing section is a finding. A new problem the PR
   adds is blocking, and so is one it leaves in its own scope with no stated
@@ -27,7 +27,7 @@ tokens searching, break less without noticing, and find root causes faster.
 
 ## 1. Scope
 
-Comments and Tests are both in scope, every time, and done last (step 4).
+Comments and Tests are both in scope, every time (step 4).
 
 ## 2. List every problem
 
@@ -87,16 +87,16 @@ fix some along the way, which is fine.
 
 Comments:
 
-- Comments that restate the implementation, like `// sort first so the binary search works`, only change when it does. Remove them, even if they're phrased as a why.
+- Comments that restate the implementation, like `// sort first so the binary search works`, only change when it does, so they have no reason of their own to change. Remove them, even if they're phrased as a why.
 - Comments about something outside the code, like `// the proxy drops websockets, so we poll`, change when that does, and the code can't show it. Keep them.
 - Comments that explain a workaround in the codebase, like `// wait 100ms because the cache isn't ready yet`, only change when the problem behind the workaround does. They go when the redesign removes that problem.
 
 Tests, last, because they are your regression safety net. A test should fail on
 a regression, and only then:
 
-- Tests that repeat the implementation check the same interpretation against itself. Remove them.
-- Tests tied to internals break when the code changes but behavior doesn't. Rewrite them to depend on behavior, which changes less.
-- Tests that can't fail pass whatever the code does. Remove them.
+- Tests that repeat the implementation only change when it does, so they have no reason of their own to change. They check the same interpretation against itself, so remove them.
+- Tests tied to internals break when the code changes but behavior doesn't, so they change for the wrong reason. Rewrite them to depend on behavior, which changes less.
+- Tests that can't fail pass whatever the code does, so no change ever affects them. They aren't checking anything, so remove them.
 
 ## 5. Check, and repeat until done
 
@@ -105,16 +105,20 @@ surplus. **Do not stop until there is nothing worth fixing left.**
 
 You're done when:
 
-- **As few special cases are left as possible.** How many remain is the best measure of how close you are.
+- **As few special cases are left in the system as possible.** How many remain is the best measure of how close you are.
 - A typical change lands in one place.
 - Every import is reasonable, and nothing imports anything more volatile than itself.
 - Subagents have no issues left that are worth fixing.
 - Intended behavior is the same as when you started, apart from bugs the refactor fixed. Test this at the end.
 
-**Tips:** script away function bodies so the whole area fits in context;
-summarize parts with subagents; script a dependency graph and rerun it as you
-go; start where leverage is highest; keep a decision log; use Git history as
-evidence of how often pieces change and what changes together.
+**Tips**
+
+- **Start from a skeleton:** script away the function bodies, so the whole codebase fits in context.
+- **Summarize with subagents:** have them summarize parts of the codebase, so you can reason across all of it at once.
+- **Check the dependency graph often:** script one that shows what imports what, and rerun it as you go.
+- **Enter where leverage is highest:** start looking there first.
+- **Keep a decision log:** compaction is less of a problem that way.
+- **Use Git as evidence:** for how often pieces change, and what changes together.
 
 ## Decision log example
 
@@ -124,8 +128,13 @@ The list of problems:
 - `ui/LogoutDialog.tsx:30` waits 100ms after closing and hopes the message input can take focus by then.
 - `ui/Toolbar.tsx:40` and `ui/Menu.tsx:22` call the same actions, each with its own check for when they're disabled.
 - `checkout/submit.ts:9` depends directly on `payments/stripe.ts`.
+- `shortcuts/keymap.ts:18` has a switch with one case per action, separate from the menu's list.
+- `ui/CommandPalette.tsx:55` keeps its own list of actions, and it's missing the newer ones.
 - `ui/SettingsDialog.tsx:61` sets a global `skipRefocus` flag to stop the logout dialog it opens from sending focus to the message input.
+- `history/undo.ts:30` has a special case for every action that can be undone.
 - `refunds/refund.ts:22` wraps every Stripe call in `if (order.provider === "paypal")`.
+- Every action handler has to call `track()` by hand, and some don't.
+- `ui/Toolbar.test.tsx` and `ui/Menu.test.tsx` test the same actions separately.
 ```
 
 Then with the fixes:
@@ -137,6 +146,11 @@ Then with the fixes:
 - Define a `PaymentProvider` interface that Stripe and PayPal both implement, so checkout and refunds no longer know which one they're using.
   - `checkout/submit.ts:9` depends directly on `payments/stripe.ts`.
   - `refunds/refund.ts:22` wraps every Stripe call in `if (order.provider === "paypal")`.
-- Make every user action a command with a name, a handler and a disabled check, so the toolbar and menu run from one list.
+- Make every user action a command with a name, a handler and an undo, so the toolbar, menu, shortcuts, palette and undo history all run from one list.
   - `ui/Toolbar.tsx:40` and `ui/Menu.tsx:22` call the same actions, each with its own check for when they're disabled.
+  - `shortcuts/keymap.ts:18` has a switch with one case per action, separate from the menu's list.
+  - `ui/CommandPalette.tsx:55` keeps its own list of actions, and it's missing the newer ones.
+  - `history/undo.ts:30` has a special case for every action that can be undone.
+  - Every action handler has to call `track()` by hand, and some don't.
+  - `ui/Toolbar.test.tsx` and `ui/Menu.test.tsx` test the same actions separately.
 ```

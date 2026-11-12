@@ -53,9 +53,8 @@ cutover.
     control record), the owner's own settings (off by default), vendors' limits,
     and recorded technical ceilings, each with its reason. Every path honours the
     owner's limits.
-16. Every builder runs the untangle skill (`.agents/skills/untangle/SKILL.md`)
-    on its change before pushing, and every reviewer runs its check on the PR;
-    a new tangle blocks the merge.
+16. Every builder and every reviewer runs the untangle skill
+    (`.agents/skills/untangle/SKILL.md`), as its "How this project uses it" says.
 
 Python-stack sandbox, filesystem or process-limit work needs
 `scripts/linux_oracle.py`; in `platform/`, `npm run test:root -w sandbox` and
