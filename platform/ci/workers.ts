@@ -31,6 +31,12 @@ export interface WorkerConfig {
                                                               readonly script_name?: string }[] };
   readonly migrations?: readonly Readonly<Record<string, unknown>>[];
   readonly rules?: readonly { readonly type: string; readonly globs: readonly string[] }[];
+  readonly vars?: Readonly<Record<string, unknown>>;
+  readonly kv_namespaces?: readonly { readonly binding: string; readonly id: string }[];
+  readonly services?: readonly { readonly binding: string; readonly service: string;
+                                 readonly entrypoint?: string }[];
+  readonly queues?: { readonly producers?: readonly { readonly binding: string;
+                                                      readonly queue: string }[] };
 }
 
 /** `text`, a wrangler config in JSON with comments, parsed; loud when it does not parse. */
@@ -160,26 +166,69 @@ export function objectBindings(config: WorkerConfig): Record<string, ObjectBindi
   };
 }
 
+/** One kind of binding as miniflare takes it: a record by binding name, or a list of names. */
+type Named = Readonly<Record<string, unknown>> | readonly string[];
+
+/**
+ * The bindings a Worker's config gives it in miniflare, by miniflare's option, each kind
+ * only when the config has one: its vars, KV namespaces, queue producers and services, as
+ * wrangler hands a test's `main` Worker its own (`unstable_getMiniflareWorkerOptions`); its
+ * namespaces (`objectBindings`); and its buckets. Never a secret: a config names its secrets
+ * and holds no value, and nothing here reads the environment (wrangler's conversion does).
+ */
+export function configBindings(config: WorkerConfig): Record<string, Named> {
+  const kinds: Record<string, Named> = {
+    bindings: { ...config.vars },
+    kvNamespaces: Object.fromEntries((config.kv_namespaces ?? [])
+      .map((kv) => [kv.binding, { id: kv.id }])),
+    queueProducers: Object.fromEntries((config.queues?.producers ?? [])
+      .map((producer) => [producer.binding, { queueName: producer.queue }])),
+    serviceBindings: Object.fromEntries((config.services ?? []).map((service) => [
+      service.binding, { name: service.service, ...(service.entrypoint === undefined ? {}
+        : { entrypoint: service.entrypoint }) }])),
+    durableObjects: objectBindings(config),
+    r2Buckets: (config.r2_buckets ?? []).map((bucket) => bucket.binding),
+  };
+  return Object.fromEntries(Object.entries(kinds)
+    .filter(([, named]) => Object.keys(named).length > 0));
+}
+
+/** `named` as a record by binding name, a list of names read as miniflare reads one. */
+function byName(named: Named): Readonly<Record<string, unknown>> {
+  return Array.isArray(named) ? Object.fromEntries(named.map((name: string) => [name, name]))
+    : named as Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The config's bindings (`configBindings`) with a test's changes: in a kind of binding the
+ * config has, the test's binding replaces the config's of its name, and the rest stay.
+ */
+export function withChanges(config: WorkerConfig, extra: object): Record<string, Named> {
+  const changed = extra as Readonly<Record<string, unknown>>;
+  return Object.fromEntries(Object.entries(configBindings(config)).map(([kind, named]) =>
+    [kind, changed[kind] === undefined ? named
+      : { ...byName(named), ...byName(changed[kind] as Named) }]));
+}
+
 /**
  * The real Worker at `dir`, as an auxiliary Worker beside a test's own: bundled from its own
- * config and entry, as a deploy bundles it, with its own name, runtime and flags, its
- * namespaces (`objectBindings`: so a test binds its classes by `scriptName`, as other
- * Workers' configs do) and its own buckets. Its secrets and anything a test changes are the
- * caller's `extra`.
+ * config and entry, as a deploy bundles it, with its own name, runtime and flags, and every
+ * binding its config gives it (`configBindings`), as miniflare gives a test's `main` Worker
+ * its config's. A test binds its classes by `scriptName`, as other Workers' configs do. Its
+ * secrets and only what a test changes are the caller's `extra` (`withChanges`); any option
+ * that is no kind of binding the config has is the caller's.
  */
 export function auxiliary<Extra extends object>(dir: string, extra: Extra) {
   const config = workerConfig(dir);
-  const objects = objectBindings(config);
-  const buckets = config.r2_buckets ?? [];
+  const own = withChanges(config, extra);
   return {
     name: config.name,
     modulesRoot: dir,
     modules: bundled(dir),
     compatibilityDate: config.compatibility_date,
     compatibilityFlags: [...(config.compatibility_flags ?? [])],
-    ...(Object.keys(objects).length === 0 ? {} : { durableObjects: objects }),
-    ...(buckets.length === 0 ? {} : { r2Buckets: buckets.map((bucket) => bucket.binding) }),
     ...extra,
+    ...(own as object),
   };
 }
 

@@ -103,9 +103,8 @@ async function doors() {
       },
       auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: keyring },
                                              outboundService: "fake-providers" }),
-      // The files Worker: its one bucket, its config's cipher and a test keyring.
-      auxiliary(join(PLATFORM, "files"), { bindings: { ...(files.vars ?? {}),
-                                                       FILES_KEYRING: keyring } }),
+      // The files Worker: its config's bucket and cipher, and a test keyring.
+      auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: keyring } }),
       auxiliary(join(PLATFORM, "hooks"), {}),
       fake(join(DOORS, "test", "fake-providers.ts")),
       {

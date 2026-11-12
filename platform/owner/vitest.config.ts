@@ -30,9 +30,11 @@ export default defineConfig({
       // kid, and FILES_TEST_RING the files Worker's, so a test can wrap a data key under its
       // older kid; every fetch of the gateway, the sandbox and the tests reaches the gateway's
       // fake outside world (`gateway/test/fake-upstream.ts`). ROUTING_MAC_KEY is the
-      // config's one secret, the sandbox tokens' routing key. The sandbox Worker's
-      // directory is a namespace of its own (no control record in it, so it starts
-      // nothing: `sandbox_unconfigured`), and its key reaches no E2B: its behaviour against
+      // config's one secret, the sandbox tokens' routing key. Each Worker beside it has
+      // every binding its config gives it (`auxiliary`), and a test states only its secrets
+      // and what it changes. The sandbox Worker's CONTROL is the config's namespace, the
+      // owner's too, as at deploy; no test writes a control record there, so it starts
+      // nothing (`sandbox_unconfigured`), and its key reaches no E2B: its behaviour against
       // E2B is its own package's tests (`sandbox/test`).
       // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
       project("owner", "workerd", {
@@ -57,8 +59,8 @@ export default defineConfig({
                                                        outboundService: "fake-upstream" }),
                 auxiliary(join(PLATFORM, "hooks"), {}),
                 auxiliary(join(PLATFORM, "sandbox"), {
-                  bindings: { E2B_API_KEY: "e2b_unused_in_owner_tests", E2B_TEMPLATE: "none" },
-                  kvNamespaces: ["DIRECTORY"], outboundService: "fake-upstream" }),
+                  bindings: { E2B_API_KEY: "e2b_unused_in_owner_tests" },
+                  outboundService: "fake-upstream" }),
                 fake(join(PLATFORM, "gateway", "test", "fake-upstream.ts")),
               ],
             },

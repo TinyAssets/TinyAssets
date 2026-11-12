@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { hex } from "../../contract/src/envelope";
+import { cipherOf } from "../src/cipher";
 import { chunkName, KEY_REFUSED, KEYRING_UNAVAILABLE, unwrap } from "../src/datakey";
 import FilesService from "../src/index";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
@@ -24,7 +25,8 @@ const RING = JSON.stringify({ active: "k2", keys: { ...JSON.parse(OLD).keys, k2:
 const seen: Presented[] = [];
 
 const service = (bucket: R2Bucket = ssec(env.BLOBS, seen), ring: unknown = RING) =>
-  new FilesService(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: ring });
+  new FilesService(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: ring,
+                                               FILES_CIPHER: env.FILES_CIPHER });
 
 const KEYS = new Map<string, Promise<string>>();
 /** A namespace's one data key, minted on first use; a malformed namespace gets none. */
@@ -538,8 +540,8 @@ describe("manifests", () => {
     expect(await service().rewrapManifestRoot(space, "3333333333333333")).toBeNull();
     // With the old kid gone, the root still opens, and its key reads its parts.
     const without = new FilesService(createExecutionContext(), {
-      BLOBS: ssec(env.BLOBS), FILES_KEYRING: JSON.stringify({ active: "k2", keys: {
-        k2: JSON.parse(RING).keys.k2 } }) });
+      BLOBS: ssec(env.BLOBS), FILES_CIPHER: env.FILES_CIPHER,
+      FILES_KEYRING: JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } }) });
     const root = (await without.getManifestRoot(space, "2222222222222222"))!;
     expect(root.parts).toEqual([part]);
     expect(await without.getManifestPart(space, root.key, "1111111111111111", 0, part.sha256))
@@ -639,6 +641,8 @@ describe("the AES-GCM fallback (FILES_CIPHER aes-gcm)", () => {
                                                              FILES_CIPHER: "rot13" });
     expect((await failure(() => odd.getChunks(space, key, [{ sha256: part.sha256 }]))).message)
       .toBe("FILES_CIPHER is ssec or aes-gcm");
+    // No cipher at all is refused too: the config's var is the one choice, never a default.
+    expect(() => cipherOf(undefined)).toThrow("FILES_CIPHER is ssec or aes-gcm");
   });
 });
 

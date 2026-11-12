@@ -3,7 +3,8 @@
  * for every workspace that uses them: every config file is found and no dependency's is,
  * every Worker's every source is what the source guards scan, a config that does not parse
  * fails loudly, a fake is built at its Worker's own date, an auxiliary Worker has a namespace
- * of every class it defines, a gate is built from a contract's methods, and a job's own
+ * of every class it defines and every binding its config declares, a test's bindings merge
+ * into its config's by name, a gate is built from a contract's methods, and a job's own
  * sources are the scripts in its folder. The gate and the auxiliary Workers run in
  * `ci/test/gate.test.ts`.
  */
@@ -16,8 +17,8 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../paths";
 import { gate, methodsOf } from "../gate";
 import { configFiles, scriptsIn, workerSources } from "../kit/sources";
-import { fake, objectBindings, once, parseWrangler, readWrangler, type WorkerConfig,
-         workerConfig } from "../workers";
+import { configBindings, fake, objectBindings, once, parseWrangler, readWrangler, withChanges,
+         type WorkerConfig, workerConfig, workerFolders } from "../workers";
 
 /**
  * The files under a Worker's `src/` that are no script, each named: data a source imports
@@ -96,6 +97,51 @@ describe("the Worker kit", () => {
     const renamed = { name: "x", compatibility_date: "2026-10-23", migrations: [
       { tag: "v2", renamed_classes: [{ from: "A", to: "B" }] }] } as WorkerConfig;
     expect(() => objectBindings(renamed)).toThrow(/x: migration v2 has renamed_classes/);
+  });
+
+  it("gives an auxiliary Worker every var, KV namespace, queue producer and service its " +
+     "config declares, as wrangler gives a test's main Worker its own", () => {
+    for (const folder of workerFolders()) {
+      const raw = readWrangler(join(PLATFORM, folder)) as {
+        vars?: Record<string, unknown>; kv_namespaces?: { binding: string; id: string }[];
+        services?: { binding: string; service: string; entrypoint?: string }[];
+        queues?: { producers?: { binding: string; queue: string }[] } };
+      const own = configBindings(workerConfig(join(PLATFORM, folder)));
+      expect(own["bindings"] ?? {}, folder).toEqual(raw.vars ?? {});
+      expect(own["kvNamespaces"] ?? {}, folder).toEqual(Object.fromEntries(
+        (raw.kv_namespaces ?? []).map((kv) => [kv.binding, { id: kv.id }])));
+      expect(own["queueProducers"] ?? {}, folder).toEqual(Object.fromEntries(
+        (raw.queues?.producers ?? []).map((q) => [q.binding, { queueName: q.queue }])));
+      expect(own["serviceBindings"] ?? {}, folder).toEqual(Object.fromEntries(
+        (raw.services ?? []).map((s) => [s.binding, s.entrypoint === undefined
+          ? { name: s.service } : { name: s.service, entrypoint: s.entrypoint }])));
+    }
+  });
+
+  it("merges a test's bindings into its config's by name, and keeps every other", () => {
+    const config = { name: "x", compatibility_date: "2026-10-23",
+                     vars: { A: "config", B: "config" },
+                     kv_namespaces: [{ binding: "K", id: "k-id" }],
+                     services: [{ binding: "S", service: "s" },
+                                { binding: "T", service: "t", entrypoint: "E" }],
+                     queues: { producers: [{ binding: "Q", queue: "q" }] },
+                     r2_buckets: [{ binding: "R" }] } as WorkerConfig;
+    expect(withChanges(config, {})).toEqual({
+      bindings: { A: "config", B: "config" }, kvNamespaces: { K: { id: "k-id" } },
+      queueProducers: { Q: { queueName: "q" } },
+      serviceBindings: { S: { name: "s" }, T: { name: "t", entrypoint: "E" } },
+      r2Buckets: ["R"] });
+    expect(withChanges(config, { bindings: { B: "test", SECRET: "s" }, kvNamespaces: ["L"],
+                                 serviceBindings: { S: "gate" }, r2Buckets: ["R2"],
+                                 outboundService: "fake" })).toEqual({
+      bindings: { A: "config", B: "test", SECRET: "s" },
+      kvNamespaces: { K: { id: "k-id" }, L: "L" },
+      queueProducers: { Q: { queueName: "q" } },
+      serviceBindings: { S: "gate", T: { name: "t", entrypoint: "E" } },
+      r2Buckets: { R: "R", R2: "R2" } });
+    // A kind the config has none of is the test's alone (`auxiliary` keeps it as given).
+    expect(withChanges({ name: "y", compatibility_date: "2026-10-23" }, { bindings: { A: "a" } }))
+      .toEqual({});
   });
 
   it("builds a gate before a service or before objects, with a contract's methods", () => {

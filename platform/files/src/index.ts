@@ -80,8 +80,8 @@ export interface FilesEnv {
   readonly BLOBS: R2Bucket;
   /** The data keys' keyring, a Worker secret read only by `datakey.ts`. */
   readonly FILES_KEYRING?: KeyringSecret;
-  /** How the data key encrypts (`cipher.ts`): `ssec` (the default) or `aes-gcm`. */
-  readonly FILES_CIPHER?: string;
+  /** How the data key encrypts (`cipher.ts`): the config's var, `ssec` or `aes-gcm`. */
+  readonly FILES_CIPHER: string;
 }
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */

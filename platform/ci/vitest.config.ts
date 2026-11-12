@@ -29,8 +29,10 @@ export default defineConfig({
       // of each (`gate.ts`). OWNER is the owner gate, bound by `scriptName` as the doors'
       // config binds the owner, and REAL_OWNER the owner Worker itself; FILES is the files
       // gate, which the owner's own FILES binding reaches too, and REAL_FILES the files
-      // Worker itself. The gates' `Control` entrypoints are the test Worker's alone. The
-      // owner's other services are left unbound: these tests reach none of them.
+      // Worker itself. The gates' `Control` entrypoints are the test Worker's alone. Every
+      // other binding is the owner's config's own (`auxiliary`), so its gateway, hooks and
+      // sandbox Workers run beside it, each with the secret its config requires; these tests
+      // call none of them.
       project("ci", "workerd", {
         plugins: [
           cloudflareTest(once(() => ({
@@ -49,10 +51,14 @@ export default defineConfig({
               workers: [
                 auxiliary(OWNER, {
                   bindings: { ROUTING_MAC_KEY: randomBytes(32).toString("base64url") },
-                  kvNamespaces: ["CONTROL"],
                   serviceBindings: { FILES: "files-gate" },
                 }),
                 auxiliary(FILES, { bindings: { FILES_KEYRING: keyring() } }),
+                auxiliary(join(PLATFORM, "gateway"), {
+                  bindings: { GATEWAY_KEYRING: keyring() } }),
+                auxiliary(join(PLATFORM, "hooks"), {}),
+                auxiliary(join(PLATFORM, "sandbox"), {
+                  bindings: { E2B_API_KEY: "e2b_unused_in_kit_tests" } }),
                 gate("files-gate", methodsOf(join(PLATFORM, "contract", "src", "files.ts"),
                                              "ChunkStore"), { worker: FILES }),
                 gate("owner-gate", DOORS, { worker: OWNER, className: "OwnerDO" }),
