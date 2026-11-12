@@ -283,7 +283,7 @@ function view(row: Row): ConnectionView {
 export class Connections {
   readonly #storage: OwnerStorage;
   readonly #write: Write;
-  readonly #gateway: () => GatewayService;
+  readonly #gateway: GatewayService;
   readonly #owner: () => string;
   readonly #notices: Notices;
   readonly #clock: () => number;
@@ -293,7 +293,7 @@ export class Connections {
   #revision = 0;
   #usable: { revision: number; usable: readonly Usable[] } | null = null;
 
-  constructor(storage: OwnerStorage, write: Write, gateway: () => GatewayService,
+  constructor(storage: OwnerStorage, write: Write, gateway: GatewayService,
               owner: () => string, notices: Notices, clock: () => number) {
     this.#storage = storage;
     this.#write = write;
@@ -313,10 +313,6 @@ export class Connections {
 
   #changed(): void {
     this.#revision++;
-  }
-
-  #service(): GatewayService {
-    return this.#gateway();
   }
 
   // -- the doors' bodies, each run inside the door's unit ---------------------------
@@ -727,7 +723,7 @@ export class Connections {
   async #refresh(id: string, holder: string, from: Credential): Promise<void> {
     let refreshed: Refreshed;
     try {
-      refreshed = await this.#service().refresh(this.#owner(), id, from.version, from.blob);
+      refreshed = await this.#gateway.refresh(this.#owner(), id, from.version, from.blob);
     } catch (error) {
       // The gateway's fixed code, as its refusal carries it; anything else is `internal`.
       const refused = refusalOf(error)?.code;
@@ -857,7 +853,7 @@ export class Connections {
     let resealed = 0;
     let left = 0;
     for (const { connection_id: id, version, kid, blob } of held) {
-      const answer = await this.#service().reseal(this.#owner(), id, version, blob);
+      const answer = await this.#gateway.reseal(this.#owner(), id, version, blob);
       if (answer.kid === kid) {
         continue;
       }
@@ -905,8 +901,8 @@ export class Connections {
       }
       let outcome: RevokeOutcome = "failed";
       try {
-        const revoking = this.#service().revokeAtProvider(this.#owner(), id, owed.version,
-                                                          owed.blob);
+        const revoking = this.#gateway.revokeAtProvider(this.#owner(), id, owed.version,
+                                                         owed.blob);
         const answer = await inTime(revoking, CONNECTION_LIMITS.revokeMs);
         if (answer === "late") {
           revoking.catch(() => undefined);
