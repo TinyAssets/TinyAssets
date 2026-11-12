@@ -58,7 +58,7 @@ control over command-center behavior.
 - `openspec validate starter-agent-out-of-plumbing --strict`: passed.
 - `openspec validate starter-seed-lifecycle --strict`: passed.
 - `openspec validate universe-agent-harness --strict`: passed.
-- `python scripts/openspec_flow.py check-change <name> --provider codex --json`:
+- `openspec_flow.py check-change <name> --provider codex --json` (since deleted):
   allowed for both starter changes; audit reports unrelated existing queue warnings.
 - Task counts: 10 starter, 9 seed lifecycle, 12 existing parent.
 - `git diff --check`: passed.

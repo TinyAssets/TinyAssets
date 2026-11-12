@@ -40,8 +40,8 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       Gate-file change: one cross-family round.
       Guard: itself. Net about −100k. Depends on #4619.
 - [x] 2.2 **C2 Reconciler and queue fold.** Add
-      `.github/workflows/shape-reconcile.yml` and
-      `scripts/shape_reconcile.py` (design §3.2), which maintain the one
+      `shape-reconcile.yml` and `shape_reconcile.py` (design §3.2; both
+      deleted 2026-11-12, process fix P3), which maintain the one
       "Shape reconciliation" issue. Replace AGENTS.md's `openspec_flow.py
       audit` orient pointer with the issue, byte-neutral.
       **Deletes and folds:**
