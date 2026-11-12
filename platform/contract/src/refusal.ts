@@ -12,24 +12,25 @@
  * shape (`contract/guards/refusal.test.ts` holds the compatibility settings;
  * `doors/test/api-keys.test.ts` crosses the owner's object's real RPC boundary).
  *
- * A code is `transient` or terminal. A transient refusal (a pool, a ceiling or a post gate
- * full for the moment, each with its `Retry-After`) says nothing of the request: the same one
- * succeeds later. So a lane that settles a run, a schedule or a mail on a refusal settles it
- * only on a terminal one, and leaves the item to be tried again on a transient one.
+ * A code is `transient` or terminal. A transient refusal says nothing of the request: the
+ * same one succeeds later. Most say when, with their `Retry-After` (a pool, a ceiling or a
+ * post gate full for the moment, a platform gate closed); a files root that changed under a
+ * rewrap is run again at once. So a lane that settles a run, a schedule or a mail on a
+ * refusal settles it only on a terminal one, and leaves the item to be tried again on a
+ * transient one.
  *
- * Most codes are named by the message too, as its prefix (`storage_busy: ...`): the doors
- * show that code where a protocol carries one (the egress door, the inbound hooks), and the
- * object keeps it as an undeliverable mail's reason. A `quiet` code is one a message never
- * names (the two families' own, `refused` and `invalid`, and a few the object tells apart
- * inside): where a code is shown, a quiet refusal shows its message, or the egress door's
- * `egress_refused`, as it always has.
+ * A `quiet` code is one a protocol that shows a code (the egress door, the inbound hooks)
+ * does not show: it shows the refusal's message in its place, or the egress door's
+ * `egress_refused`. They are the two families' own, `refused` and `invalid`, and a few the
+ * object tells apart inside. No code is ever read from a message
+ * (`ci/guards/refusals.test.ts`).
  */
 
 interface Entry {
   readonly status: number;
   /** The `Retry-After` a refusal of this code carries when it names none of its own. */
   readonly retryAfterS?: number;
-  /** A code its message never names (see the header). */
+  /** A code a protocol that shows one shows as the refusal's message (see the header). */
   readonly quiet?: true;
   /** A refusal for the moment, the same request taken later (see the header). */
   readonly transient?: true;
@@ -50,7 +51,7 @@ export const REFUSALS = Object.freeze({
   refused: QUIET_REFUSED,
   invalid: QUIET_INVALID,
 
-  // The owner's object, named in its messages.
+  // The owner's object's.
   agent_changed: REFUSED,
   agent_disabled: REFUSED,
   agent_retired: REFUSED,
@@ -112,8 +113,8 @@ export const REFUSALS = Object.freeze({
   tool_not_served: REFUSED,
   unattended_refused: REFUSED,
 
-  // The owner's object, never named in a message: the object tells these apart inside, and
-  // a refused waiting run keeps its code as its own (`runs.ts` `refuseWaiting`).
+  // The owner's object's quiet ones: the object tells these apart inside, and a refused
+  // waiting run keeps its code as its own (`runs.ts` `refuseWaiting`).
   authority_changed: QUIET_REFUSED,
   no_authority: QUIET_REFUSED,
   not_granted: QUIET_REFUSED,
@@ -127,8 +128,25 @@ export const REFUSALS = Object.freeze({
   erasing: QUIET_REFUSED,
   message_body: QUIET_INVALID,
   post_conflict: QUIET_REFUSED,
-  // The files plane: a wrapped data key that does not open for its namespace.
+  // The files plane: a wrapped data key that does not open for its namespace; a manifest
+  // root that changed while its key was wrapped again, so the rewrap is run again.
   data_key_refused: QUIET_INVALID,
+  root_changed: Object.freeze({ status: 409, transient: true }),
+
+  // The platform gates (`control.ts`), closed: the maintenance gate (`MAINTENANCE`) or the
+  // outside switch (`OUTSIDE_OFF`), each the refusal's message.
+  unavailable: Object.freeze({ status: 503, retryAfterS: 60, transient: true }),
+
+  // The doors' own: a request with no credential the door takes, at a path it does not
+  // serve, by a method it does not take, or too large to read; an API key or a connect
+  // refused takes `invalid`, `refused` or `not_found`.
+  runner_token_missing: Object.freeze({ status: 401 }),
+  run_secret_missing: Object.freeze({ status: 401 }),
+  sync_token_missing: Object.freeze({ status: 401 }),
+  sync_token_unknown: Object.freeze({ status: 401 }),
+  sync_token_expired: Object.freeze({ status: 401 }),
+  method_not_allowed: Object.freeze({ status: 405 }),
+  events_too_large: Object.freeze({ status: 413 }),
 
   // The egress door's (`egress.ts`), answered with the object's receipt.
   egress_token_missing: Object.freeze({ status: 401 }),
@@ -146,6 +164,12 @@ export const REFUSALS = Object.freeze({
   egress_rate: Object.freeze({ status: 429 }),
   egress_spend_refused: Object.freeze({ status: 402 }),
   egress_unknown_model: Object.freeze({ status: 404 }),
+  // The egress door's own, with no receipt: the gateway's call failed, or the door stopped
+  // the stream before its answer (its deadline, the client gone, the object's end signal).
+  egress_gateway_failed: BAD_GATEWAY,
+  egress_deadline: Object.freeze({ status: 504 }),
+  egress_aborted: Object.freeze({ status: 503 }),
+  egress_ended: Object.freeze({ status: 503 }),
 
   // The gateway's, the only text it lets out (`gateway/src/failure.ts`): provider prose can
   // echo credentials, so its message is its code and nothing else.
@@ -176,6 +200,7 @@ export const REFUSALS = Object.freeze({
   unsupported_source: Object.freeze({ status: 422 }),
   not_refreshable: Object.freeze({ status: 409 }),
   deadline: Object.freeze({ status: 504 }),
+  // The gateway's and the files plane's: a keyring that does not open.
   keyring_unavailable: Object.freeze({ status: 500 }),
   // A bug in the gateway: what was thrown is never shown, only that it was.
   internal: Object.freeze({ status: 500 }),
@@ -216,13 +241,20 @@ export function isGatewayCode(code: unknown): code is GatewayCode {
   return (GATEWAY_CODES as readonly unknown[]).includes(code);
 }
 
-/** The egress door's codes, each answered with the object's receipt (`doors/src/egress.ts`). */
+/**
+ * Every code the egress door refuses with itself (`doors/src/egress.ts`), its status from
+ * `REFUSALS`: the object's, each with its receipt, then the door's own and its closed gate.
+ * A refusal the object throws keeps its own code (see the header).
+ */
 export const EGRESS_CODES = Object.freeze([
   "egress_token_missing", "egress_token_unknown", "egress_token_expired",
   "egress_lease_closed", "egress_run_closed", "egress_run_connection", "egress_policy_stale",
   "egress_network_stale", "egress_connection_refused", "egress_endpoint_refused",
   "egress_unmetered", "egress_length_required", "egress_rate", "egress_spend_refused",
   "egress_unknown_model", "egress_unpriced_option", "egress_too_large",
+  "runner_token_missing", "run_secret_missing", "sync_token_missing", "sync_token_unknown",
+  "sync_token_expired", "not_found", "method_not_allowed", "events_too_large",
+  "egress_gateway_failed", "egress_deadline", "egress_aborted", "egress_ended", "unavailable",
 ] as const satisfies readonly RefusalCode[]);
 export type EgressCode = (typeof EGRESS_CODES)[number];
 
@@ -263,7 +295,7 @@ export class Refusal extends Error {
     return this.status === 400;
   }
 
-  /** Whether a protocol that shows a code shows this one: its message names it. */
+  /** Whether a protocol that shows a code shows this one, rather than its message. */
   get named(): boolean {
     return (REFUSALS[this.code] as Entry).quiet !== true;
   }

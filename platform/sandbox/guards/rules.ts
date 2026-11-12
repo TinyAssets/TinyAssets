@@ -9,7 +9,7 @@
  * imported as data.
  */
 import type { ConfigRules } from "../../ci/kit/config";
-import { imports, type Owed } from "../../ci/kit/owed";
+import { imports, type Owed, refusals } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "sandbox",
@@ -53,4 +53,9 @@ export const OWED: readonly Owed[] = Object.freeze([
              ["platform/sandbox/src/e2b.ts", "platform/sandbox/src/install.ts"]),
   // The template's pin, read through the test kit: B18 gives it one reader in `pair.ts`.
   ...imports("B18", "platform/sandbox/template/checks.ts", ["platform/ci/workers.ts"]),
+  // The runner's answers as error classes of the Worker's own, each a contract refusal by
+  // its code (B2, S7); E2B's error, which moves with its client to `sandbox/e2b/` (B11).
+  ...refusals("B2", "platform/sandbox/src/control.ts",
+              ["class RunnerFailed extends Error", "class RunnerRefused extends Error"]),
+  ...refusals("B11", "platform/sandbox/src/e2b.ts", ["class E2bError extends Error"]),
 ]);
