@@ -168,6 +168,7 @@ Each joins the lane named. None blocks its u3 PR.
      - the memory probe is driven through the doors.
      - (the coordinator, 2026-11-12) The ledger's `limits` parameter is deleted outright, with no test-only parameter or second constructor. The memory probe's `LegSegments` moves to production's ledger limits, as `LegArchive` did, its leg seeded so production's own seal rule makes the segment it measures, with large bodies. The ledger's ceilings come before T1d, since T1d needs T1c's real entry and T1c needs the ledger's ceilings.
      - (the coordinator, 2026-11-12, from T1b3's measurement) At production's seal (`archivePick`) two 4 MiB bodies seal together but an 8 MiB body, the cap, seals alone. So the leg's `bodies` case keeps 4 against 8 MiB as production seals them, and its `rewrite` meets the largest segment production makes: the kept body one byte short of sealing alone, then an 8 MiB one, about 16 MiB, its two records checked. No test-only seal size.
+     - (the coordinator, 2026-11-12, T1b4) The measured move meets that largest segment too: the `bodies` case's muse body is the smaller of `mib` MiB and the largest body that does not seal alone, so at 8 MiB the run moves the segment of about 16 MiB, and the run checks loudly that it is one segment of two records.
    - **B3**, on the cleaned constructors.
    - **T2, the doors, after D3:**
      - the doors run on their real entry, with the owner as an auxiliary Worker;

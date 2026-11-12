@@ -778,11 +778,11 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
     } else if (path === "bodies" || path === "rewrite") {
       // At the production limits: two acked bodies, the owner's to the muse and to Dot, and
       // the hot mail past half its ceiling with unread small mail, so the lane seals the
-      // bodies and nothing else, as production seals them (`archivePick`). For the move, two
-      // of `mib` MiB: under the seal each, together in one segment; at 8 MiB, the body cap,
-      // each its own, since one reaches the seal alone. For the rewrite, the largest segment
-      // one can meet: the muse's body the largest that does not seal alone, then Dot's at
-      // `mib` (the cap), one segment of about 16 MiB; then Dot is deleted.
+      // bodies and nothing else, as production seals them (`archivePick`): the muse's body the
+      // smaller of `mib` MiB and the largest that does not seal alone, then Dot's at `mib`, so
+      // the two are one segment. At 4 MiB they seal together; at 8 MiB, the body cap, they are
+      // the largest segment production makes, about 16 MiB of two records. The move moves it;
+      // the rewrite's setup moves it, then deletes Dot.
       const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
       const post = async (on: DurableObjectStub<LegArchive>, k: number, bytes: number,
@@ -790,16 +790,13 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
         (await on.roomPost(as, { room_id: `dm:${to[k]}`, client_message_id: `b${k}`,
                                   body: new TextDecoder().decode(letters(seed * 10 + k, bytes)),
                                   parent_id: null })).message_id;
-      let kept = mib * MIB;
-      if (path === "rewrite") {
-        // A record's own bytes past its body's, read from a message of the same shape on an
-        // object of its own: the kept body is then one byte short of the seal alone.
-        const sizing = await archiveObject(env, `${name}-sizing`);
-        const its = await sizing.legAgents();
-        const overhead = await sizing.legOverhead(
-          await post(sizing, 0, SEGMENT_MIN_BYTES / 2, owner(`${name}-sizing`), its));
-        kept = SEGMENT_MIN_BYTES - 1 - (overhead - RECORD_TRAILER_BYTES);
-      }
+      // A record's own bytes past its body's, read from a message of the same shape on an
+      // object of its own: the largest body that does not seal alone is one byte short of it.
+      const sizing = await archiveObject(env, `${name}-sizing`);
+      const its = await sizing.legAgents();
+      const overhead = await sizing.legOverhead(
+        await post(sizing, 0, SEGMENT_MIN_BYTES / 2, owner(`${name}-sizing`), its));
+      const kept = Math.min(mib * MIB, SEGMENT_MIN_BYTES - 1 - (overhead - RECORD_TRAILER_BYTES));
       await stub.legAck(0, await post(stub, 0, kept));
       await stub.legAck(1, await post(stub, 1, mib * MIB));
       // Each ring is one more unread message (the run rings once, the rewrite's setup once
@@ -928,7 +925,12 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
         await settled(archive, path === "rewrite" ? (seen) => seen.purges === 0
           : (seen) => seen.records >= want!);
         await idle(archive);
-        return (await archive.legArchived()).records;
+        const seen = await archive.legArchived();
+        if (path === "bodies" && (seen.segments !== 1 || seen.records !== 2)) {
+          throw new Error(`the move's two bodies are not one segment of two records: ${
+            JSON.stringify(seen)} (the seal rule changed?)`);
+        }
+        return seen.records;
       }
       if (path === "edit") {
         const done = await stub.fileEdit(who, { path: "/workspace/f.txt", old_text: MARK,
