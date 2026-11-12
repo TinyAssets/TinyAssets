@@ -6,8 +6,10 @@
  * policy's validator (`policy-document.ts`) refuses a rule on an act no door does, no hook
  * kind is and no tool of the rule names: nothing could decide it.
  *
- * The file is held whole when this module loads: an act missing its words, or naming a kind,
- * a condition or an unseen way the file does not define, stops every Worker that reads it.
+ * The module keeps no state and does no work at load (ADR-032). The whole file is held by its
+ * guard (`guards/acts.test.ts`), and each act is held again, with the file's tables, when it
+ * is read: an act missing its words, or naming a kind, a condition or an unseen way the file
+ * does not define, fails loudly at its first read.
  */
 import raw from "../acts.json" with { type: "json" };
 
@@ -75,19 +77,22 @@ export function actProblems(file: unknown): string[] {
   return problems;
 }
 
-const problems = actProblems(raw);
-if (problems.length > 0) {
-  throw new Error(`the acts file is broken: ${problems.join("; ")}`);
-}
-/** Each act frozen whole, so no module can change one for the isolate. */
-const ACTS: Readonly<Record<string, Act>> = Object.freeze(Object.fromEntries(
-  Object.entries(raw.acts).map(([name, act]) => [name, Object.freeze({
-    says: act.says, hook: Object.freeze([...act.hook] as HookKind[]),
-    unseen: Object.freeze([...act.unseen] as Unseen[]) })])));
-
-/** The act named `name`, or undefined for a name the file does not hold. */
+/**
+ * The act named `name`, held whole and frozen at its read, so no module can change one for
+ * the isolate; or undefined for a name the file does not hold.
+ */
 export function actNamed(name: unknown): Act | undefined {
-  return typeof name === "string" && Object.hasOwn(ACTS, name) ? ACTS[name] : undefined;
+  if (typeof name !== "string" || !Object.hasOwn(raw.acts, name)) {
+    return undefined;
+  }
+  const act = (raw.acts as Record<string, Act>)[name]!;
+  const problems = actProblems({ ...raw, acts: { [name]: act } });
+  if (problems.length > 0) {
+    throw new Error(`the acts file is broken: ${problems.join("; ")}`);
+  }
+  Object.freeze(act.hook);
+  Object.freeze(act.unseen);
+  return Object.freeze(act);
 }
 
 /** Whether `name` is a condition the file defines. */
