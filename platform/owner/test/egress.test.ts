@@ -1154,7 +1154,7 @@ describe("a lease given back (untangle A2, review F5)", () => {
     await capped(r, ROOMY);
     await defineAgent(r.stub, r.bind(), "main", { ...onKey(connection), scopes: [] });
     // A sign-in holds the owner's lease first, so the run joins it: the sign-in's start
-    // opened the lease and, answered started, applied its network.
+    // opened the lease, carrying its network.
     const { id } = await r.stub.signinStart(r.bind(), { engine: "claude-code" }) as { id: string };
     const signin = (await recorder(r.stub)).signins.at(-1)! as SandboxSignin;
     const sl = signin as unknown as SandboxStart;
@@ -1187,16 +1187,18 @@ describe("a lease given back (untangle A2, review F5)", () => {
     expect((await rows(r)).at(-1)).toMatchObject({ ended: "lease" });
   });
 
-  it("is a start the sandbox has no room for: its network never applied, so no call " +
-     "opened under it", async () => {
+  it("ends its streams: a start the sandbox has no room for gives its lease back", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
     await capped(r, ROOMY);
     await defineAgent(r.stub, r.bind(), "main", { ...onKey(connection), scopes: [] });
     // While the start is out (the run queued, its lease and grant live), the run's process
-    // tries a model call on its lease; then the sandbox answers it has no room.
+    // opens a model call on its lease; then the sandbox answers it has no room.
     const opened = await r.in(async (instance) => {
       let call: EgressOpened | EgressRefusal | null = null;
+      // The end signal read where it was opened, in the start's own call: read from the
+      // test's, a stream of another request's reads as over though it is not.
+      let closed: Promise<boolean> = Promise.resolve(false);
       instance.recorder.answer = { started: false, code: SANDBOX_WAITING };
       instance.recorder.beforeAnswer = async (start) => {
         call = await instance.egressOpen({
@@ -1204,16 +1206,24 @@ describe("a lease given back (untangle A2, review F5)", () => {
             kind: "egress", token: hashOf("egress", start.tokens!.egress_token),
             generation: start.network!.generation, secret: hashed(secretOf(start)) } },
           { run: start.run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
+        if (call.ok) {
+          const read = call.ended.getReader().read().then(({ done }) => done, () => false);
+          const late = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000));
+          closed = Promise.race([read, late]);
+        }
       };
-      return { instance, wait: () => call };
+      return { instance, wait: () => call, closed: () => closed };
     });
     const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
                                          { message: "go", client_send_id: "q-1" });
     expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
-    // The start that carried the network was not answered started, so no stream opened.
-    expect(opened.wait()).toMatchObject({ ok: false, code: "egress_network_stale" });
+    const call = opened.wait() as EgressOpened | EgressRefusal | null;
+    expect(call).toMatchObject({ ok: true });
+    // Its run never started, so no run's end ended the stream: the lease's did, its signal
+    // closed as the start's answer gave the lease back.
+    expect(await opened.closed()).toBe(true);
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
-    expect(await rows(r)).toMatchObject([{ state: "refused", code: "egress_network_stale" }]);
+    expect((await rows(r)).at(-1)).toMatchObject({ ended: "lease" });
   });
 });
 
@@ -1467,6 +1477,31 @@ describe("a sandbox's network (E1)", () => {
     expect(opened).toMatchObject({ ok: true, connection, generation: 1 });
     expect(await r.sql("SELECT network_generation FROM sandbox_leases"))
       .toEqual([{ network_generation: 1 }]);
+  });
+
+  it("admits the run's first model call made before its start's answer is recorded",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    await capped(r, ROOMY);
+    // The runner launched, its CLI calls its model at once: the start has not answered yet.
+    const during = await r.in((instance) => {
+      let call: EgressOpened | EgressRefusal | null = null;
+      instance.recorder.beforeAnswer = async (start) => {
+        instance.recorder.beforeAnswer = null;
+        RUN = start.run;
+        call = await instance.egressOpen(egressOf(r, start, start.network!.generation),
+                                         request(connection));
+      };
+      return () => call;
+    });
+    const { run, start } = await ownerRun(r.stub, r.bind(),
+                                          { ...onKey(connection), scopes: [] });
+    expect(run).toMatchObject({ state: "running" });
+    const call = during() as EgressOpened | EgressRefusal | null;
+    expect(call === null || call.ok || call.code).toBe(true);  // its code, were it refused
+    expect(call).toMatchObject({ ok: true, connection, generation: start.network!.generation,
+                                 metered: true });
   });
 
   it("is applied at that start's own generation: a policy write during the start leaves " +

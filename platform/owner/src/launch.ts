@@ -14,9 +14,9 @@
  * - **a mail's reply** (`answer`): a run's result posted as its agent's reply to that mail, in
  *   the settle's unit, its body placed in R2 first when long (`beginReply`, `withReply`);
  * - **the sandbox's leases** (`openLease`, `sandboxLeases`): an authority's lease opened with its
- *   tokens and network, that network applied once the start that carried it is answered
- *   `started` (`networkApplied`), given back, and paused through the sandbox Worker once no
- *   run holds it (`leaseFreed`); one run's whole environment (`#runConfig`).
+ *   tokens and network, that network marked on it at the generation it was made under, given
+ *   back, and paused through the sandbox Worker once no run holds it (`leaseFreed`); one
+ *   run's whole environment (`#runConfig`).
  *
  * It reaches the owner's other modules only through the object's state it is handed
  * (`OwnerState`), each read or write in the unit it is called in.
@@ -332,9 +332,6 @@ export class Launcher implements RunHost {
         this.runs.settle(admitted.run, "unknown", "start_lost", null, clock());
       } else if (answer.started) {
         this.runs.started(admitted.run, clock());
-        if (admitted.network !== null) {
-          this.networkApplied(admitted.lease, admitted.network);
-        }
       } else if (answer.code === SANDBOX_WAITING) {
         // E2B runs as many sandboxes as its plan allows: the run waits, never refused, and
         // the lane starts it again when the platform's line rings the owner (`sandboxRung`).
@@ -709,6 +706,18 @@ export class Launcher implements RunHost {
    * by its heartbeat, with no deadline of their own, `LEASE_LIVED`, so no run meets a fixed
    * one) and the runner's own secret, and the owner's network made with the egress token in
    * its transform. A lease that lapsed is replaced: its streams and tokens end with it.
+   *
+   * The lease's network is marked in this same unit, at the generation this network is made
+   * under, never a later one: the unit that dispatches the start (a run's admission, a
+   * sign-in's first unit). That start applies it before anything in the sandbox can call
+   * out with this lease's egress token, which only that network's transform carries: E2B
+   * takes the network with the create, or replaces it on a running or resumed sandbox, before
+   * the runner launches anything (`sandbox/src/control.ts`, `#ensure` and `#launch`). So a
+   * call bearing the token was made through the network, and a run's first model call is
+   * admitted however soon it comes, before its start's answer is recorded. A policy write
+   * while the start is out leaves the newer generation stale (`egress_network_stale`), and a
+   * start that fails gives the lease back, so a mark on it admits nothing. In `ask` mode the
+   * owner gets a refusal receipt for each network made (`network.ts`).
    */
   openLease(now: number, authority: string):
       { lease: Lease; tokens: OpenedTokens; network: NetworkPlan } {
@@ -720,27 +729,17 @@ export class Launcher implements RunHost {
     const live = new Set(this.#o.files.liveLeases(now).map((each) => each.lease_id));
     this.#o.egress.end("lease", (stream) => !live.has(stream.lease));
     const { document } = this.#o.policy.read();
-    return { lease, tokens: { egress_token: egress.token, sync_token: sync.token,
-                              runner_token: runner },
-             network: networkDocument(document.egress, this.#o.policy.egressGeneration(),
-                                      egress.token) };
-  }
-
-  /**
-   * In the unit that records a start answered `started` (a run's, or a sign-in's) that
-   * carried `network`: that network applied to its lease, at the generation it was made
-   * under, never the current one (`sandbox.ts`: the start that opened the lease applies its
-   * network whole). A policy write while the start was out leaves the newer generation stale,
-   * and its egress refused `egress_network_stale`. In `ask` mode the owner gets a refusal
-   * receipt at each apply (`network.ts`). A lease lost meanwhile has nothing applied.
-   */
-  networkApplied(lease: { lease_id: string; epoch: number }, network: NetworkPlan): void {
-    if (this.#o.files.networkApplied(lease.lease_id, lease.epoch, network.generation)
-        && network.receipt) {
+    const network = networkDocument(document.egress, this.#o.policy.egressGeneration(),
+                                    egress.token);
+    this.#o.files.leaseNetwork(lease.lease_id, network.generation);
+    if (network.receipt) {
       this.#o.policy.refusal("sandbox_network", { mode: network.mode,
                                                   generation: network.generation },
                              clock(), "egress.ask");
     }
+    return { lease, tokens: { egress_token: egress.token, sync_token: sync.token,
+                              runner_token: runner },
+             network };
   }
 
   /**
