@@ -29,7 +29,7 @@ import { invocation } from "./engine";
 import { HEARTBEAT_MS, lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
 import { SCRATCH_ENV } from "./scratch";
-import { JOB_FILES, PROTOCOL, type StartDoc } from "./protocol";
+import { COMMAND, inboxCode, JOB_FILES, PROTOCOL, RUNNERS, type StartDoc } from "./protocol";
 import { READS, STATE_FORMAT } from "./state-format";
 import { Doors, POOL_GIDS, POOL_UIDS, probesBundle, runnerBundle, Sandbox, simulated, startDoc,
          SYNC_UID, TA_GID } from "./test/harness";
@@ -523,7 +523,7 @@ describe("the vendor's own sign-in", () => {
       await frameWhere(id, (frame) => frame["code"] === plan.code);
     }
     if (plan.paste !== undefined) {
-      box.write(`/var/lib/ta/inbox/${id}.code`, plan.paste);
+      box.write(inboxCode(id), plan.paste);
       expect(box.runner("login-input", id).code).toBe(0);
     }
     await doors.ended_(25_000, id);
@@ -619,14 +619,14 @@ describe("the vendor's own sign-in", () => {
       expect(refused.err).toContain(`no command ${command}`);
     }
     // With other bytes at their runner's path, the probes refuse loudly.
-    expect(box.exec(["sh", "-c", `echo >> /opt/ta/runner/${box.digest}/runner.mjs`]).status)
+    expect(box.exec(["sh", "-c", `echo >> ${RUNNERS}/${box.digest}/runner.mjs`]).status)
       .toBe(0);
     const other = box.probe("login-probe", "claude-code");
     expect(other.code, other.why).toBe(1);
     expect(other.err).toContain(`the runner ${box.digest} the probes were built beside is not ` +
                                 "installed here");
     // With their runner gone from the sandbox, the probes refuse loudly.
-    expect(box.exec(["rm", "-rf", `/opt/ta/runner/${box.digest}`]).status).toBe(0);
+    expect(box.exec(["rm", "-rf", `${RUNNERS}/${box.digest}`]).status).toBe(0);
     const alone = box.probe("login-probe", "claude-code");
     expect(alone.code, alone.why).toBe(1);
     expect(alone.err).toContain(`the runner ${box.digest} the probes were built beside is not ` +
@@ -678,14 +678,14 @@ describe("the vendor's own sign-in", () => {
     box.login({ id, engine: "codex" }, doors);
     box.runner("login-launch", id);
     await frameWhere(id, (frame) => frame["state"] === "open");
-    box.write(`/var/lib/ta/inbox/${id}.code`, "not-wanted");
+    box.write(inboxCode(id), "not-wanted");
     expect(box.runner("login-input", id).code).toBe(0);
-    expect(() => lstatSync(box.path(`/var/lib/ta/inbox/${id}.code`))).toThrow();
+    expect(() => lstatSync(box.path(inboxCode(id)))).toThrow();
     // A code the Worker left that was never handed over goes with the sign-in's end.
-    box.write(`/var/lib/ta/inbox/${id}.code`, "left-behind");
+    box.write(inboxCode(id), "left-behind");
     box.runner("login-cancel", id);
     await doors.ended_(25_000, id);
-    expect(() => lstatSync(box.path(`/var/lib/ta/inbox/${id}.code`))).toThrow();
+    expect(() => lstatSync(box.path(inboxCode(id)))).toThrow();
     expect(box.ran("codex").some((each) => each.stdin.includes("not-wanted"))).toBe(false);
     expect(signinFrames(id).some((frame) => frame["state"] === "code_sent")).toBe(false);
   });
@@ -1693,8 +1693,8 @@ describe("prepare, at the sandbox's real paths", () => {
     chownSync(box.path("/etc/group-ta"), 0, TA_GID);
     chmodSync(box.path("/etc/group-ta"), 0o664);
     const other = "a".repeat(64);
-    box.write(`/opt/ta/runner/${other}/runner.mjs`, "// another runner");
-    box.write("/var/lib/ta/inbox/si_x.code", "left at rest");
+    box.write(`${RUNNERS}/${other}/runner.mjs`, "// another runner");
+    box.write(inboxCode("si_x"), "left at rest");
     const prepared = box.runner("prepare", "8.8.8.8", "1.1.1.1");
     expect(prepared.code, prepared.why).toBe(0);
     expect(readFileSync(box.path("/etc/resolv.conf"), "utf8"))
@@ -1715,8 +1715,8 @@ describe("prepare, at the sandbox's real paths", () => {
     expect(statSync(box.path("/opt/ta/anyone")).mode & 0o777).toBe(0o644);
     expect(statSync(box.path("/etc/group-ta")).mode & 0o777).toBe(0o644);
     expect(readFileSync(box.path("/var/lib/ta/format"), "utf8")).toBe(`${STATE_FORMAT}\n`);
-    expect(readdirSync(box.path("/opt/ta/runner"))).toEqual([box.digest]);
-    expect(existsSync(box.path("/var/lib/ta/inbox/si_x.code"))).toBe(false);
+    expect(readdirSync(box.path(RUNNERS))).toEqual([box.digest]);
+    expect(existsSync(box.path(inboxCode("si_x")))).toBe(false);
     // The host's own are untouched: its sudoers, and its /proc.
     expect(readFileSync("/etc/sudoers", "utf8")).toBe(hostSudoers);
     expect(readFileSync("/proc/mounts", "utf8")).not.toMatch(/ \/proc proc [^ ]*hidepid/);
@@ -1778,7 +1778,7 @@ describe("cancel and the runner's state", () => {
     // older one's bytes are beside it.
     const own = box.digest;
     const old = "b".repeat(64);
-    box.write(`/opt/ta/runner/${old}/runner.mjs`, "// a runner");
+    box.write(`${RUNNERS}/${old}/runner.mjs`, "// a runner");
     box.write("/var/lib/ta/sessions-seen.json", "{}");
     box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
                              sleepMs: 20_000 });
@@ -1808,9 +1808,9 @@ describe("cancel and the runner's state", () => {
     // A new marker: the one cache gone with it; the durable state kept. No runner's bytes
     // go at `adopt`: its `prepare` drops them once the row names it.
     expect(existsSync(box.path("/var/lib/ta/sessions-seen.json"))).toBe(false);
-    expect(readdirSync(box.path("/opt/ta/runner")).sort()).toEqual([own, old].sort());
+    expect(readdirSync(box.path(RUNNERS)).sort()).toEqual([own, old].sort());
     // Run by no loader (no digest named), it refuses.
-    expect(box.exec([NODE, `/opt/ta/runner/${own}/runner.mjs`, "adopt"]).status).toBe(1);
+    expect(box.exec([NODE, `${RUNNERS}/${own}/runner.mjs`, "adopt"]).status).toBe(1);
   });
 
   it("reads every format's run and sign-in state it reads, as each was recorded", () => {
@@ -1827,12 +1827,16 @@ describe("cancel and the runner's state", () => {
           files["var/lib/ta/signin/<id>/state.json"]!, { pid: sleepers[1]!, ended: false })));
         const answer = JSON.parse(box.runner("state").out) as Record<string, unknown>;
         expect(answer).toMatchObject({ live: 2 });
-        // The answer is the one the runner's protocol records, field for field.
-        expect(Object.keys(answer).sort())
-          .toEqual([...PROTOCOLS[String(PROTOCOL)]!.state].sort());
+        // Each answer is the one the runner's protocol records, field for field.
+        const answers = PROTOCOLS[String(PROTOCOL)]!.answers;
+        expect(shapeProblems(answer, answers[COMMAND.state]!)).toEqual([]);
+        expect(shapeProblems(JSON.parse(box.runner("quiet-wait", String(Date.now())).out),
+                             answers[COMMAND.quietWait]!)).toEqual([]);
         expect(box.runner("adopt").code).toBe(3);  // both read as living
         rmSync(box.path(`/var/lib/ta/runs/${run}`), { recursive: true, force: true });
         rmSync(box.path(`/var/lib/ta/signin/${id}`), { recursive: true, force: true });
+        // `renew-wait` answers nothing: the Worker reads only its exit.
+        expect(box.runner("renew-wait", String(Date.now()))).toMatchObject({ code: 0, out: "" });
       }
     } finally {
       for (const sleeper of sleepers) {

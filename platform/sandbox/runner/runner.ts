@@ -31,9 +31,9 @@
  *   paths back into the store, the files synced out, the user given back, then the end.
  * - `cancel <run>`: SIGTERM to the CLI, a kill after `CANCEL_GRACE_MS`; 3 when not live.
  * - `status <run>`: 0 while its runner runs, else 3.
- * - `state`: the live runs and whether every CLI is quiet (`{live, quiet}`).
+ * - `state`: the live runs, whether every CLI is quiet, and the protocol (`StateAnswer`).
  * - `quiet-wait <until_ms>`: until every live CLI is quiet (between turns, as its events
- *   show) or `until`, then the live runs and whether they are quiet (`{live, quiet}`): the
+ *   show) or `until`, then the live runs and whether they are quiet (`QuietAnswer`): the
  *   renewal's look for a quiet moment, signalling nothing.
  * - `renew-wait <deadline_ms>`: until every live CLI is quiet or the deadline, then each
  *   run's runner, told on its channel (`tell`), posts `ta.renewing` and holds its posts;
@@ -71,15 +71,15 @@ import type { SourceRecord } from "../../sources/src/schema";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
 import { RUNNER_HEADER } from "../../contract/src/egress";
 import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
+import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
-import { AGENTS_DIR, binPath, HOMES, invocation, isKept, keptPaths, SYSTEM,
-         WORKSPACE } from "./engine";
+import { binPath, HOMES, invocation, isKept, keptPaths, SYSTEM } from "./engine";
 import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite, walkFiles } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
-import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
-         secretAtoms } from "./guards";
+import { ancestorEnvFile, envScanReach, heldSecret, homeEnvFile, projectEnvFile,
+         projectEnvRefusal, secretAtoms } from "./guards";
 import { project } from "./project";
 import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
          scratchCleared, type ScratchCleared,
@@ -91,11 +91,11 @@ import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
   openMirror, RACY_MS, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport,
 } from "./sync";
-import { type Command, COMMAND, EXIT, inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS,
-         INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer, type RenewAnswer,
+import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc, JOB_FILES,
+         type JobKind, JOBS, INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer,
          RUNNERS, type SigninDoc, type StartDoc, type StateAnswer,
          STATE_DIR } from "./protocol";
-import { COMMAND_MS, CONVERSATIONS, configOwned, dropHome, engineEnv, giveTree, keepHome,
+import { CONVERSATIONS, configOwned, dropHome, engineEnv, giveTree, keepHome,
          makeHome, nextGeneration, readJson, record, RECORDS, shared, sortedWalk, STORE,
          withStore } from "./session";
 import { checkFormat, dropRunners } from "./state-format";
@@ -536,7 +536,7 @@ function prepare(servers: readonly string[]): number {
   // in the inbox goes at every boot and resume, before anything else reads it.
   const inbox = INBOX;
   for (const name of existsSync(inbox) ? readdirSync(inbox) : []) {
-    if (name.endsWith(".code")) {
+    if (name.endsWith(CODE_SUFFIX)) {
       remove(`${inbox}/${name}`);
     }
   }
@@ -678,7 +678,7 @@ function quiet(state: RunState): boolean {
     || state.last_kind === "result" || state.last_kind === "usage";
 }
 
-function answer(value: StateAnswer | QuietAnswer | RenewAnswer): number {
+function answer(value: StateAnswer | QuietAnswer): number {
   process.stdout.write(JSON.stringify(value));
   return OK;
 }
@@ -717,11 +717,11 @@ async function renewWait(deadline: number): Promise<number> {
   for (;;) {
     const live = liveRuns();
     if (live.length === 0) {
-      return answer({ live: 0 });
+      return OK;
     }
     if (live.every(({ state }) => quiet(state)) || Date.now() >= deadline) {
       await told(VERB.renewing, deadline);
-      return answer({ live: live.length });
+      return OK;
     }
     await new Promise((resolve) => setTimeout(resolve, FLUSH_MS));
   }
@@ -1041,19 +1041,15 @@ function envFiles(home: string, cwd: string): { home: Map<string, string>;
       out.home.set(rel, text);
     }
   }
-  const depth = (rel: string) => {
-    const parts = rel.split("/");
-    return parts.length > 2 || (parts.length === 2 && !parts[0]!.startsWith("."))
-      || (parts.length === 1 && !parts[0]!.startsWith("."));
-  };
-  for (const rel of sortedWalk(cwd, depth)) {
+  const beyond = (rel: string) => !envScanReach(rel);
+  for (const rel of sortedWalk(cwd, beyond)) {
     const text = projectEnvFile(rel) === null ? undefined : read(cwd, rel);
     if (text !== undefined) {
       out.project.set(rel, text);
     }
   }
   for (let dir = dirname(cwd); ; dir = dirname(dir)) {
-    for (const rel of sortedWalk(dir, depth)) {
+    for (const rel of sortedWalk(dir, beyond)) {
       const text = ancestorEnvFile(rel) === null ? undefined : read(dir, rel);
       if (text !== undefined) {
         out.above.set(`${dir}/${rel}`, text);

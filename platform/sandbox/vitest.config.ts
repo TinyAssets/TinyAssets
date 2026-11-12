@@ -7,6 +7,9 @@ import { defineConfig } from "vitest/config";
 import { project } from "../ci/project";
 import { configBindings, fake, main, once, pool, workerConfig } from "../ci/workers";
 
+import { PROTOCOL } from "./runner/protocol";
+import { PROTOCOLS } from "./runner/test/state-shape";
+
 const SANDBOX = dirname(fileURLToPath(import.meta.url));
 /** Builds the runner the Worker ships before the tests that need it (`runner-build.ts`). */
 const RUNNER_BUILD = join(SANDBOX, "runner-build.ts");
@@ -28,9 +31,11 @@ export default defineConfig({
             bindings: { E2B_API_KEY: "e2b_test_key_0000" },
             serviceBindings: { E2B: "fake-e2b" },
             outboundService: "fake-e2b",
-            // The ring queue's consumer in tests: each ring recorded at once.
-            workers: [fake(join(SANDBOX, "test", "fake-e2b.ts"), { queueConsumers: {
-              [RING]: { maxBatchSize: 1, maxBatchTimeout: 0 } } })],
+            // The ring queue's consumer in tests: each ring recorded at once. The fake's loader
+            // and runner answer by the runner protocol's record (`PROTOCOL`).
+            workers: [fake(join(SANDBOX, "test", "fake-e2b.ts"), {
+              bindings: { PROTOCOL: PROTOCOLS[String(PROTOCOL)]! },
+              queueConsumers: { [RING]: { maxBatchSize: 1, maxBatchTimeout: 0 } } })],
           })))),
         ],
         test: { globalSetup: [RUNNER_BUILD] },
