@@ -962,7 +962,7 @@ describe("settlement", () => {
     await until(() => upstreamCancelled("deadline"), "the upstream cancel");
   });
 
-  it("ends a stream when its lease closes, or its connection is revoked", async () => {
+  it("ends a stream when its run ends, or its connection is revoked", async () => {
     const box = await sandbox();
     const first = await send(egressRequest(box, COMPLETIONS, {
       headers: { "x-fake-egress": "slow-close" } }));
@@ -971,7 +971,7 @@ describe("settlement", () => {
     await over(box);
     await settledOf(box.owner);
     expect(await drained(reader)).toBe("egress_ended");
-    expect(await reservations(box.owner)).toMatchObject([{ ended: "lease", outcome: "ended" }]);
+    expect(await reservations(box.owner)).toMatchObject([{ ended: "run", outcome: "ended" }]);
 
     const again = await sandbox();
     const second = await send(egressRequest(again, COMPLETIONS, {
