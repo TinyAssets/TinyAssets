@@ -44,7 +44,7 @@ export default defineConfig({
       // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
       project("owner", "workerd", {
         plugins: [
-          cloudflareTest(once(() => pool(main(join(PLATFORM, "owner"), {
+          cloudflareTest(once(async () => pool(main(join(PLATFORM, "owner"), {
               durableObjects: Object.fromEntries(Object.entries(NAMESPACES).map(
                 ([binding, className]) => [binding, { className, useSQLite: true }])),
               bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
@@ -58,10 +58,12 @@ export default defineConfig({
                                  SANDBOX_LOG: { name: "fake-sandbox", entrypoint: "Log" } },
               outboundService: "fake-upstream",
               workers: [
-                auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: FILES_RING } }),
-                auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: KEYRING },
-                                                       outboundService: "fake-upstream" }),
-                auxiliary(join(PLATFORM, "codemode"), {}),
+                await auxiliary(join(PLATFORM, "files"),
+                                { bindings: { FILES_KEYRING: FILES_RING } }),
+                await auxiliary(join(PLATFORM, "gateway"),
+                                { bindings: { GATEWAY_KEYRING: KEYRING },
+                                  outboundService: "fake-upstream" }),
+                await auxiliary(join(PLATFORM, "codemode"), {}),
                 gate("sandbox-gate", methodsOf(join(PLATFORM, "contract", "src", "sandbox.ts"),
                                                 "SandboxService"), { fake: FAKE_SANDBOX }),
                 fake(FAKE_SANDBOX),

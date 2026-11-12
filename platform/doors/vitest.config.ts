@@ -42,7 +42,7 @@ export default defineConfig({
       project("doors", "workerd", {
         test: { globalSetup: ["./test/import-setup.ts"] },
         plugins: [
-          cloudflareTest(once(() => pool(main(join(PLATFORM, "doors"), {
+          cloudflareTest(once(async () => pool(main(join(PLATFORM, "doors"), {
               durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
               bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY,
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
@@ -58,12 +58,13 @@ export default defineConfig({
                                  SANDBOX: "fake-sandbox",
                                  SANDBOX_LOG: { name: "fake-sandbox", entrypoint: "Log" } },
               workers: [
-                auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: KEYRING },
-                                                       outboundService: "fake-providers" }),
-                auxiliary(join(PLATFORM, "codemode"), {}),
+                await auxiliary(join(PLATFORM, "gateway"),
+                                { bindings: { GATEWAY_KEYRING: KEYRING },
+                                  outboundService: "fake-providers" }),
+                await auxiliary(join(PLATFORM, "codemode"), {}),
                 fake(join(PLATFORM, "doors", "test", "fake-providers.ts")),
                 fake(join(PLATFORM, "owner", "test", "fake-sandbox.ts")),
-                auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: KEYRING } }),
+                await auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: KEYRING } }),
               ],
             }, "./test/entry.ts")))),
         ],

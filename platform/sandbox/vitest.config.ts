@@ -27,7 +27,7 @@ export default defineConfig({
       // (`E2B`) to script it and read back what it received.
       project("sandbox", "workerd", {
         plugins: [
-          cloudflareTest(once(() => pool(main(SANDBOX, {
+          cloudflareTest(once(async () => pool(main(SANDBOX, {
             bindings: { E2B_API_KEY: "e2b_test_key_0000" },
             serviceBindings: { E2B: "fake-e2b" },
             outboundService: "fake-e2b",

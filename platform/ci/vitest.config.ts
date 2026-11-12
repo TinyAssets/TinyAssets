@@ -35,7 +35,7 @@ export default defineConfig({
       // call none of them.
       project("ci", "workerd", {
         plugins: [
-          cloudflareTest(once(() => pool({
+          cloudflareTest(once(async () => pool({
             miniflare: {
               compatibilityDate: workerConfig(OWNER).compatibility_date,
               compatibilityFlags: ["nodejs_compat"],
@@ -49,15 +49,15 @@ export default defineConfig({
                 FILES_GATE: control("files-gate"), OWNER_GATE: control("owner-gate"),
               },
               workers: [
-                auxiliary(OWNER, {
+                await auxiliary(OWNER, {
                   bindings: { ROUTING_MAC_KEY: randomBytes(32).toString("base64url") },
                   serviceBindings: { FILES: "files-gate" },
                 }),
-                auxiliary(FILES, { bindings: { FILES_KEYRING: keyring() } }),
-                auxiliary(join(PLATFORM, "gateway"), {
+                await auxiliary(FILES, { bindings: { FILES_KEYRING: keyring() } }),
+                await auxiliary(join(PLATFORM, "gateway"), {
                   bindings: { GATEWAY_KEYRING: keyring() } }),
-                auxiliary(join(PLATFORM, "codemode"), {}),
-                auxiliary(join(PLATFORM, "sandbox"), {
+                await auxiliary(join(PLATFORM, "codemode"), {}),
+                await auxiliary(join(PLATFORM, "sandbox"), {
                   bindings: { E2B_API_KEY: "e2b_unused_in_kit_tests" } }),
                 gate("files-gate", methodsOf(join(PLATFORM, "contract", "src", "files.ts"),
                                              "ChunkStore"), { worker: FILES }),
