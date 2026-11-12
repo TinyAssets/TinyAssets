@@ -11,6 +11,8 @@
  */
 import raw from "../acts.json" with { type: "json" };
 
+import { object as plain } from "./checks";
+
 /** A CLI's own tool kind whose every call is the act (`kinds`). */
 export type HookKind = keyof typeof raw.kinds;
 /** When a door's call is its act (`conditions`): every call when its row names none. */
@@ -28,9 +30,6 @@ const ACT_KEYS = "hook,says,unseen";
 const FILE_KEYS = "about,acts,conditions,kinds,unseen";
 /** An act's name: dotted lowercase words. */
 const ACT_NAME = /^[a-z]+(?:\.[a-z]+)*$/;
-
-const plain = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Distinct names, each one of `known`'s keys. */
 function namesOf(value: unknown, known: Record<string, unknown>): boolean {
@@ -76,23 +75,15 @@ export function actProblems(file: unknown): string[] {
   return problems;
 }
 
-/** `value` and everything in it frozen, so no module can change an act for the isolate. */
-function frozen<T>(value: T): T {
-  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
-    for (const each of Object.values(value)) {
-      frozen(each);
-    }
-    Object.freeze(value);
-  }
-  return value;
-}
-
 const problems = actProblems(raw);
 if (problems.length > 0) {
   throw new Error(`the acts file is broken: ${problems.join("; ")}`);
 }
-const ACTS = frozen(raw.acts as unknown as Readonly<Record<string, Act>>);
-const CONDITIONS = frozen(raw.conditions);
+/** Each act frozen whole, so no module can change one for the isolate. */
+const ACTS: Readonly<Record<string, Act>> = Object.freeze(Object.fromEntries(
+  Object.entries(raw.acts).map(([name, act]) => [name, Object.freeze({
+    says: act.says, hook: Object.freeze([...act.hook] as HookKind[]),
+    unseen: Object.freeze([...act.unseen] as Unseen[]) })])));
 
 /** The act named `name`, or undefined for a name the file does not hold. */
 export function actNamed(name: unknown): Act | undefined {
@@ -101,5 +92,5 @@ export function actNamed(name: unknown): Act | undefined {
 
 /** Whether `name` is a condition the file defines. */
 export function isCondition(name: unknown): name is Condition {
-  return typeof name === "string" && Object.hasOwn(CONDITIONS, name);
+  return typeof name === "string" && Object.hasOwn(raw.conditions, name);
 }
