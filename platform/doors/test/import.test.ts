@@ -29,7 +29,6 @@ import { admitOwner, doorsEnv, OPEN, setControl, TIERS } from "./support";
 
 const KEY = randomBytes(32).toString("base64url");
 const BUNDLE: ImportBundle = inject("importBundle");
-const NOTICE = "Your files from the old TinyAssets are in /workspace/imported";
 
 const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
@@ -183,7 +182,7 @@ async function readBack(owner: string, files = bundleFiles()): Promise<void> {
   }
   const notices = (await stub.noticeList(own(owner))).notices;
   expect(notices.filter((notice) => notice.type === "imported").map((notice) => notice.detail))
-    .toEqual([NOTICE]);
+    .toEqual([json(files.get("owner.json")!)["notice"]]);
 }
 
 beforeAll(async () => {

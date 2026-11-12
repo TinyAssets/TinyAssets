@@ -10,6 +10,9 @@
  *
  * And the profiles (`profiles.json`, slice M): each lists exactly its tools, table tools in
  * the table's order; `code`, a generic executor, never in the directory's.
+ *
+ * And the agent's definition (the starter's text and the MCP instructions): it names only the
+ * table's tools, and nothing of the cutover's import.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +21,7 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import profiles from "../../contract/profiles.json" with { type: "json" };
+import { IMPORTED } from "../../contract/src/paths";
 import {
   CLIENT_PROFILES, DEFAULT_PROFILE, doorTable, type DoorRow, profileNames, type Tool, toolNames,
   toolTable,
@@ -294,54 +298,11 @@ describe("tool table guard", () => {
                          "file_append", "file_edit", "collection_write"]) {
       expect(CLIENT_KEY).toContain(named);
     }
-    // The tools it names are the table's, so each is one the client is served (connect_url
-    // is a field of agents_list's apps).
-    for (const tool of (CLIENT_INSTRUCTIONS.match(/\b[a-z]+_[a-z_]+\b/g) ?? []).filter((word) => word !== "connect_url")) {
-      expect(toolNames(), tool).toContain(tool);
-    }
     for (const profile of CLIENT_PROFILES) {
       expect(profileNames(profile)).toEqual(expect.arrayContaining(
         ["search", "fetch", "file_append", "file_edit", "collection_write", "agents_list"]));
     }
     expect(RUN_INSTRUCTIONS).not.toBe(CLIENT_INSTRUCTIONS);
-  });
-
-  it("tells an outside client's agent, once, inside onboarding, what to say to a user who " +
-     "moved from the old TinyAssets, and never to act on the old files alone (import slice 8)",
-     () => {
-    const first = "# Your files from the old TinyAssets";
-    // The key is the first line of the README the importer writes.
-    expect(readFileSync(join(PLATFORM, "import", "build.ts"), "utf8")).toContain(`"${first}",`);
-    const start = CLIENT_INSTRUCTIONS.indexOf("If /workspace/USER.md is missing");
-    const onboarding = CLIENT_INSTRUCTIONS.slice(start, CLIENT_INSTRUCTIONS.indexOf(". ", start) + 1);
-    // The gate: onboarding's own condition, so it runs once, until the Onboarded date is
-    // written; and nowhere else in the text.
-    expect(onboarding.endsWith("fill in the Profile's Onboarded line with today's date.")).toBe(true);
-    expect(CLIENT_INSTRUCTIONS.split("/workspace/imported/")).toHaveLength(2);
-    expect(onboarding).toContain("/workspace/imported/");
-    // After the user's own request, first in onboarding's message, keyed on the README.
-    const clause = onboarding.slice(onboarding.indexOf("after doing what they asked, if "),
-                                    onboarding.indexOf("; then ask in one message"));
-    expect(clause).toContain(`if /workspace/imported/README.md begins "${first}", first tell ` +
-                             "them");
-    for (const said of ["their old data came across there",
-                        "their old schedules no longer run",
-                        "connectors, model sources and API keys again in TinyAssets, never by " +
-                        "pasting a secret",
-                        "offer to merge the imported files, merging only what they pick",
-                        "never deleting or moving anything there unless they ask",
-                        "save that rule in USER.md as a directive"]) {
-      expect(clause, said).toContain(said);
-    }
-    // No word that lets an agent act alone; and the pattern sees each kind an edit could add.
-    const permissions = /\b(?:you|agents?|it) (?:may|can|should) (?:delete|move|remove|merge|overwrite)\b|\bautomatic(?:ally)?\b|\b(?:merge|delete|move|remove) (?:everything|all|them all|the whole)\b|\b(?:delete|move|remove) the imported\b|\bif they do not answer\b/i;
-    expect(CLIENT_INSTRUCTIONS).not.toMatch(permissions);
-    for (const added of ["you may delete the imported files once merged",
-                         "merge them automatically", "merge everything there"]) {
-      expect(`${clause}; ${added}`, added).toMatch(permissions);
-    }
-    // The brain's rules in the first 512 characters hold none of it.
-    expect(CLIENT_KEY).not.toContain("/workspace/imported/");
   });
 
   it("lists exactly each profile's tools: the directory's all but code, a run's all but " +
@@ -404,5 +365,47 @@ describe("tool table guard", () => {
          gate: "door", args: "none" });
     expect([...outsideDoors([row("peek", "account"), row("mine", "owner")])])
       .toEqual([["peek", "read_graph"]]);
+  });
+});
+
+/**
+ * The words of `text` that look like one of `tools` and are none: a word whose first segment
+ * is a tool family (`file_`, `run_`, ...) that no tool is named, as a renamed tool left in a
+ * text would be. A family's wildcard (`file_*`) is one: name the tools, or say it in prose.
+ */
+function strayTools(text: string, tools: readonly string[]): string[] {
+  const families = new Set(tools.filter((name) => name.includes("_"))
+    .map((name) => name.split("_")[0]));
+  return [...text.matchAll(/\b[a-z]+_[a-z0-9_*]*/g)].map((found) => found[0])
+    .filter((word) => families.has(word.split("_")[0]) && !tools.includes(word));
+}
+
+/**
+ * The agent's one definition, as every engine reads it: the starter's files (the plugins carry
+ * its skills byte for byte, `apps.test.ts`) but the vendored OKF spec, which is upstream's
+ * words, and the MCP instructions.
+ */
+describe("the agent's definition", () => {
+  const starter = JSON.parse(readFileSync(join(PLATFORM, "starter", "starter.json"), "utf8")) as
+    { okf: { vendored: string }; files: { path: string; text: string }[] };
+  const texts: [string, string][] = [
+    ...starter.files.filter((file) => file.path !== starter.okf.vendored)
+      .map((file): [string, string] => [file.path, file.text]),
+    ["CLIENT_INSTRUCTIONS", CLIENT_INSTRUCTIONS], ["RUN_INSTRUCTIONS", RUN_INSTRUCTIONS]];
+
+  it("names only the door table's tools", () => {
+    for (const [where, text] of texts) {
+      expect([where, strayTools(text, toolNames())]).toEqual([where, []]);
+    }
+    // A misspelt tool and a family's wildcard are seen; a field of a tool's answer is not one.
+    expect(strayTools("use `file_*` or run_stauts, then agents_list's connect_url", toolNames()))
+      .toEqual(["file_*", "run_stauts"]);
+  });
+
+  it("says nothing of the cutover's import, which only the importer's README explains", () => {
+    for (const [where, text] of texts) {
+      expect([where, text.includes(IMPORTED), /old TinyAssets/i.test(text)])
+        .toEqual([where, false, false]);
+    }
   });
 });

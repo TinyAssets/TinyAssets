@@ -31,7 +31,9 @@ from the starter's skills and `platform/contract/identity.json`. Don't edit them
 - **Example prompts:** take them from the manifest's `defaultPrompt`. Put "Set me up on
   TinyAssets" first.
 - **The review reads the MCP `instructions` and tool descriptions** (OpenAI: "scanned and
-  reviewed"). They sit in `platform/doors/src/instructions.ts` and `platform/contract/doors.json`. Check them
+  reviewed"). They sit in `platform/doors/src/instructions.ts`, whose onboarding steps come from
+  the starter's onboarding skill (its steps' bold leads, written into
+  `platform/doors/onboarding.json` by `build.mjs`), and `platform/contract/doors.json`. Check them
   against the plugin guidelines on the day: no "always", no broad triggering, and nothing
   that redirects the conversation.
 - **The tool annotations** are explicit on every tool. `file_append` is
