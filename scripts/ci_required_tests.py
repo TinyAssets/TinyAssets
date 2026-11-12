@@ -23,8 +23,8 @@ Honesty note (same spirit as pr-scope-guard.yml)
 -----------------------------------------------
 A contributor CAN add their own broken test to the quarantine file to get green.
 This is a declaration control, not a security boundary. What it does buy: doing
-so is an explicit, reviewable line in the diff, inside the PR's declared lane,
-instead of an invisible regression riding in on a green check.
+so is an explicit, reviewable line in the PR's diff, instead of an invisible
+regression riding in on a green check.
 """
 
 from __future__ import annotations
