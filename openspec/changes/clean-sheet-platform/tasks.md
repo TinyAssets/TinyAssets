@@ -343,7 +343,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     G-H11 and G-SP5 (d3 §O5).
   - Lane R's cipher PR: `files/src/cipher.ts`'s SSE-C premise (d3 §O8).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is seven PRs, each green on its own:
+  (d3 §K1, §K2). T1 is eight PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
   - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
@@ -359,17 +359,28 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     a test that a halted schedule runs no lane already due (`schedule.ts`'s `onJob`); the
     memory leg's floor never read high by earlier work's garbage (the pool's observer made
     outside `run`, the floor read again at the run's start).
-  - [ ] T1b4: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
-    `admitted`, `changes`, `adopt` and `wall` required, its decisions as pure functions, the
-    archive's tests at production ceilings, `b23_research.md` question 3).
+  - [ ] T1b4: the ledger's decisions as pure functions tested with small numbers (`sealable`,
+    `archiveDue`, `hotFull`, `postRoom`, `moveTake`); `admitted`, `changes`, `adopt` and `wall`
+    required; `ledger-bounds` and `agent-mail`'s identity bounds at production's ceilings; the
+    memory probe's measured move production's largest segment (d3 §K1).
+  - [ ] T1b5: the archive's object tests at production ceilings (`archive-mail.test.ts`), then
+    the ledger's `limits` parameter, `Internals.ledgerLimits`, `BigArchivingOwnerDO` and the
+    other three classes' ceilings deleted, `LEDGER_LIMITS` checked once at module load, and a
+    test of the purge queue's ceiling (`ledger.ts` `remove`, `maxAgentRows` purges waiting),
+    which none holds today (`b23_research.md` question 3), and one that a lone straggler makes
+    the lane due (no test fails today if `Ledger.archiveDue` asks `archiveDue` no straggler).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     the unbound-`ERASURES` throw gone (`owner-do.ts:767-768`; the generated `OwnerEnv` already
     types it required, C2b) with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
     rig admitting by the door, the doors' entry with no third constructor argument, and
     `BackupParts`' test-only `sizes?` and `pool?` gone; the owner suite's lease clock under the
-    fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`) (list 6, item 6j).
-  - [ ] T1d: the owner memory probe driven through the doors.
+    fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`) (list 6, item 6j);
+    the object's `admitted` held by a test (no test fails today if the object passes the ledger
+    `() => true`: a suspension between a wakes pass's claims, the `GATEWAY` gate holding its
+    send); `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted.
+  - [ ] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
+    copy of the object's wiring, deleted.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real

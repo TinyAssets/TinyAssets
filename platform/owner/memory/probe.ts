@@ -38,9 +38,11 @@ import { TIERS } from "../../ci/fixtures";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
 import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
+import { isAdmitted } from "../src/admission";
 import { Backups } from "../src/backup";
 import { Bodies, type Located } from "../src/bodies";
 import { ChangeLog } from "../src/changelog";
+import { Collections } from "../src/collections";
 import { Grants } from "../src/grants";
 import { Ledger, LEDGER_LIMITS } from "../src/ledger";
 import { EDIT_BYTES_MAX, Files } from "../src/files";
@@ -53,7 +55,7 @@ import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import type { OwnerEnv } from "../src/env";
 import { OwnerDO } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
-import { Policy } from "../src/policy";
+import { fileLimits, Policy } from "../src/policy";
 import { MIGRATIONS } from "../src/schema";
 import {
   MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, RECORD_TRAILER_BYTES,
@@ -188,6 +190,16 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
 }
 
 /**
+ * The leg's files on `gate`'s storage, over `store`: at 25 GB, and alone, as
+ * the leg measures them: nothing to reclaim, tell or keep, and the wall the plain refusal.
+ */
+function legFiles(gate: WriteGate, store: ChunkStore): Files {
+  return new Files(gate.storage, store, () => ({ ...FILE_DEFAULTS, max_bytes: 25_000_000_000 }),
+                   gate.write, () => new Refusal("storage_full"), () => false, () => {},
+                   () => null);
+}
+
+/**
  * The store as the owner isolate calls it: each chunk read, once it is in hand, is a
  * checkpoint too, so a sample sees the bytes a call brought before the path goes on.
  */
@@ -288,11 +300,7 @@ export class LegOwner extends OwnerDO {
     super(state, { ...env, FILES: files });
     this.#leg = env;
     this.#gate = new WriteGate(state.storage);
-    const bodyFiles = new Files(this.#gate.storage, files,
-                            () => ({ ...FILE_DEFAULTS, max_bytes: 25_000_000_000 }),
-                            this.#gate.write, () => new Refusal("storage_full"),
-                            // The leg measures bodies alone: nothing to reclaim, tell or keep.
-                            () => false, () => {}, () => null);
+    const bodyFiles = legFiles(this.#gate, files);
     this.#bodies = new Bodies(bodyFiles, this.#gate.storage, this.#gate.write);
     this.#files = bodyFiles;
   }
@@ -465,22 +473,37 @@ const ORIGINS = [MUSE, DOT, PAT];
  */
 export class LegArchive extends OwnerDO {
   readonly #state: DurableObjectState;
+  readonly #store: ChunkStore;
 
   constructor(state: DurableObjectState, env: LegEnv) {
-    super(state, { ...env, FILES: received(env) }, { starter: null });
+    const store = received(env);
+    super(state, { ...env, FILES: store }, { starter: null });
     this.#state = state;
+    this.#store = store;
   }
 
-  #ledger(): Ledger {
+  /**
+   * The ledger on the object's storage, a copy of the object's wiring: the owner's admission,
+   * the collections' change cursor, and the leg's own files' adoption and wall (`legFiles`).
+   * It goes when the probe reaches the ledger only by the doors (T1d).
+   */
+  #ledger(grants = new Grants(this.#state.storage, new Policy(this.#state.storage))): Ledger {
     const storage = this.#state.storage;
-    return new Ledger(storage, new Grants(storage, new Policy(storage)));
+    const gate = new WriteGate(storage);
+    const files = legFiles(gate, this.#store);
+    const bodies = new Bodies(files, gate.storage, gate.write);
+    const collections = new Collections(storage, bodies.adopt, () =>
+      fileLimits(new Policy(storage).read().document, null));
+    return new Ledger(storage, grants, () => isAdmitted(storage),
+                      () => collections.clock(), bodies.adopt,
+                      (needed) => files.fullRefusal(needed));
   }
 
   /** Agents registered as their own clients file them: each's id. */
   legAgents(): string[] {
     const storage = this.#state.storage;
     const grants = new Grants(storage, new Policy(storage));
-    const ledger = new Ledger(storage, grants);
+    const ledger = this.#ledger(grants);
     return ORIGINS.map((origin, n) => {
       grants.admit(origin.client, "mcp", null, Math.floor(Date.now() / 1000));
       return ledger.register(origin, { kind: "mcp", ref: `conn-${n}` }, {
@@ -756,11 +779,11 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
     } else if (path === "bodies" || path === "rewrite") {
       // At the production limits: two acked bodies, the owner's to the muse and to Dot, and
       // the hot mail past half its ceiling with unread small mail, so the lane seals the
-      // bodies and nothing else, as production seals them (`archivePick`). For the move, two
-      // of `mib` MiB: under the seal each, together in one segment; at 8 MiB, the body cap,
-      // each its own, since one reaches the seal alone. For the rewrite, the largest segment
-      // one can meet: the muse's body, within bytes, the largest that does not seal alone,
-      // then Dot's at `mib` (the cap), one segment of about 16 MiB; then Dot is deleted.
+      // bodies and nothing else, as production seals them (`archivePick`): the muse's body the
+      // smaller of `mib` MiB and the largest that does not seal alone, then Dot's at `mib`, so
+      // the two are one segment. At 4 MiB they seal together; at 8 MiB, the body cap, they are
+      // the largest segment production makes, about 16 MiB of two records. The move moves it;
+      // the rewrite's setup moves it, then deletes Dot.
       const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
       const post = async (on: DurableObjectStub<LegArchive>, k: number, bytes: number,
@@ -768,18 +791,16 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
         (await on.roomPost(as, { room_id: `dm:${to[k]}`, client_message_id: `b${k}`,
                                   body: new TextDecoder().decode(letters(seed * 10 + k, bytes)),
                                   parent_id: null })).message_id;
-      let kept = mib * MIB;
-      if (path === "rewrite") {
-        // A record's own bytes past its body's, read from a message of the same shape on an
-        // object of its own. Its three rows each write its post's `clock()`, whole seconds to
-        // three decimals, so another post's record is up to `TIMES_SLACK` longer: the kept
-        // body is then at most that and a byte short of the seal alone, and never reaches it.
-        const sizing = await archiveObject(env, `${name}-sizing`);
-        const its = await sizing.legAgents();
-        const overhead = await sizing.legOverhead(
-          await post(sizing, 0, SEGMENT_MIN_BYTES / 2, owner(`${name}-sizing`), its));
-        kept = SEGMENT_MIN_BYTES - 1 - TIMES_SLACK - (overhead - RECORD_TRAILER_BYTES);
-      }
+      // A record's own bytes past its body's, read from a message of the same shape on an
+      // object of its own. Its three rows each write its post's `clock()`, whole seconds to
+      // three decimals, so another post's record is up to `TIMES_SLACK` longer: the largest
+      // body that does not seal alone is then at most that and a byte short of the seal.
+      const sizing = await archiveObject(env, `${name}-sizing`);
+      const its = await sizing.legAgents();
+      const overhead = await sizing.legOverhead(
+        await post(sizing, 0, SEGMENT_MIN_BYTES / 2, owner(`${name}-sizing`), its));
+      const kept = Math.min(mib * MIB, SEGMENT_MIN_BYTES - 1 - TIMES_SLACK
+                                         - (overhead - RECORD_TRAILER_BYTES));
       await stub.legAck(0, await post(stub, 0, kept));
       await stub.legAck(1, await post(stub, 1, mib * MIB));
       // Each ring is one more unread message (the run rings once, the rewrite's setup once
@@ -915,7 +936,12 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
         await settled(archive, path === "rewrite" ? (seen) => seen.purges === 0
           : (seen) => seen.records >= want!);
         await idle(archive);
-        return (await archive.legArchived()).records;
+        const seen = await archive.legArchived();
+        if (path === "bodies" && (seen.segments !== 1 || seen.records !== 2)) {
+          throw new Error(`the move's two bodies are not one segment of two records: ${
+            JSON.stringify(seen)} (the seal rule changed?)`);
+        }
+        return seen.records;
       }
       if (path === "edit") {
         const done = await stub.fileEdit(who, { path: "/workspace/f.txt", old_text: MARK,

@@ -1596,9 +1596,9 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     const { generation, policy } = await r.stub.policyRead(r.bind());
     const written = r.stub.policyWrite(r.session(), { expected_generation: generation,
       policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
-    const first = await Promise.race([written.then(() => "answered"), new Promise(
-      (resolve) => setTimeout(() => resolve("waiting"), 2000))]);
+    // The write answers, on no clock: a write that waited on the sandbox would never answer
+    // here, since the re-apply then reaches the gate and stays held, never let go.
+    expect(await written).toMatchObject({ policy: { egress: { mode: "allowlist" } } });
     expect(await env.SANDBOX_GATE.held(HELD_WAIT_MS)).toHaveLength(1);
-    expect(first).toBe("answered");
   });
 });
