@@ -791,12 +791,15 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
                                   body: new TextDecoder().decode(letters(seed * 10 + k, bytes)),
                                   parent_id: null })).message_id;
       // A record's own bytes past its body's, read from a message of the same shape on an
-      // object of its own: the largest body that does not seal alone is one byte short of it.
+      // object of its own. Its three rows each write its post's `clock()`, whole seconds to
+      // three decimals, so another post's record is up to `TIMES_SLACK` longer: the largest
+      // body that does not seal alone is then at most that and a byte short of the seal.
       const sizing = await archiveObject(env, `${name}-sizing`);
       const its = await sizing.legAgents();
       const overhead = await sizing.legOverhead(
         await post(sizing, 0, SEGMENT_MIN_BYTES / 2, owner(`${name}-sizing`), its));
-      const kept = Math.min(mib * MIB, SEGMENT_MIN_BYTES - 1 - (overhead - RECORD_TRAILER_BYTES));
+      const kept = Math.min(mib * MIB, SEGMENT_MIN_BYTES - 1 - TIMES_SLACK
+                                         - (overhead - RECORD_TRAILER_BYTES));
       await stub.legAck(0, await post(stub, 0, kept));
       await stub.legAck(1, await post(stub, 1, mib * MIB));
       // Each ring is one more unread message (the run rings once, the rewrite's setup once
@@ -839,6 +842,13 @@ async function ring(stub: DurableObjectStub<LegArchive>, who: Binding, agent: st
   await stub.roomPost(who, { room_id: `dm:${agent}`, client_message_id: cmid, body: "ring",
                              parent_id: null });
 }
+
+/**
+ * The most two posts' records of one shape differ by: each of a record's three rows (the
+ * message, its body, its recipient) writes the post's `clock()`, `Date.now() / 1000`, as
+ * whole seconds up to three decimals, so 4 characters a row (`".123"`).
+ */
+const TIMES_SLACK = 3 * ".123".length;
 
 /** How often a case looks at its archive object's lane, and how many looks it waits at most. */
 const LANE_POLL_MS = 10;
