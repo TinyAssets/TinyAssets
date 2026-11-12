@@ -326,14 +326,16 @@ function signinDocument(signin: SandboxSignin): SigninDoc {
 }
 
 /**
- * The lease file a start or sign-in that opened its lease hands the runner: the lease and
- * the runner's two tokens alone. The egress token stays in E2B's transform, outside.
+ * The lease file a start or sign-in that opened its lease hands the runner (null for one
+ * that joins it): the lease and the runner's two tokens alone. The egress token stays in
+ * E2B's transform, outside.
  */
-function leaseFile(request: SandboxStart | SandboxSignin,
-                   tokens: NonNullable<SandboxStart["tokens"]>): LeaseFile {
-  return { lease: { lease_id: request.lease.lease_id, epoch: request.lease.epoch },
-           authority: request.authority,
-           tokens: { sync_token: tokens.sync_token, runner_token: tokens.runner_token } };
+function leaseFile(request: SandboxStart | SandboxSignin): LeaseFile | null {
+  const { tokens } = request;
+  return tokens === null ? null
+    : { lease: { lease_id: request.lease.lease_id, epoch: request.lease.epoch },
+        authority: request.authority,
+        tokens: { sync_token: tokens.sync_token, runner_token: tokens.runner_token } };
 }
 
 /** What a start or a sign-in hands its job's launch (`#launch`). */
@@ -844,8 +846,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return { started: false, code: CODES.lost };
       }
       const { handle } = got;
-      if (request.tokens !== null) {
-        await e2b.upload(handle, LEASE_FILE, json(leaseFile(request, request.tokens)));
+      const lease = leaseFile(request);
+      if (lease !== null) {
+        await e2b.upload(handle, LEASE_FILE, json(lease));
         // The lease's own network is on it now: a re-apply kept for an earlier one is moot.
         this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0, network_due = NULL " +
                          "WHERE authority = ?", request.lease.lease_id, request.authority);
