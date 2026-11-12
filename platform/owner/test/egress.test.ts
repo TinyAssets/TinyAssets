@@ -1361,6 +1361,14 @@ describe("the sandbox's lease", () => {
     expect(await r.sql("SELECT epoch FROM file_space")).toEqual([{ epoch: lease.epoch }]);
     expect(JSON.stringify(await r.sql("SELECT * FROM sandbox_leases")))
       .not.toContain(lease.opened.egress_token.split(".")[2]);
+    // Its runner's every event batch is its heartbeat: the lease lives on from that batch.
+    await r.sql("UPDATE sandbox_leases SET lease_expires = lease_expires - 30");
+    const [aged] = await r.sql("SELECT lease_expires FROM sandbox_leases") as
+      { lease_expires: number }[];
+    await r.stub.runEvents(runnerBinding(r, lease.start), { frames: [] });
+    const [renewed] = await r.sql("SELECT lease_expires FROM sandbox_leases") as
+      { lease_expires: number }[];
+    expect(renewed!.lease_expires).toBeGreaterThanOrEqual(aged!.lease_expires + 29);
     // No run meets a deadline: the tokens die with the lease, given back once its last run
     // ends.
     await over(r, lease);
