@@ -201,10 +201,16 @@ try {
   const costs = JSON.parse(await get("/costs"));
   const UNIT = costs.unit;
   const QUARTER = costs.chunk / 4;
-  /** The most a case holds over the isolate at rest after its setup, and its checkpoints. */
+  /**
+   * The most a case holds over the isolate at rest with it ready, and its checkpoints. The
+   * floor is read after its setup and again at the run's `start`, before its path begins, and
+   * is the lesser: earlier work's garbage still counted at one reading (a stale reference)
+   * only ever adds to it, and a floor read high reads the whole run low (a 96 MiB edit once
+   * read 0.01 MiB against its usual 8, and failed the 192 against 96 difference).
+   */
   const peak = async (path, mib, n = 1) => {
     await get(`/setup?path=${path}&mib=${mib}&n=${n}`);
-    const floor = Math.min(await live(), await live());
+    let floor = Math.min(await live(), await live());
     let most = 0;
     let points = 0;
     // The most a sample in the owner isolate read past the units its pool held then: each
@@ -221,9 +227,14 @@ try {
     // The most live while a log segment's ship hold (`SHIP_UNITS`) is what the pool holds.
     let shipMost = 0;
     sample = async (held, at) => {
+      const reading = await live();
+      if (at.split("+").every((each) => each === "start")) {
+        floor = Math.min(floor, reading);
+        return;
+      }
       points += 1;
       heldMost = Math.max(heldMost, held ?? 0);
-      const now = await live() - floor;
+      const now = reading - floor;
       if (held === costs.SHIP_UNITS) {
         shipMost = Math.max(shipMost, now);
       }

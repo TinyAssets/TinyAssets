@@ -872,17 +872,28 @@ async function idle(stub: DurableObjectStub<ArchiveObject>): Promise<void> {
     await stub.legArchived())}`);
 }
 
+/**
+ * Each hold's end, before its release, as a checkpoint (`SlotPool.observe`). Made outside
+ * `run`, so the pool, which keeps it until the next run, holds `env` alone: a closure made in
+ * `run` shares its one context, and kept this case's appended text live into the next
+ * case's floor.
+ */
+function observer(env: LegEnv): (units: number) => Promise<void> {
+  return (units) => owned(env, `end-of-${units}`);
+}
+
 async function run(env: LegEnv, path: string, mib: number, timed: boolean):
     Promise<number[]> {
   TIMED.on = timed;
-  // Each hold's end, before its release, is a checkpoint too (`SlotPool.observe`).
-  holds.ownerSlots().observe = (units) => owned(env, `end-of-${units}`);
+  holds.ownerSlots().observe = observer(env);
   await env.STORE.timed(timed);
   const appended = LEG.appended;
   return Promise.all(LEG.ready.map(async ({ name, who, etag, content, offset, agents,
                                           want }) => {
     const stub = env.OWNER.getByName(name);
     try {
+      // Every case ready and nothing of its path begun: the driver reads its floor here too.
+      await owned(env, "start");
       if (path === "records") {
         return await moveRecords(env, MOVE_RECORDS);
       }
