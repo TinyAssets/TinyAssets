@@ -34,8 +34,9 @@ export default defineConfig({
       // Worker beside it have every binding their configs give them (`main`, `auxiliary`),
       // and a test states only their secrets and what it changes; nothing is read from the
       // host (`pool`). The sandbox Worker's CONTROL is the config's namespace, the
-      // owner's too, as at deploy; no test writes a control record there, so it starts
-      // nothing (`sandbox_unconfigured`), and its key reaches no E2B: its behaviour against
+      // owner's too, as at deploy. The tests write control records there, and none holds
+      // sandbox numbers, so it starts nothing (`sandbox_unconfigured`); its key reaches no
+      // E2B (its fetches reach the fake outside world): its behaviour against
       // E2B is its own package's tests (`sandbox/test`).
       // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
       project("owner", "workerd", {

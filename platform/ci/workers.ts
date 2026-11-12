@@ -390,13 +390,15 @@ export function hostSecrets(options: unknown): string[] {
 /**
  * A test's Workers' options, checked before they run (`cloudflareTest(once(() => pool(...)))`,
  * and the doors' browser test's Miniflare): refused when they read a config through the pool
- * (`wrangler`, which fills secrets and vars from the host) or carry any host secret
- * (`hostSecrets`).
+ * (`wrangler`, or `experimental`'s config file: wrangler's conversion fills either's secrets
+ * and vars from the host) or carry any host secret (`hostSecrets`).
  */
 export function pool<Options extends object>(options: Options): Options {
-  if ("wrangler" in options) {
-    throw new Error("a test pool reads no config itself (its wrangler option fills secrets " +
-                    "and vars from the host): build its Worker with ci/workers.ts main()");
+  const reads = ["wrangler", "experimental"].filter((option) => option in options);
+  if (reads.length > 0) {
+    throw new Error(`a test pool reads no config itself (its ${reads.join(" and ")} option ` +
+                    "fills secrets and vars from the host): build its Worker with " +
+                    "ci/workers.ts main()");
   }
   const found = hostSecrets(options);
   if (found.length > 0) {

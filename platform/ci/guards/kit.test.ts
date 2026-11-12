@@ -236,12 +236,20 @@ describe("the Worker kit", () => {
       }
     }
     expect(() => pool({ wrangler: {} })).toThrow(/a test pool reads no config itself/);
+    expect(() => pool({ experimental: { newConfig: true } }))
+      .toThrow(/a test pool reads no config itself \(its experimental option/);
   });
 
   it("builds every test's Workers through the kit: no config read by the pool or wrangler, " +
      "and every pool checked", () => {
-    const forbidden = ["configPath", "unstable_getMiniflareWorkerOptions", "getPlatformProxy",
-                       "unstable_readConfig"];
+    // The pool's own config options, and wrangler as a module: its conversions and its dev
+    // servers (`unstable_dev`, `unstable_startWorker`, `getPlatformProxy`) each fill a
+    // Worker's secrets and vars from `.dev.vars`, `.env` and `process.env`. The kit runs only
+    // wrangler's command line, to bundle.
+    const forbidden: readonly (readonly [string, RegExp])[] = [
+      ["configPath", /configPath/], ["newConfig", /newConfig/],
+      ["the wrangler module", /(?:\bfrom|\bimport\s*\(|\brequire\s*\()\s*["']wrangler["']/],
+    ];
     const problems: string[] = [];
     const walk = (dir: string, at: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -256,7 +264,7 @@ describe("the Worker kit", () => {
           continue;
         }
         const text = readFileSync(join(dir, entry.name), "utf8");
-        for (const word of forbidden.filter((token) => text.includes(token))) {
+        for (const [word] of forbidden.filter(([, pattern]) => pattern.test(text))) {
           problems.push(`${path} names ${word}`);
         }
         const pools = text.split("cloudflareTest(").length - 1;
