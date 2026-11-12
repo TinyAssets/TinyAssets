@@ -302,7 +302,7 @@ Each joins the lane named. None blocks its u3 PR.
      - **P-H1** (`okf-watch apply` runs only `bundle.mjs` and leaves the plugins stale, release-critical), with P-H2 and P-T2, goes to B9. `okf-watch apply` runs `npm run generate`, and the workflow adds `platform/plugins`.
    - B22's idle cut lives in `gateway/src/forward.ts` (`IDLE_CUT_MS`). Its only reader is the gateway, so that is the right home by B6. Logged.
    - B13's `/app` plus `/app/*` text is superseded by §J1 (`app*`).
-6. **Lane C's first PR adds §G14's tools row.** It keeps `vitest.config.ts` files, which import `ci/`, apart from build tools, which must not.
+6. **Lane C's first PR adds §G14's tools row.** It keeps `vitest.config.ts` files, which import `ci/`, apart from build tools, which must not. (C2 left it; C2b adds it, `ci/kit/layers.ts` "a workspace's tools".)
 7. **R4 (the `tasks.md` re-cut) goes next, before more lanes edit `tasks.md`.** The file is 244 KB, and each PR adds history lines to it.
 8. **The small items** (15, 16) ride the PR that next touches each file:
    - the `cipher.ts` SSE-C premise goes with lane R's cipher PR;

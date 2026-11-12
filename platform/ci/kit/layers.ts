@@ -143,10 +143,19 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     computed: true,
   },
   {
-    // A workspace's tools are the scripts at its top (its test config, its generators).
-    name: "a workspace's tests, memory legs and tools",
+    // A workspace's tools are the scripts at its top but its test configs (d2 §G14, d3 §O6):
+    // its generators and builds, run in Node. They take their own workspace, the contract and
+    // the records, never the test kit.
+    name: "a workspace's tools",
     files: ["platform/<ws>/*.{ts,mts,cts,js,mjs,cjs}", "!platform/{ci,deploy,import}/*",
-            "platform/{deploy,import}/vitest.config.ts",
+            "!platform/<ws>/vitest.config.ts", "!platform/sandbox/root-tests.mjs"],
+    may: ["platform/<ws>/**", "!platform/<ws>/guards/**", ...CONTRACT, ...SOURCES, ...NOT_TESTS],
+  },
+  {
+    // A workspace's test configs and its test runner sit at its top beside its tools.
+    name: "a workspace's tests and memory legs",
+    files: ["platform/<ws>/vitest.config.ts", "!platform/ci/*",
+            "platform/sandbox/root-tests.mjs",
             "platform/<ws>/**/test/**", "platform/<ws>/**/*.test.*",
             "platform/<ws>/memory/**", "!platform/<ws>/guards/**", "!platform/ci/**"],
     may: TESTS_MAY,
