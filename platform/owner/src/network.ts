@@ -45,8 +45,9 @@
  *   made under (`x-ta-network-generation`) on every HTTPS request to the door, outside the
  *   VM, replacing any header of the same names the sandbox sent. The door admits a request
  *   only under the current egress generation, which moves only when the policy's egress
- *   table does, so a request through a stale network is refused until the sandbox slice
- *   applies the new one. The token is never in the VM; whoever holds the project's E2B API
+ *   table does, so a request through a stale network is refused until the new one is
+ *   applied: the `runs` lane re-applies each live lease's (`Launcher.reapply`, the sandbox
+ *   Worker's `network`). The token is never in the VM; whoever holds the project's E2B API
  *   key can read it back from the sandbox's info (`SandboxNetworkRuleInfo`), so that key is
  *   a platform secret with the token's custody.
  *
@@ -75,9 +76,11 @@ export interface EgressPolicy {
 
 /**
  * E2B's network configuration for the owner's egress policy at egress `generation`, with
- * `token`, the sandbox's egress token, in the egress door's transform.
+ * `token`, the sandbox's egress token, in the egress door's transform. A re-apply's plan
+ * (`token` null) carries none: the object holds only its hash, and the sandbox Worker sets
+ * the live sandbox's own (`NetworkReapply`).
  */
-export function networkDocument(egress: EgressPolicy, generation: number, token: string):
+export function networkDocument(egress: EgressPolicy, generation: number, token: string | null):
     NetworkPlan {
   const mode = egress.mode;
   if (mode !== "open" && mode !== "allowlist" && mode !== "ask") {
@@ -86,7 +89,7 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
   if (!Number.isSafeInteger(generation) || generation < 1) {
     throw new Refusal("invalid", "a policy generation is a whole number from 1");
   }
-  if (!tokenShaped(token)) {
+  if (token !== null && !tokenShaped(token)) {
     throw new Refusal("invalid", "a sandbox token is its owner, its secret and its MAC, base64url");
   }
   const allowed = new Set<string>();
@@ -102,7 +105,9 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
   // `open` lets every name out (`*`); either way the door is listed, last (`allowList`).
   const closed = closedNetwork(mode === "open" ? ["*"] : allowed);
   const headers: Record<string, string> = {};
-  headers[SANDBOX_HEADER] = token;
+  if (token !== null) {
+    headers[SANDBOX_HEADER] = token;
+  }
   headers[GENERATION_HEADER] = String(generation);
   const rules: Record<string, readonly NetworkRule[]> = {};
   rules[DOOR_HOST] = Object.freeze([Object.freeze({

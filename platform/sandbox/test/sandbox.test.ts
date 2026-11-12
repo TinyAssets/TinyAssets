@@ -70,13 +70,13 @@ async function rung(owner: string): Promise<void> {
 const hex = (n: number, c = "a") => c.repeat(n);
 const RUN = `run_${hex(32, "1")}`;
 const LEASE = { lease_id: hex(32, "b"), epoch: 1 };
-/** The lease's egress token, a marker: E2B's transform alone carries it, never the VM. */
+/** The lease's egress token, a marker: only the network's transform carries it. */
 const EGRESS_TOKEN = "egress-token-0f1e2d3c4b5a";
 const NETWORK = {
   network: { allowOut: ["github.com", "egress.tinyassets.io"], denyOut: ["0.0.0.0/0"],
              dnsServers: ["1.1.1.1"],
              rules: { "egress.tinyassets.io": [{ transform: { headers: {
-               "x-ta-sandbox": "token", "x-ta-network-generation": "1" } } }] } },
+               "x-ta-sandbox": EGRESS_TOKEN, "x-ta-network-generation": "1" } } }] } },
   mode: "allowlist", generation: 1, unexpressed: [], receipt: false, boundary: false, note: "",
 };
 
@@ -85,7 +85,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
     credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
     unattended: false, authority: "owner", lease: LEASE, route: "r".repeat(64),
-    tokens: { egress_token: EGRESS_TOKEN, sync_token: "sync", runner_token: hex(64, "d") },
+    tokens: { sync_token: "sync", runner_token: hex(64, "d") },
     network: NETWORK as never,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
               env: { HOME: "{home}" }, inherit: ["PATH"] },
@@ -1155,7 +1155,8 @@ describe("the schema (S25)", () => {
       migrations.map((each, i) => ({ version: i + 1, sha256: migrationDigest(each) }));
     await runInDurableObject(stub(who), (_instance, state) => {
       expect(kept(state)).toEqual(digests(CONTROL_MIGRATIONS));
-      const edited = [[...CONTROL_MIGRATIONS[0]!, "CREATE TABLE probe (n INTEGER)"]];
+      const edited = [[...CONTROL_MIGRATIONS[0]!, "CREATE TABLE probe (n INTEGER)"],
+                      ...CONTROL_MIGRATIONS.slice(1)];
       expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_CHANGED);
     });
     await runInDurableObject(env.SLOTS.getByName(SLOTS), (_instance, state) => {
@@ -1207,5 +1208,93 @@ describe("the network", () => {
     await stub(who).start(who, start({ credential: "api_key", network: none as never }));
     const prepare = (await seen()).commands.find((command) => command.argv[1] === "prepare")!;
     expect(prepare.argv.slice(1)).toEqual(["prepare"]);
+  });
+});
+
+describe("a live lease's network re-applied (E2)", () => {
+  /** A re-apply's plan under generation 2: the policy's network, its transform's generation, no token. */
+  const PLAN = { ...NETWORK, generation: 2, network: {
+    allowOut: ["egress.tinyassets.io"], denyOut: ["0.0.0.0/0"], dnsServers: ["1.1.1.1"],
+    rules: { "egress.tinyassets.io": [{ transform: { headers: {
+      "x-ta-network-generation": "2" } } }] } } };
+  const reapply = (over: Record<string, unknown> = {}) =>
+    ({ authority: "owner", lease: LEASE, network: PLAN, ...over }) as never;
+  /** A sandbox's network as the fake E2B holds it: its names and its door's headers. */
+  const networkOf = async (index = 0) => {
+    const box = (await seen()).sandboxes[index]! as unknown as {
+      network: { allowOut: string[];
+                 rules: Record<string, { transform: { headers: Record<string, string> } }[]> } };
+    return { allowOut: box.network.allowOut,
+             headers: box.network.rules["egress.tinyassets.io"]![0]!.transform.headers };
+  };
+
+  it("replaces a running sandbox's network whole, keeping its live egress token and every " +
+     "launched job's vendor hosts", async () => {
+    await e2b("/script", { signin: { "claude-code": 0, gemini: 0 } });
+    const who = owner();
+    await stub(who).start(who, start());
+    // A run joins on another engine's sign-in: its vendor's hosts are let out.
+    await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, engine: "gemini",
+                                       tokens: null, network: null }));
+    expect(await stub(who).network(reapply())).toEqual({ state: "applied" });
+    const network = await networkOf();
+    expect(network.headers).toEqual({ "x-ta-sandbox": EGRESS_TOKEN,
+                                      "x-ta-network-generation": "2" });
+    // The policy's own names are the plan's (`github.com` is gone); the jobs' vendors stay.
+    expect(network.allowOut).not.toContain("github.com");
+    expect(network.allowOut).toEqual(expect.arrayContaining(["claude.ai", "accounts.google.com"]));
+    expect(network.allowOut.at(-1)).toBe("egress.tinyassets.io");
+  });
+
+  it("answers lost for a lease it has no sandbox of, and refuses a plan with a token",
+     async () => {
+    const who = owner();
+    expect(await stub(who).network(reapply())).toEqual({ state: "lost" });
+    await stub(who).start(who, start({ credential: "api_key" }));
+    expect(await stub(who).network(reapply({ lease: { lease_id: hex(32, "9"), epoch: 2 } })))
+      .toEqual({ state: "lost" });
+    const tokened = { ...PLAN, network: { ...PLAN.network, rules: {
+      "egress.tinyassets.io": [{ transform: { headers: { "x-ta-sandbox": "forged",
+                                                          "x-ta-network-generation": "2" } } }] } } };
+    await expect(stub(who).network(reapply({ network: tokened })))
+      .rejects.toThrow(/no token/);
+    expect((await networkOf()).headers["x-ta-network-generation"]).toBe("1");
+  });
+
+  it("keeps it for a paused sandbox, applied as the sandbox resumes", async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
+    const who = owner();
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/pause", { id });
+    expect(await stub(who).network(reapply())).toEqual({ state: "at_resume" });
+    // Nothing is sent to a paused sandbox: E2B holds its old network until it resumes.
+    expect((await networkOf()).headers["x-ta-network-generation"]).toBe("1");
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes[0]!.state).toBe("running");
+    const network = await networkOf();
+    expect(network.headers).toEqual({ "x-ta-sandbox": EGRESS_TOKEN,
+                                      "x-ta-network-generation": "2" });
+    expect(network.allowOut).toEqual(expect.arrayContaining(["claude.ai"]));
+    expect(network.allowOut).not.toContain("github.com");
+  });
+
+  it("keeps a joining job's vendor hosts when the start that opened its lease runs after it",
+     async () => {
+    await e2b("/script", { signin: { "claude-code": 0, gemini: 0 } });
+    const who = owner();
+    // The sandbox runs under an older lease; then a new lease's joining job (gemini, on its
+    // own sign-in) reaches the Worker before the start that opened that lease.
+    await stub(who).start(who, start({ credential: "api_key" }));
+    const next = { lease_id: hex(32, "c"), epoch: 2 };
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, engine: "gemini",
+                                             lease: next, tokens: null, network: null })))
+      .toEqual({ started: true });
+    expect((await networkOf()).allowOut).toEqual(expect.arrayContaining(["accounts.google.com"]));
+    // The opener's network replaces the live one whole, and keeps the joiner's vendor.
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "3")}`, lease: next,
+                                             credential: "api_key" })))
+      .toEqual({ started: true });
+    expect((await networkOf()).allowOut).toEqual(expect.arrayContaining(["accounts.google.com"]));
   });
 });

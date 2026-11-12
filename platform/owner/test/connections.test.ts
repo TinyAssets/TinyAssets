@@ -25,7 +25,7 @@ import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
 import type { Binding } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
-import { hashed, ownerRun, secretOf } from "./runs-support";
+import { egressTokenOf, hashed, ownerRun, secretOf } from "./runs-support";
 import {
   ANTHROPIC, catalog, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT, scopeOf, sealedAs,
   until,
@@ -60,7 +60,7 @@ async function sandboxOf(r: Gated): Promise<Binding> {
   const { start } = await ownerRun(r.stub, r.bind(), { engine: "pi", credential: "api_key",
                                                        connection, scopes: [] });
   RUN = start.run;
-  const token = verifyToken(env.ROUTING_MAC_KEY, "egress", start.tokens!.egress_token)!.hash;
+  const token = verifyToken(env.ROUTING_MAC_KEY, "egress", egressTokenOf(start))!.hash;
   return r.bind({ sandbox: { kind: "egress", token, generation: start.network!.generation,
                              secret: hashed(secretOf(start)) } });
 }

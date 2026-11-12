@@ -171,7 +171,6 @@ export type LiveRun = {
 
 /** A lease the admission opened: its two tokens, for the start that configures the sandbox. */
 export interface OpenedTokens {
-  readonly egress_token: string;
   readonly sync_token: string;
   /** The runner's own secret, for its events and sign-in reports: never a CLI's. */
   readonly runner_token: string;

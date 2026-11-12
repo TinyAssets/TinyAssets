@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
-import { defineAgent, secretOf } from "../../owner/test/runs-support";
+import { defineAgent, egressTokenOf, secretOf } from "../../owner/test/runs-support";
 import { type DoorsEnv } from "../src/config";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
@@ -116,7 +116,7 @@ async function sandbox(models: Record<string, unknown> = {
   const { run_id: run } = await submitted.json<{ run_id: string }>();
   const start = await runInDurableObject(env.OWNER.getByName(owner), (instance: unknown) =>
     (instance as OwnerDO).recorder.starts.find((each) => each.run === run)!);
-  const opened: Opened = { egress_token: start.tokens!.egress_token,
+  const opened: Opened = { egress_token: egressTokenOf(start),
                            sync_token: start.tokens!.sync_token, lease: start.lease,
                            network: start.network!, env: start.config.env };
   return { owner, session: app.session, token: opened.egress_token, app: app.access_token,

@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { mintToken } from "../../contract/src/routing-mac";
 import type { Binding } from "../../contract/src/binding";
-import { defineAgent } from "../../owner/test/runs-support";
+import { defineAgent, egressTokenOf } from "../../owner/test/runs-support";
 import {
   EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER, SYNC_HEADER,
 } from "../../contract/src/egress";
@@ -42,7 +42,7 @@ async function leased() {
     (instance as OwnerDO).recorder.starts) as SandboxStart[];
   return { who, start: start!, sync: start!.tokens!.sync_token,
            // What every HTTPS call out of the sandbox carries: E2B's transform's headers.
-           inside: { [SANDBOX_HEADER]: start!.tokens!.egress_token,
+           inside: { [SANDBOX_HEADER]: egressTokenOf(start!),
                      [GENERATION_HEADER]: String(start!.network!.generation) } };
 }
 
@@ -133,8 +133,8 @@ describe("the sync doors", () => {
 
   it("refuse no token, the egress token, and a forged one, before any object", async () => {
     const { who, start } = await leased();
-    for (const headers of [{}, { [SYNC_HEADER]: start.tokens!.egress_token,
-                                 [SANDBOX_HEADER]: start.tokens!.egress_token,
+    for (const headers of [{}, { [SYNC_HEADER]: egressTokenOf(start),
+                                 [SANDBOX_HEADER]: egressTokenOf(start),
                                  [GENERATION_HEADER]: String(start.network!.generation) },
                            { [SYNC_HEADER]: mintToken(Buffer.alloc(32, 7).toString("base64url"), "sync", who,
                                                       Math.floor(Date.now() / 1000) + 60).token }]) {

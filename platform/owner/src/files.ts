@@ -320,6 +320,13 @@ export interface SandboxLease {
   readonly expires_at: number;
   /** The egress generation the sandbox's network was last applied under, or null. */
   readonly network_generation: number | null;
+  /**
+   * The egress generation a re-apply of its network is out with (`Launcher.reapply`), or
+   * null: its calls are admitted under it too, since only that network sets it.
+   */
+  readonly network_pending: number | null;
+  /** When that re-apply was sent, or the last one failed (s): the lane's retry clock. */
+  readonly network_tried_at: number | null;
   /** The engines its own runner last reported signed in inside it (a client's sandbox's). */
   readonly signins: readonly string[];
 }
@@ -337,14 +344,16 @@ export interface LeaseTokens {
 type LeaseRow = {
   authority: string; lease_id: string; epoch: number; holder: string; lease_expires: number;
   egress_token: string; sync_token: string; runner_token: string;
-  network_generation: number | null; signins: string;
+  network_generation: number | null; network_pending: number | null;
+  network_tried_at: number | null; signins: string;
 };
 
 function leaseOf(row: LeaseRow): SandboxLease {
   return { authority: row.authority, lease_id: row.lease_id, epoch: row.epoch,
            egress_token: row.egress_token, sync_token: row.sync_token,
            runner_token: row.runner_token, expires_at: row.lease_expires,
-           network_generation: row.network_generation,
+           network_generation: row.network_generation, network_pending: row.network_pending,
+           network_tried_at: row.network_tried_at,
            signins: row.signins === "" ? [] : row.signins.split(",") };
 }
 
@@ -2131,6 +2140,46 @@ export class Files {
     this.#change(null, () => {
       this.#sql.exec("UPDATE sandbox_leases SET network_generation = ? WHERE lease_id = ?",
                      generation, leaseId);
+    });
+  }
+
+  /**
+   * A re-apply of the live lease's network sent under `generation` at `now`: its calls are
+   * admitted under it from this unit on. Whether that lease, at that epoch, is still live.
+   */
+  networkSent(leaseId: string, epoch: number, generation: number, now: number): boolean {
+    return this.#change(null, () => this.#sql.exec(
+      "UPDATE sandbox_leases SET network_pending = ?, network_tried_at = ? " +
+        `WHERE lease_id = ? AND epoch = ? AND ${LIVE_LEASE}`,
+      generation, now, leaseId, epoch, now).rowsWritten > 0);
+  }
+
+  /**
+   * A re-apply's answer, fenced by the lease: `applied` confirms its generation (never an
+   * older one over a newer) and clears it from out; `at_resume` keeps it out (its sandbox
+   * paused, the Worker applies it as it resumes), its retry clock from `now`; a failure
+   * (`lost`, no answer) clears it, so its calls are refused again, and the lane tries again
+   * once its retry clock passes.
+   */
+  networkAnswered(leaseId: string, epoch: number, generation: number,
+                  answer: "applied" | "at_resume" | "failed", now: number): void {
+    this.#change(null, () => {
+      const fence = `WHERE lease_id = ? AND epoch = ? AND ${LIVE_LEASE}`;
+      if (answer === "applied") {
+        this.#sql.exec(
+          "UPDATE sandbox_leases SET network_generation = MAX(COALESCE(network_generation, " +
+            "0), ?), network_pending = CASE WHEN network_pending <= ? THEN NULL ELSE " +
+            "network_pending END, network_tried_at = CASE WHEN network_pending <= ? THEN " +
+            `NULL ELSE network_tried_at END ${fence}`,
+          generation, generation, generation, leaseId, epoch, now);
+      } else if (answer === "at_resume") {
+        this.#sql.exec(`UPDATE sandbox_leases SET network_tried_at = ? ${fence} AND ` +
+                         "network_pending = ?", now, leaseId, epoch, now, generation);
+      } else {
+        this.#sql.exec("UPDATE sandbox_leases SET network_pending = NULL, network_tried_at = ? " +
+                         `${fence} AND network_pending = ?`, now, leaseId, epoch, now,
+                       generation);
+      }
     });
   }
 

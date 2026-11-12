@@ -35,7 +35,7 @@ import { CREDENTIAL_KINDS, SourceRecordError } from "../../sources/src/schema";
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
 import type { Stamped, StandingGrant } from "./authority";
 import type { Placed, Placing } from "./bodies";
-import { OWNER_AUTHORITY, type Lease } from "./files";
+import { OWNER_AUTHORITY, type Lease, type SandboxLease } from "./files";
 import { type Delivery, type MailAuthority, mailInput } from "./ledger";
 import { nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
@@ -47,10 +47,21 @@ import {
   type SpendCaps, type UsableSource,
 } from "./runs";
 import { SANDBOX_ABSENT, SANDBOX_WAITING, started } from "./sandbox";
+import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
 import { switchedOn } from "./signins";
 import { tierNumbers } from "./tier";
 import type { TierName } from "../../contract/src/control";
 import type { CredentialKind, NetworkPlan } from "../../contract/src/sandbox";
+
+/**
+ * How long a live lease's re-apply waits before the lane sends it again, after it was sent
+ * with no answer yet, failed, or was kept for its paused sandbox: long enough that a lane
+ * pass does not loop on a sandbox Worker that keeps failing, short enough that a model call
+ * refused for a stale network is answered within a minute of the Worker taking it again.
+ */
+export const NETWORK_RETRY_S = 30;
+/** A re-apply's call to the sandbox Worker, bounded inside a lane pass (`schedule.ts`). */
+const NETWORK_CALL_MS = (LANE_HUNG_S - LANE_PASS_S) * 1000;
 
 /** The agent's file changed between its read and the admission: the caller tries again. */
 export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was admitted";
@@ -107,10 +118,6 @@ export interface SandboxLeases {
    * still live under it settled `unknown` (its runner is gone with it).
    */
   close(request: { lease_id: string; epoch: number }): Promise<{ released: boolean }>;
-  /** The network document for the current egress policy, with the egress token. */
-  network(egressToken: string): Promise<NetworkPlan>;
-  /** Whether a live lease's network is older than the egress policy: 8b re-applies it. */
-  stale(leaseId: string): Promise<boolean>;
   /** The owner's egress policy, its generation, and `run`'s environment. */
   config(run: SandboxRun): Promise<SandboxConfig>;
 }
@@ -132,6 +139,8 @@ export class Launcher implements RunHost {
    * synchronous unit, for its settle to post by reference (`answer`).
    */
   #replyPlaced: Placed | null = null;
+  /** The leases whose re-apply this instance has out with the sandbox Worker (`reapply`). */
+  readonly #reapplying = new Set<string>();
 
   constructor(o: LaunchState) {
     this.#o = o;
@@ -483,11 +492,20 @@ export class Launcher implements RunHost {
 
   // -- THE RUNS LANE -----------------------------------------------------------------------
 
-  /** The `runs` lane's next time: mail no run has taken while admitted, else Runs' own. */
+  /**
+   * The `runs` lane's next time: mail no run has taken while admitted, else the soonest of
+   * Runs' own and a live lease's re-apply coming due (`reapply`).
+   */
   next(now: number): number | null {
     const admitted = this.#o.unadmitted() === null;
-    return admitted && this.#o.ledger.mailDue(this.runs.queueRoom(MAIL_INPUT_BYTES)) ? now
-      : this.runs.next(now, admitted);
+    if (admitted && this.#o.ledger.mailDue(this.runs.queueRoom(MAIL_INPUT_BYTES))) {
+      return now;
+    }
+    const times = [this.runs.next(now, admitted),
+                   ...(admitted && this.sandboxBound()
+                     ? this.#behind(now).map((each) => each.due) : [])]
+      .filter((time): time is number => time !== null);
+    return times.length === 0 ? null : Math.min(...times);
   }
 
   /**
@@ -512,6 +530,7 @@ export class Launcher implements RunHost {
   async run(_now: number, until: number): Promise<void> {
     await this.#laneSignins();
     await this.#o.door(() => this.runs.lost(clock()));
+    await this.reapply(false);
     while (clock() < until) {
       const waiting = await this.#o.door(() => {
         const next = this.#o.unadmitted() !== null ? null : this.runs.nextWaiting();
@@ -737,9 +756,86 @@ export class Launcher implements RunHost {
                                                   generation: network.generation },
                              clock(), "egress.ask");
     }
-    return { lease, tokens: { egress_token: egress.token, sync_token: sync.token,
-                              runner_token: runner },
-             network };
+    return { lease, tokens: { sync_token: sync.token, runner_token: runner }, network };
+  }
+
+  /**
+   * In a unit: the live leases whose network is behind the current egress generation (an
+   * egress policy write since their start), each with its re-apply's due time: at once
+   * when none was tried, else `NETWORK_RETRY_S` after the last was sent or failed. Not one
+   * this instance has out now: its answer comes first.
+   */
+  #behind(now: number): { lease: SandboxLease; due: number }[] {
+    const generation = this.#o.policy.egressGeneration();
+    return this.#o.files.liveLeases(now)
+      .filter((lease) => lease.network_generation !== generation
+              && !this.#reapplying.has(lease.lease_id))
+      .map((lease) => ({ lease, due: lease.network_tried_at === null ? now
+        : Math.max(now, lease.network_tried_at + NETWORK_RETRY_S) }));
+  }
+
+  /**
+   * Each live lease whose network is behind the current egress generation, made again
+   * under it and re-applied on its sandbox (the sandbox Worker's `network`, which keeps the
+   * live egress token and the launched jobs' vendor hosts): the leases due (`#behind`), or
+   * on a `kick` (a policy write's, once its unit committed) every one not already out with
+   * this generation. Its send is a unit (`networkSent`): the lease's calls are admitted
+   * under the new generation from there on, since only that network's transform sets it.
+   * Its answer is another (`networkAnswered`): `applied` confirms it; `at_resume` keeps it
+   * out for its paused sandbox; `lost`, a throw or no answer within `NETWORK_CALL_MS`
+   * leaves it to the lane's next try (a late answer is recorded when it comes). In `ask`
+   * mode each re-apply is a refusal receipt, as each lease's first network is.
+   */
+  async reapply(kick: boolean): Promise<void> {
+    const sandbox = this.#o.env.SANDBOX;
+    if (sandbox === undefined) {
+      return;  // no sandbox bound, so no lease was opened under one
+    }
+    const sent = await this.#o.door(() => {
+      if (this.#o.unadmitted() !== null) {
+        return [];
+      }
+      const now = clock();
+      const generation = this.#o.policy.egressGeneration();
+      const due = this.#behind(now).filter(({ lease, due: at }) =>
+        kick ? lease.network_pending !== generation : at <= now);
+      if (due.length === 0) {
+        return [];
+      }
+      const network = networkDocument(this.#o.policy.read().document.egress, generation, null);
+      const out: { lease: SandboxLease; network: NetworkPlan }[] = [];
+      for (const { lease } of due) {
+        if (this.#o.files.networkSent(lease.lease_id, lease.epoch, generation, now)) {
+          this.#reapplying.add(lease.lease_id);
+          out.push({ lease, network });
+          if (network.receipt) {
+            this.#o.policy.refusal("sandbox_network", { mode: network.mode, generation },
+                                   clock(), "egress.ask");
+          }
+        }
+      }
+      return out;
+    });
+    await Promise.all(sent.map(async ({ lease, network }) => {
+      let answer: "applied" | "at_resume" | "failed" | "late" = "failed";
+      try {
+        const got = await inTime(sandbox.network(this.#o.owner(), {
+          authority: lease.authority, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
+          network }), NETWORK_CALL_MS);
+        answer = got === "late" ? "late" : got.state === "lost" ? "failed" : got.state;
+      } catch {
+        console.error("a lease's network re-apply did not reach the sandbox; the lane tries again");
+      }
+      try {
+        if (answer !== "late") {  // out still: its send's retry clock stands
+          const recorded = answer;
+          await this.#o.door(() => this.#o.files.networkAnswered(
+            lease.lease_id, lease.epoch, network.generation, recorded, clock()));
+        }
+      } finally {
+        this.#reapplying.delete(lease.lease_id);
+      }
+    }));
   }
 
   /**
@@ -798,16 +894,6 @@ export class Launcher implements RunHost {
           }
         }
         return { released };
-      }),
-      network: (egressToken) => this.#o.door(() => {
-        this.#o.admitted("read");
-        const { document } = this.#o.policy.read();
-        return networkDocument(document.egress, this.#o.policy.egressGeneration(), egressToken);
-      }),
-      stale: (leaseId) => this.#o.door(() => {
-        const lease = this.#o.files.liveLeases(clock()).find((each) => each.lease_id === leaseId);
-        return lease !== undefined
-          && lease.network_generation !== this.#o.policy.egressGeneration();
       }),
       config: (run) => this.#o.door(() => {
         this.#o.admitted("read");

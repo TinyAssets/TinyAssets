@@ -7,7 +7,8 @@
  *
  * - a run's start (`SandboxStart`) and a vendor sign-in's (`SandboxSignin`), each answered
  *   `Started`; the network the start that opens a lease configures (`NetworkPlan`, made by
- *   `owner/src/network.ts` in E2B's own field names);
+ *   `owner/src/network.ts` in E2B's own field names), and a live lease's network made again
+ *   under a newer egress generation (`NetworkReapply`, answered `NetworkApplied`);
  * - the Worker's own log of the owner's sandboxes (`MeterEvent`), read `METER_BATCH` at a time.
  */
 
@@ -82,12 +83,12 @@ export interface SandboxStart {
   readonly authority: string;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
   /**
-   * The lease's tokens, only when this start opened it: the egress token (E2B's transform),
-   * the sync token (the sync agent) and the runner's own secret (`x-ta-runner` on its event
-   * and sign-in posts), which the runner keeps where no CLI can read it.
+   * The lease's tokens, only when this start opened it: the sync token (the sync agent) and
+   * the runner's own secret (`x-ta-runner` on its event and sign-in posts), which the runner
+   * keeps where no CLI can read it. The egress token is not among them: only the network's
+   * transform carries it, outside the VM.
    */
-  readonly tokens: { readonly egress_token: string; readonly sync_token: string;
-                     readonly runner_token: string } | null;
+  readonly tokens: { readonly sync_token: string; readonly runner_token: string } | null;
   /** The owner's network, its transform carrying the egress token, with `tokens` only. */
   readonly network: NetworkPlan | null;
   readonly config: RunConfig;
@@ -140,6 +141,23 @@ export interface SandboxSignin {
   readonly urls: { readonly events: string; readonly signin: string };
 }
 
+/**
+ * A live lease's network made again under a newer egress generation (an egress policy write
+ * since its start): the plan's transform carries the generation header and no egress token,
+ * which the sandbox Worker keeps as the live sandbox's transform has it.
+ */
+export interface NetworkReapply {
+  readonly authority: string;
+  readonly lease: { readonly lease_id: string; readonly epoch: number };
+  readonly network: NetworkPlan;
+}
+
+/**
+ * A re-apply's answer: `applied`, on the running sandbox now; `at_resume`, its sandbox
+ * paused, the network kept and applied as it resumes; `lost`, no sandbox of that lease.
+ */
+export type NetworkApplied = { readonly state: "applied" | "at_resume" | "lost" };
+
 /** The most log entries one read takes. */
 export const METER_BATCH = 1000;
 
@@ -177,6 +195,12 @@ export interface SandboxService {
    */
   release(owner: string, request: { readonly lease_id: string }):
     Promise<{ readonly paused: boolean }>;
+  /**
+   * A live lease's network replaced whole on its sandbox (E2B's network update), under a
+   * newer egress generation: the live egress token kept, and every job launched in it kept
+   * its vendor hosts. A paused sandbox applies it as it resumes.
+   */
+  network(owner: string, request: NetworkReapply): Promise<NetworkApplied>;
   /** The owner waits for a sandbox no more: out of the platform's line. */
   unwait(owner: string): Promise<void>;
   /** The owner erased: each of their sandboxes killed, the Worker's state of them deleted. */

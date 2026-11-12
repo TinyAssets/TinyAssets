@@ -69,10 +69,13 @@ import { DurableObject } from "cloudflare:workers";
 import { readControl, type SandboxCeilings } from "../../contract/src/control";
 import { bundledSources, engineHosts } from "../../sources/src/catalog";
 import { LEASE_TTL_S } from "../../contract/src/limits";
-import { allowList, EGRESS_HOST } from "../../contract/src/egress";
+import {
+  allowList, EGRESS_HOST, GENERATION_HEADER, SANDBOX_HEADER,
+} from "../../contract/src/egress";
 import { migrate } from "../../contract/src/migrate";
 import {
-  METER_BATCH, type MeterEvent, type SandboxSignin, type SandboxStart, type Started,
+  METER_BATCH, type MeterEvent, type NetworkApplied, type NetworkReapply, type SandboxSignin,
+  type SandboxStart, type Started,
 } from "../../contract/src/sandbox";
 
 import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
@@ -194,6 +197,11 @@ interface Row {
   tries: number;
   /** The runner's digest the sandbox runs: this Worker's at its create, or adopted since. */
   runner: string;
+  /**
+   * A re-apply's network kept while its sandbox is paused, applied as it resumes: the
+   * owner's plan as it came, with no egress token (`network`), or null.
+   */
+  network_due: string | null;
 }
 
 /** A running sandbox's handle, and the runner's digest its commands name. */
@@ -232,6 +240,43 @@ function widened(network: E2bNetwork, hosts: readonly string[]): E2bNetwork | nu
     return null;
   }
   return { ...network, allowOut: allowList([...network.allowOut, ...hosts]) };
+}
+
+/**
+ * The egress token a sandbox's live network carries in the door's transform (as E2B's info
+ * returns its rules), or null when it carries none.
+ */
+function liveToken(network: unknown): string | null {
+  const rules = (network as { rules?: Record<string, unknown> } | null)?.rules;
+  const door = rules?.[EGRESS_HOST];
+  const first = Array.isArray(door) ? door[0] as { transform?: { headers?: unknown } } : undefined;
+  const headers = first?.transform?.headers as Record<string, unknown> | undefined;
+  const token = headers?.[SANDBOX_HEADER];
+  return typeof token === "string" && token !== "" ? token : null;
+}
+
+/**
+ * A re-apply's plan (`NetworkReapply`), held to its shape: E2B's whole document, its one
+ * transform on the door setting the generation header and no egress token.
+ */
+function reapplyNetwork(network: unknown): E2bNetwork {
+  const plan = e2bNetwork(network);
+  const door = plan.rules[EGRESS_HOST];
+  const headers = Array.isArray(door) && door.length === 1
+    ? (door[0] as { transform?: { headers?: Record<string, unknown> } }).transform?.headers
+    : undefined;
+  if (Object.keys(plan.rules).length !== 1 || headers === undefined
+      || typeof headers[GENERATION_HEADER] !== "string" || SANDBOX_HEADER in headers) {
+    throw new Error("a re-apply's network sets the door's generation header, and no token");
+  }
+  return plan;
+}
+
+/** The plan made whole: the live sandbox's own egress token set in the door's transform. */
+function withToken(plan: E2bNetwork, token: string): E2bNetwork {
+  const door = plan.rules[EGRESS_HOST]![0] as { transform: { headers: Record<string, string> } };
+  return { ...plan, rules: { [EGRESS_HOST]: [{ transform: { headers: {
+    ...door.transform.headers, [SANDBOX_HEADER]: token } } }] } };
 }
 
 /** The vendor's own hosts of an engine run on its sign-in; none on a key. */
@@ -409,6 +454,34 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       .toArray();
   }
 
+  /** The vendor hosts of every job launched in the authority's sandbox under `leaseId`. */
+  #launchedHosts(authority: string, leaseId: string | null): string[] {
+    const hosts = new Set<string>();
+    for (const { hosts: each } of this.#sql.exec<{ hosts: string }>(
+      "SELECT hosts FROM launched WHERE authority = ? AND lease_id = ?", authority, leaseId)
+      .toArray()) {
+      for (const host of JSON.parse(each) as string[]) {
+        hosts.add(host);
+      }
+    }
+    return [...hosts];
+  }
+
+  /**
+   * The re-apply kept for the authority's paused sandbox, made whole for `found` as it is
+   * now: the live egress token in the door's transform, the launched jobs' vendor hosts let
+   * out; or null when none is kept (or its sandbox carries no token to keep).
+   */
+  #due(authority: string, found: SandboxInfo): E2bNetwork | null {
+    const row = this.#row(authority);
+    const token = liveToken(found.network);
+    if (row?.network_due == null || token === null) {
+      return null;
+    }
+    const whole = withToken(reapplyNetwork(JSON.parse(row.network_due)), token);
+    return widened(whole, this.#launchedHosts(authority, row.lease_id)) ?? whole;
+  }
+
   /** Whether a lease runs in the authority's sandbox: a run launched and not released. */
   #leased(authority: string): boolean {
     return this.#sql.exec("SELECT 1 FROM launched WHERE authority = ?", authority).toArray()
@@ -542,13 +615,17 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     // Its own runner: the one that wrote its disk and launched its runs.
     let handle: Box = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken,
                         runner: row.runner };
-    if (network !== null) {
-      await e2b.network(resumed.sandboxID, network);
+    // A start's own network, else a re-apply kept while it was paused (`network`).
+    const applied = network ?? this.#due(row.authority, found);
+    if (applied !== null) {
+      await e2b.network(resumed.sandboxID, applied);
+      this.#sql.exec("UPDATE sandboxes SET network_due = NULL WHERE authority = ?",
+                     row.authority);
     }
     if (adopt && found.pauseMode !== "filesystem" && row.renewing === 0) {
       handle = (await this.#adopt(row.authority, handle)).box;
     }
-    await this.#prepare(handle, network ?? e2bNetwork(found.network));
+    await this.#prepare(handle, applied ?? e2bNetwork(found.network));
     if (found.pauseMode === "filesystem") {
       await this.#run(handle, [COMMAND.recover]);  // rebooted: its runs restart from disk
     } else if (row.renewing === 1) {
@@ -727,7 +804,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const e2b = this.#e2b();
       const network = request.network === null ? null : e2bNetwork(request.network.network);
       const hosts = job.hosts();
-      const first = network === null ? null : widened(network, hosts) ?? network;
+      // The opener's network replaces the live one whole: it keeps the vendor hosts of every
+      // job launched under this lease before it (a joining job's start that ran first).
+      const kept = network === null ? []
+        : [...hosts, ...this.#launchedHosts(request.authority, request.lease.lease_id)];
+      const first = network === null ? null : widened(network, kept) ?? network;
       const got = await this.#ensure(owner, request.authority, first, ceilings, request.route);
       if (got === "waiting") {
         return { started: false, code: CODES.waiting };
@@ -742,8 +823,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         const lease: LeaseFile = { lease: request.lease, authority: request.authority,
                                    tokens: { sync_token, runner_token } };
         await e2b.upload(handle, LEASE_FILE, json(lease));
-        this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0 WHERE authority = ?",
-                       request.lease.lease_id, request.authority);
+        // The lease's own network is on it now: a re-apply kept for an earlier one is moot.
+        this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0, network_due = NULL " +
+                         "WHERE authority = ?", request.lease.lease_id, request.authority);
       } else if (hosts.length > 0) {
         // A joining job on another engine's sign-in: its vendor's hosts added to the live
         // network (read back whole, its transform with it, and replaced whole).
@@ -763,8 +845,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         throw new Error(`the runner did not launch ${job.kind === "run" ? "run" : "sign-in"} ${
           job.id}`);
       }
-      this.#sql.exec("INSERT OR REPLACE INTO launched (run, authority, lease_id) VALUES (?, ?, ?)",
-                     job.id, request.authority, request.lease.lease_id);
+      this.#sql.exec("INSERT OR REPLACE INTO launched (run, authority, lease_id, hosts) " +
+                       "VALUES (?, ?, ?, ?)", job.id, request.authority,
+                     request.lease.lease_id, JSON.stringify(hosts));
       this.#sql.exec("UPDATE sandboxes SET releasing = 0, idle_since = NULL WHERE " +
                        "authority = ?", request.authority);
       await this.#arm();
@@ -781,6 +864,45 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /** The authority's running sandbox, or null (none, or paused). */
   async #running(authority: string): Promise<Box | null> {
     return (await this.#find(this.#row(authority))).handle;
+  }
+
+  /**
+   * A live lease's network replaced whole under a newer egress generation (the owner's
+   * `runs` lane, after an egress policy write), on the serial chain: the lease's sandbox as
+   * E2B has it now, the plan made whole with that sandbox's own egress token (read back from
+   * its live transform; the owner holds only its hash) and widened by the vendor hosts of
+   * every job launched in it under the lease, so a signed-in CLI keeps its vendor. A running
+   * sandbox takes it at once (`applied`); a paused one keeps it on its row, applied as it
+   * resumes (`at_resume`); a lease this Worker has no sandbox of answers `lost`.
+   */
+  async network(request: NetworkReapply): Promise<NetworkApplied> {
+    if (typeof request !== "object" || request === null || !AUTHORITY.test(request.authority)
+        || !LEASE.test(request.lease?.lease_id) || !Number.isSafeInteger(request.lease.epoch)) {
+      throw new Error("a re-apply names its authority and its lease");
+    }
+    const plan = reapplyNetwork(request.network?.network);
+    return this.#serial(async () => {
+      const e2b = this.#e2b();
+      const row = this.#row(request.authority);
+      if (row === null || row.lease_id !== request.lease.lease_id) {
+        return { state: "lost" };
+      }
+      const found = await e2b.info(row.sandbox_id);
+      const token = found === null ? null : liveToken(found.network);
+      if (found === null || token === null) {
+        return { state: "lost" };
+      }
+      if (handleOf(found, row) === null) {
+        this.#sql.exec("UPDATE sandboxes SET network_due = ? WHERE authority = ?",
+                       JSON.stringify(plan), row.authority);
+        return { state: "at_resume" };
+      }
+      const whole = withToken(plan, token);
+      await e2b.network(found.sandboxID,
+                        widened(whole, this.#launchedHosts(row.authority, row.lease_id)) ?? whole);
+      this.#sql.exec("UPDATE sandboxes SET network_due = NULL WHERE authority = ?", row.authority);
+      return { state: "applied" };
+    });
   }
 
   /**

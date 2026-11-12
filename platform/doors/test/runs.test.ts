@@ -17,7 +17,7 @@ import {
 } from "../../contract/src/egress";
 import type { Binding } from "../../contract/src/binding";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
-import { defineAgent, secretOf } from "../../owner/test/runs-support";
+import { defineAgent, egressTokenOf, secretOf } from "../../owner/test/runs-support";
 import { RUN_INSTRUCTIONS } from "../src/mcp";
 import { profileNames } from "../../contract/src/doors";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
@@ -90,7 +90,7 @@ const TOKENS = new Map<string, { egress: string; runner: string }>();
 
 function tokenOf(start: SandboxStart): string {
   if (start.tokens !== null) {
-    TOKENS.set(start.lease.lease_id, { egress: start.tokens.egress_token,
+    TOKENS.set(start.lease.lease_id, { egress: egressTokenOf(start),
                                        runner: start.tokens.runner_token });
   }
   return TOKENS.get(start.lease.lease_id)!.egress;

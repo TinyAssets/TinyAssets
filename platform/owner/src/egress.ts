@@ -16,10 +16,13 @@
  *   process in the sandbox spends as another run; and the connection is the one its run
  *   grant holds (`egress_run_connection`, `runs.ts`): a run never spends on a connection it
  *   was not given, and a run on the vendor's own sign-in may call none;
- * - the egress generation the request's transform carries, and the one the sandbox's
- *   network was last applied under, are the current one (`egress_policy_stale`,
- *   `egress_network_stale`): a write that changes the egress table leaves egress refused,
- *   fail-closed, until the sandbox slice applies the new network;
+ * - the egress generation the request's transform carries is the current one
+ *   (`egress_policy_stale`), and so is the one the sandbox's network was last applied
+ *   under or the one a re-apply is out with (`egress_network_stale`): a write that
+ *   changes the egress table leaves egress refused, fail-closed, until the `runs` lane
+ *   re-applies the lease's network under the new generation (`Launcher.reapply`), its
+ *   calls admitted once that re-apply is sent, since only the new network's transform
+ *   sets the new generation;
  * - the connection is the owner's, active, its credential usable and its scope stored
  *   (`egress_connection_refused`), and the method and path are among its sealed endpoints,
  *   by the gateway's own rule (`egress_endpoint_refused`);
@@ -445,7 +448,7 @@ export class Egress {
     if (sandbox.generation !== generation) {
       return refuse("egress_policy_stale");
     }
-    if (lease.network_generation !== generation) {
+    if (lease.network_generation !== generation && lease.network_pending !== generation) {
       return refuse("egress_network_stale");
     }
     const credential = this.#deps.credential(request.connection, now * 1000);

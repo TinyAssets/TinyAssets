@@ -553,6 +553,10 @@ export const policyDoors = Object.freeze({
                policy: written.document };
     }));
     await o.door(() => o.egress.end("policy"));
+    // A write that moved the egress generation: each live lease's network re-applied under
+    // it now, the lane trying again for any that does not land (`Launcher.reapply`).
+    await o.launcher.reapply(true);
+    await o.sync();
     return done;
   },
   policyProposal(o: OwnerState, { r }: Call<CardRequest>): { change: Change; digest: string } {
