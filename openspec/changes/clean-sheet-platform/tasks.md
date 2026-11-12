@@ -40,6 +40,8 @@ questions are at the end.
 - [x] 3.5 Policy, grants and sessions (`owner/src/policy.ts`, `grants.ts`, `sessions.ts`).
 - [x] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue
   (`owner/src/schedule.ts`).
+- [x] Append-only migrations from the first deploy: the locks (`owner/migrations.json`,
+  `sandbox/migrations/`), their guards (`owner/guards/lock.ts`) and the kit's `lockRefusal`.
 - [ ] 3.7 The owner's action decision. The gateway's binding gate it waited for is gone
   (ADR-034), so R5's design replaces it (d3 §N), built in R5's slices (§10 step 4).
 
@@ -72,7 +74,8 @@ questions are at the end.
 ## 6. Files and sandbox
 
 - [x] 6.1 The trusted file plane: the manifest in the owner's object and the files Worker
-  (`owner/src/files.ts`, `platform/files`).
+  (`owner/src/files.ts`, `platform/files`). Its create-once put on the live bucket is still
+  unprobed: §10 step 7.
 
 ## 7. Wakes and outside agents
 
@@ -183,7 +186,7 @@ The window is d3 §D steps 10 to 15, in this order. The deletion list below beco
   - The old platform's billing is turned off as the window opens (off without its Stripe
     secrets); every open Checkout Session completes or expires and its webhook is applied; then
     Stripe's endpoint (`/app/billing/webhook`) is disabled. No paid subscription exists (the
-    founder; d2 §F), and a billing door is later work (§10 step 19).
+    founder; d2 B13), and a billing door is later work (§10 step 19).
   - The full backup, then the census on that copy. Any paid owner or Stripe id it counts is
     raised before the window, and any edge case (digest-only tombstones, live capability URLs,
     unacked mail, an owner past 30,000 entries) stops it loudly and goes to the founder (the
@@ -206,7 +209,7 @@ The window is d3 §D steps 10 to 15, in this order. The deletion list below beco
     are admitted empty. The old canary stays provisioned until the switch, since
     `deploy/deploy_fail_safe.sh` refuses a data-moving deploy without it.
 - [ ] **Step 12. Manifest phase 1:** `IMPORT_KEY` removed, since a replayed admit is accepted by
-  design; and `deploy-worker.yml` deleted, so no routine deploy of the old proxy takes routes
+  design; and R1, `deploy-worker.yml` deleted, so no routine deploy of the old proxy takes routes
   back (d3 §J1: the proxy ends with no routes).
 - [ ] **Step 13. `routes`, the handles canary, the platform's canary.** `identity.json`'s `host`
   is already `tinyassets.io` (d3 §H). Mode `routes` keeps its route record, then hands the
@@ -226,8 +229,8 @@ The window is d3 §D steps 10 to 15, in this order. The deletion list below beco
 - [ ] **Step 15. Manifest phase 2, the deletion** (Direction 5): two or three PRs in one window,
   each under GitHub's 3,000-file limit and proved by the manifest's dry run (d3 §F5). It
   deletes the old stack, the import window above, the old stack's workflows (`dr-drill.yml`
-  among them), its docs, rules and specs. `slow-tests` leaves the ruleset and the classic
-  branch protection first (d3 §F4).
+  among them), its docs, rules and specs, and `docs/architecture.md`'s S36 row then reads
+  converged. `slow-tests` leaves the ruleset and the classic branch protection first (d3 §F4).
   - **Old tests leave with their code** (Direction 6): every test file
     `python scripts/affected_tests.py --retiring` lists (its `RETIRING` paths follow the
     manifest), and any other test that fails only because its code is gone. None is skipped,
@@ -302,6 +305,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10).
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
+  - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
+    depth (Fact 15; the coordinator, 2026-11-12, below).
   - B2: `owner/src/wakes.ts`'s swallowed doorbell open failure surfaces, rather than settling
     the wake `unknown` (Fact 8; d3 §I).
   - S2: `#forget`'s `unreserve` is never swallowed and is retried by the alarm until it lands,
@@ -353,6 +358,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The two app stores' dashboards checked for anything we must follow up (a review in
   flight, an auto-release, a testing-track deadline, a policy form); the founder's sign-in
   (d3 §F2).
+- [ ] The data shapes already known to be wrong, fixed before real data (d3 §P, list3 P48),
+  each researched first (Fact 14) and given its lane PR: room ids moved off member-encoding
+  (`dm:a+b`) onto a rooms table with members, moving the mail threads and conversations keyed
+  by `chain_root` (S4's migration); the files index (shards or R2 trees), after the latency
+  probe's option B, which needs a token with Workers R2 Storage: Edit (the probe's workflow
+  and scripts removed after it); and ADR-036's four silent losses: collection history's
+  `maxHistoryCharge` pruning, the ledger's newest-50,000 receipts, `CONVERSATIONS_KEPT`
+  forgetting the oldest idle conversation's resume id, and file versions, with the index.
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 
@@ -380,8 +393,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] 1. H2 (§5).
 - [ ] 2. The rehearsal's platform half (§9 item 7), which also proves the `aes-gcm` files under
   each owner's key: every chunk put by `stage` and read back by `verify`.
-- [ ] 3. Each engine's record, live, on its pinned version in a headless E2B VM, the record
-  fixed where it differs. The pinned installs, startup, users and the not-signed-in run
+- [ ] 3. Slice S verifies each engine record live, on its pinned version in a headless E2B VM,
+  the record fixed where it differs. The pinned installs, startup, users and the not-signed-in run
   passed (`sandbox-probe.md`); what is left needs a model or a sign-in:
   - every CLI: its event shapes against the matchers on a run and a resume; a resume after a
     cold create restores `session_paths`; MCP injection reaches the run's door with no bearer
@@ -502,7 +515,7 @@ Moved before the window, into lane R (d3 §F3, §G).
   the live proof). Claude's plugin directory follows a repository, so the plugin may need its
   own; a Gemini listing needs a profile without `converse`, rooms and mail, outside Direction 7
   today; whether Muse's own client completes our OAuth is unverified; the listing's own door is
-  the founder's question 7.
+  the founder's question 4.
 - Each adds, and none guards data or routing:
   - [ ] The shared app's install flow (Slack's OAuth v2 install, which proves the owner holds the
     workspace), writing the object's `shared` binding and its `i:` entry. Until then no event
@@ -532,27 +545,26 @@ Moved before the window, into lane R (d3 §F3, §G).
   - [ ] The files' history counted in bytes, as the collections' is, which lifts `max_entries`
     past 30,000 (`limits-audit.md`).
   - [ ] Sync-in of the working set alone (today the whole workspace), with the scratch design.
+  - [ ] The gateway pool's two recorded Lows (MEMORY PR 3a's verification): a slow sender can
+    hold its first unit early so wait-die favours it as the oldest (16 % lower throughput at
+    saturation, measured); a user-defined endpoint that reads its upload slowly holds the
+    call's units through it, bounded by `heldDeadlineMs`.
 
 ### Step 20. The later slices, re-listed, rooms and status first
 
-Each needs its research first (Fact 14; list3 P49). Which wrong shapes are fixed before real
-data, free today, and which become a live migration over every owner is undecided (list3 P48).
+Each needs its research first (Fact 14; list3 P49). The data shapes among them are fixed before
+real data, in step 5 (d3 §P).
 
 - [ ] S4, rooms and status: group rooms of three or more (the owner, main agents and TinyAssets
-  agents, one post waking each member it addresses); room ids moved off member-encoding
-  (`dm:a+b`) onto a rooms table with members, moving the mail threads and conversations keyed by
-  `chain_root`; `inbox_digest` over the owner's and outside agents' mailboxes.
+  agents, one post waking each member it addresses), on step 5's rooms table; `inbox_digest`
+  over the owner's and outside agents' mailboxes.
 - [ ] S6, the app manifest and agent players, with the app's view of mail-started runs and
   agents' chains.
 - [ ] S7, the device runner; S8, real-time tiers.
 - [ ] The founder-approved primitives in `docs/architecture.md`: N2 phone push, N3 voice and
   video, N4 a live takeover view, N6 undo by snapshot, N7 agent purchases, N9 media results.
-- [ ] The files index (shards or R2 trees), after the latency probe's option B, which needs a
-  token with Workers R2 Storage: Edit; the probe's workflow and scripts are removed after it.
-- [ ] Mail archive's later phases, each a silent loss removed (ADR-036): collection history's
-  `maxHistoryCharge` pruning; the ledger's newest-50,000 receipts; `CONVERSATIONS_KEPT`
-  forgetting the oldest idle conversation's resume id; file versions, with the index; a batched
-  or tiered merge for sparse late acks; unread mail archived, with its own research.
+- [ ] Mail archive's later phases (ADR-036), past step 5's four: a batched or tiered merge for
+  sparse late acks; unread mail archived, with its own research.
 
 S9 (Claude and Grok wakes) is built as slice W. S10 (Sign in with ChatGPT) is parked and its
 record deleted (d3 §A8): it comes back as a record if OpenAI approves.
@@ -563,29 +575,31 @@ Already decided, so not asked again: the live stage, yes (d3 §F1); the store la
 the new apps are ready (§F2); restore and the off-account copy built before real data (§F3,
 §G); the ruleset is the coordinator's to change (§F4); the deletion as two or three PRs in one
 window (§F5); the files cipher `aes-gcm` (§G); imported owners' old "ask first" defaults kept as
-their own settings (§N7); no paid subscription exists (d2 §F); the founder's and the canary's
+their own settings (§N7); no paid subscription exists (d2 B13); the founder's and the canary's
 owners start fresh (2026-11-04); the window is not announced (2026-11-07).
 
 Open questions, from the as-built record:
-1. A client's mail starts an unattended run, but the same client's `converse` starts an attended
-   one, so one client gets two answers to "is a person present". Should both read the client's
-   sign-in, or should `converse` follow mail's rule? (slice ID's review, H2)
-2. Should owners get a setting, off by default, that stops agent-to-agent mail past a chain
-   depth? Today a chain is bounded only by the tier, the inputs' queue, the mailboxes and the
-   owner's spending caps.
-3. Should the OKF watcher's readied pull requests get an automatic reviewer, or wait for a review
-   session as every pull request does?
-4. Codex, Gemini and Kimi sign-ins are off, because each vendor's terms for hosted use are
+1. Codex, Gemini and Kimi sign-ins are off, because each vendor's terms for hosted use are
    unclear (`cli.login.hosted_use`). Turn any of them on?
-5. Capture always on gives a recovery point of minutes instead of a night. It costs about $62 a
+2. Capture always on gives a recovery point of minutes instead of a night. It costs about $62 a
    month for a heavy owner and $0.20 for a light one, against about $0.70 for the heavy one
    today. Turn it on?
-6. Non-model credentials (GitHub, Notion and the rest), git through credentials, WebSocket APIs
+3. Non-model credentials (GitHub, Notion and the rest), git through credentials, WebSocket APIs
    and SigV4 need a TLS-terminating proxy, which is a host (Direction 8). Keep them out of v1, or
    choose one?
-7. When the directory submission is made: should the listing get its own MCP door, with grants
+4. When the directory submission is made: should the listing get its own MCP door, with grants
    pinned to the `directory` profile, against Direction 2's "one MCP door"? The old stack built
    and retired `/mcp-directory`.
+
+The coordinator's to decide (no spending, irreversible or outward-facing act), from the
+as-built record, and decided (the coordinator, 2026-11-12):
+- **Attended** (slice ID's review, H2): "attended" means a live caller is waiting for the
+  answer. So `converse` is attended and a client's mail is unattended, as built. The rules key
+  on that, never on which client sent it.
+- **A chain-depth stop:** yes. An owner setting, off by default (Fact 15), stops agent-to-agent
+  mail past a chain depth. It rides lane O (§10 step 4).
+- **The OKF watcher's pull requests:** no separate reviewer. The one review gate (d3 §B6)
+  reviews them like any other.
 
 Steps only the founder can take, each handed over with its exact commands when it is ready: the
 E2B API key rotated; the Spaces read key; the two store dashboards; AuthKit's production Google
