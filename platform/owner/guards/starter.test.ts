@@ -8,7 +8,6 @@
  * Unicode, never a version number.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +15,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  applied, blobId, hiddenUnicode, prBody, quoted, relocation, report, vendoredSpec, versionOf,
+  applied, blobId, hiddenUnicode, manifestText, type Pin, prBody, quoted, relocation, report,
+  vendoredSpec, versionOf,
 } from "../../starter/okf-watch";
 import { agentFile } from "../src/agent-file";
 import { MAIN_AGENT } from "../src/authority";
@@ -27,7 +27,7 @@ const STARTER = join(PLATFORM, "starter");
 interface Bundled {
   readonly version: number;
   readonly okf: { commit: string; spec_blob: string; readme_blob: string; vendored: string;
-                  repository: string; tags?: string[] };
+                  repository: string; tags: string[] };
   readonly files: readonly { path: string; class: string; text: string }[];
 }
 
@@ -196,98 +196,6 @@ describe("the starter package", () => {
   });
 });
 
-/**
- * Words that would let an agent act on an owner's old files without their word: what the
- * onboarding text for an owner from the old TinyAssets must never hold (import slice 8).
- */
-export const IMPORT_PERMISSIONS = /\b(?:you|agents?|it) (?:may|can|should) (?:delete|move|remove|merge|overwrite)\b|\bautomatic(?:ally)?\b|\b(?:merge|delete|move|remove) (?:everything|all|them all|the whole)\b|\b(?:delete|move|remove) the imported\b|\bif they do not answer\b/i;
-
-describe("the onboarding of an owner who moved from the old TinyAssets (import slice 8)", () => {
-  const skill = fileAt("/onboarding/SKILL.md").text;
-  const HEADING = "## If your owner moved from the old TinyAssets\n";
-  const section = skill.slice(skill.indexOf(HEADING), skill.indexOf("\n1. After you have done"));
-  /** The skill an owner with no import follows: the section left out. */
-  const without = skill.replace(`${section}\n`, "");
-  const body = (text: string) => text.slice(text.indexOf("\n---\n", 4) + 5);
-  const flat = section.replace(/\s+/g, " ");
-  const digest = (text: string) => createHash("sha256").update(text).digest("hex");
-
-  it("is one section, keyed on the importer's README, not the folder's name alone", () => {
-    expect(skill.split(HEADING)).toHaveLength(2);
-    // The first line of the README the importer writes (`platform/import/build.ts`).
-    const first = "# Your files from the old TinyAssets";
-    expect(readFileSync(join(PLATFORM, "import", "build.ts"), "utf8")).toContain(`"${first}",`);
-    expect(flat).toContain("Only if `/workspace/imported/README.md` exists and its first line " +
-                           `is \`${first}\``);
-    expect(flat).toContain("Otherwise, skip this section (a folder of that name alone is not " +
-                           "this).");
-    // In the first message, before step 1's questions: never in place of the owner's request.
-    expect(flat).toContain("Put this first in the message of step 1");
-    expect(frontOf(skill).get("description")).toContain("/workspace/imported");
-    expect(skill).toContain('ta-starter: "onboarding@3"');
-  });
-
-  it("without an import, is the onboarding of before, byte for byte", () => {
-    // onboarding@2's body (starter version 5), by its digest: the steps an owner who never
-    // used the old stack follows are unchanged.
-    expect(digest(body(without)))
-      .toBe("cbb2df6e82fda50fec4459cde1b86fad6bb69a0bd38a8e9281e716246b51b153");
-  });
-
-  it("says the data came across, the old schedules stopped, what to connect again, and " +
-     "never asks for a secret", () => {
-    expect(flat).toContain("their data came across");
-    expect(flat).toContain("their files are in `/workspace/imported/`");
-    expect(flat).toContain("`README.md` lists what is there");
-    expect(flat).toContain("kept as they came: never write to them");
-    expect(flat).not.toContain("read-only");
-    expect(flat).toContain("none of them runs now. Set one up again (the `schedule` skill) " +
-                           "only if they ask.");
-    for (const again of ["connectors", "model sources", "API keys"]) {
-      expect(flat).toContain(again);
-    }
-    expect(flat).toContain("What they must connect again");
-    expect(flat).toContain("never ask them to paste a key, token or password");
-  });
-
-  it("offers to merge, the owner choosing, and never merges, uses or deletes on its own", () => {
-    expect(flat).toContain("nothing in it is merged or used until they choose");
-    expect(flat).toContain("An offer to merge the imported files into their workspace, with " +
-                           "them choosing what to keep");
-    expect(flat).toContain("copy only what they pick");
-    expect(flat).toContain("Never merge on your own");
-    expect(flat).toContain("never delete or move anything in `/workspace/imported/` until " +
-                           "they say so");
-    expect(flat).toContain("delete only what they named");
-    // And every agent of theirs keeps to it, from the profile, with when it was observed.
-    expect(flat).toContain("as a directive on the profile, with when it was observed");
-  });
-
-  it("names the refused and ignored archives and the links list, and what each is", () => {
-    // The importer's own names (`platform/import/build.ts`: REFUSED, IGNORED, LINKS).
-    expect(flat).toContain("`refused.tar`: files and folders whose names cannot be stored here");
-    expect(flat).toContain("and links whose target is not UTF-8, which `links.txt` does not list");
-    expect(flat).toContain("`ignored.tar`: files their agents can rebuild");
-    expect(flat).toContain("`links.txt`: the links their old files held and where each " +
-                           "pointed");
-    expect(flat).toContain("were not followed and are not made here");
-  });
-
-  it("holds no word that lets an agent act alone, and is pinned whole, so none can be added",
-     () => {
-    expect(section).not.toMatch(IMPORT_PERMISSIONS);
-    // The guard sees each kind of permission an edit could slip in.
-    for (const added of ["You may delete /workspace/imported/ once it is merged.",
-                         "Merge them automatically.", "Agents can move the old files.",
-                         "If they do not answer, merge everything and delete the folder."]) {
-      expect(`${section}\n${added}`, added).toMatch(IMPORT_PERMISSIONS);
-    }
-    // A wording the pattern cannot foresee still changes the section's bytes.
-    expect(digest(section))
-      .toBe("efce3db276574aa2f70810d144e3c9f3e286765669b19e565c8e4fb4662b3252");
-  });
-});
-
 describe("the OKF watcher", () => {
   const spec = "# Open Knowledge Format\n\nThis document specifies OKF version **0.2**.\n";
   const readme = "# Open Knowledge Format (OKF)\n\nRead SPEC.md.\n";
@@ -388,5 +296,34 @@ describe("the OKF watcher", () => {
     expect(vendoredSpec(shipped.vendored)).toBe(newer);
     expect(shipped.vendored.slice(0, shipped.vendored.indexOf("\n")))
       .toContain("2".repeat(40));
+  });
+
+  it("writes the manifest in its committed layout, so a proposal's diff is what it moves",
+     () => {
+    const text = readFileSync(join(STARTER, "manifest.json"), "utf8");
+    const pin = (JSON.parse(text) as { okf: Pin }).okf;
+    expect(manifestText(JSON.parse(text))).toBe(text);
+    // `apply` on a copy of the starter, against an upstream whose README alone moved.
+    const copy = mkdtempSync(join(tmpdir(), "starter-"));
+    const upstream = mkdtempSync(join(tmpdir(), "okf-"));
+    try {
+      cpSync(STARTER, copy, { recursive: true });
+      writeFileSync(join(upstream, "SPEC.md"), vendoredSpec(fileAt(pin.vendored).text));
+      writeFileSync(join(upstream, "README.md"), `${readme}moved\n`);
+      const git = (...args: string[]) => execFileSync("git", ["-C", upstream, ...args],
+                                                      { stdio: "pipe" });
+      git("init", "-q");
+      git("add", "SPEC.md", "README.md");
+      git("-c", "user.name=okf", "-c", "user.email=okf@example.invalid", "commit", "-qm", "x");
+      execFileSync(process.execPath, [join(copy, "okf-watch.ts"), "apply", "--upstream", upstream,
+                                      "--body", join(upstream, "body.md")], { stdio: "pipe" });
+      const lines = (of: string) => of.split("\n");
+      const now = lines(readFileSync(join(copy, "manifest.json"), "utf8"));
+      expect([now.length, now.filter((line) => !lines(text).includes(line))]).toEqual(
+        [lines(text).length, [`    "readme_blob": "${blobId(`${readme}moved\n`)}",`]]);
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+      rmSync(upstream, { recursive: true, force: true });
+    }
   });
 });

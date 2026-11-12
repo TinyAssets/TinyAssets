@@ -50,6 +50,9 @@ function setup(): { f: Fixture; out: string; priv: string; options: Options } {
 
 const json = (path: string) => JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 
+/** Words that would let an agent act on an owner's old files without their word. */
+const PERMISSIONS = /\b(?:you|agents?|it) (?:may|can|should) (?:delete|move|remove|merge|overwrite)\b|\bautomatic(?:ally)?\b|\b(?:merge|delete|move|remove) (?:everything|all|them all|the whole)\b|\b(?:delete|move|remove) the imported\b|\bif they do not answer\b/i;
+
 function manifest(bundle: string): Entry[] {
   return readdirSync(join(bundle, "manifest")).sort((a, b) => parseInt(a) - parseInt(b))
     .flatMap((page) => json(join(bundle, "manifest", page))["entries"] as Entry[]);
@@ -200,10 +203,8 @@ describe("the bundle builder", () => {
     const readme = bytesOf(bundle, entries.find((e) => e.path === `${I}/README.md`)!).toString();
     expect(readme).toContain("| `.records/broker/policy.db` | receipts | 1 |");
     expect(readme).toContain("- `old/` (retired)");
-    // Its words agree with the starter's onboarding skill (import slice 8): the records kept
-    // as they came, never "read-only" (the files plane has no such bit), and what refused.tar
-    // holds beside names, the links links.txt does not list.
-    expect(readme.split("\n")[0]).toBe("# Your files from the old TinyAssets");
+    // The records kept as they came, never "read-only" (the files plane has no such bit), and
+    // what refused.tar holds beside names, the links links.txt does not list.
     expect(readme).toContain("(copies, kept as they came: don't write to them)");
     expect(readme).not.toContain("read-only");
     expect(readme).toContain("and links whose target is not UTF-8, which `links.txt` does not " +
@@ -214,6 +215,41 @@ describe("the bundle builder", () => {
     expect(all).not.toContain("sk-secret");
     expect(all).not.toContain("secret-user");
     expect(all).not.toMatch(/"token"/);
+  });
+
+  it("tells the owner's agent first what to say of the move, promising only what the app " +
+     "connects, and never to act on the old files alone", () => {
+    const { f, out, options } = setup();
+    buildBundles(f.copy, options);
+    const bundle = join(out, keyOf(ALICE));
+    const readme = bytesOf(bundle, manifest(bundle).find((e) => e.path === `${I}/README.md`)!)
+      .toString();
+    const lines = readme.split("\n");
+    expect([lines[0], lines[2]]).toEqual(["# Your files from the old TinyAssets",
+                                          "## For your agent"]);
+    const section = readme.slice(readme.indexOf("## For your agent"),
+                                 readme.indexOf("\n## ", readme.indexOf("## For your agent")))
+      .replace(/\s+/g, " ");
+    expect(section).toContain("none of them runs now");
+    // What the owner's app connects (model sources, connected apps, API keys), and no
+    // connector, which nothing on the platform connects.
+    for (const again of ["model sources", "the AI assistants they use", "new API keys"]) {
+      expect(section).toContain(again);
+    }
+    expect(section).not.toMatch(/connector/i);
+    expect(section).toContain("never ask them to paste a key, token or password");
+    expect(section).toContain("copy only what they pick");
+    expect(section).toContain("never delete or move anything in this folder until they say so");
+    expect(section).toContain(`\`- Old TinyAssets files are in ${I}/: merge only what they ` +
+                              "pick, delete nothing there until they say` as a directive on " +
+                              "their profile");
+    // No word that lets an agent act alone; and the pattern sees each kind an edit could add.
+    expect(section).not.toMatch(PERMISSIONS);
+    for (const added of ["You may delete this folder once it is merged.",
+                         "Merge them automatically.", "Agents can move the old files.",
+                         "If they do not answer, merge everything and delete the folder."]) {
+      expect(`${section} ${added}`, added).toMatch(PERMISSIONS);
+    }
   });
 
   it("lists links in links.txt, never followed, and keeps refused names verbatim in refused.tar", () => {

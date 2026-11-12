@@ -180,8 +180,8 @@ The window is d3 §D steps 10 to 15, in this order. The deletion list below beco
       import window's credentials"), and the Spaces read key, already asked (d3 §E7);
     - the dead-letter reader's limit noted: a message returns about 100 times before the pull
       consumer's `max_retries` drops it.
-  - [x] 8. Onboarding tells imported owners what came across (#5463). d2 §C moves that text into
-    the importer's README, out of the starter (d2 B20, §10 step 4).
+  - [x] 8. Onboarding tells imported owners what came across (#5463). The text is in the
+    importer's README, out of the starter (d2 B20).
 - [ ] **Step 10. Backup, census, off-site copy.**
   - The old platform's billing is turned off as the window opens (off without its Stripe
     secrets); every open Checkout Session completes or expires and its webhook is applied; then
@@ -296,13 +296,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     in Python until the hold ends (d3 §A7).
   - `sources/chatgpt.json` and the `unwired` field deleted in their own PR, before B17 (d3 §A8,
     §L4).
-  - B20: no workspace file becomes an instruction; the onboarding sentence is generated from the
-    onboarding skill's steps at build time; the import notice promises only what can be done,
-    since no connector is connected again in TinyAssets (d3 §A9, list3 P31).
   - B22: a test of the gateway's deadline before a provider's headers, on real or fake time;
     `resealDoorbell`, so an idle doorbell's blob leaves its kid, and the sweep's doorbell half
     (d3 §I).
-  - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10).
+  - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10). Its
+    vocabulary rule replaces the doors' check that the agent's definition says nothing of the
+    import (`doors/guards/tools.test.ts`, B20).
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
