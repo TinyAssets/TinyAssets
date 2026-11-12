@@ -24,7 +24,7 @@ export const IMPORTS: ImportRules = Object.freeze({
   called: "the importer",
   banned: Object.freeze([{
     pattern: /^fetch$/,
-    home: "import/stage.ts",
+    homes: ["import/stage.ts"],
     says: "names %s: the importer's network is stage.ts's alone",
   }, {
     pattern: /^(?:WebSocket|getByName|R2Bucket|DurableObject|WorkerEntrypoint)$/,
