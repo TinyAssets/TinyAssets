@@ -344,7 +344,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     `ERASURES` required with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
-    rig admitting by the door, and the doors' entry with no third constructor argument.
+    rig admitting by the door, the doors' entry with no third constructor argument, and
+    `BackupParts`' test-only `sizes?` and `pool?` gone.
   - [ ] T1d: the owner memory probe driven through the doors.
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then

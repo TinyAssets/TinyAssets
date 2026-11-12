@@ -456,24 +456,86 @@ const SEQ_CHARGE = (row: string) => charge("collection_seqs_added", "rows_charge
 const USAGE_CHARGE = (row: string) => charge("collection_usage_added", "rows_charge", row);
 const HISTORY_CHARGE = (row: string) => charge("collection_history_added", "charge", row);
 
+/** One number a query reads. */
+function one(sql: SqlStorage, query: string, ...bindings: SqlStorageValue[]): number {
+  return sql.exec<{ n: number }>(query, ...bindings).one().n;
+}
+
+/**
+ * What the rows and history entries `where` names take, by the schema's own charges: the
+ * rows' (`rows`), each outside writer's share and all of theirs (`*`), and the history's.
+ */
+function charged(sql: SqlStorage, where: string):
+    { shares: Usage; rows: number; history: number } {
+  const shares = Object.fromEntries(sql.exec<{ who: string; charge: number }>(
+    `SELECT who, SUM(charge) AS charge FROM (SELECT filer AS who, ${ROW_CHARGE("r")} AS charge ` +
+      `FROM collection_rows r WHERE filer != 'owner' AND ${where} UNION ALL SELECT '*', ` +
+      `${ROW_CHARGE("r")} FROM collection_rows r WHERE filer != 'owner' AND ${where}) ` +
+      "GROUP BY who").toArray().map((row) => [row.who, row.charge]));
+  return {
+    shares,
+    rows: one(sql, `SELECT COALESCE(SUM(${ROW_CHARGE("r")}), 0) AS n FROM collection_rows r ` +
+      `WHERE ${where}`),
+    history: one(sql, `SELECT COALESCE(SUM(${HISTORY_CHARGE("h")}), 0) AS n ` +
+      `FROM collection_history h WHERE ${where}`),
+  };
+}
+
+/** What the seq rows and the share rows take of the rows' charge. */
+function bookkeeping(sql: SqlStorage): number {
+  return one(sql, `SELECT COALESCE(SUM(${SEQ_CHARGE("s")}), 0) AS n FROM collection_seqs s`)
+    + one(sql, `SELECT COALESCE(SUM(${USAGE_CHARGE("u")}), 0) AS n FROM collection_usage u`);
+}
+
 /**
  * The bounds' counters recounted from the rows, the seq rows and the share rows, by the
  * schema's own charges, and the history's (`history`).
  */
 function recount(sql: SqlStorage): Usage {
-  const one = (query: string) => sql.exec<{ n: number }>(query).one().n;
-  const shares = Object.fromEntries(sql.exec<{ who: string; charge: number }>(
-    `SELECT who, SUM(charge) AS charge FROM (SELECT filer AS who, ${ROW_CHARGE("r")} AS charge ` +
-      "FROM collection_rows r WHERE filer != 'owner' UNION ALL SELECT '*', " +
-      `${ROW_CHARGE("r")} FROM collection_rows r WHERE filer != 'owner') GROUP BY who`)
-    .toArray().map((row) => [row.who, row.charge]));
-  const usage = sql.exec<{ charge: number }>(
-    `SELECT COALESCE(SUM(${USAGE_CHARGE("u")}), 0) AS charge FROM collection_usage u`).one().charge;
-  return {
-    ...shares,
-    rows: one(`SELECT COALESCE(SUM(${ROW_CHARGE("r")}), 0) AS n FROM collection_rows r`)
-      + one(`SELECT COALESCE(SUM(${SEQ_CHARGE("s")}), 0) AS n FROM collection_seqs s`) + usage,
-    history: one(`SELECT COALESCE(SUM(${HISTORY_CHARGE("h")}), 0) AS n FROM collection_history h`),
+  const all = charged(sql, "TRUE");
+  return { ...all.shares, rows: all.rows + bookkeeping(sql), history: all.history };
+}
+
+/**
+ * `recount` for steps that write only in the collections `among` names, beside a fill,
+ * without reading the fill at every step: what is `among` recounted each time, the fill
+ * once, here. A step leaves each fill row as it is, which this checks by the rows still at
+ * or before the fill's last change (any write moves a row's change on). A step lets the
+ * fill's history entries go but never changes one (`collection_history_kept`), so the
+ * fill's history is the sum of the charges, recounted here, of its entries still kept.
+ */
+function recounter(sql: SqlStorage, among: string): () => Usage {
+  expect(one(sql, `SELECT COUNT(*) AS n FROM collection_rows WHERE ${among}`)).toBe(0);
+  const fill = charged(sql, `NOT ${among}`);
+  const entries = new Map(sql.exec<{ id: number; charge: number }>(
+    `SELECT rowid AS id, ${HISTORY_CHARGE("h")} AS charge FROM collection_history h ` +
+      `WHERE NOT ${among}`).toArray().map((entry) => [entry.id, entry.charge]));
+  const last = one(sql, "SELECT MAX(change) AS n FROM collection_rows");
+  const rows = one(sql, "SELECT COUNT(*) AS n FROM collection_rows");
+  return () => {
+    expect(one(sql, "SELECT COUNT(*) AS n FROM collection_rows WHERE change <= ?", last),
+           "the fill's rows are as they were").toBe(rows);
+    let history = 0;
+    let fills = 0;
+    // By the history's age index, which holds each entry's rowid and no more.
+    for (const { id } of sql.exec<{ id: number }>(
+      "SELECT rowid AS id FROM collection_history ORDER BY at")) {
+      const each = entries.get(id);
+      if (each !== undefined) {
+        history += each;
+        fills += 1;
+      }
+    }
+    const now = charged(sql, among);
+    expect(one(sql, "SELECT COUNT(*) AS n FROM collection_history") - fills,
+           "every other history entry is in the collections the steps write")
+      .toBe(one(sql, `SELECT COUNT(*) AS n FROM collection_history WHERE ${among}`));
+    const shares: Usage = { ...fill.shares };
+    for (const [who, each] of Object.entries(now.shares)) {
+      shares[who] = (shares[who] ?? 0) + each;
+    }
+    return { ...shares, rows: fill.rows + now.rows + bookkeeping(sql),
+             history: history + now.history };
   };
 }
 
@@ -489,14 +551,29 @@ describe("the bounds' counters", () => {
   it.each([1, 7, 42, 1009, 65537])("equal a recount after every step (seed %i)",
                                     { tags: ["large"] }, async (seed) => {
     const { stub, name: owner } = ownerObject();
+    const collections = ["board", "room:go:main", "room:go:side"];
+    const among = `collection IN (${collections.map((name) => `'${name}'`).join(", ")})`;
     const outcomes = await inFilled(stub, (store, state) => {
-      // The rows' charge all but reached, and the history's passed on the way, so the steps
-      // meet both: the rows refused, the history pruned by what it takes.
+      const sql = state.storage.sql;
+      // The history's charge passed, and the rows' reached but for the room a dozen of the
+      // steps' own rows take, so the steps meet both: the history pruned by what they take,
+      // and rows written until they are refused. The rows alone fill less than the history's
+      // charge, so the history is filled first.
+      for (let n = 0; n < 12; n++) {
+        store.write(owner, owner, "board", `r${n}`, "𝄞".repeat(12), "", false);
+      }
+      fillHistory(store, owner, () => one(
+        sql, "SELECT revision_floor AS n FROM collection_space") > 0);
       fillRows(store, owner);
+      store.clear(owner, "board", null);
+      expect(counters(sql)).toEqual(recount(sql));
+      const recounted = recounter(sql, among);
+      const fills = () => one(sql,
+                              `SELECT COUNT(*) AS n FROM collection_history WHERE NOT ${among}`);
+      const filled = fills();
       const random = seeded(seed);
       const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
       const callers = [owner, "bob", "cara", "dan"];
-      const collections = ["board", "room:go:main", "room:go:side"];
       const letters = ["a", "é", "€", "𝄞", "z"];
       const counted: Record<string, number> = {};
       for (let step = 0; step < 300; step++) {
@@ -525,15 +602,17 @@ describe("the bounds' counters", () => {
           outcome = error instanceof Refusal ? error.code : (error as Error).name;
         }
         counted[outcome] = (counted[outcome] ?? 0) + 1;
-        expect(counters(state.storage.sql), `seed ${seed}, step ${step}`)
-          .toEqual(recount(state.storage.sql));
-        expect(counters(state.storage.sql)["history"]!, `seed ${seed}, step ${step}`)
+        expect(counters(sql), `seed ${seed}, step ${step}`).toEqual(recounted());
+        expect(counters(sql)["history"]!, `seed ${seed}, step ${step}`)
           .toBeLessThanOrEqual(LIMITS.maxHistoryCharge);
       }
-      return counted;
+      return { counted, pruned: filled - fills(),
+               rows: one(sql, `SELECT COUNT(*) AS n FROM collection_rows WHERE ${among}`) };
     });
-    // The sequence reaches the bounds, the swaps and the erases, not only plain writes.
-    expect(Object.keys(outcomes).sort()).toEqual(["Conflict", "done", "refused"]);
+    // The sequence reaches the bounds, the swaps and the erases, not only plain writes: rows
+    // stand at the end, and the steps' entries pruned the fill's.
+    expect(Object.keys(outcomes.counted).sort()).toEqual(["Conflict", "done", "refused"]);
+    expect([outcomes.rows > 0, outcomes.pruned > 0]).toEqual([true, true]);
   });
 
   it("are kept by the store alone: a history entry is never changed", async () => {
