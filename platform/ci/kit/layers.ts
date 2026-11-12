@@ -125,7 +125,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
             "!platform/import/vitest.config.ts", ...NOT_TESTS],
     may: ["platform/import/**", "!platform/import/guards/**", ...CONTRACT,
           "platform/deploy/{facts,cloudflare}.ts", "platform/ci/paths.ts",
-          "platform/starter/starter.json", ...NOT_TESTS],
+          "platform/owner/src/starter-package.ts", ...NOT_TESTS],
     // Node's file system and SQLite: no process, no socket, no package.
     packages: ["node:crypto", "node:fs", "node:os", "node:path", "node:sqlite"],
   },

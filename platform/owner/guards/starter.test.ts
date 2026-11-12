@@ -30,6 +30,7 @@ interface Bundled {
   readonly okf: { commit: string; spec_blob: string; readme_blob: string; vendored: string;
                   repository: string; tags: string[] };
   readonly files: readonly { path: string; class: string; text: string }[];
+  readonly retired: readonly string[];
 }
 
 const bundled = JSON.parse(readFileSync(join(STARTER, "starter.json"), "utf8")) as Bundled;
@@ -74,26 +75,15 @@ describe("the starter package", () => {
     } finally {
       rmSync(copy, { recursive: true, force: true });
     }
-    // And against main's bundle: nothing dropped unretired. Said loudly when it cannot run.
-    const history = spawnSync("git", ["rev-parse", "--verify", "--quiet", "origin/main"],
-                              { cwd: PLATFORM, encoding: "utf8" });
+    // And against main's bundle: nothing dropped unretired. A checkout without main's bundle
+    // fails here, never passes unchecked.
     const main = spawnSync("git", ["show", "origin/main:platform/starter/starter.json"],
                            { cwd: PLATFORM, encoding: "utf8" });
-    if (history.status !== 0) {
-      console.warn("STARTER GUARD: this checkout holds no origin/main, so the dropped-path " +
-                   "check against main's starter.json DID NOT RUN; bundle.mjs's write-time " +
-                   "check is the only one here");
-    } else if (main.status !== 0) {
-      console.warn("STARTER GUARD: origin/main holds no platform/starter/starter.json yet, so " +
-                   "there is no earlier bundle to compare: the dropped-path check against main " +
-                   "had nothing to check");
-    } else {
-      const previous = JSON.parse(main.stdout) as Bundled & { retired?: string[] };
-      const named = new Set([...bundled.files.map((file) => file.path),
-                             ...((bundled as Bundled & { retired?: string[] }).retired ?? [])]);
-      expect([...previous.files.map((file) => file.path), ...(previous.retired ?? [])]
-        .filter((path) => !named.has(path))).toEqual([]);
-    }
+    expect(main.status, `main's starter.json is unreadable here: ${main.stderr}`).toBe(0);
+    const previous = JSON.parse(main.stdout) as Bundled;
+    const named = new Set([...bundled.files.map((file) => file.path), ...bundled.retired]);
+    expect([...previous.files.map((file) => file.path), ...previous.retired]
+      .filter((path) => !named.has(path))).toEqual([]);
   });
 
   it("holds the default agent's files, the owner-wide profile, map and goals, and the " +
@@ -113,8 +103,7 @@ describe("the starter package", () => {
       moved_from: "/workspace/agents/main/USER.md" });
     // The default agent is the one a scoped client's call acts as when it names none.
     expect(bundled.files.at(-1)!.path).toBe(`/workspace/agents/${MAIN_AGENT}/agent.json`);
-    expect((bundled as Bundled & { retired: string[] }).retired)
-      .toEqual(["/workspace/agents/main/USER.md"]);
+    expect(bundled.retired).toEqual(["/workspace/agents/main/USER.md"]);
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/USER.md");
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/index.md");
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/goals/index.md");
