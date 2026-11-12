@@ -182,7 +182,7 @@ export function mailInput(mail: Pick<Delivery, "sender_id" | "sender_kind" | "se
 export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed; its mail " +
   "is kept, and new mail to or from it is refused";
 export const NO_AGENT = "no_agent: no such agent of the owner's";
-export const DELIVERY_METHODS: readonly string[] =
+const DELIVERY_METHODS: readonly string[] =
   Object.freeze(["mcp_event", "routine_fire", "webhook", "a2a", "pull"]);
 /** A wake's `changes` bits, in `CHANGES` order. */
 const CHANGE_BIT: Readonly<Record<Change, number>> = Object.freeze({ mail: 1, rooms: 2,
@@ -221,7 +221,7 @@ const LONE_SURROGATE = /\p{Cs}/u;
  * own.
  */
 export const WAKE_DEFAULTS = Object.freeze({ maxWakesPerHour: null, batchWindowS: 0 });
-export const WAKE_SETTINGS = Object.freeze({
+const WAKE_SETTINGS = Object.freeze({
   maxWakesPerHour: Object.freeze({ low: 1, high: 9_007_199_254_740_991 }),  // any whole cap
   batchWindowS: Object.freeze({ low: 0, high: 9_007_199_254_740_991 }),  // any whole seconds
 });
@@ -317,13 +317,13 @@ export function checkLimits(limits: LedgerLimits): LedgerLimits {
 }
 
 /** The refusal of a post when too much mail is unread (`maxUnacked`). */
-export const LEDGER_FULL = "ledger_full" as const;
+const LEDGER_FULL = "ledger_full" as const;
 
 /** A post at the hot ceiling while the `archive` lane moves acked mail out: retry soon. */
-export const STORAGE_BUSY = "storage_busy" as const;
+const STORAGE_BUSY = "storage_busy" as const;
 
 /** A message body as a post takes it, or refused; the door checks it before placing it. */
-export function checkMessage(body: unknown): asserts body is string {
+function checkMessage(body: unknown): asserts body is string {
   if (typeof body !== "string") {
     throw new Refusal("invalid", "body is text");
   }
@@ -416,7 +416,7 @@ export type Agent = {
   readonly wake_tat: number | null;
 };
 
-export interface Registration {
+interface Registration {
   readonly command_center_id: unknown;
   readonly display_name: unknown;
   readonly delivery_method: unknown;
@@ -430,7 +430,7 @@ export interface Posted {
   readonly paused_reason: string;
 }
 
-export type Integrity = "ok" | "tampered" | "missing";
+type Integrity = "ok" | "tampered" | "missing";
 
 export interface Mail {
   readonly seq: number;
@@ -447,7 +447,7 @@ export interface Mail {
 }
 
 /** A message as a read answers it: its body cut to fit the answer says so (`pages.ts`). */
-export type ReadMail = Mail & Partial<Cut>;
+type ReadMail = Mail & Partial<Cut>;
 
 export interface MailPage {
   readonly reader: string;
@@ -746,7 +746,7 @@ export function retryAfter(value: number | null | undefined, attempts: number): 
 }
 
 /** Whether an outside client's grant still stands: the object's grants (`grants.ts`). */
-export interface GrantReader {
+interface GrantReader {
   live(client: string): boolean;
 }
 
@@ -937,7 +937,7 @@ export function keptRecord(table: MoveTable, key: number, offset: number, length
 }
 
 /** A fence row's members bloom, as bytes. */
-export function fenceBloom(fence: Fence): Uint8Array {
+function fenceBloom(fence: Fence): Uint8Array {
   return Uint8Array.from(Buffer.from(fence.members, "hex"));
 }
 
@@ -945,7 +945,7 @@ export function fenceBloom(fence: Fence): Uint8Array {
 const IMAGE_GROUP = 512;
 
 /** The archive chain read's segments a page reads at most. */
-export const CHAIN_SEGMENTS = 8;
+const CHAIN_SEGMENTS = 8;
 
 /**
  * A read on from `offset` into its page's first message's body names that message (review
@@ -2386,13 +2386,6 @@ export class Ledger {
                      `WHERE ${DUE} AND state = 'held_cap'`, now);
   }
 
-  /** A reader's mailbox counter: its unacked messages. */
-  #mailbox(reader: string): { unacked: number } {
-    return this.#sql.exec<{ unacked: number }>(
-      "SELECT unacked FROM ledger_readers WHERE reader = ?", reader,
-    ).toArray()[0] ?? { unacked: 0 };
-  }
-
   /**
    * Refuse one more message to `recipient` past its mailbox's cap, or an agent's mail to the
    * owner past its `share` of the owner's mailbox (see {@link LedgerLimits}). Bytes are the
@@ -3199,7 +3192,7 @@ export function archiveMoving(): Refusal {
 }
 
 /** A post's parent, hot at its gate, moved to the archive before its unit (`roomPost`). */
-export class ParentMoved extends Error {
+class ParentMoved extends Error {
   override readonly name = "ParentMoved";
 }
 

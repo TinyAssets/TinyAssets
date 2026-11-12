@@ -8,7 +8,7 @@
  * are `owner/src/policy.ts`'s.
  */
 import { sha256Hex } from "./digest";
-import { profileNames, toolNames } from "./doors";
+import { toolNames } from "./doors";
 import { FILE_DEFAULTS, KEEP_CEILING } from "./file-defaults";
 import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "./limits";
 import { Refusal } from "./refusal";

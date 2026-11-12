@@ -18,11 +18,12 @@ import { type Credential } from "../../gateway/src/credential";
 import { type Source, SUPPORTED_APIS } from "../../contract/src/egress-scope";
 import { recordOf } from "../../gateway/src/catalog";
 import { open } from "../../gateway/src/keyring";
+import { PLATFORM_ONLY } from "../src/admission";
 import { CONNECTION_LIMITS } from "../src/connections";
 import { MODELS_JSON_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
-import type { Binding } from "../../contract/src/binding";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import { egressTokenOf, hashed, ownerRun, secretOf } from "./runs-support";
@@ -929,6 +930,174 @@ describe("a blob resealed under the active kid", () => {
     await settled(r, binding, [answer]);
     expect((await secrets(r, connection)).map((row) => [row["version"], row["kid"]]))
       .toEqual([[1, "k1"]]);
+  });
+});
+
+describe("the platform's reseal sweep", () => {
+  const platform = (r: Gated): Binding => ({ owner: r.name, caller: PLATFORM_CALLER,
+                                             origin: null });
+  const kids = async (r: Gated) => (await r.sql(
+    "SELECT connection_id, version, kid FROM connection_secrets ORDER BY connection_id"))
+    .map((row) => [row["connection_id"], row["version"], row["kid"]]);
+  /** An API key connection committed with a blob sealed under `kid`. */
+  const keyUnder = async (r: Gated, kid: "k1" | "k2") => {
+    const { connection } = await r.stub.connectionPrepare(r.session(), {
+      source: "anthropic", kind: "api_key", display_name: "Key", provider: "anthropic",
+      revocable: false });
+    await r.stub.connectionCommit(r.session(), {
+      connection, version: 1, kid, models: await catalog(ANTHROPIC),
+      egress: await scopeOf(ANTHROPIC), blob: await sealedAs(kid, r.name, connection, 1, {
+        kind: "api_key", secret: `sk-${kid}`, upstream: ANTHROPIC.upstream,
+        endpoints: ANTHROPIC.endpoints, sealed_at: 1 }) });
+    return connection;
+  };
+
+  it("reseals an idle blob under an older kid, and leaves one under the active kid",
+     async () => {
+    const r = await gated();
+    const idle = await keyUnder(r, "k1");
+    const current = await keyUnder(r, "k2");
+    expect((await failure(() => r.stub.gatewayReseal(r.bind()))).message).toBe(PLATFORM_ONLY);
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0 });
+    const swept = [[idle, 2, "k2"], [current, 1, "k2"]]
+      .sort((a, b) => (String(a[0]) < String(b[0]) ? -1 : 1));
+    expect(await kids(r)).toEqual(swept);
+    const [row] = await secrets(r, idle);
+    const opened = await open(keyring("k2"), { owner: r.name, connection: idle, version: 2 },
+                              row!["blob"]);
+    expect(opened.credential.kind === "api_key" && opened.credential.secret).toBe("sk-k1");
+    // Nothing is left under the older kid: a second sweep reseals nothing.
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 0 });
+    expect(await kids(r)).toEqual(swept);
+  });
+
+  it("leaves a blob a refresh holds, and counts it left for the next sweep", async () => {
+    const r = await gated();
+    const connection = await keyUnder(r, "k1");
+    await r.sql("UPDATE connections SET lease_id = 'refreshing', lease_until = ?",
+                Date.now() + 60_000);
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 1 });
+    expect(await kids(r)).toEqual([[connection, 1, "k1"]]);
+    await r.sql("UPDATE connections SET lease_id = NULL, lease_until = NULL");
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0 });
+    expect(await kids(r)).toEqual([[connection, 2, "k2"]]);
+  });
+
+  it("reseals a blob kept for its provider revoke, and the revoke is sent for it too",
+     async () => {
+    const r = await gated();
+    const connection = (await r.stub.connectionPrepare(r.session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT })).connection;
+    const far = Date.now() + 86_400_000;
+    await r.stub.connectionCommit(r.session(), {
+      connection, version: 1, kid: "k1", models: await catalog(OPENAI), expires_at: far,
+      egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
+        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
+        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: far } }) });
+    let letRevoke!: () => void;
+    await r.in((instance) => {
+      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
+    });
+    await r.stub.connectionRevoke(r.session(), { connection });
+    // The lane sends the revoke of version 1, held, and the sweep reseals meanwhile.
+    await r.sql("UPDATE cf_agents_jobs SET time = 0");
+    void runDurableObjectAlarm(r.stub).catch(() => false);
+    const revokes = async () => (await r.in((instance) => instance.calls))
+      .filter((made) => made.method === "revokeAtProvider").map((made) => JSON.parse(made.text));
+    await until(async () => (await revokes()).length === 1, "the first revoke to be sent");
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0 });
+    expect(await kids(r)).toEqual([[connection, 2, "k2"]]);
+    await r.in((instance) => {
+      instance.faults.revokeGate = null;
+      letRevoke();
+    });
+    await until(async () => {
+      await lanes(r);
+      return (await secrets(r, connection)).length === 0;
+    }, "the resealed blob's revoke", 50);
+    expect((await revokes()).map((sent) => sent.slice(0, 3)))
+      .toEqual([[r.name, connection, 1], [r.name, connection, 2]]);
+  });
+
+  it("leaves a revoked connection's kept blob while its refresh is in flight, so the " +
+     "rotated tokens are kept for the provider revoke", async () => {
+    const r = await gated();
+    const connection = (await r.stub.connectionPrepare(r.session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT })).connection;
+    const soon = Date.now() + 60_000;
+    await r.stub.connectionCommit(r.session(), {
+      connection, version: 1, kid: "k1", models: await catalog(OPENAI), expires_at: soon,
+      egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
+        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
+        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: soon } }) });
+    let letRefresh!: () => void;
+    let letRevoke!: () => void;
+    await r.in((instance) => {
+      instance.faults.refreshGate = new Promise<void>((resolve) => { letRefresh = resolve; });
+      // The lane's provider revoke is held, so the kept blob stays for the sweep.
+      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
+    });
+    const calling = calls(r, 1).then(() => undefined, () => undefined);
+    await until(async () => (await r.sql("SELECT lease_id FROM connections"))[0]!["lease_id"]
+      !== null, "the lease to be taken");
+    await r.stub.connectionRevoke(r.session(), { connection });
+    // The revoke cleared the row's lease: only this instance's refresh still holds the blob.
+    expect(await r.sql("SELECT status, lease_id FROM connections"))
+      .toEqual([{ status: "revoked", lease_id: null }]);
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 1 });
+    expect(await kids(r)).toEqual([[connection, 1, "k1"]]);
+    await r.in(() => letRefresh());
+    await calling;
+    await until(async () => (await kids(r))[0]?.[1] === 2, "the refreshed tokens to be kept");
+    const [row] = await secrets(r, connection);
+    const opened = await open(keyring("k2"), { owner: r.name, connection, version: 2 },
+                              row!["blob"]);
+    expect(opened.credential.kind === "oauth2" && opened.credential.oauth.refresh).toBe("rt-2");
+    await r.in((instance) => {
+      instance.faults.revokeGate = null;
+      letRevoke();
+    });
+  });
+
+  it("never brings back a blob its provider revoke deleted while the gateway resealed it",
+     async () => {
+    const r = await gated();
+    const connection = (await r.stub.connectionPrepare(r.session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT })).connection;
+    const far = Date.now() + 86_400_000;
+    await r.stub.connectionCommit(r.session(), {
+      connection, version: 1, kid: "k1", models: await catalog(OPENAI), expires_at: far,
+      egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
+        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
+        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: far } }) });
+    let letReseal!: () => void;
+    let letRevoke!: () => void;
+    await r.in((instance) => {
+      instance.faults.resealGate = new Promise<void>((resolve) => { letReseal = resolve; });
+      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
+    });
+    await r.stub.connectionRevoke(r.session(), { connection });
+    // The sweep reads the kept blob and waits on its reseal; the lane's revoke deletes it.
+    const sweep = r.stub.gatewayReseal(platform(r));
+    await until(async () => (await r.in((instance) => instance.calls))
+      .some((made) => made.method === "reseal"), "the reseal to be asked");
+    await r.in((instance) => {
+      instance.faults.revokeGate = null;
+      letRevoke();
+    });
+    await until(async () => {
+      await lanes(r);
+      return (await secrets(r, connection)).length === 0;
+    }, "the provider revoke", 50);
+    await r.in((instance) => {
+      instance.faults.resealGate = null;
+      letReseal();
+    });
+    expect(await sweep).toEqual({ resealed: 0, left: 1 });
+    expect(await secrets(r, connection)).toEqual([]);
   });
 });
 

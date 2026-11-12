@@ -64,7 +64,7 @@ const WRITES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
                                  "#writeInline", "ns"]),
   "owner/src/schedule.ts": new Set(["push", "cancel"]),
   "owner/src/connections.ts": new Set(["#lease", "#unlease", "#refreshed", "#sweep", "#owed",
-                                       "#revokeOutcome"]),
+                                       "#revokeOutcome", "#keepResealed"]),
 });
 
 function isAsync(node: ts.Node): boolean {
@@ -316,9 +316,9 @@ const UNIT_ARGUMENTS: Readonly<Record<string, readonly number[]>> = Object.freez
  * reads what the gate does not hold (R2, a sandbox), or reads only what its unit read.
  */
 const OWN_UNITS: ReadonlySet<string> = new Set([
-  // Each writes in units of its own around its R2 or sandbox calls.
+  // Each writes in units of its own around its R2, sandbox or gateway calls.
   "files.write", "files.writeChunks", "files.upload", "files.rewrap", "files.space",
-  "connections.fresh", "erasure.begin", "launcher.seeded", "launcher.launch",
+  "connections.fresh", "connections.reseal", "erasure.begin", "launcher.seeded", "launcher.launch",
   "launcher.cancel", "launcher.reapply",
   // Each reads in units of its own, or R2 alone.
   "files.fetch", "archive.archived", "archive.chain", "launcher.readAgent",

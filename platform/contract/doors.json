@@ -652,6 +652,10 @@
       "capability": null, "handler": "files", "gate": "units", "args": "none"
     },
     {
+      "door": "gatewayReseal", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "connections", "gate": "units", "args": "none"
+    },
+    {
       "door": "policyRead", "class": "read", "caller": "owner", "action": "read its policy",
       "capability": null, "handler": "policy", "gate": "door", "args": "none"
     },

@@ -109,7 +109,7 @@ import type { CredentialKind, NetworkPlan, RunConfig } from "../../contract/src/
 export const RUNS_KEPT = 2000;
 
 export const NO_CONVERSATION = "no_conversation: no such conversation of the caller's";
-export const CONVERSATION_BUSY = "conversation_busy: a run in this conversation is still live";
+const CONVERSATION_BUSY = "conversation_busy: a run in this conversation is still live";
 /** The inputs waiting for their conversations are at their ceiling (`QUEUE_ROWS`, `QUEUE_BYTES`). */
 export const QUEUE_FULL = `run_inputs_full: ${QUEUE_ROWS} inputs or ${QUEUE_BYTES} bytes wait ` +
   "already; let a run settle first";
@@ -125,7 +125,7 @@ export const SIGNIN_REQUIRED = "signin_required";
 export const UNATTENDED_REFUSED = "unattended_refused: no source of this agent may run " +
   "unattended on its record";
 export const NO_SOURCE = "no_source: no connected source can run this agent's engine";
-export const OWNER_LIMIT = "owner_limit";
+const OWNER_LIMIT = "owner_limit";
 export const NO_RUN = "no_run: no such run of the caller's";
 export const RUN_ENDED = "run_ended: the run is no longer live";
 export const NO_SCHEDULE = "no_schedule: no such schedule of the caller's";
@@ -133,7 +133,7 @@ export const NO_SCHEDULE = "no_schedule: no such schedule of the caller's";
 export const NO_REPLY = "NO_REPLY";
 
 export type RunState = "waiting" | "queued" | "running" | "succeeded" | "failed" | "unknown";
-export type Initiator = "owner" | "client" | "schedule" | "mail";
+type Initiator = "owner" | "client" | "schedule" | "mail";
 
 /** A connected source as the choice reads it: `Connections.usable`'s shape. */
 export interface UsableSource {
@@ -290,7 +290,7 @@ export interface Admitted {
 }
 
 /** The source a run was given, its id and secret: what its environment is made from. */
-export interface Chosen {
+interface Chosen {
   readonly run: string;
   readonly engine: string;
   readonly credential: CredentialKind;
@@ -302,7 +302,7 @@ export interface Chosen {
  * A request admitted before (its run, nothing new written), or a run that waits for its
  * conversation's live run (written `waiting`, its input kept): nothing to start now.
  */
-export interface Retried {
+interface Retried {
   readonly existing: true;
   readonly run: string;
   readonly conversation: string;
@@ -340,7 +340,7 @@ export interface RunReceipt {
 }
 
 /** A run grant, as the run-scoped door and egress read it. */
-export interface RunGrant {
+interface RunGrant {
   readonly run: string;
   /** Its agent: who the run acts as in the ledger. */
   readonly agent: string;
@@ -448,7 +448,7 @@ function authorityOf(origin: { readonly client: string } | null): string {
  * `conversations.session_id` CHECK). The VM is untrusted, so any other the engine names is
  * refused here, never handed to SQLite to fail the runner's whole post.
  */
-export const SESSION_ID = /^[!-~]{1,256}$/;
+const SESSION_ID = /^[!-~]{1,256}$/;
 /** The run's error when its engine named a session id outside that shape: a fixed code. */
 export const SESSION_REFUSED = "session_id_refused: the engine named a session id outside " +
   "its shape, so this conversation does not resume";
@@ -507,7 +507,7 @@ const UNNAMED_SHOWN = 5;
  * the object's own words: only the count and the escaped paths come from the event, never
  * its text (round 8, R8-1); null for any other event, or one not of that shape.
  */
-export function unnamedNotice(event: unknown): string | null {
+function unnamedNotice(event: unknown): string | null {
   if (typeof event !== "object" || event === null
       || (event as Record<string, unknown>)["type"] !== "ta.sync_unnamed") {
     return null;
@@ -1627,17 +1627,17 @@ export function mailConversation(agent: string, thread: string, client: string |
  * The longest a run door waits for its run to settle before it answers the run as it
  * stands, in ms: a call's own bound (a convention; the run itself has no deadline).
  */
-export const RUN_WAIT_MS = 60_000;
+const RUN_WAIT_MS = 60_000;
 
 /** A run's input: well-formed text, at least a character; its size is the door's bound. */
-export function runText(value: unknown, what: string): string {
+function runText(value: unknown, what: string): string {
   if (typeof value !== "string" || value.length === 0 || /\p{Cs}/u.test(value)) {
     throw new Refusal("invalid", `${what} is well-formed text`);
   }
   return value;
 }
 
-export function waitOf(value: unknown): number {
+function waitOf(value: unknown): number {
   if (value === undefined) {
     return 0;
   }
@@ -1648,10 +1648,10 @@ export function waitOf(value: unknown): number {
   return value;
 }
 
-export const SEND_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const SEND_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** A request's retry key: the caller and its send id, hashed, so a retry is the same run. */
-export function requestKey(client: string | null, sendId: unknown): string {
+function requestKey(client: string | null, sendId: unknown): string {
   if (typeof sendId !== "string" || !SEND_ID.test(sendId)) {
     throw new Refusal("invalid", "client_send_id is 1 to 128 letters, digits, - and _");
   }

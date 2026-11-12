@@ -32,7 +32,7 @@ export interface Cut {
 }
 
 /** An item as a page shows it, and the bytes of its JSON. */
-export interface Fitted<T> {
+interface Fitted<T> {
   readonly item: T;
   readonly bytes: number;
 }

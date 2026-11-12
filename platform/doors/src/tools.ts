@@ -17,11 +17,6 @@ import type { OwnerDoors } from "../../contract/src/owner";
  */
 export type DoorName = keyof OwnerDoors & string;
 
-/** A tool's door, as its row names it: a row the table holds, checked as it is read. */
-export function toolDoor(tool: { readonly door: string }): string {
-  return doorRow(tool.door).door;
-}
-
 /**
  * Call the door named `door` on the bound object, its row read first (an unknown name is a
  * bug). The arguments go as the door's request, which the object checks field by field; a
@@ -30,8 +25,8 @@ export function toolDoor(tool: { readonly door: string }): string {
 export function callDoor(stub: DurableObjectStub<OwnerDoors>, binding: Binding, door: string,
                          request: unknown): Promise<unknown> {
   // An RPC stub's method is called as itself: `call` and `apply` would be RPC names.
-  const method = (stub as unknown as Record<string, unknown>)[doorRow(door).door] as
+  const row = doorRow(door);
+  const method = (stub as unknown as Record<string, unknown>)[row.door] as
     (...args: unknown[]) => Promise<unknown>;
-  return Reflect.apply(method, stub, takesRequest(doorRow(door)) ? [binding, request]
-                                                                 : [binding]);
+  return Reflect.apply(method, stub, takesRequest(row) ? [binding, request] : [binding]);
 }

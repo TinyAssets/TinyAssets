@@ -7,8 +7,8 @@
  *   owner Worker's own SQLite class in the platform; the owner Worker declares the same
  *   routing key, `ROUTING_MAC_KEY`.
  * - `GATEWAY`: the gateway Worker's `ConnectGateway` entrypoint, whose class in the
- *   gateway's source serves exactly `seal`, `exchange` and `verify` (the connect steps),
- *   so the doors can make no model call through it and hold no keyring. Only
+ *   gateway's source serves exactly `seal`, `exchange` and `verify` (the connect steps)
+ *   and `sealDoorbell` and `verifyDoorbell` (a wake's secret), so the doors can make no model call through it and hold no keyring. Only
  *   `src/connect.ts` names it (the binder guard).
  * - `EGRESS`: the gateway Worker's `EgressGateway` entrypoint, whose class serves exactly
  *   `forward` (G4's egress door). Only `src/egress.ts` names it.

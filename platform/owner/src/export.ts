@@ -75,8 +75,8 @@ import { CURSOR_CHARS } from "../../contract/src/limits";
 import type { Call, Door, OwnerState } from "./owner-do";
 import { clock } from "./clock";
 
-export const EXPORT_FORMAT = "tinyassets-export";
-export const EXPORT_VERSION = 3;
+const EXPORT_FORMAT = "tinyassets-export";
+const EXPORT_VERSION = 3;
 /**
  * The rows' bytes one page gathers before it ends, counted as a generation's part holds them
  * (each line's UTF-8 and its newline): well inside one RPC's 32 MiB. `export.test.ts` ("a
@@ -93,7 +93,7 @@ const READ_BATCH = EXPORT_READ_BATCH;
 export const CHUNK_LINE_BYTES = 23 + 64 + 9 + 7 + 1 + 1;
 
 /** One exported table: its columns, and the key it is read in order of. */
-export interface ExportTable {
+interface ExportTable {
   readonly columns: readonly string[];
   /** Its primary key's columns, or `rowid`. */
   readonly key: readonly string[];
@@ -261,12 +261,12 @@ export const START: Cursor = Object.freeze({ section: -1, after: null });
 const GEN = HEX16;
 
 /** An export's cursor: its generation and the index of the object to read next. */
-export function encodeExportCursor(gen: string, index: number): string {
+function encodeExportCursor(gen: string, index: number): string {
   return Buffer.from(JSON.stringify([EXPORT_VERSION, gen, index])).toString("base64url");
 }
 
 /** An export's cursor handed back, checked whole: anything else is refused. */
-export function decodeExportCursor(text: unknown): { gen: string; index: number } {
+function decodeExportCursor(text: unknown): { gen: string; index: number } {
   let parsed: unknown;
   try {
     parsed = typeof text === "string" && text.length <= 128 && /^[A-Za-z0-9_-]+$/.test(text)
@@ -373,7 +373,7 @@ export interface Page {
 }
 
 /** What the header line says. */
-export interface Header {
+interface Header {
   readonly schema: number;
   readonly owner: string;
   readonly at: number;

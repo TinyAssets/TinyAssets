@@ -115,7 +115,7 @@ export const MOVE_PASS_UNITS = 3;
  * carry the whole part over RPC: rvburst X1), beside the buffer once its rows are let go,
  * so twice it at most, within `SHIP_BYTES`.
  */
-export const SEGMENT_BUFFER_BYTES = CHUNK_BYTES;
+const SEGMENT_BUFFER_BYTES = CHUNK_BYTES;
 
 /**
  * One row's text while a segment encodes it, at its worst: the widest row image the log takes
@@ -123,7 +123,7 @@ export const SEGMENT_BUFFER_BYTES = CHUNK_BYTES;
  * stored text, its parsed value, its JSON written again), each a two-byte string in V8 once
  * one character is past U+00FF (review rvburst V1).
  */
-export const SEGMENT_ROW_BYTES = 3 * 2 * IMAGE_MAX;
+const SEGMENT_ROW_BYTES = 3 * 2 * IMAGE_MAX;
 
 /** A segment's build at its most: its buffer and one row's text. */
 export const SHIP_BYTES = SEGMENT_BUFFER_BYTES + SEGMENT_ROW_BYTES;
@@ -148,7 +148,7 @@ export const BURST_GATHER_BYTES = 2 * CHUNK_BYTES;
  * the widest line that reached it, an image at most `IMAGE_MAX`, and a page's chunk lines,
  * `EXPORT_READ_BATCH` of `CHUNK_LINE_BYTES`), held once as its pages and again as its parts.
  */
-export const BURST_BYTES = BURST_GATHER_BYTES + EXPORT_PAGE_BYTES + IMAGE_MAX
+const BURST_BYTES = BURST_GATHER_BYTES + EXPORT_PAGE_BYTES + IMAGE_MAX
   + EXPORT_READ_BATCH * CHUNK_LINE_BYTES;
 
 /**
@@ -159,7 +159,7 @@ export const BURST_BYTES = BURST_GATHER_BYTES + EXPORT_PAGE_BYTES + IMAGE_MAX
  * values (`IMAGE_MAX`, two bytes a character) beside the text so far. Its rows come a row at
  * a time from the cursor, never a batch held whole (rvburst W1).
  */
-export const PAGE_BUILD_BYTES = 2 * (EXPORT_PAGE_BYTES + IMAGE_MAX)
+const PAGE_BUILD_BYTES = 2 * (EXPORT_PAGE_BYTES + IMAGE_MAX)
   + (EXPORT_PAGE_BYTES + IMAGE_MAX + EXPORT_READ_BATCH * CHUNK_LINE_BYTES) + 2 * IMAGE_MAX;
 
 /** A burst at its cut: its pages and its parts. */

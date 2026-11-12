@@ -20,7 +20,7 @@
 import { Buffer } from "node:buffer";
 
 import { exported } from "./export";
-import { CHUNK_BYTES, IMAGE_MAX, LOG_BYTES, LOG_ROW_BYTES } from "../../contract/src/limits";
+import { CHUNK_BYTES } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 
 /** What the log holds in place of an image past `IMAGE_MAX`. */

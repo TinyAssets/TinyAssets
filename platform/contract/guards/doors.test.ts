@@ -98,13 +98,13 @@ describe("the door table", () => {
 
   it("classes each door as admission reads it", () => {
     const classOf = (name: string) => doorRow(name).class;
-    for (const door of ["admissionSet", "tierSet", "dataKeyRewrap", "erasureOutside",
-                        "erasureOutsideDone"]) {
+    for (const door of ["admissionSet", "tierSet", "dataKeyRewrap", "gatewayReseal",
+                        "erasureOutside", "erasureOutsideDone"]) {
       expect(classOf(door), door).toBe("admission");
     }
     expect(doorTable().filter((each) => each.class === "admission").map((each) => each.door).sort())
       .toEqual(["admissionSet", "dataKeyRewrap", "erasureOutside", "erasureOutsideDone",
-                "tierSet"]);
+                "gatewayReseal", "tierSet"]);
     // The work a billing suspension refuses, and some of what it leaves.
     for (const door of ["fileWrite", "fileUploadBegin", "collectionWrite", "policyWrite",
                         "roomPost", "agentSubmit", "agentRun"]) {

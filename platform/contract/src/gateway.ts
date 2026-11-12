@@ -147,6 +147,8 @@ export interface GatewayService {
   /** The provider asked to revoke an OAuth credential (RFC 7009). */
   revokeAtProvider(owner: string, connection: string, version: number, blob: string):
     Promise<Revoked>;
+  /** A blob resealed under the active kid, bound to `version + 1` (the owner's sweep). */
+  reseal(owner: string, connection: string, version: number, blob: string): Promise<Resealed>;
   /**
    * One wake sent with a doorbell subscription's sealed secret (slice W): the gateway opens
    * the blob (and the replaced one's, inside its rotation window) and makes the send.

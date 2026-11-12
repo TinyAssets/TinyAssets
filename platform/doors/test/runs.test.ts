@@ -18,7 +18,7 @@ import {
 import type { Binding } from "../../contract/src/binding";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { defineAgent, egressTokenOf, secretOf } from "../../owner/test/runs-support";
-import { RUN_INSTRUCTIONS } from "../src/mcp";
+import { RUN_INSTRUCTIONS } from "../src/instructions";
 import { profileNames } from "../../contract/src/doors";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
 import { SESSION_REFUSED } from "../../owner/src/runs";

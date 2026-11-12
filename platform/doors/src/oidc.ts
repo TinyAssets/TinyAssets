@@ -135,11 +135,6 @@ export function upstreamConfig(text: string): UpstreamConfig {
   });
 }
 
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
 function unbase64url(text: string): Uint8Array {
   if (!/^[A-Za-z0-9_-]*$/.test(text)) {
     throw new Error("the access token is not base64url");

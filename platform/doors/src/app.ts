@@ -102,9 +102,9 @@ import type { ControlRead } from "../../contract/src/control";
 import type { JsonBody } from "../../contract/src/owner";
 import { ownerGate, ownerRead } from "./control";
 import {
-  deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,
+  deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
-import { CONNECT_ROUTES, ConnectRefused, sealDoorbell } from "./connect";
+import { CONNECT_ROUTES, ConnectRefused, DOORBELL_VERSION, sealDoorbell } from "./connect";
 import { eraseOwner } from "./erase";
 import { streamUpload } from "./file-bytes";
 import { HOOK_ROUTES } from "./inbound";
@@ -115,7 +115,7 @@ import type { Sources } from "../../sources/src/schema";
 import { signinsRead } from "../../sources/src/signin";
 import { refusalResponse } from "./refused";
 import { toolTable } from "../../contract/src/doors";
-import { callDoor, type DoorName, toolDoor } from "./tools";
+import { callDoor, type DoorName } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import { CAPABILITY_WORDS, RUN_CAPABILITIES } from "../../contract/src/capabilities";
@@ -135,7 +135,7 @@ function json(status: number, body: unknown, headers: HeadersInit = {}): Respons
  * Every owner-surface answer but the socket's upgrade carries these: JSON is never sniffed
  * into anything else, and no answer runs or frames anything if opened as a page.
  */
-export const SURFACE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+const SURFACE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   "X-Content-Type-Options": "nosniff",
   "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
 });
@@ -307,7 +307,7 @@ const ownerTool: Route = async ({ owner: { binding, stub }, body: request, rest:
   if (tool === undefined) {
     return failure(404, "no such tool");
   }
-  return answerJson(tool.name, await callDoor(stub, binding, toolDoor(tool), request));
+  return answerJson(tool.name, await callDoor(stub, binding, tool.door, request));
 };
 
 /**
@@ -316,7 +316,7 @@ const ownerTool: Route = async ({ owner: { binding, stub }, body: request, rest:
  * 4 MiB an object, 256 MiB a response). The client asks again with the last cursor line it
  * read, which names its export_id.
  */
-export const EXPORT_PAGES = 64;
+const EXPORT_PAGES = 64;
 
 /**
  * The owner's export, as newline-delimited JSON (`application/x-ndjson`): its generation's
@@ -389,7 +389,7 @@ async function doorbell({ env, owner: { binding, stub }, body: request }: Served
   const sealed = await sealDoorbell(env, binding.owner, id, { record: kind.id, url, secret });
   return json(200, await stub.agentDoorbell(binding, {
     agent_id: request["agent_id"], kind: kind.id, subscription_id: id, board: follow.board,
-    rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: 1 }));
+    rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: DOORBELL_VERSION }));
 }
 
 /** `agent/doorbell/kinds`: the wake kinds the owner pastes a URL and token for. */
@@ -499,7 +499,7 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "files/read": { serve: fileRead },
     "files/write": { serve: fileWrite },
     "keys": answered(({ env, owner, body }) => mintKey(env, owner, body)),
-    "keys/list": answered(({ owner }) => listKeys(owner)),
+    "keys/list": { door: "keyList" },
     "account/erase": answered(({ owner, body }) => eraseOwner(owner, body),
                               { "Set-Cookie": clearedCookie() }),
     "files/upload/begin": { door: "fileUploadBegin" },

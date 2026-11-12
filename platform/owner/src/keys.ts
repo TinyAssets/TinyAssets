@@ -10,7 +10,7 @@
  *   concurrent mints cannot pass the count by one. The count is the owner's set clients'
  *   own bound (`GRANT_LIMITS.maxOwnerClients`, the 10 GB's share: each key's grant is an
  *   owner-set client), held equal by a test. An agent's held key request (a policy card,
- *   `KEY_REQUEST`) is applied with the grant, once, its scopes the card's (the Python's
+ *   `api_key_request`) is applied with the grant, once, its scopes the card's (the Python's
  *   `_apply_key_request`).
  * - **Use**: every call an API key makes marks its row's `last_used_at`, at most once a
  *   `USE_INTERVAL_S`, so a key's use is a read most calls (as a grant's `last_seen`).
@@ -32,9 +32,7 @@ import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "./clock";
 
 /** How stale a key's `last_used_at` may be before a call marks it again. */
-export const USE_INTERVAL_S = 60;
-/** The policy card an agent files to ask the owner for a key (`policyPropose`). */
-export const KEY_REQUEST = "api_key_request";
+const USE_INTERVAL_S = 60;
 
 export const TOO_MANY_KEYS = "too many live API keys; revoke one first";
 
