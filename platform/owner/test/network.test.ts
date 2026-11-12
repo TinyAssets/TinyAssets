@@ -47,7 +47,7 @@ describe("the network document", () => {
     expect(plan).toEqual({
       network: { allowOut: ["*", EGRESS_HOST], denyOut: [ALL_TRAFFIC], dnsServers: ["1.1.1.1"],
                  rules: transform(3) },
-      mode: "open", generation: 3, unexpressed: [], receipt: false, boundary: false,
+      mode: "open", unexpressed: [], receipt: false, boundary: false,
       note: BOUNDARY_NOTE });
     expect(DNS_SERVERS).toEqual(["1.1.1.1"]);
     expect(ALL_TRAFFIC).toBe("0.0.0.0/0");

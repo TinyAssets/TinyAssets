@@ -13,7 +13,7 @@ import { mintToken } from "../../contract/src/routing-mac";
 import type { Binding } from "../../contract/src/binding";
 import { defineAgent } from "../../owner/test/runs-support";
 import {
-  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER, SYNC_HEADER,
+  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, SANDBOX_HEADER, SYNC_HEADER,
 } from "../../contract/src/egress";
 import {
   appPost, call, OPEN, recorded, serveFirstPartyDocument, setControl, signInApp,
@@ -43,7 +43,7 @@ async function leased() {
   return { who, start: start!, sync: start!.tokens!.sync_token,
            // What every HTTPS call out of the sandbox carries: E2B's transform's headers.
            inside: { [SANDBOX_HEADER]: egressTokenOf(start!.network!.network)!,
-                     [GENERATION_HEADER]: String(start!.network!.generation) } };
+                     [GENERATION_HEADER]: String(generationOf(start!.network!.network)) } };
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
@@ -135,7 +135,7 @@ describe("the sync doors", () => {
     const { who, start } = await leased();
     for (const headers of [{}, { [SYNC_HEADER]: egressTokenOf(start.network!.network)!,
                                  [SANDBOX_HEADER]: egressTokenOf(start.network!.network)!,
-                                 [GENERATION_HEADER]: String(start.network!.generation) },
+                                 [GENERATION_HEADER]: String(generationOf(start.network!.network)) },
                            { [SYNC_HEADER]: mintToken(Buffer.alloc(32, 7).toString("base64url"), "sync", who,
                                                       Math.floor(Date.now() / 1000) + 60).token }]) {
       const refused = await door("changes", { after: 0, limit: 10 }, headers);

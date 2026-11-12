@@ -336,9 +336,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     researched first: the line's object lives in the test Worker itself, which the plugin
     names (a gate fronts an object by its Worker's name), the suite runs inside that object
     (`runInDurableObject`), and `SandboxSlots` has no interface for `methodsOf`.
-  - Lane S: `sandbox/src/e2b.ts`'s constructor defaults (the `fetcher` at `:47`, `retryAfter =
-    null` at `:180`; T1b), and `NetworkPlan`'s typed `generation` beside the header the Worker
-    reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `node ci/budgets.mjs` (d3 §I): the large from the Vitest reports the `platform-sizes` legs
     upload, the runner's medium from a local `test:root` report (`platform-tests` uploads none).
