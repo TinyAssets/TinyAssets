@@ -30,6 +30,8 @@ import { createInterface } from "node:readline";
 import type { EgressScope } from "../../contract/src/egress-scope";
 import { ALL_TRAFFIC, closedNetwork, DNS_SERVERS, EGRESS_ORIGIN, egressBaseUrl,
          sandboxEnv } from "../../contract/src/egress";
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
+import { AGENTS_DIR } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 import { STEP_NS, stepNanos } from "../../contract/src/sync-ignore";
 import { bundledRecords, engineHosts } from "../../sources/src/catalog";
@@ -37,13 +39,13 @@ import { runEnv } from "../../sources/src/run-env";
 import type { SourceRecord } from "../../sources/src/schema";
 import { SIGNIN_REFUSALS, signinShape } from "../../sources/src/signin";
 
-import { AGENTS_DIR, binPath, invocation, isKept, keptPaths, SYSTEM } from "./engine";
+import { binPath, invocation, isKept, keptPaths, SYSTEM } from "./engine";
 import { lineEvent } from "./frames";
 import { remove, safeDirs, safeWrite } from "./fsafe";
 import { loginArgv, onTerminal, plain, type Prompt, prompted } from "./login";
-import { EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
+import { COMMAND_MS, EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
-import { COMMAND_MS, CONVERSATIONS, configOwned, dropHome, engineEnv, giveTree, keepHome,
+import { CONVERSATIONS, configOwned, dropHome, engineEnv, giveTree, keepHome,
          makeHome, record, RECORDS, shared, sortedWalk, sources, STORE } from "./session";
 import { asUser, give, killAll, take } from "./users";
 
@@ -285,7 +287,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
     let size = 0;
     request.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= 4 * 1024 * 1024) {
+      if (size <= EGRESS_BODY_MAX) {
         chunks.push(chunk);
       }
     });

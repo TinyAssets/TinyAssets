@@ -20,13 +20,11 @@
  */
 import type { CliSpec, SourceRecord } from "../../sources/src/schema";
 import { envStem, MCP_DOOR } from "../../contract/src/egress";
+import { AGENTS_DIR } from "../../contract/src/paths";
 import { forbids } from "../../contract/src/text";
-import type { CredentialKind } from "../../contract/src/sandbox";
 
 import type { StartDoc } from "./protocol";
 
-export const WORKSPACE = "/workspace";
-export const AGENTS_DIR = "/workspace/agents";
 export const ENGINE_ROOT = "/opt/ta/engines";
 
 /**

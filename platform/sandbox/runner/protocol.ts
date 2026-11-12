@@ -1,15 +1,21 @@
 /**
  * The Worker↔runner protocol (runner by digest; the rule is `state-format.ts`'s): every
- * command the runner takes, the exit codes it and its loader answer, the state directory's
- * layout both sides name, and the documents the Worker hands the runner and reads back. The
- * Worker (`src/control.ts`) and the runner (`runner.ts`) both dispatch from these names, so
- * neither holds a copy of the other's. `protocol.json` records each version's commands and
- * `state` answer, frozen. The runner reports its own in `state`; the Worker speaks `SPEAKS`
- * and refuses loudly a runner speaking another. A change ships in two deploys: the first
- * Worker speaks both while its runner speaks the old one, the second runner speaks the new
- * one. It imports only the contract's types.
+ * command the runner takes, the exit codes it and its loader answer, the paths both sides
+ * name, the documents the Worker hands the runner and the answers it reads back. The Worker
+ * (`src/control.ts`) and the runner (`runner.ts`) both dispatch from these names, so neither
+ * holds a copy of the other's. The documents and answers are this protocol's own types, not
+ * the owner contract's: the Worker maps its contract's values into them in one place
+ * (`control.ts` `startDocument`, `signinDocument`, `leaseFile`), so an owner contract edit
+ * never changes what a live runner of an older deploy reads.
+ *
+ * `protocol.json` records each version whole (its commands, exit codes, paths, documents
+ * and answers), frozen by digest (`state-format.test.ts`); this file, what the Worker writes
+ * and what the runner answers are held to its record. The runner reports its own protocol in
+ * `state`; the Worker speaks `SPEAKS` and refuses loudly a runner speaking another. A change
+ * ships in two deploys: the first Worker speaks both while its runner speaks the old one,
+ * the second runner speaks the new one.
  */
-import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
+import { LEASE_TTL_S } from "../../contract/src/limits";
 
 /** The protocol this runner speaks. */
 export const PROTOCOL = 1;
@@ -78,6 +84,14 @@ export const EXIT = Object.freeze({
   mismatch: 25,
 } as const);
 
+/**
+ * A runner command's deadline, the Worker's and the runner's own (a status check, the wait
+ * for a runner's answer, a store's lock): the lease's TTL. The owner's object settles a run
+ * whose runner it has not heard from in `LEASE_TTL_S`, so a command that takes longer has
+ * lost its run regardless.
+ */
+export const COMMAND_MS = LEASE_TTL_S * 1000;
+
 /** The template's loader, which runs a runner by its digest, and its own install command. */
 export const LOADER = "/usr/local/bin/ta-runner";
 export const INSTALL = "install";
@@ -90,6 +104,8 @@ export const STATE_DIR = "/var/lib/ta";
 export const INCOMING = `${STATE_DIR}/incoming`;
 /** Where the Worker leaves a job's document and a pasted code. */
 export const INBOX = `${STATE_DIR}/inbox`;
+/** How a pasted code's name in the inbox ends (`inboxCode`). */
+export const CODE_SUFFIX = ".code";
 /** The lease's secrets, as the start or sign-in that opened it hands them (`LeaseFile`). */
 export const LEASE_FILE = `${STATE_DIR}/lease.json`;
 
@@ -105,7 +121,7 @@ export function inboxDoc(id: string): string {
 
 /** A sign-in's pasted code in the inbox, by the sign-in's id. */
 export function inboxCode(id: string): string {
-  return `${INBOX}/${id}.code`;
+  return `${INBOX}/${id}${CODE_SUFFIX}`;
 }
 
 /**
@@ -133,17 +149,55 @@ export const JOB_FILES = Object.freeze({
   socket: "job.sock",
 } as const);
 
-/**
- * A run's start, as the runner reads it from the inbox: the Worker's start but the lease's
- * own secrets, its network and its sealed route, with the control record's scratch
- * retention (`scratch_retention_days`, null when it names none; absent, the same).
- */
-export type StartDoc = Omit<SandboxStart, "tokens" | "network" | "route"> & {
-  readonly scratch_retention_days?: number | null;
-};
+/** A lease, as a document names it: its id, and the epoch its holder runs under. */
+export interface DocLease {
+  readonly lease_id: string;
+  readonly epoch: number;
+}
 
-/** A sign-in's document: the Worker's sign-in but its lease, secrets, network and route. */
-export type SigninDoc = Omit<SandboxSignin, "tokens" | "network" | "lease" | "route">;
+/**
+ * A run's start, as the runner reads it from the inbox: the run, its agent and conversation,
+ * the engine's record and the credential it runs on, its input, whose sandbox it runs in and
+ * under which lease, the run's config, its doors (`mcp` carries the run's own secret;
+ * `mcp_bare` is the one a record sending that secret in a header takes), and the control
+ * record's scratch retention (null when it names none; absent, the same).
+ */
+export interface StartDoc {
+  readonly run: string;
+  readonly agent: string;
+  readonly conversation: string;
+  readonly engine: string;
+  readonly credential: "vendor_login_in_sandbox" | "api_key";
+  readonly model: string | null;
+  readonly session_id: string | null;
+  readonly prompt: string;
+  readonly unattended: boolean;
+  readonly authority: string;
+  readonly lease: DocLease;
+  readonly config: {
+    readonly generation: number;
+    readonly egress: { readonly mode: string;
+                       readonly destinations: readonly { host: string; port: number }[] };
+    readonly env: Readonly<Record<string, string>>;
+    readonly inherit: readonly string[];
+  };
+  readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
+                   readonly signin: string };
+  readonly scratch_retention_days?: number | null;
+}
+
+/**
+ * A sign-in's document: the engine signed in or out, the region chosen among its record's,
+ * whose sandbox, and its doors (its own events, and the presence report's).
+ */
+export interface SigninDoc {
+  readonly id: string;
+  readonly engine: string;
+  readonly region: string | null;
+  readonly mode: "in" | "out";
+  readonly authority: string;
+  readonly urls: { readonly events: string; readonly signin: string };
+}
 
 /**
  * The lease's secrets, as a start or sign-in that opened the lease hands them: the two the
@@ -152,9 +206,9 @@ export type SigninDoc = Omit<SandboxSignin, "tokens" | "network" | "lease" | "ro
  * it, outside (`owner/src/network.ts`).
  */
 export interface LeaseFile {
-  readonly lease: SandboxStart["lease"];
+  readonly lease: DocLease;
   readonly authority: string;
-  readonly tokens: Pick<NonNullable<SandboxStart["tokens"]>, "sync_token" | "runner_token">;
+  readonly tokens: { readonly sync_token: string; readonly runner_token: string };
 }
 
 /** `state`'s answer: how many jobs live, whether every live run's CLI is quiet, the protocol. */
@@ -165,7 +219,19 @@ export interface StateAnswer {
 }
 
 /** `quiet-wait`'s answer: the live runs, and whether they are quiet. */
-export type QuietAnswer = Omit<StateAnswer, "protocol">;
+export interface QuietAnswer {
+  readonly live: number;
+  readonly quiet: boolean;
+}
 
-/** `renew-wait`'s answer: how many runs lived when it told them. */
-export type RenewAnswer = Pick<StateAnswer, "live">;
+/** An answer's fields, each with its JSON type. */
+export type AnswerFields<T> = Readonly<Record<keyof T, "number" | "boolean">>;
+
+/** The answers the Worker reads, by command: each field's JSON type, which it holds them to. */
+export const ANSWERS: {
+  readonly [COMMAND.state]: AnswerFields<StateAnswer>;
+  readonly [COMMAND.quietWait]: AnswerFields<QuietAnswer>;
+} = Object.freeze({
+  [COMMAND.state]: Object.freeze({ live: "number", quiet: "boolean", protocol: "number" }),
+  [COMMAND.quietWait]: Object.freeze({ live: "number", quiet: "boolean" }),
+});

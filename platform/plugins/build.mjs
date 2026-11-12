@@ -3,21 +3,22 @@
 // agent definition):
 // - the TinyAssets plugins: one for ChatGPT and Codex (the portable Agent Plugins format,
 //   with OpenAI's extension) and one for Claude (`.claude-plugin/`), each the MCP server plus
-//   the starter's own skills, copied byte for byte from
-//   `platform/starter/workspace/.agents/skills/`. The skills already speak to an agent over
-//   MCP as well as in a sandbox. `scratch` is left out: it is about a sandbox's own disk.
+//   the starter's own skills, copied byte for byte from the starter's files under
+//   `/workspace/.agents/skills/` (all but those `manifest.json` marks `plugin: false`). The
+//   skills already speak to an agent over MCP as well as in a sandbox.
 // - the onboarding steps the doors' MCP instructions tell a client with no plugin
 //   (`doors/onboarding.json`, read by `doors/src/instructions.ts`).
 //
-// `node platform/plugins/build.mjs` writes them; `--check` exits 1 when a committed file
-// differs from what this makes (the doors' plugins guard runs it).
-// Nothing here is submitted anywhere: SUBMIT.md is the founder's checklist.
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+// This writes them: one of `npm run generate`'s generators, which
+// `ci/guards/generated.test.ts` holds current. Nothing here is submitted anywhere: SUBMIT.md
+// is the founder's checklist.
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SKILLS = join(HERE, "..", "starter", "workspace", ".agents", "skills");
+/** Where the starter's shared skills land in an owner's files. */
+const SKILLS = "/workspace/.agents/skills/";
 const STARTER = JSON.parse(readFileSync(join(HERE, "..", "starter", "manifest.json"), "utf8"));
 // The doors' public identity: the origin, the MCP door the plugins connect to, and the
 // site's legal page.
@@ -29,11 +30,8 @@ const LEGAL = `${ORIGIN}${IDENTITY.legal}`;
 /** The doors' copy of the onboarding steps, by its path under this directory. */
 const ONBOARDING = join("..", "doors", "onboarding.json");
 
-/** The skills each plugin carries, in this order: the brain's first. */
-export const BUNDLED = Object.freeze(["shared-brain", "onboarding", "goals", "knowledge",
-                                      "rooms-and-board", "schedule"]);
 /** The listings' example prompts: the first makes onboarding the user's own request. */
-export const PROMPTS = Object.freeze([
+const PROMPTS = Object.freeze([
   "Set me up on TinyAssets",
   "What do you know about my goals?",
   "Tell my other assistants I prefer short answers",
@@ -54,23 +52,12 @@ function json(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-/** Every file under `dir`, as paths relative to it. */
-function walk(dir, under = dir) {
-  return readdirSync(dir).sort().flatMap((name) => {
-    const path = join(dir, name);
-    return statSync(path).isDirectory() ? walk(path, under) : [relative(under, path)];
-  });
-}
-
-/** The skills' files, as `skills/<name>/...`. */
+/** The skills' files the plugins carry, as `skills/<name>/...`. */
 function skillFiles() {
-  const files = {};
-  for (const skill of BUNDLED) {
-    for (const file of walk(join(SKILLS, skill))) {
-      files[join("skills", skill, file)] = readFileSync(join(SKILLS, skill, file), "utf8");
-    }
-  }
-  return files;
+  return Object.fromEntries(STARTER.files
+    .filter((file) => file.path.startsWith(SKILLS) && file.plugin !== false)
+    .map((file) => [join("skills", file.path.slice(SKILLS.length)),
+                    readFileSync(join(HERE, "..", "starter", file.path.slice(1)), "utf8")]));
 }
 
 /**
@@ -78,7 +65,7 @@ function skillFiles() {
  * in order. A step with no lead is the skill's alone (the pass and brief, which needs the
  * `schedule` skill).
  */
-export function onboardingSteps(skill) {
+function onboardingSteps(skill) {
   const leads = [...skill.matchAll(/^\d+\. \*\*([^*]+)\*\*/gm)].map((found) => {
     const lead = found[1].replace(/\s+/g, " ").replaceAll("`", "").replace(/\.$/, "");
     return `${lead[0].toLowerCase()}${lead.slice(1)}`;
@@ -90,7 +77,7 @@ export function onboardingSteps(skill) {
 }
 
 /** Each file this makes, by path under this directory. */
-export function plugins() {
+function plugins() {
   const skills = skillFiles();
   const out = {};
   for (const [path, text] of Object.entries(skills)) {
@@ -136,35 +123,12 @@ export function plugins() {
   return out;
 }
 
-/** The files `dir` holds now, by path under this directory. */
-function committed(dir) {
-  try {
-    return Object.fromEntries(walk(join(HERE, dir)).map((file) =>
-      [join(dir, file), readFileSync(join(HERE, dir, file), "utf8")]));
-  } catch {
-    return {};
-  }
-}
-
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const made = plugins();
-  if (process.argv.includes("--check")) {
-    const now = { ...committed("chatgpt"), ...committed("claude"),
-                  [ONBOARDING]: readFileSync(join(HERE, ONBOARDING), "utf8") };
-    const stale = [...new Set([...Object.keys(made), ...Object.keys(now)])]
-      .filter((path) => made[path] !== now[path]).sort();
-    if (stale.length > 0) {
-      console.error(`platform/plugins is stale (${stale.join(", ")}): run node ` +
-                    "platform/plugins/build.mjs");
-      process.exit(1);
-    }
-  } else {
-    for (const dir of ["chatgpt", "claude"]) {
-      rmSync(join(HERE, dir), { recursive: true, force: true });
-    }
-    for (const [path, text] of Object.entries(made)) {
-      mkdirSync(dirname(join(HERE, path)), { recursive: true });
-      writeFileSync(join(HERE, path), text);
-    }
+  for (const dir of ["chatgpt", "claude"]) {
+    rmSync(join(HERE, dir), { recursive: true, force: true });
+  }
+  for (const [path, text] of Object.entries(plugins())) {
+    mkdirSync(dirname(join(HERE, path)), { recursive: true });
+    writeFileSync(join(HERE, path), text);
   }
 }

@@ -1,26 +1,27 @@
 /**
- * The starter package as data (`platform/starter/`): the bundle the owner's object carries is
- * the sources' own; every file is portable to every engine (`AGENTS.md` plain markdown well
- * under Codex's 32 KiB with no imports or frontmatter, each skill an Agent Skills folder whose
- * name is its folder's); `agent.json` passes the owner's own check and comes last; the
- * vendored OKF spec is byte for byte the pinned blob; and the OKF watcher's checks
- * (`okf-watch.ts`) against fixtures: a content diff, a relocation banner, new tags and hidden
- * Unicode, never a version number.
+ * The starter package as data (`platform/starter/`): every file is portable to every engine
+ * (`AGENTS.md` plain markdown well under Codex's 32 KiB with no imports or frontmatter, each
+ * skill an Agent Skills folder whose name is its folder's); `agent.json` passes the owner's
+ * own check and comes last; the vendored OKF spec is byte for byte the pinned blob; and the
+ * OKF watcher's checks (`okf-watch.ts`) against fixtures: a content diff, a relocation
+ * banner, new tags and hidden Unicode, never a version number; and its `apply`, which leaves
+ * every generated file current (`ci/guards/generated.test.ts` holds the committed ones).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import {
-  applied, blobId, hiddenUnicode, manifestText, type Pin, prBody, quoted, relocation, report,
+  applied, blobId, hiddenUnicode, manifestText, prBody, quoted, relocation, report,
   vendoredSpec, versionOf,
 } from "../../starter/okf-watch";
 import { agentFile } from "../src/agent-file";
 import { MAIN_AGENT } from "../src/authority";
-import { PLATFORM } from "../../ci/paths";
+import { changedBy, platformCopy, regenerated, removeCopy } from "../../ci/kit/generated";
+import { PLATFORM, REPO } from "../../ci/paths";
 
 const STARTER = join(PLATFORM, "starter");
 
@@ -49,15 +50,6 @@ function frontOf(text: string): Map<string, string> {
 }
 
 describe("the starter package", () => {
-  it("is carried as its sources make it (bundle.mjs --check)", () => {
-    expect(() => execFileSync(process.execPath, [join(STARTER, "bundle.mjs"), "--check"],
-                              { stdio: "pipe" })).not.toThrow();
-    const manifest = JSON.parse(readFileSync(join(STARTER, "manifest.json"), "utf8"));
-    expect(bundled.version).toBe(manifest.version);
-    expect(bundled.files.map((file) => file.path)).toEqual(
-      manifest.files.map((file: { path: string }) => file.path));
-  });
-
   it("refuses to bundle a path dropped without being retired (review R2-L4)", () => {
     const copy = mkdtempSync(join(tmpdir(), "starter-"));
     try {
@@ -75,6 +67,10 @@ describe("the starter package", () => {
       expect([kept.status, kept.stderr]).toEqual([0, ""]);
       expect(JSON.parse(readFileSync(join(copy, "starter.json"), "utf8")).retired)
         .toContain(gone);
+      // With no bundle to compare, nothing is written: no run passes the check unchecked.
+      rmSync(join(copy, "starter.json"));
+      const unchecked = spawnSync(process.execPath, [join(copy, "bundle.mjs")], { encoding: "utf8" });
+      expect([unchecked.status, existsSync(join(copy, "starter.json"))]).toEqual([1, false]);
     } finally {
       rmSync(copy, { recursive: true, force: true });
     }
@@ -306,32 +302,51 @@ describe("the OKF watcher", () => {
       .toContain("2".repeat(40));
   });
 
-  it("writes the manifest in its committed layout, so a proposal's diff is what it moves",
-     () => {
+  it("writes the manifest in its committed layout", () => {
     const text = readFileSync(join(STARTER, "manifest.json"), "utf8");
-    const pin = (JSON.parse(text) as { okf: Pin }).okf;
     expect(manifestText(JSON.parse(text))).toBe(text);
-    // `apply` on a copy of the starter, against an upstream whose README alone moved.
-    const copy = mkdtempSync(join(tmpdir(), "starter-"));
-    const upstream = mkdtempSync(join(tmpdir(), "okf-"));
+  });
+
+  it("applies a new spec to the starter and the plugins alike, leaving nothing to generate, " +
+     "and its workflow commits all of it", { tags: ["large"] }, () => {
+    const copy = platformCopy();
     try {
-      cpSync(STARTER, copy, { recursive: true });
-      writeFileSync(join(upstream, "SPEC.md"), vendoredSpec(fileAt(pin.vendored).text));
-      writeFileSync(join(upstream, "README.md"), `${readme}moved\n`);
-      const git = (...args: string[]) => execFileSync("git", ["-C", upstream, ...args],
-                                                      { stdio: "pipe" });
-      git("init", "-q");
-      git("add", "SPEC.md", "README.md");
-      git("-c", "user.name=okf", "-c", "user.email=okf@example.invalid", "commit", "-qm", "x");
-      execFileSync(process.execPath, [join(copy, "okf-watch.ts"), "apply", "--upstream", upstream,
-                                      "--body", join(upstream, "body.md")], { stdio: "pipe" });
-      const lines = (of: string) => of.split("\n");
-      const now = lines(readFileSync(join(copy, "manifest.json"), "utf8"));
-      expect([now.length, now.filter((line) => !lines(text).includes(line))]).toEqual(
-        [lines(text).length, [`    "readme_blob": "${blobId(`${readme}moved\n`)}",`]]);
+      const upstream = join(copy, "..", "okf");
+      const vendoredPath = join(copy, "starter", bundled.okf.vendored.slice(1));
+      const newer = `${vendoredSpec(readFileSync(vendoredPath, "utf8"))}A new rule.\n`;
+      execFileSync("git", ["init", "-q", upstream]);
+      writeFileSync(join(upstream, "SPEC.md"), newer);
+      writeFileSync(join(upstream, "README.md"), "# Open Knowledge Format (OKF)\n");
+      execFileSync("git", ["-C", upstream, "add", "."]);
+      execFileSync("git", ["-C", upstream, "-c", "user.name=okf", "-c", "user.email=okf@invalid",
+                           "commit", "-q", "-m", "a new rule"]);
+      const manifestPath = join(copy, "starter", "manifest.json");
+      const before = readFileSync(manifestPath, "utf8").split("\n");
+      const changed = changedBy(copy, () => {
+        execFileSync(process.execPath, [join(copy, "starter", "okf-watch.ts"), "apply",
+                                        "--upstream", upstream,
+                                        "--body", join(copy, "..", "body.md")], { stdio: "pipe" });
+      });
+      const plugin = join(copy, "plugins", "claude", "skills", "knowledge", "references",
+                          "okf-spec.md");
+      expect(vendoredSpec(readFileSync(plugin, "utf8"))).toBe(newer);
+      expect(JSON.parse(readFileSync(join(copy, "plugins", "chatgpt", "plugin.json"), "utf8"))
+        .version).toBe(`1.0.${bundled.version + 1}`);
+      expect(regenerated(copy), "apply left a generated file stale").toEqual([]);
+      // The manifest keeps its committed layout: a proposal's diff is the lines it moves.
+      const after = readFileSync(manifestPath, "utf8").split("\n");
+      expect([after.length, after.filter((line) => !before.includes(line))
+        .map((line) => /^\s*"(\w+)":/.exec(line)?.[1])])
+        .toEqual([before.length, ["version", "commit", "spec_blob", "readme_blob"]]);
+      // The proposal's commit (`okf-watch.yml`'s `git add`) holds every file apply changed.
+      const workflow = readFileSync(join(REPO, ".github", "workflows", "okf-watch.yml"), "utf8");
+      const added = /^\s*git add (.+)$/m.exec(workflow)![1]!.split(" ");
+      const uncommitted = changed.filter((path) =>
+        !added.some((dir) => `platform/${path}`.startsWith(`${dir}/`)));
+      expect(changed.length).toBeGreaterThan(0);
+      expect(uncommitted).toEqual([]);
     } finally {
-      rmSync(copy, { recursive: true, force: true });
-      rmSync(upstream, { recursive: true, force: true });
+      removeCopy(copy);
     }
   });
 });

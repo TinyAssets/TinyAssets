@@ -193,11 +193,20 @@ Each joins the lane named. None blocks its u3 PR.
    - Today a failed `unreserve` leaves a `held` row in `SandboxSlots` that never expires, so the line counts a slot for a sandbox that's gone, forever.
    - The fix: never swallow. The release is retried by the object's alarm until it lands.
    - A test fails `unreserve` once, then shows the slot freed after the alarm.
-2. **S63's `bootId`: an unreadable boot id never matches,** not even another unreadable one. It fails closed, so a sandbox with an unknown boot is treated as a new boot. This rides S2.
+2. **S63's `bootId`: an unreadable boot id never matches,** not even another unreadable one. It fails closed, so a sandbox with an unknown boot is treated as a new boot. This rides S2. (The runner's own unreadable boot id is amended by item 8.)
 3. **B7's runner items N23, N30 and N33 go to S2.** No S PR held them (a gap in `d2` §D).
 4. **The `chatgpt.json` and `unwired` deletion (§A8) is its own PR.** It reaches the doors, the owner, the gateway tests, the contract guards and the spec.
 5. **S8** (S13's `lease_id` half: the contract, the owner's call and the RPC) stays a later S PR.
 6. **The host lock** (`heavy.sh`) now takes whichever slot is free, rather than choosing one by pid parity.
+7. **S2's three choices beside B15's and B7's letter are taken (S2's review, 2026-11-12):**
+   - **`N33`: the route probe's captured-body cap is `EGRESS_BODY_MAX`, not `CHUNK_BYTES`.** The cap belongs to the probe's fake gateway, which judges a model call's body as the egress door and the gateway read it; the files plane's chunk size has no reason to move it.
+   - **`template/checks.ts` reads `COMMAND` and `EXIT` from `protocol.ts`, not from `protocol.json`.** It drives the real runner, which dispatches from `protocol.ts`, and a test holds `protocol.ts` to the frozen record.
+   - **`startDocument` passes `config.egress` whole.** Mapping its two keys would fix one key order and change the document's bytes against main's; the policy's validator holds it to `mode` and `destinations`, and the Worker's test holds the nested shape to the record.
+8. **Amends item 2 (S2's review, 2026-11-12, Fact 8): a runner that cannot read its own boot id throws.** It takes no lock, so it never takes over a live holder's. Under the old wording such a runner took over every lock, live holders' included, and exclusion was lost within the boot. A lock that names no boot, or another boot, is still taken over.
+9. **Follow-up, after S2: a stale owed slot can let a renewal's fresh hold go.**
+   - It needs a failure of the line first: a `#resume` whose give-back the line refused leaves its sandbox's slot owed while the sandbox runs on.
+   - If a later look holds that same sandbox's slot again (`reserve`, its resume refused for room), the give-back after the look lets that hold go.
+   - The fix: where a slot is reserved again (`#lookAt`, `#renew`), its owed row is deleted first, with a test that refuses one give-back, then has the next look's resume refused for room and shows the slot still held.
 
 
 ## §M. E1–E3, the sandbox's network (2026-11-12)
@@ -319,3 +328,23 @@ Every known-wrong data shape is fixed before the cutover imports real data: a fi
 - capture always on: new recurring spend, about $62 a month for a heavy owner;
 - non-model credentials through a TLS proxy: needs a host, against Direction 8;
 - the directory listing's own MCP door: Direction 2, and the directory submission.
+
+## §R. B9's Env half (2026-11-12)
+
+C2 built B9's `npm run generate` and its staleness guard, and stopped at the `Env` half: d2 B9's design can't be built as written. C2 measured this against wrangler 4.154.0:
+- **The six generated files can't all be compiled.** `wrangler types --env-interface <Worker>Env` still writes the global augmentations: `Cloudflare.Env`, `Cloudflare.GlobalProps`, `StringifyValues` and, for a Worker with string vars, `NodeJS.ProcessEnv`. No flag drops only those. With all six included, `tsc` gives 62 errors: `process.env` requires every Worker's string vars, so every `execFileSync(…, { env })` in Node code fails, and `Cloudflare.Env` merges all six Workers' bindings.
+- **Wrangler types a binding to another Worker by its implementation, never by its contract.** Given only the Worker's own config, the binding is `Fetcher` or an untyped `Service`. Given the bound Worker's config too, it is `Service<typeof import("../gateway/src/index").default>` or `DurableObjectNamespace<import("../owner/src/index").OwnerDO>`, an edge into another Worker's `src`.
+- Strict vars also type deploy-time values as the config's placeholders (`OWNER_ISSUER: "not-configured"`).
+
+**Decided: option (a).**
+- `ci/kit/types.ts` writes each `<Worker>Env` from wrangler's binding list.
+- A binding to another Worker is typed by its contract interface, through a table in the contract.
+- The output has no global augmentation.
+- The hand `Env` interfaces and `envProblems` are deleted.
+- `SANDBOX` and `ERASURES` become required in the same change.
+
+**Not (b), one tsconfig per Worker:** it types bindings by implementation, which the layer table refuses.
+
+**Not (c), keeping wrangler's files excluded beside the hand interfaces:** it keeps hand copies held only by a name check, the hidden link the untangle removes.
+
+It builds as its own PR, **C2b**, right after C2.

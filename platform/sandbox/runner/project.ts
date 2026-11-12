@@ -9,7 +9,9 @@
  * never root; links are never synced, and the last projection's are taken away first.
  */
 import { existsSync, lstatSync, readdirSync, symlinkSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+
+import { ABILITIES_DIR, AGENTS_DIR, SKILLS_DIR, WORKSPACE } from "../../contract/src/paths";
 
 import { safeDirs } from "./fsafe";
 
@@ -49,9 +51,10 @@ export function project(workspace: string, agent: string, skillsPaths: readonly 
       unlinkSync(link);
     }
   }
-  const agentDir = join(workspace, "agents", agent);
-  const sources = [join(agentDir, ".agents", "skills"), join(workspace, ".agents", "skills"),
-                   join(workspace, "skills")];
+  const local = (path: string) => join(workspace, relative(WORKSPACE, path));
+  const agentDir = join(local(AGENTS_DIR), agent);
+  const sources = [join(agentDir, ".agents", "skills"), join(local(ABILITIES_DIR), "skills"),
+                   local(SKILLS_DIR)];
   const chosen = new Map<string, string>();
   for (const source of sources) {
     for (const name of skillsIn(source)) {

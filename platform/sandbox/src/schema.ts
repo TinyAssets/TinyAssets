@@ -36,6 +36,11 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE launched ADD COLUMN hosts TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE sandboxes ADD COLUMN network_due TEXT",
   ]),
+  // 3 (S2): the slots this object owes the platform's line, each kept until the line takes
+  // it back (a renewal's held slot, its sandbox running again or gone).
+  Object.freeze([
+    "CREATE TABLE IF NOT EXISTS owed (sandbox_id TEXT PRIMARY KEY)",
+  ]),
 ]);
 
 /** `SandboxSlots`'s, the one line for the platform. */

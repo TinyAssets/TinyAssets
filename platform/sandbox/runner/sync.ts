@@ -47,7 +47,7 @@ import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeW
          walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
 import { SYNC_HEADER } from "../../contract/src/egress";
-import { CLIENT_READ_ONLY } from "../../contract/src/paths";
+import { CLIENT_READ_ONLY, WORKSPACE } from "../../contract/src/paths";
 import {
   CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_LIST, MAX_SYNC_OPS, SYNC_BODY_MAX,
 } from "../../contract/src/limits";
@@ -62,7 +62,7 @@ const INTENT_ID_CHARS = 2 * INTENT_ID_BYTES;
  * commit's own fields (its lease id, epoch and the JSON around them, under 128 bytes).
  */
 const BODY_MAX = SYNC_BODY_MAX - 128;
-export const SESSIONS = "/workspace/.sessions";
+export const SESSIONS = `${WORKSPACE}/.sessions`;
 /** The mirror's rows a page of a removal scan or a reset reads at once. */
 const PAGE = 1000;
 
@@ -233,7 +233,7 @@ export interface Place {
 }
 
 function localOf(place: Pick<Place, "local">, path: string): string {
-  return join(place.local, relative("/workspace", path));
+  return join(place.local, relative(WORKSPACE, path));
 }
 
 function clientReadOnly(path: string): boolean {
@@ -374,7 +374,7 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
     if (page["reset"] === true) {
       mirror.resetBegin();
       try {
-        await listApply(client, place, mirror, "/workspace");
+        await listApply(client, place, mirror, WORKSPACE);
         for (let after = "", gone = mirror.unseen(after, PAGE); gone.length > 0;
              gone = mirror.unseen(after, PAGE)) {
           for (const path of gone) {
@@ -396,7 +396,7 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
       last.set(change.path, change.kind);
     }
     for (const [path, kind] of last) {
-      if (path === "/workspace" || path.startsWith("/workspace/")) {
+      if (path === WORKSPACE || path.startsWith(`${WORKSPACE}/`)) {
         await apply(client, place, mirror, path, kind);
       }
     }
@@ -787,21 +787,21 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   const out = (rel: string, isDir: boolean): boolean => {
     const why = ignored(rel, isDir);
     return why === "custom" || (why === "default"
-                                && !mirror.knowsUnder(`/workspace/${rel}`));
+                                && !mirror.knowsUnder(`${WORKSPACE}/${rel}`));
   };
   const unnamed: string[] = [];
   let unnamedCount = 0;
   for (const rel of walkFiles(place.local, { skip: (each, isDir) => {
     const name = each.split("/").at(-1)!;
-    return each === ".sessions" || name.startsWith(".ta-")
+    return `${WORKSPACE}/${each}` === SESSIONS || name.startsWith(".ta-")
       || out(each, isDir);
   }, unnamed: (rel) => {
     unnamedCount += 1;
     if (unnamed.length < LISTED) {
-      unnamed.push(`/workspace/${rel}`);
+      unnamed.push(`${WORKSPACE}/${rel}`);
     }
   } })) {
-    const path = `/workspace/${rel}`;
+    const path = `${WORKSPACE}/${rel}`;
     if (place.authority !== "owner" && clientReadOnly(path)) {
       continue;
     }
@@ -815,11 +815,11 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   for (let after = "", known = mirror.page(after, PAGE); known.length > 0;
        known = mirror.page(after, PAGE)) {
     for (const path of known) {
-      if (path.startsWith(`${SESSIONS}/`) || !path.startsWith("/workspace/")
+      if (path.startsWith(`${SESSIONS}/`) || !path.startsWith(`${WORKSPACE}/`)
           || (place.authority !== "owner" && clientReadOnly(path))) {
         continue;
       }
-      if (ignored(path.slice("/workspace/".length)) === "custom") {
+      if (ignored(path.slice(`${WORKSPACE}/`.length)) === "custom") {
         // Never removed (the owner keeps it as it was); its changes, never sent, are said.
         kept += 1;
         if (await heldBack(place, path, mirror.get(path)!)) {
