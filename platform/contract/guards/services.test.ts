@@ -1,7 +1,7 @@
 /**
- * The services' RPC contracts (`decisions.md` A1): the gateway's, the files Worker's, the
- * codemode Worker's, the sandbox Worker's and the owner object's doors as the doors call them
- * (`contract/src/{gateway,files,codemode,sandbox,owner}.ts`).
+ * The services' RPC contracts (`docs/decisions/untangle-2026-11-wave-1.md` A1): the gateway's,
+ * the files Worker's, the codemode Worker's, the sandbox Worker's and the owner object's doors as
+ * the doors call them (`contract/src/{gateway,files,codemode,sandbox,owner}.ts`).
  *
  * - Each service implements its contract: every entrypoint class names its interface
  *   (`implements`), so `tsc` holds the two to each other.

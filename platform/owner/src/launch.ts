@@ -1,7 +1,8 @@
 /**
- * Runs launched, delivered and given their sandbox (ADR-034 decision 4; `decisions.md` A2): the
- * object's half of a run, around `runs.ts`'s rows and decisions. One `Launcher` an object, which
- * serves Runs its one narrow interface (`RunHost`) and holds:
+ * Runs launched, delivered and given their sandbox (ADR-034 decision 4;
+ * `docs/decisions/untangle-2026-11-wave-1.md` A2): the object's half of a run, around `runs.ts`'s
+ * rows and decisions. One `Launcher` an object, which serves Runs its one narrow interface
+ * (`RunHost`) and holds:
  *
  * - **a launch** (`launch`): the agent's `agent.json` read whole (`readAgent`), its run admitted
  *   in one unit against the file still at the etag it was read at, then started through the

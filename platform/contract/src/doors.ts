@@ -1,8 +1,8 @@
 /**
- * The owner object's doors, as data (`doors.json`; ADR-032, `decisions.md` A2): one row for
- * each public RPC method of `OwnerDO`, and nothing else lists them. A row says how the object
- * takes a call, and the object's one runner (`owner/src/owner-do.ts`, `#run`) does each step
- * from it, in this order:
+ * The owner object's doors, as data (`doors.json`; ADR-032,
+ * `docs/decisions/untangle-2026-11-wave-1.md` A2): one row for each public RPC method of
+ * `OwnerDO`, and nothing else lists them. A row says how the object takes a call, and the
+ * object's one runner (`owner/src/owner-do.ts`, `#run`) does each step from it, in this order:
  *
  * 1. **bind**: the object's own owner, its admission for the door's `class` (`work`, `read`
  *    or `reduce`, which decides what a suspension leaves it, `admission.ts`; `admission`,
