@@ -1,7 +1,7 @@
 /**
- * The hooks Worker's source reaches no owner and no storage (agent research §6.4): its rules
- * (`rules.ts`), held over its whole import closure by the platform's isolation checker
- * (`ci/kit/imports.ts`).
+ * The hooks Worker's source reaches no owner and no storage (agent research §6.4): its banned
+ * names (`rules.ts`), held over its whole import closure by the platform's isolation checker
+ * (`ci/kit/imports.ts`). What it may import is the layer table's (`ci/kit/layers.ts`).
  */
 import { describe, expect, it } from "vitest";
 
@@ -16,10 +16,6 @@ isolationTests(IMPORTS, {
     ["the gateway", "export const g = (env: { GATEWAY: unknown }) => env.GATEWAY;"],
     ["storage", "export const s = (ctx: { storage: unknown }) => ctx.storage;"],
     ["process", "export const p = () => process;"],
-    ["the owner object's module", "import { OwnerDO } from '../../owner/src/owner-do';"],
-    ["a path out and back", "import { x } from '../src/../../owner/src/text';"],
-    ["another package", "import { x } from '@earendil-works/pi-ai';"],
-    ["QuickJS outside codemode.ts", "import { x } from '@earendil-works/pi-codemode/cloudflare';"],
     ["a dynamic import", "export const f = () => import('./codemode');"],
     ["require", "export const x = require('node:fs');"],
     ["a type import by path", "export type T = import('../../owner/src/owner-do').OwnerDO;"],
@@ -30,8 +26,6 @@ isolationTests(IMPORTS, {
       "import type { CodemodeRemote } from '@earendil-works/pi-codemode/portable';",
       "import { CodemodeSandbox } from './codemode';",
     ].join("\n")],
-    ["QuickJS in codemode.ts", "hooks/src/codemode.ts",
-     "import { CodemodeSandboxDurableObject } from '@earendil-works/pi-codemode/cloudflare';"],
   ],
 });
 

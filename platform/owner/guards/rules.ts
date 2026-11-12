@@ -45,6 +45,7 @@ import { CONFIG as FILES } from "../../files/guards/rules";
 import { CONFIG as GATEWAY } from "../../gateway/guards/rules";
 import { CONFIG as HOOKS } from "../../hooks/guards/rules";
 import { CONFIG as SANDBOX } from "../../sandbox/guards/rules";
+import { imports, type Owed } from "../../ci/kit/owed";
 
 /** The classes the Worker's migrations make, each SQLite-backed. */
 export const CLASSES = Object.freeze(["OwnerDO"]);
@@ -123,3 +124,34 @@ export const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
                            vars: Object.keys(SANDBOX.vars!), secrets: SANDBOX.secrets!,
                            queues: SANDBOX.exact!["queues"] }),
 });
+
+/**
+ * What the owner's tests, guards and memory legs still owe the platform's guards
+ * (`ci/kit/owed.ts`): another workspace's internals, each until the fix named removes it.
+ */
+export const OWED: readonly Owed[] = Object.freeze([
+  // Platform-wide guards in the owner's tree: B8 moves each to its subject.
+  ...imports("B8", "platform/owner/guards/rules.ts", [
+    "platform/files/guards/rules.ts", "platform/gateway/guards/rules.ts",
+    "platform/hooks/guards/rules.ts", "platform/sandbox/guards/rules.ts"]),
+  ...imports("B8", "platform/owner/guards/starter.test.ts", ["platform/starter/okf-watch.ts"]),
+  // The egress memory leg, the doors' and the gateway's, in the owner's tree: B23.
+  ...imports("B23", "platform/owner/memory/egress-probe.ts", [
+    "platform/doors/src/egress.ts", "platform/gateway/src/catalog.ts",
+    "platform/gateway/src/held.ts", "platform/gateway/src/keyring.ts",
+    "platform/gateway/src/meter.ts", "platform/gateway/src/index.ts"]),
+  // Tests on the other Workers' internals, not their front doors: B23.
+  ...imports("B23", "platform/owner/test/connections.test.ts", [
+    "platform/gateway/src/credential.ts", "platform/gateway/src/catalog.ts",
+    "platform/gateway/src/keyring.ts"]),
+  ...imports("B23", "platform/owner/test/export.test.ts",
+             ["platform/files/src/datakey.ts", "platform/files/src/index.ts"]),
+  ...imports("B23", "platform/owner/test/gateway-support.ts",
+             ["platform/gateway/src/credential.ts", "platform/gateway/src/keyring.ts"]),
+  ...imports("B23", "platform/owner/test/holds.test.ts",
+             ["platform/files/src/datakey.ts", "platform/files/src/keys.ts"]),
+  ...imports("B23", "platform/owner/test/runs-authority.test.ts",
+             ["platform/doors/src/binder.ts"]),
+  // The hand test env, typing `GATEWAY` from the gateway's class: B9 generates it.
+  ...imports("B9", "platform/owner/test/env.d.ts", ["platform/gateway/src/index.ts"]),
+]);

@@ -11,7 +11,9 @@ import {
   unpricedOption,
 } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
-import { egressTarget, meteredCall, meteredModel } from "../../contract/src/egress-scope";
+import {
+  egressTarget, meteredCall, meteredModel, SUPPORTED_APIS,
+} from "../../contract/src/egress-scope";
 import {
   clamped, describes, learnMeter, meteredRecord, meteredUsage, sentHeaders, snapshotOf,
 } from "../src/meter";
@@ -88,6 +90,8 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
 
   it("cites a page and the day it was read for every free call, and lists only sealed ones", () => {
     expect(ruledApis()).toContain("anthropic-messages");
+    // A credential is sealed only for an API a call on it can be metered on (untangle v:S5).
+    expect([...SUPPORTED_APIS].sort()).toEqual([...ruledApis()].sort());
     for (const api of ruledApis()) {
       for (const call of apiRules(api)!.free) {
         expect(call.cite, api).toMatch(/^https:\/\/[^/]+\//);
@@ -213,16 +217,19 @@ describe("the meter pi-ai's adapter teaches", () => {
     expect(meteredModel(meter, "POST", "/v1/messages", { model: "model-x" })).toBe("model-x");
     expect(meteredModel(meter, "POST", "/v1/messages", {})).toBeNull();
     expect(meteredModel(meter, "POST", "/v1/models", { model: "model-x" })).toBeNull();
-    expect(clamped(meter, { model: "m", max_tokens: 50_000 }, 1000)).toEqual({ model: "m",
-                                                                              max_tokens: 1000 });
-    expect(clamped(meter, { model: "m", max_tokens: 10 }, 1000)).toEqual({ model: "m",
-                                                                          max_tokens: 10 });
-    expect(clamped(meter, { model: "m" }, 1000)).toEqual({ model: "m", max_tokens: 1000 });
-    expect(clamped(meter, { model: "m", max_tokens: "lots" }, 1000))
-      .toEqual({ model: "m", max_tokens: 1000 });
+    const api = "anthropic-messages";
+    const tier = { service_tier: "standard_only" };
+    expect(clamped(meter, { model: "m", max_tokens: 50_000 }, 1000, api))
+      .toEqual({ model: "m", max_tokens: 1000, ...tier });
+    expect(clamped(meter, { model: "m", max_tokens: 10 }, 1000, api))
+      .toEqual({ model: "m", max_tokens: 10, ...tier });
+    expect(clamped(meter, { model: "m" }, 1000, api)).toEqual({ model: "m", max_tokens: 1000,
+                                                               ...tier });
+    expect(clamped(meter, { model: "m", max_tokens: "lots" }, 1000, api))
+      .toEqual({ model: "m", max_tokens: 1000, ...tier });
     const google = (await learnMeter(builtinCatalog(), GOOGLE.upstream, "AIza-x"))!;
-    expect(clamped(google, { contents: [] }, 7)).toEqual({ contents: [],
-                                                          generationConfig: { maxOutputTokens: 7 } });
+    expect(clamped(google, { contents: [] }, 7, "google-generative-ai"))
+      .toEqual({ contents: [], generationConfig: { maxOutputTokens: 7 } });
   });
 
   it("reads an Anthropic stream's usage with pi-ai's parser, priced by the catalog", async () => {

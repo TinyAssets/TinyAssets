@@ -35,33 +35,17 @@ export const CONFIG: ConfigRules = Object.freeze({
 export const KEYRING_HOME = "gateway/src/keyring.ts";
 
 /**
- * Its source:
+ * Its source, over its whole import closure (what it may import is the layer table's,
+ * `ci/kit/layers.ts`: its own source, the contract and the source records):
  * - `GATEWAY_KEYRING` is named only in `src/keyring.ts`; and no source names `process` (an
  *   identifier, a string such as `globalThis["process"]`, or the `node:process` module), so
  *   the env handed to a call is the only way to the keyring;
  * - no source names `OWNER` or `getByName`: the gateway is handed the owner and never looks
- *   one up, and its config binds no namespace to look one up in;
- * - it reaches outside `gateway/src/` only the contract's vocabulary it speaks: its own RPC
- *   contract (`contract/src/gateway.ts`), the owner grammar, the one refusal and its codes,
- *   the ids, the limits, the egress wire and scope with the per-API rules and the model
- *   record, the wake records with their callback checks (which the doorbell applies again
- *   where it sends) and their kinds' file, and the isolate's slot pool, and the sealed
- *   envelope its keyring seals by; none of it imports anything but itself;
- * - its packages are pi-ai, `cloudflare:workers`, and `node:async_hooks` in `egress.ts` alone.
+ *   one up, and its config binds no namespace to look one up in.
  */
 export const IMPORTS: ImportRules = Object.freeze({
   worker: "gateway",
   called: "the gateway",
-  outside: Object.freeze([
-    "contract/src/api-rules", "contract/src/checks", "contract/src/egress",
-    "contract/src/egress-scope", "contract/src/envelope", "contract/src/gateway",
-    "contract/src/ids",
-    "contract/src/limits", "contract/src/model-record", "contract/src/refusal",
-    "contract/src/slots", "contract/src/text", "contract/src/wake-records",
-    "contract/wake-kinds.json",
-  ]),
-  packages: Object.freeze(["@earendil-works/pi-ai"]),
-  bare: Object.freeze({ "cloudflare:workers": null, "node:async_hooks": "gateway/src/egress.ts" }),
   banned: Object.freeze([
     { pattern: /GATEWAY_KEYRING/, home: KEYRING_HOME, says: "names GATEWAY_KEYRING outside keyring.ts" },
     { pattern: /^(?:process|node:process)$/, says: "names process, whose env the gateway never reads" },

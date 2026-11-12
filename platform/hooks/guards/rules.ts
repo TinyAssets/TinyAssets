@@ -40,20 +40,12 @@ export const CONFIG: ConfigRules = Object.freeze({
 /**
  * Its source names no binding of the owner's world (`OWNER`, `FILES`, `GATEWAY`, `BLOBS`)
  * or `HOOKS` (it is never bound to itself), nor `storage` (its objects never use their
- * storage, so a script leaves nothing behind), nor `process`. It imports only its own
- * sources, its RPC contract (`contract/src/hooks.ts`, types alone), `cloudflare:workers` and
- * pi's code mode (`/cloudflare` in `codemode.ts` alone, which bundles QuickJS; `/portable`
- * for its types).
+ * storage, so a script leaves nothing behind), nor `process`, over its whole import closure.
+ * What it may import is the layer table's (`ci/kit/layers.ts`).
  */
 export const IMPORTS: ImportRules = Object.freeze({
   worker: "hooks",
   called: "the hooks Worker",
-  outside: Object.freeze(["contract/src/hooks"]),
-  bare: Object.freeze({
-    "cloudflare:workers": null,
-    "@earendil-works/pi-codemode/cloudflare": "hooks/src/codemode.ts",
-    "@earendil-works/pi-codemode/portable": null,
-  }),
   banned: Object.freeze([{
     pattern: /^(?:OWNER|FILES|GATEWAY|BLOBS|HOOKS|storage|process|node:process)$/,
     says: "names %s",

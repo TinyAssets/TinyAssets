@@ -12,7 +12,6 @@ import { extname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../paths";
-import { importProblem, type ImportRules, owns } from "../kit/imports";
 import { configFiles, scriptsIn, workerSources } from "../kit/sources";
 import { fake, once, parseWrangler, readWrangler, workerConfig } from "../workers";
 

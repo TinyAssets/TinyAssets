@@ -78,24 +78,24 @@ export interface Source {
 }
 
 /**
- * The pi-ai 1.4.0 APIs the gateway runs: each sends every request through `fetch`, so the
- * call's endpoint guard sees it, either as `options.fetch` (`anthropic-messages.js:422`,
- * `openai-responses.js:138`, `openai-completions.js:186`, `mistral-conversations.js:180`,
- * `azure-openai-responses.js:128`, `pi-messages.js:271`) or, for Google's two, which
- * refuse a custom fetch, through the global-fetch interposer (`egress.ts`). Every other
- * API is refused as `unsupported_source`: Bedrock signs with a Node HTTP handler outside
- * `fetch`, and `openai-codex-responses` is the legacy ChatGPT backend (research §2.6:
- * Sign in with ChatGPT reaches only `POST /v1/responses`, through `openai-responses`),
- * with a WebSocket transport and per-session caches kept in module state.
+ * The pi-ai 1.4.0 APIs the gateway runs: those a sandbox call can be metered on (each has
+ * its rules, `api-rules.ts` `ruledApis`, which a gateway test holds equal), since egress is
+ * the one model path and an API with no rules could be sealed but never used. Each sends every request through `fetch`, so the call's
+ * endpoint guard sees it, either as `options.fetch` (`anthropic-messages.js:422`,
+ * `openai-responses.js:138`, `openai-completions.js:186`, `mistral-conversations.js:180`) or,
+ * for Google's, which refuses a custom fetch, through the global-fetch interposer
+ * (`egress.ts`). Every other API is refused as `invalid_source`: Bedrock signs with a Node
+ * HTTP handler outside `fetch`, and `openai-codex-responses` is the legacy ChatGPT backend
+ * (research §2.6: Sign in with ChatGPT reaches only `POST /v1/responses`, through
+ * `openai-responses`), with a WebSocket transport and per-session caches kept in module state.
  */
 export const SUPPORTED_APIS: readonly string[] = Object.freeze([
   "anthropic-messages", "openai-responses", "openai-completions", "mistral-conversations",
-  "azure-openai-responses", "pi-messages", "google-generative-ai", "google-vertex",
+  "google-generative-ai",
 ]);
 
 /** The supported APIs whose adapters refuse `options.fetch` (held by `egress.ts`). */
-export const GLOBAL_FETCH_APIS: readonly string[] = Object.freeze(["google-generative-ai",
-                                                                   "google-vertex"]);
+export const GLOBAL_FETCH_APIS: readonly string[] = Object.freeze(["google-generative-ai"]);
 
 /** A pi-ai provider's or API's id. */
 export const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;

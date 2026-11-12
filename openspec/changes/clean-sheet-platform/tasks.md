@@ -957,7 +957,8 @@ account and no deploy.
   door's outcome and bytes, and the charge `succeeded` at pi-ai's cost, `failed` (nothing
   sent, or the provider refused before any output) or `unknown` (a cut, an abort, an
   answer pi-ai cannot read), which keeps the whole charge; one never settled is `lost`
-  past six minutes, its charge `unknown`. Every stop (the object's end signal, the
+  three missed beats on (`LOST_AFTER_S`, 180 s), or past the day's deadline, its charge
+  `unknown`. Every stop (the object's end signal, the
   deadline, the client leaving) aborts the provider's request through a stop stream the
   gateway watches. **Ends**: a policy write, a suspension, the connection's revoke, the
   lease's close or a successor lease, and the erasure end the streams they cover (research
@@ -1778,7 +1779,7 @@ R, S, M and W.
     by matches, its worst case measured (`guards/search-cpu.test.ts`: 766 ms of CPU at
     5,000 matching 4 KiB files and a 1 MiB query) (M3); the rooms skill says how mail
     between agents is answered (M4); the OKF watcher opens, readies and labels with
-    `MERGE_ATTRIBUTION_TOKEN` as `main-red.yml` does (fails loudly without it), asks the
+    `MERGE_ATTRIBUTION_TOKEN`, a user token (fails loudly without it), asks the
     founder's login, quotes upstream text escaped inside a fence, checks it for hidden
     characters, and holds least permissions with pinned actions (M5, L6); a retired path's
     deletion is kept (L1), an unadopted proposal stays one (L2), a door that needs an agent
@@ -2593,9 +2594,16 @@ R, S, M and W.
   quarantined or rewritten to pass. A test that also reaches kept code keeps its cases
   for that code. A listed structural guard (`scripts/ci_structural_guards.py` `GUARDS`)
   is deleted only once this line names the platform guard that replaces it, or the
-  recorded decision that retires its principle. Until then, each runs whenever a Python change could reach it, and never
-  for a `platform/` or prose change it cannot read (the merge gate's tree selection,
-  `affected_tests.provable_shape`).
+  recorded decision that retires its principle. Until then, each runs when the run's
+  selection holds its test file: for every change to the old stack, and for a change to a
+  tree it reads (the merge gate's tree selection, `affected_tests.provable_shape`).
+  The same change deletes the old stack's jobs from `tests.yml` (`select`,
+  `structural-guards`, `required-tests-shard`, `affected-tests`, `heavy-tests`,
+  `slow-tests`) and the steps of `required-tests` that read them. `required-tests` keeps
+  its name and its lasting needs: `platform-tests`, `platform-sizes`, `platform-app` and
+  `process`. `slow-tests` is a required context of its own, so it leaves the ruleset and the
+  branch protection first (the founder, in the window), or every later pull request waits
+  on a check that never reports.
 
 - [ ] **The founder's and the canary's owners start fresh** (the founder's ruling, 2026-11-04):
   the founder's main account and every canary owner account begin on the new platform with

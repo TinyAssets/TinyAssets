@@ -4,8 +4,11 @@
  *
  * `platform-tests` runs every workspace's tests as parallel legs and `platform-sizes` runs
  * the large ones, sharded (`ci/classes.ts`). A matrix job's result is every leg's, and
- * `required-tests` (the protected context) fails unless both, and the owner app's browser
- * job, succeeded. Held here: every workspace `platform/package.json` lists has its tests run
+ * `required-tests` (the protected context) fails unless both, the owner app's browser job
+ * and the `process` leg succeeded. Those four are the gate's lasting shape: the old stack's
+ * Python jobs beside them leave at the cutover, and this guard does not read them. `process`
+ * runs the process's own tests with plain pytest on the runner, with nothing of the old
+ * stack installed. Held here: every workspace `platform/package.json` lists has its tests run
  * by a leg, its `test` script whole or each `npm run` part of it; every workspace with a
  * large test has its `test:sizes` run, every shard of it; the typecheck has its leg; no leg
  * is excluded, conditional or allowed to fail; and each leg runs exactly its command.
@@ -18,7 +21,7 @@
  * in `tests.yml`. No figure is pinned here: a time limit is never a design input.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -282,16 +285,19 @@ describe("platform-tests and platform-sizes", () => {
 describe("required-tests", () => {
   const RESULTS = { PLATFORM_RESULT: "${{ needs.platform-tests.result }}",
                     APP_RESULT: "${{ needs.platform-app.result }}",
-                    SIZES_RESULT: "${{ needs.platform-sizes.result }}" };
+                    SIZES_RESULT: "${{ needs.platform-sizes.result }}",
+                    PROCESS_RESULT: "${{ needs.process.result }}" };
 
-  it("needs the platform's jobs, each run on every event and never allowed to fail", () => {
+  it("needs the platform's jobs and the process leg, each run on every event and never " +
+     "allowed to fail", () => {
     const jobs = tests().jobs;
     const agg = jobs["required-tests"];
     expect(agg.if).toBe("always()");
     expect(agg["continue-on-error"]).toBeUndefined();
-    for (const name of ["platform-tests", "platform-app", "platform-sizes"]) {
+    for (const name of ["platform-tests", "platform-app", "platform-sizes", "process"]) {
       expect(agg.needs).toContain(name);
       expect(jobs[name].if, `${name} must run on every event`).toBeUndefined();
+      expect(jobs[name].needs, `${name} must wait on no other job`).toBeUndefined();
       expect(jobs[name]["continue-on-error"]).toBeUndefined();
       for (const each of jobs[name].steps) {
         expect(each.if, `a step of ${name} is conditional`).toBeUndefined();
@@ -300,24 +306,104 @@ describe("required-tests", () => {
     }
   });
 
-  it("fails unless every platform job succeeded, by running the gate step's own script", () => {
+  it("fails unless every one of them succeeded, by running the gate step's own script", () => {
     const steps: Data[] = tests().jobs["required-tests"].steps;
     const gate = steps.filter((each) => "PLATFORM_RESULT" in (each.env ?? {}));
     expect(gate).toHaveLength(1);
     expect(gate[0].if).toBeUndefined();
     expect(gate[0]["continue-on-error"]).toBeUndefined();
     expect(gate[0].env).toEqual(RESULTS);
+    const names = Object.keys(RESULTS);
     const results = ["success", "failure", "skipped", "cancelled", ""];
-    for (const platform of results) {
-      for (const app of results) {
-        for (const sizes of results) {
-          const script = `PLATFORM_RESULT=${platform}\nAPP_RESULT=${app}\n` +
-            `SIZES_RESULT=${sizes}\n${gate[0].run}`;
-          const run = spawnSync("bash", ["-s"], { input: script });
-          const passed = platform === "success" && app === "success" && sizes === "success";
-          expect(run.status, `${platform} ${app} ${sizes}`).toBe(passed ? 0 : 1);
+    const status = (values: string[]): number | null => spawnSync("bash", ["-s"], {
+      input: names.map((name, i) => `${name}=${values[i]}\n`).join("") + gate[0].run,
+    }).status;
+    // Every pair of results at every value, the rest succeeding: 150 runs of the script.
+    for (let a = 0; a < names.length; a++) {
+      for (let b = a + 1; b < names.length; b++) {
+        for (const first of results) {
+          for (const second of results) {
+            const values = names.map((_, i) => (i === a ? first : i === b ? second : "success"));
+            const passed = first === "success" && second === "success";
+            expect(status(values), `${names[a]}=${first} ${names[b]}=${second}`)
+              .toBe(passed ? 0 : 1);
+          }
         }
       }
     }
+    expect(status(names.map(() => "failure"))).toBe(1);
   });
+});
+
+describe("process", () => {
+  const INSTALL = "pip install -r scripts/process-requirements.txt";
+  const PYTEST = "python -m pytest --noconftest -q -p no:cacheprovider";
+
+  /** Each way the leg could run something other than the process's tests, whole. */
+  function processProblems(job: Data): string[] {
+    const found: string[] = [];
+    const keys = Object.keys(job ?? {}).sort();
+    if (JSON.stringify(keys) !== JSON.stringify(["name", "runs-on", "steps", "timeout-minutes"])) {
+      found.push(`process carries keys that may change what it runs: ${keys.join(", ")}`);
+    }
+    if (job?.name !== "process" || job?.["runs-on"] !== "ubuntu-latest") {
+      found.push("process is one job named process, on the plain runner");
+    }
+    const steps: Data[] = job?.steps ?? [];
+    const shape = steps.map((each) => Object.keys(each).sort().join(","));
+    if (JSON.stringify(shape) !== JSON.stringify(["uses", "uses,with", "run", "run"])) {
+      found.push("process's steps are checkout, setup-python, the install and pytest, each " +
+                 `alone: ${shape.join(" | ")}`);
+      return found;
+    }
+    if (steps[2].run !== INSTALL) {
+      found.push(`process installs its own requirements and nothing else: ${steps[2].run}`);
+    }
+    const words = String(steps[3].run).trim().split(/\s+/);
+    const flags = PYTEST.split(" ").length;
+    if (words.slice(0, flags).join(" ") !== PYTEST) {
+      found.push(`process runs plain pytest with no conftest: ${words.slice(0, flags).join(" ")}`);
+    }
+    const targets = words.slice(flags);
+    if (targets[0] !== "scripts/tests" || targets.length < 2) {
+      found.push("process runs scripts/tests and the process's tests still under tests/");
+    }
+    for (const target of targets) {
+      if (!/^(scripts\/tests|tests\/test_\w+\.py)$/.test(target) ||
+          !existsSync(join(REPO, target))) {
+        found.push(`process names something that is not a test file here: ${target}`);
+      }
+    }
+    return found;
+  }
+
+  it("runs the process's own tests with plain pytest and nothing of the old stack", () => {
+    expect(processProblems(tests().jobs.process)).toEqual([]);
+    // pytest and a YAML reader: nothing that installs the old stack's package.
+    const wanted = readFileSync(join(REPO, "scripts", "process-requirements.txt"), "utf8")
+      .split("\n").filter((line) => line.trim() !== "" && !line.startsWith("#"));
+    expect(wanted.map((line) => line.split(/[<>=!~ ]/)[0])).toEqual(["pytest", "pyyaml"]);
+  });
+
+  type Mutation = (job: Data) => void;
+  const mutations: Record<string, Mutation> = {
+    "job if": (job) => { job.if = "github.event_name != 'pull_request'"; },
+    "job continue-on-error": (job) => { job["continue-on-error"] = true; },
+    "waits on the selection": (job) => { job.needs = "select"; },
+    "installs the old stack": (job) => { job.steps[2].run = "pip install -e '.[dev]'"; },
+    "pytest swallowed": (job) => { job.steps[3].run += " || true"; },
+    "loads the old stack's conftest": (job) => {
+      job.steps[3].run = job.steps[3].run.replace("--noconftest ", "");
+    },
+    "a step shell that runs nothing": (job) => { job.steps[3].shell = "true {0}"; },
+    "a test file that is gone": (job) => { job.steps[3].run += " tests/test_gone_file.py"; },
+    "no test of its own": (job) => { job.steps[3].run = PYTEST; },
+  };
+  for (const [name, mutate] of Object.entries(mutations)) {
+    it(`catch the mutation: ${name}`, () => {
+      const job = structuredClone(tests().jobs.process);
+      mutate(job);
+      expect(processProblems(job)).not.toEqual([]);
+    });
+  }
 });

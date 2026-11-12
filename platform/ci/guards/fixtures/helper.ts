@@ -1,5 +1,5 @@
 /**
- * A test's helper that re-exports another Worker's source, as `doors/test/entry.ts` does: the
- * isolation test's probe (`isolation.test.ts`) reaches a Worker's source through it.
+ * A test's helper outside every Worker's source, re-exporting the contract: the isolation
+ * test's probe (`isolation.test.ts`) reaches the contract through it, read from disk.
  */
-export type { OwnerDO } from "../../../owner/src/owner-do";
+export type { Refusal } from "../../../contract/src/refusal";
