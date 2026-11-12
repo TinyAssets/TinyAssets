@@ -11,6 +11,12 @@
  */
 import { EVENT_FRAMES_MAX, EVENTS_BODY_MAX, FRAME_UNITS_MAX } from "../../contract/src/run-events";
 
+/**
+ * The runner's heartbeat: slice R's lease renewal cadence, a post at least every 20 s
+ * (`Poster`), well inside the lease's TTL.
+ */
+export const HEARTBEAT_MS = 20_000;
+
 export interface PostedFrame {
   readonly seq: number;
   readonly at: number;
