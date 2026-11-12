@@ -9,13 +9,13 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { AUTOINDEXES } from "../guards/autoindexes";
-import { Collections, LIMITS } from "../src/collections";
+import { Collections } from "../src/collections";
 import {
   INDEX_KEPT, MANIFEST_TABLES, PAGE_BYTES, RECORD_FIXED, recordLayout, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import type { OwnerDO } from "../src/owner-do";
-import { ownerObject } from "./support";
+import { collectionParts, ownerObject } from "./support";
 
 /** A record laid out as the guard lays a term (its page share at worst fill, its overflow). */
 const laid = (payload: number, kept: number) => {
@@ -48,8 +48,8 @@ describe("the owner-bound guard against the database", () => {
       const name = (letter: string) => "𝄞".repeat(255) + letter;
       const who = "𝄞".repeat(512);
       const before = charge();
-      new Collections(state.storage, LIMITS).write(who, who, name("c"), name("r"),
-                                                   "b".repeat(PLACE_BYTES), "", false);
+      new Collections(...collectionParts(state.storage))
+        .write(who, who, name("c"), name("r"), "b".repeat(PLACE_BYTES), "", false);
       const charged = charge() - before;
       const N = 9;
       const [collection, row, principal] = [1024, 1024, 2048];
@@ -73,7 +73,7 @@ describe("the owner-bound guard against the database", () => {
         "SELECT charge FROM collection_space").one().charge;
       const name = (letter: string) => "𝄞".repeat(255) + letter;
       const who = "𝄞".repeat(512);
-      const store = new Collections(state.storage, LIMITS);
+      const store = new Collections(...collectionParts(state.storage));
       const made = store.write(who, who, name("c"), name("r"), "b", "", true);
       store.delete(who, name("c"), name("r"), made.etag);
       // The delete drops the row's earlier entries: its own is the history's one entry.

@@ -24,6 +24,8 @@ import { failure } from "./support";
 const CHATGPT: Origin = Object.freeze({ client: "1".repeat(64), family: "2".repeat(64) });
 const CLAUDE: Origin = Object.freeze({ client: "3".repeat(64), family: "4".repeat(64) });
 const READ = Object.freeze({ universe: "alpha", agent: "main", capability: "read_graph" });
+/** The `n`th of the many clients a test fills a bound with; none of the named ones. */
+const filler = (n: number) => n.toString(16).padStart(64, "0");
 const WRITE = Object.freeze({ ...READ, capability: "write_graph" });
 
 async function clients(r: Rig) {
@@ -213,7 +215,7 @@ describe("an outside client's grant", () => {
   it("never refuses a new client at the cap: the least recently seen free row goes (P4)",
      async () => {
     const r = await rig();
-    const id = (n: number) => n.toString(16).padStart(64, "0");
+    const id = filler;
     const out = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
       const grants = new Grants(state.storage, new Policy(state.storage));
       for (let n = 0; n < GRANT_LIMITS.maxFreeClients; n++) {
@@ -255,12 +257,16 @@ describe("an outside client's grant", () => {
                                         client))).message)
         .toMatch(/an outside client grant the owner set or an agent holds is never deleted/);
     }
+    // The free rows at their bound, CHATGPT's seen least recently: CLAUDE's takes its place.
+    const free = Array.from({ length: GRANT_LIMITS.maxFreeClients - 1 }, (_, n) => filler(n));
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage),
-                                { ...GRANT_LIMITS, maxFreeClients: 1 });
-      grants.admit(CLAUDE.client, "mcp", null, clock());  // CHATGPT's free row goes
+      const grants = new Grants(state.storage, new Policy(state.storage));
+      const t = clock() + 1;
+      free.forEach((client, n) => grants.admit(client, "mcp", null, t + n));
+      grants.admit(CLAUDE.client, "mcp", null, t + free.length);  // CHATGPT's free row goes
     });
-    expect(Object.keys(await rows()).sort()).toEqual([CLAUDE.client, MUSE.client].sort());
+    expect(Object.keys(await rows()).sort())
+      .toEqual([CLAUDE.client, MUSE.client, ...free].sort());
     await r.stub.deleteAgent(r.session(null), { agent_id: muse });
     expect(await rows()).toMatchObject({ [MUSE.client]: [0, 0] });  // free once its agent goes
     await r.sql("DELETE FROM outside_clients WHERE client = ?", MUSE.client);
@@ -286,11 +292,15 @@ describe("an outside client's grant", () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
     await r.stub.outsideAgents(r.bind(CLAUDE));
+    // The rows the owner sets one short of their bound; CHATGPT's then takes the last place.
+    const owned = Array.from({ length: GRANT_LIMITS.maxOwnerClients - 1 }, (_, n) => filler(n));
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage),
-                                { ...GRANT_LIMITS, maxOwnerClients: 1 });
+      const grants = new Grants(state.storage, new Policy(state.storage));
       const change = (client: string, expected: number) => ({
         client, source: "mcp", mode: "full", scopes: [], expected_revision: expected, name: "" });
+      for (const client of owned) {
+        grants.set("session", change(client, 0), clock());
+      }
       grants.set("session", change(CHATGPT.client, 1), clock());
       grants.set("session", change(CHATGPT.client, 2), clock());  // the same row again
       for (const client of [CLAUDE.client, DOT.client]) {
@@ -302,7 +312,8 @@ describe("an outside client's grant", () => {
       expect(grants.admit(MUSE.client, "mcp", null, clock()).mode).toBe("full");
     });
     expect((await clients(r)).map((c) => [c.client, c.owner_set]).sort())
-      .toEqual([[CHATGPT.client, 1], [CLAUDE.client, 1], [MUSE.client, 0]].sort());
+      .toEqual([[CHATGPT.client, 1], [CLAUDE.client, 1], [MUSE.client, 0],
+                ...owned.map((client) => [client, 1])].sort());
     expect((await failure(() => r.sql("DELETE FROM outside_clients WHERE client = ?",
                                       CHATGPT.client))).message)
       .toMatch(/never deleted/);  // a grant the owner set, standing
@@ -629,8 +640,12 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     await r.stub.outsideAgents(r.bind(CHATGPT, { authenticated_at: signedBefore }));
     await r.stub.outsideAgents(r.bind(CLAUDE));
     const out = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage),
-                                { ...GRANT_LIMITS, maxOwnerClients: 1 });
+      const grants = new Grants(state.storage, new Policy(state.storage));
+      // The live rows one short of their bound, and a revoked one beside them.
+      for (let n = 0; n < GRANT_LIMITS.maxOwnerClients - 1; n++) {
+        grants.set("session", { client: filler(n), source: "mcp", mode: "full", scopes: [],
+                                expected_revision: 0, name: "" }, t);
+      }
       grants.revoke(CHATGPT.client, t - 31 * DAY);
       try {
         grants.set("session", { client: CLAUDE.client, source: "mcp", mode: "full", scopes: [],
@@ -655,8 +670,12 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     await r.stub.outsideAgents(r.bind(CHATGPT, { authenticated_at: Math.floor(t - 40 * DAY) }));
     await r.stub.outsideAgents(r.bind(CLAUDE));
     const evicted = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage),
-                                { ...GRANT_LIMITS, maxOwnerClients: 1 });
+      const grants = new Grants(state.storage, new Policy(state.storage));
+      // The revoked rows the owner set one short of their bound, each revoked after CLAUDE's.
+      for (let n = 0; n < GRANT_LIMITS.maxOwnerClients - 1; n++) {
+        grants.set("session", { client: filler(n), source: "mcp", mode: "revoked", scopes: [],
+                                expected_revision: 0, name: "" }, t - 29 * DAY);
+      }
       grants.revoke(CHATGPT.client, t - 31 * DAY);
       grants.revoke(CLAUDE.client, t - 30 * DAY);
       return grants.evictRevoked(t);

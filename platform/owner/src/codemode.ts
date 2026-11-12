@@ -16,8 +16,7 @@
  * - **When:** only while the owner's policy turns it on (`codemode.on`, on by default,
  *   `CODEMODE_DEFAULTS`).
  * - **How long:** `CODEMODE_TIMEOUT_MS` of wall time, tool calls included, and the
- *   codemode Worker's interrupt budget of compute between them; the tests pass smaller
- *   bounds.
+ *   codemode Worker's interrupt budget of compute between them.
  */
 import { randomUUID } from "node:crypto";
 
@@ -39,23 +38,18 @@ import type { OwnerEnv } from "./env";
 type CodemodeTools = NonNullable<
   ConstructorParameters<typeof RemoteCodemodeSandbox>[0]["tools"]>;
 
-/** How long one script may run, in ms; a script past it ends with pi-codemode's `timeout`. */
+/**
+ * How long one script may run, in ms; a script past it ends with pi-codemode's `timeout`. Its
+ * compute is the codemode Worker's own interrupt budget, which no owner sets
+ * (`codemode/src/codemode.ts`, tested in `codemode/test/`).
+ */
 export const CODEMODE_TIMEOUT_MS = 300_000;
 
 /** What the codemode Worker serves the owner (`contract/src/codemode.ts`): code mode's VMs. */
 export type CodemodeService = OwnerEnv["CODEMODE_VM"];
 
-/**
- * A script's bounds: its wall time (`CODEMODE_TIMEOUT_MS` unless a test passes less). Its
- * compute is the codemode Worker's own interrupt budget, which no owner sets
- * (`codemode/src/codemode.ts`, tested in `codemode/test/`).
- */
-export interface CodemodeBounds {
-  readonly timeoutMs?: number;
-}
-
 /** What code mode's sandbox reaches: the codemode Worker, the owner it runs for, its tools. */
-interface CodemodeParts extends CodemodeBounds {
+interface CodemodeParts {
   readonly service: () => CodemodeService | undefined;
   readonly owner: () => string;
   readonly tools: CodemodeTools;
@@ -67,7 +61,7 @@ interface CodemodeParts extends CodemodeBounds {
  */
 export function codemodeSandbox(parts: CodemodeParts): RemoteCodemodeSandbox {
   return new RemoteCodemodeSandbox({
-    timeoutMs: parts.timeoutMs ?? CODEMODE_TIMEOUT_MS,
+    timeoutMs: CODEMODE_TIMEOUT_MS,
     tools: [...parts.tools],
     remote: (): CodemodeRemote => {
       const service = parts.service();
@@ -182,9 +176,8 @@ export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is pa
   `${PAGE_BYTES} characters one answer holds; return less, or write it with a tool and read ` +
   "it back";
 
-/** What a script runs with: its bounds, the codemode Worker, its owner, and its tools. */
+/** What a script runs with: the codemode Worker, its owner, and its tools. */
 interface ScriptParts {
-  readonly bounds: CodemodeBounds;
   readonly service: () => CodemodeService | undefined;
   readonly owner: string;
   readonly script: string;
@@ -202,11 +195,9 @@ async function runScript(parts: ScriptParts): Promise<CodeResult> {
   // The wall bound, held here too: pi-codemode's own deadline is a timer, which a script
   // calling tools back to back starved in workerd, so each call checks the clock, which
   // moves with every call's I/O, and ends the execution past it.
-  const timeoutMs = parts.bounds.timeoutMs ?? CODEMODE_TIMEOUT_MS;
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + CODEMODE_TIMEOUT_MS;
   const late = new AbortController();
   const sandbox = codemodeSandbox({
-    ...parts.bounds,
     service: parts.service,
     owner: () => parts.owner,
     tools: parts.tools.map((tool) => ({
@@ -238,7 +229,7 @@ async function runScript(parts: ScriptParts): Promise<CodeResult> {
       }
     }
     const error = late.signal.aborted && !result.ok
-      ? { kind: "timeout", message: `Execution timed out after ${timeoutMs} ms` }
+      ? { kind: "timeout", message: `Execution timed out after ${CODEMODE_TIMEOUT_MS} ms` }
       : result.ok ? null : { kind: result.error.kind, message: result.error.message };
     const answer: CodeResult = error === null
       ? { ok: true, value: (result as { value: JsonValue }).value, output: result.output,
@@ -327,9 +318,9 @@ export const codemodeDoors = Object.freeze({
     if (closed !== null) {
       throw new Refusal("refused", closed);
     }
-    return runScript({ bounds: o.codemode, service: () => o.env.CODEMODE_VM, owner, script,
-                       tools, call: (tool, args) => scripted(o,
-                         door.binding, tool, args, () => control.refusal(gate, owner)) });
+    return runScript({ service: () => o.env.CODEMODE_VM, owner, script, tools,
+                       call: (tool, args) => scripted(o, door.binding, tool, args,
+                                                      () => control.refusal(gate, owner)) });
   },
   toolProfile(o: OwnerState, { account }: Call<undefined>):
       { profile: ProfileName; tools: readonly string[] } {

@@ -220,7 +220,7 @@ function authority(mode: string, held: readonly Scope[], profile: string): strin
  * `outside_scopes`: exact triples; a wildcard is never a scope, and a capability is one a
  * door checks (`RUN_CAPABILITIES`), so a grant never names one that nothing would hold.
  */
-export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scope[] {
+export function scopes(value: unknown): Scope[] {
   if (!Array.isArray(value) || value.some((scope) =>
     !plain(scope) || Object.keys(scope).sort().join() !== "agent,capability,universe"
     || Object.values(scope).some((v) => typeof v !== "string" || !v || v === "*"
@@ -231,9 +231,9 @@ export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scop
     (scope as Record<string, string>)["capability"]!))) {
     throw new Refusal("invalid", `a scope's capability is one of ${RUN_CAPABILITIES.join(", ")}`);
   }
-  if (utf8Bytes(JSON.stringify(value)) > limits.maxScopesBytes) {
+  if (utf8Bytes(JSON.stringify(value)) > GRANT_LIMITS.maxScopesBytes) {
     throw new Refusal("invalid",
-                      `a grant's scopes are at most ${limits.maxScopesBytes} bytes of JSON`);
+                      `a grant's scopes are at most ${GRANT_LIMITS.maxScopesBytes} bytes of JSON`);
   }
   return value as Scope[];
 }
@@ -254,12 +254,10 @@ type Usage = { owner_clients: number; free_clients: number };
 export class Grants {
   readonly #storage: OwnerStorage;
   readonly #policy: Policy;
-  readonly #limits: GrantLimits;
 
-  constructor(storage: OwnerStorage, policy: Policy, limits: GrantLimits = GRANT_LIMITS) {
+  constructor(storage: OwnerStorage, policy: Policy) {
     this.#storage = storage;
     this.#policy = policy;
-    this.#limits = limits;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -284,7 +282,7 @@ export class Grants {
       throw new Refusal("refused", "outside client revoked");
     }
     if (row.revoked_at !== null && (authenticatedAt === null
-        || authenticatedAt <= row.revoked_at + this.#limits.revokeClockMarginS)) {
+        || authenticatedAt <= row.revoked_at + GRANT_LIMITS.revokeClockMarginS)) {
       throw new Refusal("refused", "a fresh sign-in is required after a revoke");
     }
     return { mode: row.mode as Grant["mode"], scopes: JSON.parse(row.scopes) as Scope[],
@@ -312,10 +310,10 @@ export class Grants {
         const fence = sql.exec<{ mcp_through: number }>(
           "SELECT mcp_through FROM grant_fences").one().mcp_through;
         if (fence > 0 && (authenticatedAt === null
-                          || authenticatedAt <= fence + this.#limits.revokeClockMarginS)) {
+                          || authenticatedAt <= fence + GRANT_LIMITS.revokeClockMarginS)) {
           throw new Refusal("refused", "a fresh sign-in is required after a revoke");
         }
-        const over = this.#usage().free_clients - this.#limits.maxFreeClients + 1;
+        const over = this.#usage().free_clients - GRANT_LIMITS.maxFreeClients + 1;
         if (over > 0) {
           sql.exec("DELETE FROM outside_clients WHERE client IN (SELECT client FROM " +
                      "outside_clients WHERE owner_set = 0 AND agents = 0 AND held = 0 " +
@@ -328,7 +326,7 @@ export class Grants {
         row = this.#row(client);
       } else if (row !== undefined && row.source !== source) {
         throw new Refusal("refused", "outside client source changed");
-      } else if (row !== undefined && now - row.last_seen >= this.#limits.seenIntervalS) {
+      } else if (row !== undefined && now - row.last_seen >= GRANT_LIMITS.seenIntervalS) {
         sql.exec("UPDATE outside_clients SET last_seen = ? WHERE client = ?", now, client);
       }
       if (row !== undefined && row.vendor === null && vendor !== null) {
@@ -438,7 +436,7 @@ export class Grants {
     if (typeof mode !== "string" || !OUTSIDE_MODES.includes(mode)) {
       throw new Refusal("invalid", "invalid outside grant mode");
     }
-    const held = scopes(change.scopes, this.#limits);
+    const held = scopes(change.scopes);
     if ((mode === "scoped") !== (held.length > 0)) {
       throw new Refusal("invalid", "a scoped grant, and only a scoped one, names scopes");
     }
@@ -462,7 +460,7 @@ export class Grants {
         throw new Refusal("refused", "outside client source changed");
       }
       const live = row?.owner_set === 1 && row.mode !== "revoked";
-      if (mode !== "revoked" && !live && this.#liveSet() >= this.#limits.maxOwnerClients) {
+      if (mode !== "revoked" && !live && this.#liveSet() >= GRANT_LIMITS.maxOwnerClients) {
         throw new Refusal("refused",
                           "the owner's managed outside clients are at their limit; revoke " +
                           "one to make room");
@@ -583,7 +581,7 @@ export class Grants {
   evictRevoked(now: number): string[] {
     const over = this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM outside_clients WHERE owner_set = 1 AND mode = 'revoked'")
-      .one().n - this.#limits.maxOwnerClients;
+      .one().n - GRANT_LIMITS.maxOwnerClients;
     if (over <= 0) {
       return [];
     }

@@ -11,7 +11,7 @@ import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
-import { CARD_LIMITS, CARD_TTL_S, type CardLimits, Registrations } from "../src/registrations";
+import { CARD_LIMITS, CARD_TTL_S, Registrations } from "../src/registrations";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
 import { failure } from "./support";
 
@@ -23,12 +23,14 @@ const cards = (r: Rig) => r.table("agent_cards");
 const held = async (r: Rig, origin: Origin) => (await r.sql(
   "SELECT agents, held FROM outside_clients WHERE client = ?", origin.client))[0];
 
-/** The object's registrations on its own storage, with some bounds changed. */
-function inCards<R>(r: Rig, limits: Partial<CardLimits>,
-                    act: (cards: Registrations, grants: Grants) => R): Promise<R> {
+/** The `n`th of the many clients, or families, a test fills a bound with. */
+const filler = (n: number, pad = "0") => n.toString(16).padStart(64, pad);
+
+/** The object's registrations on its own storage. */
+function inCards<R>(r: Rig, act: (cards: Registrations, grants: Grants) => R): Promise<R> {
   return runInDurableObject(r.stub, (_i: OwnerDO, state) => {
     const grants = new Grants(state.storage, new Policy(state.storage));
-    return act(new Registrations(state.storage, grants, { ...CARD_LIMITS, ...limits }), grants);
+    return act(new Registrations(state.storage, grants), grants);
   });
 }
 
@@ -72,7 +74,7 @@ describe("an MCP client's agent registration", () => {
     }
     expect((await r.stub.outsideAgents(r.bind(null))).agents).toEqual([]);
     // Past its life, a card is neither shown nor applied.
-    expect(await inCards(r, {}, (registry, _grants) => {
+    expect(await inCards(r, (registry, _grants) => {
       const later = clock() + CARD_TTL_S + 1;
       try {
         registry.take(filed.card_id, filed.digest, later);
@@ -112,7 +114,8 @@ describe("an MCP client's agent registration", () => {
     expect((await cards(r)).map((row) => row["card_id"])).toEqual([second.card_id]);
     expect(first.card_id).not.toBe(second.card_id);
     await r.stub.outsideAgents(r.bind(DOT));
-    const out = await inCards(r, { perClient: 1, maxPending: 2, maxRequest: 120 }, (registry) => {
+    const full = "too many pending agent registrations";
+    const out = await inCards(r, (registry, grants) => {
       const stamp = (origin: Origin) => ({ client: origin.client, generation: 1,
                                            authenticated_at: null });
       const tried = (origin: Origin, request: Record<string, unknown> = REQUEST) => {
@@ -122,23 +125,49 @@ describe("an MCP client's agent registration", () => {
           return (error as Error).message;
         }
       };
-      return [tried({ ...MUSE, family: "e".repeat(64) }), tried(DOT),
-              tried(DOT, { ...REQUEST, display_name: "x".repeat(200) }),
-              tried({ client: "1".repeat(64), family: "2".repeat(64) })];
+      /** The request whose JSON is `size` characters. */
+      const sized = (size: number) => ({ ...REQUEST, display_name: "x".repeat(
+        size - JSON.stringify({ ...REQUEST, display_name: "" }).length) });
+      // MUSE's other families to its bound, the next one past it.
+      const mine = Array.from({ length: CARD_LIMITS.perClient }, (_, n) =>
+        tried({ ...MUSE, family: filler(n, "e") }));
+      const request = [tried(DOT, sized(CARD_LIMITS.maxRequest + 1)),
+                       tried(DOT, sized(CARD_LIMITS.maxRequest))];
+      // Other clients' cards, each client's to its bound, until the owner's are at theirs.
+      const others: string[] = [];
+      for (let n = 0; !others.includes(full) && n < CARD_LIMITS.maxPending; n++) {
+        grants.admit(filler(n), "mcp", null, clock());
+        for (let k = 0; k < CARD_LIMITS.perClient && !others.includes(full); k++) {
+          others.push(tried({ client: filler(n), family: filler(k, "e") }));
+        }
+      }
+      return { mine, request, others,
+               stranger: tried({ client: "1".repeat(64), family: "2".repeat(64) }) };
     });
-    expect(out).toEqual(["this client's pending registrations are at their limit", "card_",
-                         "a registration is at most 120 characters",
-                         "outside client has no grant"]);
+    expect(out).toEqual({
+      mine: [...Array(CARD_LIMITS.perClient - 1).fill("card_"),
+             "this client's pending registrations are at their limit"],
+      request: [`a registration is at most ${CARD_LIMITS.maxRequest} characters`, "card_"],
+      // MUSE's cards and DOT's one are pending beside them.
+      others: [...Array(CARD_LIMITS.maxPending - CARD_LIMITS.perClient - 1).fill("card_"), full],
+      stranger: "outside client has no grant" });
+    expect(await cards(r)).toHaveLength(CARD_LIMITS.maxPending);
   });
 
   it("holds its client's row, and ends with any change to the client's grant", async () => {
     const r = await rig();
     await r.stub.registerPropose(r.bind(MUSE), REQUEST);
+    // The free rows at their bound, each seen after MUSE's: DOT's makes room by the least
+    // recently seen of them, never by MUSE's row, which its card holds.
+    const free = Array.from({ length: GRANT_LIMITS.maxFreeClients }, (_, n) => filler(n));
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      new Grants(state.storage, new Policy(state.storage), { ...GRANT_LIMITS, maxFreeClients: 1 })
-        .admit(DOT.client, "mcp", null, clock());
+      const grants = new Grants(state.storage, new Policy(state.storage));
+      const t = clock() + 1;
+      free.forEach((client, n) => grants.admit(client, "mcp", null, t + n));
+      grants.admit(DOT.client, "mcp", null, t + free.length);
     });
     expect(await held(r, MUSE)).toEqual({ agents: 0, held: 1 });  // not evicted
+    expect(await held(r, { client: free[0]!, family: "" })).toBeUndefined();
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     expect(await cards(r)).toEqual([]);
     expect(await held(r, MUSE)).toEqual({ agents: 0, held: 0 });
@@ -149,7 +178,7 @@ describe("an MCP client's agent registration", () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(MUSE));
     await r.stub.outsideAgents(r.bind(DOT));
-    const out = await inCards(r, {}, (registry) => {
+    const out = await inCards(r, (registry) => {
       const t = clock();
       const by = (origin: Origin) => ({ client: origin.client, generation: 1,
                                         authenticated_at: null });
