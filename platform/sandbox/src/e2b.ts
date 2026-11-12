@@ -170,16 +170,17 @@ function info(value: unknown): SandboxInfo {
 }
 
 /**
- * The runtime's own fetch, the fetcher of an `E2b` the Worker or the template checks make:
- * called on its own, since workerd refuses a fetch called as another object's method.
+ * The Worker's and the template checks' `E2b`, on the runtime's own fetch: called on its own,
+ * since workerd refuses a fetch called as another object's method. The fetch never leaves
+ * this module, so every call it makes is one of `E2b`'s, on E2B's origins.
  */
-export function runtimeFetch(url: string, init?: RequestInit): Promise<Response> {
-  return fetch(url, init);
+export function runtimeE2b(key: string): E2b {
+  return new E2b(key, (url, init) => fetch(url, init));
 }
 
 /**
  * The platform API and envd, by the project's key and its caller's `fetcher`: the runtime's
- * (`runtimeFetch`), or the deploy kit's recorded IO.
+ * (`runtimeE2b`), or the deploy kit's recorded IO.
  */
 export class E2b {
   readonly #key: string;

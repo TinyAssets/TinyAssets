@@ -82,7 +82,7 @@ import {
 } from "../../contract/src/sandbox";
 
 import {
-  E2b, type E2bNetwork, type Handle, noRoom, runtimeFetch, type SandboxInfo,
+  type E2b, type E2bNetwork, type Handle, noRoom, runtimeE2b, type SandboxInfo,
 } from "./e2b";
 import { type AnswerFields, ANSWERS, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc,
          type JobKind, JOBS, LEASE_FILE, type LeaseFile, LOADER, type QuietAnswer, SPEAKS,
@@ -383,7 +383,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     migrate(ctx.storage, CONTROL_MIGRATIONS);
-    this.#e2b = () => new E2b(env.E2B_API_KEY, runtimeFetch);
+    this.#e2b = () => runtimeE2b(env.E2B_API_KEY);
     this.#digest = runnerDigest();
   }
 
