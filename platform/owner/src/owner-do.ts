@@ -183,7 +183,8 @@ import type {
 } from "../../contract/src/owner";
 import { Sessions, sessionsDoors } from "./sessions";
 import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
-import { starterDoors } from "./starter";
+import { type Receipt as StarterReceipt, Starter, starterDoors } from "./starter";
+import { carried, type StarterPackage } from "./starter-package";
 import { priced, Usage as ModelUsage, usageDoors, type UsageReceipt } from "./usage";
 import { migrate } from "../../contract/src/migrate";
 import { Archive, type ArchiveMoveSeen, type ChainStep } from "./archive";
@@ -191,8 +192,6 @@ import { MIGRATIONS } from "./schema";
 import { Backups, MANIFEST_PROTECT_S } from "./backup";
 import { OpenExports } from "./open-exports";
 import { ChangeLog } from "./changelog";
-import { carried, type Receipt as StarterReceipt, Starter, type StarterPackage }
-  from "./starter";
 import { CONTROL_FRESH_MS, ControlGate } from "./control-gate";
 import { storageFull, storageFullRefusal } from "./storage-full";
 import { Doorbell, type WakeSender } from "./wakes";

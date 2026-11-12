@@ -791,7 +791,8 @@ describe("a policy write mid-stream", () => {
     // sandbox Worker's `network`), so a call through it is answered.
     await runDurableObjectAlarm(env.OWNER.getByName(box.owner));
     const asked = (await recorded(box.owner)).networks;
-    expect(asked).toMatchObject([{ lease: box.opened.lease, network: { generation: 2 } }]);
+    expect(asked).toMatchObject([{ lease: box.opened.lease }]);
+    expect(asked.map((each) => generationOf(each.network.network))).toEqual([2]);
     const applied = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
     expect(applied.status).toBe(200);
     expect(await applied.text()).toBe(EGRESS_CHUNKS.join(""));

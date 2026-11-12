@@ -16,7 +16,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { E2b, type E2bNetwork, type Handle } from "./src/e2b";
+import { type E2b, type E2bNetwork, type Handle, runtimeE2b } from "./src/e2b";
 import { pinned } from "./template/checks";
 
 /** The probe's sandboxes carry `ta_probe=long-pause`, and nothing else does. */
@@ -401,7 +401,7 @@ async function main(argv: readonly string[]): Promise<number> {
   summary.line(`### E2B long-pause probe: ${mode}`);
   summary.line();
   try {
-    const e2b = new E2b(process.env["E2B_API_KEY"] ?? "");
+    const e2b = runtimeE2b(process.env["E2B_API_KEY"] ?? "");
     await (mode === "start" ? start(e2b, summary) : mode === "check" ? check(e2b, summary, ids)
       : cleanup(e2b, summary));
     return 0;

@@ -336,19 +336,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     researched first: the line's object lives in the test Worker itself, which the plugin
     names (a gate fronts an object by its Worker's name), the suite runs inside that object
     (`runInDurableObject`), and `SandboxSlots` has no interface for `methodsOf`.
-  - Lane S: `sandbox/src/e2b.ts`'s constructor defaults (the `fetcher` at `:47`, `retryAfter =
-    null` at `:180`; T1b), and `NetworkPlan`'s typed `generation` beside the header the Worker
-    reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `node ci/budgets.mjs` (d3 §I): the large from the Vitest reports the `platform-sizes` legs
     upload, the runner's medium from a local `test:root` report (`platform-tests` uploads none).
-  - Lane C: P-T1, the starter guard's "DID NOT RUN" warning that passes when it cannot check
-    against main, fails instead (V1 and C2 each left it to the other); `contract/src/slots.ts`
-    `SlotPool`'s constructor defaults (T1b).
-  - Lane I: V2-H9, `import/build.ts`'s `starterPaths()` re-deriving the starter's seeding rule
-    beside `owner/src/starter.ts` (V1).
-  - Lane X: `okf-watch.yml`'s `FOUNDER` login, a copy of `.github/CODEOWNERS` (P-H5′'s
-    workflow half; V1).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
   - Lane R's cipher PR: `files/src/cipher.ts`'s SSE-C premise (d3 §O8).

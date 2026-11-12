@@ -127,7 +127,7 @@ async function leased(r: Gated, roomy = true,
   return {
     opened, run: start.run, start, lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
     egress, sync,
-    as: (at = opened.network.generation, token = egress) =>
+    as: (at = generationOf(opened.network.network)!, token = egress) =>
       r.bind({ sandbox: { kind: "egress", token, generation: at, ...secretFor(RUN) } }),
     synced: (token = sync, by = egress) => r.bind({ sandbox: { kind: "sync", token,
                                                                 egress: by } }),
@@ -836,7 +836,7 @@ describe("admit, then reserve (egress shape research, A′)", () => {
     if (!opened.ok) {
       throw new Error(`refused ${opened.code}`);
     }
-    const other = lease.as(lease.opened.network.generation, "f".repeat(64));
+    const other = lease.as(generationOf(lease.opened.network.network)!, "f".repeat(64));
     expect((await failure(() => r.stub.egressReserve(other, reserving(opened.reservation))))
       .message).toMatch(/^invalid egress reserve/);
     expect(await r.stub.egressSettle(lease.as(), settle(opened.reservation)))
@@ -1118,15 +1118,17 @@ describe("a change that ends egress", () => {
     await r.stub.policyWrite(r.session(), { expected_generation: latest.generation, policy: {
       ...latest.policy, egress: { mode: "allowlist", destinations: [] } } });
     await drainDue(r.stub);
-    expect((await recorder(r.stub)).networks).toMatchObject([{
+    const { networks } = await recorder(r.stub);
+    expect(networks).toMatchObject([{
       lease: { lease_id: lease.lease_id, epoch: lease.epoch },
-      network: { generation: 2, mode: "allowlist", boundary: false } }]);
+      network: { mode: "allowlist", boundary: false } }]);
+    expect(networks.map((each) => generationOf(each.network.network))).toEqual([2]);
     expect(await refusedWith(r, lease.as(1), connection)).toBe("egress_policy_stale");
     expect(await refusedWith(r, lease.as(2), connection)).toBe("egress_network_stale");
     // The next start that opens a lease carries the new network, and applies it.
     await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
     const next = await leased(r, false);
-    expect(next.opened.network.generation).toBe(2);
+    expect(generationOf(next.opened.network.network)).toBe(2);
     expect(await r.stub.egressOpen(next.as(2), request(connection)))
       .toMatchObject({ ok: true, generation: 2 });
   });
@@ -1175,7 +1177,7 @@ describe("a lease given back (untangle A2, review F5)", () => {
     const signin = (await recorder(r.stub)).signins.at(-1)! as SandboxSignin;
     const sl = signin as unknown as SandboxStart;
     expect(await r.sql("SELECT network_generation FROM sandbox_leases"))
-      .toEqual([{ network_generation: sl.network!.generation }]);
+      .toEqual([{ network_generation: generationOf(sl.network!.network) }]);
     await scripted(r.stub, { answer: { started: false, code: SANDBOX_WAITING } });
     let call: EgressOpened | EgressRefusal | null = null;
     const run = await whileOut("start", () => r.stub.agentSubmit(
@@ -1184,7 +1186,7 @@ describe("a lease given back (untangle A2, review F5)", () => {
       call = await r.stub.egressOpen({
         owner: r.name, caller: r.name, origin: null, sandbox: {
           kind: "egress", token: hashOf("egress", egressTokenOf(sl.network!.network)!),
-          generation: sl.network!.generation, secret: hashed(secretOf(start)) } },
+          generation: generationOf(sl.network!.network)!, secret: hashed(secretOf(start)) } },
         { run: start.run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
     });
     expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
@@ -1214,7 +1216,7 @@ describe("a lease given back (untangle A2, review F5)", () => {
       call = await r.stub.egressOpen({
         owner: r.name, caller: r.name, origin: null, sandbox: {
           kind: "egress", token: hashOf("egress", egressTokenOf(start.network!.network)!),
-          generation: start.network!.generation, secret: hashed(secretOf(start)) } },
+          generation: generationOf(start.network!.network)!, secret: hashed(secretOf(start)) } },
         { run: start.run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
     });
     expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
@@ -1391,7 +1393,8 @@ describe("the sandbox's lease", () => {
       .filter((receipt) => receipt.rule === "egress.ask");
     // A lease opened under another mode receipts nothing.
     const before = await leased(r);
-    expect(before.opened.network).toMatchObject({ generation: 1, receipt: false });
+    expect(before.opened.network).toMatchObject({ receipt: false });
+    expect(generationOf(before.opened.network.network)).toBe(1);
     expect(await asked()).toEqual([]);
     await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
     const { generation, policy } = await r.stub.policyRead(r.bind());
@@ -1399,7 +1402,8 @@ describe("the sandbox's lease", () => {
       ...policy, egress: { mode: "ask", destinations: [{ host: "pypi.org", port: 443 }] } } });
     expect(await asked()).toEqual([]);
     const lease = await leased(r);
-    expect(lease.opened.network).toMatchObject({ mode: "ask", generation: 2, receipt: true });
+    expect(lease.opened.network).toMatchObject({ mode: "ask", receipt: true });
+    expect(generationOf(lease.opened.network.network)).toBe(2);
     expect(await asked())
       .toMatchObject([{ kind: "refusal", decision: "deny", outcome: "refused" }]);
     // A run that joins the live lease carries no network, so applies none.
@@ -1455,7 +1459,7 @@ describe("a sandbox's network (E1)", () => {
     await capped(r, ROOMY);
     const { start } = await ownerRun(r.stub, r.bind(), { ...onKey(connection), scopes: [] });
     RUN = start.run;
-    expect(start.network!.generation).toBe(1);
+    expect(generationOf(start.network!.network)).toBe(1);
     const opened = await r.stub.egressOpen(egressOf(r, start, 1), request(connection));
     expect(opened.ok || opened.code).toBe(true);  // its refusal's code, were it refused
     expect(opened).toMatchObject({ ok: true, connection, generation: 1 });
@@ -1474,11 +1478,11 @@ describe("a sandbox's network (E1)", () => {
       r.stub, r.bind(), { ...onKey(connection), scopes: [] }), async () => {
       const out = (await recorder(r.stub)).starts.at(-1)!;
       RUN = out.run;
-      call = await r.stub.egressOpen(egressOf(r, out, out.network!.generation),
+      call = await r.stub.egressOpen(egressOf(r, out, generationOf(out.network!.network)!),
                                      request(connection));
     });
     expect(run).toMatchObject({ state: "running" });
-    expect(call).toMatchObject({ ok: true, connection, generation: start.network!.generation,
+    expect(call).toMatchObject({ ok: true, connection, generation: generationOf(start.network!.network),
                                  metered: true });
   });
 
@@ -1497,7 +1501,7 @@ describe("a sandbox's network (E1)", () => {
         ...policy, egress: { mode: "allowlist", destinations: [] } } });
     });
     RUN = start.run;
-    expect(start.network!.generation).toBe(1);
+    expect(generationOf(start.network!.network)).toBe(1);
     expect(await r.sql("SELECT network_generation FROM sandbox_leases"))
       .toEqual([{ network_generation: 1 }]);
     expect(await refusedWith(r, egressOf(r, start, 1), connection)).toBe("egress_policy_stale");
@@ -1546,7 +1550,7 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     expect(more).toEqual([]);
     expect(sent).toMatchObject({ authority: "owner",
                                  lease: { lease_id: lease.lease_id, epoch: lease.epoch },
-                                 network: { generation: 2, mode: "allowlist" } });
+                                 network: { mode: "allowlist" } });
     // Its plan sets the new generation and no egress token: the Worker keeps the live one.
     expect([generationOf(sent!.network.network), egressTokenOf(sent!.network.network)])
       .toEqual([2, null]);
@@ -1578,7 +1582,7 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     // Past it, the lane sends it again, and this time it lands.
     // A newer generation is sent at once, whatever the clock.
     await egressWrite(r, "open");
-    expect((await recorder(r.stub)).networks.map((each) => each.network.generation))
+    expect((await recorder(r.stub)).networks.map((each) => generationOf(each.network.network)))
       .toEqual([2, 3]);
     expect(await refusedWith(r, lease.as(3), connection)).toBe("egress_network_stale");
     await scripted(r.stub, { networkAnswer: { state: "applied" } });
