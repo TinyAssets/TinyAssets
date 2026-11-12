@@ -1169,8 +1169,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const began = Date.now();
     let next: number;
     try {
-      next = await this.#look(began);
-      await this.#giveBack();
+      // What is owed is given back whatever the look found: no slot waits on another sandbox.
+      next = await this.#look(began).finally(() => this.#giveBack());
       this.#sql.exec("UPDATE known SET failures = 0");
     } catch (error) {
       // E2B unreachable, or answering out of shape: asked again, backing off from the

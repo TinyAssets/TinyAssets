@@ -813,6 +813,79 @@ describe("the look before the runtime ceiling", () => {
     }
   });
 
+  it("gives a gone renewal's slot back to the line though another sandbox's look fails",
+     async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 3 });
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
+    const who = owner();
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    // A second sandbox of the same owner's, a client's.
+    const run = `run_${hex(32, "4")}`;
+    await stub(who).start(who, start({ run, authority: hex(64, "c"),
+                                       lease: { lease_id: hex(32, "9"), epoch: 1 },
+                                       urls: runUrls(run, hex(64, "e")) }));
+    expect((await seen()).sandboxes).toHaveLength(2);
+    await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+    await e2b("/script", { others: 1, refuseResume: true });
+    await runDurableObjectAlarm(stub(who));
+    const reserved = async () => (await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved;
+    expect(await reserved()).toBe(1);
+    // The renewal's sandbox gone; the other's runner speaks a protocol this Worker does
+    // not, so every look fails after it forgets the gone one.
+    await e2b("/gone", { id });
+    await e2b("/script", { protocol: PROTOCOL + 5 });
+    await runDurableObjectAlarm(stub(who));
+    await runDurableObjectAlarm(stub(who));
+    expect(await reserved()).toBe(0);
+  });
+
+  /** A renewal's slot held in the line, its sandbox then gone from E2B unseen. */
+  async function heldThenGone(who: string): Promise<() => Promise<number>> {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+    await e2b("/script", { others: 1, refuseResume: true });
+    await runDurableObjectAlarm(stub(who));
+    const reserved = async () => (await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved;
+    expect(await reserved()).toBe(1);
+    await e2b("/gone", { id });
+    return reserved;
+  }
+
+  it("arms the look at once while a slot is owed, so one a release forgot is given back",
+     async () => {
+    const who = owner();
+    const reserved = await heldThenGone(who);
+    // The release finds the sandbox gone: forgotten, its slot owed, and no row left to look at.
+    expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: false });
+    // The look armed at once takes it to the line, with no one running the alarm by hand.
+    const until = Date.now() + 5_000;
+    while (await reserved() > 0) {
+      expect(Date.now()).toBeLessThan(until);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  });
+
+  it("gives back every slot owed before an erasure deletes the object's storage", async () => {
+    const who = owner();
+    const reserved = await heldThenGone(who);
+    const unreserve = SandboxSlots.prototype.unreserve;
+    SandboxSlots.prototype.unreserve = async function () {
+      throw new Error("the line is unreachable");
+    };
+    try {
+      await runDurableObjectAlarm(stub(who));  // forgotten; its give-back refused, still owed
+    } finally {
+      SandboxSlots.prototype.unreserve = unreserve;
+    }
+    expect(await reserved()).toBe(1);
+    await stub(who).erase(who);
+    expect(await reserved()).toBe(0);
+  });
+
   it("leaves a paused, idle sandbox alone, with no alarm", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
     const who = owner();
