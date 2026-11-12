@@ -1,7 +1,8 @@
 /**
- * The codemode Worker's RPC contract (`tinyassets-codemode`, `decisions.md` A1): its default
- * entrypoint, as the owner's object binds it (`CODEMODE_VM`), which the codemode Worker implements
- * (`codemode/src/index.ts`) and code mode calls (`owner/src/codemode.ts`).
+ * The codemode Worker's RPC contract (`tinyassets-codemode`,
+ * `docs/decisions/untangle-2026-11-wave-1.md` A1): its default entrypoint, as the owner's object
+ * binds it (`CODEMODE_VM`), which the codemode Worker implements (`codemode/src/index.ts`) and
+ * code mode calls (`owner/src/codemode.ts`).
  *
  * The request and the exchange are pi-codemode's own (`CodemodeRemoteRequest`,
  * `CodemodeRemoteExchange`, from `@earendil-works/pi-codemode/portable`), which both sides

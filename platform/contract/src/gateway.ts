@@ -1,8 +1,9 @@
 /**
- * The model gateway's RPC contract (`tinyassets-gateway`, `decisions.md` A1): each of its
- * entrypoints' methods, as their callers bind them, and the values that cross them. The
- * gateway implements each entrypoint against it (`gateway/src/index.ts`), and the owner's
- * object and the doors bind it from here, so no caller copies a gateway type.
+ * The model gateway's RPC contract (`tinyassets-gateway`,
+ * `docs/decisions/untangle-2026-11-wave-1.md` A1): each of its entrypoints' methods, as their
+ * callers bind them, and the values that cross them. The gateway implements each entrypoint
+ * against it (`gateway/src/index.ts`), and the owner's object and the doors bind it from here, so
+ * no caller copies a gateway type.
  *
  * - `GatewayService`: the default entrypoint, as the owner's object binds it (`GATEWAY`).
  * - `ConnectService`: `ConnectGateway`, the doors' connect steps (`GATEWAY` of the doors).
