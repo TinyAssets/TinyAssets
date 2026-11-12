@@ -38,7 +38,32 @@ import type { SandboxEnv } from "./env";
 /** The one line's name. */
 export const SLOTS = "slots";
 
-export class SandboxSlots extends DurableObject<SandboxEnv> {
+/** The line, as the sandbox Worker's control and entrypoint call it. */
+export interface SlotLine {
+  /**
+   * Whether `owner` may try for one more running sandbox now, and how many slots renewals
+   * hold meanwhile (taken, whatever E2B's count says).
+   */
+  turn(owner: string): Promise<{ turn: boolean; reserved: number }>;
+  /** A renewing sandbox's slot held across its pause and resume. */
+  reserve(sandboxId: string): Promise<void>;
+  /** The slot given back (the sandbox runs again, or is gone): the line is rung. */
+  unreserve(sandboxId: string): Promise<void>;
+  /**
+   * `owner` found no room: it waits, in the place it first took. `ceilingS` is the plan's
+   * runtime ceiling as the owner's start read it: the longest the first in line goes
+   * unrung.
+   */
+  wait(owner: string, ceilingS: number): Promise<void>;
+  /** `owner`'s start got its sandbox: it leaves the line, and the next is rung. */
+  took(owner: string): Promise<void>;
+  /** `owner` waits no more (no run of its waits, or it is erased); the next is rung. */
+  leave(owner: string): Promise<void>;
+  /** A sandbox of the platform's paused or was killed: the first in line is rung. */
+  freed(): Promise<void>;
+}
+
+export class SandboxSlots extends DurableObject<SandboxEnv> implements SlotLine {
   readonly #sql: SqlStorage;
 
   constructor(ctx: DurableObjectState, env: SandboxEnv) {
@@ -52,22 +77,16 @@ export class SandboxSlots extends DurableObject<SandboxEnv> {
       "SELECT owner, misses FROM waiting ORDER BY seq LIMIT 1").toArray()[0] ?? null;
   }
 
-  /**
-   * Whether `owner` may try for one more running sandbox now, and how many slots renewals
-   * hold meanwhile (taken, whatever E2B's count says).
-   */
   async turn(owner: string): Promise<{ turn: boolean; reserved: number }> {
     const head = this.#head();
     return { turn: head === null || head.owner === owner,
              reserved: this.#sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM held").one().n };
   }
 
-  /** A renewing sandbox's slot held across its pause and resume. */
   async reserve(sandboxId: string): Promise<void> {
     this.#sql.exec("INSERT INTO held (sandbox_id) VALUES (?) ON CONFLICT DO NOTHING", sandboxId);
   }
 
-  /** The slot given back (the sandbox runs again, or is gone): the line is rung. */
   async unreserve(sandboxId: string): Promise<void> {
     if (this.#sql.exec("DELETE FROM held WHERE sandbox_id = ? RETURNING sandbox_id", sandboxId)
       .toArray().length > 0) {
@@ -75,11 +94,6 @@ export class SandboxSlots extends DurableObject<SandboxEnv> {
     }
   }
 
-  /**
-   * `owner` found no room: it waits, in the place it first took. `ceilingS` is the plan's
-   * runtime ceiling as the owner's start read it: the longest the first in line goes
-   * unrung.
-   */
   async wait(owner: string, ceilingS: number): Promise<void> {
     const line = this.#sql.exec<{ next_seq: number }>("SELECT next_seq FROM line").toArray()[0];
     const seq = line?.next_seq ?? 1;
@@ -91,7 +105,6 @@ export class SandboxSlots extends DurableObject<SandboxEnv> {
     await this.#arm();
   }
 
-  /** `owner`'s start got its sandbox: it leaves the line, and the next is rung. */
   async took(owner: string): Promise<void> {
     if (this.#sql.exec("DELETE FROM waiting WHERE owner = ? RETURNING owner", owner)
       .toArray().length > 0) {
@@ -99,7 +112,6 @@ export class SandboxSlots extends DurableObject<SandboxEnv> {
     }
   }
 
-  /** `owner` waits no more (no run of its waits, or it is erased); the next is rung. */
   async leave(owner: string): Promise<void> {
     const wasHead = this.#head()?.owner === owner;
     this.#sql.exec("DELETE FROM waiting WHERE owner = ?", owner);
@@ -108,7 +120,6 @@ export class SandboxSlots extends DurableObject<SandboxEnv> {
     }
   }
 
-  /** A sandbox of the platform's paused or was killed: the first in line is rung. */
   async freed(): Promise<void> {
     await this.#ring();
   }
