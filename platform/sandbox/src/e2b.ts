@@ -39,16 +39,13 @@ export class E2bError extends Error {
   override readonly name = "E2bError";
   readonly status: number;
   readonly code: string | null;
-  readonly retryAfter: number | null;
 
   // Fields, not parameter properties: Node's type stripping, which runs this file in the
   // deploy kit, takes no parameter property.
-  constructor(status: number, code: string | null, message: string,
-              retryAfter: number | null = null) {
+  constructor(status: number, code: string | null, message: string) {
     super(message);
     this.status = status;
     this.code = code;
-    this.retryAfter = retryAfter;
   }
 }
 
@@ -172,13 +169,23 @@ function info(value: unknown): SandboxInfo {
   };
 }
 
-/** The platform API and envd, by the project's key; `fetcher` is the Worker's own fetch. */
+/**
+ * The runtime's own fetch, the fetcher of an `E2b` the Worker or the template checks make:
+ * called on its own, since workerd refuses a fetch called as another object's method.
+ */
+export function runtimeFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, init);
+}
+
+/**
+ * The platform API and envd, by the project's key and its caller's `fetcher`: the runtime's
+ * (`runtimeFetch`), or the deploy kit's recorded IO.
+ */
 export class E2b {
   readonly #key: string;
   readonly #fetch: (url: string, init?: RequestInit) => Promise<Response>;
 
-  constructor(key: string, fetcher: (url: string, init?: RequestInit) => Promise<Response> =
-                (url, init) => fetch(url, init)) {
+  constructor(key: string, fetcher: (url: string, init?: RequestInit) => Promise<Response>) {
     if (typeof key !== "string" || key.length < 8) {
       throw new Error("E2B_API_KEY is not set: the sandbox Worker reaches E2B by it");
     }
@@ -204,9 +211,8 @@ export class E2b {
       } catch {
         code = null;
       }
-      const after = Number(response.headers.get("Retry-After"));
       throw new E2bError(response.status, code, `E2B ${method} ${path.split("?")[0]} answered ${
-        response.status}`, Number.isFinite(after) && after > 0 ? after : null);
+        response.status}`);
     }
     return { status: response.status, json: text === "" ? null : JSON.parse(text) };
   }

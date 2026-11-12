@@ -320,9 +320,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     first, so a renewal's fresh hold is never given back (d3 §L9), with a gate in front of
     `SLOTS` (`ci/gate.ts`), used by both slot tests, in place of the prototype patch at
     `sandbox/test/sandbox.test.ts:797`.
-  - Lane S: `sandbox/src/e2b.ts`'s constructor defaults (the `fetcher` at `:47`, `retryAfter =
-    null` at `:180`; T1b), and `NetworkPlan`'s typed `generation` beside the header the Worker
-    reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `ci/budgets.mjs --write` (d3 §I).
   - Lane C: P-T1, the starter guard's "DID NOT RUN" warning that passes when it cannot check

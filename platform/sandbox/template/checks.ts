@@ -29,7 +29,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readWrangler } from "../../ci/workers";
-import { E2b, type Handle } from "../src/e2b";
+import { E2b, type Handle, runtimeFetch } from "../src/e2b";
 import { install } from "../src/install";
 import { COMMAND, EXIT, LOADER } from "../runner/protocol";
 import type { Plan, PlanSandbox, PlanStep } from "../runner/probes";
@@ -182,7 +182,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (key === undefined || key === "") {
     throw new Error("E2B_API_KEY is not set (the production environment's secrets)");
   }
-  const e2b = new E2b(key);
+  const e2b = new E2b(key, runtimeFetch);
   const out = mkdtempSync(join(tmpdir(), "ta-checks-"));
   try {
     const { runner, probes } = bundles(execFileSync, out);
