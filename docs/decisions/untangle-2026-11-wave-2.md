@@ -533,7 +533,7 @@ The listings, and the other working files this log names (`*_research.md`, `*_re
 **Removes:** `s2:N42`, and `S18`'s residue (the Worker bundling the whole catalog).
 
 **Design:**
-- `sources/src/served.ts` names the served-CLI records (not unwired, with a credential, login and npm). `image.ts`, the probes' plan, `reportSignins`, `invocation` and `RECORDS` use it.
+- `sources/src/served.ts` names the served-CLI records (with a credential, login and npm). `image.ts`, the probes' plan, `reportSignins`, `invocation` and `RECORDS` use it.
 - The owner's plan (`owner/src/sandbox.ts`) hands the engine hosts in `SandboxStart` and `SandboxSignin`, as it hands the network. The sandbox Worker drops `bundledSources()`.
 
 **Files:** `sources/src/served.ts` (new), `sandbox/{template/image.ts, runner/{probes,runner,engine,session}.ts, src/control.ts}`, `contract/src/sandbox.ts`, `owner/src/sandbox.ts` (after B3).
