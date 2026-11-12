@@ -435,7 +435,6 @@ def _known_memory_ref(text: str) -> bool:
     return any(
         marker in text
         for marker in (
-            ".agents/activity.log",
             ".claude/agent-memory/",
             ".claude/projects/",
             ".codex/",
