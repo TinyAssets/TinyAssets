@@ -70,7 +70,8 @@ import { readControl, type SandboxCeilings } from "../../contract/src/control";
 import { bundledSources, engineHosts } from "../../sources/src/catalog";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import {
-  allowList, EGRESS_HOST, GENERATION_HEADER, SANDBOX_HEADER,
+  allowList, doorHeaders, EGRESS_HOST, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER,
+  withEgressToken,
 } from "../../contract/src/egress";
 import { migrate } from "../../contract/src/migrate";
 import {
@@ -243,16 +244,12 @@ function widened(network: E2bNetwork, hosts: readonly string[]): E2bNetwork | nu
 }
 
 /**
- * The egress token a sandbox's live network carries in the door's transform (as E2B's info
- * returns its rules), or null when it carries none.
+ * Whether `network` was made under a newer egress generation than `plan`: a re-apply that
+ * reaches the Worker after a later one (separate calls, so not ordered) never replaces it.
  */
-function liveToken(network: unknown): string | null {
-  const rules = (network as { rules?: Record<string, unknown> } | null)?.rules;
-  const door = rules?.[EGRESS_HOST];
-  const first = Array.isArray(door) ? door[0] as { transform?: { headers?: unknown } } : undefined;
-  const headers = first?.transform?.headers as Record<string, unknown> | undefined;
-  const token = headers?.[SANDBOX_HEADER];
-  return typeof token === "string" && token !== "" ? token : null;
+function newer(network: unknown, plan: unknown): boolean {
+  return Number(doorHeaders(network)?.[GENERATION_HEADER] ?? 0)
+    > Number(doorHeaders(plan)?.[GENERATION_HEADER] ?? 0);
 }
 
 /**
@@ -261,25 +258,13 @@ function liveToken(network: unknown): string | null {
  */
 function reapplyNetwork(network: unknown): E2bNetwork {
   const plan = e2bNetwork(network);
-  const door = plan.rules[EGRESS_HOST];
-  const headers = Array.isArray(door) && door.length === 1
-    ? (door[0] as { transform?: { headers?: Record<string, unknown> } }).transform?.headers
-    : undefined;
-  if (Object.keys(plan.rules).length !== 1 || headers === undefined
-      || typeof headers[GENERATION_HEADER] !== "string" || SANDBOX_HEADER in headers) {
+  const headers = doorHeaders(plan);
+  if (Object.keys(plan.rules).length !== 1 || plan.rules[EGRESS_HOST]?.length !== 1
+      || headers === null || typeof headers[GENERATION_HEADER] !== "string"
+      || SANDBOX_HEADER in headers) {
     throw new Error("a re-apply's network sets the door's generation header, and no token");
   }
   return plan;
-}
-
-/** The plan made whole: the live sandbox's own egress token set in the door's transform. */
-function withToken(plan: E2bNetwork, token: string): E2bNetwork {
-  const door = plan.rules[EGRESS_HOST]![0] as { transform: { headers: Record<string, string> } };
-  const headers: Record<string, string> = { ...door.transform.headers };
-  headers[SANDBOX_HEADER] = token;
-  const rules: Record<string, unknown[]> = {};
-  rules[EGRESS_HOST] = [{ transform: { headers } }];
-  return { ...plan, rules };
 }
 
 /** The vendor's own hosts of an engine run on its sign-in; none on a key. */
@@ -477,11 +462,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    */
   #due(authority: string, found: SandboxInfo): E2bNetwork | null {
     const row = this.#row(authority);
-    const token = liveToken(found.network);
+    const token = egressTokenOf(found.network);
     if (row?.network_due == null || token === null) {
       return null;
     }
-    const whole = withToken(reapplyNetwork(JSON.parse(row.network_due)), token);
+    const whole = withEgressToken(reapplyNetwork(JSON.parse(row.network_due)), token);
     return widened(whole, this.#launchedHosts(authority, row.lease_id)) ?? whole;
   }
 
@@ -891,16 +876,21 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return { state: "lost" };
       }
       const found = await e2b.info(row.sandbox_id);
-      const token = found === null ? null : liveToken(found.network);
+      const token = found === null ? null : egressTokenOf(found.network);
       if (found === null || token === null) {
         return { state: "lost" };
       }
+      if (newer(found.network, plan)) {
+        return { state: "applied" };  // a later re-apply is on it already
+      }
       if (handleOf(found, row) === null) {
-        this.#sql.exec("UPDATE sandboxes SET network_due = ? WHERE authority = ?",
-                       JSON.stringify(plan), row.authority);
+        if (row.network_due === null || !newer(JSON.parse(row.network_due), plan)) {
+          this.#sql.exec("UPDATE sandboxes SET network_due = ? WHERE authority = ?",
+                         JSON.stringify(plan), row.authority);
+        }
         return { state: "at_resume" };
       }
-      const whole = withToken(plan, token);
+      const whole = withEgressToken(plan, token);
       await e2b.network(found.sandboxID,
                         widened(whole, this.#launchedHosts(row.authority, row.lease_id)) ?? whole);
       this.#sql.exec("UPDATE sandboxes SET network_due = NULL WHERE authority = ?", row.authority);

@@ -9,7 +9,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
-  EGRESS_HOST, EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER,
+  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import type { OwnerDO } from "./entry";
@@ -17,11 +17,6 @@ import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } f
 import type { SandboxSignin } from "../../contract/src/sandbox";
 
 let restore: () => void = () => undefined;
-
-/** The lease's egress token: only the sign-in's network's transform carries it. */
-function egressTokenOf(signin: SandboxSignin): string {
-  return signin.network!.network.rules[EGRESS_HOST]![0]!.transform.headers[SANDBOX_HEADER]!;
-}
 
 /** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
 const CLAUDE_PAGE = "https://claude.com/cai/oauth/authorize?code=true&client_id=" +
@@ -53,7 +48,7 @@ describe("the sign-in routes and door", () => {
     expect(view.state).toBe("starting");
     const [asked] = await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
       (instance as OwnerDO).recorder.signins) as SandboxSignin[];
-    const inside = { [SANDBOX_HEADER]: egressTokenOf(asked!),
+    const inside = { [SANDBOX_HEADER]: egressTokenOf(asked!.network!.network)!,
                      [GENERATION_HEADER]: String(asked!.network!.generation),
                      "x-ta-runner": asked!.tokens!.runner_token };
     const url = CLAUDE_PAGE;
@@ -84,7 +79,7 @@ describe("the sign-in routes and door", () => {
     const body = JSON.stringify({ frames: [] });
     const at = `${EGRESS_ORIGIN}/signin/${view.id}/events`;
     for (const headers of [
-      { [SANDBOX_HEADER]: egressTokenOf(asked!),
+      { [SANDBOX_HEADER]: egressTokenOf(asked!.network!.network)!,
         [GENERATION_HEADER]: String(asked!.network!.generation) },
       { "x-ta-runner": asked!.tokens!.runner_token }]) {
       const refused = await call(new Request(at, { method: "POST", body,

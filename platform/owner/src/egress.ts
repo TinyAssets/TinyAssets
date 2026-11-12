@@ -71,7 +71,7 @@
  * `receiptsKept` admitted and `refusalsKept` refused rows kept as receipts.
  *
  * Declared difference from research §6, which let a sandbox response already streaming
- * finish within the gateway's 5-minute deadline: here a policy write ends it, as it ends
+ * finish within its deadline (`EGRESS_DEADLINE_S`): here a policy write ends it, as it ends
  * the owner's in-flight turns.
  */
 import type { SandboxBinding } from "../../contract/src/binding";

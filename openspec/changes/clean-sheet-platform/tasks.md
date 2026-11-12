@@ -964,8 +964,8 @@ account and no deploy.
   done**: each call is admitted at open against the current **egress generation**, which
   moves only when the policy's egress table does (the grants' revision/authority split), so
   a write that changes egress leaves the network stale, egress refused, fail-closed, until
-  the lease's network is re-applied (E2: `Launcher.reapply` as the write commits, the
-  `runs` lane for any that does not land; the sandbox Worker's `network`), and no other policy change
+  the lease's network is re-applied (E2: the `runs` lane's `Launcher.reapply`, which the
+  write's unit wakes; the sandbox Worker's `network`), and no other policy change
   stalls egress; the gateway fetches strictly publicly and the object refuses IP literals
   (`network.ts`'s `checkDestination`, the policy's own rule). **The network document**
   (`network.ts`, pure): E2B's `allowOut`, `denyOut`, `dnsServers` and `rules` (e2b SDK

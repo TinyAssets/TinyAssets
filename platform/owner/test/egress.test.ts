@@ -16,7 +16,7 @@ import { verifyToken } from "../../contract/src/routing-mac";
 import type { Metering } from "../../contract/src/gateway";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
-import { EGRESS_BEAT_S } from "../../contract/src/egress";
+import { EGRESS_BEAT_S, egressTokenOf } from "../../contract/src/egress";
 import {
   EGRESS_LIMITS, egressPrice,
   LOST_AFTER_S,
@@ -34,7 +34,7 @@ import { signedIn } from "./ledger-support";
 import { drainDue, failure, TIERS } from "./support";
 import { NETWORK_RETRY_S, type SandboxRun } from "../src/launch";
 import {
-  defineAgent, egressTokenOf, hashed, ownerRun, recorder, runnerSandbox, secretOf,
+  defineAgent, hashed, ownerRun, recorder, runnerSandbox, secretOf,
 } from "./runs-support";
 import type { NetworkPlan, SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 import { SANDBOX_WAITING } from "../src/sandbox";
@@ -115,7 +115,8 @@ async function leased(r: Gated, roomy = true,
   const chosen = run ?? (oldest === undefined ? SIGNED_IN : onKey(oldest.id));
   const { start } = await ownerRun(r.stub, r.bind(), { ...chosen, scopes: [] });
   if (start.tokens !== null) {
-    OPENED.set(start.lease.lease_id, { ...start.tokens, egress_token: egressTokenOf(start),
+    OPENED.set(start.lease.lease_id, { ...start.tokens,
+                                       egress_token: egressTokenOf(start.network!.network)!,
                                        network: start.network! });
   }
   const opened: Opened = { ...OPENED.get(start.lease.lease_id)!, lease: start.lease };
@@ -1095,8 +1096,9 @@ describe("a change that ends egress", () => {
                                                                            turn_requests: 50 } } });
     expect(await ended(opened)).toBe(true);
     expect(await rows(r)).toMatchObject([{ state: "open", ended: "policy" }]);
-    // A write that leaves the egress table as it was leaves the network current: nothing
-    // is re-applied.
+    // A write that leaves the egress table as it was leaves the network current: the lane
+    // it wakes re-applies nothing.
+    await drainDue(r.stub);
     expect((await recorder(r.stub)).networks).toEqual([]);
     await admitted(r, lease, connection);
     // A policy change outside the document (an agent's wake limits: \`Policy.changed\`), neither.
@@ -1107,6 +1109,7 @@ describe("a change that ends egress", () => {
     const latest = await r.stub.policyRead(r.bind());
     await r.stub.policyWrite(r.session(), { expected_generation: latest.generation, policy: {
       ...latest.policy, egress: { mode: "allowlist", destinations: [] } } });
+    await drainDue(r.stub);
     expect((await recorder(r.stub)).networks).toMatchObject([{
       lease: { lease_id: lease.lease_id, epoch: lease.epoch },
       network: { generation: 2, mode: "allowlist", boundary: false } }]);
@@ -1172,7 +1175,7 @@ describe("a lease given back (untangle A2, review F5)", () => {
       instance.recorder.beforeAnswer = async (start) => {
         call = await instance.egressOpen({
           owner: r.name, caller: r.name, origin: null, sandbox: {
-            kind: "egress", token: hashOf("egress", egressTokenOf(sl)),
+            kind: "egress", token: hashOf("egress", egressTokenOf(sl.network!.network)!),
             generation: sl.network!.generation, secret: hashed(secretOf(start)) } },
           { run: start.run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
       };
@@ -1209,7 +1212,7 @@ describe("a lease given back (untangle A2, review F5)", () => {
       instance.recorder.beforeAnswer = async (start) => {
         call = await instance.egressOpen({
           owner: r.name, caller: r.name, origin: null, sandbox: {
-            kind: "egress", token: hashOf("egress", egressTokenOf(start)),
+            kind: "egress", token: hashOf("egress", egressTokenOf(start.network!.network)!),
             generation: start.network!.generation, secret: hashed(secretOf(start)) } },
           { run: start.run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
         if (call.ok) {
@@ -1255,7 +1258,8 @@ describe("the owner's erasure", () => {
                                                      scopes: [] });
     RUN = start.run;
     const sandbox = bind({ sandbox: { kind: "egress",
-                                      token: hashOf("egress", egressTokenOf(start)),
+                                      token: hashOf("egress",
+                                                    egressTokenOf(start.network!.network)!),
                                       generation: 1, secret: hashed(secretOf(start)) } });
     const open = await stub.egressOpen(sandbox, request(prepared.connection));
     expect(open.ok).toBe(true);
@@ -1472,7 +1476,7 @@ describe("the sandbox's lease", () => {
 describe("a sandbox's network (E1)", () => {
   /** The egress door's binding for `start`'s lease and run, at the transform's `generation`. */
   const egressOf = (r: Gated, start: SandboxStart, generation: number) => r.bind({ sandbox: {
-    kind: "egress", token: hashOf("egress", egressTokenOf(start)), generation,
+    kind: "egress", token: hashOf("egress", egressTokenOf(start.network!.network)!), generation,
     secret: hashed(secretOf(start)) } });
 
   it("is marked by the unit that dispatches the start carrying it: the run's first model " +
@@ -1542,11 +1546,16 @@ describe("a sandbox's network (E1)", () => {
 });
 
 describe("a live lease's network re-applied after an egress write (E2)", () => {
-  /** The owner's egress table changed: the egress generation moves (to 2 from a fresh 1). */
-  async function egressWrite(r: Gated): Promise<void> {
+  /**
+   * The owner's egress table changed (the egress generation moves, to 2 from a fresh 1),
+   * then the pass of the `runs` lane the write's unit woke.
+   */
+  async function egressWrite(r: Gated, mode: "allowlist" | "open" = "allowlist"):
+      Promise<void> {
     const { generation, policy } = await r.stub.policyRead(r.bind());
     await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
-      ...policy, egress: { mode: "allowlist", destinations: [] } } });
+      ...policy, egress: { mode, destinations: [] } } });
+    await drainDue(r.stub);
   }
 
   /** The lease's network as the object holds it: confirmed, out, and its retry clock. */
@@ -1561,8 +1570,8 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     await drainDue(r.stub);
   }
 
-  it("is re-applied as the write commits: a call under the new generation is admitted, " +
-     "from the moment the re-apply is out", async () => {
+  it("is re-applied by the lane the write wakes: a call under the new generation is " +
+     "admitted from the moment the re-apply is out", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
     const lease = await leased(r);
@@ -1597,8 +1606,8 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     expect(await refusedWith(r, lease.as(1), connection)).toBe("egress_policy_stale");
   });
 
-  it("is tried again by the lane once it failed, its calls refused until it lands",
-     async () => {
+  it("is tried again by the lane once it failed, its calls refused until it lands; at " +
+     "once under a newer generation", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
     const lease = await leased(r);
@@ -1614,15 +1623,20 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     expect((await recorder(r.stub)).networks).toHaveLength(1);
     expect(await refusedWith(r, lease.as(2), connection)).toBe("egress_network_stale");
     // Past it, the lane sends it again, and this time it lands.
+    // A newer generation is sent at once, whatever the clock.
+    await egressWrite(r, "open");
+    expect((await recorder(r.stub)).networks.map((each) => each.network.generation))
+      .toEqual([2, 3]);
+    expect(await refusedWith(r, lease.as(3), connection)).toBe("egress_network_stale");
     await r.in((instance) => { instance.recorder.networkAnswer = { state: "applied" }; });
     await r.sql("UPDATE sandbox_leases SET network_tried_at = network_tried_at - ?",
                 NETWORK_RETRY_S);
     await laneNow(r);
-    expect((await recorder(r.stub)).networks).toHaveLength(2);
-    expect(await networkRow(r)).toEqual([{ network_generation: 2, network_pending: null,
+    expect((await recorder(r.stub)).networks).toHaveLength(3);
+    expect(await networkRow(r)).toEqual([{ network_generation: 3, network_pending: null,
                                            tried: 0 }]);
-    expect(await r.stub.egressOpen(lease.as(2), request(connection)))
-      .toMatchObject({ ok: true, generation: 2 });
+    expect(await r.stub.egressOpen(lease.as(3), request(connection)))
+      .toMatchObject({ ok: true, generation: 3 });
   });
 
   it("is kept out for a paused sandbox, applied as it resumes, and sent again until it " +
@@ -1645,5 +1659,24 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     expect((await recorder(r.stub)).networks).toHaveLength(2);
     expect(await networkRow(r)).toEqual([{ network_generation: 2, network_pending: null,
                                            tried: 0 }]);
+  });
+
+  it("leaves the policy write to answer at once, whatever the sandbox Worker does",
+     async () => {
+    const r = await gated();
+    await leased(r);
+    let release = () => {};
+    await r.in((instance) => {
+      instance.recorder.beforeNetwork = () => new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    });
+    const { generation, policy } = await r.stub.policyRead(r.bind());
+    const written = r.stub.policyWrite(r.session(), { expected_generation: generation,
+      policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
+    const first = await Promise.race([written.then(() => "answered"), new Promise(
+      (resolve) => setTimeout(() => resolve("waiting"), 2000))]);
+    release();
+    expect(first).toBe("answered");
   });
 });

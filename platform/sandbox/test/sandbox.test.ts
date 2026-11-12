@@ -1298,4 +1298,32 @@ describe("a live lease's network re-applied (E2)", () => {
       .toEqual({ started: true });
     expect((await networkOf()).allowOut).toEqual(expect.arrayContaining(["accounts.google.com"]));
   });
+
+  it("never puts an older generation's network over a newer one's, running or paused",
+     async () => {
+    const at = (generation: number, allowOut: string[]) => ({ ...PLAN, generation, network: {
+      ...PLAN.network, allowOut,
+      rules: { "egress.tinyassets.io": [{ transform: { headers: {
+        "x-ta-network-generation": String(generation) } } }] } } });
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
+    const who = owner();
+    await stub(who).start(who, start());
+    // Generation 3's re-apply lands first; generation 2's, sent before it, arrives after.
+    expect(await stub(who).network(reapply({ network: at(3, ["egress.tinyassets.io"]) })))
+      .toEqual({ state: "applied" });
+    expect(await stub(who).network(reapply({
+      network: at(2, ["old.example", "egress.tinyassets.io"]) }))).toEqual({ state: "applied" });
+    expect((await networkOf()).headers["x-ta-network-generation"]).toBe("3");
+    expect((await networkOf()).allowOut).not.toContain("old.example");
+    // Paused: the newer kept plan stays kept.
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/pause", { id });
+    expect(await stub(who).network(reapply({ network: at(4, ["egress.tinyassets.io"]) })))
+      .toEqual({ state: "at_resume" });
+    expect(await stub(who).network(reapply({
+      network: at(2, ["old.example", "egress.tinyassets.io"]) }))).toEqual({ state: "applied" });
+    await runDurableObjectAlarm(stub(who));
+    expect((await networkOf()).headers["x-ta-network-generation"]).toBe("4");
+    expect((await networkOf()).allowOut).not.toContain("old.example");
+  });
 });

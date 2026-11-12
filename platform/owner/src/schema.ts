@@ -2033,11 +2033,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   ]),
   // 5, after the vendor's 4 (E2): a live lease's network re-applied under a newer egress
   // generation (`Launcher.reapply`): the generation a re-apply is out with, whose calls are
-  // admitted under it too, and when it was sent or last failed, the lane's retry clock.
+  // admitted under it too; and the lane's retry clock, when the last was sent or failed
+  // and under which generation.
   // `sandbox_leases` is kept out of the export (`NOT_EXPORTED`), so no capture trigger.
   Object.freeze([
     "ALTER TABLE sandbox_leases ADD COLUMN network_pending INTEGER CHECK (network_pending IS " +
       "NULL OR network_pending >= 1)",
     "ALTER TABLE sandbox_leases ADD COLUMN network_tried_at REAL",
+    "ALTER TABLE sandbox_leases ADD COLUMN network_tried_generation INTEGER",
   ]),
 ]);

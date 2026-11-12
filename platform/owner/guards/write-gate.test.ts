@@ -319,7 +319,7 @@ const OWN_UNITS: ReadonlySet<string> = new Set([
   // Each writes in units of its own around its R2, sandbox or gateway calls.
   "files.write", "files.writeChunks", "files.upload", "files.rewrap", "files.space",
   "connections.fresh", "connections.reseal", "erasure.begin", "launcher.seeded", "launcher.launch",
-  "launcher.cancel", "launcher.reapply",
+  "launcher.cancel",
   // Each reads in units of its own, or R2 alone.
   "files.fetch", "archive.archived", "archive.chain", "launcher.readAgent",
   "launcher.settledWithin",

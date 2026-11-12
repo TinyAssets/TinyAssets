@@ -166,7 +166,7 @@ describe("open uploads, apart from what is stored", () => {
   it("are let go when the lease whose sync began them ends", async () => {
     const r = await rig();
     const lease = await inFiles(r.stub, {}, (files) =>
-      files.leaseAcquire("owner", "sandbox-1", TOKENS));
+      files.leaseAcquire("owner", "sandbox-1", TOKENS, 1));
     await inFiles(r.stub, {}, (files) => files.syncBegin(lease.lease_id, lease.epoch, 8_000,
                                                          ["ef".repeat(32)]));
     expect(await open(r)).toBe(1);
@@ -180,7 +180,7 @@ describe("open uploads, apart from what is stored", () => {
     const r = await rig();
     for (const [n, take] of [[1, "lapsed"], [2, "acquired"]] as const) {
       const lease = await inFiles(r.stub, {}, (files) =>
-        files.leaseAcquire("owner", `sandbox-${n}`, n === 1 ? TOKENS : OTHER));
+        files.leaseAcquire("owner", `sandbox-${n}`, n === 1 ? TOKENS : OTHER, 1));
       await inFiles(r.stub, {}, (files) => files.syncBegin(lease.lease_id, lease.epoch, 8_000,
                                                            [`a${n}`.repeat(32)]));
       await sqlIn(r.stub, "UPDATE sandbox_leases SET lease_expires = 1");  // the sandbox died
@@ -188,7 +188,7 @@ describe("open uploads, apart from what is stored", () => {
         await inFiles(r.stub, {}, (files) => files.leasesLapsed(Date.now() / 1000));
       } else {
         // A sign-in takes the next lease before any runs pass noticed the lapse.
-        await inFiles(r.stub, {}, (files) => files.leaseAcquire("owner", "sandbox-3", TOKENS));
+        await inFiles(r.stub, {}, (files) => files.leaseAcquire("owner", "sandbox-3", TOKENS, 1));
       }
       expect(await open(r)).toBe(0);
       await sqlIn(r.stub, "DELETE FROM sandbox_leases");
@@ -201,7 +201,7 @@ describe("open uploads, apart from what is stored", () => {
     await inFiles(r.stub, {}, (files) => files.begin(8_000, ["a3".repeat(32)],
                                                      `client:${CLIENT}`));
     const lease = await inFiles(r.stub, {}, (files) =>
-      files.leaseAcquire(CLIENT, "sandbox-1", TOKENS));
+      files.leaseAcquire(CLIENT, "sandbox-1", TOKENS, 1));
     expect(await inFiles(r.stub, {}, (files) => files.syncWriter(lease.lease_id, lease.epoch)))
       .toBe(`client:${CLIENT}`);
     await inFiles(r.stub, {}, (files) => files.syncBegin(lease.lease_id, lease.epoch, 8_000,
@@ -239,7 +239,7 @@ describe("the sync's ignore list", () => {
     // A sandbox's sync writes the list (its writer the owner's lease) with the count its
     // sync agent made in the sandbox. The object holds none of those files: it scans nothing.
     const lease = await inFiles(r.stub, {}, (files) =>
-      files.leaseAcquire("owner", "sandbox-1", TOKENS));
+      files.leaseAcquire("owner", "sandbox-1", TOKENS, 1));
     const sync = (inline: string, held: unknown, base: number | null = null) =>
       r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch,
         ops: [{ op: "write", path: `${W}/.ta/sync-ignore`, base, inline: text(inline),
@@ -297,7 +297,7 @@ describe("the sync's ignore list", () => {
     const r = await rig();
     const client = "c".repeat(64);
     const lease = await inFiles(r.stub, {}, (files) =>
-      files.leaseAcquire(client, "sandbox-1", TOKENS));
+      files.leaseAcquire(client, "sandbox-1", TOKENS, 1));
     await sqlIn(r.stub, "INSERT INTO outside_clients (client, source, mode, scopes, generation, " +
       "name, first_seen, last_seen) VALUES (?, 'mcp', 'full', '[]', 1, '', 1, 1)", client);
     await r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch,

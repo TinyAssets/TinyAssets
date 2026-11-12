@@ -10,13 +10,17 @@
  * clamped to its reservation; every refusal is a fixed code that forwards nothing; and every
  * admitted call is settled once, however it ends, at the cost pi-ai read, or kept whole.
  */
-import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
+import {
+  createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
+} from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
-import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
-import { defineAgent, egressTokenOf, secretOf } from "../../owner/test/runs-support";
+import {
+  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER,
+} from "../../contract/src/egress";
+import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { type DoorsEnv } from "../src/config";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
@@ -116,7 +120,7 @@ async function sandbox(models: Record<string, unknown> = {
   const { run_id: run } = await submitted.json<{ run_id: string }>();
   const start = await runInDurableObject(env.OWNER.getByName(owner), (instance: unknown) =>
     (instance as OwnerDO).recorder.starts.find((each) => each.run === run)!);
-  const opened: Opened = { egress_token: egressTokenOf(start),
+  const opened: Opened = { egress_token: egressTokenOf(start.network!.network)!,
                            sync_token: start.tokens!.sync_token, lease: start.lease,
                            network: start.network!, env: start.config.env };
   return { owner, session: app.session, token: opened.egress_token, app: app.access_token,
@@ -782,8 +786,9 @@ describe("a policy write mid-stream", () => {
     await until(() => upstreamCancelled("policy"), "the upstream cancel");
     const old = await send(egressRequest(box));
     expect([old.status, await codeOf(old)]).toEqual([409, "egress_policy_stale"]);
-    // The write re-applied the lease's network under generation 2 (the sandbox Worker's
-    // `network`), so a call through it is answered.
+    // The `runs` lane the write woke re-applied the lease's network under generation 2 (the
+    // sandbox Worker's `network`), so a call through it is answered.
+    await runDurableObjectAlarm(env.OWNER.getByName(box.owner));
     const asked = await runInDurableObject(env.OWNER.getByName(box.owner), (instance: unknown) =>
       (instance as OwnerDO).recorder.networks);
     expect(asked).toMatchObject([{ lease: box.opened.lease, network: { generation: 2 } }]);

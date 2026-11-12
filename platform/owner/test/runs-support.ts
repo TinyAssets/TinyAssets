@@ -9,7 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { verifyToken } from "../../contract/src/routing-mac";
-import { EGRESS_HOST, SANDBOX_HEADER } from "../../contract/src/egress";
+import { egressTokenOf } from "../../contract/src/egress";
 
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
@@ -17,7 +17,7 @@ import type { RunReceipt } from "../src/runs";
 import type { RecordingSandbox } from "./sandbox-fake";
 
 import { TIERS } from "./support";
-import type { NetworkPlan, SandboxStart } from "../../contract/src/sandbox";
+import type { SandboxStart } from "../../contract/src/sandbox";
 
 export { TIERS };
 
@@ -68,19 +68,6 @@ export function recorder(stub: DurableObjectStub<OwnerDO>): Promise<RecordingSan
   return runInDurableObject(stub, (instance: OwnerDO) => (instance as Recorded).recorder);
 }
 
-/**
- * The lease's egress token, from the start (or sign-in) that opened it: only its network's
- * transform carries it (`SANDBOX_HEADER`), as E2B sets it outside the VM.
- */
-export function egressTokenOf(opened: { readonly network: NetworkPlan | null }): string {
-  const rule = opened.network?.network.rules[EGRESS_HOST]?.[0];
-  const token = rule?.transform.headers[SANDBOX_HEADER];
-  if (token === undefined) {
-    throw new Error("this start opened no lease: it carries no network");
-  }
-  return token;
-}
-
 /** A run's own secret, as its start's MCP URL carries it (`/r/<run>/<secret>/mcp`). */
 export function secretOf(start: SandboxStart): string {
   const found = /\/r\/run_[0-9a-f]{32}\/([0-9a-f]{64})\/mcp$/.exec(start.urls.mcp);
@@ -102,7 +89,7 @@ const LEASE_TOKENS = new Map<string, { egress: string; sync: string; runner: str
 export function leaseTokens(start: SandboxStart): { egress: string; sync: string;
                                                     runner: string } {
   if (start.tokens !== null) {
-    LEASE_TOKENS.set(start.lease.lease_id, { egress: egressTokenOf(start),
+    LEASE_TOKENS.set(start.lease.lease_id, { egress: egressTokenOf(start.network!.network)!,
                                              sync: start.tokens.sync_token,
                                              runner: start.tokens.runner_token });
   }

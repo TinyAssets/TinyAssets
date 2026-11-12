@@ -52,9 +52,8 @@
  *   a platform secret with the token's custody.
  *
  */
-import { tokenShaped } from "../../contract/src/routing-mac";
 import {
-  closedNetwork, EGRESS_HOST as DOOR_HOST, GENERATION_HEADER, SANDBOX_HEADER,
+  closedNetwork, EGRESS_HOST as DOOR_HOST, GENERATION_HEADER,
 } from "../../contract/src/egress";
 import { checkDestination } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
@@ -75,22 +74,19 @@ export interface EgressPolicy {
 }
 
 /**
- * E2B's network configuration for the owner's egress policy at egress `generation`, with
- * `token`, the sandbox's egress token, in the egress door's transform. A re-apply's plan
- * (`token` null) carries none: the object holds only its hash, and the sandbox Worker sets
- * the live sandbox's own (`NetworkReapply`).
+ * E2B's network configuration for the owner's egress policy at egress `generation`, its
+ * door's transform setting the generation and no egress token: the start that opens a
+ * lease adds the lease's (`withEgressToken`), and a re-apply's goes as it is, the sandbox
+ * Worker setting the live sandbox's own (`NetworkReapply`), since the object holds only
+ * its hash.
  */
-export function networkDocument(egress: EgressPolicy, generation: number, token: string | null):
-    NetworkPlan {
+export function networkDocument(egress: EgressPolicy, generation: number): NetworkPlan {
   const mode = egress.mode;
   if (mode !== "open" && mode !== "allowlist" && mode !== "ask") {
     throw new Refusal("invalid", "invalid egress policy");
   }
   if (!Number.isSafeInteger(generation) || generation < 1) {
     throw new Refusal("invalid", "a policy generation is a whole number from 1");
-  }
-  if (token !== null && !tokenShaped(token)) {
-    throw new Refusal("invalid", "a sandbox token is its owner, its secret and its MAC, base64url");
   }
   const allowed = new Set<string>();
   const unexpressed: Unexpressed[] = [];
@@ -105,9 +101,6 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
   // `open` lets every name out (`*`); either way the door is listed, last (`allowList`).
   const closed = closedNetwork(mode === "open" ? ["*"] : allowed);
   const headers: Record<string, string> = {};
-  if (token !== null) {
-    headers[SANDBOX_HEADER] = token;
-  }
   headers[GENERATION_HEADER] = String(generation);
   const rules: Record<string, readonly NetworkRule[]> = {};
   rules[DOOR_HOST] = Object.freeze([Object.freeze({
