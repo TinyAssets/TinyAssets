@@ -39,8 +39,8 @@
  * The Python closed the owner's public egress tunnels before a write committed and
  * cancelled its live streams after. Here a policy write ends the owner's sandbox egress
  * streams (`egress.ts`): each sandbox request is admitted at open against the current
- * generation, and the sandbox's network is stale, egress refused, until the sandbox slice
- * applies it again (G4).
+ * generation, and a write that moves it wakes the `runs` lane (`synced`), which re-applies
+ * each live lease's network under it (`Launcher.reapply`); its calls are refused until then.
  *
  * Declared differences from the Python:
  * - An egress destination whose host the WHATWG URL parser reads as an IP address

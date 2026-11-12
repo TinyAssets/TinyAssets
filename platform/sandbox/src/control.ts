@@ -70,7 +70,7 @@ import { readControl, type SandboxCeilings } from "../../contract/src/control";
 import { bundledSources, engineHosts } from "../../sources/src/catalog";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import {
-  allowList, doorHeaders, EGRESS_HOST, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER,
+  allowList, doorHeaders, EGRESS_HOST, egressTokenOf, generationOf, SANDBOX_HEADER,
   withEgressToken,
 } from "../../contract/src/egress";
 import { migrate } from "../../contract/src/migrate";
@@ -246,10 +246,15 @@ function widened(network: E2bNetwork, hosts: readonly string[]): E2bNetwork | nu
 /**
  * Whether `network` was made under a newer egress generation than `plan`: a re-apply that
  * reaches the Worker after a later one (separate calls, so not ordered) never replaces it.
+ * Every network the owner makes carries its generation, so one with none fails loudly.
  */
 function newer(network: unknown, plan: unknown): boolean {
-  return Number(doorHeaders(network)?.[GENERATION_HEADER] ?? 0)
-    > Number(doorHeaders(plan)?.[GENERATION_HEADER] ?? 0);
+  const live = generationOf(network);
+  const next = generationOf(plan);
+  if (live === null || next === null) {
+    throw new Error("a lease's network carries the egress generation it was made under");
+  }
+  return live > next;
 }
 
 /**
@@ -260,8 +265,7 @@ function reapplyNetwork(network: unknown): E2bNetwork {
   const plan = e2bNetwork(network);
   const headers = doorHeaders(plan);
   if (Object.keys(plan.rules).length !== 1 || plan.rules[EGRESS_HOST]?.length !== 1
-      || headers === null || typeof headers[GENERATION_HEADER] !== "string"
-      || SANDBOX_HEADER in headers) {
+      || headers === null || generationOf(plan) === null || SANDBOX_HEADER in headers) {
     throw new Error("a re-apply's network sets the door's generation header, and no token");
   }
   return plan;

@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import {
-  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, SANDBOX_HEADER,
+  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { type DoorsEnv } from "../src/config";
@@ -567,8 +567,8 @@ describe("the egress door", () => {
     expect(verifyToken(env.ROUTING_MAC_KEY, "sync", box.opened.sync_token))
       .toMatchObject({ owner: box.owner });
     const { network } = box.opened;
-    expect(network.network.rules["egress.tinyassets.io"]).toEqual([{ transform: { headers: {
-      [SANDBOX_HEADER]: box.token, [GENERATION_HEADER]: "1" } } }]);
+    expect([egressTokenOf(network.network), generationOf(network.network)])
+      .toEqual([box.token, 1]);
     expect(JSON.stringify(network)).not.toContain(box.opened.sync_token);
     expect(network.network.denyOut).toEqual(["0.0.0.0/0"]);
     expect(network.network.allowOut).toEqual(["*", "egress.tinyassets.io"]);
