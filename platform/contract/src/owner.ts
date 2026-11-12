@@ -1,7 +1,8 @@
 /**
- * The owner object's doors as the doors Worker calls them (`decisions.md` A1; `list_doors.md`
- * R1): the one interface the doors type the owner's stub by (`DurableObjectStub<OwnerDoors>`),
- * which `OwnerDO` implements (`owner/src/owner-do.ts`), so the doors import no owner source.
+ * The owner object's doors as the doors Worker calls them
+ * (`docs/decisions/untangle-2026-11-wave-1.md` A1; `list_doors.md` R1): the one interface the
+ * doors type the owner's stub by (`DurableObjectStub<OwnerDoors>`), which `OwnerDO` implements
+ * (`owner/src/owner-do.ts`), so the doors import no owner source.
  *
  * It names only the doors the doors call, each a row of the door table (`doors.json`, read by
  * `doors.ts`; the services guard, `contract/guards/services.test.ts`, holds every name here
