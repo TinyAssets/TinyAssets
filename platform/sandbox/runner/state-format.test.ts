@@ -8,7 +8,9 @@
  * against the same frozen record, so it reads what this one writes. The rule itself: a
  * runner reads its format and the ones either side at most, the marker is never lowered,
  * and a rollback across a format change starts. The protocol: the commands the runner
- * takes and the Worker sends, and `state`'s answer, are the recorded ones.
+ * takes and the Worker sends, the exit codes, the paths and the answers the Worker reads
+ * are the recorded ones (the documents the Worker writes and the answers the real runner
+ * gives are held to the same record by the Worker's tests and `runner.test.ts`).
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync }
@@ -19,7 +21,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { COMMAND, INTERNAL_COMMANDS, JOBS, PROTOCOL, RETIRED_IN_1, SPEAKS,
+import { ANSWERS, COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL, INTERNAL_COMMANDS,
+         JOBS, LEASE_FILE, LOADER, PROTOCOL, RETIRED_IN_1, RUNNERS, SPEAKS, STATE_DIR,
          WORKER_COMMANDS } from "./protocol";
 import { checkFormat, dropRunners, type FormatRule, formatStep, READS,
          STATE_FORMAT } from "./state-format";
@@ -32,7 +35,7 @@ import { FORMATS, PROTOCOLS, sample, shapeProblems, type Format } from "./test/s
  */
 const FROZEN = Object.freeze({
   formats: { "1": "a19128179e56fbfc00a07a0aec3a84aa274a692db344bf2b042e56cab0f07263" },
-  protocols: { "1": "aac0a62b9d84e282755fdcccb9b1c0370d9bd1ff6619b5547027cc5aae152ffa" },
+  protocols: { "1": "aa417ab2b758c766a2278a57f2437bb570fa6ece2cd3ced66b20f684eb42c8b2" },
 });
 
 /** Canonical JSON (sorted keys), for an entry's digest. */
@@ -216,6 +219,15 @@ describe("the Worker's protocol with the runner", () => {
       expect(WORKER_COMMANDS.filter((command) =>
         !PROTOCOLS[String(protocol)]!.commands.includes(command))).toEqual([]);
     }
+  });
+
+  it("names the exit codes, the paths and the answers its protocol's record names", () => {
+    const record = PROTOCOLS[String(PROTOCOL)]!;
+    expect(EXIT).toEqual(record.exit);
+    expect({ loader: LOADER, install: INSTALL, runners: RUNNERS, state: STATE_DIR,
+             incoming: incoming("<digest>"), inbox_doc: inboxDoc("<id>"),
+             inbox_code: inboxCode("<id>"), lease: LEASE_FILE }).toEqual(record.paths);
+    expect(ANSWERS).toEqual(record.answers);
   });
 
   it("launches and cancels each kind of job by a command the Worker sends", () => {

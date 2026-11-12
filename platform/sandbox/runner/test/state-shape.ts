@@ -1,13 +1,20 @@
 /**
  * The recorded formats and protocols (`state-format.json`, `protocol.json`) and how a value
- * is held to a recorded shape, for the tests of the rule (`state-format.test.ts`, and
- * `runner.test.ts`, which reads what the real runner wrote). Tests only.
+ * is held to a recorded shape, for the tests of the rule (`state-format.test.ts`;
+ * `runner.test.ts`, which reads what the real runner wrote and answered; and the sandbox
+ * Worker's, which reads the documents it wrote). Tests only.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import formats from "../state-format.json" with { type: "json" };
+import protocols from "../protocol.json" with { type: "json" };
 
-/** Each persisted file's fields and their types (`a|b`), as `state-format.json` records. */
-export type Shape = Readonly<Record<string, string>>;
+/**
+ * A JSON value's fields and their types (`a|b`), as `state-format.json` records each persisted
+ * file and `protocol.json` each document and answer: a field holding an object of its own
+ * fields is that object's shape.
+ */
+export interface Shape {
+  readonly [field: string]: string | Shape;
+}
 
 export interface Format {
   /** The sync mirror's schema, as SQLite keeps it (`sqlite_master`, by name). */
@@ -18,31 +25,40 @@ export interface Format {
   readonly text: Readonly<Record<string, string>>;
 }
 
+/** A protocol's record: everything the Worker and a runner of it say to each other. */
 export interface Protocol {
   readonly commands: readonly string[];
-  readonly state: readonly string[];
+  readonly exit: Readonly<Record<string, number>>;
+  /** Each path both sides name (`<digest>`, `<id>` a name), and the loader's install command. */
+  readonly paths: Readonly<Record<string, string>>;
+  /** The documents the Worker writes: a job's start or sign-in, and the lease file. */
+  readonly documents: Readonly<Record<"start" | "signin" | "lease", Shape>>;
+  /** The answers the Worker reads, by command. */
+  readonly answers: Readonly<Record<string, Shape>>;
 }
 
-export const FORMATS = JSON.parse(readFileSync(join(import.meta.dirname, "..", "state-format.json"),
-                                               "utf8")) as Record<string, Format>;
-export const PROTOCOLS = JSON.parse(readFileSync(join(import.meta.dirname, "..", "protocol.json"),
-                                                 "utf8")) as Record<string, Protocol>;
+export const FORMATS: Readonly<Record<string, Format>> = formats;
+export const PROTOCOLS: Readonly<Record<string, Protocol>> = protocols;
 
 function typeOf(value: unknown): string {
   return value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
 }
 
 /** How `value` differs from `shape`: a field missing, one more, or one of another type. */
-export function shapeProblems(value: unknown, shape: Shape): string[] {
+export function shapeProblems(value: unknown, shape: Shape, at = ""): string[] {
   if (typeOf(value) !== "object") {
-    return [`not an object: ${typeOf(value)}`];
+    return [`${at === "" ? "" : `${at}: `}not an object: ${typeOf(value)}`];
   }
   const fields = value as Record<string, unknown>;
-  return [...new Set([...Object.keys(shape), ...Object.keys(fields)])].sort().flatMap((key) =>
-    !(key in shape) ? [`${key}: not in the record`]
-      : !(key in fields) ? [`${key}: missing`]
-        : shape[key]!.split("|").includes(typeOf(fields[key])) ? []
-          : [`${key}: ${typeOf(fields[key])}, not ${shape[key]}`]);
+  return [...new Set([...Object.keys(shape), ...Object.keys(fields)])].sort().flatMap((key) => {
+    const name = `${at}${key}`;
+    const want = shape[key];
+    return want === undefined ? [`${name}: not in the record`]
+      : !(key in fields) ? [`${name}: missing`]
+        : typeof want !== "string" ? shapeProblems(fields[key], want, `${name}.`)
+          : want.split("|").includes(typeOf(fields[key])) ? []
+            : [`${name}: ${typeOf(fields[key])}, not ${want}`];
+  });
 }
 
 /** A value of `shape`, each field its first type's (`over` set as given). */
@@ -50,5 +66,6 @@ export function sample(shape: Shape, over: Record<string, unknown> = {}): Record
   const first: Record<string, unknown> = { number: 0, string: "s", boolean: false, null: null,
                                            object: {}, array: [] };
   return Object.fromEntries(Object.entries(shape).map(([key, types]) =>
-    [key, key in over ? over[key] : first[types.split("|")[0]!]]));
+    [key, key in over ? over[key] : typeof types === "string" ? first[types.split("|")[0]!]
+      : sample(types)]));
 }

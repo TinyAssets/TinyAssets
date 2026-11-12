@@ -6,15 +6,31 @@
  * consumer in tests, recording each ring.
  *
  * The runner's loader (`/usr/local/bin/ta-runner`, `template/ta-runner`) as the template
- * bakes it: a sandbox holds no runner until one is uploaded under `/var/lib/ta/incoming/` and
- * installed by its SHA-256 (`install <sha>`: absent 24, not its digest 25); a command names
- * its runner's digest (`<sha> <command>`: absent 24, and 25 for a digest the test tampered),
- * and is recorded with that digest beside it. The commands answer as scripted: a sign-in
- * check by engine, the runner's state (for `state`, `quiet-wait` and `renew-wait`; `state`
- * with the runner's protocol), `adopt` refused (3) while the state is live, `prepare`
- * dropping every other runner while nothing lives, and every other command 0. An upload can
- * be refused (a full disk), and a command's reply lost after it ran (`lost`).
+ * bakes it: a sandbox holds no runner until one is uploaded to the loader's incoming path and
+ * installed by its SHA-256 (`install <sha>`: absent, or not its digest); a command names its
+ * runner's digest (`<sha> <command>`: absent, or not its digest for one the test tampered),
+ * and is recorded with that digest beside it. Its exit codes, paths and the loader's install
+ * command are the runner protocol's record (`PROTOCOL`, `runner/protocol.json`), which the
+ * test config binds: a single-module fake imports nothing of the runner's. The commands
+ * answer as scripted: a sign-in check by engine, the runner's state (for `state` and
+ * `quiet-wait`; `state` with the runner's protocol), `adopt` refused ("no") while the state
+ * is live, `prepare` dropping every other runner while nothing lives, and every other
+ * command done, answering nothing. An upload can be refused (a full disk), and a command's
+ * reply lost after it ran (`lost`).
  */
+import { env } from "cloudflare:workers";
+
+/** The parts of the runner protocol's record the fake answers by. */
+interface Protocol {
+  readonly exit: { readonly ok: number; readonly usage: number; readonly no: number;
+                   readonly absent: number; readonly mismatch: number };
+  readonly paths: { readonly install: string; readonly incoming: string };
+}
+
+const protocol = (): Protocol => (env as unknown as { PROTOCOL: Protocol }).PROTOCOL;
+/** Where an upload is a runner's bytes for the loader: the record's path less `<digest>`. */
+const incomingDir = (): string => protocol().paths.incoming.replace(/<digest>$/, "");
+
 interface FakeSandbox {
   id: string;
   token: string;
@@ -29,8 +45,6 @@ interface FakeSandbox {
   /** The runners installed in it, by digest. */
   runners: Set<string>;
 }
-
-const INCOMING = "/var/lib/ta/incoming/";
 
 interface Script {
   signin: Record<string, number>;
@@ -132,31 +146,33 @@ async function sha256(bytes: ArrayBuffer): Promise<string> {
 /** The loader: `install <sha>`, or a command by its runner's digest (`argv` without it). */
 function loader(box: FakeSandbox, raw: string[]):
     { code: number; out: string; argv: string[]; runner: string | null } {
+  const { exit, paths } = protocol();
   const [cmd, first, ...rest] = raw;
-  if (first === "install") {
+  if (first === paths.install) {
     const digest = rest[0] ?? "";
-    const path = `${box.id}:${INCOMING}${digest}`;
+    const path = `${box.id}:${incomingDir()}${digest}`;
     const got = fake.incoming.get(path);
     fake.incoming.delete(path);
-    const code = got === undefined ? 24 : got !== digest ? 25 : 0;
-    if (code === 0) {
+    const code = got === undefined ? exit.absent : got !== digest ? exit.mismatch : exit.ok;
+    if (code === exit.ok) {
       box.runners.add(digest);
     }
-    return { code, out: "", argv: [cmd!, "install", digest], runner: null };
+    return { code, out: "", argv: [cmd!, paths.install, digest], runner: null };
   }
   const digest = first ?? "";
   const argv = [cmd!, ...rest];
   if (!/^[0-9a-f]{64}$/.test(digest)) {
-    return { code: 2, out: "", argv, runner: digest };
+    return { code: exit.usage, out: "", argv, runner: digest };
   }
   if (!box.runners.has(digest)) {
-    return { code: 24, out: "", argv, runner: digest };
+    return { code: exit.absent, out: "", argv, runner: digest };
   }
   if (fake.script.tampered === digest) {
-    return { code: 25, out: "", argv, runner: digest };
+    return { code: exit.mismatch, out: "", argv, runner: digest };
   }
   if (rest[0] === "adopt") {
-    return { code: fake.script.state.live > 0 ? 3 : 0, out: "", argv, runner: digest };
+    return { code: fake.script.state.live > 0 ? exit.no : exit.ok, out: "", argv,
+             runner: digest };
   }
   if (rest[0] === "prepare" && fake.script.state.live === 0) {
     box.runners = new Set([digest]);  // the other runners' bytes dropped, nothing living
@@ -165,21 +181,19 @@ function loader(box: FakeSandbox, raw: string[]):
 }
 
 function runner(argv: string[]): { code: number; out: string } {
+  const { exit } = protocol();
   const [, command, arg] = argv;
   if (command === "signin-check") {
-    return { code: fake.script.signin[arg ?? ""] ?? 3, out: "" };
+    return { code: fake.script.signin[arg ?? ""] ?? exit.no, out: "" };
   }
   if (command === "state") {
-    return { code: 0, out: JSON.stringify({ ...fake.script.state,
-                                            protocol: fake.script.protocol }) };
+    return { code: exit.ok, out: JSON.stringify({ ...fake.script.state,
+                                                  protocol: fake.script.protocol }) };
   }
   if (command === "quiet-wait") {
-    return { code: 0, out: JSON.stringify(fake.script.state) };
+    return { code: exit.ok, out: JSON.stringify(fake.script.state) };
   }
-  if (command === "renew-wait") {
-    return { code: 0, out: JSON.stringify({ live: fake.script.state.live }) };
-  }
-  return { code: 0, out: "" };
+  return { code: exit.ok, out: "" };
 }
 
 function connected(box: FakeSandbox, status = 200): Response {
@@ -286,7 +300,7 @@ async function envd(request: Request, url: URL): Promise<Response> {
     if (fake.script.room !== null && bytes.byteLength > fake.script.room) {
       return new Response("no space left on device", { status: 507 });
     }
-    if (path.startsWith(INCOMING)) {
+    if (path.startsWith(incomingDir())) {
       // A runner's bytes: kept as their digest and size, not the bundle itself.
       const digest = await sha256(bytes);
       fake.incoming.set(`${id}:${path}`, digest);
@@ -302,7 +316,7 @@ async function envd(request: Request, url: URL): Promise<Response> {
     const start = JSON.parse(new TextDecoder().decode(bytes.subarray(5, 5 + length))) as {
       process: { cmd: string; args: string[] } };
     const raw = [start.process.cmd, ...start.process.args];
-    const install = raw[1] === "install";
+    const install = raw[1] === protocol().paths.install;
     const command = install ? "install" : raw[2];
     if (command !== undefined && command === fake.script.broken) {
       // The process never starts: nothing of it runs.
@@ -362,6 +376,12 @@ export default {
         const { id } = await request.json() as { id: string };
         fake.sandboxes.get(id)!.state = "paused";
         fake.sandboxes.get(id)!.pauseMode = "full";
+        return Response.json({});
+      }
+      if (url.pathname === "/gone") {
+        // E2B holds the sandbox no more (killed, or expired), unseen by the Worker.
+        const { id } = await request.json() as { id: string };
+        fake.sandboxes.delete(id);
         return Response.json({});
       }
       if (url.pathname === "/stray") {

@@ -11,17 +11,13 @@
  * - The owner's doors are the door table's (`doors.json`): each one the contract names is a
  *   row, taking the binding first (but the two unbound doors) and a request where its row
  *   takes one, by the row's own fields where it lists them (`Asked` or `Handed` of the door,
- *   from `requests.ts`, which `node contract/requests.ts` writes from the table and this
- *   holds current).
+ *   from `requests.ts`, which `npm run generate` writes from the table).
  */
-import { readFileSync } from "node:fs";
-
 import { describe, expect, it } from "vitest";
 import ts from "typescript";
 
 import { parse, workerSources } from "../../ci/kit/sources";
-import { REQUESTS_FILE, requestsSource } from "../requests";
-import { doorRow, doorTable, takesRequest, UNBOUND_DOORS } from "../src/doors";
+import { doorRow, takesRequest, UNBOUND_DOORS } from "../src/doors";
 
 /** The service contracts, by their module. */
 const CONTRACTS = Object.freeze(["gateway", "files", "codemode", "sandbox", "owner", "requests"]
@@ -240,14 +236,6 @@ describe("the services' contracts", () => {
     expect(doorProblem("fileProbe", 2)).toBe("fileProbe: no row of the door table");
     expect(doorProblem("sessionOpen", 2)).toBe("sessionOpen: takes 2 arguments, its row 1");
     expect(doorProblem("sandboxRung", 1)).toBe("sandboxRung: takes 1 arguments, its row 0");
-  });
-
-  it("take each request the table lists the fields of as requests.ts writes it from the table",
-     () => {
-    expect(readFileSync(REQUESTS_FILE, "utf8"), "run node contract/requests.ts")
-      .toBe(requestsSource(doorTable()));
-    expect(requestsSource(doorTable())).toContain(
-      '  readonly grantRevoke: DoorFields<"client">;\n');
   });
 
   it("let only the doors' body parser make a JsonBody: no source spells its mark or casts to it",

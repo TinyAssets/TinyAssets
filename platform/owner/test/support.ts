@@ -407,8 +407,9 @@ const FILLING = Object.freeze({
 /**
  * The owner's rows filled with rows of the owner's own files scope: `FILLING`'s, then empty
  * ones under short names, until a write is refused past the rows' charge
- * (`LIMITS.maxRowsCharge`), so less room is left than any one more row takes. The history
- * passes its own charge on the way. Every filling row is outside the collections a test names.
+ * (`LIMITS.maxRowsCharge`), so less room is left than any one more row takes. Their history
+ * stays short of its own charge (`fillHistory` passes it). Every filling row is outside the
+ * collections a test names.
  */
 export function fillRows(store: Collections, owner: string): void {
   const passes = [
