@@ -94,7 +94,10 @@ export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore =
                         limits: Partial<FileLimits> = {}): Files {
   return new Files(storage, store, () => ({ ...FILE_DEFAULTS,
                                             max_bytes: TIERS.free.storage_bytes, ...limits }),
-                   write, TIERLESS_FULL);
+                   write, TIERLESS_FULL,
+                   // Alone, as these tests make them: no mail to reclaim at the figure, no
+                   // other module told of a change, and no manifest generation to protect.
+                   () => false, () => {}, () => null);
 }
 
 /** The refusal at the storage figure with no tier named, as these files' tests make it. */

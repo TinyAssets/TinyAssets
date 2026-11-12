@@ -314,6 +314,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B2: `owner/src/wakes.ts`'s swallowed doorbell open failure surfaces, rather than settling
     the wake `unknown` (Fact 8; d3 §I).
   - A later S PR: S13's `lease_id` half (d3 §L5).
+  - A later S PR: a slot reserved again (`#lookAt`, `#renew`) deletes its stale owed row
+    first, so a renewal's fresh hold is never given back (d3 §L9).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `ci/budgets.mjs --write` (d3 §I).
   - Lane C's first PR: the tools' own layer row (d2 §G14, d3 §O6).
@@ -322,12 +324,19 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
     (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is four PRs, each green on its own:
+  (d3 §K1, §K2). T1 is five PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
-  - [ ] T1b: the ceilings and defaults: every `limits` parameter and defaulted constructor
-    parameter, `Internals.ledgerLimits` and `codemode`, the archive's tests at production
-    ceilings (`b23_research.md` question 3).
+  - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
+    `Connections` read where they are defined, their tests at production's numbers;
+    `Schedule`'s `passMs` gone and `halted` required; `Files`' `reclaim`, `changed` and
+    `manifested` required; `Connections`' unbound `GATEWAY` case gone.
+  - [ ] T1b2: the rest of the ceilings and defaults: `Grants` (and `scopes`' default),
+    `Registrations`, `Collections` (`DEFAULT_SHARES` deleted, `adopt` and `shares` required),
+    the ledger's (`Internals.ledgerLimits`, `admitted`, `changes`, `adopt` and `wall` required,
+    its decisions as pure functions, the archive's tests at production ceilings,
+    `b23_research.md` question 3), and code mode's (`timeoutMs`, and its unbound `CODEMODE_VM`
+    case with its test).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     `ERASURES` required with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the

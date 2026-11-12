@@ -142,17 +142,15 @@ export class Schedule extends LifecycleCapability {
   readonly #clock: () => number;
   /** The object's write gate, which every job set goes through. */
   readonly #write: Write;
-  readonly #passMs: number;
   /** Whether every lane is halted: the owner is being erased (`erasure.ts`). A read. */
   readonly #halted: () => boolean;
 
   constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number, write: Write,
-              passMs: number = LANE_PASS_S * 1000, halted: () => boolean = () => false) {
+              halted: () => boolean) {
     super(SCHEDULE);
     this.#lanes = new Map(Object.entries(lanes));
     this.#clock = clock;
     this.#write = write;
-    this.#passMs = passMs;
     this.#halted = halted;
   }
 
@@ -209,7 +207,7 @@ export class Schedule extends LifecycleCapability {
     if (lane === undefined || job.id !== laneJob(job.fn) || this.#halted()) {
       return undefined;  // no lane of this code's, or none runs: done
     }
-    const answer = await lane.run(this.#clock(), Date.now() + this.#passMs);
+    const answer = await lane.run(this.#clock(), Date.now() + LANE_PASS_S * 1000);
     await this.#set(job.fn, heldUntil(answer));
     return undefined;  // superseded by the set above
   }

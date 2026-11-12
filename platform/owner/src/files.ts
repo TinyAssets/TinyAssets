@@ -586,8 +586,8 @@ export class Files {
   #pastFigure = false;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write, full: Full, reclaim: Reclaim = () => false,
-              changed: Changed = () => {}, manifested: () => number | null = () => null) {
+              write: Write, full: Full, reclaim: Reclaim, changed: Changed,
+              manifested: () => number | null) {
     this.#storage = storage;
     this.#manifested = manifested;
     this.#store = store;

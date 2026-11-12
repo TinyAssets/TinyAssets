@@ -96,7 +96,7 @@ export const DEFAULT_POLICY_DIGEST =
  * outside client holds at most a quarter of the pending ones. Each
  * receipt bucket keeps its newest 5,000 rows (about a megabyte) and lists its last 50.
  */
-export interface PolicyLimits {
+interface PolicyLimits {
   readonly maxDocument: number;
   readonly maxChange: number;
   readonly proposalTtlS: number;
@@ -348,8 +348,7 @@ export function whole(value: unknown): value is number {
 }
 
 /** `_validate`: the whole document, or a refusal naming its first fault. */
-export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
-    PolicyDocument {
+export function validate(document: unknown): PolicyDocument {
   if (!plain(document) || !keys(document, ["entries", "spend", "egress",
     ...(["codemode", "files", "models", "tools"] as const).filter((table) =>
       Object.hasOwn(document, table))])) {
@@ -422,7 +421,7 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
   if (!plain(ceilings) || Object.values(ceilings).some((value) => !whole(value))) {
     throw new Refusal("invalid", "invalid source ceiling");
   }
-  if (codePoints(canonical(document)) > limits.maxDocument) {
+  if (codePoints(canonical(document)) > POLICY_LIMITS.maxDocument) {
     throw new Refusal("refused", "the policy document is too large");
   }
   return document as unknown as PolicyDocument;
