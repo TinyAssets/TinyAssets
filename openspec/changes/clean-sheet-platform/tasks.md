@@ -318,6 +318,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B2: `owner/src/wakes.ts`'s swallowed doorbell open failure surfaces, rather than settling
     the wake `unknown` (Fact 8; d3 §I).
   - A later S PR: S13's `lease_id` half (d3 §L5).
+  - A later S PR: a slot reserved again (`#lookAt`, `#renew`) deletes its stale owed row
+    first, so a renewal's fresh hold is never given back (d3 §L9).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `ci/budgets.mjs --write` (d3 §I).
   - Lane C's first PR: the tools' own layer row (d2 §G14, d3 §O6).
