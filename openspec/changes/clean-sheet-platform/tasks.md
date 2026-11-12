@@ -4,11 +4,13 @@ where something cites it: the code, the specs, the ADRs and the PRs hold how it 
 text before this cut, with every slice's as-built record and review rounds, is
 `git show de098f01a:openspec/changes/clean-sheet-platform/tasks.md`.
 
-Pointers: `d2 B<n>` is the untangle's wave-2 fix B<n> and `d2 §X` a section of that log; `d3 §X`
-is a section of the untangle's log of the whole remaining build (2026-11-11). Both logs move into
-`docs/decisions/untangle-2026-11.md` with d2 B26. `list3 P<n>` is a problem in that build's
-`plan` review. §10 is the order of the work; §9 is the cutover window; the founder's open
-questions are at the end.
+Pointers: `d2 B<n>` is fix B<n> of the untangle's wave-2 log,
+`docs/decisions/untangle-2026-11-wave-2.md`, and `d2 §X` a section of it; `d3 §X` is a section
+of the untangle's log of the whole remaining build (2026-11-11),
+`docs/decisions/untangle-2026-11-remaining-build.md`, and `list3 P<n>` a problem in that build's
+`plan` review. An id with a colon, such as `d2:N56`, is a problem in a listing those logs cite.
+§10 is the order of the work; §9 is the cutover window; the founder's open questions are at the
+end.
 
 ## 1. Verify the unverified facts
 
@@ -248,7 +250,7 @@ The window is d3 §D steps 10 to 15, in this order. The deletion list below beco
 The u3 PRs, C1 and P1 have landed (#5493 to #5499), with E1, E3, S0, S1 and T0.
 
 - [x] B25, the code mode Worker's rename (d2 B25), with d3 §O2's fixes (#5506).
-- [ ] T0b, the kit's binding pass-through (d3 §M6), merged after B25 as d3 §O3 says.
+- [x] T0b, the kit's binding pass-through and its guard against host secrets (d3 §M6, #5510).
 - [x] E2, re-applying a live lease's network (d3 §M2, #5509), with d3 §O1's fixes,
   which take in `SandboxStart.tokens.egress_token` (d3 §M3) and `owner/src/egress.ts`'s stale
   "5-minute" and "until the sandbox slice applies it again", with the specs' copies (d3 §I, §M).
@@ -271,7 +273,7 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
 P3 and P5 landed in #5504: no ritual body lines, no 8-file cap, the tamper check reads the
 platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §B7).
 
-- [ ] `.agents/activity.log` deleted, which #5504's own check couldn't let it do.
+- [x] `.agents/activity.log` deleted (#5505).
 - [ ] The manifest's inventory: every path in the repo that goes, is edited or moves, and every
   live object (d3 §A10).
 
@@ -285,6 +287,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B8: the compatibility date is a kit check that the six configs agree (d3 §A4).
   - B9: `okf-watch apply` runs `npm run generate`, and its workflow adds `platform/plugins`
     (d3 §O5).
+  - B11: a Worker's existence from `Cloudflare.workers`, never from its secret listing: the
+    `workers` and `doors deployed` steps, which read a secret listing for it
+    (`deploy/deploy.ts:1231-1236`, `:1394-1396`) (d3 §O2).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H). The `apply` job runs
     the plan it was approved on: the plan passes as an artifact, and `apply` stops on any
@@ -300,8 +305,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `resealDoorbell`, so an idle doorbell's blob leaves its kid, and the sweep's doorbell half
     (d3 §I).
   - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10). Its
-    vocabulary rule replaces the doors' check that the agent's definition says nothing of the
-    import (`doors/guards/tools.test.ts`, B20).
+    platform Workers are entries in the deploy kit's `retired` list (`deploy/platform.json`),
+    the one remover of a platform Worker (d3 §O2). Its vocabulary rule replaces the doors'
+    check that the agent's definition says nothing of the import
+    (`doors/guards/tools.test.ts`, B20).
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
@@ -317,12 +324,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
-    (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer; `sandbox/vitest.config.ts`'s
-    config literals, read from `wrangler.jsonc`.
+    (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
   (d3 §K1, §K2). T1 also deletes `SandboxLeases` whole (d3 §O4) and takes T0's nits (d3 §M6).
-  T2, or a small kit PR before it, builds every `main` in the kit with test secrets, and a guard
-  fails any suite holding a value from `process.env` (d3 §N, T0b's review).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and
@@ -333,8 +337,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   seen green on a real PR, then `review` required, then the receipt half deleted (d3 §F4);
   P6–P9 after the lanes.
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5).
-- [ ] `decisions2.md`'s problem index, with decisions for the swallowed errors (`d2:N56`), the
-  retries (`d2:N57`) and `s2:N51` (d3 §A11).
+- [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
+  (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
 
@@ -374,12 +378,18 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 7. The dark redeploy of the untangled build
 
+- [x] The migration locks pin E2's owner 5 and SandboxControl 2 first: the kit's `locks` step
+  refuses every mode until they do (`deploy/checklist.md` § The migration locks; #5511).
 - [ ] `dark` with the untangled build, the sandbox Worker included (the first `dark` stopped
   there), its ring queue and control namespace. Checked live at it:
   - the deploy workflow's `pair` job, live;
   - E1's: a lease opened after the redeploy has its network marked applied, and its sandbox's
     model calls are admitted (d3 §K5, §M1); E3's: that lease's file holds no egress token
     (d3 §M3);
+  - E2's (d3 §M2, §O1): with a run live on an API key, an allowlist egress policy written; the
+    run's next model call through `egress.tinyassets.io` is answered, not refused 409; the
+    sandbox's network, read from E2B, carries generation 2 and the same `x-ta-sandbox`; a host
+    the policy dropped is unreachable from the sandbox;
   - the files Worker's create-once put on the live bucket (`onlyIf: { etagDoesNotMatch: "*" }`,
     and which R2 checks first when the bytes miss the `sha256`; `files/test/chunks.test.ts`);
   - R5's (d3 §N9): Claude's `defer` with several tool calls in one turn; managed settings

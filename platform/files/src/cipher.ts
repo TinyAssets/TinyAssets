@@ -1,5 +1,5 @@
 /**
- * How the owner's data key encrypts a stored object: R2's SSE-C (`ssec`, the default), or,
+ * How the owner's data key encrypts a stored object: R2's SSE-C (`ssec`, as configured), or,
  * should slice L's live probe find SSE-C does not combine with the create-once put or R2's
  * `sha256` check, AES-256-GCM in this Worker (`aes-gcm`). Both are built and tested, so the
  * switch is the config's `FILES_CIPHER` alone; objects are never mixed (it is chosen before
@@ -19,9 +19,9 @@ export type Cipher = "ssec" | "aes-gcm";
 const NONCE_BYTES = 12;
 const TAG_BITS = 128;
 
-/** The configured cipher; anything else fails loudly. */
+/** The configured cipher; anything else, none included, fails loudly. */
 export function cipherOf(value: unknown): Cipher {
-  if (value === undefined || value === "ssec") {
+  if (value === "ssec") {
     return "ssec";
   }
   if (value === "aes-gcm") {

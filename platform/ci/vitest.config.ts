@@ -9,7 +9,7 @@ import { keyring } from "./fixtures";
 import { control, gate, methodsOf } from "./gate";
 import { PLATFORM } from "./paths";
 import { project } from "./project";
-import { auxiliary, once, workerConfig } from "./workers";
+import { auxiliary, once, pool, workerConfig } from "./workers";
 
 const OWNER = join(PLATFORM, "owner");
 const FILES = join(PLATFORM, "files");
@@ -29,11 +29,13 @@ export default defineConfig({
       // of each (`gate.ts`). OWNER is the owner gate, bound by `scriptName` as the doors'
       // config binds the owner, and REAL_OWNER the owner Worker itself; FILES is the files
       // gate, which the owner's own FILES binding reaches too, and REAL_FILES the files
-      // Worker itself. The gates' `Control` entrypoints are the test Worker's alone. The
-      // owner's other services are left unbound: these tests reach none of them.
+      // Worker itself. The gates' `Control` entrypoints are the test Worker's alone. Every
+      // other binding is the owner's config's own (`auxiliary`), so its gateway, codemode and
+      // sandbox Workers run beside it, each with the secret its config requires; these tests
+      // call none of them.
       project("ci", "workerd", {
         plugins: [
-          cloudflareTest(once(() => ({
+          cloudflareTest(once(() => pool({
             miniflare: {
               compatibilityDate: workerConfig(OWNER).compatibility_date,
               compatibilityFlags: ["nodejs_compat"],
@@ -49,10 +51,14 @@ export default defineConfig({
               workers: [
                 auxiliary(OWNER, {
                   bindings: { ROUTING_MAC_KEY: randomBytes(32).toString("base64url") },
-                  kvNamespaces: ["CONTROL"],
                   serviceBindings: { FILES: "files-gate" },
                 }),
                 auxiliary(FILES, { bindings: { FILES_KEYRING: keyring() } }),
+                auxiliary(join(PLATFORM, "gateway"), {
+                  bindings: { GATEWAY_KEYRING: keyring() } }),
+                auxiliary(join(PLATFORM, "codemode"), {}),
+                auxiliary(join(PLATFORM, "sandbox"), {
+                  bindings: { E2B_API_KEY: "e2b_unused_in_kit_tests" } }),
                 gate("files-gate", methodsOf(join(PLATFORM, "contract", "src", "files.ts"),
                                              "ChunkStore"), { worker: FILES }),
                 gate("owner-gate", DOORS, { worker: OWNER, className: "OwnerDO" }),
