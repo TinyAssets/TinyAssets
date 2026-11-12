@@ -1,0 +1,142 @@
+---
+name: untangle
+description: Find and remove hidden links, needless links, surplus and special cases, so a change lands in one place and nothing breaks unnoticed. Use when building, refactoring or reviewing any change in this repo, and when untangling a whole area.
+---
+
+# untangle
+
+Untangle the code a change touches, or a whole area, and finish the job.
+
+**Why:** agents write better code in a well-structured codebase, spend fewer
+tokens searching, break less without noticing, and find root causes faster.
+
+## How this project uses it
+
+- **Every builder** runs steps 2 to 5 on its own change: step 2 on the code it
+  touches and the code that calls it, before building; steps 3 and 4 while
+  building; step 5 on its own diff before pushing. Fix the problems inside the
+  change's scope, and never add one: no shim, alias, copy of a value,
+  one-caller parameter, test-only hook, optional binding or special case.
+- **The PR body** carries an **Untangle check** section: what you found, what
+  you fixed, what you left and why, and that the diff adds no new problem of
+  any of the four kinds.
+- **Every reviewer** runs step 5 on the PR and checks each claim in the
+  Untangle check section; a missing section is a finding. A new problem the PR
+  adds is blocking, and so is one it leaves in its own scope with no stated
+  reason.
+
+## 1. Scope
+
+Comments and Tests are both in scope, every time, and done last (step 4).
+
+## 2. List every problem
+
+Don't change anything yet.
+
+Go through the code asking one thing: **should these pieces change together?**
+Write down every place the code gets the answer wrong, as in the decision log
+example below. There are only three ways to get it wrong.
+
+**Hidden links:** pieces that must change together, where the code doesn't show it.
+
+- Copies of logic or values: change one and the others must change too, but nothing says so.
+- A module that reads a global or file set by another module: change that module and this one breaks, but nothing shows it (self-contained code).
+- A feature split across folders by layer, or related code in different folders: one change needs all of them, but the layout hides that (domain-driven code, colocation).
+- A call order or convention callers just have to know: change it and callers break, but nothing warns them (explicit over implicit).
+
+**Needless links:** pieces tied together that change for different reasons.
+
+- Callers that depend on internals: the internals change for their own reasons, and the callers break anyway (encapsulation).
+- Stable code that imports something more volatile: the stable code has to change whenever the volatile code does (dependency direction).
+- A general function with a parameter only one workflow understands: the function has to change whenever that workflow does (caller vocabulary).
+- A shallow module: its interface changes whenever its internals do, so its callers change with it (deep modules).
+
+**Surplus:** pieces with no reason of their own to change.
+
+- Wrappers: they only change when the thing they wrap does (pass-through wrappers).
+- Extension points and config for things that never vary: nothing will ever change them (speculative generality).
+- Dead code: nothing uses it, so nothing will ever need it to change.
+
+Also write down every **special case**: code that exists for one situation
+instead of following from how the system works. Each one is a requirement the
+design never accounted for, so use them to work out what the system needs to be.
+
+- An `if` for one value
+- A parameter for a specific caller
+- A swallowed exception
+- A retry or sleep
+- A disabled test
+
+## 3. Redesign from first principles
+
+Work out the fixes as if the system had known today's requirements from the
+start. Look for the one fix behind several problems, which often looks nothing
+like them. Don't fix special cases one by one.
+
+Ask the same thing of every fix, even one that looks better in the code: pieces
+that change together end up together, pieces that don't aren't tied, and
+everything depends on what changes less.
+
+Write each fix above the problems it solves, as in the decision log example.
+
+## 4. Fix everything on the list
+
+Remove the special cases the redesign makes unnecessary, and keep the ones the
+system still needs. Don't go looking for bugs separately. A structural fix may
+fix some along the way, which is fine.
+
+Comments:
+
+- Comments that restate the implementation, like `// sort first so the binary search works`, only change when it does. Remove them, even if they're phrased as a why.
+- Comments about something outside the code, like `// the proxy drops websockets, so we poll`, change when that does, and the code can't show it. Keep them.
+- Comments that explain a workaround in the codebase, like `// wait 100ms because the cache isn't ready yet`, only change when the problem behind the workaround does. They go when the redesign removes that problem.
+
+Tests, last, because they are your regression safety net. A test should fail on
+a regression, and only then:
+
+- Tests that repeat the implementation check the same interpretation against itself. Remove them.
+- Tests tied to internals break when the code changes but behavior doesn't. Rewrite them to depend on behavior, which changes less.
+- Tests that can't fail pass whatever the code does. Remove them.
+
+## 5. Check, and repeat until done
+
+Have subagents search for special cases, hidden links, needless links and
+surplus. **Do not stop until there is nothing worth fixing left.**
+
+You're done when:
+
+- **As few special cases are left as possible.** How many remain is the best measure of how close you are.
+- A typical change lands in one place.
+- Every import is reasonable, and nothing imports anything more volatile than itself.
+- Subagents have no issues left that are worth fixing.
+- Intended behavior is the same as when you started, apart from bugs the refactor fixed. Test this at the end.
+
+**Tips:** script away function bodies so the whole area fits in context;
+summarize parts with subagents; script a dependency graph and rerun it as you
+go; start where leverage is highest; keep a decision log; use Git history as
+evidence of how often pieces change and what changes together.
+
+## Decision log example
+
+The list of problems:
+
+```md
+- `ui/LogoutDialog.tsx:30` waits 100ms after closing and hopes the message input can take focus by then.
+- `ui/Toolbar.tsx:40` and `ui/Menu.tsx:22` call the same actions, each with its own check for when they're disabled.
+- `checkout/submit.ts:9` depends directly on `payments/stripe.ts`.
+- `ui/SettingsDialog.tsx:61` sets a global `skipRefocus` flag to stop the logout dialog it opens from sending focus to the message input.
+- `refunds/refund.ts:22` wraps every Stripe call in `if (order.provider === "paypal")`.
+```
+
+Then with the fixes:
+
+```md
+- Make the general `Dialog` give focus back to whatever had it before it opened, so the wait and the flag can both go.
+  - `ui/LogoutDialog.tsx:30` waits 100ms after closing and hopes the message input can take focus by then.
+  - `ui/SettingsDialog.tsx:61` sets a global `skipRefocus` flag to stop the logout dialog it opens from sending focus to the message input.
+- Define a `PaymentProvider` interface that Stripe and PayPal both implement, so checkout and refunds no longer know which one they're using.
+  - `checkout/submit.ts:9` depends directly on `payments/stripe.ts`.
+  - `refunds/refund.ts:22` wraps every Stripe call in `if (order.provider === "paypal")`.
+- Make every user action a command with a name, a handler and a disabled check, so the toolbar and menu run from one list.
+  - `ui/Toolbar.tsx:40` and `ui/Menu.tsx:22` call the same actions, each with its own check for when they're disabled.
+```

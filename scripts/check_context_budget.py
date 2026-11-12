@@ -126,7 +126,7 @@ AGGREGATES: tuple[Aggregate, ...] = (
     Aggregate("docs/reference/*.md", "docs/reference/*.md", 5299,
               exclude=("environment-variables.md", "workos-authkit-integration.md"),
               note="Procedure docs. A new gate here displaces an old one."),
-    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 23884,
+    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 31721,
               note="Skills are rulebook too -- a rule moved into a skill is still a rule."),
     Aggregate("docs/reviews/*", "docs/reviews/*", 0,
               note="Retired reviews cannot grow back outside the document homes."),

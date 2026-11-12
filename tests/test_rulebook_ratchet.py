@@ -60,6 +60,10 @@ RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md", "docs/reviews/*
 # down by at least as much — while lowering any pin stays free.
 POST_CUT_TOTAL = 4403         # sum of the per-file pins
 POST_CUT_AGGREGATE_TOTAL = 58471   # sum of the directory pins after review prune
+# 2026-11-12, the founder: the skills pin rose 23884 -> 31721 for the untangle
+# skill (7720 B) and its line in peer-agents' dispatch block (123 B, 6 B of it in
+# the old headroom). The #5418 cut (skills 51730 -> 23884) displaced it, so this
+# cap is unchanged.
 
 
 
