@@ -15,7 +15,6 @@ import { describe, expect, it } from "vitest";
 import { readWrangler, wranglerKeys } from "../workers.ts";
 import { PLATFORM } from "../paths.ts";
 import { type Config, configFiles, platformConfigs } from "./sources.ts";
-import { envProblems } from "./types.ts";
 
 /** The flag that keeps a Worker's own namespaces out of its `ctx.exports`. */
 export const NO_EXPORTS = "disable_ctx_exports";
@@ -49,11 +48,6 @@ export interface ConfigRules {
   readonly exact?: Readonly<Record<string, unknown>>;
   /** What the Worker checks against the platform's other configs. */
   readonly across?: (config: Config, platform: ReadonlyMap<string, Config>) => string[];
-  /**
-   * Its env interfaces, `<file from its folder>#<interface>`: together their own members
-   * name exactly the bindings its config makes (`types.ts`).
-   */
-  readonly env: readonly string[];
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -181,16 +175,6 @@ export function configProblems(config: Config, rules: ConfigRules,
   return problems;
 }
 
-/**
- * The test that `worker`'s env interfaces (`env`) name exactly the bindings its committed
- * binding types do (`npm run generate` writes those from its config).
- */
-export function bindingTypesTest(worker: string, env: readonly string[]): void {
-  it("has its env naming each binding its config makes", () => {
-    expect(envProblems(worker, env)).toEqual([]);
-  });
-}
-
 /** `config` with `patch` laid over it, a key the patch sets `undefined` removed. */
 export function patched(config: Config, patch: Config): Config {
   const probe: Config = { ...config, ...patch };
@@ -246,7 +230,6 @@ export function configTests(rules: ConfigRules, tests: ConfigTests): Config {
       expect(configFiles(dir)).toEqual(["wrangler.jsonc"]);
     });
 
-    bindingTypesTest(rules.worker, rules.env);
   });
   return config;
 }

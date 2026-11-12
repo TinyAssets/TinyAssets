@@ -14,7 +14,6 @@ import type { ConfigRules } from "../../ci/kit/config";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "files",
-  env: Object.freeze(["src/index.ts#FilesEnv"]),
   name: "tinyassets-files",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",

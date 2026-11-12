@@ -14,7 +14,8 @@ import { createExecutionContext, env, runInDurableObject } from "cloudflare:test
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OwnerDO } from "../../owner/src/owner-do";
-import { APP_BODY_MAX, CONNECT_CALLBACK, CONNECTED_PAGE, type DoorsEnv, now } from "../src/config";
+import { APP_BODY_MAX, CONNECT_CALLBACK, CONNECTED_PAGE, now } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { serve } from "../src/doors";
 import { connectCookie } from "../src/session";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";

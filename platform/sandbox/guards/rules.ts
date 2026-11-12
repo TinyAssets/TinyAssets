@@ -13,8 +13,6 @@ import { imports, type Owed } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "sandbox",
-  env: Object.freeze(["src/index.ts#Env", "src/control.ts#SandboxEnv",
-                      "src/slots.ts#SlotsEnv"]),
   name: "tinyassets-sandbox",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "build", "compatibility_date", "compatibility_flags",

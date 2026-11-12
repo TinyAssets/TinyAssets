@@ -9,7 +9,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "../src/instructions";
-import type { DoorsEnv } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import {
   call, connect, doorsEnv, OPEN, registerClient, setControl, sqlIn, type Tokens, url,
   answerOf,

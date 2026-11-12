@@ -5,14 +5,17 @@
  * script_name in production) is bound to the real object in one script
  * (vitest.config.ts), which binds its SANDBOX to the owner's fake sandbox Worker.
  */
-import type { DoorsEnv } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { serve } from "../src/doors";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
-import { type OwnerEnv, OwnerDO as RealOwnerDO } from "../../owner/src/owner-do";
+import { OwnerDO as RealOwnerDO } from "../../owner/src/owner-do";
 import type { Refusal } from "../../contract/src/refusal";
 import { RecordingErasures } from "../../owner/test/erasure-fake";
+
+/** The owner object's env, as its class takes it. */
+type OwnerEnv = ConstructorParameters<typeof RealOwnerDO>[1];
 
 /** The doors a test may have refused once, as the object's own. */
 type Refusable = "outsideAgents" | "toolProfile" | "fileUploadTarget" | "erasureOutside"

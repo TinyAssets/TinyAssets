@@ -57,8 +57,9 @@ import { type GatewayCode, isGatewayCode, REFUSALS, refusalOf } from "../../cont
 import type { Bound } from "./binder";
 import { navigation } from "./authorize";
 import {
-  CONNECT_CALLBACK, CONNECT_CALLBACK_PATH, CONNECTED_PAGE, type DoorsEnv, now, PUBLIC_ORIGIN,
+  CONNECT_CALLBACK, CONNECT_CALLBACK_PATH, CONNECTED_PAGE, now, PUBLIC_ORIGIN,
 } from "./config";
+import type { DoorsEnv } from "./env";
 import { clearedConnectCookie, connectBound, connectCookie } from "./session";
 import { sealedSource } from "../../sources/src/check";
 import type { ConnectMethod, OAuthSpec, SourceRecord, Sources } from "../../sources/src/schema";

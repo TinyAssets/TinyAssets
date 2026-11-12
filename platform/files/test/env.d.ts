@@ -1,7 +1,4 @@
-// The files Worker's bucket and cipher, as its wrangler.jsonc declares them.
+// The files Worker's bucket and cipher, as its generated env types them (`src/env.ts`).
 declare namespace Cloudflare {
-  interface Env {
-    BLOBS: R2Bucket;
-    FILES_CIPHER: string;
-  }
+  interface Env extends Pick<import("../src/env").FilesEnv, "BLOBS" | "FILES_CIPHER"> {}
 }

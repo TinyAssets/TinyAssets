@@ -1,0 +1,44 @@
+{
+  "about": "How one Worker's binding to another is typed: each Worker's entrypoint classes and the Durable Object classes other Workers bind, by the Worker's folder, each with its source and the contract interface it implements (in contract/src/<folder>.ts, with args when the interface is generic), and default naming the class a binding with no entrypoint reaches; and each queue's message type (contract/src/<module>.ts#<type>). npm run generate (ci/kit/types.ts) types every service, Durable Object and queue producer binding from this, and the services guard (contract/guards/services.test.ts) holds each class to its contract.",
+  "workers": {
+    "codemode": {
+      "default": "Codemode",
+      "classes": {
+        "Codemode": { "source": "src/index.ts", "contract": "CodemodeWorker",
+                      "args": ["@earendil-works/pi-codemode/portable#CodemodeRemoteRequest",
+                               "@earendil-works/pi-codemode/portable#CodemodeRemoteExchange"] }
+      }
+    },
+    "files": {
+      "default": "FilesService",
+      "classes": {
+        "FilesService": { "source": "src/index.ts", "contract": "ChunkStore" },
+        "FilesUpload": { "source": "src/index.ts", "contract": "ChunkUpload" }
+      }
+    },
+    "gateway": {
+      "default": "Gateway",
+      "classes": {
+        "Gateway": { "source": "src/index.ts", "contract": "GatewayService" },
+        "ConnectGateway": { "source": "src/index.ts", "contract": "ConnectService" },
+        "EgressGateway": { "source": "src/index.ts", "contract": "EgressService" }
+      }
+    },
+    "owner": {
+      "classes": {
+        "OwnerDO": { "source": "src/owner-do.ts", "contract": "OwnerDoors" }
+      }
+    },
+    "sandbox": {
+      "default": "Sandbox",
+      "classes": {
+        "Sandbox": { "source": "src/index.ts", "contract": "SandboxService" }
+      }
+    }
+  },
+  "queues": {
+    "tinyassets-erasure": "queues#OwnerMessage",
+    "tinyassets-import": "import-message#ImportMessage",
+    "tinyassets-sandbox-ring": "queues#OwnerMessage"
+  }
+}

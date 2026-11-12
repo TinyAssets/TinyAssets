@@ -71,8 +71,6 @@ export const OWNER_QUEUES = Object.freeze({ producers: Object.freeze([
  * sandbox tokens are MAC'd under (`contract/src/routing-mac.ts`), the doors Worker's too.
  */
 export const SECRETS = Object.freeze(["ROUTING_MAC_KEY"]);
-/** The owner Worker's env interface, which names each binding its config makes. */
-export const ENV = Object.freeze(["src/owner-do.ts#OwnerEnv"]);
 /**
  * The keys a bound Worker may set that bind nothing: among them its own build step and its
  * modules' types (`build`, `rules`: the sandbox Worker's runner, built and imported as data).
@@ -152,6 +150,4 @@ export const OWED: readonly Owed[] = Object.freeze([
              ["platform/files/src/datakey.ts", "platform/files/src/keys.ts"]),
   ...imports("B23", "platform/owner/test/runs-authority.test.ts",
              ["platform/doors/src/binder.ts"]),
-  // The hand test env, typing `GATEWAY` from the gateway's class: B9 generates it.
-  ...imports("B9", "platform/owner/test/env.d.ts", ["platform/gateway/src/index.ts"]),
 ]);
