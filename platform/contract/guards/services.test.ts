@@ -1,7 +1,7 @@
 /**
  * The services' RPC contracts (`decisions.md` A1): the gateway's, the files Worker's, the
- * hooks Worker's, the sandbox Worker's and the owner object's doors as the doors call them
- * (`contract/src/{gateway,files,hooks,sandbox,owner}.ts`).
+ * codemode Worker's, the sandbox Worker's and the owner object's doors as the doors call them
+ * (`contract/src/{gateway,files,codemode,sandbox,owner}.ts`).
  *
  * - Each service implements its contract: every entrypoint class names its interface
  *   (`implements`), so `tsc` holds the two to each other.
@@ -24,7 +24,7 @@ import { REQUESTS_FILE, requestsSource } from "../requests";
 import { doorRow, doorTable, takesRequest, UNBOUND_DOORS } from "../src/doors";
 
 /** The service contracts, by their module. */
-const CONTRACTS = Object.freeze(["gateway", "files", "hooks", "sandbox", "owner", "requests"]
+const CONTRACTS = Object.freeze(["gateway", "files", "codemode", "sandbox", "owner", "requests"]
   .map((name) => `contract/src/${name}.ts`));
 
 /** Each service's entrypoint classes, by source, and the contract interface each implements. */
@@ -32,7 +32,7 @@ const IMPLEMENTS: Readonly<Record<string, Readonly<Record<string, string>>>> = O
   "gateway/src/index.ts": { ConnectGateway: "ConnectService", EgressGateway: "EgressService",
                             Gateway: "GatewayService" },
   "files/src/index.ts": { FilesService: "ChunkStore", FilesUpload: "ChunkUpload" },
-  "hooks/src/index.ts": { Hooks: "HooksService" },
+  "codemode/src/index.ts": { Codemode: "CodemodeWorker" },
   "sandbox/src/index.ts": { Sandbox: "SandboxService" },
   "owner/src/owner-do.ts": { OwnerDO: "OwnerDoors" },
 });

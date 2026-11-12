@@ -22,7 +22,7 @@ import { BOUND_KEYS, type Bound, CLASSES, ENV, ENV_KEYS, LIMITS, OWNER_QUEUES, R
 const OWNER = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
 
-const HOOKS_OWN = SERVICES["HOOKS"]!.own! as {
+const CODEMODE_OWN = SERVICES["CODEMODE_VM"]!.own! as {
   durable_objects: { bindings: object[] }; classes: readonly string[] };
 const SANDBOX_OWN = SERVICES["SANDBOX"]!.own! as {
   durable_objects: { bindings: object[] }; classes: readonly string[] };
@@ -293,12 +293,12 @@ describe("owner Worker config", () => {
   bindingTypesTest("owner", ENV);
 
   it("binds only FILES, to a Worker that binds one bucket, GATEWAY, to one that binds " +
-     "nothing, and HOOKS, to one that binds its own class, and turns ctx.exports off", () => {
+     "nothing, and CODEMODE_VM, to one that binds its own class, and turns ctx.exports off", () => {
     expect(configProblems(config, platformConfigs())).toEqual([]);
     expect(config["compatibility_flags"]).toContain(NO_EXPORTS);
     expect(config["services"]).toEqual([{ binding: "FILES", service: "tinyassets-files" },
                                         { binding: "GATEWAY", service: "tinyassets-gateway" },
-                                        { binding: "HOOKS", service: "tinyassets-hooks" },
+                                        { binding: "CODEMODE_VM", service: "tinyassets-codemode" },
                                         { binding: "SANDBOX", service: "tinyassets-sandbox" }]);
     expect(config["durable_objects"]).toBeUndefined();
   });
@@ -418,12 +418,12 @@ describe("owner Worker config", () => {
       .toEqual([`env.prod.limits are not ${JSON.stringify(LIMITS)}`]);
   });
 
-  it("refuses FILES, GATEWAY, HOOKS and SANDBOX when their Workers' configs are not in the " +
+  it("refuses FILES, GATEWAY, CODEMODE_VM and SANDBOX when their Workers' configs are not in the " +
      "platform", () => {
     expect(configProblems(config)).toEqual(
       ["services binds tinyassets-files, whose config is not in the platform",
        "services binds tinyassets-gateway, whose config is not in the platform",
-       "services binds tinyassets-hooks, whose config is not in the platform",
+       "services binds tinyassets-codemode, whose config is not in the platform",
        "services binds tinyassets-sandbox, whose config is not in the platform"]);
   });
 
@@ -468,28 +468,29 @@ describe("owner Worker config", () => {
       .not.toEqual([]);
   });
 
-  const hooks = { name: "tinyassets-hooks", main: "src/index.ts",
+  const codemode = { name: "tinyassets-codemode", main: "src/index.ts",
                   compatibility_flags: ["disable_ctx_exports"], workers_dev: false,
                   limits: { cpu_ms: 300_000 },
-                  durable_objects: HOOKS_OWN.durable_objects,
-                  migrations: [{ tag: "v1", new_sqlite_classes: HOOKS_OWN.classes }] };
-  const hooksBinding = [{ binding: "HOOKS", service: "tinyassets-hooks" }];
+                  durable_objects: CODEMODE_OWN.durable_objects,
+                  migrations: [{ tag: "v1", new_sqlite_classes: CODEMODE_OWN.classes }] };
+  const codemodeBinding = [{ binding: "CODEMODE_VM", service: "tinyassets-codemode" }];
 
-  it("allows HOOKS to the hooks Worker, which binds its own class", () => {
-    expect(configProblems({ ...config, services: hooksBinding },
-                          new Map([["tinyassets-hooks", hooks as Config]]))).toEqual([]);
+  it("allows CODEMODE_VM to the codemode Worker, which binds its own class", () => {
+    expect(configProblems({ ...config, services: codemodeBinding },
+                          new Map([["tinyassets-codemode", codemode as Config]]))).toEqual([]);
   });
 
   it.each([
     ["the owner's class", { durable_objects: { bindings: [
-      ...HOOKS_OWN.durable_objects.bindings,
+      ...CODEMODE_OWN.durable_objects.bindings,
       { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
     ["its sandbox as another Worker's class", { durable_objects: { bindings: [
       { name: "CODEMODE", class_name: "CodemodeSandbox", script_name: "tinyassets-owner" }] } }],
     ["no classes", { durable_objects: undefined }],
     ["a second class made", { migrations: [{ tag: "v1", new_sqlite_classes: [
-      ...HOOKS_OWN.classes, "Other"] }] }],
-    ["classes made without SQLite", { migrations: [{ tag: "v1", new_classes: HOOKS_OWN.classes }] }],
+      ...CODEMODE_OWN.classes, "Other"] }] }],
+    ["classes made without SQLite",
+     { migrations: [{ tag: "v1", new_classes: CODEMODE_OWN.classes }] }],
     ["a Worker Loader", { worker_loaders: [{ binding: "LOADER" }] }],
     ["a service", { services: [{ binding: "OWNER", service: "tinyassets-owner" }] }],
     ["a bucket", { r2_buckets: [{ binding: "B", bucket_name: "tinyassets-files" }] }],
@@ -498,16 +499,16 @@ describe("owner Worker config", () => {
     ["a secret", { secrets: { required: ["GATEWAY_KEYRING"] } }],
     ["other limits", { limits: { cpu_ms: 30_000, subrequests: 10 } }],
     ["a route", { routes: ["tinyassets.io/hooks/*"] }],
-    ["an environment", { env: { prod: { name: "tinyassets-hooks-prod" } } }],
-  ])("refuses HOOKS when the hooks Worker holds %s", (_what, extra) => {
-    const probe: Config = { ...hooks, ...extra };
+    ["an environment", { env: { prod: { name: "tinyassets-codemode-prod" } } }],
+  ])("refuses CODEMODE_VM when the codemode Worker holds %s", (_what, extra) => {
+    const probe: Config = { ...codemode, ...extra };
     for (const [key, value] of Object.entries(extra)) {
       if (value === undefined) {
         delete probe[key];
       }
     }
-    expect(configProblems({ ...config, services: hooksBinding },
-                          new Map([["tinyassets-hooks", probe]]))).not.toEqual([]);
+    expect(configProblems({ ...config, services: codemodeBinding },
+                          new Map([["tinyassets-codemode", probe]]))).not.toEqual([]);
   });
 
   it("refuses FILES bound to another platform Worker, even one that binds nothing", () => {
@@ -629,23 +630,23 @@ describe("owner Worker config", () => {
 describe("the owner's own hold on the Workers it binds, whatever their rules say", () => {
   // Each probe grows a bound Worker's rules (the allowance the owner reads from them) and its
   // config together, so only the owner's own invariant can refuse it.
-  const hooks = readWrangler(join(PLATFORM, "hooks"));
+  const codemode = readWrangler(join(PLATFORM, "codemode"));
   const sandbox = readWrangler(join(PLATFORM, "sandbox"));
   const grown = (bindings: object[], classes: readonly string[]) => ({
-    config: { ...hooks, durable_objects: { bindings },
+    config: { ...codemode, durable_objects: { bindings },
               migrations: [{ tag: "v1", new_sqlite_classes: classes }] } as Config,
-    allowed: { ...SERVICES["HOOKS"]!, own: { durable_objects: { bindings }, classes } },
+    allowed: { ...SERVICES["CODEMODE_VM"]!, own: { durable_objects: { bindings }, classes } },
   });
 
   it.each([
-    ["a namespace of another Worker's class", grown([...HOOKS_OWN.durable_objects.bindings,
+    ["a namespace of another Worker's class", grown([...CODEMODE_OWN.durable_objects.bindings,
       { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }],
-                                                    HOOKS_OWN.classes)],
-    ["a namespace of a class not its own", grown([...HOOKS_OWN.durable_objects.bindings,
-      { name: "OTHER", class_name: "Other" }], HOOKS_OWN.classes)],
-    ["OwnerDO among its own classes", grown([...HOOKS_OWN.durable_objects.bindings,
-      { name: "OWNER", class_name: "OwnerDO" }], [...HOOKS_OWN.classes, "OwnerDO"])],
-  ])("refuses HOOKS when the hooks Worker's rules and config both gain %s",
+                                                    CODEMODE_OWN.classes)],
+    ["a namespace of a class not its own", grown([...CODEMODE_OWN.durable_objects.bindings,
+      { name: "OTHER", class_name: "Other" }], CODEMODE_OWN.classes)],
+    ["OwnerDO among its own classes", grown([...CODEMODE_OWN.durable_objects.bindings,
+      { name: "OWNER", class_name: "OwnerDO" }], [...CODEMODE_OWN.classes, "OwnerDO"])],
+  ])("refuses CODEMODE_VM when the codemode Worker's rules and config both gain %s",
      (_what, { config: probe, allowed }) => {
     expect(boundProblems(probe, allowed)).not.toEqual([]);
   });

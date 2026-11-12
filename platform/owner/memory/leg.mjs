@@ -94,7 +94,7 @@ const owner :Workerd.Worker = (
                (name = "FILES", service = (name = "files", entrypoint = "Store")),
                (name = "STORE", service = (name = "files", entrypoint = "Store")),
                (name = "DRIVER", service = "driver"),
-               (name = "GATEWAY", service = "dummy"), (name = "HOOKS", service = "dummy"),
+               (name = "GATEWAY", service = "dummy"), (name = "CODEMODE_VM", service = "dummy"),
                (name = "CONTROL", kvNamespace = "dummy"),
                (name = "ROUTING_MAC_KEY", text = "bGVnLXJvdXRpbmcta2V5LWZvci10aGUtbWVtb3J5LWxlZw") ],
 );

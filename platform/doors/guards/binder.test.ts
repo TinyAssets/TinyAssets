@@ -2,8 +2,8 @@
  * The binder is the only binder (research checklist 1, 6, 17).
  *
  * - `getByName` appears only in `doors/src/binder.ts`, across every Worker's source, but
- *   for the hooks Worker naming its own class's objects (`this.env.CODEMODE`, in
- *   `hooks/src/index.ts` alone: a code mode execution's sandbox, which binds nothing of an
+ *   for the codemode Worker naming its own class's objects (`this.env.CODEMODE`, in
+ *   `codemode/src/index.ts` alone: a code mode execution's sandbox, which binds nothing of an
  *   owner) and the sandbox Worker naming its own classes' objects (`this.env.SANDBOXES` and
  *   `this.env.SLOTS`, in `sandbox/src/index.ts` and `control.ts` alone: one owner's
  *   sandboxes' E2B calls, and the platform's line for one more sandbox, neither of which
@@ -32,9 +32,9 @@ import { parse, reporter, workerSources } from "../../ci/kit/sources";
 const BINDER = "doors/src/binder.ts";
 /** The owner's object, which names no object. */
 const OWNER_DO = "owner/src/owner-do.ts";
-/** The hooks Worker's entry, which names its own class's objects and nothing else. */
-const HOOKS_ENTRY = "hooks/src/index.ts";
-const HOOKS_OWN = new Set(["this.env.CODEMODE"]);
+/** The codemode Worker's entry, which names its own class's objects and nothing else. */
+const CODEMODE_ENTRY = "codemode/src/index.ts";
+const CODEMODE_OWN = new Set(["this.env.CODEMODE"]);
 /** The sandbox Worker's sources that name its own classes' objects, and nothing else. */
 const SANDBOX_SOURCES = new Set(["sandbox/src/index.ts", "sandbox/src/control.ts"]);
 const SANDBOX_OWN = new Set(["this.env.SANDBOXES", "this.env.SLOTS"]);
@@ -66,7 +66,7 @@ export function binderProblems(fileName: string, source: string): string[] {
     const on = name === "getByName" && ts.isPropertyAccessExpression(node.parent)
       && node.parent.name === node ? node.parent.expression.getText(file) : null;
     if (name === "getByName" && fileName !== BINDER
-        && !(fileName === HOOKS_ENTRY && on !== null && HOOKS_OWN.has(on))
+        && !(fileName === CODEMODE_ENTRY && on !== null && CODEMODE_OWN.has(on))
         && !(SANDBOX_SOURCES.has(fileName) && on !== null && SANDBOX_OWN.has(on))) {
       report(node, "names getByName outside the binder");
     }
@@ -146,17 +146,18 @@ describe("binder guard", () => {
     ["doors/src/ring.ts", "export const f = (env: any) => env.IMPORT_STAGING.get('k');"],
     ["doors/src/erase.ts", "export const f = (env: any) => env.IMPORTS.send({});"],
     ["doors/src/import.ts", "export const f = (env: any) => env.FILES.putChunks('n', 'k', []);"],
-    [HOOKS_ENTRY, "export const f = (env: any) => env.OWNER.getByName('bob');"],
-    [HOOKS_ENTRY, "export const f = (env: any) => env.RUNNER.getByName('bob');"],
-    [HOOKS_ENTRY, "class H { env: any; f(n: string) { return this.env.RUNNER.getByName(n); } }"],
-    ["hooks/src/codemode.ts", "export const f = (o: any) => o.env.CODEMODE.getByName('bob');"],
+    [CODEMODE_ENTRY, "export const f = (env: any) => env.OWNER.getByName('bob');"],
+    [CODEMODE_ENTRY, "export const f = (env: any) => env.RUNNER.getByName('bob');"],
+    [CODEMODE_ENTRY, "class H { env: any; f(n: string) { return this.env.RUNNER.getByName(n); } }"],
+    ["codemode/src/codemode.ts", "export const f = (o: any) => o.env.CODEMODE.getByName('bob');"],
   ])("sees, in %s, %s", (fileName, source) => {
     expect(binderProblems(fileName, source)).not.toEqual([]);
   });
 
   it.each([
     ["doors/src/binder.ts", "export const f = (ns: any) => ns.getByName('alice');"],
-    [HOOKS_ENTRY, "class H { env: any; f(n: string) { return this.env.CODEMODE.getByName(n); } }"],
+    [CODEMODE_ENTRY,
+     "class H { env: any; f(n: string) { return this.env.CODEMODE.getByName(n); } }"],
     ["doors/src/binder.ts", "export const b = { owner: 'a', caller: 'a', origin: null };"],
     ["doors/src/session.ts", "export const f = (r: Request) => r.headers.get('Cookie');"],
     ["doors/src/app.ts", "export const h = { 'Set-Cookie': 'x' };"],

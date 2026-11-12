@@ -1,9 +1,9 @@
 /**
- * The hooks Worker's allow-lists (agent research §6.4; pi audit F8; narrowed to code mode by
+ * The codemode Worker's allow-lists (agent research §6.4; pi audit F8; narrowed to code mode by
  * ADR-034 decision 12), checked by the platform's guard kit (`ci/kit/`).
  *
  * Every code mode script runs in this Worker, so it must reach no owner's object, store,
- * ledger or policy, and nothing but the owner Worker's `HOOKS` service binding may reach it.
+ * ledger or policy, and nothing but the owner Worker's `CODEMODE_VM` service binding may reach it.
  */
 import type { ConfigRules } from "../../ci/kit/config";
 import type { ImportRules } from "../../ci/kit/imports";
@@ -20,9 +20,9 @@ import type { Config } from "../../ci/kit/sources";
  * Worker's.
  */
 export const CONFIG: ConfigRules = Object.freeze({
-  worker: "hooks",
-  env: Object.freeze(["src/index.ts#HooksEnv"]),
-  name: "tinyassets-hooks",
+  worker: "codemode",
+  env: Object.freeze(["src/index.ts#CodemodeEnv"]),
+  name: "tinyassets-codemode",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",
                        "workers_dev", "preview_urls", "limits", "durable_objects", "migrations"]),
@@ -39,15 +39,15 @@ export const CONFIG: ConfigRules = Object.freeze({
 
 /**
  * Its source names no binding of the owner's world (`OWNER`, `FILES`, `GATEWAY`, `BLOBS`)
- * or `HOOKS` (it is never bound to itself), nor `storage` (its objects never use their
+ * or `CODEMODE_VM` (it is never bound to itself), nor `storage` (its objects never use their
  * storage, so a script leaves nothing behind), nor `process`, over its whole import closure.
  * What it may import is the layer table's (`ci/kit/layers.ts`).
  */
 export const IMPORTS: ImportRules = Object.freeze({
-  worker: "hooks",
-  called: "the hooks Worker",
+  worker: "codemode",
+  called: "the codemode Worker",
   banned: Object.freeze([{
-    pattern: /^(?:OWNER|FILES|GATEWAY|BLOBS|HOOKS|storage|process|node:process)$/,
+    pattern: /^(?:OWNER|FILES|GATEWAY|BLOBS|CODEMODE_VM|storage|process|node:process)$/,
     says: "names %s",
   }]),
 });

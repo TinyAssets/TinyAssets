@@ -61,6 +61,10 @@
  * - a Worker's first deploy is `wrangler deploy`; later ones upload a version, then deploy it,
  *   which never touches a route; `--migrate` names a Worker with a pending Durable Object
  *   migration to deploy whole;
+ * - a retired Worker (`platform.json`) is deleted, with its Durable Objects, only after every
+ *   Worker is deployed and only when the account's Workers listing holds it, never forced:
+ *   Cloudflare refuses while another Worker still references it. It is the one way the kit
+ *   deletes a Worker;
  * - a route handover moves a pattern another Worker holds in place (`PUT`), adds a missing
  *   one (`POST`), and only then deletes another Worker's narrower pattern, so no path is ever
  *   served by nothing (`handover`).
@@ -96,7 +100,7 @@ import {
 } from "./cloudflare.ts";
 import {
   AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
-  FIRST_PARTY, KEYRINGS, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, ROUTES,
+  FIRST_PARTY, KEYRINGS, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, ROUTES,
   SECRET_INPUTS, SECRETS, SHARED, WORKERS, ZONE,
 } from "./facts.ts";
 
@@ -1245,6 +1249,23 @@ const workers = step("workers", async (run, work) => {
   }
 });
 
+/**
+ * Each retired Worker the account still holds (its Workers listing), deleted with its
+ * Durable Objects once every Worker is deployed, so nothing of this tree binds it.
+ */
+const retired = step("retired", async (run, work) => {
+  const cloudflare = made(work.cloudflare, "Cloudflare");
+  const account = made(work.account, "the account");
+  const held = await cloudflare.workers(account);
+  for (const name of RETIRED.filter((each) => held.includes(each))) {
+    work.plan.push(`delete the retired Worker ${name} and its Durable Objects (no Worker ` +
+                   "of this tree binds it)");
+    if (run.apply) {
+      await cloudflare.deleteWorker(account, name);
+    }
+  }
+});
+
 /** The control record, written closed only when the API answered there is none. */
 const control = step("control", async (run, work) => {
   const ids = made(work.ids, "the namespaces");
@@ -1688,7 +1709,7 @@ const READS: readonly Step[] = [inputs, keyrings, locks, zone, upstream, templat
 const CHECKS: readonly Step[] = [...READS, redirect, authorize];
 /** Storage, then the Workers, then the control record. */
 const STORAGE: readonly Step[] = [namespaces, buckets, queues, listings];
-const DEPLOY: readonly Step[] = [staged, secrets, workers, control, hookLater];
+const DEPLOY: readonly Step[] = [staged, secrets, workers, retired, control, hookLater];
 const DARK: readonly Step[] = [...CHECKS, ...STORAGE, ...DEPLOY, hook(false, ""),
                                reported("\nNothing was changed."), canary("auto"), h2Next];
 

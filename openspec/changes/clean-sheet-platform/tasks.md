@@ -247,7 +247,7 @@ The window is d3 §D steps 10 to 15, in this order. The deletion list below beco
 
 The u3 PRs, C1 and P1 have landed (#5493 to #5499), with E1, E3, S0, S1 and T0.
 
-- [ ] B25, the code mode Worker's rename (d2 B25), with d3 §O2's fixes before it merges.
+- [x] B25, the code mode Worker's rename (d2 B25), with d3 §O2's fixes (#5506).
 - [ ] T0b, the kit's binding pass-through (d3 §M6), merged after B25 as d3 §O3 says.
 - [ ] E2, re-applying a live lease's network (d3 §M2), with d3 §O1's fixes before it merges,
   which take in `SandboxStart.tokens.egress_token` (d3 §M3) and `owner/src/egress.ts`'s stale

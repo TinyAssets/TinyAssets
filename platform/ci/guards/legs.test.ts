@@ -250,7 +250,7 @@ describe("platform-tests and platform-sizes", () => {
     },
     "an extra step after the command": (job) => { job.steps.push({ run: "true" }); },
     "a shallow checkout": (job) => { job.steps[0].with["fetch-depth"] = 1; },
-    "drop hooks leg": drop("hooks"),
+    "drop codemode leg": drop("codemode"),
     "drop runner leg": drop("runner"),
     "drop typecheck leg": drop("typecheck"),
     "drop ci leg": drop("ci"),

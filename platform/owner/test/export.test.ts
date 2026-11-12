@@ -102,7 +102,7 @@ async function policyInSession(o: Owner): Promise<void> {
   const { generation, policy } = await o.stub.policyRead(o.bind());
   const { tools: _tools, ...rest } = policy as typeof policy & { tools?: unknown };
   await o.stub.policyWrite(o.session(), { expected_generation: generation,
-                                          policy: { ...rest, hooks: { codemode: false } } });
+                                          policy: { ...rest, codemode: { on: false } } });
 }
 
 /** A writer at every outside call: `count` small files, a notice changed, one gone, one new. */

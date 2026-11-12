@@ -188,21 +188,21 @@ export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [numb
 
 /**
  * Owner code mode policy (agent research §6.4): whether code mode scripts may run, their
- * VMs in the hooks Worker. On until the owner turns it off: code mode adds no authority
+ * VMs in the codemode Worker. On until the owner turns it off: code mode adds no authority
  * (each call is the tool's own door, admitted again), so the owner's own setting is the
  * one that limits it.
  */
-export const HOOK_DEFAULTS = Object.freeze({ codemode: true });
+export const CODEMODE_DEFAULTS = Object.freeze({ on: true });
 
-/** The document's `hooks` table, as written. */
-export interface HookPolicy {
-  readonly codemode?: boolean;
+/** The document's `codemode` table, as written. */
+export interface CodemodePolicy {
+  readonly on?: boolean;
 }
 
-/** The `hooks` table: `codemode` alone, a boolean. */
-function validHooks(hooks: unknown): boolean {
-  return plain(hooks) && Object.entries(hooks).every(([key, value]) =>
-    key === "codemode" && typeof value === "boolean");
+/** The `codemode` table: `on` alone, a boolean. */
+function validCodemode(codemode: unknown): boolean {
+  return plain(codemode) && Object.entries(codemode).every(([key, value]) =>
+    key === "on" && typeof value === "boolean");
 }
 
 /** The document's `tools` table, as written: the owner's `custom` profile. */
@@ -291,8 +291,8 @@ function validModels(models: unknown): boolean {
 
 /** The document as `validate` leaves it. */
 export interface PolicyDocument {
+  readonly codemode?: CodemodePolicy;
   readonly files?: Partial<FileSettings>;
-  readonly hooks?: HookPolicy;
   readonly models?: ModelPolicy;
   readonly tools?: ToolPolicy;
   readonly entries: PolicyEntry[];
@@ -351,15 +351,15 @@ export function whole(value: unknown): value is number {
 export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
     PolicyDocument {
   if (!plain(document) || !keys(document, ["entries", "spend", "egress",
-    ...(["files", "models", "hooks", "tools"] as const).filter((table) =>
+    ...(["codemode", "files", "models", "tools"] as const).filter((table) =>
       Object.hasOwn(document, table))])) {
     throw new Refusal("invalid", "invalid policy document");
   }
   if (document["models"] !== undefined && !validModels(document["models"])) {
     throw new Refusal("invalid", "invalid models policy");
   }
-  if (document["hooks"] !== undefined && !validHooks(document["hooks"])) {
-    throw new Refusal("invalid", "invalid hooks policy: codemode, a boolean");
+  if (document["codemode"] !== undefined && !validCodemode(document["codemode"])) {
+    throw new Refusal("invalid", "invalid codemode policy: on, a boolean");
   }
   if (document["tools"] !== undefined && !validTools(document["tools"])) {
     throw new Refusal("invalid",

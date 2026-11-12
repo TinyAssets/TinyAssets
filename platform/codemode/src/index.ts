@@ -1,9 +1,9 @@
 /**
- * The hooks Worker (`tinyassets-hooks`; ADR-032 §4, pi audit F8, narrowed to code mode by
+ * The codemode Worker (`tinyassets-codemode`; ADR-032 §4, pi audit F8, narrowed to code mode by
  * ADR-034 decision 12): code mode's VMs, out of the owner's object. Not deployed: no
  * workflow deploys platform/.
  *
- * The owner Worker binds its default entrypoint as `HOOKS`, and nothing else reaches it:
+ * The owner Worker binds its default entrypoint as `CODEMODE_VM`, and nothing else reaches it:
  * no route, no `workers.dev` or preview URL. It binds only the namespace of its own class,
  * so it reaches no owner's object, no store and no other Worker, and holds no owner's
  * ledger or policy (`guards/config.test.ts`).
@@ -19,7 +19,7 @@ import type {
   CodemodeRemoteExchange, CodemodeRemoteRequest,
 } from "@earendil-works/pi-codemode/portable";
 
-import type { HooksService } from "../../contract/src/hooks";
+import type { CodemodeWorker } from "../../contract/src/codemode";
 
 import type { CodemodeSandbox } from "./codemode";
 
@@ -28,7 +28,7 @@ export { CodemodeSandbox } from "./codemode";
 /** The most characters an execution's name takes: the owner's name, a slash and a UUID. */
 const NAME_MAX = 512;
 
-export interface HooksEnv {
+export interface CodemodeEnv {
   readonly CODEMODE: DurableObjectNamespace<CodemodeSandbox>;
 }
 
@@ -36,8 +36,8 @@ function named(value: unknown): value is string {
   return typeof value === "string" && value !== "" && value.length <= NAME_MAX;
 }
 
-export class Hooks extends WorkerEntrypoint<HooksEnv>
-    implements HooksService<CodemodeRemoteRequest, CodemodeRemoteExchange> {
+export default class Codemode extends WorkerEntrypoint<CodemodeEnv>
+    implements CodemodeWorker<CodemodeRemoteRequest, CodemodeRemoteExchange> {
   /**
    * One code mode execution, named by the owner: the VM runs in that sandbox object and
    * every tool call goes back through `exchange`. Resolves once the VM has stopped.
@@ -50,5 +50,3 @@ export class Hooks extends WorkerEntrypoint<HooksEnv>
     await this.env.CODEMODE.getByName(name).execute(request, exchange);
   }
 }
-
-export default Hooks;

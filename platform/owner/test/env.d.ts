@@ -1,6 +1,6 @@
 // The test-only namespaces of the owner object (`namespaces.ts`, each a class of the test
 // Worker, `worker.ts`), the test keyring (the one the gateway Worker run beside the tests
-// holds), and the Worker's own bindings: FILES, GATEWAY, HOOKS and SANDBOX, each to its
+// holds), and the Worker's own bindings: FILES, GATEWAY, CODEMODE_VM and SANDBOX, each to its
 // Worker run beside it, CONTROL, and its one secret, ROUTING_MAC_KEY.
 declare namespace Cloudflare {
   type TestNamespaces = typeof import("./namespaces").NAMESPACES;
@@ -15,7 +15,7 @@ declare namespace Cloudflare {
     CONNECT: import("../../contract/src/gateway").ConnectService;
     FILES: import("../../contract/src/files").ChunkStore;
     GATEWAY: Service<import("../../gateway/src/index").default>;
-    HOOKS: import("../src/codemode").CodemodeService;
+    CODEMODE_VM: import("../src/codemode").CodemodeService;
     CONTROL: KVNamespace;
     TEST_KEYRING: string;
     /** The files Worker's ring, test-only: a test wraps a data key under its older kid. */
