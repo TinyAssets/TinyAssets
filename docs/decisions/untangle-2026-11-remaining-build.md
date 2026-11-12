@@ -316,6 +316,8 @@ Each joins the lane named. None blocks its u3 PR.
 
 Every known-wrong data shape is fixed before the cutover imports real data: a fix is free on a dark platform and a live migration after it. So none is deferred to "live migration later". Each one names its lane PR; R4's §10 step 20 points here.
 
+**Item 3, collection history: the order adopted from `history_keys_research.md`** (the coordinator, 2026-11-12; beside #5524's item 3, the second to land merges them): H1, the history keys (`untangle/h1-history-keys`); then S1, the stream extraction into `owner/src/stream.ts`, after T1b4, receipts and rooms; then H2, the erasures stream; then H3, the history stream. Conversations (item 4) and F2 follow, on S1's module.
+
 
 ## §Q. The questions buried in `tasks.md` (from R4's review, 2026-11-12)
 

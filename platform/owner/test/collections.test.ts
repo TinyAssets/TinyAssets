@@ -8,6 +8,7 @@
  * object's RPC door with a binding.
  */
 import type { WrittenRow } from "../src/collections";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Collections, Conflict, LIMITS, type Row } from "../src/collections";
@@ -19,6 +20,8 @@ import {
 } from "./support";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
+import { migrate } from "../../contract/src/migrate";
+import type { OwnerDO } from "../src/owner-do";
 import type { Origin } from "../../contract/src/binding";
 import { DOT, MUSE, origin, rig, type Rig } from "./ledger-support";
 
@@ -317,20 +320,18 @@ describe("the primitive's history", () => {
   it("is bounded in bytes, oldest first, and a key with no entry left repeats no revision",
      { tags: ["large"] }, async () => {
     const { stub, name: alice } = ownerObject();
-    const space = (state: DurableObjectState) => state.storage.sql.exec<{
-      charge: number; revision_floor: number }>(
-      "SELECT charge, revision_floor FROM collection_space").one();
     const kept = await inFilled(stub, (store, state) => {
+      const sql = state.storage.sql;
       const a = store.write(alice, alice, "board", "a", "aaaa", "", false);
-      store.delete(alice, "board", "a", a.etag);  // its tombstone: revision 2
+      store.delete(alice, "board", "a", a.etag);  // its deletion: revision 2
       store.write(alice, alice, "board", "b", "bbbb", "", false);
-      expect(space(state)).toMatchObject({ revision_floor: 0 });
-      // Entries past the charge: the oldest, a's tombstone, goes first, and its revision
-      // becomes the floor.
-      fillHistory(store, alice, () => space(state).revision_floor > 0);
-      expect(space(state).revision_floor).toBe(2);
-      expect(space(state).charge).toBeLessThanOrEqual(LIMITS.maxHistoryCharge);
-      // Made again, `a` goes on past every revision a prune let go.
+      // Entries past the charge: the oldest change, a's deletion, goes first.
+      fillHistory(store, alice, () => one(
+        sql, "SELECT COUNT(*) AS n FROM collection_erasures WHERE key = 'a'") === 0);
+      expect(one(sql, "SELECT COUNT(*) AS n FROM collection_history WHERE key = 'b'")).toBe(1);
+      expect(one(sql, "SELECT charge AS n FROM collection_space"))
+        .toBeLessThanOrEqual(LIMITS.maxHistoryCharge);
+      // Made again, `a` goes on past every revision an erase gave.
       expect(store.write(alice, alice, "board", "a", "again", "", false).revision).toBe(3);
       return state.storage.sql.exec<{ revision: number; op: string }>(
         "SELECT revision, op FROM collection_history WHERE collection = 'board' AND key = 'a'")
@@ -345,20 +346,21 @@ describe("the primitive's history", () => {
     // history's charge, and the floor keeps their revisions from repeating.
     const { stub, name: alice } = ownerObject();
     await inFilled(stub, (store, state) => {
-      const count = (where: string) => state.storage.sql.exec<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM collection_history WHERE ${where}`).one().n;
+      const count = (table: string, where: string) => state.storage.sql.exec<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).one().n;
       const row = store.write(alice, alice, "board", "k0", "v", "", false);
       store.delete(alice, "board", "k0", row.etag);
       // Entries past the charge: k0's tombstone, the oldest, goes first.
-      fillHistory(store, alice, () => count("collection = 'board' AND key = 'k0'") === 0);
-      const filled = count("collection != 'board'");
+      fillHistory(store, alice, () => count("collection_erasures", "key = 'k0'") === 0);
+      const filled = count("collection_history", "collection != 'board'");
       for (let n = 1; n < 20; n++) {
         const made = store.write(alice, alice, "board", `k${n}`, "v", "", false);
         store.delete(alice, "board", `k${n}`, made.etag);
       }
       // The newer tombstones are kept, each in the history's bytes: older entries went.
-      expect(count("collection = 'board'")).toBe(19);
-      expect(count("collection != 'board'")).toBeLessThan(filled);
+      expect(count("collection_erasures", "collection = 'board'")).toBe(19);
+      expect(count("collection_history", "collection = 'board'")).toBe(0);
+      expect(count("collection_history", "collection != 'board'")).toBeLessThan(filled);
       expect(state.storage.sql.exec<{ charge: number }>("SELECT charge FROM collection_space")
         .one().charge).toBeLessThanOrEqual(LIMITS.maxHistoryCharge);
       // k0's tombstone was the oldest: made again, it goes past the pruned revisions.
@@ -446,7 +448,7 @@ type Usage = Record<string, number>;
  * text.
  */
 function charge(trigger: string, column: string, row: string): string {
-  const sql = MIGRATIONS.flat().find((each) => each.startsWith(`CREATE TRIGGER ${trigger} `));
+  const sql = MIGRATIONS.flat().findLast((each) => each.startsWith(`CREATE TRIGGER ${trigger} `));
   const at = `UPDATE collection_space SET ${column} = ${column} + `;
   const start = sql === undefined ? -1 : sql.indexOf(at);
   if (start < 0) {
@@ -458,6 +460,7 @@ const ROW_CHARGE = (row: string) => charge("collection_rows_added", "rows_charge
 const SEQ_CHARGE = (row: string) => charge("collection_seqs_added", "rows_charge", row);
 const USAGE_CHARGE = (row: string) => charge("collection_usage_added", "rows_charge", row);
 const HISTORY_CHARGE = (row: string) => charge("collection_history_added", "charge", row);
+const ERASURE_CHARGE = (row: string) => charge("collection_erasures_added", "charge", row);
 
 /** One number a query reads. */
 function one(sql: SqlStorage, query: string, ...bindings: SqlStorageValue[]): number {
@@ -480,7 +483,9 @@ function charged(sql: SqlStorage, where: string):
     rows: one(sql, `SELECT COALESCE(SUM(${ROW_CHARGE("r")}), 0) AS n FROM collection_rows r ` +
       `WHERE ${where}`),
     history: one(sql, `SELECT COALESCE(SUM(${HISTORY_CHARGE("h")}), 0) AS n ` +
-      `FROM collection_history h WHERE ${where}`),
+      `FROM collection_history h WHERE ${where}`)
+      + one(sql, `SELECT COALESCE(SUM(${ERASURE_CHARGE("e")}), 0) AS n ` +
+        `FROM collection_erasures e WHERE ${where}`),
   };
 }
 
@@ -505,13 +510,14 @@ function recount(sql: SqlStorage): Usage {
  * once, here. A step leaves each fill row as it is, which this checks by the rows still at
  * or before the fill's last change (any write moves a row's change on). A step lets the
  * fill's history entries go but never changes one (`collection_history_kept`), so the
- * fill's history is the sum of the charges, recounted here, of its entries still kept.
+ * fill's history is the sum of the charges, recounted here, of its entries still kept. The
+ * fill erases nothing, so every deletion is among the steps' collections.
  */
 function recounter(sql: SqlStorage, among: string): () => Usage {
   expect(one(sql, `SELECT COUNT(*) AS n FROM collection_rows WHERE ${among}`)).toBe(0);
   const fill = charged(sql, `NOT ${among}`);
   const entries = new Map(sql.exec<{ id: number; charge: number }>(
-    `SELECT rowid AS id, ${HISTORY_CHARGE("h")} AS charge FROM collection_history h ` +
+    `SELECT change AS id, ${HISTORY_CHARGE("h")} AS charge FROM collection_history h ` +
       `WHERE NOT ${among}`).toArray().map((entry) => [entry.id, entry.charge]));
   const last = one(sql, "SELECT MAX(change) AS n FROM collection_rows");
   const rows = one(sql, "SELECT COUNT(*) AS n FROM collection_rows");
@@ -520,9 +526,9 @@ function recounter(sql: SqlStorage, among: string): () => Usage {
            "the fill's rows are as they were").toBe(rows);
     let history = 0;
     let fills = 0;
-    // By the history's age index, which holds each entry's rowid and no more.
+    // By the keys' index, which holds each entry's key and change and no body.
     for (const { id } of sql.exec<{ id: number }>(
-      "SELECT rowid AS id FROM collection_history ORDER BY at")) {
+      "SELECT change AS id FROM collection_history")) {
       const each = entries.get(id);
       if (each !== undefined) {
         history += each;
@@ -566,7 +572,7 @@ describe("the bounds' counters", () => {
         store.write(owner, owner, "board", `r${n}`, "𝄞".repeat(12), "", false);
       }
       fillHistory(store, owner, () => one(
-        sql, "SELECT revision_floor AS n FROM collection_space") > 0);
+        sql, "SELECT COUNT(*) AS n FROM collection_history WHERE collection = 'board'") < 12);
       fillRows(store, owner);
       store.clear(owner, "board", null);
       expect(counters(sql)).toEqual(recount(sql));
@@ -625,6 +631,82 @@ describe("the bounds' counters", () => {
       expect(() => state.storage.sql.exec("UPDATE collection_history SET body_json = 'x'"))
         .toThrow(/a history entry is never changed/);
     });
+  });
+});
+
+describe("the history keys' migration (untangle H1)", () => {
+  it("keys each entry by its change, moves the deletions, ticks nothing, and leaves every " +
+     "counter and content reference as a recount finds it", async () => {
+    const { stub, name: owner } = ownerObject();
+    const placed = "c".repeat(64);
+    const migrated = await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      // Back to an object of the migrations before it, the owner's tables gone first.
+      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+          "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+          "AND name NOT GLOB 'cf_*'").toArray()) {
+        sql.exec(`DROP TABLE "${name}"`);
+      }
+      migrate(state.storage, MIGRATIONS.slice(0, -1));
+      // As the code before it left them: `a` written three times; `b` deleted (its entries
+      // with it) and made again private; `c` deleted while private; `d`'s body placed.
+      sql.exec("INSERT INTO file_contents (content_id, size, inline, refs) VALUES (?, 5000, " +
+                 "NULL, 0)", placed);
+      const entry = (key: string, revision: number, at: number, change: number | null = null,
+                     op = "write", privateWriter: string | null = null,
+                     content: string | null = null) => sql.exec(
+        "INSERT INTO collection_history (collection, key, revision, op, body_json, at, " +
+          "writer, change, private_writer, body_bytes, content_id, filer) " +
+          "VALUES ('board', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'owner')", key, revision, op,
+        change === null && content === null ? `${key}${revision}` : "", at, owner, change,
+        privateWriter, change !== null ? 0 : content === null ? 2 : 5000, content);
+      const live = (key: string, revision: number, change: number, writer = owner,
+                    content: string | null = null) => sql.exec(
+        "INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
+          "private, body, updated_at, creator, body_bytes, content_id, filer, change) " +
+          "VALUES ('board', ?, ?, ?, 'e', ?, ?, ?, 1, ?, ?, ?, 'owner', ?)", key, revision,
+        change, writer, writer === owner ? 0 : 1, content === null ? `${key}${revision}` : "",
+        writer, content === null ? 2 : 5000, content, change);
+      entry("a", 1, 1);
+      entry("a", 2, 2);
+      entry("a", 3, 3);
+      live("a", 3, 3);
+      entry("b", 2, 5, 5, "delete");
+      entry("b", 3, 6);
+      live("b", 3, 6, "bob");
+      entry("c", 2, 8, 8, "delete", "bob");
+      entry("d", 1, 9, null, "write", null, placed);
+      live("d", 1, 9, owner, placed);
+      sql.exec("UPDATE collection_clock SET change = 9");
+      const kept = () => sql.exec("SELECT (SELECT refs FROM file_contents WHERE content_id = ?) " +
+        "AS refs, (SELECT body_bytes FROM file_space) AS inline, (SELECT change FROM " +
+        "collection_clock) AS clock", placed).one();
+      const before = kept();
+      migrate(state.storage, MIGRATIONS);
+      const space = sql.exec<{ charge: number; revision_floor: number }>(
+        "SELECT charge, revision_floor FROM collection_space").one();
+      return {
+        before, after: kept(), space, recount: recount(sql)["history"],
+        history: sql.exec("SELECT change, key, revision, prev FROM collection_history " +
+                          "ORDER BY change").toArray().map((row) => Object.values(row)),
+        erasures: sql.exec("SELECT change, key, revision, private_writer, prev FROM " +
+                           "collection_erasures ORDER BY change").toArray()
+          .map((row) => Object.values(row)),
+        read: new Collections(...collectionParts(state.storage)).history(owner, "board", "a")
+          .entries.map((each) => [each.change, each.body]),
+      };
+    });
+    // Each live row's newest entry takes its row's change; older ones negative keys in the
+    // order they were written; each names the entry it follows.
+    expect(migrated.history).toEqual([[-2, "a", 1, null], [-1, "a", 2, -2], [3, "a", 3, -1],
+                                      [6, "b", 3, null], [9, "d", 1, null]]);
+    expect(migrated.erasures).toEqual([[5, "b", 2, null, null], [8, "c", 2, "bob", null]]);
+    expect(migrated.read).toEqual([[-2, "a1"], [-1, "a2"], [3, "a3"]]);
+    // A key made again goes past every revision a deletion gave; nothing else moved.
+    expect(migrated.space.revision_floor).toBe(2);
+    expect(migrated.space.charge).toBe(migrated.recount);
+    expect(migrated.after).toEqual(migrated.before);
+    expect(migrated.after).toMatchObject({ refs: 2, clock: 9 });
   });
 });
 

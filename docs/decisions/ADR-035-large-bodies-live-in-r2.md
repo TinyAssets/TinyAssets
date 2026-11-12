@@ -72,7 +72,7 @@ R2's read latency is not documented [I: a network round trip from the object, te
    - A mail to one of the owner's own agents (slice ID) is bounded by the body bound alone. Its run reads the body from R2 as it starts. A run that waits for its conversation keeps only the mail's reference in its input row (the run's `mail`), and reads the mail again when its turn comes. The mail is held until the run settles, so its body stays.
    - A mail run's reply past the threshold is placed in R2 before the settle's unit, read ahead from the same batch (`Runs.answering`), and the settle's unit posts it by reference. If another batch of the run lands between the two units, the settle's unit refuses this one (`events_raced`, 503) and the runner posts it again. A crash before the settle leaves only an orphan upload, which expires and is swept; the runner's batch is posted again, and the reply with it. No reply is lost.
    - A delete's or clear's history entry (slice M) carries no body, so nothing of it is placed. Its change and private writer are counted in the history's charge with its `collection_erasures` entry, as a row's change is with its `collection_changes` entry.
-   - A pull, a history read or a mailbox read returns at most `READ_PAGE_BYTES` (8 MiB) of bodies after its first item. A history read past one page answers `more` and a `before_revision` cursor.
+   - A pull, a history read or a mailbox read returns at most `READ_PAGE_BYTES` (8 MiB) of bodies after its first item. A history read past one page answers `more` and a `before` cursor.
 8. **Erasure leaves no orphan.**
    - Once the erasure's mark stands, every upload and every chunk put is refused.
    - The erasure waits out the puts already in flight, and `PUT_GRACE_MS` (a day) past its mark.

@@ -36,8 +36,10 @@
  * their keys, digests). Slice M added each collection row's owner-wide change and its
  * `collection_changes` entry, an erase entry's change, private writer and
  * `collection_erasures` entry (all in the collections' charges), and the one-row
- * `collection_clock`. A new table, or a raised bound, must stay under half the limit, or the
- * guard fails.
+ * `collection_clock`. Untangle H1 keyed the history by its change, so its age index and its
+ * erase entries' index went, and moved the deletions to their own table, `collection_erasures`,
+ * in the history's charge with no index. A new table, or a raised bound, must stay under half
+ * the limit, or the guard fails.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -500,13 +502,12 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                                   collection_writers: 0, collection_creators: 0,
                                   collection_changes: 0,
                                   sqlite_autoindex_collection_seqs_1: 0 } },
-    // The history in bytes, as SQLite lays its entries out (its triggers' charge), erased keys'
-    // tombstones among them, pruned at it.
+    // The history in bytes, as SQLite lays its entries out (its triggers' charge), and the
+    // deletions with it, pruned at it.
     collection_history: { rows: 1, bytes: C.maxHistoryCharge, charged: true,
                           by: "maxHistoryCharge at WORST_FILL, charged by its triggers",
-                          indexes: { sqlite_autoindex_collection_history_1: 0,
-                                     collection_history_by_age: 0,
-                                     collection_erasures: 0 } },
+                          tables: ["collection_history", "collection_erasures"],
+                          indexes: { sqlite_autoindex_collection_history_1: 0 } },
     collection_space: { rows: 1, bytes: ROW, by: "one row" },
     collection_clock: { rows: 1, bytes: ROW, by: "one row (slice M)" },
     agent_cards: { rows: K.maxPending, bytes: ROW + 37 + 64 + 64 + 64 + K.maxRequest + 64,
@@ -705,18 +706,29 @@ export function ownerTables(schema = `${MIGRATE}\n${SCHEMA}`): string[] {
   return [...tables].sort();
 }
 
+/** The indexes the schema makes and keeps, each with its table: a dropped one is not. */
+function madeIndexes(schema: string = SCHEMA): Map<string, string> {
+  const made = new Map<string, string>();
+  for (const [, name, table, dropped] of schema.matchAll(
+    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)|DROP INDEX (?:IF EXISTS )?([a-zA-Z_0-9]+)/g)) {
+    if (dropped === undefined) {
+      made.set(name!, table!);
+    } else {
+      made.delete(dropped);
+    }
+  }
+  return made;
+}
+
 /** The indexes the schema makes on `table`, by name. */
 function indexesOn(table: string): string[] {
-  return [...SCHEMA.matchAll(
-    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
-    .filter((match) => match[2] === table).map((match) => match[1]!).sort();
+  return [...madeIndexes()].filter(([, on]) => on === table).map(([name]) => name).sort();
 }
 
 /** The indexes the schema makes on the manifest's tables. */
 export function manifestIndexes(schema: string = SCHEMA): string[] {
-  return [...schema.matchAll(/CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
-    .filter((match) => Object.hasOwn(MANIFEST_TABLES, match[2]!)).map((match) => match[1]!)
-    .sort();
+  return [...madeIndexes(schema)].filter(([, on]) => Object.hasOwn(MANIFEST_TABLES, on))
+    .map(([name]) => name).sort();
 }
 
 /** The tables the terms cover: each term's own, and the manifest's. */
@@ -731,9 +743,8 @@ export function covered(terms: Readonly<Record<string, Term>> = TERMS): string[]
  * each `CREATE INDEX` it spells, and each SQLite makes on its own (`AUTOINDEXES`).
  */
 export function ownerIndexes(schema: string = SCHEMA): string[] {
-  const spelled = [...schema.matchAll(
-    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
-    .filter((match) => !Object.hasOwn(MANIFEST_TABLES, match[2]!)).map((match) => match[1]!);
+  const spelled = [...madeIndexes(schema)].filter(([, on]) => !Object.hasOwn(MANIFEST_TABLES, on))
+    .map(([name]) => name);
   return [...new Set([...spelled, ...AUTOINDEXES])].sort();
 }
 
@@ -1003,22 +1014,20 @@ describe("the owner's database bound", () => {
     expect(SCHEMA).not.toMatch(/native_agents \([^)]*UNIQUE|agent_id TEXT NOT NULL UNIQUE/);
   });
 
-  it("charges slice M's indexes: the change orders of the rows and the erase entries", () => {
-    // Each charged by its table's trigger-kept charge: `collection_changes` a row's, in the
-    // rows' triggers, `collection_erasures` a delete's or clear's history entry's, in the
-    // history's, partial on them alone.
+  it("charges the change orders: the rows' index, and the history's and deletions' keys",
+     () => {
+    // `collection_changes` is charged by the rows' triggers; the history and the deletions
+    // are keyed by their change (untangle H1), so neither has a change index, and a dropped
+    // index is no longer counted.
     expect(indexesOn("collection_rows"))
       .toEqual(["collection_changes", "collection_creators", "collection_writers"]);
-    expect(indexesOn("collection_history"))
-      .toEqual(["collection_erasures", "collection_history_by_age"]);
-    expect(SCHEMA).toContain(
-      "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL");
+    expect([indexesOn("collection_history"), indexesOn("collection_erasures")]).toEqual([[], []]);
+    expect(ownerIndexes()).not.toContain("collection_history_by_age");
+    expect(ownerIndexes(`${SCHEMA}\nCREATE INDEX x ON runs (agent)\nDROP INDEX x`))
+      .toEqual(ownerIndexes());
     expect(TERMS["collection_rows"]!.indexes).toHaveProperty("collection_changes", 0);
-    expect(TERMS["collection_history"]!.indexes).toHaveProperty("collection_erasures", 0);
-    // A delete's or clear's entry (its change set) charges its `collection_erasures` entry.
-    expect(MIGRATIONS.flat().find((sql) => sql.startsWith(
-      "CREATE TRIGGER collection_history_added "))).toContain(
-      "CASE WHEN NEW.change IS NULL THEN 0 ELSE ");
+    expect(TERMS["collection_history"]!.tables)
+      .toEqual(["collection_history", "collection_erasures"]);
   });
 
   it("counts Lifecycle's own rows, apart from the tables", () => {

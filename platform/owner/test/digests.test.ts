@@ -106,7 +106,7 @@ describe("a digest past a pruned deletion (review rvlim N1)", () => {
       const cursor = store.changed(name, { collection: "board" }, 0, 100).cursor;
       store.delete(name, "board", "gone", made.etag);
       const tombstones = () => state.storage.sql.exec<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM collection_history WHERE collection = 'board' AND " +
+        "SELECT COUNT(*) AS n FROM collection_erasures WHERE collection = 'board' AND " +
           "key = 'gone'").one().n;
       expect(tombstones()).toBe(1);
       // A reader past the delete is told it while it is kept.
@@ -148,12 +148,15 @@ describe("a digest's placed bodies (ADR-035)", () => {
     expect(live(inbox.rooms.rows)[0]!).not.toHaveProperty("content_id");
     const board = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: 0 });
     expect(live(board.rows).map((m) => [m.row_id, m.body_bytes])).toEqual([["task", 4000]]);
-    // A delete's entry carries no body: nothing of it is placed, and the digest reports it.
+    // A delete's entry carries no body: the row's placed entries go, and the digest reports
+    // the deletion.
     const [stored] = await r.sql("SELECT etag FROM collection_rows WHERE row_id = 'task'");
     await r.stub.collectionDelete(r.bind(null), { collection: "board", row_id: "task",
                                                   expected_etag: stored!["etag"] as string });
-    expect(await r.sql("SELECT body_json, content_id FROM collection_history WHERE op = 'delete'"))
-      .toEqual([{ body_json: "", content_id: null }]);
+    expect(await r.sql("SELECT (SELECT COUNT(*) FROM collection_history WHERE key = 'task') " +
+                       "AS entries, (SELECT COUNT(*) FROM collection_erasures WHERE key = " +
+                       "'task' AND op = 'delete') AS deletions"))
+      .toEqual([{ entries: 0, deletions: 1 }]);
     const after = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: board.cursor });
     expect(after.rows.map((m) => [m.row_id, m.deleted])).toEqual([["task", true]]);
   });
@@ -226,7 +229,7 @@ describe("a digest's deletions", () => {
 });
 
 describe("a digest's reads", () => {
-  it("read by the change indexes from the cursor on, never a collection's rows", async () => {
+  it("read by the change orders from the cursor on, never a collection's rows", async () => {
     const r = await rig();
     await write(r, "board", "t1", "a task");
     const plans = await runInDurableObject(r.stub, (_instance: OwnerDO, state) =>
@@ -240,12 +243,12 @@ describe("a digest's reads", () => {
     for (const plan of plans) {
       expect(plan).toMatch(/SEARCH collection_rows USING INDEX collection_changes \(change>\?\)/);
       expect(plan).toMatch(
-        /SEARCH collection_history USING INDEX collection_erasures \(change>\?\)/);
+        /SEARCH collection_erasures USING INTEGER PRIMARY KEY \(rowid>\?\)/);
       expect(plan).not.toMatch(/SCAN collection_|collection_writers|collection_creators/);
     }
   });
 
-  it("keeps a key's delete once the key is made again private: no row's history is trimmed",
+  it("keeps a key's delete once the key is made again private, and deleted again",
      async () => {
     const r = await rig();
     const bob = "bob";
@@ -262,9 +265,15 @@ describe("a digest's reads", () => {
         .map((row) => [row.row_id, row.deleted])).toEqual([["t", true]]);
       expect(store.changed(bob, { collection: "board" }, before, 10).rows
         .map((row) => [row.row_id, row.deleted])).toEqual([["t", true], ["t", false]]);
-      // The history is bounded by its bytes alone (ADR-035), the delete's entry among them.
+      // The row made again has the history of its own writes, from its making.
       expect(store.history(bob, "board", "t").entries.map((entry) => entry.op))
-        .toEqual(["delete", ...Array<string>(6).fill("write")]);
+        .toEqual(Array<string>(6).fill("write"));
+      // Deleted again, its private deletion is bob's alone, and the public one stays.
+      store.delete(r.owner, "board", "t", etag);
+      expect(store.changed("muse", { collection: "board" }, before, 10).rows
+        .map((row) => [row.row_id, row.deleted])).toEqual([["t", true]]);
+      expect(store.changed(bob, { collection: "board" }, before, 10).rows
+        .map((row) => [row.row_id, row.deleted])).toEqual([["t", true], ["t", true]]);
     });
   });
 });
