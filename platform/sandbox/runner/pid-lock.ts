@@ -2,8 +2,8 @@
  * The one lock the runner takes (an engine's store, a pool user, the sync agent's turn): a
  * file naming its holder, `<pid> <boot>`, made whole beside its name and linked into place,
  * so no lock is ever seen half made. A lock is taken over once its holder is gone: its
- * process dead, or of another boot (a pid repeats after a reboot, which a lock on disk
- * outlives), by one taker alone (`takeOver`). A wait sleeps, so the waiter's event loop goes
+ * process dead, or of another boot or an unknown one (a pid repeats after a reboot, which a
+ * lock on disk outlives), by one taker alone (`takeOver`). A wait sleeps, so the waiter's event loop goes
  * on (a run's heartbeats), at `FIRST_MS` and backing off to at most its caller's longest
  * sleep, and fails loudly past its bound.
  */
@@ -35,17 +35,21 @@ export function alive(pid: number | null): boolean {
   }
 }
 
-/** This boot's id: a pid names a process only within the boot it was taken in. */
-export function bootId(): string {
+/**
+ * This boot's id: a pid names a process only within the boot it was taken in. Null when it
+ * cannot be read, and a null boot matches no lock's, not even one taken under another null:
+ * a holder of an unknown boot counts as one of another boot, gone.
+ */
+export function bootId(): string | null {
   try {
-    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || null;
   } catch {
-    return "";
+    return null;
   }
 }
 
 /** Whether the lock at `path` has a holder still there (none, or one gone, is free). */
-function held(path: string, boot: string): boolean {
+function held(path: string, boot: string | null): boolean {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -56,7 +60,7 @@ function held(path: string, boot: string): boolean {
     throw error;
   }
   const [pid, of] = text.split(" ");
-  return alive(Number(pid)) && (of === undefined || of === "" || boot === "" || of === boot);
+  return boot !== null && of === boot && alive(Number(pid));
 }
 
 /** The identity of the file at `path` (its inode), or null when there is none. */
@@ -78,7 +82,7 @@ function inode(path: string): string | null {
  * names it, so a taker that read the gone holder never removes a lock another took since.
  * False while another taker's claim stands (that taker takes the lock).
  */
-function takeOver(path: string, lock: string, boot: string): boolean {
+function takeOver(path: string, lock: string, boot: string | null): boolean {
   const claim = `${path}.${lock}.gone`;
   try {
     linkSync(path, claim);
@@ -115,7 +119,7 @@ export function tryLock(path: string): boolean {
   const temp = `${path}.${randomBytes(6).toString("hex")}`;
   const fd = openSync(temp, "wx", 0o600);
   try {
-    writeSync(fd, `${process.pid} ${boot}`);
+    writeSync(fd, `${process.pid} ${boot ?? ""}`);
   } finally {
     closeSync(fd);
   }

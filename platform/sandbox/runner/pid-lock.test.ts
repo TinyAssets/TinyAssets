@@ -1,7 +1,7 @@
 /**
  * The runner's one lock (`pid-lock.ts`): held by a live holder of this boot alone; taken
- * over from a holder that is gone (dead, or of another boot), by one taker alone however
- * many race for it; waited for, sleeping, and refused loudly past the wait's bound.
+ * over from a holder that is gone (dead, or of another or an unknown boot), by one taker
+ * alone however many race for it; waited for, sleeping, and refused loudly past the wait's bound.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -50,6 +50,16 @@ describe("the runner's lock", () => {
     expect(tryLock(lock)).toBe(true);
     writeFileSync(lock, `1 ${bootId()}`);  // pid 1 of this boot: held
     expect(tryLock(lock)).toBe(false);
+  });
+
+  it("is taken over from a holder of an unknown boot: an unreadable boot id matches none",
+     () => {
+    const lock = lockPath();
+    expect(bootId()).not.toBeNull();  // this boot's own is known
+    writeFileSync(lock, "1 ");  // pid 1, its lock taken while its boot id could not be read
+    expect(tryLock(lock)).toBe(true);
+    writeFileSync(lock, "1");  // no boot named at all
+    expect(tryLock(lock)).toBe(true);
   });
 
   it("is waited for while held, and refused loudly past the wait's bound", async () => {

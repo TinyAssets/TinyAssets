@@ -34,7 +34,8 @@ import { fileURLToPath } from "node:url";
 import { RUNS_CEILING } from "../../contract/src/control";
 import { sha256Hex } from "../../contract/src/digest";
 import { bundledSources } from "../../sources/src/catalog";
-import { binPath, ENGINE_ROOT, WORKSPACE } from "../runner/engine";
+import { WORKSPACE } from "../../contract/src/paths";
+import { binPath, ENGINE_ROOT } from "../runner/engine";
 import { INBOX, INCOMING, LOADER, RUNNERS, STATE_DIR } from "../runner/protocol";
 import { E2B_USER, POOL_PREFIX, SHARED_GROUP, SYNC_HOME, SYNC_USER } from "../runner/users";
 

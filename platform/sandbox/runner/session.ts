@@ -9,7 +9,6 @@ import { existsSync, lchownSync, lstatSync, mkdirSync, readdirSync, readFileSync
          writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { LEASE_TTL_S } from "../../contract/src/limits";
 import { bundledSources } from "../../sources/src/catalog";
 import { RUN_BASICS } from "../../sources/src/run-env";
 import type { SourceRecord } from "../../sources/src/schema";
@@ -17,7 +16,7 @@ import type { SourceRecord } from "../../sources/src/schema";
 import { HOMES, isKept, keptPaths } from "./engine";
 import { remove, safeDirs, safeRead, safeWrite, type Walk, walkFiles } from "./fsafe";
 import { withLock } from "./pid-lock";
-import { STATE_DIR } from "./protocol";
+import { COMMAND_MS, STATE_DIR } from "./protocol";
 import { group, type Identity, SHARED_GROUP } from "./users";
 
 const STATE = STATE_DIR;
@@ -25,13 +24,6 @@ const STATE = STATE_DIR;
 export const STORE = `${STATE}/store`;
 /** The conversations of the engines that resume by their working directory. */
 export const CONVERSATIONS = "/var/lib/ta-conv";
-/** The lease's TTL, the object's (`LEASE_TTL_S`). */
-const LEASE_TTL_MS = LEASE_TTL_S * 1000;
-/**
- * The longest a status check, or the wait for a runner's answer, may take: the lease's TTL,
- * past which a start's run is lost anyway (a run with no post within it is settled lost).
- */
-export const COMMAND_MS = LEASE_TTL_MS;
 
 export const sources = bundledSources();
 export const RECORDS = new Map(sources.ids().map((id) => [id, sources.get(id)!] as const)
