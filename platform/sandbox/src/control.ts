@@ -81,7 +81,9 @@ import {
   type SandboxStart, type Started,
 } from "../../contract/src/sandbox";
 
-import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
+import {
+  type E2b, type E2bNetwork, type Handle, noRoom, runtimeE2b, type SandboxInfo,
+} from "./e2b";
 import { type AnswerFields, ANSWERS, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc,
          type JobKind, JOBS, LEASE_FILE, type LeaseFile, LOADER, type QuietAnswer, SPEAKS,
          type SigninDoc, type StartDoc, type StateAnswer,
@@ -381,7 +383,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     migrate(ctx.storage, CONTROL_MIGRATIONS);
-    this.#e2b = () => new E2b(env.E2B_API_KEY);
+    this.#e2b = () => runtimeE2b(env.E2B_API_KEY);
     this.#digest = runnerDigest();
   }
 

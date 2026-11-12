@@ -14,9 +14,10 @@ import { lstatSync, readdirSync } from "node:fs";
 
 import { INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
+import { carried } from "../owner/src/starter-package";
 
 import { fileSha256, layout } from "./backup";
-import { type Built, buildTree, type Fit, fitOf, starterPaths, type Tiers } from "./build";
+import { type Built, buildTree, type Fit, fitOf, type Tiers } from "./build";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
 import { TAR_MEMBER_MAX } from "./tar";
 
@@ -113,7 +114,7 @@ export function precheck(owner: Owner, tiers: Tiers): Problem[] {
   if (tier !== undefined && largest > tier.storage_bytes) {
     problems.push({ code: "over_storage", at });
   }
-  if (tree.carried.length + tree.archived.length + starterPaths().length
+  if (tree.carried.length + tree.archived.length + carried().files.length
       > FILE_DEFAULTS.max_entries) {
     problems.push({ code: "over_entries", at });
   }

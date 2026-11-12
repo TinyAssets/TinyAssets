@@ -18,9 +18,10 @@ import { Notices } from "../src/notices";
 import { type OwnerDO, RUN_STARTS_NONE } from "../src/owner-do";
 import { SEARCH_SCAN } from "../src/file-search";
 import { contentIdOf } from "../../contract/src/content";
+import { Starter } from "../src/starter";
 import {
-  carried, NEWER, Starter, type StarterFile, starterPackage, type StarterPackage,
-} from "../src/starter";
+  carried, NEWER, type StarterFile, starterPackage, type StarterPackage,
+} from "../src/starter-package";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import {

@@ -342,7 +342,8 @@ describe("the import layers", () => {
     ["the importer the contract, the deploy facts and the starter's package", {
       "platform/import/probe.ts": [
         'import { x } from "../contract/src/content";', 'import { f } from "../deploy/facts";',
-        'import s from "../starter/starter.json";', 'import { REPO } from "../ci/paths";',
+        'import { carried } from "../owner/src/starter-package";',
+        'import { REPO } from "../ci/paths";',
       ].join("\n") }],
     ["the owner app its own pages, by the path they are served at", {
       "platform/doors/app/probe.js": 'import { h } from "/app/static/view.js";' }],

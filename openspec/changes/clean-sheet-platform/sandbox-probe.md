@@ -34,6 +34,7 @@ was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or t
 | The window let lapse | E2B auto-paused the sandbox at its timeout (`pauseMode: full`); a resume found the process alive. |
 | A stream dropped from envd | The process kept running. |
 | Resume after a long pause | **75 minutes paused**: resume to first byte 589 ms; the process alive, 10 MB file intact. Days remain unmeasured. |
+| Resume after days paused | The long-pause rows come from `e2b-pause-probe.yml` (`platform/sandbox/pause-probe.ts`): 14 and 30 days, with and without about 5 GB of scratch. |
 | Renewal with the real runner and a live run (template 1) | `ta-runner renewing` 252 ms (its `ta.renewing` frame posted, posts held), pause, resume, `ta-runner renewed`: frames went on, the run ended `exit_code 0` with all 30 of its events. |
 | `X-Total-Running` | The list answers E2B's own running count in one call: the concurrency check's source. |
 | Credit and spend | E2B's public API has no balance or spend endpoint (team metrics give concurrency only): the credit alert is owed. |

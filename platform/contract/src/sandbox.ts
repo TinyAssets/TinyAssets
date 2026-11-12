@@ -37,12 +37,14 @@ export interface Unexpressed {
   readonly reason: "port";
 }
 
-/** What the sandbox slice sends. */
+/**
+ * What the sandbox slice sends. The egress generation it was made under is in the
+ * document's door transform alone (`generationOf`), the header E2B stamps and the door
+ * admits by.
+ */
 export interface NetworkPlan {
   readonly network: NetworkDocument;
   readonly mode: EgressMode;
-  /** The policy generation the document was made under. */
-  readonly generation: number;
   /** Destinations refused because E2B cannot filter them by name. */
   readonly unexpressed: readonly Unexpressed[];
   /** Whether the network is a data boundary: never, in v1 (`BOUNDARY_NOTE`). */

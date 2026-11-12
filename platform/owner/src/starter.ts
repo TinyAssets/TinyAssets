@@ -3,7 +3,7 @@
  * answers of 2026-11-03): the files every owner's default agent, `main`, starts from, written
  * into the owner's files by the object itself, as the owner, and kept current by one rule.
  *
- * The package is data (`platform/starter/`, carried here as `starter.json`): a version and
+ * The package is data (`platform/starter/`, read by `starter-package.ts`): a version and
  * its files, each `managed` (the platform's to update) or `personal` (`SOUL.md`, `USER.md`:
  * seeded once, never touched again). Each path the object ever wrote holds a **receipt**:
  * the version it last reconciled, the content id it installed, the content id it last
@@ -38,54 +38,20 @@
  * says: never by inventing a file. Every write is a unit of the object's gate; a pass is
  * single-flight on its lane.
  */
-import starterJson from "../../starter/starter.json" with { type: "json" };
-
 import { agentFile } from "./agent-file";
 import { FileFault, Refusal } from "../../contract/src/refusal";
 import { contentIdOf } from "../../contract/src/content";
 import { type Content, FileConflict, type Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
-import { ownersOnly } from "./paths";
-import { storedPath, within, WORKSPACE } from "../../contract/src/paths";
 import type { Call, OwnerState } from "./owner-do";
+import { NEWER, type StarterClass, type StarterFile, type StarterPackage } from "./starter-package";
 
-/**
- * The most paths a package may name, its files and the paths it once shipped and dropped
- * (`retired`) together: the receipts' bound (one row a path; the owner-bound guard).
- */
-export const STARTER_FILES_MAX = 64;
 /** How long a pass that failed waits before it is tried again. */
 export const STARTER_RETRY_S = 300;
-/** The name beside a file that holds its newer version, which no engine loads. */
-export const NEWER = ".ta-new";
 /** The history op of the starter's own writes. */
 const STARTER_OP = "starter";
 
-type StarterClass = "managed" | "personal";
 type ReceiptState = "installed" | "edited" | "deleted" | "proposed";
-
-export interface StarterFile {
-  readonly path: string;
-  readonly class: StarterClass;
-  /** The version whose change to this file widens what the agent may do, and why. */
-  readonly widens?: { readonly version: number; readonly why: string };
-  /**
-   * A personal file's earlier path, retired: an owner who holds a changed file there is
-   * seeded here with a copy of it (the old file is left as it is) and told once.
-   */
-  readonly moved_from?: string;
-  readonly text: string;
-}
-
-export interface StarterPackage {
-  readonly version: number;
-  readonly files: readonly StarterFile[];
-  /**
-   * Paths an earlier version shipped and this one does not: their receipts are kept, so a
-   * file the owner deleted stays deleted if a later version ships its path again.
-   */
-  readonly retired: readonly string[];
-}
 
 export interface Receipt {
   readonly path: string;
@@ -96,77 +62,6 @@ export interface Receipt {
   readonly installed: string | null;
   /** The content it last wrote beside it as `.ta-new`, or null. */
   readonly offered: string | null;
-}
-
-/**
- * A package checked whole: a positive version, its files and retired paths at most
- * `STARTER_FILES_MAX` together and none twice, `agent.json` last.
- */
-export function starterPackage(value: unknown): StarterPackage {
-  const pkg = value as { version?: unknown; files?: unknown; retired?: unknown };
-  const retired = pkg?.retired ?? [];
-  if (typeof pkg !== "object" || pkg === null || !Number.isSafeInteger(pkg.version)
-      || (pkg.version as number) < 1 || !Array.isArray(pkg.files) || pkg.files.length < 1
-      || !Array.isArray(retired)
-      || pkg.files.length + retired.length > STARTER_FILES_MAX) {
-    throw new Refusal("invalid",
-                      `a starter package is a version and 1 to ${STARTER_FILES_MAX} files ` +
-                      "and retired paths");
-  }
-  const paths = new Set<string>();
-  const files = pkg.files.map((file: Partial<StarterFile>): StarterFile => {
-    const path = storedPath(file.path);
-    // A managed file is instructions, in the owner's trees; a personal one (the profile, the
-    // workspace's map) is data, anywhere in the workspace, the owner's to change. Who else
-    // may write it is the agent trees' rule: the profile is in `OWNER_TREES`, so a grant the
-    // owner narrowed never writes it, and the map is not.
-    if (!within(path, WORKSPACE) || path === WORKSPACE || path.endsWith(NEWER)
-        || paths.has(path) || (file.class !== "managed" && file.class !== "personal")
-        || (file.class === "managed" && !ownersOnly(path)) || typeof file.text !== "string") {
-      throw new Refusal("invalid",
-                        `starter file ${String(file.path)} is a distinct path in the workspace ` +
-                        "(a managed one in the owner's trees), managed or personal, with its " +
-                        "text");
-    }
-    if (file.moved_from !== undefined && (file.class !== "personal"
-        || !(Array.isArray(retired) && retired.includes(file.moved_from)))) {
-      throw new Refusal("invalid",
-                        `starter file ${path} moved from a retired path, and is personal`);
-    }
-    const widens = file.widens;
-    if (widens !== undefined && (!Number.isSafeInteger(widens.version) || widens.version < 2
-                                 || widens.version > (pkg.version as number)
-                                 || typeof widens.why !== "string" || widens.why === "")) {
-      throw new Refusal("invalid", `starter file ${path}'s widens names a later version and why`);
-    }
-    paths.add(path);
-    return Object.freeze({ path, class: file.class, text: file.text,
-                           ...(widens === undefined ? {} : { widens }),
-                           ...(file.moved_from === undefined ? {}
-                             : { moved_from: storedPath(file.moved_from) }) });
-  });
-  const agents = files.filter((file) => file.path.endsWith("/agent.json"));
-  if (agents.length > 0 && files.at(-1) !== agents.at(-1)) {
-    throw new Refusal("invalid", "a starter package writes agent.json last");
-  }
-  for (const agent of agents) {
-    agentFile(agent.text);
-  }
-  const gone = retired.map((path: unknown) => {
-    const at = storedPath(path);
-    if (paths.has(at)) {
-      throw new Refusal("invalid", `starter path ${at} is retired and shipped at once`);
-    }
-    paths.add(at);
-    return at;
-  });
-  return Object.freeze({ version: pkg.version as number, files: Object.freeze(files),
-                         retired: Object.freeze(gone) });
-}
-
-/** The package this code carries, checked. */
-export function carried(): StarterPackage {
-  return starterPackage(starterJson);
 }
 
 /** Why replacing `before` with `after` at `file`'s path widens what the agent may do, or null. */

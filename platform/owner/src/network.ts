@@ -102,7 +102,6 @@ export function networkDocument(egress: EgressPolicy, generation: number): Netwo
       rules: Object.freeze(closed.rules),
     }),
     mode,
-    generation,
     unexpressed: Object.freeze(mode === "open" ? [] : unexpressed),
     boundary: false,
     note: BOUNDARY_NOTE,
