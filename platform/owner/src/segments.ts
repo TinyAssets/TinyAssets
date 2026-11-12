@@ -5,7 +5,7 @@
  *
  * A segment is one content of the files plane (ADR-035's placement: `Files.begin`, its
  * chunks to `FILES`, `Files.adopt` in the unit that names it), so it is under the owner's
- * data key (SSE-C), its bytes count in the one storage number (`chunk_bytes`), and the GC
+ * data key, its bytes count in the one storage number (`chunk_bytes`), and the GC
  * grace, the generation's protection and the erasure's prefix delete cover it as any content.
  * Its bytes (review N3: a body is never escaped, so a record's size is its bytes):
  * 1. a record's rows, each one line in the export's own grammar (`export.ts`):

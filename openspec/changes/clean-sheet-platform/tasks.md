@@ -289,6 +289,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2).
   - B6: the queue names generated from the Worker configs into the contract (d3 §A3).
+  - B6 (V2): `files/src/index.ts` `getChunks` charges a verified range its length but fetches
+    and opens its whole chunk, so a batch of ranges of many chunks holds more than
+    `BATCH_BYTES` (older than R1: under SSE-C a verified range was read whole too). With
+    `verify` required, the budget bounds what a batch holds, not only what it returns (R1's
+    review).
   - B8: the compatibility date is a kit check that the six configs agree (d3 §A4).
   - B11: a Worker's existence from `Cloudflare.workers`, never from its secret listing: the
     `workers` and `doors deployed` steps, which read a secret listing for it
@@ -444,8 +449,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     run's next model call through `egress.tinyassets.io` is answered, not refused 409; the
     sandbox's network, read from E2B, carries generation 2 and the same `x-ta-sandbox`; a host
     the policy dropped is unreachable from the sandbox;
-  - the files Worker's create-once put on the live bucket (`onlyIf: { etagDoesNotMatch: "*" }`,
-    and which R2 checks first when the bytes miss the `sha256`; `files/test/chunks.test.ts`);
+  - the files Worker's create-once put of sealed bytes on the live bucket (`onlyIf:
+    { etagDoesNotMatch: "*" }` with the sealed bytes' own `sha256`; `files/test/chunks.test.ts`),
+    and the files bucket listed empty first: no object stored before the one cipher opens under
+    it (d3 §G);
   - R5's (d3 §N9): Claude's `defer` with several tool calls in one turn; managed settings
     against an organization's server-managed settings; Codex, Gemini and pi loading our
     root-owned hooks unattended; the delay one decision adds; a census of non-default rules,

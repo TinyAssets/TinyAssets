@@ -4,7 +4,7 @@
  * The bytes are immutable chunks of at most 4 MiB in one R2 bucket shared by every
  * owner, each named by its SHA-256 under this owner's random 128-bit namespace `ns`,
  * which is made on first use and held only here, and each put and read under this owner's
- * own data key (SSE-C), which this object holds only wrapped (`data_key`, made with the
+ * own data key, which this object holds only wrapped (`data_key`, made with the
  * namespace by `FILES.mintKey`): opened by the files Worker's keyring for one call at a
  * time, never here, and gone with the object at erasure (crypto-erasure, `datakey.ts`).
  * The files Worker (`FILES`) moves them and never sees a path. Everything that says what a file is lives in this object's
