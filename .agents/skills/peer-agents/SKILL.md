@@ -36,8 +36,7 @@ Put a constraints block in the brief itself -- the CLI has no flag for it:
 HARD CONSTRAINTS ON HOW YOU WORK:
 - Do NOT dispatch sub-agents. No scripts/peer_agent.py, no claude/codex
   subprocess, no new worktree. You are the reviewer; review it yourself.
-- Do NOT run the full suite. No scripts/ci_required_tests.py, no
-  `pytest -m "not slow"`. Run at most the one test file you need.
+- Do NOT run the full suite; CI does. Run at most the one test file needed.
 - Budget ~10 minutes. Read the diff and the cited files and reason.
 - Do the untangle skill's searches (Fact 16) yourself, inside this block's
   limits: no subagents.

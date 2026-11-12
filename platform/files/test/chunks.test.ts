@@ -1,15 +1,14 @@
 /**
- * The files Worker: verified, create-once chunks under one owner namespace's keys, each put
- * and read under that owner's data key (SSE-C, held to R2's documented answers by
- * `ssec.ts`, since miniflare ignores the key).
+ * The files Worker: verified, create-once chunks under one owner namespace's keys, each
+ * sealed and opened in the Worker under that owner's data key, so the bucket holds only
+ * ciphertext bound to each object's own key.
  */
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
-import { hex } from "../../contract/src/envelope";
-import { cipherOf } from "../src/cipher";
+import { hex, OBJECT_OVERHEAD, sealObject } from "../../contract/src/envelope";
 import { chunkName, KEY_REFUSED, KEYRING_UNAVAILABLE, unwrap } from "../src/datakey";
 import FilesService from "../src/index";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
@@ -17,17 +16,13 @@ import { chunkKey, manifestKey } from "../src/keys";
 
 import { ringKey } from "../../ci/fixtures";
 
-import { type Presented, ssec } from "./ssec";
-
 /** The keyring, rotated: `k1` an older kid, `k2` the active one. */
 const OLD = JSON.stringify({ active: "k1", keys: { k1: ringKey() } });
 const RING = JSON.stringify({ active: "k2", keys: { ...JSON.parse(OLD).keys, k2: ringKey() } });
-const seen: Presented[] = [];
 
 // `ring` may be what no deploy sets but a secret can still hold: missing, or not a ring.
-const service = (bucket: R2Bucket = ssec(env.BLOBS, seen), ring: unknown = RING) =>
-  new FilesService(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: ring as string,
-                                               FILES_CIPHER: env.FILES_CIPHER });
+const service = (bucket: R2Bucket = env.BLOBS, ring: unknown = RING) =>
+  new FilesService(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: ring as string });
 
 const KEYS = new Map<string, Promise<string>>();
 /** A namespace's one data key, minted on first use; a malformed namespace gets none. */
@@ -54,6 +49,12 @@ const files = () => ({
 /** The R2 key a namespace's chunk `hash` is stored under: its name under the data key. */
 async function named(space: string, hash: string, ring: string = RING): Promise<string> {
   return chunkKey(space, await chunkName(await unwrap(ring, space, await keyOf(space)), hash));
+}
+
+/** `body` sealed as the Worker seals the chunk `hash` of `space`: what its R2 key holds. */
+async function sealedAt(space: string, hash: string, body: Uint8Array): Promise<Uint8Array> {
+  return sealObject(await unwrap(RING, space, await keyOf(space)), await named(space, hash),
+                    body);
 }
 
 function ns(): string {
@@ -139,8 +140,8 @@ describe("putChunks", () => {
       .toBe("a chunk key holds bytes this Worker did not verify");
   });
 
-  // Whether R2 checks a put's digest before its precondition is unprobed (tasks 6): a
-  // bucket that reports "exists" first must still never vouch for the wrong bytes.
+  // A bucket that reports "exists" before anything else must still never vouch for the
+  // wrong bytes: the Worker checks them first, and opens what the key holds.
   const existing = (stored: Uint8Array): R2Bucket => ({
     put: async () => null,
     get: async () => ({ arrayBuffer: async () => stored.slice().buffer }),
@@ -150,7 +151,7 @@ describe("putChunks", () => {
     const body = bytes("true bytes");
     const hash = await sha(body);
     const space = ns();
-    const lying = service(existing(body));
+    const lying = service(existing(await sealedAt(space, hash, body)));
     expect((await failure(async () => lying.putChunks(space, await keyOf(space), [{
       sha256: hash, bytes: bytes("wrong byte") }]))).message)
       .toBe("the chunk's bytes do not match its sha256");
@@ -162,7 +163,7 @@ describe("putChunks", () => {
     const body = bytes("sized");
     const hash = await sha(body);
     const space = ns();
-    const odd = service(existing(bytes("sized!")));
+    const odd = service(existing(await sealedAt(space, hash, bytes("sized!"))));
     expect((await failure(async () => odd.putChunks(space, await keyOf(space), [{
       sha256: hash, bytes: body }]))).message)
       .toBe("a chunk key holds bytes this Worker did not verify");
@@ -199,11 +200,19 @@ describe("putChunks", () => {
     expect(await keys(space)).toEqual([]);
   });
 
-  it("takes a full batch of two 4 MiB chunks", async () => {
+  it("takes a full batch of two 4 MiB chunks, and reads it back whole and by verified range",
+     async () => {
     expect([CHUNK_BYTES, BATCH_BYTES / CHUNK_BYTES]).toEqual([4 * 1024 * 1024, 2]);
+    const space = ns();
     const full = Array.from({ length: BATCH_BYTES / CHUNK_BYTES },
                             (_, i) => new Uint8Array(CHUNK_BYTES).fill(i + 1));
-    expect(await put(ns(), ...full)).toEqual({ created: full.length });
+    expect(await put(space, ...full)).toEqual({ created: full.length });
+    const hashes = await Promise.all(full.map(sha));
+    const whole = await files().getChunks(space, hashes.map((sha256) => ({ sha256 })));
+    expect(await Promise.all(whole.map(sha))).toEqual(hashes);
+    expect(await files().getChunks(space, hashes.map((sha256) => ({
+      sha256, offset: CHUNK_BYTES - 3, length: 3, verify: true }))))
+      .toEqual(full.map((chunk) => chunk.slice(CHUNK_BYTES - 3)));
   });
 });
 
@@ -260,9 +269,10 @@ describe("getChunks", () => {
     expect(await files().getChunks(space, [{ sha256: l }, { sha256: d }]))
       .toEqual([letters, digits]);
     expect(await files().getChunks(space, [{ sha256: d, offset: 2, length: 3 },
-                                           { sha256: d, offset: 8, length: 100 },
-                                           { sha256: l, offset: 0, length: 1 }]))
-      .toEqual([bytes("234"), bytes("89"), bytes("a")]);
+                                           { sha256: d, offset: 8, length: 100 }]))
+      .toEqual([bytes("234"), bytes("89")]);
+    expect(await files().getChunks(space, [{ sha256: l, offset: 0, length: 1 }]))
+      .toEqual([bytes("a")]);
     expect((await failure(() => files().getChunks(ns(), [{ sha256: d }]))).message)
       .toBe("a chunk the manifest holds is missing from the bucket");
   });
@@ -277,9 +287,9 @@ describe("getChunks", () => {
                                                      { sha256: d, offset: 8, length: 100,
                                                        verify: true }]);
     expect(await verified()).toEqual([bytes("234"), bytes("89")]);
-    // Bytes changed under the chunk's key: a verified range fails loudly, a plain one cannot see.
-    await ssec(env.BLOBS).put(await named(space, d), bytes("0123456780"),
-                              { ssecKey: await unwrap(RING, space, await keyOf(space)) });
+    // Other bytes sealed under the chunk's key: a verified range fails loudly, a plain one
+    // cannot see.
+    await env.BLOBS.put(await named(space, d), await sealedAt(space, d, bytes("0123456780")));
     expect((await failure(verified)).message).toBe("a chunk's bytes no longer match its hash");
     expect(await files().getChunks(space, [{ sha256: d, offset: 2, length: 3 }]))
       .toEqual([bytes("234")]);
@@ -309,10 +319,8 @@ describe("getChunks", () => {
     const body = bytes("original");
     await put(space, body);
     const hash = await sha(body);
-    const head = await env.BLOBS.head(await named(space, hash));
-    // The same key's mark kept: the bytes, not the key, are what changed.
-    await env.BLOBS.put(await named(space, hash), bytes("corrupted"),
-                        { customMetadata: head!.customMetadata! });
+    // Sealed under the very key, so it opens: the bytes, not the key, are what changed.
+    await env.BLOBS.put(await named(space, hash), await sealedAt(space, hash, bytes("corrupted")));
     expect((await failure(() => files().getChunks(space, [{ sha256: hash }]))).message)
       .toBe("a chunk's bytes no longer match its hash");
   });
@@ -364,20 +372,20 @@ describe("deleteChunks", () => {
   });
 });
 
-describe("data keys (SSE-C)", () => {
-  it("puts and reads every chunk under its owner's key, and refuses a call with none", async () => {
+describe("data keys", () => {
+  it("seals every chunk under its owner's key at its own R2 key, and refuses a call with none",
+     async () => {
     const space = ns();
     const body = bytes("keyed");
     const hash = await sha(body);
-    const from = seen.length;
     await put(space, body);
     expect(await files().getChunks(space, [{ sha256: hash }, { sha256: hash, offset: 1,
                                                                 length: 2 }]))
       .toEqual([body, bytes("ey")]);
-    const calls = seen.slice(from);
-    expect(calls.map((call) => call.op)).toEqual(["put", "get", "get"]);
-    expect(new Set(calls.map((call) => call.digest)).size).toBe(1);
-    expect(calls[0]!.digest).toMatch(/^[0-9a-f]{64}$/);
+    const stored = new Uint8Array(await (await env.BLOBS.get(await named(space, hash)))!
+      .arrayBuffer());
+    expect(stored.byteLength).toBe(body.byteLength + OBJECT_OVERHEAD);
+    expect(new TextDecoder().decode(stored)).not.toContain("keyed");
     for (const key of [undefined, "", "v1.k2.AAAA.AAAA", 7]) {
       expect((await failure(() => service().getChunks(space, key as string,
                                                       [{ sha256: hash }]))).message)
@@ -416,20 +424,20 @@ describe("data keys (SSE-C)", () => {
 
   it("opens a key wrapped under an older kid, and none once its kid leaves the ring", async () => {
     const space = ns();
-    const old = (await service(ssec(env.BLOBS), OLD).mintKey(space)).key;
+    const old = (await service(env.BLOBS, OLD).mintKey(space)).key;
     expect(old.startsWith("v1.k1.")).toBe(true);
     const body = bytes("older");
     await service().putChunks(space, old, [{ sha256: await sha(body), bytes: body }]);
     expect(await service().getChunks(space, old, [{ sha256: await sha(body) }])).toEqual([body]);
     const without = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
-    expect((await failure(() => service(ssec(env.BLOBS), without)
+    expect((await failure(() => service(env.BLOBS, without)
       .getChunks(space, old, [{ sha256: "a".repeat(64) }]))).message).toBe(KEY_REFUSED);
   });
 
   it("wraps a key again under the active kid: the same data key, so every chunk still reads",
      async () => {
     const space = ns();
-    const old = (await service(ssec(env.BLOBS), OLD).mintKey(space)).key;
+    const old = (await service(env.BLOBS, OLD).mintKey(space)).key;
     const body = bytes("kept across a rotation");
     await service().putChunks(space, old, [{ sha256: await sha(body), bytes: body }]);
     const { key } = await service().rewrapKey(space, old);
@@ -437,7 +445,7 @@ describe("data keys (SSE-C)", () => {
     expect((await service().rewrapKey(space, key)).key).toBe(key);  // active already: as it is
     // The old kid leaves the ring: the re-wrapped key reads what the old one put.
     const without = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
-    expect(await service(ssec(env.BLOBS), without).getChunks(space, key,
+    expect(await service(env.BLOBS, without).getChunks(space, key,
                                                              [{ sha256: await sha(body) }]))
       .toEqual([body]);
     // Another namespace's key is refused, as a read refuses it.
@@ -453,7 +461,7 @@ describe("data keys (SSE-C)", () => {
     const { namespace: space, k1: older } = VECTORS.files;
     const body = bytes("under main's key");
     const hash = await sha(body);
-    const under = (ring: string) => service(ssec(env.BLOBS), ring);
+    const under = (ring: string) => service(env.BLOBS, ring);
     await under(rotated).putChunks(space, older.wrapped, [{ sha256: hash, bytes: body }]);
     expect(await under(rotated).getChunks(space, VECTORS.files.rewrapped, [{ sha256: hash }]))
       .toEqual([body]);
@@ -473,9 +481,9 @@ describe("data keys (SSE-C)", () => {
     ["an extra field", JSON.stringify({ active: "k1", keys: { k1: ringKey() }, x: 1 })],
   ])("fails every keyed call loudly with %s", async (_what, ring) => {
     const space = ns();
-    expect((await failure(() => service(ssec(env.BLOBS), ring).mintKey(space))).message)
+    expect((await failure(() => service(env.BLOBS, ring).mintKey(space))).message)
       .toBe(KEYRING_UNAVAILABLE);
-    expect((await failure(async () => service(ssec(env.BLOBS), ring).getChunks(
+    expect((await failure(async () => service(env.BLOBS, ring).getChunks(
       space, await keyOf(space), [{ sha256: "a".repeat(64) }]))).message)
       .toBe(KEYRING_UNAVAILABLE);
   });
@@ -516,7 +524,7 @@ describe("manifests", () => {
     const second = (await service().mintKey(space)).key;
     expect((await failure(() => service().getManifestPart(space, second, "0123456789abcdef", 0,
                                                           written[0]!.sha256))).message)
-      .toMatch(/^SSE-C/);
+      .toBe("a stored object does not open under its owner's key");
     await service().deleteManifest(space, "0123456789abcdef", 2, [segment]);
     expect(await keys(space)).toEqual([]);
     expect(manifestKey(space, "0123456789abcdef", 3)).toBe(`o/${space}/m/0123456789abcdef/3`);
@@ -525,14 +533,14 @@ describe("manifests", () => {
   it("writes a root under the active kid, and wraps an old root's key again in place",
      async () => {
     const space = ns();
-    const old = (await service(ssec(env.BLOBS), OLD).mintKey(space)).key;
+    const old = (await service(env.BLOBS, OLD).mintKey(space)).key;
     const part = await service().putManifestPart(space, old, "1111111111111111", 0, bytes("night one"));
     // A pass that began before a rotation still writes its root under the active kid.
     await service().putManifestRoot(space, old, "1111111111111111", [part], [], { s: 1, e: 0 });
     expect((await service().getManifestRoot(space, "1111111111111111"))!.key.startsWith("v1.k2."))
       .toBe(true);
     // A root written under the old kid (before the rotation) is wrapped again in place.
-    await service(ssec(env.BLOBS), OLD).putManifestRoot(space, old, "2222222222222222", [part], [],
+    await service(env.BLOBS, OLD).putManifestRoot(space, old, "2222222222222222", [part], [],
                                                         { s: 1, e: 0 });
     expect((await service().getManifestRoot(space, "2222222222222222"))!.key).toBe(old);
     const { key } = (await service().rewrapManifestRoot(space, "2222222222222222"))!;
@@ -540,9 +548,8 @@ describe("manifests", () => {
     expect(await service().rewrapManifestRoot(space, "2222222222222222")).toEqual({ key });
     expect(await service().rewrapManifestRoot(space, "3333333333333333")).toBeNull();
     // With the old kid gone, the root still opens, and its key reads its parts.
-    const without = new FilesService(createExecutionContext(), {
-      BLOBS: ssec(env.BLOBS), FILES_CIPHER: env.FILES_CIPHER,
-      FILES_KEYRING: JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } }) });
+    const retired = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
+    const without = service(env.BLOBS, retired);
     const root = (await without.getManifestRoot(space, "2222222222222222"))!;
     expect(root.parts).toEqual([part]);
     expect(await without.getManifestPart(space, root.key, "1111111111111111", 0, part.sha256))
@@ -565,34 +572,30 @@ describe("manifests", () => {
   });
 });
 
-describe("the AES-GCM fallback (FILES_CIPHER aes-gcm)", () => {
-  const sealed = () => new FilesService(createExecutionContext(),
-                                        { BLOBS: env.BLOBS, FILES_KEYRING: RING,
-                                          FILES_CIPHER: "aes-gcm" });
-
+describe("sealed objects", () => {
   it("stores only sealed bytes, reads them whole and by range, under the owner's key alone",
      async () => {
     const space = ns();
     const key = await keyOf(space);
     const body = bytes("plain words the bucket never sees");
     const hash = await sha(body);
-    expect(await sealed().putChunks(space, key, [{ sha256: hash, bytes: body }]))
+    expect(await service().putChunks(space, key, [{ sha256: hash, bytes: body }]))
       .toEqual({ created: 1 });
-    expect(await sealed().putChunks(space, key, [{ sha256: hash, bytes: body }]))
+    expect(await service().putChunks(space, key, [{ sha256: hash, bytes: body }]))
       .toEqual({ created: 0 });
     const raw = new Uint8Array(await (await env.BLOBS.get(await named(space, hash)))!
       .arrayBuffer());
     expect(new TextDecoder().decode(raw)).not.toContain("plain words");
-    expect(raw.byteLength).toBe(body.byteLength + 12 + 16);
-    expect(await sealed().getChunks(space, key, [{ sha256: hash },
-                                                 { sha256: hash, offset: 6, length: 5 }]))
+    expect(raw.byteLength).toBe(body.byteLength + OBJECT_OVERHEAD);
+    expect(await service().getChunks(space, key, [{ sha256: hash },
+                                                  { sha256: hash, offset: 6, length: 5 }]))
       .toEqual([body, bytes("words")]);
     // Another key minted for the very namespace names nothing stored under the first.
-    const second = (await sealed().mintKey(space)).key;
-    expect((await failure(() => sealed().getChunks(space, second, [{ sha256: hash }]))).message)
+    const second = (await service().mintKey(space)).key;
+    expect((await failure(() => service().getChunks(space, second, [{ sha256: hash }]))).message)
       .toBe("a chunk the manifest holds is missing from the bucket");
-    expect((await failure(() => sealed().putChunks(space, key, [{ sha256: hash,
-                                                                  bytes: bytes("other") }])))
+    expect((await failure(() => service().putChunks(space, key, [{ sha256: hash,
+                                                                   bytes: bytes("other") }])))
       .message).toBe("the chunk's bytes do not match its sha256");
   });
 
@@ -600,50 +603,71 @@ describe("the AES-GCM fallback (FILES_CIPHER aes-gcm)", () => {
     const space = ns();
     const key = await keyOf(space);
     const [one, two] = [bytes("first"), bytes("second")];
-    await sealed().putChunks(space, key, [{ sha256: await sha(one), bytes: one },
-                                          { sha256: await sha(two), bytes: two }]);
+    await service().putChunks(space, key, [{ sha256: await sha(one), bytes: one },
+                                           { sha256: await sha(two), bytes: two }]);
     const stored = new Uint8Array(await (await env.BLOBS.get(await named(space, await sha(one))))!
       .arrayBuffer());
     await env.BLOBS.put(await named(space, await sha(two)), stored);
     const twoSha = await sha(two);
-    expect((await failure(() => sealed().getChunks(space, key, [{ sha256: twoSha }])))
+    expect((await failure(() => service().getChunks(space, key, [{ sha256: twoSha }])))
       .message).toBe("a stored object does not open under its owner's key");
     stored[20] = stored[20]! ^ 1;
     await env.BLOBS.put(await named(space, await sha(one)), stored);
     const oneSha = await sha(one);
-    expect((await failure(() => sealed().getChunks(space, key, [{ sha256: oneSha }])))
+    expect((await failure(() => service().getChunks(space, key, [{ sha256: oneSha }])))
       .message).toBe("a stored object does not open under its owner's key");
   });
 
-  it("charges a range a whole chunk, which it opens whole: a batch pulls no more", async () => {
+  it("opens no object moved from another owner, or from another generation", async () => {
+    const [alice, bob] = [ns(), ns()];
+    const body = bytes("the same bytes, two owners");
+    const hash = await sha(body);
+    await put(alice, body);
+    await put(bob, body);
+    const raw = async (at: string) => (await env.BLOBS.get(at))!.arrayBuffer();
+    await env.BLOBS.put(await named(bob, hash), await raw(await named(alice, hash)));
+    expect((await failure(() => files().getChunks(bob, [{ sha256: hash }]))).message)
+      .toBe("a stored object does not open under its owner's key");
+    const key = await keyOf(alice);
+    const [older, newer] = ["1111111111111111", "2222222222222222"];
+    const part = await service().putManifestPart(alice, key, older, 0, bytes("night one"));
+    await service().putManifestPart(alice, key, newer, 0, bytes("night one"));
+    await env.BLOBS.put(manifestKey(alice, newer, 0), await raw(manifestKey(alice, older, 0)));
+    expect((await failure(() => service().getManifestPart(alice, key, newer, 0, part.sha256)))
+      .message).toBe("a stored object does not open under its owner's key");
+  });
+
+  it("charges an unverified range a whole chunk, which it opens whole: a batch pulls no more",
+     async () => {
     const space = ns();
     const key = await keyOf(space);
     const body = bytes("ranges");
     const hash = await sha(body);
-    await sealed().putChunks(space, key, [{ sha256: hash, bytes: body }]);
+    await service().putChunks(space, key, [{ sha256: hash, bytes: body }]);
     const range = { sha256: hash, offset: 0, length: 1 };
-    expect(await sealed().getChunks(space, key, [range, range])).toEqual([bytes("r"), bytes("r")]);
-    expect((await failure(() => sealed().getChunks(space, key, [range, range, range]))).message)
+    expect(await service().getChunks(space, key, [range, range])).toEqual([bytes("r"), bytes("r")]);
+    expect((await failure(() => service().getChunks(space, key, [range, range, range]))).message)
       .toBe(`a get moves at most ${BATCH_BYTES} bytes`);
-    // Under SSE-C, R2 slices: a range costs its length.
-    const other = ns();
-    await put(other, body);
-    expect(await files().getChunks(other, [range, range, range])).toHaveLength(3);
   });
 
-  it("seals manifest parts too, and refuses a cipher it does not know", async () => {
+  it("seals manifest parts too: the bucket holds no part's plain bytes", async () => {
     const space = ns();
     const key = await keyOf(space);
-    const part = await sealed().putManifestPart(space, key, "0123456789abcdef", 0, bytes("a manifest"));
-    expect(await sealed().getManifestPart(space, key, "0123456789abcdef", 0, part.sha256))
+    const part = await service().putManifestPart(space, key, "0123456789abcdef", 0,
+                                                 bytes("a manifest"));
+    expect(await service().getManifestPart(space, key, "0123456789abcdef", 0, part.sha256))
       .toEqual(bytes("a manifest"));
-    const odd = new FilesService(createExecutionContext(), { BLOBS: env.BLOBS,
-                                                             FILES_KEYRING: RING,
-                                                             FILES_CIPHER: "rot13" });
-    expect((await failure(() => odd.getChunks(space, key, [{ sha256: part.sha256 }]))).message)
-      .toBe("FILES_CIPHER is ssec or aes-gcm");
-    // No cipher at all is refused too: the config's var is the one choice, never a default.
-    expect(() => cipherOf(undefined)).toThrow("FILES_CIPHER is ssec or aes-gcm");
+    const raw = await (await env.BLOBS.get(manifestKey(space, "0123456789abcdef", 0)))!.text();
+    expect(raw).not.toContain("a manifest");
+  });
+
+  it("leaves a fault R2 reports on a put its own, never the caller's bytes refused", async () => {
+    const space = ns();
+    const body = bytes("in transit");
+    const fault = new Error("put: The SHA-256 checksum you specified did not match what we " +
+                            "received. (10037)");
+    const faulty = { put: async () => { throw fault; } } as unknown as R2Bucket;
+    expect(await failure(async () => service(faulty).putChunks(space, await keyOf(space), [{
+      sha256: await sha(body), bytes: body }]))).toBe(fault);
   });
 });
-

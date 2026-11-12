@@ -5,7 +5,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 import { project } from "../ci/project";
-import { configBindings, fake, main, once, pool, workerConfig } from "../ci/workers";
+import { configBindings, fake, fakeConfig, main, once, pool, workerConfig } from "../ci/workers";
 
 import { PROTOCOL } from "./runner/protocol";
 import { PROTOCOLS } from "./runner/test/state-shape";
@@ -16,6 +16,8 @@ const RUNNER_BUILD = join(SANDBOX, "runner-build.ts");
 /** The ring queue the Worker's `RING` produces to, as its config names it. */
 const RING = (configBindings(workerConfig(SANDBOX))["queueProducers"] as
   Record<string, { queueName: string }>)["RING"]!.queueName;
+/** The fake E2B, E2B's two hosts in tests. */
+const FAKE_E2B = join(SANDBOX, "test", "fake-e2b.ts");
 
 export default defineConfig({
   test: {
@@ -29,11 +31,11 @@ export default defineConfig({
         plugins: [
           cloudflareTest(once(async () => pool(main(SANDBOX, {
             bindings: { E2B_API_KEY: "e2b_test_key_0000" },
-            serviceBindings: { E2B: "fake-e2b" },
-            outboundService: "fake-e2b",
+            serviceBindings: { E2B: fakeConfig(FAKE_E2B).name },
+            outboundService: fakeConfig(FAKE_E2B).name,
             // The ring queue's consumer in tests: each ring recorded at once. The fake's loader
             // and runner answer by the runner protocol's record (`PROTOCOL`).
-            workers: [fake(join(SANDBOX, "test", "fake-e2b.ts"), {
+            workers: [fake(FAKE_E2B, {
               bindings: { PROTOCOL: PROTOCOLS[String(PROTOCOL)]! },
               queueConsumers: { [RING]: { maxBatchSize: 1, maxBatchTimeout: 0 } } })],
           })))),

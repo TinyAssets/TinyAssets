@@ -282,7 +282,7 @@ jobs:
   # than the medium legs' critical path. Required through `required-tests`' needs, on every
   # event: the PR's builder sees a production-size failure before anyone stamps it, and the
   # queue and the hourly run hold main to it. Every workspace with a large test has its
-  # `test:sizes` here, every shard (platform/ci/guards/legs.test.ts).
+  # `test:sizes` here, every shard, `1/1` when whole (platform/ci/guards/legs.test.ts).
   #
   # timeout-minutes is a watchdog: about 3 x the slowest shard's measured time (owner 2/2,
   # 178 s in one local run, 2026-11-04; re-derive from the first CI run's shard times).
@@ -299,11 +299,11 @@ jobs:
           - leg: owner 2/2
             command: npm run test:sizes -w owner -- --shard=2/2
           - leg: runner
-            command: npm run test:sizes -w sandbox
+            command: npm run test:sizes -w sandbox -- --shard=1/1
           - leg: deploy
-            command: npm run test:sizes -w deploy
+            command: npm run test:sizes -w deploy -- --shard=1/1
           - leg: ci
-            command: npm run test:sizes -w ci
+            command: npm run test:sizes -w ci -- --shard=1/1
     defaults:
       run:
         working-directory: platform
@@ -318,7 +318,16 @@ jobs:
           cache: npm
           cache-dependency-path: platform/package-lock.json
       - run: npm ci
-      - run: ${{ matrix.command }}
+      # Each leg's Vitest JSON report, the input of `node ci/budgets.mjs` (ci/classes.ts), beside
+      # Vitest's two reporters on a GitHub runner (the default and its failure annotations).
+      # overwrite: a re-run of the whole run uploads each leg's report again.
+      - run: ${{ matrix.command }} --reporter=default --reporter=github-actions --reporter=json --outputFile.json=${{ runner.temp }}/report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sizes-report-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/report.json
+          if-no-files-found: error
+          overwrite: true
 
   # The owner app in a real browser (slice APP): Chromium at the Playwright version the
   # platform lockfile pins, against the doors in workerd. Required through
