@@ -1393,7 +1393,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
 async function reportSignins(start: StartDoc, lease: LeaseFile): Promise<void> {
   const signins: { engine: string; signed_in: boolean }[] = [];
   for (const rec of RECORDS.values()) {
-    if (rec.unwired === undefined && rec.cli!.credential.includes("vendor_login_in_sandbox")
+    if (rec.cli!.credential.includes("vendor_login_in_sandbox")
         && rec.cli!.login !== undefined) {
       signins.push({ engine: rec.id, signed_in: await safeSignedIn(rec) });
     }

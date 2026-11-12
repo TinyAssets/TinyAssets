@@ -998,8 +998,7 @@ describe("an API-key run's base URL (codexurl_research.md)", () => {
   it("hands every key record's CLI the door in its declared channel", () => {
     for (const engine of sources.ids()) {
       const cli = sources.get(engine)!.cli;
-      if (cli === undefined || sources.get(engine)!.unwired !== undefined
-          || !cli.credential.includes("api_key")) {
+      if (cli === undefined || !cli.credential.includes("api_key")) {
         continue;
       }
       for (const [provider, names] of Object.entries(cli.api_key_env!)) {

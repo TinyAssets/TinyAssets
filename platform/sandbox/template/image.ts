@@ -120,7 +120,7 @@ function engines(): ImageEngine[] {
   for (const id of [...sources.ids()].sort()) {
     const record = sources.get(id)!;
     const install = record.cli?.install;
-    if (install === undefined || record.unwired !== undefined || install.manager !== "npm") {
+    if (install === undefined || install.manager !== "npm") {
       continue;
     }
     const digest = sha256Hex(readFileSync(lock(id)));

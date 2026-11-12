@@ -27,10 +27,6 @@ export function catalogOf(records: readonly unknown[]): Sources {
       // Each engine a key names is a served CLI record that runs on a key of this provider.
       for (const engine of record.engines ?? []) {
         const named = byId(engine) === undefined ? undefined : sourceRecord(byId(engine));
-        if (named?.unwired !== undefined) {
-          throw new SourceRecordError(`source record ${JSON.stringify(record.id)}: engine ` +
-            `${JSON.stringify(engine)} is unwired (${named.unwired}), so no key runs it`);
-        }
         const cli = named?.cli;
         if (cli?.api_key_env?.[record.upstream!.provider] === undefined) {
           throw new SourceRecordError(`source record ${JSON.stringify(record.id)}: engine ` +

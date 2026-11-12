@@ -125,9 +125,6 @@ export function plan(runner: string): Plan {
   const routes: PlanStep[] = [];
   for (const rec of [...RECORDS.values()].sort((a, b) => (a.id < b.id ? -1 : 1))) {
     const cli = rec.cli!;
-    if (rec.unwired !== undefined) {
-      continue;
-    }
     if (cli.login !== undefined) {
       const regions = Object.keys(cli.regions ?? {}).sort();
       for (const region of regions.length > 0 ? regions : [null]) {
@@ -242,7 +239,7 @@ const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 /** The sealed API a provider's key goes to, as the gateway's record for it says. */
 function sealedScope(provider: string, engine: string): EgressScope {
   const found = (bundledRecords() as Record<string, unknown>[]).filter((raw) =>
-    raw["provider"] === provider && raw["unwired"] === undefined
+    raw["provider"] === provider
     && typeof raw["base_url"] === "string" && Array.isArray(raw["connect"])
     && (raw["connect"] as string[]).includes("api_key")
     && Array.isArray(raw["engines"]) && (raw["engines"] as string[]).includes(engine))
@@ -541,7 +538,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
 async function routeProbe(engine: string, provider: string,
                           resolvers: readonly string[]): Promise<number> {
   const rec = record(engine);
-  if (rec.unwired !== undefined || !rec.cli!.credential.includes("api_key")
+  if (!rec.cli!.credential.includes("api_key")
       || rec.cli!.api_key_env?.[provider] === undefined) {
     throw new Error(`engine ${engine} runs on no API key of provider ${provider}`);
   }
