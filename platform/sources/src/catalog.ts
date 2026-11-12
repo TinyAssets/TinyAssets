@@ -2,8 +2,8 @@
  * A catalog of source records (`Sources`): the records, held together by the checker's
  * rules for a catalog (`checkedTogether`) when it is made, and each checked whole
  * (`sourceRecord`) when it is read. The platform's own are every record file beside this
- * module, listed by `records.ts`, which `write-records.ts` writes from the folder and a
- * guard holds to it, so a new record needs no hand-added import.
+ * module, listed by `records.ts`, which `npm run generate` writes from the folder, so a new
+ * record needs no hand-added import.
  */
 import { object } from "../../contract/src/checks";
 import { SOURCE_ID } from "../../contract/src/text";

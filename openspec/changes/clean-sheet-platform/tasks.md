@@ -285,8 +285,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B4: the door table generates the prototype methods at module load (d3 §K4).
   - B6: the queue names generated from the Worker configs into the contract (d3 §A3).
   - B8: the compatibility date is a kit check that the six configs agree (d3 §A4).
-  - B9: `okf-watch apply` runs `npm run generate`, and its workflow adds `platform/plugins`
-    (d3 §O5).
+  - C2b, B9's `Env` half (d3 §R): `ci/kit/types.ts` writes each `<Worker>Env` from wrangler's
+    binding list, a binding to another Worker typed by its contract through a contract table,
+    with no global augmentation; the hand `Env`s and `envProblems` deleted; `SANDBOX` and
+    `ERASURES` required. Right after C2.
   - B11: a Worker's existence from `Cloudflare.workers`, never from its secret listing: the
     `workers` and `doors deployed` steps, which read a secret listing for it
     (`deploy/deploy.ts:1231-1236`, `:1394-1396`) (d3 §O2).

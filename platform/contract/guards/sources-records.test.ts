@@ -1,7 +1,7 @@
 /**
  * The catalog finds every record file: `sources/src/records.ts`, which a Worker's bundle
- * reads in place of a folder, is the list `sources/write-records.ts` makes from the folder,
- * so a record file added or removed without writing it again fails here.
+ * reads in place of a folder, is the list `sources/write-records.ts` makes from the folder
+ * (one of `npm run generate`'s generators), so a record file needs no hand-added import.
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,14 +10,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { bundledRecords } from "../../sources/src/catalog";
-import { RECORDS_FILE, recordsText, SOURCES } from "../../sources/write-records";
+import { recordsText, SOURCES } from "../../sources/write-records";
 
 describe("the catalog's record files", () => {
-  it("are the folder's, as write-records.ts lists them (run it after adding a record)", () => {
-    expect(readFileSync(RECORDS_FILE, "utf8"), "node platform/sources/write-records.ts")
-      .toBe(recordsText());
-  });
-
   it("are every record file, in name order, as each holds it", () => {
     const text = recordsText();
     const files = [...text.matchAll(/^import \w+ from "\.\.\/([^"]+)";$/gm)].map((m) => m[1]!);

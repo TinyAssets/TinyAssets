@@ -1,10 +1,9 @@
 /**
  * The AI apps an owner may connect (`apps.json`, slice BRAIN) and the plugins built from the
- * starter's skills (`platform/plugins`): the data's shape, how a signed-in client is known
- * from it, the dynamic-registration rule it carries, and the plugins current with their one
- * source.
+ * starter's skills (`platform/plugins`, which `npm run generate` writes): the data's shape,
+ * how a signed-in client is known from it, the dynamic-registration rule it carries, and what
+ * the plugins connect to.
  */
-import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
@@ -270,20 +269,7 @@ describe("apps.json", () => {
 });
 
 describe("the plugins", () => {
-  it("are current with the starter's skills and the doors' identity, and so is " +
-     "doors/onboarding.json (build.mjs --check)", () => {
-    execFileSync(process.execPath, [join(PLUGINS, "build.mjs"), "--check"], { stdio: "pipe" });
-  });
-
-  it("carry the brain's skills byte for byte, the MCP server, and the onboarding prompt " +
-     "first", () => {
-    const starter = join(PLATFORM, "starter", "workspace", ".agents", "skills");
-    for (const plugin of ["chatgpt", "claude"]) {
-      for (const skill of ["shared-brain", "onboarding", "goals"]) {
-        expect(readFileSync(join(PLUGINS, plugin, "skills", skill, "SKILL.md"), "utf8"))
-          .toBe(readFileSync(join(starter, skill, "SKILL.md"), "utf8"));
-      }
-    }
+  it("carry the doors' MCP server, and the onboarding prompt first", () => {
     const openai = JSON.parse(readFileSync(join(PLUGINS, "chatgpt", "plugin.json"), "utf8"));
     const interface_ = openai.extensions["com.openai"].interface;
     expect(interface_.defaultPrompt[0]).toBe("Set me up on TinyAssets");

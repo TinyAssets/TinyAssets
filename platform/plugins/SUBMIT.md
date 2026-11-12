@@ -1,8 +1,8 @@
 # Submitting the TinyAssets plugins
 
 This is the founder's checklist. Submitting a listing is an outward act, so no agent does
-it. The plugins in `chatgpt/` and `claude/` are built by `node platform/plugins/build.mjs`
-from the starter's skills and `platform/contract/apps.json`. Don't edit them by hand.
+it. The plugins in `chatgpt/` and `claude/` are built by `npm run generate` (`build.mjs`)
+from the starter's skills and `platform/contract/identity.json`. Don't edit them by hand.
 
 ## Before either submission
 
