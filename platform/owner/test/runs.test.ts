@@ -396,8 +396,6 @@ describe("simultaneous runs", () => {
     // Each run's environment names its own connection alone.
     expect(JSON.stringify(onA.start.config.env)).not.toContain(b);
     expect(JSON.stringify(onB.start.config.env)).not.toContain(a);
-    await r.in((instance) => instance.sandbox.networkApplied({
-      ...onA.start.lease, generation: 1 }));
     const egress = (start: SandboxStart) => r.bind({ sandbox: {
       kind: "egress", generation: 1, secret: hashed(secretOf(start)), token: verifyToken(
         env.ROUTING_MAC_KEY, "egress", onA.start.tokens!.egress_token)!.hash } });

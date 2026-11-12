@@ -50,8 +50,9 @@ async function lanes(r: Gated): Promise<void> {
 }
 
 /**
- * The sandbox's lease taken for a run on the owner's connection (pi on that key) and its
- * network applied, and the egress door's binding for it, as a sandbox's calls carry it.
+ * The sandbox's lease taken for a run on the owner's connection (pi on that key), its
+ * network applied by the start that carried it, and the egress door's binding for it, as a
+ * sandbox's calls carry it.
  */
 async function sandboxOf(r: Gated): Promise<Binding> {
   const [{ id: connection }] = await r.sql(
@@ -59,9 +60,6 @@ async function sandboxOf(r: Gated): Promise<Binding> {
   const { start } = await ownerRun(r.stub, r.bind(), { engine: "pi", credential: "api_key",
                                                        connection, scopes: [] });
   RUN = start.run;
-  await r.in((instance) => instance.sandbox.networkApplied({
-    lease_id: start.lease.lease_id, epoch: start.lease.epoch,
-    generation: start.network!.generation }));
   const token = verifyToken(env.ROUTING_MAC_KEY, "egress", start.tokens!.egress_token)!.hash;
   return r.bind({ sandbox: { kind: "egress", token, generation: start.network!.generation,
                              secret: hashed(secretOf(start)) } });

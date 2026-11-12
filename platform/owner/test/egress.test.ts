@@ -98,12 +98,12 @@ const OPENED = new Map<string, Omit<Opened, "lease">>();
 
 /**
  * A run admitted for `run` (an agent's file naming its engine, credential and connection),
- * through the run door, which opens the sandbox's lease (or joins the live one); unless
- * `apply` is false its network applied; the owner's caps made roomy first, unless `roomy`
+ * through the run door, which opens the sandbox's lease (or joins the live one), its network
+ * applied by the start that opened it; the owner's caps made roomy first, unless `roomy`
  * is false. Unless a test names the run, it is pi on the owner's oldest active connection,
  * the one the test calls, or a run on the owner's own sign-in when the owner holds none.
  */
-async function leased(r: Gated, apply = true, roomy = true,
+async function leased(r: Gated, roomy = true,
                       run?: Omit<SandboxRun, "run" | "secret">): Promise<Leased> {
   if (roomy) {
     await capped(r, ROOMY);
@@ -120,11 +120,6 @@ async function leased(r: Gated, apply = true, roomy = true,
   SECRETS.set(start.run, hashed(secretOf(start)));
   const egress = hashOf("egress", opened.egress_token);
   const sync = hashOf("sync", opened.sync_token);
-  if (apply) {
-    await r.in((instance) => instance.sandbox.networkApplied({
-      lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
-      generation: opened.network.generation }));
-  }
   return {
     opened, run: start.run, lease_id: opened.lease.lease_id, epoch: opened.lease.epoch, egress,
     sync,
@@ -256,11 +251,13 @@ async function capped(r: Gated, models: Record<string, unknown>,
     ...policy, models, spend: { ...policy.spend, ask_above: askAbove } } });
 }
 
-/** The caps set once the lease is held, its network applied under the new generation. */
+/**
+ * The caps set once the lease is held: a model policy write leaves the egress generation, so
+ * the network its start applied stays current.
+ */
 async function cappedLeased(r: Gated, models: Record<string, unknown>): Promise<Leased> {
-  const lease = await leased(r, false);
+  const lease = await leased(r);
   await capped(r, models);
-  await r.in((instance) => instance.sandbox.networkApplied({ ...held(lease), generation: 1 }));
   return lease;
 }
 
@@ -344,12 +341,12 @@ describe("an egress call", () => {
                                 paths: ["/v1/messages/batches"], methods: ["POST"] }] },
                                   "Other");
     await r.in((instance) => instance.sandbox.close(held(lease)));
-    const onOther = await leased(r, true, true, onKey(other));
+    const onOther = await leased(r, true, onKey(other));
     expect(await refusedWith(r, onOther.as(), other, { path: "/v1/messages/batches" }))
       .toBe("egress_unmetered");
     // Another provider on the same API, sealing the same path: Anthropic's page is not its.
     await r.in((instance) => instance.sandbox.close(held(onOther)));
-    const onCounted = await leased(r, true, true, onKey(connection));
+    const onCounted = await leased(r, true, onKey(connection));
     await r.sql("UPDATE connections SET provider = 'vercel-ai-gateway' WHERE id = ?", connection);
     expect(await refusedWith(r, onCounted.as(), connection,
                              { path: "/v1/messages/count_tokens" })).toBe("egress_unmetered");
@@ -359,7 +356,7 @@ describe("an egress call", () => {
     const r = await gated();
     const a = await r.connect("sk-good");
     const b = await r.connect("sk-good-2", ANTHROPIC, "B");
-    const onA = await leased(r, true, true, onKey(a));
+    const onA = await leased(r, true, onKey(a));
     expect(await refusedWith(r, onA.as(), b)).toBe("egress_run_connection");
     expect((await admitted(r, onA, a)).ok).toBe(true);
     // The connection is the run grant's, never the lease's.
@@ -373,7 +370,7 @@ describe("an egress call", () => {
     const r = await gated();
     const a = await r.connect("sk-good");
     const b = await r.connect("sk-good-2", ANTHROPIC, "B");
-    const signedIn = await leased(r, true, true, SIGNED_IN);
+    const signedIn = await leased(r, true, SIGNED_IN);
     for (const connection of [a, b, `c${"0".repeat(24)}`]) {
       expect(await refusedWith(r, signedIn.as(), connection), connection)
         .toBe("egress_run_connection");
@@ -403,18 +400,23 @@ describe("an egress call", () => {
     const connection = await r.connect("sk-good");
     const other = await gated();
     const theirs = await other.connect("sk-good");
-    const before = await leased(r, false);
+    const before = await leased(r);
+    // An egress write since its start: its network stays at the generation that start
+    // applied (1), and the policy's is 2.
+    const { generation, policy } = await r.stub.policyRead(r.bind());
+    await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
+      ...policy, egress: { mode: "allowlist", destinations: [] } } });
     // The lease: another token, then the transform's generation, then the network's.
-    expect(await refusedWith(r, before.as(1, "f".repeat(64)), connection))
+    expect(await refusedWith(r, before.as(2, "f".repeat(64)), connection))
       .toBe("egress_lease_closed");
-    expect(await refusedWith(r, before.as(2), connection)).toBe("egress_policy_stale");
-    expect(await refusedWith(r, before.as(), connection)).toBe("egress_network_stale");
+    expect(await refusedWith(r, before.as(1), connection)).toBe("egress_policy_stale");
+    expect(await refusedWith(r, before.as(2), connection)).toBe("egress_network_stale");
     await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
-    expect(await refusedWith(r, before.as(), connection)).toBe("egress_lease_closed");
+    expect(await refusedWith(r, before.as(2), connection)).toBe("egress_lease_closed");
     const lease = await leased(r);
-    expect(await refusedWith(r, before.as(), connection)).toBe("egress_lease_closed");
+    expect(await refusedWith(r, before.as(2), connection)).toBe("egress_lease_closed");
     // The run's connection, before the generations: another owner's, or none, is not it.
-    expect(await refusedWith(r, lease.as(2), theirs)).toBe("egress_run_connection");
+    expect(await refusedWith(r, lease.as(1), theirs)).toBe("egress_run_connection");
     expect(await refusedWith(r, lease.as(), `c${"0".repeat(24)}`))
       .toBe("egress_run_connection");
     // The run's own connection: one with no scope stored, an unusable blob.
@@ -450,7 +452,7 @@ describe("an egress call", () => {
     const version = async () =>
       (await r.sql("SELECT version FROM connections WHERE id = ?", connection))[0]!["version"];
     // A live lease whose run was not given the connection refreshes nothing.
-    const signedIn = await leased(r, true, true, SIGNED_IN);
+    const signedIn = await leased(r, true, SIGNED_IN);
     expect(await refusedWith(r, signedIn.as(), connection,
                              { path: "/v1/responses", model: OPENAI_MODEL }))
       .toBe("egress_run_connection");
@@ -692,7 +694,7 @@ async function pricedModels(r: Gated, connection: string) {
 
 /** A lease open and applied on the owner's own caps, and its egress binding. */
 async function defaultLease(r: Gated): Promise<Leased> {
-  return leased(r, true, false);
+  return leased(r, false);
 }
 
 describe("a call's reservation (review round 3)", () => {
@@ -926,9 +928,8 @@ describe("the spend caps", () => {
      async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
-    const lease = await leased(r, false);
+    const lease = await leased(r);
     await capped(r, ROOMY, 100);  // "ask me above 100", for the agent's purchases
-    await r.in((instance) => instance.sandbox.networkApplied({ ...held(lease), generation: 1 }));
     await admitted(r, lease, connection);
   });
 
@@ -1043,7 +1044,6 @@ describe("the spend caps", () => {
     expect((await charges(r)).at(-1)).toMatchObject({ rule: "source_daily_cost" });
     // And the sandbox's spend is on the counters the model reservations read.
     await capped(r, ROOMY);
-    await r.in((instance) => instance.sandbox.networkApplied({ ...held(lease), generation: 1 }));
     const opened = await admitted(r, lease, connection);
     await r.stub.egressSettle(lease.as(), settle(opened.reservation));
     expect(await sourceSpend(r)).toEqual([{ p: "d", cost: one + 4200 },
@@ -1062,7 +1062,7 @@ describe("the spend caps", () => {
     // Settled, its request still counts: the run's cap is its calls, not those open.
     expect(await refusedWith(r, lease.as(), connection)).toBe("egress_spend_refused");
     // A second run beside it, on the same lease, starts afresh on counters of its own.
-    const next = await leased(r, true, false);
+    const next = await leased(r, false);
     expect(next.lease_id).toBe(lease.lease_id);
     expect(next.run).not.toBe(lease.run);
     await admitted(r, next, connection);
@@ -1104,15 +1104,13 @@ describe("a change that ends egress", () => {
     expect(await r.in((instance) => instance.sandbox.stale(lease.lease_id))).toBe(true);
     expect(await refusedWith(r, lease.as(1), connection)).toBe("egress_policy_stale");
     expect(await refusedWith(r, lease.as(2), connection)).toBe("egress_network_stale");
-    expect((await failure(() => r.in((instance) => instance.sandbox.networkApplied({
-      ...held(lease), generation: 1 })))).message).toMatch(/^egress_policy_stale/);
-    expect((await failure(() => r.in((instance) => instance.sandbox.networkApplied({
-      lease_id: lease.lease_id, epoch: lease.epoch + 1, generation: 2 })))).message)
-      .toBe(SYNC_FENCED);
     const network = await r.in((instance) => instance.sandbox.network(lease.opened.egress_token));
     expect(network).toMatchObject({ generation: 2, mode: "allowlist", boundary: false });
-    await r.in((instance) => instance.sandbox.networkApplied({ ...held(lease), generation: 2 }));
-    expect(await r.stub.egressOpen(lease.as(2), request(connection)))
+    // The next start that opens a lease carries the new network, and applies it.
+    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
+    const next = await leased(r, false);
+    expect(next.opened.network.generation).toBe(2);
+    expect(await r.stub.egressOpen(next.as(2), request(connection)))
       .toMatchObject({ ok: true, generation: 2 });
   });
 
@@ -1122,7 +1120,7 @@ describe("a change that ends egress", () => {
     const first = await r.connect("sk-good");
     const second = await r.connect("sk-good-2", ANTHROPIC, "Second");
     const third = await r.connect("sk-good-3", ANTHROPIC, "Third");
-    const lease = await leased(r, true, true, onKey(first));
+    const lease = await leased(r, true, onKey(first));
     const a = await admitted(r, lease, first);
     // Another connection's revoke leaves the stream be; its own connection's ends it.
     await r.stub.connectionRevoke(r.session(), { connection: second });
@@ -1131,16 +1129,16 @@ describe("a change that ends egress", () => {
     expect(await ended(a)).toBe(true);
     expect(await r.in((instance) => instance.sandbox.close(held(lease))))
       .toEqual({ released: true });
-    const next = await leased(r, true, true, onKey(third));
+    const next = await leased(r, true, onKey(third));
     const b = await admitted(r, next, third);
     expect(await r.in((instance) => instance.sandbox.close(held(next))))
       .toEqual({ released: true });
     expect(await ended(b)).toBe(true);
     expect(await rows(r)).toMatchObject([{ ended: "connection" }, { ended: "lease" }]);
-    const last = await leased(r, true, true, onKey(third));
+    const last = await leased(r, true, onKey(third));
     const c = await admitted(r, last, third);
     await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
-    await leased(r, true, false, onKey(third));
+    await leased(r, false, onKey(third));
     // The lapsed lease's run was lost: settled unknown, its streams ended with it.
     expect(await ended(c)).toBe(true);
     expect((await rows(r)).at(-1)).toMatchObject({ ended: "run" });
@@ -1155,17 +1153,17 @@ describe("a lease given back (untangle A2, review F5)", () => {
     const connection = await r.connect("sk-good");
     await capped(r, ROOMY);
     await defineAgent(r.stub, r.bind(), "main", { ...onKey(connection), scopes: [] });
-    // A sign-in holds the owner's lease first, so the run joins it.
+    // A sign-in holds the owner's lease first, so the run joins it: the sign-in's start
+    // opened the lease, carrying its network.
     const { id } = await r.stub.signinStart(r.bind(), { engine: "claude-code" }) as { id: string };
     const signin = (await recorder(r.stub)).signins.at(-1)! as SandboxSignin;
     const sl = signin as unknown as SandboxStart;
+    expect(await r.sql("SELECT network_generation FROM sandbox_leases"))
+      .toEqual([{ network_generation: sl.network!.generation }]);
     const opened = await r.in(async (instance) => {
       let call: EgressOpened | EgressRefusal | null = null;
       instance.recorder.answer = { started: false, code: SANDBOX_WAITING };
       instance.recorder.beforeAnswer = async (start) => {
-        await instance.sandbox.networkApplied({ lease_id: sl.lease.lease_id,
-                                                epoch: sl.lease.epoch,
-                                                generation: sl.network!.generation });
         call = await instance.egressOpen({
           owner: r.name, caller: r.name, origin: null, sandbox: {
             kind: "egress", token: hashOf("egress", sl.tokens!.egress_token),
@@ -1203,9 +1201,6 @@ describe("a lease given back (untangle A2, review F5)", () => {
       let closed: Promise<boolean> = Promise.resolve(false);
       instance.recorder.answer = { started: false, code: SANDBOX_WAITING };
       instance.recorder.beforeAnswer = async (start) => {
-        await instance.sandbox.networkApplied({ lease_id: start.lease.lease_id,
-                                                epoch: start.lease.epoch,
-                                                generation: start.network!.generation });
         call = await instance.egressOpen({
           owner: r.name, caller: r.name, origin: null, sandbox: {
             kind: "egress", token: hashOf("egress", start.tokens!.egress_token),
@@ -1253,8 +1248,6 @@ describe("the owner's erasure", () => {
                                                      connection: prepared.connection,
                                                      scopes: [] });
     RUN = start.run;
-    await runInDurableObject(stub, (instance: FauxOwnerDO) => instance.sandbox.networkApplied({
-      lease_id: start.lease.lease_id, epoch: start.lease.epoch, generation: 1 }));
     const sandbox = bind({ sandbox: { kind: "egress",
                                       token: hashOf("egress", start.tokens!.egress_token),
                                       generation: 1, secret: hashed(secretOf(start)) } });
@@ -1347,7 +1340,7 @@ describe("the sandbox's lease", () => {
      "which a close clears",
      async () => {
     const r = await gated();
-    const lease = await leased(r, false);
+    const lease = await leased(r);
     const tokens = { egress: lease.opened.egress_token, sync: lease.opened.sync_token };
     for (const [kind, token] of Object.entries(tokens) as ["egress" | "sync", string][]) {
       expect(token).toMatch(/^[A-Za-z0-9_-]+\.0\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
@@ -1363,7 +1356,7 @@ describe("the sandbox's lease", () => {
                          "network_generation FROM sandbox_leases"))
       .toEqual([{ authority: "owner", lease_id: lease.lease_id, epoch: lease.epoch,
                   egress_token: lease.egress, sync_token: lease.sync,
-                  network_generation: null }]);
+                  network_generation: 1 }]);
     expect(await r.sql("SELECT epoch FROM file_space")).toEqual([{ epoch: lease.epoch }]);
     expect(JSON.stringify(await r.sql("SELECT * FROM sandbox_leases")))
       .not.toContain(lease.opened.egress_token.split(".")[2]);
@@ -1372,29 +1365,41 @@ describe("the sandbox's lease", () => {
     await r.in((instance) => instance.sandbox.close(held(lease)));
     expect(await r.stub.agentStatus(r.bind(), { run_id: lease.run }))
       .toMatchObject({ state: "unknown", code: "lease_closed" });
-    const again = await leased(r, false, false);
+    const again = await leased(r, false);
     const renewed = await r.in((instance) => instance.sandbox.renew(held(again)));
     expect(renewed).toMatchObject({ lease_id: again.lease_id, epoch: again.epoch });
     await r.in((instance) => instance.sandbox.close(held(again)));
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
-    const applied = await leased(r);
+    const first = await leased(r);
     await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
-    const next = await leased(r, false);
+    const next = await leased(r);
+    // A lapsed lease's successor has tokens of its own, its network applied by its own start.
     expect(await r.sql("SELECT egress_token, network_generation FROM sandbox_leases"))
-      .toEqual([{ egress_token: next.egress, network_generation: null }]);
-    expect(applied.egress).not.toBe(next.egress);
+      .toEqual([{ egress_token: next.egress, network_generation: 1 }]);
+    expect(first.egress).not.toBe(next.egress);
   });
 
-  it("receipts an ask-mode network's refusal of what it does not list", async () => {
+  it("receipts an ask-mode network's refusal of what it does not list, once as its lease opens",
+     async () => {
     const r = await gated();
-    const lease = await leased(r, false);
+    const asked = async () => (await r.stub.policyReceipts(r.bind())).receipts
+      .filter((receipt) => receipt.rule === "egress.ask");
+    // A lease opened under another mode receipts nothing.
+    const before = await leased(r);
+    expect(before.opened.network).toMatchObject({ generation: 1, receipt: false });
+    expect(await asked()).toEqual([]);
+    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
     const { generation, policy } = await r.stub.policyRead(r.bind());
     await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
       ...policy, egress: { mode: "ask", destinations: [{ host: "pypi.org", port: 443 }] } } });
-    await r.in((instance) => instance.sandbox.networkApplied({ ...held(lease), generation: 2 }));
-    const { receipts } = await r.stub.policyReceipts(r.bind());
-    expect(receipts.filter((receipt) => receipt.rule === "egress.ask"))
+    expect(await asked()).toEqual([]);
+    const lease = await leased(r);
+    expect(lease.opened.network).toMatchObject({ mode: "ask", generation: 2, receipt: true });
+    expect(await asked())
       .toMatchObject([{ kind: "refusal", decision: "deny", outcome: "refused" }]);
+    // A run that joins the live lease carries no network, so applies none.
+    await leased(r, false);
+    expect(await asked()).toHaveLength(1);
   });
 
   it("hands the sandbox slice its policy and its clients' environment", async () => {
@@ -1455,5 +1460,74 @@ describe("the sandbox's lease", () => {
         .toMatch(message);
     }
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+  });
+});
+
+describe("a sandbox's network (E1)", () => {
+  /** The egress door's binding for `start`'s lease and run, at the transform's `generation`. */
+  const egressOf = (r: Gated, start: SandboxStart, generation: number) => r.bind({ sandbox: {
+    kind: "egress", token: hashOf("egress", start.tokens!.egress_token), generation,
+    secret: hashed(secretOf(start)) } });
+
+  it("is marked by the unit that dispatches the start carrying it: the run's first model " +
+     "call is admitted, with nothing else marking it", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    await capped(r, ROOMY);
+    const { start } = await ownerRun(r.stub, r.bind(), { ...onKey(connection), scopes: [] });
+    RUN = start.run;
+    expect(start.network!.generation).toBe(1);
+    const opened = await r.stub.egressOpen(egressOf(r, start, 1), request(connection));
+    expect(opened.ok || opened.code).toBe(true);  // its refusal's code, were it refused
+    expect(opened).toMatchObject({ ok: true, connection, generation: 1 });
+    expect(await r.sql("SELECT network_generation FROM sandbox_leases"))
+      .toEqual([{ network_generation: 1 }]);
+  });
+
+  it("admits the run's first model call made before its start's answer is recorded",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    await capped(r, ROOMY);
+    // The runner launched, its CLI calls its model at once: the start has not answered yet.
+    const during = await r.in((instance) => {
+      let call: EgressOpened | EgressRefusal | null = null;
+      instance.recorder.beforeAnswer = async (start) => {
+        instance.recorder.beforeAnswer = null;
+        RUN = start.run;
+        call = await instance.egressOpen(egressOf(r, start, start.network!.generation),
+                                         request(connection));
+      };
+      return () => call;
+    });
+    const { run, start } = await ownerRun(r.stub, r.bind(),
+                                          { ...onKey(connection), scopes: [] });
+    expect(run).toMatchObject({ state: "running" });
+    const call = during() as EgressOpened | EgressRefusal | null;
+    expect(call === null || call.ok || call.code).toBe(true);  // its code, were it refused
+    expect(call).toMatchObject({ ok: true, connection, generation: start.network!.generation,
+                                 metered: true });
+  });
+
+  it("is applied at that start's own generation: a policy write during the start leaves " +
+     "the newer one stale", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    await capped(r, ROOMY);
+    await r.in((instance) => {
+      instance.recorder.beforeAnswer = async () => {
+        instance.recorder.beforeAnswer = null;
+        const { generation, policy } = await instance.policyRead(r.bind());
+        await instance.policyWrite(r.session(), { expected_generation: generation, policy: {
+          ...policy, egress: { mode: "allowlist", destinations: [] } } });
+      };
+    });
+    const { start } = await ownerRun(r.stub, r.bind(), { ...onKey(connection), scopes: [] });
+    RUN = start.run;
+    expect(start.network!.generation).toBe(1);
+    expect(await r.sql("SELECT network_generation FROM sandbox_leases"))
+      .toEqual([{ network_generation: 1 }]);
+    expect(await refusedWith(r, egressOf(r, start, 1), connection)).toBe("egress_policy_stale");
+    expect(await refusedWith(r, egressOf(r, start, 2), connection)).toBe("egress_network_stale");
   });
 });
