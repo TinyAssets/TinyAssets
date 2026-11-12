@@ -969,6 +969,51 @@ def test_select_installs_before_it_selects() -> None:
     assert not steps[install].get("continue-on-error", False)
 
 
+def test_select_runs_everything_on_every_event_but_a_merge_group(tmp_path) -> None:
+    """Push, schedule and dispatch select the whole surface; a merge group, its own diff.
+
+    The gate runs only a tree-only diff's readers, so main's own runs are the one place
+    the whole surface runs after such a merge. The step's own script runs here, with
+    `python` replaced by a recorder that writes the selection each mode would.
+    """
+    step = next(s for s in _load()["jobs"]["select"]["steps"] if s.get("id") == "pick")
+    assert "if" not in step and not step.get("continue-on-error")
+    assert step["env"] == {"BASE": "${{ github.event.merge_group.base_sha }}"}
+    fake = tmp_path / "bin" / "python"
+    fake.parent.mkdir()
+    fake.write_text(
+        '#!/bin/sh\necho "$@" >> "$CALLS"\n'
+        'case "$*" in\n'
+        '  *"--ci-select all"*) echo ALL > affected.txt ;;\n'
+        '  *"--ci-select"*) echo tests/test_x.py > affected.txt ;;\n'
+        '  *) echo sha256:recorded ;;\nesac\n', encoding="utf-8")
+    fake.chmod(0o755)
+    everything = "scripts/ci_required_tests.py --ci-select all --out affected.txt"
+    diff = "scripts/ci_required_tests.py --ci-select gate --base abc123 --out affected.txt"
+    for event, base, call, scope in (
+        ("merge_group", "abc123", diff, "affected"),
+        ("push", "", everything, "ALL"),
+        ("schedule", "", everything, "ALL"),
+        ("workflow_dispatch", "", everything, "ALL"),
+        # A merge group with no base cannot name its diff: everything.
+        ("merge_group", "", everything, "ALL"),
+    ):
+        work = tmp_path / f"{event}-{base or 'none'}"
+        work.mkdir()
+        script = step["run"].replace("${{ github.event_name }}", event)
+        assert "${{" not in script
+        env = {"PATH": f"{fake.parent}{os.pathsep}{os.environ['PATH']}",
+               "CALLS": str(work / "calls.txt"), "BASE": base,
+               "GITHUB_OUTPUT": str(work / "output.txt"),
+               "GITHUB_STEP_SUMMARY": str(work / "summary.md")}
+        done = subprocess.run(["bash", "-s"], input=script.encode(), env=env, cwd=work,
+                              capture_output=True)
+        assert done.returncode == 0, done.stderr
+        calls = (work / "calls.txt").read_text(encoding="utf-8").splitlines()
+        assert calls[0] == call and len(calls) == 2, (event, calls)
+        assert f"scope={scope}" in (work / "output.txt").read_text(encoding="utf-8"), event
+
+
 def test_the_gate_asks_for_the_conservative_selection() -> None:
     """`--gate`, not the advisory PR-time mode.
 
@@ -1091,9 +1136,18 @@ def test_structural_job_runs_unconditionally_and_slow_collection_has_browser():
     structural = jobs["structural-guards"]
     assert "if" not in structural
     assert not structural.get("continue-on-error")
+    # The job always runs and reports, waiting on no other job. Which guards it runs is
+    # the selection's to say: the step selects, then hands the guards that selection.
+    assert "needs" not in structural
     step = next(s for s in structural["steps"]
                 if "scripts.ci_structural_guards" in s.get("run", ""))
     assert "if" not in step and not step.get("continue-on-error")
+    code = [line.strip() for line in step["run"].splitlines() if line.strip()]
+    # A selector that crashes fails the step: nothing after it can pass in its place.
+    assert code[0] == "set -euo pipefail"
+    assert code[-1] == 'python -m scripts.ci_structural_guards --selection "$SELECTION"'
+    assert step["env"] == {"BASE": "${{ github.event.merge_group.base_sha }}",
+                           "SELECTION": "${{ runner.temp }}/structural-selection.txt"}
     slow = jobs["slow-tests"]
     # Playwright 1.58 cannot install chromium on ubuntu 26.04, which is
     # what ubuntu-latest is now. The queue runs this install before pytest.
@@ -1101,6 +1155,113 @@ def test_structural_job_runs_unconditionally_and_slow_collection_has_browser():
     slow_run = "\n".join(s.get("run", "") for s in slow["steps"])
     assert "pip install -e '.[dev,browser]'" in slow_run
     assert "python -m playwright install --with-deps chromium" in slow_run
+
+
+def test_the_structural_guards_run_what_the_selection_holds(tmp_path, monkeypatch, capsys):
+    import scripts.ci_structural_guards as guards
+
+    every = guards.targets()
+    workflow_guard = "tests/test_tests_workflow.py"
+    routes = [f"tests/test_onboarding_app.py::{name}" for name in guards.ROUTE_CASES]
+    assert workflow_guard in every and set(routes) <= set(every)
+    assert guards.selected_targets(None) == every
+    assert guards.selected_targets([]) == []
+    assert guards.selected_targets([workflow_guard, "tests/test_no_guard.py"]) == [workflow_guard]
+    # A guard that names cases of a file runs when the selection holds the file.
+    assert guards.selected_targets(["tests/test_onboarding_app.py"]) == routes
+
+    ran: list[list[str]] = []
+    monkeypatch.setattr(guards.pytest, "main",
+                        lambda args, plugins: ran.append([a for a in args if a in every]) or 0)
+    selection = tmp_path / "affected.txt"
+    for text, expected in (("ALL\n", [every]), (f"{workflow_guard}\ntests/test_x.py\n",
+                                                [[workflow_guard]]), ("", [])):
+        ran.clear()
+        selection.write_text(text, encoding="utf-8")
+        monkeypatch.setattr(sys, "argv", ["ci_structural_guards", "--selection", str(selection)])
+        assert guards.main() == 0
+        # No guard selected: pytest is never started (with no target it would collect
+        # the whole of tests/), and the job says so.
+        assert ran == expected, text
+    assert "nothing to run" in capsys.readouterr().out
+    # Without a selection every guard runs, as a builder's own run does.
+    monkeypatch.setattr(sys, "argv", ["ci_structural_guards"])
+    assert guards.main() == 0 and ran == [every]
+
+
+def test_the_structural_job_selects_as_the_gate_does_on_each_event(tmp_path) -> None:
+    """A merge group and a pull request take the gate's selection of their own diff.
+
+    The base tip is HEAD^1 of a pull request's merge commit, so the guards a PR runs are
+    the ones its queue entry will. Every other event runs every guard. The step's own
+    script runs here, with `python` replaced by a recorder.
+    """
+    job = _load()["jobs"]["structural-guards"]
+    checkout = next(s for s in job["steps"] if "actions/checkout" in str(s.get("uses", "")))
+    assert checkout["with"]["fetch-depth"] == 0
+    step = next(s for s in job["steps"] if "scripts.ci_structural_guards" in s.get("run", ""))
+    fake = tmp_path / "bin" / "python"
+    fake.parent.mkdir()
+    fake.write_text('#!/bin/sh\necho "$@" >> "$CALLS"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    selection = tmp_path / "selection.txt"
+    guards = f"-m scripts.ci_structural_guards --selection {selection}"
+    select = "scripts/affected_tests.py --gate --base {} --out " + str(selection)
+    for event, base, expected in (
+        ("merge_group", "abc123", [select.format("abc123"), guards]),
+        ("pull_request", "", [select.format("HEAD^1"), guards]),
+        ("push", "", [guards]),
+        ("schedule", "", [guards]),
+        ("workflow_dispatch", "", [guards]),
+        # A merge group with no base cannot name its diff: every guard.
+        ("merge_group", "", [guards]),
+    ):
+        calls = tmp_path / "calls.txt"
+        calls.unlink(missing_ok=True)
+        selection.unlink(missing_ok=True)
+        script = step["run"].replace("${{ github.event_name }}", event)
+        assert "${{" not in script
+        env = {"PATH": f"{fake.parent}{os.pathsep}{os.environ['PATH']}", "CALLS": str(calls),
+               "BASE": base, "SELECTION": str(selection)}
+        done = subprocess.run(["bash", "-s"], input=script.encode(), env=env,
+                              cwd=tmp_path, capture_output=True)
+        assert done.returncode == 0, done.stderr
+        assert calls.read_text(encoding="utf-8").splitlines() == expected, event
+        if len(expected) == 1:
+            assert selection.read_text(encoding="utf-8").split() == ["ALL"]
+
+
+def test_an_empty_gate_selection_runs_nothing_and_is_not_the_whole_surface(
+        tmp_path, monkeypatch) -> None:
+    """A diff no test can read selects none, and none is not ALL.
+
+    The selector used to turn an empty selection into the whole surface. Now it stays
+    empty: every shard owns nothing and says so in the shape the aggregate needs, and
+    the aggregate judges a union of nothing against a selection of nothing.
+    """
+    out = tmp_path / "affected.txt"
+    monkeypatch.setattr(_ci.subprocess, "run",
+                        lambda cmd, **kwargs: out.write_text("", encoding="utf-8"))
+    scope, digest = _ci.ci_select("gate", out, changed=["platform/owner/src/a.ts"])
+    assert (out.read_text(encoding="utf-8"), scope) == ("", "affected")
+    assert digest == _ci.selection_digest([]) != _ci.selection_digest(None)
+    monkeypatch.undo()
+
+    shards = tmp_path / "shards"
+    for index in range(1, 7):
+        monkeypatch.setattr(sys, "argv", [
+            "ci_required_tests.py", "--junit", str(shards / f"junit-shard-{index}.xml"),
+            "--affected", str(out), "--shard", f"{index}/6", "--profile", "affected",
+            "--selection", digest, "--plan-shard"])
+        assert _ci.main() == 0
+    monkeypatch.setattr(sys, "argv", [
+        "ci_required_tests.py", "--aggregate", str(shards), "--expect-shards", "6",
+        "--shard-job-result", "success", "--junit", str(tmp_path / "junit.xml"),
+        "--affected", str(out), "--profile", "affected", "--selection", digest])
+    assert _ci.main() == 0
+    # One shard that did not report still fails it.
+    (shards / "junit-shard-3.json").unlink()
+    assert _ci.main() == 1
 
 
 def test_every_event_requires_structural_success(tmp_path):

@@ -67,7 +67,7 @@ function deepFreeze<T>(value: T): T {
 }
 
 /** Every extension a Worker's bundler would take as script, and how to parse it. */
-const KINDS: Readonly<Record<string, ts.ScriptKind>> = Object.freeze({
+export const KINDS: Readonly<Record<string, ts.ScriptKind>> = Object.freeze({
   ".ts": ts.ScriptKind.TS, ".mts": ts.ScriptKind.TS, ".cts": ts.ScriptKind.TS,
   ".tsx": ts.ScriptKind.TSX, ".js": ts.ScriptKind.JS, ".mjs": ts.ScriptKind.JS,
   ".cjs": ts.ScriptKind.JS, ".jsx": ts.ScriptKind.JSX,

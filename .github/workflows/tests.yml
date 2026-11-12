@@ -46,8 +46,8 @@ on:
     branches: [main]
   # The post-merge tripwire's only reliable AUTOMATIC trigger on this repo.
   # This run IS the compensator for `strict` branch protection being off, so a
-  # red `main` here is reverted first and diagnosed after -- never left red
-  # while someone investigates.
+  # red `main` here is re-run once and then raises the `main-red` alarm
+  # (main-red.yml). Nothing is reverted automatically.
   # (`workflow_dispatch` below is also non-PR, but it needs a human to press it,
   # so it cannot carry a tripwire. Stated precisely because the first draft of
   # this comment claimed push was the only non-PR trigger, which is false.)
@@ -149,6 +149,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The old stack's structural guards, under the selection the shards run under
+  # (`affected_tests.py --gate`, see `select` below): a guard runs when its test file is
+  # selected, and every guard runs when the selection is the whole surface. A diff no guard
+  # can read runs none. The job reads the selection as the selector gives it, before the
+  # shards' own exclusions (a guard on the heavy list still runs here). On a pull request
+  # the diff is the PR's own (HEAD^1 of the merge commit is the base tip), so a builder
+  # sees the guards the queue will run. Required through `required-tests`' needs.
   structural-guards:
     name: structural-guards
     runs-on: ubuntu-latest
@@ -164,8 +171,48 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install guard dependencies
         run: pip install -e '.[dev,browser]'
-      - name: Run every structural guard with repair instructions
-        run: python -m scripts.ci_structural_guards
+      - name: Run the structural guards this run's diff can reach, with repair instructions
+        env:
+          BASE: ${{ github.event.merge_group.base_sha }}
+          SELECTION: ${{ runner.temp }}/structural-selection.txt
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "merge_group" ] && [ -n "${BASE:-}" ]; then
+            python scripts/affected_tests.py --gate --base "$BASE" --out "$SELECTION"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            python scripts/affected_tests.py --gate --base HEAD^1 --out "$SELECTION"
+          else
+            echo ALL > "$SELECTION"
+          fi
+          python -m scripts.ci_structural_guards --selection "$SELECTION"
+
+  # The process's own tests: the gates' scripts that outlast the old stack (the review
+  # receipt, the lane check and the Bash guard, the queue-attempt ledger, the rule files'
+  # byte pins, the session sync gate, the platform's setup, main-red's decision). Plain
+  # pytest on the runner, on every event: no image, no old-stack package, and no conftest
+  # (`tests/conftest.py` loads the old stack). Required through `required-tests`' needs.
+  # Held by platform/ci/guards/legs.test.ts, where the pin outlasts the Python suite.
+  process:
+    name: process
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: scripts/process-requirements.txt
+      - run: pip install -r scripts/process-requirements.txt
+      - run: >-
+          python -m pytest --noconftest -q -p no:cacheprovider
+          scripts/tests
+          tests/test_review_check.py
+          tests/test_lane_scope_and_bash_guard.py
+          tests/test_queue_attempts.py
+          tests/test_rulebook_ratchet.py
+          tests/test_session_sync_gate.py
+          tests/test_platform_setup.py
 
   # The TypeScript platform workspace (ADR-032): typecheck, then its tests in the
   # real workerd runtime. Required through `required-tests`' needs; nothing here deploys.
@@ -318,8 +365,17 @@ jobs:
   # `affected_tests.py --base <base_sha>` is exactly the entry's own diff. On
   # EVERY other event -- push to main, schedule, dispatch -- the answer is ALL,
   # unconditionally: the post-merge run is the one that sees the whole surface,
-  # and `main-red.yml` acts on it. That split is the whole design; a selective
+  # and `main-red.yml` alarms on it. That split is the whole design; a selective
   # push run would leave nothing covering the rest.
+  #
+  # The selection is ALL for any diff that touches the old stack: its code, its
+  # tests, its packaging, any Python outside `platform/`, or a path that starts its
+  # image build (`build-image.yml`'s push paths: the deploy chain's workflows).
+  # A diff confined to
+  # the trees no Python imports (`affected_tests.TREES`: the platform, the prose,
+  # the workflows, the provider files, the non-Python files under `scripts/`)
+  # selects only the tests the reader map gives those trees, and none when the
+  # map gives none.
   #
   # It publishes the selection as an artifact AND its digest as an output. The
   # digest is what makes the shards' agreement checkable: every shard records
@@ -666,8 +722,10 @@ jobs:
     # with the `gh api` protection update in
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
+    # The gate's lasting shape is the last four: the platform's legs and the process leg.
+    # The first four are the old stack's Python jobs, which leave at the cutover.
     needs: [select, required-tests-shard, affected-tests, structural-guards, platform-tests,
-            platform-app, platform-sizes]
+            platform-app, platform-sizes, process]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -685,6 +743,8 @@ jobs:
         with:
           python-version: '3.11'
 
+      # The job must have run and succeeded on every event. Which guards it ran is the
+      # selection's to say; a skipped or cancelled job fails.
       - name: Require structural guards on every event
         env:
           STRUCTURAL_RESULT: ${{ needs.structural-guards.result }}
@@ -694,16 +754,18 @@ jobs:
             exit 1
           fi
 
-      # The TypeScript platform (ADR-032), its large tests and the owner app in a browser
-      # gate every event too: each must have run and succeeded; skipped or cancelled fails.
-      - name: Require the platform's tests and the owner app's browser test
+      # The TypeScript platform (ADR-032), its large tests, the owner app in a browser and
+      # the process leg gate every event: each must have run and succeeded; skipped or
+      # cancelled fails. This step is the gate's lasting shape.
+      - name: Require the platform's tests, the owner app's browser test and the process leg
         env:
           PLATFORM_RESULT: ${{ needs.platform-tests.result }}
           APP_RESULT: ${{ needs.platform-app.result }}
           SIZES_RESULT: ${{ needs.platform-sizes.result }}
+          PROCESS_RESULT: ${{ needs.process.result }}
         run: |
-          if [ "$PLATFORM_RESULT" != success ] || [ "$APP_RESULT" != success ] || [ "$SIZES_RESULT" != success ]; then
-            echo "::error::Platform checks did not pass (platform-tests=$PLATFORM_RESULT, platform-sizes=$SIZES_RESULT, platform-app=$APP_RESULT). Fix the named job and rerun Tests."
+          if [ "$PLATFORM_RESULT" != success ] || [ "$APP_RESULT" != success ] || [ "$SIZES_RESULT" != success ] || [ "$PROCESS_RESULT" != success ]; then
+            echo "::error::Required legs did not pass (platform-tests=$PLATFORM_RESULT, platform-sizes=$SIZES_RESULT, platform-app=$APP_RESULT, process=$PROCESS_RESULT). Fix the named job and rerun Tests."
             exit 1
           fi
 

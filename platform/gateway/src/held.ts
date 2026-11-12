@@ -174,8 +174,7 @@ export class Hold {
   readonly #most: number;
   readonly #signal: AbortSignal;
 
-  constructor(owner: string, signal: AbortSignal,
-              pool: SlotPool = gatewaySlots()) {
+  constructor(pool: SlotPool, owner: string, signal: AbortSignal) {
     this.#lease = pool.lease(owner);
     this.#most = pool.most;
     this.#signal = signal;
