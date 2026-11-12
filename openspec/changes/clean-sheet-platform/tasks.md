@@ -326,10 +326,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
     (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is four PRs, each green on its own:
+  (d3 §K1, §K2). T1 is five PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
-  - [x] T1b: the ceilings of `Policy`, `ModelUsage`, `Sessions`, `Egress` and
+  - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
     `Connections` read where they are defined, their tests at production's numbers;
     `Schedule`'s `passMs` gone and `halted` required; `Files`' `reclaim`, `changed` and
     `manifested` required; `Connections`' unbound `GATEWAY` case gone.
