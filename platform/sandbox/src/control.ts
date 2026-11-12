@@ -18,7 +18,8 @@
  *    by E2B for room, the run waits (`sandbox_waiting`) until the doorbell rings, never
  *    refused. Every resume runs `prepare` again (the lockdown re-checked, not assumed). A
  *    start that opened the lease (`tokens`) applies its network whole and hands the runner
- *    its secrets (`/var/lib/ta/lease.json`, in the root-only state directory);
+ *    its two secrets, the sync token and its own (`/var/lib/ta/lease.json`, in the root-only
+ *    state directory), never the egress token, which the network's transform carries;
  * 3. a run on the vendor's own sign-in widens the network to its record's login and
  *    provider hosts, and runs the record's `status_argv` there first
  *    (`ta-runner signin-check`): no login, and the answer is `signin_required`;
@@ -741,8 +742,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       const { handle } = got;
       if (request.tokens !== null) {
+        // The runner's two tokens alone: the egress token stays in E2B's transform, outside.
+        const { sync_token, runner_token } = request.tokens;
         const lease: LeaseFile = { lease: request.lease, authority: request.authority,
-                                   tokens: request.tokens };
+                                   tokens: { sync_token, runner_token } };
         await e2b.upload(handle, LEASE_FILE, json(lease));
         this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0 WHERE authority = ?",
                        request.lease.lease_id, request.authority);
