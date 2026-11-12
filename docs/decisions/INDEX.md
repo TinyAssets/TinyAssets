@@ -39,3 +39,12 @@ acceptance except its Status line (ADR-005).
 - [ADR-022-box-backend-gvisor-on-the-droplet.md](ADR-022-box-backend-gvisor-on-the-droplet.md) — gVisor on the droplet as the one box backend · superseded by ADR-032
 - [ADR-001-truth-hierarchy-and-freshness.md](ADR-001-truth-hierarchy-and-freshness.md) — superseded by ADR-005
 - [ADR-002-static-vs-dynamic-context-budget.md](ADR-002-static-vs-dynamic-context-budget.md) — superseded by ADR-005
+
+## Decision logs
+
+Working logs, not ADRs: each records a run's decisions in order, and a later entry or log
+amends an earlier one where it says so.
+
+- [untangle-2026-11-wave-1.md](untangle-2026-11-wave-1.md) — the untangle's first redesign of `platform/`: root fixes A1–A7, the bugs found, the spec questions decided
+- [untangle-2026-11-wave-2.md](untangle-2026-11-wave-2.md) — the second wave: fixes B1–B26, the lanes and their order, the plan's review (§G)
+- [untangle-2026-11-remaining-build.md](untangle-2026-11-remaining-build.md) — the whole remaining build in one order, amending wave 2, with the decisions since (§A–§Q)
