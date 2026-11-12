@@ -1,7 +1,7 @@
 /**
  * The sandbox's template and the pair it runs (`template/`):
- * - the image (`image.py`, from `image.ts`'s spec and staged files) is the recipe the pinned
- *   template was built from, as E2B's SDK serializes it: a step changed is a new image;
+ * - the image (`image.py`, from `image.ts`'s spec and staged files) is the recipe the next
+ *   build will produce, as E2B's SDK serializes it: a step changed is a new image;
  * - its tag moves with every input of the image's build, and with nothing else (the runner,
  *   the probes, the checks, the tag's own code);
  * - the runner the Worker ships is the bundle as built, byte for byte, and carries none of
@@ -206,7 +206,7 @@ function passing(entry: Passed): boolean {
 }
 
 describe("the image", () => {
-  it("is the recipe the pinned template was built from, as E2B's SDK serializes it", () => {
+  it("is the recipe the next build will produce, as E2B's SDK serializes it", () => {
     const steps = JSON.parse(recipe()) as { steps: { type: string }[]; fromImage: string };
     expect(steps.fromImage).toBe("e2bdev/base");
     expect(steps.steps).toHaveLength(21);
