@@ -25,7 +25,8 @@
 //   move's own code: no real mail reaches it) within `moveTableUnits` and 256 bytes a record;
 //   the merge of the most records real mail reaches (round 5's), its records within the same
 //   at its passes' ends; a tail seal of small messages, a move of
-//   two large bodies (4 against 8 MiB each, O(1) in size) and a purge's rewrite of them,
+//   two large bodies as one segment (4 MiB each, against the largest segment production
+//   makes, 8 MiB and the largest body short of the seal: O(1) in size) and a purge's rewrite,
 //   each run by the object's own `archive` lane, every pass within its table's and its own
 //   units;
 // - a generation's burst (slice P): at production sizes, of the smallest lines, run by the
@@ -418,11 +419,12 @@ try {
         costs.move_seal_units * UNIT + pass,
         "moveTableUnits(archiveRecords, the most a seal takes) + MOVE_PASS_UNITS");
   const bodies = { 4: await twice("bodies", 4), 8: await twice("bodies", 8) };
-  check("archive move: peak(two 8 MiB bodies) - peak(two 4 MiB), least of two runs",
-        bodies[8].least - bodies[4].least, QUARTER, "a quarter chunk");
-  check("archive move: peak(two 8 MiB bodies), worst of two runs", bodies[8].most,
-        costs.move_body_units * UNIT + pass, "moveTableUnits(2) + MOVE_PASS_UNITS");
-  check("archive rewrite: peak, a purge of one of two 8 MiB bodies",
+  check("archive move: peak(the largest segment, about 16 MiB) - peak(two 4 MiB bodies), " +
+        "least of two runs", bodies[8].least - bodies[4].least, QUARTER, "a quarter chunk");
+  check("archive move: peak(the largest segment, about 16 MiB), worst of two runs",
+        bodies[8].most, costs.move_body_units * UNIT + pass,
+        "moveTableUnits(2) + MOVE_PASS_UNITS");
+  check("archive rewrite: peak, a purge of one body of the largest segment",
         await peak("rewrite", 8), costs.move_body_units * UNIT + pass,
         "moveTableUnits(2) + MOVE_PASS_UNITS");
 

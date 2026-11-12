@@ -175,12 +175,12 @@ export function placedAs(place: Placed | null, body: string): boolean {
  * adopted and held to be that body's own; with null for a body its row keeps.
  */
 export function adopted<T>(body: string, place: Placed | null | undefined, writer: string,
-                           adopt: Adopt | undefined, name: (contentId: string | null) => T): T {
+                           adopt: Adopt, name: (contentId: string | null) => T): T {
   const bytes = bodyBytes(body);
   if (!placed(bytes.byteLength)) {
     return name(null);
   }
-  if (place === null || place === undefined || adopt === undefined) {
+  if (place === null || place === undefined) {
     throw new Error(`a body of more than ${PLACE_BYTES} bytes is placed before its write`);
   }
   if (!placedAs(place, body)) {
