@@ -279,6 +279,8 @@ Each joins the lane named. None blocks its u3 PR.
    - They are the owner's own settings, which Fact 15 allows, and the owner can change them.
    - The notice's wording is outward-facing, so it goes to the founder (`founder_batch.md` item 6).
 8. **Build slices, after B25 and alongside lane O:** the report's six. None adds spending.
+   The honest note (§N5, `policyRead`'s `holds_at` and `not_enforced`), in no slice's list,
+   rides slice 4 (P-hooks), once the engine records say where a hook holds.
 9. **Live checks owed at the dark redeploy:**
    - Claude `defer` with several tool calls in one turn;
    - managed settings against an org's server-managed settings;

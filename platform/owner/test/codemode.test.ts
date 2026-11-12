@@ -14,7 +14,9 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { CODEMODE_TIMEOUT_MS, type CodemodeService, codemodeSandbox } from "../src/codemode";
-import { CODEMODE_DEFAULTS, validate } from "../../contract/src/policy-document";
+import {
+  CODEMODE_DEFAULTS, DEFAULT_POLICY_JSON, validate,
+} from "../../contract/src/policy-document";
 import { codemodeSettings } from "../src/policy";
 
 /** The codemode Worker, each execution's name recorded on `names`. */
@@ -73,9 +75,7 @@ describe("code mode's executor", () => {
   });
 
   it("is on in the owner's policy until the owner turns it off, its one switch", () => {
-    const base = { entries: [], egress: { mode: "open", destinations: [] },
-                   spend: { daily: null, monthly: null, transaction: null, ask_above: null,
-                            source_ceilings: {} } };
+    const base = JSON.parse(DEFAULT_POLICY_JSON) as object;
     expect(CODEMODE_DEFAULTS).toEqual({ on: true });
     expect(codemodeSettings(validate(base))).toEqual({ on: true });
     expect(codemodeSettings(validate({ ...base, codemode: { on: false } })))

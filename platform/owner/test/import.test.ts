@@ -23,7 +23,9 @@ import {
 import { MAX_OPEN_INTENTS } from "../src/files";
 import { IMPORT_NOTICE, type ImportCheckAnswer } from "../src/import";
 import type { OwnerDO } from "../src/owner-do";
-import { DEFAULT_POLICY_DIGEST, policyDigest } from "../../contract/src/policy-document";
+import {
+  DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, policyDigest, type PolicyDocument,
+} from "../../contract/src/policy-document";
 import { recorder } from "./runs-support";
 import { failure, TIERS } from "./support";
 
@@ -46,9 +48,8 @@ const importing = (owner: string, tiers: unknown = TIERS): Binding =>
   ({ owner, caller: PLATFORM_CALLER, origin: null, import: { bundle: BUNDLE }, tiers });
 const own = (owner: string): Binding => ({ owner, caller: owner, origin: null, tiers: TIERS });
 
-const POLICY = { entries: [], egress: { mode: "ask", destinations: [] },
-                 spend: { daily: null, monthly: null, transaction: null, ask_above: null,
-                          source_ceilings: {} } };
+const POLICY = { ...JSON.parse(DEFAULT_POLICY_JSON) as PolicyDocument,
+                 actions: [{ act: "people.message", do: "ask" as const }] };
 
 function inline(path: string, text: string, mode: 0 | 1 = 0) {
   const bytes = bytesOf(text);
@@ -145,9 +146,9 @@ describe("the import's rows", () => {
     const rows = [{ kind: "policy" as const, document: POLICY }];
     expect(await stub.importRows(importing(owner), { rows })).toEqual({ written: 1, skipped: 0 });
     expect(await stub.importRows(importing(owner), { rows })).toEqual({ written: 0, skipped: 1 });
-    const other = { ...POLICY, egress: { mode: "open", destinations: [] } };
+    const { actions: _rules, ...other } = POLICY;
     expect(policyDigest(other)).toBe(DEFAULT_POLICY_DIGEST);
-    const changed = { ...POLICY, egress: { mode: "allowlist", destinations: [] } };
+    const changed = { ...POLICY, egress: { mode: "allowlist" as const, destinations: [] } };
     expect((await failure(() => stub.importRows(importing(owner), {
       rows: [{ kind: "policy", document: changed }] }))).code).toBe("conflict");
     // A document the validator refuses is refused, never stored.
