@@ -318,13 +318,16 @@ jobs:
           cache: npm
           cache-dependency-path: platform/package-lock.json
       - run: npm ci
-      # Each leg's Vitest JSON report, the input of `node ci/budgets.mjs` (ci/classes.ts).
-      - run: ${{ matrix.command }} --reporter=default --reporter=json --outputFile.json=${{ runner.temp }}/report.json
+      # Each leg's Vitest JSON report, the input of `node ci/budgets.mjs` (ci/classes.ts), beside
+      # Vitest's two reporters on a GitHub runner (the default and its failure annotations).
+      # overwrite: a re-run of the whole run uploads each leg's report again.
+      - run: ${{ matrix.command }} --reporter=default --reporter=github-actions --reporter=json --outputFile.json=${{ runner.temp }}/report.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sizes-report-${{ strategy.job-index }}
           path: ${{ runner.temp }}/report.json
           if-no-files-found: error
+          overwrite: true
 
   # The owner app in a real browser (slice APP): Chromium at the Playwright version the
   # platform lockfile pins, against the doors in workerd. Required through

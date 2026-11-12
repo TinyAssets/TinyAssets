@@ -324,8 +324,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     null` at `:180`; T1b), and `NetworkPlan`'s typed `generation` beside the header the Worker
     reads (#5513).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
-    `node ci/budgets.mjs` from the Vitest reports the `platform-sizes` legs upload, owed once one
-    CI run has uploaded them (d3 §I).
+    `node ci/budgets.mjs` (d3 §I): the large from the Vitest reports the `platform-sizes` legs
+    upload, the runner's medium from a local `test:root` report (`platform-tests` uploads none).
   - Lane C: P-T1, the starter guard's "DID NOT RUN" warning that passes when it cannot check
     against main, fails instead (V1 and C2 each left it to the other); `contract/src/slots.ts`
     `SlotPool`'s constructor defaults (T1b).

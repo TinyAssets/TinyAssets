@@ -44,11 +44,12 @@ const STEPS: Record<string, Data[]> = {
   "platform-tests": [...SETUP, { run: "${{ matrix.command }}" }],
   "platform-sizes": [
     ...SETUP,
-    { run: "${{ matrix.command }} --reporter=default --reporter=json " +
-           "--outputFile.json=${{ runner.temp }}/report.json" },
+    { run: "${{ matrix.command }} --reporter=default --reporter=github-actions " +
+           "--reporter=json --outputFile.json=${{ runner.temp }}/report.json" },
     { uses: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
       with: { name: "sizes-report-${{ strategy.job-index }}",
-              path: "${{ runner.temp }}/report.json", "if-no-files-found": "error" } },
+              path: "${{ runner.temp }}/report.json", "if-no-files-found": "error",
+              overwrite: true } },
   ],
 };
 const JOB_KEYS = ["defaults", "name", "runs-on", "steps", "strategy", "timeout-minutes"];

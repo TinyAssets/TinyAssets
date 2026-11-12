@@ -20,10 +20,10 @@ tokens searching, break less without noticing, and find root causes faster.
   found, fixed and left (and why), and that the diff adds none of the four kinds.
 - **Every reviewer** runs step 5 on the PR and checks that section; a missing
   one is a finding. A problem the PR adds or leaves in scope unexplained
-  blocks. It commits its own small fixes and approves that head.
-- **Lean:** CI is the one full run: run only what the diff can break, one
-  mutation per declared change. Read only what applies. One PR in flight per
-  lane, never stacked. Known fixes and process cuts go at once, as small PRs.
+  blocks. It commits its own fixes of up to 50 lines and approves that head.
+- CI is the one full run: run only what the diff can break, one mutation per
+  declared change. Read only what applies. One PR in flight per lane, never
+  stacked. Known fixes and process cuts go at once, as small PRs.
 
 ## 1. Scope
 
