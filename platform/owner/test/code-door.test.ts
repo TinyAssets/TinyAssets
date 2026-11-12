@@ -6,13 +6,13 @@
  * admitted again against its grant and the control record's gates (`SwitchedOwnerDO`, its
  * record flipped mid-script); no tool outside the profile and no capability outside the
  * grant; a revoked client and another owner's binding refused; a script past its wall time
- * stopped (`BoundedOwnerDO`, its bound small; production's is `CODEMODE_TIMEOUT_MS`), saying
+ * (`CODEMODE_TIMEOUT_MS`, under a clock that moves a second at each reading) stopped, saying
  * which calls landed; output past one answer cut and said so, a value past it refused
  * `answer_too_large`. A script past its compute is the codemode Worker's to stop
  * (`codemode/test/`).
  */
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import { MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
@@ -20,14 +20,15 @@ import { MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
 import { profileNames } from "../../contract/src/doors";
 import type { Origin } from "../../contract/src/binding";
 import { jsonBytes } from "../../contract/src/encoded";
-import { CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED } from "../src/codemode";
+import {
+  CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, CODEMODE_TIMEOUT_MS,
+} from "../src/codemode";
 import type { OwnerDO } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
 import { validate } from "../../contract/src/policy-document";
 import { customTools } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure } from "./support";
-import { BOUNDED_TIMEOUT_MS } from "./worker";
 
 /** The owner turns code mode on or off, and names its own `custom` tools, in its session. */
 async function setPolicy(r: Rig, codemode: boolean, custom?: string[]): Promise<void> {
@@ -152,21 +153,27 @@ describe("the code door", () => {
   });
 
   it("stops a script past its wall time", async () => {
-    const r = await rig(env.BOUNDED as unknown as DurableObjectNamespace<OwnerDO>);
+    const r = await rig();
     await setPolicy(r, true);
+    // The object runs in this isolate, so it reads this clock, which moves a second at every
+    // reading: the script's tool calls take it past production's wall time in moments. A
+    // clock that never moved would hold no deadline; one moved by the test could not be,
+    // since a script calling back to back leaves the test's own turn no time to run.
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => (now += 1000));
     const before = Date.now();
     const looped = await r.stub.codeRun(r.bind(null), { script: lines(
       "for (let n = 0; n < 3; n++) {",
       "  await tools.collection_write({ collection: 'board', row_id: 'r' + n, body: 'b',",
       "    expected_etag: '', private: false });",
       "}",
-      "for (;;) { await tools.agents_list({}); }") });
+      "for (;;) { await tools.agents_list({}); }") }).finally(() => clock.mockRestore());
     // Wall time is the property: the script ran to its deadline, never stopped early, and
     // was stopped by it, the deadline the code enforces. A script that ran on would hit
     // this test's class budget instead; no hand number stands in for either.
-    expect(Date.now() - before).toBeGreaterThanOrEqual(BOUNDED_TIMEOUT_MS);
+    expect(now - before).toBeGreaterThanOrEqual(CODEMODE_TIMEOUT_MS);
     expect(looped).toMatchObject({ ok: false, error: {
-      kind: "timeout", message: new RegExp(`timed out after ${BOUNDED_TIMEOUT_MS} ms`) } });
+      kind: "timeout", message: new RegExp(`timed out after ${CODEMODE_TIMEOUT_MS} ms`) } });
     expect(looped.calls.ok).toBeGreaterThan(1);
     // Which writes landed before the stop; the reads are only counted.
     expect(looped.landed).toEqual([{ name: "collection_write", status: "ok", count: 3 }]);

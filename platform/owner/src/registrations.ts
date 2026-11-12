@@ -49,7 +49,7 @@ interface StandingReader {
 /** How long a filed card waits for the owner. */
 export const CARD_TTL_S = 7 * 86_400;
 
-export interface CardLimits {
+interface CardLimits {
   readonly maxPending: number;
   readonly perClient: number;
   readonly maxRequest: number;
@@ -96,13 +96,10 @@ function token(bytes: number): string {
 export class Registrations {
   readonly #storage: OwnerStorage;
   readonly #grants: StandingReader;
-  readonly #limits: CardLimits;
 
-  constructor(storage: OwnerStorage, grants: StandingReader,
-              limits: CardLimits = CARD_LIMITS) {
+  constructor(storage: OwnerStorage, grants: StandingReader) {
     this.#storage = storage;
     this.#grants = grants;
-    this.#limits = limits;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -130,9 +127,9 @@ export class Registrations {
       throw new Refusal("invalid", "a registration's fields are flat values");
     }
     const body = JSON.stringify(request);
-    if (codePoints(body) > this.#limits.maxRequest) {
+    if (codePoints(body) > CARD_LIMITS.maxRequest) {
       throw new Refusal("invalid",
-                        `a registration is at most ${this.#limits.maxRequest} characters`);
+                        `a registration is at most ${CARD_LIMITS.maxRequest} characters`);
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -142,11 +139,11 @@ export class Registrations {
                origin.family);
       const mine = sql.exec<{ n: number }>(
         "SELECT COUNT(*) AS n FROM agent_cards WHERE client = ?", origin.client).one().n;
-      if (mine >= this.#limits.perClient) {
+      if (mine >= CARD_LIMITS.perClient) {
         throw new Refusal("refused", "this client's pending registrations are at their limit");
       }
       if (sql.exec<{ pending_cards: number }>("SELECT pending_cards FROM policy_usage").one()
-            .pending_cards >= this.#limits.maxPending) {
+            .pending_cards >= CARD_LIMITS.maxPending) {
         throw new Refusal("refused", "too many pending agent registrations");
       }
       const cardId = "card_" + token(16);

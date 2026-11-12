@@ -7,7 +7,6 @@ export const NAMESPACES = Object.freeze({
   OWNER: "OwnerDO",
   AGENT: "FauxOwnerDO",
   GATED: "GatedOwnerDO",
-  BOUNDED: "BoundedOwnerDO",
   ARCHIVING: "ArchivingOwnerDO",
   BIGARCHIVING: "BigArchivingOwnerDO",
   DIVERGING: "DivergingOwnerDO",
