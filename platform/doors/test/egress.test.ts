@@ -101,11 +101,11 @@ async function over(box: Sandbox): Promise<void> {
 /**
  * A signed-in owner with a Groq key connected, its sandbox's lease open and its network
  * marked as the start that opened it was dispatched; the owner's caps roomy unless
- * `models` sets them, its spend table as `spend`.
+ * `models` sets them.
  */
 async function sandbox(models: Record<string, unknown> = {
-  turn_requests: 10_000, turn_tokens: 1_000_000_000, turn_cost: 1_000_000_000_000 },
-                       spend: Record<string, unknown> = {}): Promise<Sandbox> {
+  turn_requests: 10_000, turn_tokens: 1_000_000_000, turn_cost: 1_000_000_000_000 }):
+    Promise<Sandbox> {
   const owner = `user_${crypto.randomUUID().replace(/-/g, "")}`;
   const app = await signInApp({ owner });
   const key = `gsk-good-${crypto.randomUUID()}`;
@@ -118,7 +118,7 @@ async function sandbox(models: Record<string, unknown> = {
   const { generation, policy } = await bound.stub.policyRead(bound.binding);
   await bound.stub.policyWrite({ ...bound.binding, session: app.session }, {
     expected_generation: generation,
-    policy: { ...policy, models, spend: { ...policy.spend, ...spend } } });
+    policy: { ...policy, models } });
   // The run door admits pi on the key, which opens the sandbox's lease.
   await defineAgent(bound.stub, bound.binding, "main",
                     { engine: "pi", credential: "api_key", connection, scopes: [] });
@@ -503,16 +503,6 @@ describe("the egress door", () => {
     expect(declared).toBe(String(bytes.length));
     expect(received!.length).toBe(bytes.length);
     expect(Buffer.compare(Buffer.from(received!), Buffer.from(bytes))).toBe(0);
-    await settledOf(box.owner);
-  });
-
-  it("holds a call to the model policy's caps alone: a purchase threshold refuses nothing",
-     async () => {
-    const box = await sandbox({ turn_requests: 10_000, turn_tokens: 1_000_000_000,
-                                      turn_cost: 1_000_000_000_000 }, { ask_above: 100 });
-    const response = await send(egressRequest(box));
-    expect(response.status).toBe(200);
-    await response.text();
     await settledOf(box.owner);
   });
 

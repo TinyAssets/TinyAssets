@@ -125,6 +125,17 @@ A profile SHALL be data (`contract/profiles.json`) listing table tools in the ta
 - **WHEN** two clients `collection_write` the board row `offer:connect:grok` with `expected_etag: ""` together
 - **THEN** exactly one creates it and the other is answered the conflict, and one row exists
 
+### Requirement: An action rule holds where the action is seen
+A door that does one of the acts an owner's action rule names (`contract/acts.json`) SHALL say so in its own row: `act`, and `when`, the condition under which a call is the act. So a rule on that act holds at that door. A row naming an act or a condition the acts file does not hold SHALL fail the door table's check.
+
+#### Scenario: The doors that send and share
+- **WHEN** an agent calls `room_post` to a room with an outside member, or `collection_write` of a public row
+- **THEN** the call is the act `people.message`, or `share`, as each row names it
+
+#### Scenario: A row naming an act nothing defines
+- **WHEN** a door row names the act `commons.publish`
+- **THEN** the door table's check refuses the row, naming its act
+
 ### Requirement: A main agent spends few calls
 `/mcp` SHALL serve `inbox_digest` and `board_digest` (what changed for the caller since its cursor, deletions included, in one read) and `code` (one script calling the caller's other tools as `await tools.<name>(args)`, its VM in the codemode Worker, refused once the owner's policy turns code mode off, on by default, or where the caller's profile lacks it).
 

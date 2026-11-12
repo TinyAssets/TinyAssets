@@ -12,7 +12,7 @@ import {
 import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { sourceRecord } from "../../sources/src/check";
 import { runEnv } from "../../sources/src/run-env";
-import { EGRESS_IP_LITERAL } from "../../contract/src/policy-document";
+import { EGRESS_IP_LITERAL, EGRESS_MODES } from "../../contract/src/policy-document";
 import { BOUNDARY_NOTE, networkDocument } from "../src/network";
 import {
   ALL_TRAFFIC, DNS_SERVERS, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
@@ -47,8 +47,7 @@ describe("the network document", () => {
     expect(plan).toEqual({
       network: { allowOut: ["*", EGRESS_HOST], denyOut: [ALL_TRAFFIC], dnsServers: ["1.1.1.1"],
                  rules: transform(3) },
-      mode: "open", generation: 3, unexpressed: [], receipt: false, boundary: false,
-      note: BOUNDARY_NOTE });
+      mode: "open", generation: 3, unexpressed: [], boundary: false, note: BOUNDARY_NOTE });
     expect(DNS_SERVERS).toEqual(["1.1.1.1"]);
     expect(ALL_TRAFFIC).toBe("0.0.0.0/0");
   });
@@ -61,19 +60,9 @@ describe("the network document", () => {
     // A port E2B cannot filter by name is refused, never widened to the name.
     expect(plan.unexpressed).toEqual([{ host: "db.example.com", port: 5432, reason: "port" }]);
     expect(plan.network.allowOut).not.toContain("db.example.com");
-    expect(plan.receipt).toBe(false);
   });
 
-  it("in ask mode is an allowlist and a refusal receipt", () => {
-    const allowlist = networkDocument({ mode: "allowlist", destinations: DESTINATIONS }, 2);
-    const ask = networkDocument({ mode: "ask", destinations: DESTINATIONS }, 2);
-    expect(ask.network).toEqual(allowlist.network);
-    expect(ask.unexpressed).toEqual(allowlist.unexpressed);
-    expect([ask.mode, ask.receipt]).toEqual(["ask", true]);
-  });
-
-  it.each(["open", "allowlist", "ask"])("always allows egress.tinyassets.io, last, in %s mode",
-                                        (mode) => {
+  it.each(EGRESS_MODES)("always allows egress.tinyassets.io, last, in %s mode", (mode) => {
     for (const destinations of [[], DESTINATIONS, [{ host: EGRESS_HOST, port: 443 }]]) {
       const { network } = networkDocument({ mode, destinations }, 1);
       expect(network.allowOut.at(-1)).toBe(EGRESS_HOST);
@@ -85,8 +74,7 @@ describe("the network document", () => {
       .toEqual(mode === "open" ? ["*", EGRESS_HOST] : [EGRESS_HOST]);
   });
 
-  it.each(["open", "allowlist", "ask"])("refuses an IP literal in any spelling, in %s mode",
-                                        (mode) => {
+  it.each(EGRESS_MODES)("refuses an IP literal in any spelling, in %s mode", (mode) => {
     for (const host of ["8.8.8.8", "203.0.113.7", "127.1", "0x7f000001", "0177.0.0.1",
                         "[::1]", "::1", "2001:db8::1", "12345"]) {
       const error = thrown(() => networkDocument({ mode, destinations: [{ host, port: 443 }] },
@@ -99,6 +87,8 @@ describe("the network document", () => {
   it("refuses what is not a policy: a mode, a destination or a generation", () => {
     for (const [egress, generation] of [
       [{ mode: "closed", destinations: [] }, 1],
+      // The old stack's `ask` mode, an allowlist plus a receipt, is no mode (d3 §N6).
+      [{ mode: "ask", destinations: [] }, 1],
       [{ mode: "allowlist", destinations: [{ host: "Example.com", port: 443 }] }, 1],
       [{ mode: "allowlist", destinations: [{ host: "example.com", port: 0 }] }, 1],
       [{ mode: "allowlist", destinations: [{ host: "example.com" }] }, 1],

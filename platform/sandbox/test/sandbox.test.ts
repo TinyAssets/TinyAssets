@@ -80,7 +80,7 @@ const LEASE = { lease_id: hex(32, "b"), epoch: 1 };
 const EGRESS_TOKEN = "egress-token-0f1e2d3c4b5a";
 const NETWORK = {
   network: withEgressToken(withGeneration(closedNetwork(["github.com"]), 1), EGRESS_TOKEN),
-  mode: "allowlist", generation: 1, unexpressed: [], receipt: false, boundary: false, note: "",
+  mode: "allowlist", generation: 1, unexpressed: [], boundary: false, note: "",
 };
 
 function start(over: Partial<SandboxStart> = {}): SandboxStart {

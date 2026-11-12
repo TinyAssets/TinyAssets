@@ -11,14 +11,15 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { DEFAULT_POLICY_JSON, type PolicyDocument } from "../../contract/src/policy-document";
 import { clock } from "../src/clock";
 import { SESSION_LIMITS } from "../src/sessions";
 import { MUSE, rig, type Rig, signedIn } from "./ledger-support";
 import { failure } from "./support";
 
 const DOC_WRITE = (generation: number) => ({ expected_generation: generation, policy: {
-  entries: [], egress: { mode: "open", destinations: [] },
-  spend: { daily: null, monthly: null, transaction: 5, ask_above: null, source_ceilings: {} },
+  ...JSON.parse(DEFAULT_POLICY_JSON) as PolicyDocument,
+  actions: [{ act: "people.message", do: "ask" as const }],
 } });
 
 async function write(r: Rig, session: unknown) {

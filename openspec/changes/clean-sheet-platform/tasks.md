@@ -44,8 +44,8 @@ end.
   (`owner/src/schedule.ts`).
 - [x] Append-only migrations from the first deploy: the locks (`owner/migrations.json`,
   `sandbox/migrations/`), their guards (`owner/guards/lock.ts`) and the kit's `lockRefusal`.
-- [ ] 3.7 The owner's action decision. The gateway's binding gate it waited for is gone
-  (ADR-034), so R5's design replaces it (d3 §N), built in R5's slices (§10 step 4).
+- The owner's action decision, which waited for the gateway's binding gate ADR-034 removed,
+  is R5's (d3 §N), its slices in §10 step 4.
 
 ## 4. Gateway
 
@@ -372,8 +372,26 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and
   only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`).
-- [ ] R5, where an action is decided: its six slices as d3 §N8 orders them, after B25 and
-  alongside lane O. It replaces 3.7.
+- [ ] R5, where an action is decided (d3 §N): its six slices (`r5_research.md` §6), after B25
+  and alongside lane O.
+  - [ ] P-shape: the policy's `actions` table and `contract/acts.json`, the doors' rows naming
+    their act, a rule nothing could see refused at write; the old rule tables, `spend` and
+    egress `ask` deleted; the default document and its digest anew, with owner migration 6
+    (its pin PR owed after it merges).
+  - [ ] P-decide: the decide function and its receipts bucket; `action_request` cards and the
+    once-approvals (bounded, generation-bound, swept); the owner's approve and refuse doors;
+    the decide step in the runner, from the rows' `act`; a rule's `agent`, with the agent id's
+    rule moved to the contract.
+  - [ ] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
+    stop matcher in its record's `events`; a run settles `waiting` on a card.
+  - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
+    `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
+    when needed, and runs the start check.
+  - [ ] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
+    the mapping, the old defaults written explicitly (d3 §N7), and the archive file; the
+    notice. Until it lands, an old document is archived whole (`policy.refused.json`).
+  - [ ] Later, only if an owner's rule needs it: hold-on-sync for `paths`, and asking for a
+    host through web-fetch hooks.
 - [ ] Process (d3 §B): P2 in order: reviews posted as the App's `review` check reads them and
   seen green on a real PR, then `review` required, then the receipt half deleted (d3 §F4);
   P6–P9 after the lanes.
