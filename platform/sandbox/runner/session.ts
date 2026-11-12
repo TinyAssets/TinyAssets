@@ -1,9 +1,10 @@
 /**
  * The run session, shared by the runner (`runner.ts`) and the template's probes
- * (`probes.ts`), so every CLI either starts runs as a run runs it (`withRunUser`, bounded
- * by `spawnBounded`): the platform's CLI records, the engines' stores under their locks and
- * generations, a run's home made from its store and kept back into it, and the run's config
- * files made root's. Nothing here reads a job.
+ * (`probes.ts`): each process either bundle starts is started here (`spawnBounded`), and each
+ * CLI as a run runs it (`withRunUser`), so a probe judges the code a run runs. With it, the
+ * platform's CLI records, the engines' stores under their locks and generations, a run's
+ * home made from its store and kept back into it, and the run's config files made root's.
+ * Nothing here reads a job.
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { type ChildProcess, spawn, type SpawnOptions, spawnSync } from "node:child_process";
