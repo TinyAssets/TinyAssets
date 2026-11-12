@@ -26,7 +26,7 @@ import { type DoorsEnv, MCP_RESOURCE } from "./config";
 import { deleteKey } from "./directory";
 import { authorizationServer } from "./oauth";
 
-export interface ClientRevoked {
+interface ClientRevoked {
   readonly client: string;
   readonly revoked: boolean;
   readonly generation: number;
@@ -37,7 +37,7 @@ export interface ClientRevoked {
 }
 
 /** The provider's largest page of grants. */
-export const GRANT_PAGE = 1000;
+const GRANT_PAGE = 1000;
 
 /** The ids of every one of the owner's provider grants that `keep` picks, all pages read. */
 async function grantsWhere(oauth: OAuthHelpers, owner: string, pageSize: number,
@@ -88,7 +88,7 @@ export async function replaceInstallation(env: DoorsEnv, owner: string, clientId
  * owner's grants is read before any is revoked, so a revoke never shifts the pages. The
  * count revoked.
  */
-export async function providerRevoke(env: DoorsEnv, owner: string, client: string,
+async function providerRevoke(env: DoorsEnv, owner: string, client: string,
                                      pageSize: number = GRANT_PAGE): Promise<number> {
   const oauth = authorizationServer(env).getOAuthApi(env);
   const matching = await grantsWhere(oauth, owner, pageSize, async (grant) =>

@@ -24,8 +24,8 @@
 import { refusalOf } from "../../contract/src/refusal";
 import { principal } from "../../contract/src/text";
 
-import { bindPlatformFor, type Bound } from "./binder";
-import { type DoorsEnv, ISSUER_NOT_CONFIGURED, now } from "./config";
+import { bindPlatformFor, type Bound, FOREIGN } from "./binder";
+import { type DoorsEnv, NOT_CONFIGURED, now } from "./config";
 import { deleteKey, deleteRoute, putOwner } from "./directory";
 import { revokeAll } from "./revoke";
 import type { Upstream } from "./upstream";
@@ -53,7 +53,7 @@ export async function eraseOutside(env: DoorsEnv, owner: string, upstream: () =>
     await deleteRoute(env, route);
   }
   await revokeAll(env, owner);
-  if (env.OWNER_ISSUER !== ISSUER_NOT_CONFIGURED && !owner.startsWith("iss-")) {
+  if (env.OWNER_ISSUER !== NOT_CONFIGURED && !owner.startsWith(FOREIGN)) {
     await upstream().forget(owner);
   }
   await stub.erasureOutsideDone(binding);

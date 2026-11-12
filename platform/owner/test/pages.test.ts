@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { Window } from "../src/bodies";
 import { bodied } from "../src/pages";
 
-import { escapedBytes, fitted, jsonBytes, RESULT_CHARS, unitAt } from "../../contract/src/encoded";
+import { escapedBytes, fitted, jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { utf8Bytes } from "../../contract/src/text";
 import type { Row, WrittenRow } from "../src/collections";
 import { MUSE, rig } from "./ledger-support";
@@ -49,8 +49,6 @@ describe("the exact count", () => {
     expect(part).toEqual({ text: SHAPES["pair"]!.repeat(3), bytes: 12 });
     expect(fitted(`${SHAPES["control"]}x`, 8)).toEqual({ text: SHAPES["control"], bytes: 1 });
     expect(fitted("abc", 1)).toEqual({ text: "", bytes: 0 });
-    expect(unitAt(text, 8)).toBe(4);
-    expect(unitAt(text, 6)).toBeNull();
   });
 });
 

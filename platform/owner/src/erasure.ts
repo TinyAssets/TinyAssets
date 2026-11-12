@@ -1,6 +1,6 @@
 /**
- * Erasing an owner (design-decision §1.4 item 6; tasks 5, S4-S5; ADR-034): the internal
- * path the erasure door (slice 10) will call. The order is what makes it complete:
+ * Erasing an owner (design-decision §1.4 item 6; tasks 5, S4-S5; ADR-034), begun at
+ * `ownerErase`. The order is what makes it complete:
  *
  * 1. **Mark the owner erasing** (`owner_erasure`), in one unit. From then on every door
  *    refuses (`OwnerDO`'s binding check) and no lane runs (the object's alarm resumes the
@@ -126,7 +126,7 @@ export function outsideDone(storage: OwnerStorage): boolean {
 }
 
 /** In a unit: the doors' confirmation of the outside record. */
-export function markOutside(storage: OwnerStorage): void {
+function markOutside(storage: OwnerStorage): void {
   storage.sql.exec("UPDATE owner_erasure SET outside = 1");
 }
 
@@ -145,9 +145,9 @@ export function markErasing(storage: OwnerStorage, now: number): void {
 export const NO_ERASURE = "no erasure of this owner is under way";
 
 /** What the owner types to erase its account. */
-export const ERASE_CONFIRM = "erase my account";
+const ERASE_CONFIRM = "erase my account";
 
-export function erasureConfirmed(r: Record<string, unknown>): void {
+function erasureConfirmed(r: Record<string, unknown>): void {
   if (r["confirm"] !== ERASE_CONFIRM) {
     throw new Refusal("invalid", `an erasure is confirmed by ${JSON.stringify(ERASE_CONFIRM)}`);
   }

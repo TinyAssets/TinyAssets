@@ -23,11 +23,6 @@ export interface Candidate {
   readonly model: ModelRecord;
 }
 
-/** The physical model id of a candidate, as a connection lists it. */
-export function physicalId(candidate: Pick<Candidate, "connection" | "model">): string {
-  return `${candidate.connection}/${candidate.model.id}`;
-}
-
 interface Rank {
   readonly provider: string;
   readonly model: string;

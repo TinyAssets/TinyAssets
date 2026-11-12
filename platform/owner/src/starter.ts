@@ -59,10 +59,10 @@ export const STARTER_RETRY_S = 300;
 /** The name beside a file that holds its newer version, which no engine loads. */
 export const NEWER = ".ta-new";
 /** The history op of the starter's own writes. */
-export const STARTER_OP = "starter";
+const STARTER_OP = "starter";
 
-export type StarterClass = "managed" | "personal";
-export type ReceiptState = "installed" | "edited" | "deleted" | "proposed";
+type StarterClass = "managed" | "personal";
+type ReceiptState = "installed" | "edited" | "deleted" | "proposed";
 
 export interface StarterFile {
   readonly path: string;
@@ -198,7 +198,7 @@ type ReceiptRow = {
 };
 type StateRow = { version: number; retry_at: number | null; noticed: number | null };
 
-export interface StarterDeps {
+interface StarterDeps {
   readonly storage: OwnerStorage;
   readonly files: Files;
   readonly write: Write;

@@ -19,6 +19,7 @@ import {
   applied, blobId, hiddenUnicode, prBody, quoted, relocation, report, vendoredSpec, versionOf,
 } from "../../starter/okf-watch";
 import { agentFile } from "../src/agent-file";
+import { MAIN_AGENT } from "../src/authority";
 import { PLATFORM } from "../../ci/paths";
 
 const STARTER = join(PLATFORM, "starter");
@@ -114,6 +115,8 @@ describe("the starter package", () => {
     // The profile moved from main's own folder to the workspace's root, shared by every agent.
     expect(fileAt("/workspace/USER.md")).toMatchObject({
       moved_from: "/workspace/agents/main/USER.md" });
+    // The default agent is the one a scoped client's call acts as when it names none.
+    expect(bundled.files.at(-1)!.path).toBe(`/workspace/agents/${MAIN_AGENT}/agent.json`);
     expect((bundled as Bundled & { retired: string[] }).retired)
       .toEqual(["/workspace/agents/main/USER.md"]);
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/USER.md");

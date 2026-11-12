@@ -68,22 +68,22 @@ import { checkBody, OWNER_FILER } from "./collections";
 import type { Call, Door, OwnerState } from "./owner-do";
 
 /** Whose the imported files and rows are: the owner's own. */
-export const IMPORT_WRITER = OWNER_FILER;
+const IMPORT_WRITER = OWNER_FILER;
 /** The imported rows' history op, and the notice's type. */
-export const IMPORT_OP = "import";
+const IMPORT_OP = "import";
 export const IMPORT_NOTICE = "imported";
 
 const NOT_IMPORTED = "the import writes the imported tree alone";
 const TOO_MANY_UPLOADS = `at most ${IMPORT_INTENTS} import uploads are open`;
 
 /** A row the import carries (`import/build.ts`'s `Row`). */
-export type ImportRow =
+type ImportRow =
   | { readonly kind: "policy"; readonly document: unknown }
   | { readonly kind: "collection"; readonly collection: string; readonly row_id: string;
       readonly private: 0 | 1; readonly body: string };
 
 /** A folder, or an inline file and its bytes. */
-export type ImportEntry =
+type ImportEntry =
   | { readonly kind: "dir"; readonly path: string }
   | { readonly kind: "file"; readonly path: string; readonly size: number; readonly mode: 0 | 1;
       readonly content_id: string; readonly mtime_ms: number; readonly bytes: Uint8Array };

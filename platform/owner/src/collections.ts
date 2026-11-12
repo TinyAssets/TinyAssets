@@ -118,7 +118,7 @@ export interface Row {
   readonly content_id?: string;
 }
 
-export interface HistoryEntry {
+interface HistoryEntry {
   readonly revision: number;
   readonly op: string;
   readonly writer: string;
@@ -160,7 +160,7 @@ export function checkBody(body: unknown, limits: Limits = LIMITS): string {
  * (`client:*`), or one. Bound three times; no bound `GLOB` pattern (a Durable Object's
  * SQLite takes one of at most 50 bytes, and a writer is 71).
  */
-export const FILERS = "(? = '*' OR (? = 'client:*' AND filer GLOB 'client:*') OR filer = ?)";
+const FILERS = "(? = '*' OR (? = 'client:*' AND filer GLOB 'client:*') OR filer = ?)";
 
 /** History entries one prune step reads, oldest first. */
 const PRUNE_BATCH = 64;
@@ -764,7 +764,7 @@ export function conflicted<T>(act: () => T): T | Conflicted {
 /** A written row as its write answers it: everything but its body, and the body's bytes. */
 export type WrittenRow = Omit<Row, "body" | "content_id"> & { readonly body_bytes: number };
 
-export function writtenRow(row: Row): WrittenRow {
+function writtenRow(row: Row): WrittenRow {
   const { body, content_id: _placed, ...rest } = row;
   return { ...rest, body_bytes: utf8Bytes(body) };
 }
@@ -788,7 +788,7 @@ export interface PullRequest {
   readonly after: number;
   readonly limit: number;
 }
-export interface KeyRequest {
+interface KeyRequest {
   readonly collection: string;
   readonly row_id: string;
 }

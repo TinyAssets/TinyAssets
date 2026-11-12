@@ -60,12 +60,10 @@ export interface RunMeter {
   oldestUnmetered(): number | null;
 }
 
-/** The sandbox meter's lane in the schedule. */
-export const METER_LANE = "sandbox";
 /** How long after a read an open span is read again. */
-export const METER_OPEN_S = 900;
+const METER_OPEN_S = 900;
 /** When a read whose call failed is tried again. */
-export const METER_RETRY_S = 300;
+const METER_RETRY_S = 300;
 /** Spans kept: an open one per authority and the closed ones a run not yet metered needs. */
 export const SPANS_KEPT = 1000;
 /** Days of sandbox seconds kept, past a year of the cost view. */
@@ -77,7 +75,7 @@ export const DAYS_KEPT = 400;
  */
 export const BILLED_WINDOW_S = 86_400;
 /** How far ahead of the object's clock an event's time may be: clocks drift. */
-export const BILLED_SKEW_S = 300;
+const BILLED_SKEW_S = 300;
 /**
  * The executions kept to check inside the window, one every 0.86 s all day: past it a new
  * one is counted anyway, and tallied `unverified` (the 10 GB: 8 bytes and a time a row).
@@ -135,7 +133,7 @@ function dayOf(at: number): string {
 }
 
 /** Where the `sandbox` lane reads the sandbox Worker's log, and the gate it writes through. */
-export interface MeterSource {
+interface MeterSource {
   /** The owner's log after `after`, as the sandbox Worker answers; null with none bound. */
   read(after: number): Promise<unknown> | null;
   readonly write: Write;
@@ -349,7 +347,7 @@ export class SandboxTime {
 }
 
 /** A billed event as the doors handed it, checked whole: anything else fails loudly. */
-export function billedEvent(value: unknown): BilledEvent {
+function billedEvent(value: unknown): BilledEvent {
   const event = value as Record<string, unknown>;
   const whole = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
   const id = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(v);

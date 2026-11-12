@@ -257,6 +257,8 @@ export interface GatewayFaults {
     Resealed & { readonly expires_at: number | null }) | null;
   /** Awaited before a provider revoke is sent, when set. */
   revokeGate: Promise<void> | null;
+  /** Awaited before a reseal's answer is handed back, when set. */
+  resealGate: Promise<void> | null;
   /** The next chunk read from the files plane rejected with this, when set, then cleared. */
   chunkRead: unknown;
 }
@@ -278,6 +280,12 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
       calls().push({ method: "revokeAtProvider", text: JSON.stringify(args) });
       await faults()?.revokeGate;
       return gateway.revokeAtProvider(...args);
+    },
+    reseal: async (...args) => {
+      calls().push({ method: "reseal", text: JSON.stringify(args) });
+      const answer = await gateway.reseal(...args);
+      await faults()?.resealGate;
+      return answer;
     },
     ringDoorbell: (...args) => gateway.ringDoorbell(...args),
   };
@@ -317,7 +325,7 @@ export class GatedOwnerDO extends OwnerDO {
   readonly recorder: RecordingSandbox;
   calls: GatewayCall[] = [];
   readonly faults: GatewayFaults = { refreshGate: null, refreshed: null, revokeGate: null,
-                                      chunkRead: null };
+                                      resealGate: null, chunkRead: null };
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { self?: GatedOwnerDO; sandbox?: SandboxLeases } = {};
@@ -367,6 +375,7 @@ export class RungOwnerDO extends OwnerDO {
     const gateway: GatewayService = {
       refresh: (...args) => env.GATEWAY.refresh(...args),
       revokeAtProvider: (...args) => env.GATEWAY.revokeAtProvider(...args),
+      reseal: (...args) => env.GATEWAY.reseal(...args),
       ringDoorbell: async (owner, subscription, version, blob, previous, request) => {
         made.self?.rang.push({ subscription, version, blob, previous, request });
         await made.self?.during?.();

@@ -40,9 +40,7 @@
 import { randomHex } from "../../contract/src/ids";
 import { createHash } from "node:crypto";
 
-import {
-  CHUNK_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY, SLOT_WAIT_MS,
-} from "../../contract/src/limits";
+import { CHUNK_BYTES, MANIFEST_PARTS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import type { ChangeLog } from "./changelog";
 import {
   chunkLine, type Cursor, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES,
@@ -55,10 +53,8 @@ import type { OwnerStorage, Write } from "./gate";
 import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
 import { isSlotBusy, type Slot, slotBusy, type SlotPool } from "../../contract/src/slots";
 
-/** The manifest lane's name in the schedule. */
-export const MANIFEST_LANE = "manifest";
 /** The hours of the night owners' manifests spread over, from the day's start in UTC. */
-export const MANIFEST_SPREAD_S = 4 * 3600;
+const MANIFEST_SPREAD_S = 4 * 3600;
 /**
  * How long a finished generation protects the garbage it names from early collection
  * (`files.ts`): two nights. An owner that changes has a new one each night (one `DAY_S`
@@ -70,7 +66,7 @@ export const MANIFEST_SPREAD_S = 4 * 3600;
  */
 export const MANIFEST_PROTECT_S = 2 * 86_400;
 /** When a pass whose R2 call failed tries again. */
-export const MANIFEST_RETRY_S = 300;
+const MANIFEST_RETRY_S = 300;
 /** When a generation a pass did not finish goes on: never at once. */
 export const MANIFEST_CONTINUE_S = 5;
 /**
@@ -119,7 +115,7 @@ export const MANIFEST_LOG_OVERFLOW = "manifest_log_overflow";
  * (review L5-2): its base and log are of the old schema, so it is given up, never mixed, and
  * a fresh one is begun under the new.
  */
-export const MANIFEST_SCHEMA = "manifest_schema";
+const MANIFEST_SCHEMA = "manifest_schema";
 /**
  * The notice an owner is given, once, when one line of its stream (one row, as JSON) is
  * longer than any part may be (`CHUNK_BYTES`): the files Worker takes no such part, so the
@@ -216,7 +212,7 @@ export function cutParts(pages: readonly Lines[], part: number): Uint8Array[] {
 }
 
 /** One generation's row. */
-export type GenerationRow = {
+type GenerationRow = {
   readonly gen: string;
   readonly day: string;
   readonly state: "writing" | "done";
@@ -236,7 +232,7 @@ export type GenerationRow = {
 };
 
 /** A generation's object an export reads at an index: a part, a segment, its end, or none yet. */
-export type GenerationObject =
+type GenerationObject =
   | { readonly kind: "part"; readonly part: number; readonly sha256: string }
   | { readonly kind: "segment"; readonly a: number; readonly b: number;
       readonly sha256: string }
@@ -261,7 +257,7 @@ function segmentsOf(list: string): { a: number; b: number; sha256: string; size:
 }
 
 /** What the manifest lane runs on. */
-export interface BackupParts {
+interface BackupParts {
   readonly storage: OwnerStorage;
   /** The write gate's quiet units: this lane's own writes mark nothing changed. */
   readonly write: Write;

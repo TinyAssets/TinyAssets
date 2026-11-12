@@ -59,12 +59,6 @@ export const WEB_REDIRECT = `${PUBLIC_ORIGIN}${identity.first_party.redirect}`;
  * and no config value.
  */
 export const FIRST_PARTY_CLIENTS: readonly string[] = Object.freeze([WEB_CLIENT]);
-/**
- * Origins a browser-based MCP client may send to `/mcp`. Empty: a present `Origin` is
- * refused (MCP 2026-07-28 Streamable HTTP), an absent one is allowed.
- */
-export const MCP_ORIGINS: readonly string[] = Object.freeze([]);
-
 /** Scopes the authorization server grants. Authority is the owner object's grant rows. */
 export const SCOPES: readonly string[] = Object.freeze(["offline_access"]);
 
@@ -91,23 +85,24 @@ export const API_BODY_MAX = 16 * 1024 * 1024;
 /** The owner surface's requests (a run's input among them): as a tool call's. */
 export const APP_BODY_MAX = API_BODY_MAX;
 
-/** `OWNER_ISSUER` until the AuthKit slice sets AuthKit's production issuer. */
-export const ISSUER_NOT_CONFIGURED = "not-configured";
-/** `UPSTREAM` until the deploy fills it from AuthKit's live discovery (`deploy/`). */
-export const UPSTREAM_NOT_CONFIGURED = "not-configured";
+/**
+ * `OWNER_ISSUER` and `UPSTREAM` until the deploy writes them: AuthKit's production issuer,
+ * and its endpoints from AuthKit's live discovery (`deploy/`).
+ */
+export const NOT_CONFIGURED = "not-configured";
 
 /** The inbound door's path: `/hooks/inbound/<token>`, one segment (`inbound.ts`). */
 export const INBOUND_PATH = "/hooks/inbound/";
 /**
  * An inbound event's body: the platform's one request ceiling, the same as a tool call's
- * (`API_BODY_MAX`; slice LIM raises it to its 16 MiB), never a ceiling of its own.
+ * (`API_BODY_MAX`, 16 MiB), never a ceiling of its own.
  */
 export const INBOUND_BODY_MAX = API_BODY_MAX;
 
 /**
  * The erasure queue (`erase.ts`), the one the owner Worker's `ERASURES` producer sends to:
- * the queue handler takes every other batch as the sandbox's ring (`index.ts`), so
- * `guards/config.test.ts` holds this name to the configs.
+ * the queue handler takes a batch of neither it nor the import queue as the sandbox's ring
+ * (`index.ts`), so `guards/config.test.ts` holds this name to the configs.
  */
 export const ERASURE_QUEUE = "tinyassets-erasure";
 
@@ -200,8 +195,8 @@ const ISSUER_URL = /^https:\/\/[^\s]+$/;
 /** The owner issuer, an https URL; unset, every sign-in fails loudly. */
 export function ownerIssuer(env: DoorsEnv): string {
   const issuer = env.OWNER_ISSUER;
-  if (issuer === ISSUER_NOT_CONFIGURED) {
-    throw new Error("OWNER_ISSUER is not configured (tasks 2: AuthKit)");
+  if (issuer === NOT_CONFIGURED) {
+    throw new Error("OWNER_ISSUER is not configured");
   }
   if (typeof issuer !== "string" || !ISSUER_URL.test(issuer)) {
     throw new Error("OWNER_ISSUER is an https issuer URL");

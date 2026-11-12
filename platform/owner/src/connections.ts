@@ -66,6 +66,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
 import { base64url, KID, parseBlob } from "../../contract/src/envelope";
+import { fields } from "../../contract/src/doors";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 
 import type { GatewayService, Refreshed } from "../../contract/src/gateway";
@@ -78,14 +79,14 @@ import {
 } from "../../contract/src/limits";
 import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
-import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
+import { inTime, LANE_CALL_MS } from "./schedule";
 import { codePoints, isPrintable, SOURCE_ID, utf8Bytes } from "../../contract/src/text";
 import type {
   Call, Door, OwnerState,
 } from "./owner-do";
 import { clock } from "./clock";
 
-export interface ConnectionLimits {
+interface ConnectionLimits {
   readonly maxConnections: number;
   readonly maxRevokedKept: number;
   readonly pendingTtlS: number;
@@ -122,7 +123,7 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   leaseMs: 60 * 1000,
   revokeTries: 5,
   revokeRetryS: 300,
-  revokeMs: (LANE_HUNG_S - LANE_PASS_S) * 1000,
+  revokeMs: LANE_CALL_MS,
   revokesPerPass: 8,
 });
 
@@ -183,8 +184,8 @@ type Row = {
 /** How a provider revoke ended: confirmed, impossible (no endpoint), or not confirmed. */
 type RevokeOutcome = "revoked" | "not_revocable" | "failed";
 
-export const CONNECTION_UNAVAILABLE = "connection_unavailable";
-export const CREDENTIAL_EXPIRED = "credential_expired";
+const CONNECTION_UNAVAILABLE = "connection_unavailable";
+const CREDENTIAL_EXPIRED = "credential_expired";
 
 const PROVIDER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const STATE = /^[A-Za-z0-9_-]{43}$/;
@@ -193,20 +194,7 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Exactly `required`, plus any of `optional`, none `undefined`. */
-function fields(request: unknown, required: readonly string[],
-                optional: readonly string[] = []): Record<string, unknown> {
-  if (!object(request)) {
-    throw new Refusal("invalid", "invalid connection request");
-  }
-  const keys = Object.keys(request);
-  if (!required.every((key) => keys.includes(key))
-      || !keys.every((key) => required.includes(key) || optional.includes(key))
-      || Object.values(request).some((value) => value === undefined)) {
-    throw new Refusal("invalid", "invalid connection request");
-  }
-  return request;
-}
+const INVALID_REQUEST = "invalid connection request";
 
 function text(value: unknown, max: number, what: string): string {
   if (typeof value !== "string" || !value || codePoints(value) > max || !isPrintable(value)) {
@@ -347,7 +335,7 @@ export class Connections {
    */
   prepare(sessionId: string, request: unknown, now: number): Prepared {
     const r = fields(request, ["source", "kind", "display_name", "provider", "revocable"],
-                     ["redirect_uri"]);
+                     ["redirect_uri"], INVALID_REQUEST);
     const source = grammar(r["source"], SOURCE_ID, "source");
     const provider = grammar(r["provider"], PROVIDER, "provider");
     const kind = r["kind"];
@@ -397,7 +385,7 @@ export class Connections {
    */
   commit(request: unknown, now: number): ConnectionView {
     const r = fields(request, ["connection", "version", "blob", "kid", "models"],
-                     ["expires_at", "failed", "egress"]);
+                     ["expires_at", "failed", "egress"], INVALID_REQUEST);
     const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const kid = grammar(r["kid"], KID, "kid");
     const blob = blobOf(r["blob"], kid);
@@ -485,7 +473,7 @@ export class Connections {
    */
   revoke(request: unknown, now: number): { connection: string; revoked: boolean;
                                            provider_revoke: boolean } {
-    const r = fields(request, ["connection"]);
+    const r = fields(request, ["connection"], [], INVALID_REQUEST);
     const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const row = this.#row(id);
     if (row === undefined) {
@@ -557,7 +545,7 @@ export class Connections {
   flowFinish(sessionId: string, request: unknown, now: number):
       { connection: string; version: number; verifier: string; redirect_uri: string;
         source: string } {
-    const r = fields(request, ["state"]);
+    const r = fields(request, ["state"], [], INVALID_REQUEST);
     const state = grammar(r["state"], STATE, "state");
     const flow = this.#sql.exec<{ connection_id: string; session_id: string; verifier: string;
                                   redirect_uri: string }>(
@@ -832,19 +820,63 @@ export class Connections {
    * lost the race is dropped; the gateway reseals again at the next call.
    */
   resealed(id: string, version: number, resealed: unknown, nowMs: number): boolean {
+    return this.#keepResealed(id, version, resealed, nowMs,
+                              (row) => row.status === "active");
+  }
+
+  /**
+   * In a unit: `resealed` stored by the reseal's compare-and-swap, when it is the gateway's
+   * reseal of `version` and the row, at `version`, is not being refreshed and `holds`.
+   */
+  #keepResealed(id: string, version: number, resealed: unknown, nowMs: number,
+                holds: (row: Row) => boolean): boolean {
     if (!object(resealed) || Object.keys(resealed).sort().join() !== "blob,kid,version"
         || typeof resealed["kid"] !== "string" || !KID.test(resealed["kid"])
         || resealed["version"] !== version + 1) {
       return false;
     }
     const row = this.#row(id);
-    if (row === undefined || row.status !== "active" || row.version !== version
+    if (row === undefined || !holds(row) || row.version !== version
         || this.#refreshing.has(id) || (row.lease_until !== null && row.lease_until > nowMs)) {
       return false;
     }
     const blob = blobOf(resealed["blob"], resealed["kid"]);
     this.#storage.transactionSync(() => this.#swap(id, version, resealed["kid"] as string, blob));
     return true;
+  }
+
+  /**
+   * The platform's sweep before a gateway kid leaves the ring (`gatewayReseal`): every blob
+   * the object holds, an idle connection's and one kept for its provider revoke included,
+   * resealed by `GATEWAY.reseal` and stored at the next version by the reseal's
+   * compare-and-swap, each in a unit of its own. A blob the gateway found under its active
+   * kid already is left as it is. How many were resealed, and how many lost the swap to a
+   * refresh or a revoke meanwhile (`left`): the platform sweeps again until none is left,
+   * and only then retires the kid.
+   */
+  async reseal(): Promise<{ resealed: number; left: number }> {
+    const held = this.#sql.exec<{ connection_id: string; version: number; kid: string;
+                                  blob: string }>(
+      "SELECT connection_id, version, kid, blob FROM connection_secrets " +
+        "ORDER BY connection_id").toArray();
+    let resealed = 0;
+    let left = 0;
+    for (const { connection_id: id, version, kid, blob } of held) {
+      const answer = await this.#service().reseal(this.#owner(), id, version, blob);
+      if (answer.kid === kid) {
+        continue;
+      }
+      const kept = await this.#write(() => this.#keepResealed(
+        id, version, answer, Date.now(), (row) => this.#sql.exec(
+          "SELECT 1 FROM connection_secrets WHERE connection_id = ? AND version = ? " +
+            "AND blob = ?", row.id, version, blob).toArray().length > 0));
+      if (kept) {
+        resealed++;
+      } else {
+        left++;
+      }
+    }
+    return { resealed, left };
   }
 
   // -- the `connections` lane ------------------------------------------------------
@@ -986,6 +1018,11 @@ export const connectionsDoors = Object.freeze({
     await o.door(() => o.egress.end("connection",
                                             (live) => live.connection === revoked.connection));
     return revoked;
+  },
+  async gatewayReseal(o: OwnerState, door: Door<undefined>):
+      Promise<{ resealed: number; left: number }> {
+    await o.door(() => door.check());
+    return o.connections.reseal();
   },
   connectionList(o: OwnerState, _call: Call<undefined>): { connections: ConnectionView[] } {
     return ({ connections: o.connections.list() });

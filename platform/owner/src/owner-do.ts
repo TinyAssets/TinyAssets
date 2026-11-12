@@ -23,12 +23,11 @@
  * (`registerPropose`, `registrations.ts`), which the owner applies in session by its id.
  * Every other door refuses the pair.
  *
- * Its code cannot reach another owner's object: the Worker binds only `FILES`, the files
- * Worker, which itself binds no Durable Object and no service, `GATEWAY`, the model
- * gateway, which binds nothing at all, and `HOOKS`, the hooks Worker, which binds only its
- * own class (`codemode.ts`: code mode's VMs run there, never here); it binds no Durable
- * Object namespace; the runtime hands it no `ctx.exports` (`disable_ctx_exports`); and
- * its source never names `exports` or imports `env` (the config and self-reach guards). The owner's file bytes reach the bucket only
+ * Its code cannot reach another owner's object: no service the Worker binds reaches an
+ * object (`wrangler.jsonc`, held by the config guard; code mode's VMs run in `HOOKS`,
+ * never here); it binds no Durable Object namespace; the runtime hands it no
+ * `ctx.exports` (`disable_ctx_exports`); and its source never names `exports` or imports
+ * `env` (the config and self-reach guards). The owner's file bytes reach the bucket only
  * through `FILES`, under the owner's namespace, which only this object holds
  * (`files.ts`). The module keeps no mutable state at top level (the module-state
  * guard), since objects of one class can share an isolate.
@@ -71,11 +70,11 @@
  * read and cancel runs (`runs.ts`): an engine's run in the owner's sandbox, admitted here in
  * one unit against the owner's admission, the agent, the tier's simultaneous runs, the
  * owner's own limits and the initiator's stamp, its source chosen, its row, grant and lease
- * written, then started through the `SANDBOX` interface (`sandbox.ts`), absent until slice
- * S binds it, so until then every run is refused loudly. A run's engine calls back on the
- * egress host: its MCP door, every door held to its run grant's scopes (a run binding,
- * `#runAccount`), and its event door (`runEvents`), whose frames the object reads by the
- * engine's record and relays to the owner's app sockets subscribed to that conversation.
+ * written, then started through the `SANDBOX` service (`sandbox.ts`). A run's engine
+ * calls back on the egress host: its MCP door, every door held to its run grant's scopes
+ * (a run binding, `#runAccount`), and its event door (`runEvents`), whose frames the object
+ * reads by the engine's record and relays to the owner's app sockets subscribed to that
+ * conversation.
  *
  * A main agent spends few calls (slice M): `inboxDigest` and `boardDigest` answer what
  * changed for it since its cursor in one read, held to its grant; `codeRun` is code mode at
@@ -84,8 +83,8 @@
  * `toolProfile` answers the doors which tools a caller is served (`contract/profiles.json`:
  * its grant's profile, or a run's).
  *
- * Erasing the owner (`erasure.ts`, `erase.ts`) is an internal path, which no door reaches
- * until the erasure door (slice 10): once it marks the owner, every door refuses
+ * Erasing the owner (`erasure.ts`, `erase.ts`; the door `ownerErase`): once it marks the
+ * owner, every door refuses
  * (`ERASING`, in the binding check every door's first unit runs) and no lane runs; it ends
  * every run, then wipes the owner whole, leaving only the erased admission row
  * (`admission.ts`). An object that finds that tombstone as it
@@ -232,8 +231,8 @@ import type {
 } from "./signins";
 
 /** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
-export const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
-export const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
+const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
+const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
 
 export interface RegisterRequest {
   readonly command_center_id: string;
@@ -380,8 +379,8 @@ export interface Door<R = unknown> {
 /** What a run door needs where its agent acts: to start work, or (null) to read or cancel it. */
 type RunNeed = "converse" | "run_graph" | null;
 
-export const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
-export const MCP_REGISTERS_BY_CARD = "an MCP client's agent registers through the card it files";
+const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
+const MCP_REGISTERS_BY_CARD = "an MCP client's agent registers through the card it files";
 /** A sandbox token's binding at any door but its own, and any other binding at those. */
 export const SANDBOX_DOORS = "a sandbox's token reaches its own doors only";
 export const SANDBOX_ONLY = "a sandbox door takes its own sandbox token only";
@@ -617,10 +616,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * refuses.
    */
   readonly #tombstone: boolean;
-  /**
-   * The owner's erasure (`erasure.ts`, `erase.ts`): an internal path, which the erasure
-   * door (slice 10) calls; no door reaches it yet.
-   */
+  /** The owner's erasure (`erasure.ts`, `erase.ts`), begun at `ownerErase`. */
   readonly #erasure: Erasure;
   /**
    * The cutover's discard (`#discard`): null until this instance wiped its owner's database
@@ -943,7 +939,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       gone: () => object.#tombstone || object.#erasure.erased || erasing(storage),
       discard: () => object.#discard(),
       admission: () => admission(storage),
-      keepTiers: (binding: Binding) => object.#keepTiers(binding),
+      keepTiers: (binding: Binding) => keepTiers(storage, binding.tiers, clock()),
       scope: (account: Account, capability: RunCapability, center?: unknown, agent?: string) =>
         object.#scope(account, capability, center, agent),
       universe: (account: Account) => object.#universe(account),
@@ -1530,6 +1526,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return this.#units("dataKeyRewrap", binding, undefined, filesDoors.dataKeyRewrap);
   }
 
+  /**
+   * A gateway key rotation's sweep for this owner (`gateway/src/keyring.ts`): every model
+   * credential blob it holds resealed under the gateway keyring's active kid, an idle
+   * connection's too, since nothing else reseals it; the platform retires a kid once every
+   * owner's sweep left none. The platform's alone, as `dataKeyRewrap` is.
+   */
+  async gatewayReseal(binding: Binding): Promise<{ resealed: number; left: number }> {
+    return this.#units("gatewayReseal", binding, undefined, connectionsDoors.gatewayReseal);
+  }
+
   // -- OWNER_POLICY ------------------------------------------------------------
 
   policyRead(binding: Binding): Promise<Projection> {
@@ -1887,14 +1893,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    */
   roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
     return this.#units("roomPost", binding, request, ledgerDoors.roomPost);
-  }
-
-  /**
-   * The tier numbers a door's binding handed, kept for the runs the lane starts (a mail's);
-   * none handed (`null`) forgets the kept ones, and that run is refused then, not this call.
-   */
-  #keepTiers(binding: Binding): void {
-    keepTiers(this.#storage, binding.tiers, clock());
   }
 
   // -- MODEL CONNECTIONS: sealed credentials, flows and spend (tasks 4 G2) ------------

@@ -20,7 +20,7 @@
  * 6. The platform gates: an outside client's authorization is outside work (the kill
  *    switch and the maintenance gate); the owner's own sign-in, the maintenance gate.
  * 7. Sign-up: an owner the directory has no record of is admitted by the platform, its
- *    explicit admit (`bindPlatform`, `admissionSet`), and then recorded; a fresh object
+ *    explicit admit (`bindPlatformFor`, `admissionSet`), and then recorded; a fresh object
  *    is pending until then and refuses every door (`owner/src/admission.ts`).
  * 8. An outside client: the grant, its props holding the sign-in's time. The owner's
  *    app: `sessionOpen` at the sign-in's time, the session cookie set on the redirect,
@@ -41,7 +41,7 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 
 import {
-  type AppProps, bindPlatform, bindSignIn, type McpProps, mcpOrigin, ownerOf,
+  type AppProps, bindPlatformFor, bindSignIn, type McpProps, mcpOrigin, ownerOf,
 } from "./binder";
 import { type Vendor, vendorOf } from "../../contract/src/apps";
 import { boundedText, TOO_LARGE } from "./body";
@@ -107,7 +107,7 @@ function firstParty(request: AuthRequest): boolean {
 }
 
 /** The consent page: every client-supplied string escaped, framing refused by its headers. */
-export function consentPage(details: ConsentDescription, handle: string): string {
+function consentPage(details: ConsentDescription, handle: string): string {
   const name = escape(details.clientName);
   const origin = details.clientDomain !== undefined
     ? `Published by <strong>${escape(details.clientDomain)}</strong>.`
@@ -242,8 +242,8 @@ export async function authorize(request: Request, env: DoorsEnv,
  * again at the next sign-in (the admit is idempotent) and a record never names an owner
  * its object did not admit.
  */
-async function admit(env: DoorsEnv, signedIn: SignIn, owner: string): Promise<boolean> {
-  const platform = bindPlatform(env, await bindSignIn(env, signedIn));
+async function admit(env: DoorsEnv, owner: string): Promise<boolean> {
+  const platform = bindPlatformFor(env, owner);
   let state: string;
   try {
     ({ state } = await platform.stub.admissionSet(platform.binding, { admit: true }));
@@ -355,7 +355,7 @@ export async function callback(request: Request, env: DoorsEnv,
     if (!outsideOpen(control, owner)) {
       return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
     }
-    if (record === null && !await admit(env, signedIn, owner)) {
+    if (record === null && !await admit(env, owner)) {
       return redirect(authorizationErrorRedirect(original, "access_denied",
                                                  "this account was erased"), headers);
     }
@@ -378,7 +378,7 @@ export async function callback(request: Request, env: DoorsEnv,
     if (!ownerOpen(control, owner)) {
       return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
     }
-    if (record === null && !await admit(env, signedIn, owner)) {
+    if (record === null && !await admit(env, owner)) {
       return redirect(authorizationErrorRedirect(original, "access_denied",
                                                  "this account was erased"), headers);
     }

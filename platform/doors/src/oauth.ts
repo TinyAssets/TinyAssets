@@ -46,7 +46,7 @@ import {
 } from "./config";
 import { APP_RESOURCE } from "../../contract/src/identity";
 
-export const REGISTRATION_ENDPOINT = "/oauth/register";
+const REGISTRATION_ENDPOINT = "/oauth/register";
 
 export function authorizationServer(env: DoorsEnv): OAuthAuthorizationServer<DoorsEnv> {
   return new OAuthAuthorizationServer<DoorsEnv>({

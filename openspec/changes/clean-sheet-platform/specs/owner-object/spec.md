@@ -233,7 +233,7 @@ Lifecycle SHALL own the object's single physical alarm, which the lanes' jobs an
 - **THEN** it fails, since the object defines no `fetch`
 
 ### Requirement: Only the wakes lane claims and settles wakes
-Wakes SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell the object constructs (`Doorbell`, `wakes.ts`). Each pass SHALL first recover lapsed claims by their own index, then, when rows are due, ask the kill switch once (the control record in `CONTROL`, by the doors' `outsideOpen`, bounded at `WAKE_SEND_MS`) and claim nothing on closed, a failure or no answer, holding its job `WAKE_RETRY_S` without touching a row; then claim due open rows. The lane SHALL have a job for open rows only while the owner is admitted.
+Wakes SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell the object constructs (`Doorbell`, `wakes.ts`). Each pass SHALL first recover lapsed claims by their own index, then, when rows are due, ask the kill switch once (the control record in `CONTROL`, by the doors' `outsideOpen`, bounded at `LANE_CALL_MS`) and claim nothing on closed, a failure or no answer, holding its job `WAKE_RETRY_S` without touching a row; then claim due open rows. The lane SHALL have a job for open rows only while the owner is admitted.
 
 #### Scenario: A lapsed claim behind due wakes
 - **WHEN** a claim's lease has lapsed behind more due open wakes than one pass takes, and the kill switch is closed
@@ -285,7 +285,7 @@ An enabled agent MAY hold several doorbell subscriptions (a ChatGPT dot and a Wo
 - **THEN** the wake settles failed, it is not retried, and the subscription is kept
 
 ### Requirement: A send that may have left is never replayed
-The doorbell SHALL mark a wake before its first byte and recheck the agent's subscriptions and its client's grant immediately before it; a disable, unsubscribe or grant change that landed meanwhile SHALL send nothing. A transport failure after the mark SHALL settle `unknown`; a send past `WAKE_SEND_MS` SHALL be left to its lease and recover `unknown`; neither SHALL be sent again. A `429` SHALL wait the Retry-After as sent; an unreadable one, or one naming no time after now (zero, a past date), an exponential backoff from `WAKE_LEASE_S`, so a callback never keeps the object busy.
+The doorbell SHALL mark a wake before its first byte and recheck the agent's subscriptions and its client's grant immediately before it; a disable, unsubscribe or grant change that landed meanwhile SHALL send nothing. A transport failure after the mark SHALL settle `unknown`; a send past `LANE_CALL_MS` SHALL be left to its lease and recover `unknown`; neither SHALL be sent again. A `429` SHALL wait the Retry-After as sent; an unreadable one, or one naming no time after now (zero, a past date), an exponential backoff from `WAKE_LEASE_S`, so a callback never keeps the object busy.
 
 #### Scenario: A slow send
 - **WHEN** a callback never answers
@@ -769,6 +769,10 @@ A blob the gateway resealed under its active kid SHALL be stored by compare-and-
 #### Scenario: A refresh lands while an older call is in flight
 - **WHEN** a call made on version 1 under an older kid ends after a refresh stored version 2
 - **THEN** version 2's tokens stay, and the call's reseal is dropped
+
+#### Scenario: A gateway key rotation, an idle connection
+- **WHEN** the platform sweeps an owner (`gatewayReseal`, the platform's door) after the gateway's ring made a new kid active
+- **THEN** every connection blob the object holds under an older kid, an idle one's and one kept for its provider revoke included, is resealed at the next version by the same compare-and-swap, one under the active kid is left as it is, and the answer counts any blob a refresh held (`left`), so a kid leaves the ring only after a sweep of every owner left none
 
 ### Requirement: Every model call is reserved against the owner's model policy
 Each model call the object reserves (`usage.ts`; the runs slice keys it to a run) SHALL be reserved in one unit that reads the owner policy's generation and `models` ceilings: the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens. A source's ceilings SHALL be keyed by its source record, so a reconnect keeps them.
