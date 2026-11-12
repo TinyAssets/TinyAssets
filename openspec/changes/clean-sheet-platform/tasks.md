@@ -855,10 +855,9 @@ account and no deploy.
   door's identity check only. **One lease**: the sync lease (`files.ts`; its `lease_id` the
   claim token, its epoch the fencing number, for sync commits and egress alike), which
   migration 14 binds to the two hashes and the egress generation its network was applied
-  under. The lease API is owner-internal (`SandboxLeases`: open, renew, close, network
-  applied, network, stale, config); no door reaches it, and 8b's `exec`, which runs in the
-  owner's object, gets it with the agent's parts when 8b wires `exec` (the tests take it
-  through `Internals.sandbox`). **The door** (`doors/src/egress.ts`, on
+  under (set as the start that opens the lease is dispatched, and moved by a re-apply's
+  answer, E1 and E2). The lease API is owner-internal (`SandboxLeases`: renew, close,
+  config); no door reaches it (the tests take it through `Internals.sandbox`). **The door** (`doors/src/egress.ts`, on
   `egress.tinyassets.io` only): the token verified, the maintenance gate, then
   `OwnerDO.egressOpen` (`egress.ts`, `work`): the lease by the egress hash (checked first,
   so only a live lease's call refreshes OAuth), the transform's and the lease's egress
@@ -967,7 +966,8 @@ account and no deploy.
   done**: each call is admitted at open against the current **egress generation**, which
   moves only when the policy's egress table does (the grants' revision/authority split), so
   a write that changes egress leaves the network stale, egress refused, fail-closed, until
-  8b applies it again (`SandboxLeases.stale` tells 8b's lane), and no other policy change
+  the lease's network is re-applied (E2: `Launcher.reapply` as the write commits, the
+  `runs` lane for any that does not land; the sandbox Worker's `network`), and no other policy change
   stalls egress; the gateway fetches strictly publicly and the object refuses IP literals
   (`network.ts`'s `checkDestination`, the policy's own rule). **The network document**
   (`network.ts`, pure): E2B's `allowOut`, `denyOut`, `dnsServers` and `rules` (e2b SDK

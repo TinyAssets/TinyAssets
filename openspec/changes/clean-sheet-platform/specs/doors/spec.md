@@ -456,7 +456,7 @@ The egress door SHALL settle every reservation the object admitted, once, with t
 
 #### Scenario: A policy write mid-stream
 - **WHEN** the owner writes its policy while a sandbox response streams
-- **THEN** the stream is cut, its reservation settled `ended` with its spend `unknown`, the upstream request cancelled, and when the write changed the egress table, the next call refused until the sandbox's network is applied under the new egress generation
+- **THEN** the stream is cut, its reservation settled `ended` with its spend `unknown`, the upstream request cancelled, and when the write changed the egress table, the lease's network re-applied under the new egress generation, the next call under the old generation refused, and a call through the re-applied network answered
 
 #### Scenario: The owner's object resets mid-stream
 - **WHEN** a deploy resets the owner's object while a sandbox response streams
