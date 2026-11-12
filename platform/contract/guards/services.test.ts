@@ -21,25 +21,27 @@ import { describe, expect, it } from "vitest";
 import ts from "typescript";
 
 import { parse, workerSources } from "../../ci/kit/sources";
+import { services } from "../../ci/kit/types";
 import { PLATFORM } from "../../ci/paths";
 import { readWrangler } from "../../ci/workers";
-import table from "../services.json" with { type: "json" };
 import { doorRow, takesRequest, UNBOUND_DOORS } from "../src/doors";
 
 /** The service contracts, by their module. */
 const CONTRACTS = Object.freeze(["gateway", "files", "codemode", "sandbox", "owner", "requests",
                                  "queues"].map((name) => `contract/src/${name}.ts`));
 
+const table = services();
+
 /** Each service's classes, by source, and the contract interface each implements. */
 const IMPLEMENTS = Object.entries(table.workers).flatMap(([worker, entry]) =>
-  Object.entries(entry.classes as Record<string, { source: string; contract: string }>)
+  Object.entries(entry.classes)
     .map(([name, { source, contract }]) => ({ path: `${worker}/${source}`, name, contract })));
 
 /** Each Worker's default entrypoint, as the table names it, by the Worker's main module. */
-const DEFAULTS = Object.entries(table.workers).flatMap(([worker, entry]) => "default" in entry
-  ? [{ path: `${worker}/${String(readWrangler(join(PLATFORM, worker))["main"])}`,
-       name: entry.default }]
-  : []);
+const DEFAULTS = Object.entries(table.workers).flatMap(([worker, entry]) =>
+  entry.default === undefined ? []
+    : [{ path: `${worker}/${String(readWrangler(join(PLATFORM, worker))["main"])}`,
+         name: entry.default }]);
 
 function exported(node: ts.Node): boolean {
   return ts.canHaveModifiers(node)

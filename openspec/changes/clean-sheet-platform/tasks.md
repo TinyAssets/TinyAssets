@@ -365,7 +365,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] Process (d3 §B): P2 in order: reviews posted as the App's `review` check reads them and
   seen green on a real PR, then `review` required, then the receipt half deleted (d3 §F4);
   P6–P9 after the lanes.
-- [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5).
+- [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
+  tests pass takes the two older tests that make a call refuse by patching a class's prototype
+  (`owner/test/runs-authority.test.ts:857` `Files.prototype.open`,
+  `owner/test/erasure.test.ts:83` `Lifecycle.prototype.disableAlarms`; list 6, item 9).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
@@ -633,6 +636,8 @@ Open questions, from the as-built record:
 4. When the directory submission is made: should the listing get its own MCP door, with grants
    pinned to the `directory` profile, against Direction 2's "one MCP door"? The old stack built
    and retired `/mcp-directory`.
+5. The published plugins say `license: "Proprietary"` (`platform/plugins/build.mjs`
+   `PUBLISHER`), but the repository is MIT. Which should the plugins carry (list 6, item 6d)?
 
 The coordinator's to decide (no spending, irreversible or outward-facing act), from the
 as-built record, and decided (the coordinator, 2026-11-12):

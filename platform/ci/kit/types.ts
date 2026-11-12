@@ -121,7 +121,7 @@ function contractType(table: Services, folder: string, name: string, imports: Im
 }
 
 /** The source of `worker`'s `src/env.ts`, from its config and `table`. */
-export function envSource(worker: string, table: Services = services()): string {
+function envSource(worker: string, table: Services): string {
   const config = readWrangler(join(PLATFORM, worker)) as Record<string, unknown>;
   const folders = new Map(workerFolders().map((folder) =>
     [readWrangler(join(PLATFORM, folder))["name"] as string, folder]));
