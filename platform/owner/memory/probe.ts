@@ -42,7 +42,7 @@ import { Backups } from "../src/backup";
 import { Bodies, type Located } from "../src/bodies";
 import { ChangeLog } from "../src/changelog";
 import { Grants } from "../src/grants";
-import { Ledger, LEDGER_LIMITS, type LedgerLimits } from "../src/ledger";
+import { Ledger, LEDGER_LIMITS } from "../src/ledger";
 import { EDIT_BYTES_MAX, Files } from "../src/files";
 import { WriteGate } from "../src/gate";
 import * as holds from "../src/holds";
@@ -459,29 +459,27 @@ const PAT: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(6
 const ORIGINS = [MUSE, DOT, PAT];
 
 /**
- * An owner object whose `archive` lane the leg runs: the real `OwnerDO` at `limits`, its
- * mail set up in its own ledger, outside any measurement.
+ * An owner object whose `archive` lane the leg runs: the real `OwnerDO` at the production
+ * ledger limits, its mail set up in its own ledger, outside any measurement.
  */
-class ArchiveObject extends OwnerDO {
+export class LegArchive extends OwnerDO {
   readonly #state: DurableObjectState;
-  readonly #limits: LedgerLimits;
 
-  constructor(state: DurableObjectState, env: LegEnv, limits: LedgerLimits) {
-    super(state, { ...env, FILES: received(env) }, { ledgerLimits: limits, starter: null });
+  constructor(state: DurableObjectState, env: LegEnv) {
+    super(state, { ...env, FILES: received(env) }, { starter: null });
     this.#state = state;
-    this.#limits = limits;
   }
 
   #ledger(): Ledger {
     const storage = this.#state.storage;
-    return new Ledger(storage, new Grants(storage, new Policy(storage)), this.#limits);
+    return new Ledger(storage, new Grants(storage, new Policy(storage)));
   }
 
   /** Agents registered as their own clients file them: each's id. */
   legAgents(): string[] {
     const storage = this.#state.storage;
     const grants = new Grants(storage, new Policy(storage));
-    const ledger = new Ledger(storage, grants, this.#limits);
+    const ledger = new Ledger(storage, grants);
     return ORIGINS.map((origin, n) => {
       grants.admit(origin.client, "mcp", null, Math.floor(Date.now() / 1000));
       return ledger.register(origin, { kind: "mcp", ref: `conn-${n}` }, {
@@ -609,13 +607,6 @@ class ArchiveObject extends OwnerDO {
   }
 }
 
-/** At the production ledger limits: a tail seal of small messages. */
-export class LegArchive extends ArchiveObject {
-  constructor(state: DurableObjectState, env: LegEnv) {
-    super(state, env, LEDGER_LIMITS);
-  }
-}
-
 const SIGNINS = Object.freeze(signinsOn(
   bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
 
@@ -698,7 +689,7 @@ async function upload(stub: DurableObjectStub<LegOwner>, who: Binding, path: str
 interface Ready {
   /** Its object's name: a stub is one request's, so each route gets its own. */
   readonly name: string;
-  /** An archive case's: its first agent's id, and the segments its lane stands at once done. */
+  /** An archive case's: its first agent's id, and the records its archive holds once done. */
   readonly agents?: string[];
   readonly want?: number;
   readonly who: Binding;
@@ -741,14 +732,14 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // At the production limits: small acked messages past half the hot ceiling (and `mib`
       // thousand more), so the lane seals a tail of them: 8 MiB of records (8,489 of these),
       // its arrays near the doubling's worst (at 16,384).
-      const stub = await archiveObject(env.ARCHIVE, name);
+      const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
       await stub.legSmall(`dm:${agents[0]}`, 0, 25_000 + mib * 1000);
       LEG.ready.push({ name, who, agents, want: 1 });
     } else if (path === "merge") {
       // At the production limits: the muse's sealed mail, Dot's merged into it, and Pat's
       // left for the run to ack: its merge is the measured move.
-      const stub = await archiveObject(env.ARCHIVE, name);
+      const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
       const lasts = await stub.legInterleaved(agents.map((agent) => `dm:${agent}`));
       await ring(stub, who, agents[0]!, "r0");
@@ -769,9 +760,9 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // each its own, since one reaches the seal alone. For the rewrite, the largest segment
       // one can meet: the muse's body the largest that does not seal alone, then Dot's at
       // `mib` (the cap), one segment of about 16 MiB; then Dot is deleted.
-      const stub = await archiveObject(env.ARCHIVE, name);
+      const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
-      const post = async (on: DurableObjectStub<ArchiveObject>, k: number, bytes: number,
+      const post = async (on: DurableObjectStub<LegArchive>, k: number, bytes: number,
                           as = who, to = agents) =>
         (await on.roomPost(as, { room_id: `dm:${to[k]}`, client_message_id: `b${k}`,
                                   body: new TextDecoder().decode(letters(seed * 10 + k, bytes)),
@@ -780,7 +771,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       if (path === "rewrite") {
         // A record's own bytes past its body's, read from a message of the same shape on an
         // object of its own: the kept body is then one byte short of the seal alone.
-        const sizing = await archiveObject(env.ARCHIVE, `${name}-sizing`);
+        const sizing = await archiveObject(env, `${name}-sizing`);
         const its = await sizing.legAgents();
         const overhead = await sizing.legOverhead(
           await post(sizing, 0, SEGMENT_MIN_BYTES / 2, owner(`${name}-sizing`), its));
@@ -793,7 +784,6 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // seal, and the unread within `maxUnacked`.
       const rings = path === "rewrite" ? 2 : 1;
       await stub.legUnread(`dm:${agents[0]}`, LEDGER_LIMITS.maxMessages / 2 - rings);
-      const sealed = path === "bodies" && mib * MIB >= SEGMENT_MIN_BYTES ? 2 : 1;
       if (path === "rewrite") {
         await ring(stub, who, agents[0]!, "r0");
         await settled(stub, (seen) => seen.segments >= 1);
@@ -805,7 +795,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
         }
         await stub.legRemove(agents[1]!);
       }
-      LEG.ready.push({ name, who, agents, want: path === "rewrite" ? 0 : sealed });
+      LEG.ready.push({ name, who, agents, want: path === "rewrite" ? 0 : 2 });
     } else if (path === "fetch" || path === "window") {
       LEG.ready.push({ name, who, content: await stub.legPlace(seed, mib * MIB),
                        offset: Math.floor(mib * MIB / 2) });
@@ -816,17 +806,15 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
 }
 
 /** An archive case's object, admitted as sign-up admits it. */
-async function archiveObject<T extends ArchiveObject>(namespace: DurableObjectNamespace<T>,
-                                                     name: string):
-    Promise<DurableObjectStub<T>> {
-  const stub = namespace.getByName(name);
+async function archiveObject(env: LegEnv, name: string): Promise<DurableObjectStub<LegArchive>> {
+  const stub = env.ARCHIVE.getByName(name);
   await stub.admissionSet({ owner: name, caller: PLATFORM_CALLER, origin: null } as Binding,
                           { admit: true });
   return stub;
 }
 
 /** An owner's post to the agent `agent`: its door syncs the lanes, so the archive's runs. */
-async function ring(stub: DurableObjectStub<ArchiveObject>, who: Binding, agent: string,
+async function ring(stub: DurableObjectStub<LegArchive>, who: Binding, agent: string,
                     cmid: string): Promise<void> {
   await stub.roomPost(who, { room_id: `dm:${agent}`, client_message_id: cmid, body: "ring",
                              parent_id: null });
@@ -837,7 +825,7 @@ const LANE_POLL_MS = 10;
 const LANE_LOOKS = 12_000;
 
 /** Until the lane's passes stand as `done` says (its own alarm runs them), or loudly not. */
-async function settled(stub: DurableObjectStub<ArchiveObject>,
+async function settled(stub: DurableObjectStub<LegArchive>,
                        done: (seen: { segments: number; records: number;
                                   purges: number }) => boolean):
     Promise<void> {
@@ -861,7 +849,7 @@ async function settled(stub: DurableObjectStub<ArchiveObject>,
  * sees `settled`'s condition already held; returning then, the next case's setup would drop
  * the store under the second pass.
  */
-async function idle(stub: DurableObjectStub<ArchiveObject>): Promise<void> {
+async function idle(stub: DurableObjectStub<LegArchive>): Promise<void> {
   for (let n = 0; n < LANE_LOOKS; n++) {
     if (await stub.legIdle()) {
       return;
@@ -915,7 +903,7 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
         const archive = env.ARCHIVE.getByName(name);
         await ring(archive, who, agents![0]!, "ring");
         await settled(archive, path === "rewrite" ? (seen) => seen.purges === 0
-          : (seen) => seen.segments >= want!);
+          : (seen) => seen.records >= want!);
         await idle(archive);
         return (await archive.legArchived()).records;
       }
