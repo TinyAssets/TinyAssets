@@ -1256,8 +1256,9 @@ describe("a live lease's network re-applied (E2)", () => {
     const tokened = { ...PLAN, network: { ...PLAN.network, rules: {
       "egress.tinyassets.io": [{ transform: { headers: { "x-ta-sandbox": "forged",
                                                           "x-ta-network-generation": "2" } } }] } } };
-    await expect(stub(who).network(reapply({ network: tokened })))
-      .rejects.toThrow(/no token/);
+    const refused = await stub(who).network(reapply({ network: tokened }))
+      .then(() => null, (error: unknown) => error);
+    expect(String(refused)).toMatch(/no token/);
     expect((await networkOf()).headers["x-ta-network-generation"]).toBe("1");
   });
 

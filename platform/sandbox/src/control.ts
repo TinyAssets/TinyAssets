@@ -275,8 +275,11 @@ function reapplyNetwork(network: unknown): E2bNetwork {
 /** The plan made whole: the live sandbox's own egress token set in the door's transform. */
 function withToken(plan: E2bNetwork, token: string): E2bNetwork {
   const door = plan.rules[EGRESS_HOST]![0] as { transform: { headers: Record<string, string> } };
-  return { ...plan, rules: { [EGRESS_HOST]: [{ transform: { headers: {
-    ...door.transform.headers, [SANDBOX_HEADER]: token } } }] } };
+  const headers: Record<string, string> = { ...door.transform.headers };
+  headers[SANDBOX_HEADER] = token;
+  const rules: Record<string, unknown[]> = {};
+  rules[EGRESS_HOST] = [{ transform: { headers } }];
+  return { ...plan, rules };
 }
 
 /** The vendor's own hosts of an engine run on its sign-in; none on a key. */
