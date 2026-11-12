@@ -148,7 +148,7 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
 
 describe("the meter pi-ai's adapter teaches", () => {
   const keys = bundledRecords().map(sourceRecord)
-    .filter((record) => record.connect.includes("api_key") && record.unwired === undefined);
+    .filter((record) => record.connect.includes("api_key"));
   it("has the Anthropic, OpenAI and xAI keys among the API-key sources", () => {
     expect(keys.map((record) => record.id)).toEqual(expect.arrayContaining([
       "anthropic", "openai", "xai"]));

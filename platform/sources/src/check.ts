@@ -1142,7 +1142,7 @@ export function sourceRecord(value: unknown): SourceRecord {
     check.fail("connect lists api_key and oauth, or cli alone, each once");
   }
   const base = ["id", "display_name", "connect"];
-  const optional = ["help_url", "suggested", "unwired", "curated"];
+  const optional = ["help_url", "suggested", "curated"];
   const cli = connect.includes("cli");
   const fields = cli ? check.keys(copy, "the record", [...base, "cli"], optional)
     : check.keys(copy, "the record",
@@ -1158,9 +1158,6 @@ export function sourceRecord(value: unknown): SourceRecord {
   };
   if (fields["help_url"] !== undefined) {
     record["help_url"] = check.https(fields["help_url"], "help_url");
-  }
-  if (fields["unwired"] !== undefined) {
-    record["unwired"] = check.text(fields["unwired"], /^[^\p{Cc}]{1,256}$/u, "unwired");
   }
   if (fields["curated"] !== undefined) {
     record["curated"] = fields["curated"] === false ? false

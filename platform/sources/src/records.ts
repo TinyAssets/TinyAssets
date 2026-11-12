@@ -2,7 +2,6 @@
 // `src/`: never by hand.
 import anthropic from "../anthropic.json";
 import cerebras from "../cerebras.json";
-import chatgpt from "../chatgpt.json";
 import claudeCode from "../claude-code.json";
 import codex from "../codex.json";
 import gemini from "../gemini.json";
@@ -22,7 +21,6 @@ import xai from "../xai.json";
 export const RECORDS: readonly unknown[] = Object.freeze([
   anthropic,
   cerebras,
-  chatgpt,
   claudeCode,
   codex,
   gemini,

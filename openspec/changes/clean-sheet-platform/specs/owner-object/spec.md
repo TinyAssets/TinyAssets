@@ -350,6 +350,21 @@ The owner's policy SHALL be one validated document whose digest is rechecked on 
 - **WHEN** the owner writes twice naming the same generation
 - **THEN** the first commits with one receipt and the second is refused with "policy generation changed"
 
+### Requirement: An action rule holds where the action is seen
+The owner's action rules SHALL be one `actions` table, empty until the owner writes one (Fact 15): each names an act of `contract/acts.json`, `ask` or `never`, and MAY name the MCP tools that do it. It SHALL hold only where its act is seen (the doors naming it, its CLI tool kinds, its tools), and `acts.json` SHALL name what nothing of ours sees. A rule nothing could see SHALL be refused. The old rule tables, spend caps and egress `ask` SHALL NOT be policy.
+
+#### Scenario: A rule nothing could see
+- **WHEN** the owner writes `{ act: "browser.action", do: "ask" }` naming no tools
+- **THEN** the write is refused "nothing can decide this action rule", and the same rule with `tools: ["mcp:playwright:browser_*"]` commits
+
+#### Scenario: The old stack's document
+- **WHEN** a document with `entries`, `spend` or egress mode `ask` is written
+- **THEN** it is refused whole, and the generation does not move
+
+#### Scenario: The stored default at the migration
+- **WHEN** an object holding the old default document migrates
+- **THEN** it holds the new default at the same generation, and an object holding any other old document stops loudly rather than keep a document its validator refuses
+
 ### Requirement: Every outside call is admitted against its client's grant
 The object SHALL admit each call from an outside client against that client's grant before any door acts: an MCP client's first verified call records it `full`, an API key with no grant is refused, a revoked client is refused, and after a revoke only a sign-in made after it is admitted. Only the owner in its session SHALL change a grant; the owner's account MAY revoke one without a session.
 
@@ -968,7 +983,7 @@ Once its own unit committed, a policy write SHALL end every open egress stream, 
 - **THEN** only the revoked connection's stream ends
 
 ### Requirement: The sandbox's network is made from owner policy
-`networkDocument` SHALL make E2B's network configuration from the owner's egress policy, in E2B's own field names: `denyOut` all traffic; `allowOut` `*` (names by SNI) in `open` mode, else the policy's destinations on ports 80 and 443, and in every mode `egress.tinyassets.io`; `dnsServers` pinned to one resolver; one transform, on `egress.tinyassets.io` only, setting the egress token and the egress generation. A destination on another port SHALL be refused, never widened; an IP literal SHALL be refused; `ask` mode SHALL be an allowlist whose application leaves a refusal receipt. **An allowlist is not a data boundary in v1**: E2B allows all traffic to a DNS server, on every port, and its rules name no ports, so the pinned resolver cannot be held to port 53; every network plan SHALL say so to the owner (`boundary: false`, its note). The E2B project's API key SHALL be held as a platform secret, since it can read the sandbox's transform, and so the egress token.
+`networkDocument` SHALL make E2B's network configuration from the owner's egress policy, in E2B's own field names: `denyOut` all traffic; `allowOut` `*` (names by SNI) in `open` mode, else the policy's destinations on ports 80 and 443, and in every mode `egress.tinyassets.io`; `dnsServers` pinned to one resolver; one transform, on `egress.tinyassets.io` only, setting the egress token and the egress generation. A destination on another port SHALL be refused, never widened; an IP literal SHALL be refused. **An allowlist is not a data boundary in v1**: E2B allows all traffic to a DNS server, on every port, and its rules name no ports, so the pinned resolver cannot be held to port 53; every network plan SHALL say so to the owner (`boundary: false`, its note). The E2B project's API key SHALL be held as a platform secret, since it can read the sandbox's transform, and so the egress token.
 
 #### Scenario: An allowlist naming an IP and a database port
 - **WHEN** the policy lists `8.8.8.8:443` or `db.example.com:5432`

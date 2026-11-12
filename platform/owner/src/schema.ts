@@ -2042,7 +2042,28 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE sandbox_leases ADD COLUMN network_tried_at REAL",
     "ALTER TABLE sandbox_leases ADD COLUMN network_tried_generation INTEGER",
   ]),
-  // 6, after E2's 5 (untangle H1, `history_keys_research.md` §2.2): every history entry keyed
+  // 6, after E2's 5 (R5 slice 1, d3 §N): the policy document's new shape, its `egress` table
+  // and the optional tables (`contract/src/policy-document.ts`), with no `entries` or `spend`.
+  // The old default document becomes the new default, its generation kept, since nothing it
+  // says changed. Any other document has no new shape SQL can write, its digest being
+  // SHA-256, so the trigger refuses the migration and the object stops loudly rather than
+  // keep a document its validator refuses. The platform is dark: none is held. The trigger
+  // holds the stored text as well as its digest, so a row whose digest no longer matches its
+  // document stops here too, rather than have its document replaced unread.
+  Object.freeze([
+    "CREATE TRIGGER policy_reshape_refused BEFORE UPDATE ON owner_policy WHEN OLD.digest != " +
+      "'sha256:b8a7d8f3763ebeadaace95e5a634ffa3954f88b9a75061b061e21e65222d151c' OR " +
+      "OLD.document != '{\"egress\":{\"destinations\":[],\"mode\":\"open\"},\"entries\":[]," +
+      "\"spend\":{\"ask_above\":null,\"daily\":null,\"monthly\":null,\"source_ceilings\":{}," +
+      "\"transaction\":null}}' BEGIN " +
+      "SELECT RAISE(ABORT, 'the owner policy is not the old default document, which alone " +
+      "has a new shape here'); END",
+    "UPDATE owner_policy SET digest = " +
+      "'sha256:f90862c9625ff981a8a7a0a5604579eadad9e1787c3ac869045362377960c090', " +
+      "document = '{\"egress\":{\"destinations\":[],\"mode\":\"open\"}}'",
+    "DROP TRIGGER policy_reshape_refused",
+  ]),
+  // 7, after R5's 6 (untangle H1, `history_keys_research.md` §2.2): every history entry keyed
   // by the owner-wide change its write ticked, linked to the entry it follows (`prev`), and
   // a delete's or clear's entry moved to its own table, `collection_erasures`, keyed the same
   // way, so the feed reads deletions as a range of that key and an erase never drops an

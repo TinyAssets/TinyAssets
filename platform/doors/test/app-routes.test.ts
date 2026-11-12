@@ -292,7 +292,7 @@ describe("the owner app's sources and tools routes", () => {
     for (const shown of sources) {
       expect(Object.keys(shown).sort()).toEqual(["connect", "credentials", "display_name",
                                                  "engines", "help_url", "id", "signin",
-                                                 "suggested", "unwired"]);
+                                                 "suggested"]);
     }
     const claude = sources.find((s) => s["id"] === "claude-code")!;
     expect(claude["credentials"]).toEqual(["vendor_login_in_sandbox", "api_key"]);

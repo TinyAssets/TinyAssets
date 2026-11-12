@@ -79,6 +79,7 @@
     },
     {
       "door": "roomPost", "class": "work", "caller": "account", "capability": "write_graph",
+      "act": { "name": "people.message", "when": "outside_member" },
       "handler": "ledger", "gate": "units",
       "args": {
         "refused": "invalid ledger request",
@@ -207,6 +208,7 @@
     },
     {
       "door": "collectionWrite", "class": "work", "caller": "visitors",
+      "act": { "name": "share", "when": "public_row" },
       "capability": "write_graph", "handler": "collections", "gate": "units",
       "args": {
         "refused": "invalid collection request",
@@ -351,6 +353,7 @@
     },
     {
       "door": "fileAppend", "class": "work", "caller": "account", "capability": "write_files",
+      "act": { "name": "workspace.files" },
       "handler": "files", "gate": "units",
       "args": {
         "refused": "invalid file request",
@@ -368,6 +371,7 @@
     },
     {
       "door": "fileWrite", "class": "work", "caller": "account", "capability": "write_files",
+      "act": { "name": "workspace.files" },
       "handler": "files", "gate": "units",
       "args": {
         "refused": "invalid file request",
@@ -388,6 +392,7 @@
     },
     {
       "door": "fileEdit", "class": "work", "caller": "account", "capability": "write_files",
+      "act": { "name": "workspace.files" },
       "handler": "files", "gate": "units",
       "args": {
         "refused": "invalid file request",
@@ -435,6 +440,7 @@
     },
     {
       "door": "fileMkdir", "class": "work", "caller": "account", "capability": "write_files",
+      "act": { "name": "workspace.files" },
       "handler": "files", "gate": "filing",
       "args": {
         "refused": "invalid file request",
@@ -452,6 +458,7 @@
     },
     {
       "door": "fileRemove", "class": "reduce", "caller": "account", "capability": "write_files",
+      "act": { "name": "workspace.files" },
       "handler": "files", "gate": "filing",
       "args": {
         "refused": "invalid file request",
@@ -470,6 +477,7 @@
     },
     {
       "door": "fileRename", "class": "work", "caller": "account", "capability": "write_files",
+      "act": { "name": "workspace.files" },
       "handler": "files", "gate": "filing",
       "args": {
         "refused": "invalid file request",
@@ -489,6 +497,7 @@
     },
     {
       "door": "fileRestore", "class": "work", "caller": "account", "capability": "write_files",
+      "act": { "name": "workspace.files" },
       "handler": "files", "gate": "filing",
       "args": {
         "refused": "invalid file request",
@@ -529,6 +538,7 @@
     },
     {
       "door": "agentRun", "class": "work", "caller": "account", "capability": "run_graph",
+      "act": { "name": "workspace.workflows" },
       "scope": "agent", "agent": { "field": "agent" }, "fieldsFirst": true, "handler": "runs",
       "gate": "units",
       "args": {
@@ -665,6 +675,7 @@
     },
     {
       "door": "policyWrite", "class": "work", "caller": "session", "rule": "write",
+      "act": { "name": "security.change" },
       "action": "write its policy", "capability": null, "handler": "policy", "gate": "units",
       "args": {
         "refused": "invalid policy request",
@@ -698,6 +709,7 @@
     },
     {
       "door": "grantSet", "class": "work", "caller": "session", "rule": "outside_set",
+      "act": { "name": "access.grant" },
       "action": "change an outside client's grant", "capability": null, "handler": "grants",
       "gate": "synced",
       "args": {
@@ -735,6 +747,7 @@
     },
     {
       "door": "keyMint", "class": "work", "caller": "session", "rule": "key_mint",
+      "act": { "name": "access.grant" },
       "action": "mint an API key", "capability": null, "handler": "keys", "gate": "synced",
       "args": {
         "refused": "invalid policy request",
@@ -765,11 +778,13 @@
     },
     {
       "door": "inboundCreate", "class": "work", "caller": "session", "rule": "inbound_create",
+      "act": { "name": "access.grant" },
       "action": "add an inbound binding", "capability": null, "handler": "inbound",
       "gate": "door", "args": "loose"
     },
     {
       "door": "inboundSet", "class": "work", "caller": "session", "rule": "inbound_set",
+      "act": { "name": "access.grant" },
       "action": "change an inbound binding", "capability": null, "handler": "inbound",
       "gate": "door", "args": "loose"
     },
@@ -868,16 +883,19 @@
     },
     {
       "door": "connectionPrepare", "class": "work", "caller": "session",
+      "act": { "name": "security.change" },
       "rule": "connection_prepare", "action": "connect a model source", "capability": null,
       "handler": "connections", "gate": "synced", "args": "loose"
     },
     {
       "door": "connectionCommit", "class": "work", "caller": "session",
+      "act": { "name": "security.change" },
       "rule": "connection_commit", "action": "connect a model source", "capability": null,
       "handler": "connections", "gate": "synced", "args": "loose"
     },
     {
       "door": "connectionRevoke", "class": "reduce", "caller": "session",
+      "act": { "name": "security.change" },
       "rule": "connection_revoke", "action": "revoke a model source", "capability": null,
       "handler": "connections", "gate": "units", "args": "loose"
     },
@@ -980,6 +998,7 @@
     },
     {
       "door": "fileUploadCommit", "class": "work", "caller": "account",
+      "act": { "name": "workspace.files" },
       "capability": "write_files", "handler": "files", "gate": "filing",
       "args": {
         "refused": "invalid file request",
@@ -1114,6 +1133,7 @@
     },
     {
       "door": "fileSyncCommit", "class": "work", "caller": "lease",
+      "act": { "name": "workspace.files" },
       "action": "hold the file sync lease", "capability": "write_files", "handler": "files",
       "gate": "filing",
       "args": {

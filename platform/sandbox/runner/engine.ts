@@ -147,8 +147,7 @@ export function invocation(record: SourceRecord, start: StartDoc,
                                       /** A `continue_in_cwd` conversation's own cwd. */
                                       readonly conversationDir?: string }): Invocation {
   const cli = record.cli;
-  if (cli === undefined || record.unwired !== undefined
-      || !cli.credential.includes(start.credential)) {
+  if (cli === undefined || !cli.credential.includes(start.credential)) {
     throw new Error(`engine ${record.id} does not run on ${start.credential}`);
   }
   const home = options.home;
