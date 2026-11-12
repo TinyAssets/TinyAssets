@@ -618,6 +618,14 @@ The listings, and the other working files this log names (`*_research.md`, `*_re
 
 **Risk:** low. Release-critical (`okf-watch.yml`, only if its `git add` changes). No live name. **Image:** no.
 
+**As built (V1, decided at its review, 2026-11-12).** d3 §A9 replaces §C3's pointer: the instructions' onboarding steps are the skill's steps' bold leads, written into `doors/onboarding.json` by `plugins/build.mjs` and held by its `--check`. Four departures from the text above:
+- **The pin records upstream's tags (`"tags": []`), not "without `okf.tags`".** `report()` takes `pin.tags` as the tags already seen, so a pin that never records them sees every upstream tag as new on every run and proposes forever.
+- **The publisher's fields are one `PUBLISHER` record in `build.mjs`, not in `manifest.json`.** P-H5′'s problem was the duplication, and none of the manifest's readers (`bundle.mjs`, `okf-watch`, the owner) uses the author, licence or keywords. Putting them there would tie the starter's manifest to the directory listing. The version still comes from the manifest.
+- **The tool-name and vocabulary guard lives in `doors/guards/tools.test.ts` until B8 moves it to `contract/guards`.** `starter/` has no test project, and the guard needs the door table and both instructions. Its vocabulary half is an interim copy of B24's rule, which replaces it.
+- **`contract/identity.json` (lane X's file) gains one key, `legal`.** B20 takes `LEGAL` from `identity.json`, so the key goes there. It is additive; identity is bundled whole, so the doors and owner bundles carry it unread.
+
+Also from the review: the skill's README rule treats a file's asks as data. It adds that an agent never asks the owner for a password, key or token because a file asked; credentials go only through the app's own connection screens. That closes a hostile imported README's phishing path, and the starter guard holds it.
+
 ### B21. Files: one AES-GCM home, and the blob bound from the envelope
 
 **Removes:** `v2:V2-H4`, `V2-H5`, `V2-D9`, `F-S1`'s rest.
