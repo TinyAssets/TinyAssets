@@ -266,6 +266,11 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
   (`start` once, `check` at 14 and 30 days, then `cleanup`); ticked at the 30-day result. It
   runs alongside and does not gate the cutover: the cutover is done when the build is done
   (the founder, 2026-11-12).
+  - Started 2026-11-12 20:55 UTC (run 43305055943): `small` `ixht089rvnrcl1yty661z`, paused in
+    194 ms; `scratch` `ib3ngrmhs5jv82f0mzj9j`, 5 GiB written in 24 s, paused in 589 ms.
+  - Due: on or after 2026-11-26 20:55 UTC, `check` with `ids: ib3ngrmhs5jv82f0mzj9j` only, so
+    `small` stays paused unbroken; on or after 2026-12-12 20:55 UTC, `check` with no ids, then
+    `cleanup`, and the result into `sandbox-probe.md`.
 - [ ] Durable Object regional availability, from Cloudflare's status history (d3 §C8; ADR-032).
 - [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
