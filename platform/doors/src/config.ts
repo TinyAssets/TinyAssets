@@ -130,9 +130,10 @@ export interface DoorsEnv {
   readonly ROUTING_MAC_KEY: string;
   /**
    * E2B's lifecycle webhook's signature secret (`e2b-hooks.ts`), a Worker secret slice L's
-   * deploy kit sets and registers with E2B; unset, every delivery is refused `503`.
+   * deploy kit sets and registers with E2B (`secrets.required`: no deploy without it); one
+   * shorter than 16 characters refuses every delivery `503`.
    */
-  readonly E2B_WEBHOOK_SECRET?: string;
+  readonly E2B_WEBHOOK_SECRET: string;
   /** The OAuth provider's own store (its schema; never ours). */
   readonly OAUTH_KV: KVNamespace;
   /** The owner directory: routing hints (`directory.ts`). */
@@ -163,9 +164,10 @@ export interface DoorsEnv {
   /**
    * The upstream's client secret (WorkOS's API key: the code exchange and the identity's
    * deletion need it), set in the Worker's secrets by the deploy kit from the production
-   * environment's secret store; absent until then, and every sign-in fails loudly.
+   * environment's secret store (`secrets.required`: no deploy without it); an empty one
+   * fails every sign-in loudly.
    */
-  readonly WORKOS_API_KEY?: string;
+  readonly WORKOS_API_KEY: string;
   /**
    * The files Worker's upload entrypoint (`FilesUpload`): only `file-bytes.ts` reaches it, the
    * binder streaming an upload.

@@ -250,7 +250,7 @@ The window is d3 §D steps 10 to 15, in this order. The deletion list below beco
 The u3 PRs, C1 and P1 have landed (#5493 to #5499), with E1, E3, S0, S1 and T0.
 
 - [x] B25, the code mode Worker's rename (d2 B25), with d3 §O2's fixes (#5506).
-- [ ] T0b, the kit's binding pass-through (d3 §M6), merged after B25 as d3 §O3 says.
+- [x] T0b, the kit's binding pass-through and its guard against host secrets (d3 §M6, #5510).
 - [x] E2, re-applying a live lease's network (d3 §M2, #5509), with d3 §O1's fixes,
   which take in `SandboxStart.tokens.egress_token` (d3 §M3) and `owner/src/egress.ts`'s stale
   "5-minute" and "until the sandbox slice applies it again", with the specs' copies (d3 §I, §M).
@@ -273,7 +273,7 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
 P3 and P5 landed in #5504: no ritual body lines, no 8-file cap, the tamper check reads the
 platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §B7).
 
-- [ ] `.agents/activity.log` deleted, which #5504's own check couldn't let it do.
+- [x] `.agents/activity.log` deleted (#5505).
 - [ ] The manifest's inventory: every path in the repo that goes, is edited or moves, and every
   live object (d3 §A10).
 
@@ -325,12 +325,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
-    (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer; `sandbox/vitest.config.ts`'s
-    config literals, read from `wrangler.jsonc`.
+    (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
   (d3 §K1, §K2). T1 also deletes `SandboxLeases` whole (d3 §O4) and takes T0's nits (d3 §M6).
-  T2, or a small kit PR before it, builds every `main` in the kit with test secrets, and a guard
-  fails any suite holding a value from `process.env` (d3 §N, T0b's review).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and

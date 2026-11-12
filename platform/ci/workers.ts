@@ -2,7 +2,8 @@
  * The Workers as wrangler sees them, for every test, guard and config that needs one: a
  * Worker's config read (JSONC, as wrangler reads it), the wrangler the platform installs,
  * a Worker bundled as a deploy bundles it and handed to miniflare as an auxiliary Worker,
- * and a test fake transpiled into one.
+ * a test pool's own Worker built from its config the same way, the check every test's
+ * Workers pass before they run (`pool`: no host secret), and a test fake transpiled into one.
  *
  * Node runs this file as it is (type stripping): `deploy/facts.ts`, `doors/test/app.e2e.mjs` and
  * `owner/memory/baselines.mjs` import it, so its own imports name their `.ts` files.
@@ -20,6 +21,10 @@ import { PLATFORM } from "./paths.ts";
 /** A Worker's config, as untyped data: each guard reads it field by field. */
 export type Config = Record<string, unknown>;
 
+/** A config rule's module type: wrangler's and miniflare's, the same names. */
+type RuleType = "ESModule" | "CommonJS" | "Text" | "Data" | "CompiledWasm" | "PythonModule"
+  | "PythonRequirement";
+
 /** The fields of a Worker's config the auxiliary Workers below are built from. */
 export interface WorkerConfig {
   readonly name: string;
@@ -30,7 +35,18 @@ export interface WorkerConfig {
                                                               readonly class_name: string;
                                                               readonly script_name?: string }[] };
   readonly migrations?: readonly Readonly<Record<string, unknown>>[];
-  readonly rules?: readonly { readonly type: string; readonly globs: readonly string[] }[];
+  readonly rules?: readonly { readonly type: RuleType; readonly globs: readonly string[];
+                              readonly fallthrough?: boolean }[];
+  readonly vars?: Readonly<Record<string, unknown>>;
+  readonly kv_namespaces?: readonly { readonly binding: string; readonly id: string }[];
+  readonly services?: readonly { readonly binding: string; readonly service: string;
+                                 readonly entrypoint?: string }[];
+  readonly queues?: { readonly producers?: readonly { readonly binding: string;
+                                                      readonly queue: string }[];
+                      readonly consumers?: readonly Readonly<Record<string, unknown>>[] };
+  readonly main?: string;
+  readonly secrets?: { readonly required?: readonly string[] };
+  readonly assets?: Readonly<Record<string, unknown>>;
 }
 
 /** `text`, a wrangler config in JSON with comments, parsed; loud when it does not parse. */
@@ -160,27 +176,235 @@ export function objectBindings(config: WorkerConfig): Record<string, ObjectBindi
   };
 }
 
+/** One kind of binding as miniflare takes it: a record by binding name, or a list of names. */
+type Named = Readonly<Record<string, unknown>> | readonly string[];
+
+/**
+ * The config keys the kit reads, and those it knowingly leaves out. A key in neither fails
+ * loudly (`configBindings`), so a binding a config gains never goes missing in tests. Left
+ * out: what names or deploys the Worker (`workers_dev`, `preview_urls`, `build`, which
+ * `bundle` runs), `limits` (wrangler's own conversion carries none to miniflare either), and
+ * `secrets`, which a config names without a value: a test states each (`configured`).
+ */
+const READ_KEYS: ReadonlySet<string> = new Set([
+  "$schema", "name", "main", "compatibility_date", "compatibility_flags", "rules", "vars",
+  "kv_namespaces", "services", "queues", "durable_objects", "migrations", "r2_buckets", "assets",
+  "workers_dev", "preview_urls", "build", "limits", "secrets",
+]);
+
+/** A queue consumer's config fields, as miniflare names them (`max_concurrency`: none). */
+const CONSUMER_FIELDS: Readonly<Record<string, string | null>> = Object.freeze({
+  queue: null, max_batch_size: "maxBatchSize", max_batch_timeout: "maxBatchTimeout",
+  max_retries: "maxRetries", dead_letter_queue: "deadLetterQueue", retry_delay: "retryDelay",
+  // miniflare delivers each queue's batches one at a time; wrangler drops it too.
+  max_concurrency: null,
+});
+
+/**
+ * The bindings a Worker's config gives it in miniflare, by miniflare's option, each kind
+ * only when the config has one: its vars, KV namespaces, queue producers and consumers and
+ * services, as wrangler's own conversion hands a Worker its own; its
+ * namespaces (`objectBindings`); and its buckets. Never a secret: a config names its secrets
+ * and holds no value, and nothing here reads the environment (wrangler's conversion reads
+ * `.dev.vars`, `.env` and `process.env` for them, and for any var the environment names).
+ */
+export function configBindings(config: WorkerConfig): Record<string, Named> {
+  const unread = Object.keys(config).filter((key) => !READ_KEYS.has(key));
+  const queues = Object.keys(config.queues ?? {}).filter((key) => key !== "producers"
+                                                                  && key !== "consumers");
+  if (unread.length + queues.length > 0) {
+    throw new Error(`${config.name}: the Worker kit does not carry ` +
+                    `${[...unread, ...queues.map((key) => `queues.${key}`)].join(", ")}`);
+  }
+  const kinds: Record<string, Named> = {
+    bindings: { ...config.vars },
+    kvNamespaces: Object.fromEntries((config.kv_namespaces ?? [])
+      .map((kv) => [kv.binding, { id: kv.id }])),
+    queueProducers: Object.fromEntries((config.queues?.producers ?? [])
+      .map((producer) => [producer.binding, { queueName: producer.queue }])),
+    queueConsumers: Object.fromEntries((config.queues?.consumers ?? [])
+      .map((consumer) => [String(consumer["queue"]), consumerOf(config.name, consumer)])),
+    serviceBindings: Object.fromEntries((config.services ?? []).map((service) => [
+      service.binding, { name: service.service, ...(service.entrypoint === undefined ? {}
+        : { entrypoint: service.entrypoint }) }])),
+    durableObjects: objectBindings(config),
+    r2Buckets: (config.r2_buckets ?? []).map((bucket) => bucket.binding),
+  };
+  return Object.fromEntries(Object.entries(kinds)
+    .filter(([, named]) => Object.keys(named).length > 0));
+}
+
+/** One queue consumer's config as miniflare takes it; a field the kit does not know fails. */
+function consumerOf(worker: string, consumer: Readonly<Record<string, unknown>>) {
+  return Object.fromEntries(Object.entries(consumer).flatMap(([field, value]) => {
+    if (!(field in CONSUMER_FIELDS)) {
+      throw new Error(`${worker}: the Worker kit does not carry queues.consumers[].${field}`);
+    }
+    const name = CONSUMER_FIELDS[field];
+    return name === null ? [] : [[name, value]];
+  }));
+}
+
+/** The assets fields the kit reads (wrangler's own `assets` options, from them). */
+const ASSET_FIELDS: ReadonlySet<string> = new Set(["directory", "binding", "run_worker_first",
+                                                   "html_handling", "not_found_handling"]);
+
+/** A Worker's static assets as miniflare takes them, as wrangler builds them; or none. */
+function assetsOf(config: WorkerConfig, dir: string): object {
+  const assets = config.assets;
+  if (assets === undefined) {
+    return {};
+  }
+  const unread = Object.keys(assets).filter((field) => !ASSET_FIELDS.has(field));
+  if (unread.length > 0 || typeof assets["run_worker_first"] !== "boolean") {
+    throw new Error(`${config.name}: the Worker kit reads assets' ${[...ASSET_FIELDS]
+      .join(", ")}, run_worker_first a boolean; not ${unread.join(", ")}`);
+  }
+  return { assets: {
+    directory: join(dir, String(assets["directory"])),
+    binding: assets["binding"],
+    run_worker_first: assets["run_worker_first"],
+    routerConfig: { has_user_worker: true,
+                    invoke_user_worker_ahead_of_assets: assets["run_worker_first"] },
+    assetConfig: {
+      ...(assets["html_handling"] === undefined ? {} : { html_handling: assets["html_handling"] }),
+      ...(assets["not_found_handling"] === undefined ? {}
+        : { not_found_handling: assets["not_found_handling"] }),
+      compatibility_date: config.compatibility_date,
+      compatibility_flags: [...(config.compatibility_flags ?? [])],
+    },
+  } };
+}
+
+/** `named` as a record by binding name, a list of names read as miniflare reads one. */
+function byName(named: Named): Readonly<Record<string, unknown>> {
+  return Array.isArray(named) ? Object.fromEntries(named.map((name: string) => [name, name]))
+    : named as Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The config's bindings (`configBindings`) with a test's changes: in a kind of binding the
+ * config has, the test's binding replaces the config's of its name, and the rest stay.
+ */
+export function withChanges(config: WorkerConfig, extra: object): Record<string, Named> {
+  const changed = extra as Readonly<Record<string, unknown>>;
+  return Object.fromEntries(Object.entries(configBindings(config)).map(([kind, named]) =>
+    [kind, changed[kind] === undefined ? named
+      : { ...byName(named), ...byName(changed[kind] as Named) }]));
+}
+
+/**
+ * The Worker's options as its config gives them, with a test's `extra`: its runtime and
+ * flags, its assets, and every binding (`withChanges`); any option that is no kind of
+ * binding the config has is the test's. Every secret its config requires is the test's to
+ * state, and one left out fails loudly: none is ever read from the host.
+ */
+function configured(config: WorkerConfig, dir: string, extra: object) {
+  const own = withChanges(config, extra);
+  const stated = (own["bindings"] ?? (extra as { bindings?: object }).bindings ?? {}) as object;
+  const missing = (config.secrets?.required ?? []).filter((name) => !(name in stated));
+  if (missing.length > 0) {
+    throw new Error(`${config.name}: a test states each secret its config requires, and ` +
+                    `${missing.join(", ")} is not stated`);
+  }
+  return {
+    compatibilityDate: config.compatibility_date,
+    compatibilityFlags: [...(config.compatibility_flags ?? [])],
+    ...assetsOf(config, dir),
+    ...extra,
+    ...(own as object),
+  };
+}
+
 /**
  * The real Worker at `dir`, as an auxiliary Worker beside a test's own: bundled from its own
- * config and entry, as a deploy bundles it, with its own name, runtime and flags, its
- * namespaces (`objectBindings`: so a test binds its classes by `scriptName`, as other
- * Workers' configs do) and its own buckets. Its secrets and anything a test changes are the
- * caller's `extra`.
+ * config and entry (or `entry` in its place), as a deploy bundles it, with its own name and
+ * everything its config gives it (`configured`), as `main` below is. A test binds its
+ * classes by `scriptName`, as other Workers' configs do. Its secrets and only what a test
+ * changes are the caller's `extra`.
  */
-export function auxiliary<Extra extends object>(dir: string, extra: Extra) {
+export function auxiliary<Extra extends object>(dir: string, extra: Extra, entry?: string) {
   const config = workerConfig(dir);
-  const objects = objectBindings(config);
-  const buckets = config.r2_buckets ?? [];
   return {
     name: config.name,
     modulesRoot: dir,
-    modules: bundled(dir),
-    compatibilityDate: config.compatibility_date,
-    compatibilityFlags: [...(config.compatibility_flags ?? [])],
-    ...(Object.keys(objects).length === 0 ? {} : { durableObjects: objects }),
-    ...(buckets.length === 0 ? {} : { r2Buckets: buckets.map((bucket) => bucket.binding) }),
-    ...extra,
+    modules: bundled(dir, entry),
+    ...configured(config, dir, extra),
   };
+}
+
+/**
+ * A test pool's own Worker (`cloudflareTest`'s `main`) built from the config at `dir`, as
+ * `auxiliary` builds one beside it: its entry (`entry`, or the config's own), its module
+ * rules, and everything its config gives it, with the test's secrets and changes (`extra`,
+ * its auxiliary Workers among them). The pool never reads the config itself (its `wrangler`
+ * option), so nothing comes from `.dev.vars`, `.env` or `process.env`.
+ */
+export function main<Extra extends object>(dir: string, extra: Extra, entry?: string) {
+  const config = workerConfig(dir);
+  const rules = (config.rules ?? []).map((rule) => ({
+    type: rule.type, include: [...rule.globs],
+    ...(rule.fallthrough === undefined ? {} : { fallthrough: rule.fallthrough }) }));
+  return {
+    main: entry ?? join(dir, String(config.main)),
+    miniflare: { rootPath: dir, ...configured(config, dir, extra),
+                 ...(rules.length === 0 ? {} : { modulesRules: rules }) },
+  };
+}
+
+/** Every secret a Worker's config requires, by name, across the platform's Workers. */
+export function declaredSecrets(): string[] {
+  return [...new Set(workerFolders().flatMap((folder) =>
+    workerConfig(join(PLATFORM, folder)).secrets?.required ?? []))].sort();
+}
+
+/**
+ * Where `options` carry the host's value of a declared secret (`declaredSecrets`): each
+ * string in them equal to a non-empty `process.env` value of one, by its path and the
+ * secret's name. Never the value.
+ */
+export function hostSecrets(options: unknown): string[] {
+  const host = new Map(declaredSecrets().flatMap((name) => {
+    const value = process.env[name];
+    return value === undefined || value === "" ? [] : [[value, name] as const];
+  }));
+  const found: string[] = [];
+  const walk = (value: unknown, path: string): void => {
+    if (typeof value === "string") {
+      const name = host.get(value);
+      if (name !== undefined) {
+        found.push(`${path} is the host's ${name}`);
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach((item, index) => walk(item, `${path}[${index}]`));
+    } else if (value !== null && typeof value === "object" && !ArrayBuffer.isView(value)) {
+      for (const [key, item] of Object.entries(value)) {
+        walk(item, path === "" ? key : `${path}.${key}`);
+      }
+    }
+  };
+  walk(options, "");
+  return found;
+}
+
+/**
+ * A test's Workers' options, checked before they run (`cloudflareTest(once(() => pool(...)))`,
+ * and the doors' browser test's Miniflare): refused when they read a config through the pool
+ * (`wrangler`, or `experimental`'s config file: wrangler's conversion fills either's secrets
+ * and vars from the host) or carry any host secret (`hostSecrets`).
+ */
+export function pool<Options extends object>(options: Options): Options {
+  const reads = ["wrangler", "experimental"].filter((option) => option in options);
+  if (reads.length > 0) {
+    throw new Error(`a test pool reads no config itself (its ${reads.join(" and ")} option ` +
+                    "fills secrets and vars from the host): build its Worker with " +
+                    "ci/workers.ts main()");
+  }
+  const found = hostSecrets(options);
+  if (found.length > 0) {
+    throw new Error(`a test's Workers carry a host secret: ${found.join("; ")}`);
+  }
+  return options;
 }
 
 /**
