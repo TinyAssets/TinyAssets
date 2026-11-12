@@ -328,7 +328,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
     (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is five PRs, each green on its own:
+  (d3 §K1, §K2). T1 is six PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
   - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
@@ -342,13 +342,22 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] T1b3: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
     `admitted`, `changes`, `adopt` and `wall` required, its decisions as pure functions, the
     archive's tests at production ceilings, `b23_research.md` question 3), with the memory
-    probe's `LegSegments` at production's ledger limits (d3 §K1).
+    probe's `LegSegments` at production's ledger limits (d3 §K1); code mode's unbound
+    `CODEMODE_VM` case gone with its test (`codemode.ts`'s optional `service`); a test that a
+    halted schedule runs no lane already due (`schedule.ts`'s `run`).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     `ERASURES` required with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
     rig admitting by the door, the doors' entry with no third constructor argument, and
-    `BackupParts`' test-only `sizes?` and `pool?` gone.
+    `BackupParts`' test-only `sizes?` and `pool?` gone; the owner suite's lease clock under the
+    fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`); the fake sandbox
+    `implements SandboxService` and imports `METER_BATCH` (`owner/test/fake-sandbox.ts`); the
+    `fake-sandbox`, `sandbox-gate` and `CONNECT` Worker names taken from `fake()` and
+    `workerConfig`, not written out (`owner/vitest.config.ts`, `doors/vitest.config.ts`,
+    `doors/test/app.e2e.mjs`) (list 6, items 6j, 8 and 10).
   - [ ] T1d: the owner memory probe driven through the doors.
+  - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
+    (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and
