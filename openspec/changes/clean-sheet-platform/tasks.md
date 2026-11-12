@@ -382,9 +382,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 7. The dark redeploy of the untangled build
 
-- [ ] The migration locks pin E2's owner 5 and SandboxControl 2 first: the kit's `locks` step
-  refuses every mode until they do (`deploy/checklist.md` § The migration locks). Being built
-  on `deploy/pin-e2-migrations`.
+- [x] The migration locks pin E2's owner 5 and SandboxControl 2 first: the kit's `locks` step
+  refuses every mode until they do (`deploy/checklist.md` § The migration locks; #5511).
 - [ ] `dark` with the untangled build, the sandbox Worker included (the first `dark` stopped
   there), its ring queue and control namespace. Checked live at it:
   - the deploy workflow's `pair` job, live;
