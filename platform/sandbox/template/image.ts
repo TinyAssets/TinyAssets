@@ -32,6 +32,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { RUNS_CEILING } from "../../contract/src/control";
+import { sha256Hex } from "../../contract/src/digest";
 import { bundledSources } from "../../sources/src/catalog";
 import { binPath, ENGINE_ROOT, WORKSPACE } from "../runner/engine";
 import { INBOX, INCOMING, LOADER, RUNNERS, STATE_DIR } from "../runner/protocol";
@@ -121,7 +122,7 @@ function engines(): ImageEngine[] {
     if (install === undefined || record.unwired !== undefined || install.manager !== "npm") {
       continue;
     }
-    const digest = createHash("sha256").update(readFileSync(lock(id))).digest("hex");
+    const digest = sha256Hex(readFileSync(lock(id)));
     if (digest !== install.lock_sha256) {
       throw new Error(`${id}: its lock is not the record's (${digest})`);
     }

@@ -22,10 +22,10 @@ at the cutover.
 
 ## Before you run it
 
-Done already (2026-11-05): Workers Paid; the Cloudflare token's R2, KV, Queues and Workers
-Routes edit (the `plan` job lists R2, KV and queues, so a missing scope stops it);
-`E2B_API_KEY` in `production` and nowhere else; `production` limited to `main`, with no
-required reviewer.
+The setup is done: Workers Paid, the Cloudflare token's scopes, the `production`
+environment limited to `main` with no required reviewer, its secrets (made by
+`scripts/platform_setup.py`, every value set only where it is absent), the repository
+variables, and both migration locks pinned. Later runs need only what follows.
 
 **The Cloudflare token's scopes for `routes` and `handback`: nothing new is owed, if its
 record holds.**
@@ -47,39 +47,6 @@ record holds.**
   - If DNS Edit were missing, only the handback's last step (that one DNS delete) would fail,
     loudly, with every route already back.
 
-The rest runs on your own computer, by your Claude session with your own `gh` login. It
-runs `scripts/platform_setup.py` (Windows: `python`); every value is set only where it is
-absent, goes to GitHub on stdin, and is never shown. Your part is in bold.
-
-1. `python scripts/platform_setup.py secrets`: the secrets `platform/deploy/platform.json`
-   says the setup makes (`made`; each keyring made in memory, in the shape
-   `deploy.ts keyring-new` writes).
-2. **Make a production WorkOS API key** in the WorkOS dashboard (API Keys, the production
-   environment; name it `github-production`) and **copy it**: it goes from your clipboard
-   straight to the script, never into the chat or a command line. Two steps:
-   - `Get-Clipboard | python scripts/platform_setup.py workos` in PowerShell, or from Git
-     Bash (the shell a Windows Claude session usually runs)
-     `powershell.exe -NoProfile -Command Get-Clipboard | python scripts/platform_setup.py workos`,
-     stores it in `production` if `production` holds none, after checking it starts
-     `sk_` (not `sk_test_`), and prints when `production`'s key was last updated. A held key is never
-     replaced.
-   - Once that time is the key you just made, `python scripts/platform_setup.py workos
-     --delete-repo-copies` deletes the repository-level `WORKOS_API_KEY` and
-     `WORKOS_AUTHKIT_DOMAIN` (only `production` jobs read them). The host keeps its own key.
-3. **Make the review App.** Open the review App page (`platform/deploy/review-app.html`),
-   click its button, then **Create GitHub App** on GitHub (you must be an owner of the
-   organization). GitHub lands on the repository with `?code=` in the address bar: give
-   that address to your Claude session and nowhere else, since whoever turns the code in
-   first gets the App's private key. Within the hour it runs
-   `python scripts/platform_setup.py review-app --code "<address>"`: the main-only `review`
-   environment (made when absent), `REVIEW_APP_PRIVATE_KEY` there and the variable
-   `REVIEW_APP_ID`. **Install the App** on this repository alone, from the link it prints.
-4. `python scripts/platform_setup.py variables` sets `OWNER_ISSUER` and `WORKOS_CLIENT_ID`.
-5. **Approve** the session's `gh workflow run platform-deploy.yml -f mode=plan`, and read
-   the plan.
-6. A session pins the migration lock (below) and merges it. Then **approve**
-   `gh workflow run platform-deploy.yml -f mode=dark`.
-
 Before the cutover only, not for `dark`: the AuthKit GitHub sign-in app (absent from the
 login page today; Google is live), or a decision to drop GitHub sign-in; and the optional
 Slack app (`INBOUND_SLACK_SIGNING_SECRET`). Mode `routes` enables E2B's lifecycle webhook
@@ -98,24 +65,20 @@ What the kit reads, all from the store, never a host:
 
 More on two of them:
 
-- **The migration locks, pinned at the commit you deploy.** The kit refuses to run unless
-  each lock (`platform/owner/migrations.json`, and the sandbox Worker's
-  `platform/sandbox/migrations/<class>.json`, both pinned) marks the first deploy and pins
-  every migration the code ships, in order. To pin one:
-  1. **Who and when.** A session does it once, in the same sitting as the first deploy.
-  2. **Pin.** On a branch made from the current `main`, run this in `platform/owner` (or
+- **The migration locks.** The kit refuses to run unless each lock
+  (`platform/owner/migrations.json`, and the sandbox Worker's
+  `platform/sandbox/migrations/<class>.json`) marks the first deploy and pins every migration
+  the code ships, in order. **A deploy that adds a migration** pins it first:
+  1. **Pin.** On a branch made from the current `main`, run this in `platform/owner` (or
      `platform/sandbox`):
      `PIN_MIGRATIONS=$(git rev-parse HEAD) npx vitest run --project guards guards/migrations.test.ts`.
-     It writes that Worker's locks: the first-deploy marker (time and commit) and a digest
-     for every migration.
-  3. **Land it.** Commit only those files and merge them to `main` by pull request. The workflow
+     It appends a digest for each new migration to that Worker's locks.
+  2. **Land it.** Commit only those files and merge them to `main` by pull request. The workflow
      runs only from `main`, and the kit reads the lock there.
-  4. **Every later deploy that adds a migration** repeats steps 2 and 3 first. The pin only
-     appends, and the kit refuses until it is done.
-  5. **Pin only when you deploy.** Pinning freezes the baseline for good: from then on a
-     schema change is a new migration, even if no deploy follows.
-- **The sandbox's template is built** (`E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`,
-  pinned in #5428). The kit checks E2B has a ready build, and the `pair` job checks the pair.
+  3. **Pin only when you deploy.** A pinned migration is frozen for good: from then on a
+     change to it is a new migration, even if no deploy follows.
+- **The sandbox's template is built** (`E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`).
+  The kit checks E2B has a ready build, and the `pair` job checks the pair.
 
 ## What mode `dark` changes
 
@@ -159,7 +122,7 @@ It never counts as "absent".
    Worker in `migrate` to deploy it whole; `migrate` never takes the doors.
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
-   off. It also holds your tier numbers: free 5 runs and 25 GB, paid 10 runs and 250 GB. If the
+   off. It also holds your tier numbers (`DARK_CONTROL` in `deploy.ts`). If the
    record is there, the kit leaves it alone. If the read fails, the whole run stops.
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:** the doors'
    callback (`signin.callback` in `platform/contract/identity.json`), with the checks in
@@ -201,18 +164,9 @@ It never counts as "absent".
   - prints one sign-in link, the doors' own app's (`/authorize`, its client, its
     `/app/signed-in` redirect, the `/app` resource and a fresh S256 challenge).
 
-  **Open the link and sign in once.** Read where the browser ends:
-  - **Pass:** the address begins
-    `https://tinyassets.io/app/signed-in?error=temporarily_unavailable` (more follows
-    it). The page is still the old app's and reads "Sign in to TinyAssets to continue":
-    that is expected. Every check passed and the closed gate refused the sign-in, so no
-    owner is made.
-  - **Fail:** a `400` at `/authorize` (the doors could not read their app's client
-    document); an error page at `error.workos.com` or AuthKit (the client or the callback
-    refused); a `502` at `/oauth/upstream/callback` naming the failed check (the token
-    endpoint's status and error code, `auth_time`, `client_id`...), the same line in the
-    doors' log; or `/app/signed-in?error=access_denied` ("sign in again": `auth_time` over
-    600 s old, so `max_age=0` did not force a fresh sign-in).
+  **Open the link and sign in once.** Read where the browser ends against the pass and
+  fail signs the apply job prints under the link (`PROBE_SIGNS` in `deploy.ts`), and report
+  it.
 
   If the `502` names the issuer, it quotes the `iss` the token carries. Only a WorkOS value
   (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer` in `upstreamFrom`

@@ -79,9 +79,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { PLATFORM, REPO } from "../ci/paths.ts";
 import { WRANGLER } from "../ci/workers.ts";
 // The envelope and the E2B client import nothing, so Node's type stripping runs them here by
 // their own names.
@@ -99,8 +100,6 @@ import {
   SECRET_INPUTS, SECRETS, SHARED, WORKERS, ZONE,
 } from "./facts.ts";
 
-const PLATFORM = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const REPO = resolve(PLATFORM, "..");
 const require = createRequire(join(PLATFORM, "package.json"));
 
 type Json = Record<string, unknown>;
@@ -117,6 +116,8 @@ const WORKOS_API = "https://api.workos.com";
 export const E2B_HOOK = Object.freeze({
   name: "tinyassets-lifecycle", url: E2B_HOOK_URL,
   events: Object.freeze(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"]),
+  /** Its signature secret's one other holder: the doors' copy. */
+  secret: Object.freeze({ worker: "doors", name: "E2B_WEBHOOK_SECRET" }),
 });
 /** The control record a first deploy writes when there is none: every outside door closed. */
 export const DARK_CONTROL = Object.freeze({
@@ -287,7 +288,7 @@ export function lockRefusal(lock: unknown, digests: readonly string[],
 export type GuardRun = (worker: string, out: string) => { status: number | null; stdout: string };
 
 /** The real run: `worker`'s guards project, as it evaluates its schema. */
-export function guardRun(run: Run): GuardRun {
+function guardRun(run: Run): GuardRun {
   return (worker, out) => {
     const vitest = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs");
     return run.io.spawn(process.execPath, [vitest, "run", "--project", "guards",
@@ -403,7 +404,7 @@ export function authorizeLink(upstream: UpstreamValues, state: string, challenge
 }
 
 /** Where WorkOS sends a browser whose `redirect_uri` the client does not list. */
-export const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
+const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
 
 /**
  * The early sign-in check, before any person signs in: a `GET` of the WorkOS authorize URL
@@ -490,7 +491,8 @@ function shippedPair(exec: Io["exec"]): string {
  * drift apart.
  */
 export function hookSetsSecret(setting: readonly { worker: string; name: string }[]): boolean {
-  return setting.some((each) => each.worker === "doors" && each.name === "E2B_WEBHOOK_SECRET");
+  return setting.some((each) => each.worker === E2B_HOOK.secret.worker
+                               && each.name === E2B_HOOK.secret.name);
 }
 
 /**
@@ -594,7 +596,8 @@ export function secretPlan(held: Readonly<Record<string, readonly string[] | nul
   const plan: { worker: string; name: string }[] = [];
   for (const [worker, names] of Object.entries(SECRETS)) {
     for (const name of names) {
-      const withHook = hookCreated && worker === "doors" && name === "E2B_WEBHOOK_SECRET";
+      const withHook = hookCreated && worker === E2B_HOOK.secret.worker
+        && name === E2B_HOOK.secret.name;
       if (!has(worker, name) || rotate.has(name) || withHook) {
         plan.push({ worker, name });
       }
@@ -804,11 +807,11 @@ export interface RouteRecord {
 
 const RECORD_KIND = "tinyassets-routes";
 /** A route record's key in the control namespace, after its run's id. */
-export const RECORD_PREFIX = "deploy:routes:";
+const RECORD_PREFIX = "deploy:routes:";
 const RECORD_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 /** The run's record id: the workflow run's, or, run by hand, the time's. */
-export function recordId(run: Run): string {
+function recordId(run: Run): string {
   return input(run, "GITHUB_RUN_ID")
     ?? `local-${run.io.now().toISOString().replace(/[-:]|\.\d+/g, "")}`;
 }
@@ -817,9 +820,9 @@ export function recordId(run: Run): string {
  * The record `routes` keeps of `table` and its handover `steps` on the zone `zoneId`, the
  * egress domain's Worker `domain` and E2B's `hook` as listed.
  */
-export function routeRecord(run: Run, zoneId: string, table: readonly Route[],
-                            steps: readonly RouteStep[], domain: string | null,
-                            hook: Json | null): RouteRecord {
+function routeRecord(run: Run, zoneId: string, table: readonly Route[],
+                     steps: readonly RouteStep[], domain: string | null,
+                     hook: Json | null): RouteRecord {
   return {
     kind: RECORD_KIND, zone: ZONE, zone_id: zoneId, run: recordId(run),
     attempt: input(run, "GITHUB_RUN_ATTEMPT") ?? null, at: run.io.now().toISOString(),
@@ -1275,7 +1278,7 @@ const hookLater = step("hook later", (run, work) => {
 function hook(enable: boolean, where: string): Step {
   return step(enable ? "hook enabled" : "hook", async (run, work) => {
     if (work.e2b !== undefined) {
-      const result = await lifecycleHook(work.e2b, input(run, "E2B_WEBHOOK_SECRET")!, run.apply,
+      const result = await lifecycleHook(work.e2b, input(run, E2B_HOOK.secret.name)!, run.apply,
                                          enable, hookSetsSecret(made(work.setting, "the secrets")));
       work.plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}${where}: ${result}`);
     }
@@ -1340,13 +1343,14 @@ function reported(unchanged: string): Step {
  * verify, since no probe owner's key can be minted before the doors serve `/app/api`, and
  * the dark control record admits no one.
  */
-function canary(side: "auto" | "new --unkeyed"): Step {
+function canary(...side: ["auto"] | ["new", "--unkeyed"]): Step {
   return step("canary", (run) => {
     const ran = run.io.spawn("python3", [join(REPO, "scripts", "cutover_handles_canary.py"),
-                                         "--side", ...side.split(" ")],
+                                         "--side", ...side],
                              { stdio: "inherit", cwd: REPO });
     if (ran.status !== 0) {
-      throw new Error(`the handles canary (side ${side}) failed (exit ${ran.status})`);
+      throw new Error(`the handles canary (side ${side.join(" ")}) failed (exit ${
+        ran.status})`);
     }
   });
 }
@@ -1703,7 +1707,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   routes: {
     steps: [...READS, routePlan, recorded, redirect, authorize, ...STORAGE, ...DEPLOY, handOver,
             customDomain, hook(true, ", after the routes"), reported("\nNothing was changed."),
-            canary("new --unkeyed"), h2Next],
+            canary("new", "--unkeyed"), h2Next],
     plans: true, applies: true, options: true,
   },
   h2: { steps: [h2], plans: false, applies: true, options: true },
@@ -1719,7 +1723,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
 // --- The keyring tools ------------------------------------------------------------------
 
 /** `keyring-new <file>`: a first keyring, written for the founder to store; never printed. */
-export function keyringNew(file: string, log: Io["log"] = IO.log): void {
+export function keyringNew(file: string, log: Io["log"]): void {
   writeFileSync(file, ringText({ active: "k1", keys: new Map([["k1", randomBytes(KEY_BYTES)]]) }),
                 { mode: 0o600, flag: "wx" });
   log(`wrote a new keyring to ${file}; store it as ${KEYRINGS.join(" or ")}, one ring each`);
@@ -1729,7 +1733,7 @@ export function keyringNew(file: string, log: Io["log"] = IO.log): void {
  * `keyring-add <file>`: the keyring in `file` with one more key under the kid after its
  * highest (never a retired kid's name), made active; the old kept.
  */
-export function keyringAdd(file: string, log: Io["log"] = IO.log): void {
+export function keyringAdd(file: string, log: Io["log"]): void {
   const ring = ringWith(keyring(readFileSync(file, "utf8"), "the keyring"),
                         randomBytes(KEY_BYTES));
   writeFileSync(file, ringText(ring), { mode: 0o600 });

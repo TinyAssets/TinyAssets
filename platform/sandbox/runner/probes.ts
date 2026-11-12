@@ -19,7 +19,8 @@
  * - `matcher-probe`: the sync-ignore automaton's step, judged against `STEP_NS`.
  * Each prints its result as one JSON line and exits 0 when it passed, 3 when it did not.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { sha256Hex } from "../../contract/src/digest";
+import { randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { chownSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage } from "node:http";
@@ -55,7 +56,7 @@ const OK = EXIT.ok;
 const NO = EXIT.no;
 
 /** The probes' own commands. */
-export const PROBE = Object.freeze({
+const PROBE = Object.freeze({
   plan: "plan",
   login: "login-probe",
   route: "route-probe",
@@ -63,7 +64,7 @@ export const PROBE = Object.freeze({
 } as const);
 
 /** E2B's network document, as a check sandbox is given it (`closedNetwork`'s shape). */
-export interface PlanNetwork {
+interface PlanNetwork {
   readonly allowOut: readonly string[];
   readonly denyOut: readonly string[];
   readonly dnsServers: readonly string[];
@@ -213,7 +214,7 @@ async function loginProbe(engine: string, region: string | null): Promise<number
       });
     });
   } finally {
-    killAll(as.uid);
+    killAll(as);
     dropHome(home);
     give(STATE, as);
   }
@@ -441,13 +442,13 @@ async function probeRoute(rec: SourceRecord, provider: string,
           resolve(127);
         });
       });
-      killAll(as.uid);
+      killAll(as);
       await keepHome(home, rec);
       return { stderr, exit, session_id: session, answered, resumed: call.resumed,
                connects: outsideConnects(existsSync(trace) ? readFileSync(trace, "utf8") : "",
                                          resolvers) };
     } finally {
-      killAll(as.uid);
+      killAll(as);
       if (home !== null) {
         dropHome(home);
       }
@@ -565,7 +566,7 @@ function unpaired(): string | null {
   }
   const file = `${RUNNERS}/${RUNNER}/runner.mjs`;
   if (!existsSync(file)
-      || createHash("sha256").update(readFileSync(file)).digest("hex") !== RUNNER) {
+      || sha256Hex(readFileSync(file)) !== RUNNER) {
     return `the runner ${RUNNER} the probes were built beside is not installed here`;
   }
   return null;

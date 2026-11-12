@@ -17,18 +17,6 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true
   },
-  "include": ["contract/src/**/*.ts", "contract/guards/**/*.ts", "contract/*.ts",
-              "sources/src/**/*.ts", "sources/*.ts",
-              "owner/src/**/*.ts", "owner/test/**/*.ts", "owner/guards/**/*.ts", "owner/*.ts",
-              "owner/memory/**/*.ts",
-              "files/src/**/*.ts", "files/test/**/*.ts", "files/guards/**/*.ts", "files/*.ts",
-              "doors/src/**/*.ts", "doors/test/**/*.ts", "doors/guards/**/*.ts", "doors/*.ts",
-              "gateway/src/**/*.ts", "gateway/test/**/*.ts", "gateway/guards/**/*.ts",
-              "gateway/*.ts", "hooks/src/**/*.ts", "hooks/test/**/*.ts",
-              "hooks/guards/**/*.ts", "hooks/*.ts", "sandbox/src/**/*.ts",
-              "sandbox/test/**/*.ts", "sandbox/guards/**/*.ts", "sandbox/runner/**/*.ts",
-              "sandbox/*.ts", "deploy/**/*.ts", "import/*.ts",
-              "import/guards/**/*.ts",
-              "ci/**/*.ts"],
+  "include": ["*/**/*.ts"],
   "exclude": ["**/node_modules", "*/worker-configuration.d.ts"]
 }

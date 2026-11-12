@@ -26,19 +26,17 @@ import { readEvent } from "../../contract/src/run-events";
 import { AUTOMATON_STATES, LIST_BYTES, STEP_NS } from "../../contract/src/sync-ignore";
 
 import { invocation } from "./engine";
-import { lineEvent } from "./frames";
+import { HEARTBEAT_MS, lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
 import { SCRATCH_ENV } from "./scratch";
 import { JOB_FILES, PROTOCOL, type StartDoc } from "./protocol";
 import { READS, STATE_FORMAT } from "./state-format";
-import { Doors, POOL_UIDS, probesBundle, runnerBundle, Sandbox, simulated, startDoc,
+import { Doors, POOL_GIDS, POOL_UIDS, probesBundle, runnerBundle, Sandbox, simulated, startDoc,
          SYNC_UID, TA_GID } from "./test/harness";
 import { NODE } from "./test/layout";
 import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 
 const sources = bundledSources();
-/** The runner's heartbeat (`runner.ts`, which `guards/config.test.ts` holds), as it runs. */
-const HEARTBEAT_MS = 20_000;
 
 /** Each record's own event shapes: a session id, a tool call, the final text, usage. */
 const SHAPES: Record<string, { lines: unknown[]; session: string | null; text: string;
@@ -221,7 +219,7 @@ describe.each(Object.keys(SHAPES))("a run of %s", (engine) => {
     // HOME a home of its own.
     const seen = box.ran(engine).at(-1)!;
     expect(POOL_UIDS).toContain(seen.uid);
-    expect(seen.gid).toBe(seen.uid);
+    expect(seen.gid).toBe(POOL_GIDS[POOL_UIDS.indexOf(seen.uid)]);
     expect(seen.groups).toContain(TA_GID);
     expect(seen.env["HOME"]).toBe(`/var/lib/ta-homes/${start.run}`);
     // The runner's own environment is the command's (a PATH alone): LANG is not in it.
@@ -1277,6 +1275,23 @@ describe("each run's own user", () => {
     const first = box.ran("claude-code").at(-1)!;
     expect(box.processesOf(first.uid)).toEqual([]);  // the daemon it left was killed
     expect(() => lstatSync(box.path("/tmp/left-behind"))).toThrow();  // its scratch removed
+  });
+
+  it("has its processes killed as itself: its own uid and gid, as the template gives them",
+     async () => {
+    // `kill` as the box has it, wrapped to log the real gid it runs with, then itself. The
+    // log is outside the scratch a run's user is cleared from (`/tmp` and the like).
+    const wrapped = box.exec(["sh", "-c", "mkdir -m 0777 /kill-log && k=$(readlink -f /bin/kill)" +
+                              ' && cp "$k" /kill-log/kill && cat > "$k" && chmod 0755 "$k"'],
+                             '#!/bin/sh\nid -rg >> /kill-log/gids\nexec /kill-log/kill "$@"\n');
+    expect(wrapped.status, wrapped.stderr).toBe(0);
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, daemon: true });
+    await run("claude-code");
+    const first = box.ran("claude-code").at(-1)!;
+    expect(box.processesOf(first.uid)).toEqual([]);  // the daemon it left was killed
+    const gids = readFileSync(box.path("/kill-log/gids"), "utf8").trim().split("\n");
+    expect(gids.length).toBeGreaterThan(0);
+    expect(new Set(gids)).toEqual(new Set([String(POOL_GIDS[POOL_UIDS.indexOf(first.uid)])]));
   });
 
   it("runs two runs of one engine at once as two users, neither reading the other's config",

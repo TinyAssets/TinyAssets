@@ -704,7 +704,10 @@ describe("what it remembers of a tree, and what that buys", () => {
     expect(peak).toBeLessThanOrEqual(REMEMBERED_NAME_BYTES * 1.25);
   });
 
-  it("answers a large mixed tree as git does, in any order, as with nothing remembered", () => {
+  // Large: git is its oracle over a tree made on disk (12,000 files, some 55,000 entries),
+  // and making and removing that tree is nearly all of its time, at the disk's own speed.
+  it("answers a large mixed tree as git does, in any order, as with nothing remembered",
+     { tags: ["large"] }, () => {
     let seed = 20261104;
     const random = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32);
     const pick = <T>(xs: readonly T[]) => xs[Math.floor(random() * xs.length)]!;
