@@ -8,9 +8,8 @@
  *   origin, and the egress door is served on no other, so a sandbox token reaches no other
  *   door. No route is deployed for it until the routes slice.
  *
- * - `/mcp`: the `Cookie` header removed, a present `Origin` held to `MCP_ORIGINS`
- *   (`403` otherwise), then the resource host (the token), the kill switch, the binder
- *   and the MCP handler.
+ * - `/mcp`: the `Cookie` header removed, a present `Origin` refused (`403`), then the
+ *   resource host (the token), the kill switch, the binder and the MCP handler.
  * - `/api/*`: the `Cookie` header removed, then the key (`api.ts`).
  * - `/hooks/inbound/<token>`: the inbound door (`inbound.ts`), the `Cookie` header removed;
  *   any other `/hooks/` path is `404`, its request never read.

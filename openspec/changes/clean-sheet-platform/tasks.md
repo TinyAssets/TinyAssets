@@ -107,7 +107,7 @@ test, cutover.
   admit**: a fresh object is `pending` (migration 10's row; the admission guard's pin
   updated in place, nothing deployed) and every door and lane refuses it
   (`owner_unadmitted`) until `admissionSet {admit: true}` from the reserved caller, which
-  the sign-in callback sends (`binder.ts`'s `bindPlatform`, the contract's `PLATFORM_CALLER`,
+  the sign-in callback sends (`binder.ts`'s `bindPlatformFor`, the contract's `PLATFORM_CALLER`,
   `contract/src/binding.ts`) when the directory holds no `o:` record of the owner, then writes
   `o:<owner>` admitted. An owner marked erasing or erased refuses the admit, and the
   callback refuses the sign-in. Owners migrated at cutover are admitted by the import

@@ -31,7 +31,6 @@
  * limits.
  */
 import { HEX16 } from "../../contract/src/ids";
-import { MAX_KEYS } from "../../contract/src/limits";
 
 import { bindApiKey, type Bound } from "./binder";
 import { apiKeyOrigin } from "../../contract/src/binding";
@@ -40,7 +39,6 @@ import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
 
 export const PREFIX = "ta_key_";
 const KEY = /^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
-/** The live keys an owner holds at most: the object's count (`owner/src/keys.ts`). */
 
 export class KeyRefused extends Error {
   override readonly name = "KeyRefused";
