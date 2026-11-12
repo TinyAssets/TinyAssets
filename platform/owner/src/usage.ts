@@ -57,7 +57,7 @@ import { costMicros, largestFitting, periods } from "./money";
 import type { Call, OwnerState } from "./owner-do";
 import { clock } from "./clock";
 
-export interface UsageLimits {
+interface UsageLimits {
   /** Reservation rows kept, as receipts; no cap reads them. */
   readonly receiptsKept: number;
   readonly receiptsListed: number;

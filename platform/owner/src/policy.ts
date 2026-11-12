@@ -268,7 +268,7 @@ export class Policy {
       throw new Error("policy digest mismatch");
     }
     return { generation: row.generation, digest: row.digest,
-             document: validate(document, POLICY_LIMITS) };
+             document: validate(document) };
   }
 
   projection(owner: string): Projection {
@@ -314,7 +314,7 @@ export class Policy {
    */
   write(sessionId: string, expectedGeneration: unknown, document: unknown,
         proposal: unknown, now: number): PolicyState {
-    validate(document, POLICY_LIMITS);
+    validate(document);
     const generation = expected(expectedGeneration);
     if (proposal !== null && (!plain(proposal) || !keys(proposal, ["request_id", "digest"])
                               || !cardId(proposal["request_id"])
@@ -364,7 +364,7 @@ export class Policy {
    * loudly (`conflict`). Deleted at the cutover with the import doors.
    */
   imported(document: unknown, now: number): boolean {
-    validate(document, POLICY_LIMITS);
+    validate(document);
     const row = this.#stored();
     if (row.digest === policyDigest(document)) {
       return false;

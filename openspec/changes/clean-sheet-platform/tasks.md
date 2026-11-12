@@ -326,21 +326,22 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
     (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is four PRs, each green on its own:
+  (d3 §K1, §K2). T1 is six PRs, each green on its own:
   - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
     required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
-  - [x] T1b: the ceilings of `Policy`, `ModelUsage`, `Sessions`, `Egress` and
+  - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
     `Connections` read where they are defined, their tests at production's numbers;
     `Schedule`'s `passMs` gone and `halted` required; `Files`' `reclaim`, `changed` and
     `manifested` required; `Connections`' unbound `GATEWAY` case gone.
-  - [x] T1b2: `Grants`, `Registrations` and `Collections` read their own ceilings, their tests
-    at production's numbers (the collections' fills `large`); `Collections`' `adopt` and
-    `shares` required and `DEFAULT_SHARES` gone; code mode's `timeoutMs` gone, its wall time
-    tested on the plain owner under a stepping clock.
-  - [ ] T1b3: the ledger's ceilings (`Internals.ledgerLimits`, the `limits` parameter deleted,
-    `admitted`, `changes`, `adopt` and `wall` required, its decisions as pure functions, the
-    archive's tests at production ceilings, `b23_research.md` question 3), with the memory
-    probe's `LegSegments` at production's ledger limits (d3 §K1).
+  - [x] T1b2: the rest of the ceilings and defaults: `Grants` (and `scopes`' default),
+    `Registrations`, `Collections` (`DEFAULT_SHARES` deleted, `adopt` and `shares` required),
+    and code mode's `timeoutMs`.
+  - [ ] T1b3: the ledger's (`Internals.ledgerLimits`, `admitted`, `changes`, `adopt` and `wall`
+    required, its decisions as pure functions, the archive's tests at production ceilings,
+    `b23_research.md` question 3), with the memory probe's archive cases at production's
+    ledger limits (d3 §K1); code mode's unbound `CODEMODE_VM` case gone with its test
+    (`codemode.ts`'s optional `service`); a test that a halted schedule runs no lane already
+    due (`schedule.ts`'s `run`).
   - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
     `ERASURES` required with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
     erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
