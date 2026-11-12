@@ -1,6 +1,7 @@
 /**
- * Owner policy (N10), in the owner's own object (ADR-032): one document of action rules,
- * egress and spend, its generation, the owner's receipts, and the agents' held proposals.
+ * Owner policy (N10), in the owner's own object (ADR-032): one document of egress, action
+ * rules and the owner's other settings, its generation, the owner's receipts, and the agents'
+ * held proposals.
  *
  * Ported from `PolicyStore` in `tinyassets/broker/policy.py` (origin/main 1fd430857):
  * `read`, `write` (with a held proposal's one apply), `receipts`, `receipt_proposal`,
@@ -8,9 +9,10 @@
  * in its own protected session (`sessions.ts`), writes policy; the object checks that
  * session itself before any write here runs.
  *
- * - The document is `{entries, egress, spend}`, validated whole on every write and every
- *   read; its digest is `sha256:` over its canonical JSON and is rechecked on read, so a
- *   row changed around this module fails loudly. Every owner policy change, a per-agent
+ * - The document is its `egress` table and the optional tables below
+ *   (`policy-document.ts`), validated whole on every write and every read; its digest is
+ *   `sha256:` over its canonical JSON and is rechecked on read, so a row changed around this
+ *   module fails loudly. Every owner policy change, a per-agent
  *   wake-limit change included (`changed`), bumps the generation, which a write must
  *   name (`expected_generation`), so a change made against a stale view is refused.
  * - A fresh object starts from the default document at generation 1, put there by its
@@ -21,10 +23,13 @@
  *   pending ones are never evicted, and a full pending set refuses more.
  * - A refused owner-session call leaves a `refusal` receipt with the digest of what was
  *   asked, never the session proof, written after the refused change rolled back.
+ * - The optional `actions` table holds the owner's action rules, each on an act (`acts.json`):
+ *   ask first, or never. A rule holds where its act is seen, and one nothing sees is refused
+ *   (d3 §N). Nothing decides one yet: the decision, its asks and its once-approvals are R5's
+ *   later slices (tasks.md §10, R5).
  * - The document's optional `files` table sets the owner's file quotas and history
  *   retention (`FILE_DEFAULTS`, plan §6); what it leaves out keeps the defaults. It is
- *   ours, with no Python counterpart, so the default document leaves it out and keeps
- *   its digest.
+ *   ours, with no Python counterpart, so the default document leaves it out.
  * - The optional `models` table is the owner's model budget (`MODEL_DEFAULTS`, gateway
  *   research §4): per-run requests, tokens and cost (held per sandbox run at the egress
  *   door, `egress.ts`), and owner-wide and per-source daily and monthly cost ceilings.
@@ -62,9 +67,10 @@
  *   Python wrote is; it took any JSON there.
  * - The digest is this object's own (numbers as JavaScript prints them), so the cutover
  *   recomputes it for each imported document.
- * - The decision itself (`decide`, spend reservations, once-approvals, standing grants,
- *   declared operation kinds) is the binding gate's at OPEN and comes with the gateway
- *   (tasks 3.7): its request digest and connection facts are the gateway's.
+ * - The Python's rule tables (`rules`, `approval_grants`, `operation_kinds`, `review_on`,
+ *   `review_off`), its `spend` caps and its egress `ask` mode have no counterpart: each was
+ *   keyed to the broker's app connections or read by nothing here (d3 §N6). An action rule
+ *   is the `actions` table's.
  *
  * Every change runs in one `transactionSync`, so a refusal leaves nothing behind.
  */

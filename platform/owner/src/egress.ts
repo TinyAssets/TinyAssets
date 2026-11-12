@@ -176,7 +176,7 @@ export interface EgressReceipt {
  * The owner's model policy caps a sandbox model call is held to, in µ$ for money, as the
  * policy leaves them at the open's unit: its run's requests, tokens and cost (the `models`
  * table's per-turn limits), and the owner's and the call's source's day and month. No
- * more and no less: the spend table is the agent's purchases', not model calls'.
+ * more and no less: an agent's purchases are an action rule's (`spend`, `acts.json`).
  */
 interface EgressCaps {
   /** The owner's own per-run caps, each null (none) unless the owner's policy sets it. */

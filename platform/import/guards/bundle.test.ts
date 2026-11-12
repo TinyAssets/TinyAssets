@@ -106,6 +106,7 @@ describe("the bundle builder", () => {
       `file ${I}/novel/workspace/run.sh`,
       `dir ${I}/old`,
       `file ${I}/old/soul.md`,
+      `file ${I}/policy.refused.json`,
       `file ${I}/refused.tar`,
       `dir ${I}/wiki`,
       `file ${I}/wiki/home.md`,
@@ -132,14 +133,13 @@ describe("the bundle builder", () => {
     }
   });
 
-  it("carries the policy and the collections as rows, and the owner's admission and tier", () => {
+  it("carries the collections as rows, and the owner's admission and tier", () => {
     const { f, out, options } = setup();
     buildBundles(f.copy, options);
     const bundle = join(out, keyOf(ALICE));
+    // The old stack's policy has its rule tables and spend caps, which the platform's validator
+    // no longer takes (d3 §N6), so it is archived, never a row.
     expect(rows(bundle)).toEqual([
-      { kind: "policy", document: { entries: [], egress: { mode: "ask", destinations: [] },
-                                    spend: { daily: null, monthly: null, transaction: null,
-                                             ask_above: null, source_ceilings: {} } } },
       { kind: "collection", collection: "board", row_id: "b1", private: 1, body: '{"t":"first"}' },
       { kind: "collection", collection: "board", row_id: "b2", private: 0, body: '{"t":"second"}' },
     ]);
@@ -162,8 +162,9 @@ describe("the bundle builder", () => {
     const db = new DatabaseSync(at);
     db.prepare("UPDATE policy SET document = ?").run(refused);
     db.close();
+    // Alice's, and the founder's old-shape one beside it.
     expect((census(f.copy, TIERS).report["rows"] as Record<string, number>)["policies_archived"])
-      .toBe(1);
+      .toBe(2);
     buildBundles(f.copy, options);
     const bundle = join(out, keyOf(ALICE));
     expect(rows(bundle).filter((row) => row.kind === "policy")).toEqual([]);

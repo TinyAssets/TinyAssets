@@ -255,12 +255,11 @@ const DONE = { state: "succeeded", tokens: 1500, cost: 0.0042 } as const;
 const settle = (reservation: string, extra: Record<string, unknown> = {}) =>
   ({ reservation, outcome: "complete", status: 200, bytes: 42, spend: DONE, ...extra });
 
-/** The owner's model policy set, in its session, and its spend table's `ask_above`. */
-async function capped(r: Gated, models: Record<string, unknown>,
-                      askAbove: number | null = null): Promise<void> {
+/** The owner's model policy set, in its session. */
+async function capped(r: Gated, models: Record<string, unknown>): Promise<void> {
   const { generation, policy } = await r.stub.policyRead(r.bind());
-  await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
-    ...policy, models, spend: { ...policy.spend, ask_above: askAbove } } });
+  await r.stub.policyWrite(r.session(), { expected_generation: generation,
+                                          policy: { ...policy, models } });
 }
 
 /**
@@ -937,15 +936,6 @@ describe("the spend caps", () => {
     expect((await charges(r)).at(-1)).toMatchObject({ rule: "run_tokens" });
   });
 
-  it("hold nothing of the spend table: an owner's purchase threshold is not a model cap",
-     async () => {
-    const r = await gated();
-    const connection = await r.connect("sk-good");
-    const lease = await leased(r);
-    await capped(r, ROOMY, 100);  // "ask me above 100", for the agent's purchases
-    await admitted(r, lease, connection);
-  });
-
   it("prune the spend counters at each open, so an owner who uses only the sandbox never " +
      "fills them", async () => {
     const r = await gated();
@@ -1386,31 +1376,6 @@ describe("the sandbox's lease", () => {
     expect(first.egress).not.toBe(next.egress);
   });
 
-  it("receipts an ask-mode network's refusal of what it does not list, once as its lease opens",
-     async () => {
-    const r = await gated();
-    const asked = async () => (await r.stub.policyReceipts(r.bind())).receipts
-      .filter((receipt) => receipt.rule === "egress.ask");
-    // A lease opened under another mode receipts nothing.
-    const before = await leased(r);
-    expect(before.opened.network).toMatchObject({ receipt: false });
-    expect(generationOf(before.opened.network.network)).toBe(1);
-    expect(await asked()).toEqual([]);
-    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
-    const { generation, policy } = await r.stub.policyRead(r.bind());
-    await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
-      ...policy, egress: { mode: "ask", destinations: [{ host: "pypi.org", port: 443 }] } } });
-    expect(await asked()).toEqual([]);
-    const lease = await leased(r);
-    expect(lease.opened.network).toMatchObject({ mode: "ask", receipt: true });
-    expect(generationOf(lease.opened.network.network)).toBe(2);
-    expect(await asked())
-      .toMatchObject([{ kind: "refusal", decision: "deny", outcome: "refused" }]);
-    // A run that joins the live lease carries no network, so applies none.
-    await leased(r, false);
-    expect(await asked()).toHaveLength(1);
-  });
-
   it("hands the sandbox slice its policy and its clients' environment", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
@@ -1631,9 +1596,9 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     const { generation, policy } = await r.stub.policyRead(r.bind());
     const written = r.stub.policyWrite(r.session(), { expected_generation: generation,
       policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
-    const first = await Promise.race([written.then(() => "answered"), new Promise(
-      (resolve) => setTimeout(() => resolve("waiting"), 2000))]);
+    // The write answers, on no clock: a write that waited on the sandbox would never answer
+    // here, since the re-apply then reaches the gate and stays held, never let go.
+    expect(await written).toMatchObject({ policy: { egress: { mode: "allowlist" } } });
     expect(await env.SANDBOX_GATE.held(HELD_WAIT_MS)).toHaveLength(1);
-    expect(first).toBe("answered");
   });
 });

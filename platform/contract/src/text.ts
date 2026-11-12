@@ -78,8 +78,8 @@ export function isPrintable(value: string): boolean {
 
 /**
  * A model source record's id, which a connection names its source by (`connections.ts`)
- * and owner policy keys a source's ceilings by (`policy.ts`): the Python's
- * `source_ceilings` key, so a source's ceilings outlive any one connection of it.
+ * and owner policy keys a source's ceilings by (`models.sources`, `policy-document.ts`), so
+ * a source's ceilings outlive any one connection of it.
  */
 export const SOURCE_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 

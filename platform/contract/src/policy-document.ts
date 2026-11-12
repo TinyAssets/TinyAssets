@@ -6,9 +6,16 @@
  * before the window, so a document it refuses is archived and never stops an import) hold a
  * document to the same rules. Ported from the Python's `_validate`; the declared differences
  * are `owner/src/policy.ts`'s.
+ *
+ * The document is its `egress` table and the optional tables below, each left out until the
+ * owner sets it. The `actions` table holds the owner's action rules (d3 §N): each names an act
+ * (`acts.json`), asks first or never lets it happen, and may name the tools that do it. A rule
+ * holds where its act is seen (`acts.ts`), so one nothing could see is refused here. The old
+ * rule tables and the spend caps are gone: nothing read them (d3 §N6).
  */
+import { actNamed } from "./acts";
 import { sha256Hex } from "./digest";
-import { toolNames } from "./doors";
+import { actDoors, toolNames } from "./doors";
 import { FILE_DEFAULTS, KEEP_CEILING } from "./file-defaults";
 import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "./limits";
 import { Refusal } from "./refusal";
@@ -64,30 +71,14 @@ export function checkDestination(entry: unknown): void {
   }
 }
 
-export const BEHAVIOURS: readonly string[] =
-  Object.freeze(["do", "do_if_preapproved", "ask_first", "hand_off"]);
-export const DEFAULT_RULES: Readonly<Record<string, string>> = Object.freeze({
-  "workspace.files": "do", "workspace.shell": "do", "workspace.workflows": "do",
-  "shell.egress": "do", "app.read": "do", "app.write": "do",
-  "people.message": "ask_first", "commons.publish": "ask_first", "share": "ask_first",
-  "browser.action": "ask_first", "spend": "ask_first", "money.move": "hand_off",
-  "security.change": "hand_off", "access.grant": "hand_off",
-});
-export const OPERATION_KINDS: Readonly<Record<string, string>> = Object.freeze({
-  read: "app.read", write: "app.write", delete: "app.write", message: "people.message",
-  payment: "money.move", security: "security.change", access: "access.grant",
-});
-const TABLES: readonly string[] =
-  Object.freeze(["rules", "approval_grants", "operation_kinds", "review_on", "review_off"]);
-const EGRESS_MODES: readonly string[] = Object.freeze(["open", "allowlist", "ask"]);
-const CAPS: readonly string[] = Object.freeze(["daily", "monthly", "transaction", "ask_above"]);
+/** The egress table's modes: every name out, or the owner's destinations alone. */
+export const EGRESS_MODES = Object.freeze(["open", "allowlist"] as const);
+export type EgressMode = (typeof EGRESS_MODES)[number];
 
 /** The default document as stored, and its digest (a test recomputes both). */
-export const DEFAULT_POLICY_JSON =
-  '{"egress":{"destinations":[],"mode":"open"},"entries":[],"spend":{"ask_above":null,' +
-  '"daily":null,"monthly":null,"source_ceilings":{},"transaction":null}}';
+export const DEFAULT_POLICY_JSON = '{"egress":{"destinations":[],"mode":"open"}}';
 export const DEFAULT_POLICY_DIGEST =
-  "sha256:b8a7d8f3763ebeadaace95e5a634ffa3954f88b9a75061b061e21e65222d151c";
+  "sha256:f90862c9625ff981a8a7a0a5604579eadad9e1787c3ac869045362377960c090";
 
 /**
  * How large policy state may grow. The document's 64 KiB is room for hundreds of rules
@@ -119,11 +110,49 @@ export const POLICY_LIMITS: PolicyLimits = Object.freeze({
   receiptsListed: 50,
 });
 
-/** A rule, review setting, grant or declared operation: its values are flat. */
-export interface PolicyEntry {
-  readonly scope: string;
-  readonly table: string;
-  readonly values: { readonly [key: string]: string | number | boolean | null };
+/**
+ * One rule of the `actions` table: its act (`acts.json`), whether the act waits for the
+ * owner's yes (`ask`) or never happens (`never`), and the tools that do it, which the CLIs'
+ * hooks see by name (`mcp:<server>:<tool>`, each part a name or `*` patterns). An act with no
+ * rule is allowed: the table is empty until the owner writes one (Fact 15).
+ */
+export interface ActionRule {
+  readonly act: string;
+  readonly do: "ask" | "never";
+  readonly tools?: readonly string[];
+}
+
+/** A tool a rule names: an MCP server's and its tool's names, `*` matching any run of them. */
+const TOOL_MATCHER = /^mcp:[A-Za-z0-9_*-]{1,64}:[A-Za-z0-9_.*-]{1,128}$/;
+
+/**
+ * The `actions` table: rules of an act the file holds, `ask` or `never`, and tools, when
+ * named, distinct matchers, at least one. A rule on an act no door does and no hook kind is,
+ * naming no tools, is refused: nothing could see it, so nothing could decide it.
+ */
+function checkActions(actions: unknown): void {
+  if (!Array.isArray(actions)) {
+    throw new Refusal("invalid", "invalid actions policy");
+  }
+  for (const rule of actions) {
+    const tools = plain(rule) ? rule["tools"] : undefined;
+    if (!plain(rule) || !keys(rule, ["act", "do", ...(tools === undefined ? [] : ["tools"])])
+        || (rule["do"] !== "ask" && rule["do"] !== "never")
+        || (tools !== undefined && (!Array.isArray(tools) || tools.length === 0
+            || new Set(tools).size !== tools.length
+            || !tools.every((tool) => typeof tool === "string" && TOOL_MATCHER.test(tool))))) {
+      throw new Refusal("invalid", "invalid action rule: an act, ask or never, and any tools");
+    }
+    const act = actNamed(rule["act"]);
+    if (act === undefined) {
+      throw new Refusal("invalid", "invalid action rule: no such act");
+    }
+    if (actDoors(rule["act"] as string).length === 0 && act.hook.length === 0
+        && tools === undefined) {
+      throw new Refusal("invalid", "nothing can decide this action rule: no door or tool " +
+                        "kind does its act, so name the tools that do it");
+    }
+  }
 }
 
 /**
@@ -291,20 +320,13 @@ function validModels(models: unknown): boolean {
 
 /** The document as `validate` leaves it. */
 export interface PolicyDocument {
+  readonly actions?: readonly ActionRule[];
   readonly codemode?: CodemodePolicy;
   readonly files?: Partial<FileSettings>;
   readonly models?: ModelPolicy;
   readonly tools?: ToolPolicy;
-  readonly entries: PolicyEntry[];
-  readonly egress: { readonly mode: string;
+  readonly egress: { readonly mode: EgressMode;
                      readonly destinations: { readonly host: string; readonly port: number }[] };
-  readonly spend: {
-    readonly daily: number | null;
-    readonly monthly: number | null;
-    readonly transaction: number | null;
-    readonly ask_above: number | null;
-    readonly source_ceilings: { readonly [source: string]: number };
-  };
 }
 
 /** A JSON object: not an array, not null, not a class instance. */
@@ -349,8 +371,8 @@ export function whole(value: unknown): value is number {
 
 /** `_validate`: the whole document, or a refusal naming its first fault. */
 export function validate(document: unknown): PolicyDocument {
-  if (!plain(document) || !keys(document, ["entries", "spend", "egress",
-    ...(["codemode", "files", "models", "tools"] as const).filter((table) =>
+  if (!plain(document) || !keys(document, ["egress",
+    ...(["actions", "codemode", "files", "models", "tools"] as const).filter((table) =>
       Object.hasOwn(document, table))])) {
     throw new Refusal("invalid", "invalid policy document");
   }
@@ -380,46 +402,15 @@ export function validate(document: unknown): PolicyDocument {
   }
   const egress = document["egress"];
   if (!plain(egress) || !keys(egress, ["mode", "destinations"])
-      || !EGRESS_MODES.includes(egress["mode"] as string)
+      || !(EGRESS_MODES as readonly unknown[]).includes(egress["mode"])
       || !Array.isArray(egress["destinations"])) {
     throw new Refusal("invalid", "invalid egress policy");
   }
   for (const entry of egress["destinations"]) {
     checkDestination(entry);
   }
-  const entries = document["entries"];
-  if (!Array.isArray(entries)) {
-    throw new Refusal("invalid", "invalid policy entries");
-  }
-  for (const entry of entries) {
-    if (!plain(entry) || !keys(entry, ["scope", "table", "values"])
-        || entry["scope"] !== "account" || !TABLES.includes(entry["table"] as string)
-        || !plain(entry["values"]) || Object.values(entry["values"]).some((value) =>
-          value !== null && !["string", "number", "boolean"].includes(typeof value))) {
-      throw new Refusal("invalid", "invalid scoped policy entry");
-    }
-    const values = entry["values"];
-    const action = values["action_class"];
-    if (entry["table"] === "rules" && (!BEHAVIOURS.includes(values["behaviour"] as string)
-        || typeof action !== "string" || !Object.hasOwn(DEFAULT_RULES, action))) {
-      throw new Refusal("invalid", "invalid approval rule");
-    }
-    const kind = values["kind"];
-    if (entry["table"] === "operation_kinds"
-        && (typeof kind !== "string" || !Object.hasOwn(OPERATION_KINDS, kind))) {
-      throw new Refusal("invalid", "invalid declared operation");
-    }
-  }
-  const spend = document["spend"];
-  if (!plain(spend) || !keys(spend, [...CAPS, "source_ceilings"])) {
-    throw new Refusal("invalid", "invalid spend policy");
-  }
-  if (CAPS.some((cap) => spend[cap] !== null && !whole(spend[cap]))) {
-    throw new Refusal("invalid", "invalid spend cap");
-  }
-  const ceilings = spend["source_ceilings"];
-  if (!plain(ceilings) || Object.values(ceilings).some((value) => !whole(value))) {
-    throw new Refusal("invalid", "invalid source ceiling");
+  if (document["actions"] !== undefined) {
+    checkActions(document["actions"]);
   }
   if (codePoints(canonical(document)) > POLICY_LIMITS.maxDocument) {
     throw new Refusal("refused", "the policy document is too large");

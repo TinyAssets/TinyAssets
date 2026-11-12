@@ -25,7 +25,7 @@ import {
 } from "../src/codemode";
 import type { OwnerDO } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
-import { validate } from "../../contract/src/policy-document";
+import { DEFAULT_POLICY_JSON, validate } from "../../contract/src/policy-document";
 import { customTools } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure } from "./support";
@@ -180,9 +180,7 @@ describe("the code door", () => {
   });
 
   it("takes the owner's custom tools only as distinct names of the door's tools", () => {
-    const base = { entries: [], egress: { mode: "open", destinations: [] },
-                   spend: { daily: null, monthly: null, transaction: null, ask_above: null,
-                            source_ceilings: {} } };
+    const base = JSON.parse(DEFAULT_POLICY_JSON) as object;
     expect(customTools(validate(base))).toEqual(profileNames("custom"));
     expect(customTools(validate({ ...base, tools: { custom: ["code"] } }))).toEqual(["code"]);
     for (const tools of [{ custom: ["bash"] }, { custom: ["code", "code"] },

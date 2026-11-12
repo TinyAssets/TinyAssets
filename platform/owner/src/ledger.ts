@@ -316,6 +316,80 @@ export function checkLimits(limits: LedgerLimits): LedgerLimits {
   return limits;
 }
 
+/**
+ * The ledger's decisions, each a pure function of the owner-wide counters (`ledger_usage`)
+ * and the ceilings it is given: `Ledger` gives them `LEDGER_LIMITS`, and their tests small
+ * numbers (`ledger-bounds.test.ts`).
+ */
+type Counted = Pick<Usage, "messages" | "unacked" | "acked_bytes">;
+
+/**
+ * Whether a segment's worth of acked mail waits to move: its records, or their own bytes
+ * (`line_bytes` less each one's trailer share, as `pack` and the segment count them, so a
+ * seal is never short of the least, review N4).
+ */
+export function sealable(usage: Counted,
+                         limits: Pick<LedgerLimits, "archiveRecords" | "archiveBytes">): boolean {
+  const acked = usage.messages - usage.unacked;
+  return acked >= limits.archiveRecords
+    || usage.acked_bytes - acked * RECORD_TRAILER_BYTES >= limits.archiveBytes;
+}
+
+/**
+ * Whether the `archive` lane has a move to make: hot mail past half the hot ceiling, and a
+ * straggler to merge (`straggler`, asked only then) or a segment's worth of acked mail.
+ */
+export function archiveDue(usage: Counted, limits: Pick<LedgerLimits, "maxMessages"
+                             | "archiveRecords" | "archiveBytes">,
+                           straggler: () => boolean): boolean {
+  return usage.messages > limits.maxMessages / 2 && (straggler() || sealable(usage, limits));
+}
+
+/** Whether the hot set stands at its ceiling: one more message would pass it. */
+export function hotFull(usage: Pick<Usage, "messages">,
+                        limits: Pick<LedgerLimits, "maxMessages">): boolean {
+  return usage.messages + 1 > limits.maxMessages;
+}
+
+/**
+ * What holds one more message off, never a delete: too much mail unread owner-wide
+ * (`unread`), else the hot ceiling (`hot`), else nothing (null). Only the owner-wide counts
+ * decide: no mailbox has a ceiling of its own, and no body's bytes count (ADR-035).
+ */
+export function postRoom(usage: Pick<Usage, "messages" | "unacked">,
+                         limits: Pick<LedgerLimits, "maxUnacked" | "maxMessages">):
+    "unread" | "hot" | null {
+  if (usage.unacked + 1 > limits.maxUnacked) {
+    return "unread";
+  }
+  return hotFull(usage, limits) ? "hot" : null;
+}
+
+/**
+ * How many of a move's rows it takes, oldest first, by their records' own bytes (`lines`,
+ * each less its trailer share, review N4). A tail's move (`into` null) takes them until they
+ * reach the seal, so it holds the least. A merge into the segment `into` holds it and its
+ * stragglers in the isolate at once, so it takes them only while the two fit `MOVE_BYTES`
+ * (review N3: the measured move's bound), and always at least one (so the oldest straggler
+ * always moves); the rest merge on the next passes.
+ */
+export function moveTake(lines: readonly number[], into: Pick<Fence, "bytes"> | null,
+                         limits: Pick<LedgerLimits, "archiveBytes">): number {
+  const budget = into === null ? limits.archiveBytes : Math.max(0, MOVE_BYTES - into.bytes);
+  let bytes = 0;
+  for (const [n, line] of lines.entries()) {
+    const own = line - RECORD_TRAILER_BYTES;
+    if (into !== null && n > 0 && bytes + own > budget) {
+      return n;
+    }
+    bytes += own;
+    if (into === null && bytes >= budget) {
+      return n + 1;
+    }
+  }
+  return lines.length;
+}
+
 /** The refusal of a post when too much mail is unread (`maxUnacked`). */
 const LEDGER_FULL = "ledger_full" as const;
 
@@ -993,15 +1067,18 @@ export class Ledger {
   /** The owner-wide change cursor (`Collections.clock`): what a mail wake is after. */
   readonly #changes: () => number;
 
-  /** How a posting unit adopts a placed body's content (`Bodies.adopt`); none, none placed. */
-  readonly #adopt: Adopt | undefined;
+  /** How a posting unit adopts a placed body's content (`Bodies.adopt`). */
+  readonly #adopt: Adopt;
   /** The one wall's refusal for a post that needs `needed` bytes (`Files.fullRefusal`). */
-  readonly #wall: ((needed: number) => Refusal) | undefined;
+  readonly #wall: (needed: number) => Refusal;
 
-  constructor(storage: OwnerStorage, grants: GrantReader,
-              limits: LedgerLimits = LEDGER_LIMITS, admitted: () => boolean = () => true,
-              changes: () => number = () => 0, adopt?: Adopt,
-              wall?: (needed: number) => Refusal) {
+  /**
+   * `limits` is the archive's object tests' small ceilings until they run production's
+   * (T1b5, which deletes it).
+   */
+  constructor(storage: OwnerStorage, grants: GrantReader, admitted: () => boolean,
+              changes: () => number, adopt: Adopt, wall: (needed: number) => Refusal,
+              limits: LedgerLimits = LEDGER_LIMITS) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = checkLimits(limits);
@@ -1869,17 +1946,6 @@ export class Ledger {
   }
 
   /**
-   * Whether a segment's worth of acked mail waits to move: its records, or their own bytes
-   * (`line_bytes` less each one's trailer share, as `pack` and the segment count them, so a
-   * seal is never short of the least, review N4). A read of the counters.
-   */
-  #sealable(usage: Usage): boolean {
-    const acked = usage.messages - usage.unacked;
-    return acked >= this.#limits.archiveRecords
-      || usage.acked_bytes - acked * RECORD_TRAILER_BYTES >= this.#limits.archiveBytes;
-  }
-
-  /**
    * The oldest acked hot message whose seq is below the archive's last key: acked after the
    * mail around it moved, so it goes into the segment its key falls in (`archivePick`), never
    * a new one that would overlap. A read of one index range.
@@ -1890,14 +1956,9 @@ export class Ledger {
         "coalesce(max(last_key), 0) FROM archive_segments WHERE stream = 'mail')").one().seq;
   }
 
-  /**
-   * Whether the `archive` lane has a move to make: hot mail past half the ceiling, and a
-   * straggler to merge or a segment's worth of acked mail. A read.
-   */
+  /** Whether the `archive` lane has a move to make (`archiveDue`). A read. */
   archiveDue(): boolean {
-    const usage = this.#usage();
-    return usage.messages > this.#limits.maxMessages / 2
-      && (this.#straggler() !== null || this.#sealable(usage));
+    return archiveDue(this.#usage(), this.#limits, () => this.#straggler() !== null);
   }
 
   /**
@@ -1922,7 +1983,7 @@ export class Ledger {
           "ON b.message_id = m.message_id WHERE m.unacked = 0 AND m.seq >= ? AND m.seq <= ? " +
           "ORDER BY m.seq LIMIT ?", straggler, into.last_key, limits.archiveRecords).toArray();
     } else {
-      if (!this.#sealable(this.#usage())) {
+      if (!sealable(this.#usage(), limits)) {
         return null;
       }
       rows = sql.exec<{ seq: number; line_bytes: number; content_id: string | null }>(
@@ -1930,30 +1991,12 @@ export class Ledger {
           "ON b.message_id = m.message_id WHERE m.unacked = 0 ORDER BY m.seq LIMIT ?",
         limits.archiveRecords).toArray();
     }
-    // The byte budget, in records' own bytes (their trailer shares out, review N4). A tail
-    // move seals once they reach the seal (so it holds the least). A merge holds its segment
-    // and its stragglers in the isolate at once, so it takes stragglers only while the two
-    // fit `MOVE_BYTES` (review N3: the measured move's bound), and always at least one (so
-    // the oldest straggler always moves); the rest merge on the next passes.
-    const budget = into === null ? limits.archiveBytes : Math.max(0, MOVE_BYTES - into.bytes);
-    const seqs: number[] = [];
-    const contents: string[] = [];
-    let bytes = 0;
-    for (const row of rows) {
-      const own = row.line_bytes - RECORD_TRAILER_BYTES;
-      if (into !== null && seqs.length > 0 && bytes + own > budget) {
-        break;
-      }
-      seqs.push(row.seq);
-      if (row.content_id !== null) {
-        contents.push(row.content_id);
-      }
-      bytes += own;
-      if (into === null && bytes >= budget) {
-        break;
-      }
-    }
-    return seqs.length === 0 ? null : { seqs, contents, into };
+    const taken = rows.slice(0, moveTake(rows.map((row) => row.line_bytes), into, limits));
+    return taken.length === 0 ? null : {
+      seqs: taken.map((row) => row.seq),
+      contents: taken.flatMap((row) => row.content_id === null ? [] : [row.content_id]),
+      into,
+    };
   }
 
   /**
@@ -2170,7 +2213,7 @@ export class Ledger {
 
   /** Whether the hot set stands at its ceiling: the next post is refused `storage_busy`. */
   atHotCeiling(): boolean {
-    return this.#usage().messages + 1 > this.#limits.maxMessages;
+    return hotFull(this.#usage(), this.#limits);
   }
 
   /** When the archive last placed a segment (`made_at`), or 0 for none. A read. */
@@ -2386,11 +2429,6 @@ export class Ledger {
                      `WHERE ${DUE} AND state = 'held_cap'`, now);
   }
 
-  /**
-   * Refuse one more message to `recipient` past its mailbox's cap, or an agent's mail to the
-   * owner past its `share` of the owner's mailbox (see {@link LedgerLimits}). Bytes are the
-   * tier's storage's to bound: a body past `PLACE_BYTES` is in R2.
-   */
   /** The readers holding the most unread mail, at most three, as the owner knows them. */
   #holders(): string {
     return this.#sql.exec<{ reader: string; unacked: number; name: string | null }>(
@@ -2403,11 +2441,6 @@ export class Ledger {
   }
 
   /**
-   * Room for one more message, never by a delete: too much unread mail owner-wide is
-   * `ledger_full`, and the hot ceiling, with acked mail the `archive` lane has to move,
-   * `storage_busy` until a move lands (the unread ceiling keeps a segment's records acked).
-   */
-  /**
    * Room for one more message, else its refusal: too much mail unread (`ledger_full`), or the
    * hot ceiling. The ceiling is `storage_busy`, transient, while the archive lane can move
    * acked mail out; while its moves are blocked at the storage figure it clears only when the
@@ -2415,16 +2448,15 @@ export class Ledger {
    * marked `ceiling`), the same answer for every poster: a door, a run's reply, its placement.
    */
   #roomForOne(needed: number): void {
-    const usage = this.#usage();
-    const limits = this.#limits;
-    if (usage.unacked + 1 > limits.maxUnacked) {
-      const most = limits.maxUnacked;
-      throw new Refusal("ledger_full", `${LEDGER_FULL}: too much mail is unread (${most} message${
-        most === 1 ? " waits" : "s wait"} for their readers; the most for ${this.#holders()}); ` +
+    const room = postRoom(this.#usage(), this.#limits);
+    if (room === "unread") {
+      const most = this.#limits.maxUnacked;
+      throw new Refusal("ledger_full", `${LEDGER_FULL}: too much mail is unread (${most} ` +
+                        `messages wait for their readers; the most for ${this.#holders()}); ` +
                         "reading and acking mail makes room");
     }
-    if (usage.messages + 1 > limits.maxMessages) {
-      if (this.#wall !== undefined && this.archiveBlocked()) {
+    if (room === "hot") {
+      if (this.archiveBlocked()) {
         // The one wall, marked as the ceiling's: an inbound app's event is told to send it
         // again (`OwnerDO#inboundRefused`), as at a ceiling that clears by itself.
         const wall = this.#wall(needed);

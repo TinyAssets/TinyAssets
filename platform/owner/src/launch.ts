@@ -681,8 +681,7 @@ export class Launcher implements RunHost {
    * call bearing the token was made through the network, and a run's first model call is
    * admitted however soon it comes, before its start's answer is recorded. A policy write
    * while the start is out leaves the newer generation stale (`egress_network_stale`), and a
-   * start that fails gives the lease back, so a mark on it admits nothing. In `ask` mode the
-   * owner gets a refusal receipt for each network made (`network.ts`).
+   * start that fails gives the lease back, so a mark on it admits nothing.
    */
   openLease(now: number, authority: string):
       { lease: Lease; tokens: OpenedTokens; network: NetworkPlan } {
@@ -701,16 +700,10 @@ export class Launcher implements RunHost {
 
   /**
    * In a unit: the network for the owner's egress policy at the egress `generation` the unit
-   * read, with no egress token (`networkDocument`); in `ask` mode its refusal receipt, one at
-   * each network made (a lease's first, each re-apply).
+   * read, with no egress token (`networkDocument`).
    */
   #networkPlan(generation: number): NetworkPlan {
-    const plan = networkDocument(this.#o.policy.read().document.egress, generation);
-    if (plan.receipt) {
-      this.#o.policy.refusal("sandbox_network", { mode: plan.mode, generation }, clock(),
-                             "egress.ask");
-    }
-    return plan;
+    return networkDocument(this.#o.policy.read().document.egress, generation);
   }
 
   /**

@@ -84,10 +84,7 @@ export class OwnerDO extends RealOwnerDO {
   }
 }
 
-/**
- * A served RFC 6749 source: the bundled records' only one is Sign in with ChatGPT,
- * unwired until OpenAI's approval, so the flow is tested on this one.
- */
+/** An RFC 6749 source: no bundled record is one, so the flow is tested on this one. */
 export const TEST_OAUTH = Object.freeze({
   id: "test_oauth",
   display_name: "Test OAuth",
