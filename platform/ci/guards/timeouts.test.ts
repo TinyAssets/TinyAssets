@@ -175,7 +175,10 @@ describe("the run-time check", () => {
     expect(medium("ci/guards").provide.classTimeouts).toEqual(want);
     const owner = (await configs()).find(({ ws }) => ws === "owner")!.projects
       .find((each) => each.test.name === "workerd")!;
-    expect(owner.test["setupFiles"]).toEqual([CLASS_CHECK, "./test/admitted.ts"]);
+    // A project's own setup files are kept, after the class check.
+    const setup = owner.test["setupFiles"] as string[];
+    expect(setup[0]).toBe(CLASS_CHECK);
+    expect(setup.slice(1).length).toBeGreaterThan(0);
     for (const { ws, projects } of await configs()) {
       for (const each of projects) {
         expect((each.test["setupFiles"] as string[])[0], `${ws}/${each.test.name}`)

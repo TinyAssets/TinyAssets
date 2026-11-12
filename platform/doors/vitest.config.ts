@@ -33,8 +33,10 @@ export default defineConfig({
       // gateway, codemode and files Workers are each bundled from their own config, as a
       // deploy bundles them. The doors' and each auxiliary Worker have every binding their
       // configs give them (`main`, `auxiliary`), and the tests state each secret: none is
-      // read from the host. The owner object hosted in this script has only the two bindings
-      // stated below, until it runs as an auxiliary of its own (T2).
+      // read from the host. The owner object hosted in this script has only the three bindings
+      // stated below, until it runs as an auxiliary of its own (T2). SANDBOX is the owner
+      // suite's fake sandbox Worker (`owner/test/fake-sandbox.ts`), whose record a test
+      // reads through SANDBOX_LOG.
       // The import consumer's tests take a bundle the slice-2 builder made in Node
       // (`test/import-setup.ts`), deleted at the cutover with the importer.
       project("doors", "workerd", {
@@ -46,18 +48,21 @@ export default defineConfig({
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                           WORKOS_API_KEY: "test-client-secret",
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
-              // CODEMODE_VM and OWNER_FILES: the owner object's (in this script for the
-              // tests), to the real codemode and files Workers, as the owner config binds
-              // them: the owner's FILES is the files Worker's whole service, the doors' its
-              // upload entrypoint.
+              // CODEMODE_VM, OWNER_FILES and SANDBOX: the owner object's (in this script for
+              // the tests), to the real codemode and files Workers, as the owner config binds
+              // them (the owner's FILES is the files Worker's whole service, the doors' its
+              // upload entrypoint), and to the owner suite's fake sandbox Worker.
               serviceBindings: { PROVIDERS: "fake-providers",
                                  CODEMODE_VM: workerConfig(join(PLATFORM, "codemode")).name,
-                                 OWNER_FILES: workerConfig(join(PLATFORM, "files")).name },
+                                 OWNER_FILES: workerConfig(join(PLATFORM, "files")).name,
+                                 SANDBOX: "fake-sandbox",
+                                 SANDBOX_LOG: { name: "fake-sandbox", entrypoint: "Log" } },
               workers: [
                 auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: KEYRING },
                                                        outboundService: "fake-providers" }),
                 auxiliary(join(PLATFORM, "codemode"), {}),
                 fake(join(PLATFORM, "doors", "test", "fake-providers.ts")),
+                fake(join(PLATFORM, "owner", "test", "fake-sandbox.ts")),
                 auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: KEYRING } }),
               ],
             }, "./test/entry.ts")))),

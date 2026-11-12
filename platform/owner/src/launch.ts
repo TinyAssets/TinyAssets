@@ -14,15 +14,15 @@
  *   schedules claimed once and run;
  * - **a mail's reply** (`answer`): a run's result posted as its agent's reply to that mail, in
  *   the settle's unit, its body placed in R2 first when long (`beginReply`, `withReply`);
- * - **the sandbox's leases** (`openLease`, `sandboxLeases`): an authority's lease opened with its
- *   tokens and network, that network marked on it at the generation it was made under, given
- *   back, and paused through the sandbox Worker once no run holds it (`leaseFreed`); one
- *   run's whole environment (`#runConfig`).
+ * - **the sandbox's leases** (`openLease`): an authority's lease opened with its tokens and
+ *   network, that network marked on it at the generation it was made under, given back, and
+ *   paused through the sandbox Worker once no run holds it (`leaseFreed`); one run's whole
+ *   environment (`#runConfig`).
  *
  * It reaches the owner's other modules only through the object's state it is handed
  * (`OwnerState`), each read or write in the unit it is called in.
  */
-import { HEX64, randomHex } from "../../contract/src/ids";
+import { randomHex } from "../../contract/src/ids";
 import { sha256Hex } from "../../contract/src/digest";
 import { utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { LEASE_LIVED, mintToken, sealRoute } from "../../contract/src/routing-mac";
@@ -31,7 +31,7 @@ import { PLACE_BYTES } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
-import { CREDENTIAL_KINDS, SourceRecordError } from "../../sources/src/schema";
+import { SourceRecordError } from "../../sources/src/schema";
 
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
 import type { Stamped, StandingGrant } from "./authority";
@@ -40,19 +40,19 @@ import { OWNER_AUTHORITY, type Lease, type SandboxLease } from "./files";
 import { type Delivery, type MailAuthority, mailInput } from "./ledger";
 import { nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
-import { type EgressPolicy, networkDocument } from "./network";
+import { networkDocument } from "./network";
 import type { OwnerState } from "./owner-do";
 import {
   type Ask, type LiveLease, type LiveRun, type MailAnswer, mailConversation, NO_SCHEDULE,
   type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority, SIGNIN_REQUIRED,
   type SpendCaps, type UsableSource,
 } from "./runs";
-import { SANDBOX_ABSENT, SANDBOX_WAITING, started } from "./sandbox";
+import { SANDBOX_WAITING, started } from "./sandbox";
 import { inTime, LANE_CALL_MS } from "./schedule";
 import { switchedOn } from "./signins";
 import { tierNumbers } from "./tier";
 import type { TierName } from "../../contract/src/control";
-import type { CredentialKind, NetworkPlan } from "../../contract/src/sandbox";
+import type { CredentialKind, NetworkPlan, RunConfig } from "../../contract/src/sandbox";
 
 /**
  * How long a live lease's re-apply waits before the lane sends it again, after it was sent
@@ -86,41 +86,6 @@ export interface SandboxRun {
   readonly connection?: string;
 }
 
-/** What the sandbox slice sets up a sandbox from (`network.ts`). */
-interface SandboxConfig {
-  readonly generation: number;
-  readonly egress: EgressPolicy;
-  /**
-   * The run's whole environment, its allow-list (`runEnv`, `sandboxEnv`): `HOME` and the
-   * record's own variables, each a template the runner fills (`{home}`, `{agent}`), and on
-   * an API key its one connection's key variables. The runner starts from an empty
-   * environment and sets exactly these, keeping only `inherit` of the sandbox's own.
-   */
-  readonly env: Readonly<Record<string, string>>;
-  /** The process basics the run keeps from the sandbox template's environment. */
-  readonly inherit: readonly string[];
-}
-
-/**
- * The sandbox leases, one an authority (the owner's own work's, each outside client's),
- * owner-internal (G4): no door reaches them. A run's admission opens its authority's, or
- * joins the live one (`runs.ts`): there is no other way to open one, so no path skips
- * admission. What is left here is what slice S's sandbox Worker reports and the tests take
- * through `Internals.sandbox`. Each call is one unit of the write gate, and refused unless
- * the owner is admitted for its class, as a door's binding check refuses.
- */
-export interface SandboxLeases {
-  /** Renew it (the runner's heartbeat; each event batch renews it too). */
-  renew(request: { lease_id: string; epoch: number }): Promise<Lease>;
-  /**
-   * Give it back: both tokens refused from this unit on, its streams ended, and every run
-   * still live under it settled `unknown` (its runner is gone with it).
-   */
-  close(request: { lease_id: string; epoch: number }): Promise<{ released: boolean }>;
-  /** The owner's egress policy, its generation, and `run`'s environment. */
-  config(run: SandboxRun): Promise<SandboxConfig>;
-}
-
 /** What the launcher reaches of the object: its stores, its gate, and its own reads. */
 export type LaunchState = Pick<OwnerState, "env" | "storage" | "owner" | "files" | "connections"
   | "grants" | "policy" | "usage" | "egress" | "relay" | "ledger" | "notices" | "signins"
@@ -152,10 +117,6 @@ export class Launcher implements RunHost {
 
   tier(): TierName {
     return this.#o.tier();
-  }
-
-  sandboxBound(): boolean {
-    return this.#o.env.SANDBOX !== undefined;
   }
 
   reachable(): readonly UsableSource[] {
@@ -314,13 +275,9 @@ export class Launcher implements RunHost {
     if (admitted.existing) {
       return admitted.run;
     }
-    const sandbox = this.#o.env.SANDBOX;
     let answer: { started: true } | { started: false; code: string } | null = null;
     try {
-      if (sandbox === undefined) {
-        throw new Error(SANDBOX_ABSENT);  // admission refused this already
-      }
-      answer = started(await sandbox.start(this.#o.owner(), {
+      answer = started(await this.#o.env.SANDBOX.start(this.#o.owner(), {
         run: admitted.run, agent, conversation: admitted.conversation,
         engine: admitted.engine, credential: admitted.credential, model: admitted.model,
         session_id: admitted.session_id, prompt: admitted.prompt, unattended,
@@ -394,13 +351,8 @@ export class Launcher implements RunHost {
 
   /** Stop a run's CLI through the sandbox; a failure is logged, the run settles regardless. */
   async cancel(run: Pick<LiveRun, "run" | "lease_id">): Promise<void> {
-    const sandbox = this.#o.env.SANDBOX;
-    if (sandbox === undefined) {
-      console.error(`${SANDBOX_ABSENT}: run ${run.run}'s CLI could not be stopped`);
-      return;
-    }
     try {
-      await sandbox.cancel(this.#o.owner(), { run: run.run, lease_id: run.lease_id });
+      await this.#o.env.SANDBOX.cancel(this.#o.owner(), { run: run.run, lease_id: run.lease_id });
     } catch {
       console.error("a run's cancel did not reach the sandbox");
     }
@@ -413,12 +365,8 @@ export class Launcher implements RunHost {
    * for a pause that did not land.
    */
   async #sandboxRelease(leaseId: string): Promise<void> {
-    const sandbox = this.#o.env.SANDBOX;
-    if (sandbox === undefined) {
-      return;  // no sandbox bound, so no lease was opened under one
-    }
     try {
-      await sandbox.release(this.#o.owner(), { lease_id: leaseId });
+      await this.#o.env.SANDBOX.release(this.#o.owner(), { lease_id: leaseId });
     } catch {
       console.error("a lease's release did not reach the sandbox; its idle reap pauses it");
     }
@@ -499,8 +447,7 @@ export class Launcher implements RunHost {
       return now;
     }
     const times = [this.runs.next(now, admitted),
-                   ...(admitted && this.sandboxBound()
-                     ? this.#behind(now).map((each) => each.due) : [])]
+                   ...(admitted ? this.#behind(now).map((each) => each.due) : [])]
       .filter((time): time is number => time !== null);
     return times.length === 0 ? null : Math.min(...times);
   }
@@ -793,10 +740,7 @@ export class Launcher implements RunHost {
    * records nothing: the send's retry clock stands.
    */
   async reapply(): Promise<void> {
-    if (!this.sandboxBound()) {
-      return;  // no sandbox bound, so no lease was opened under one
-    }
-    const sandbox = this.#o.env.SANDBOX!;
+    const sandbox = this.#o.env.SANDBOX;
     const sent = await this.#o.door(() => {
       if (this.#o.unadmitted() !== null) {
         return [];
@@ -836,22 +780,12 @@ export class Launcher implements RunHost {
    * its credential and an API-key run's connection, with the owner's egress policy and its
    * generation: refused (`invalid`) when the record does not run on that credential.
    */
-  #runConfig(run: SandboxRun): SandboxConfig {
-    if (typeof run !== "object" || run === null || typeof run.engine !== "string"
-        || typeof run.run !== "string" || !CREDENTIAL_KINDS.includes(run.credential)
-        || (run.credential === "api_key") !== (typeof run.connection === "string")) {
-      throw new Refusal("invalid",
-                        "a sandbox run names itself, its engine, its credential and, on an " +
-                        "API key, its connection");
-    }
+  #runConfig(run: SandboxRun): RunConfig {
     let engine;
     try {
       engine = runEnv(bundledSources(), run.engine, run.credential);
     } catch (error) {
       throw error instanceof SourceRecordError ? new Refusal("run_config_invalid", error.message) : error;
-    }
-    if (typeof run.secret !== "string" || !HEX64.test(run.secret)) {
-      throw new Refusal("invalid", "a sandbox run carries its own secret, 64 hex");
     }
     const keyed = sandboxEnv(this.#o.connections.egressible(),
                              () => randomHex(16),
@@ -865,34 +799,5 @@ export class Launcher implements RunHost {
     const { document } = this.#o.policy.read();
     return { generation: this.#o.policy.egressGeneration(), egress: document.egress,
              env: Object.freeze({ ...engine.env, ...keyed }), inherit: engine.inherit };
-  }
-
-  /** The sandbox's lease API, which the sandbox slice reaches in the object (`SandboxLeases`). */
-  sandboxLeases(): SandboxLeases {
-    const leases: SandboxLeases = {
-      renew: (request) => this.#o.door(() => {
-        this.#o.admitted("work");
-        return this.#o.files.leaseRenew(request.lease_id, request.epoch);
-      }),
-      close: (request) => this.#o.door(() => {
-        this.#o.admitted("reduce");
-        const { released } = this.#o.files.leaseRelease(request.lease_id, request.epoch);
-        if (released) {
-          this.#o.egress.end("lease", (live) => live.lease === request.lease_id);
-        }
-        // Its runs go with it: their runner is gone, so each is settled `unknown`.
-        for (const run of this.runs.liveRuns()) {
-          if (run.lease_id === request.lease_id && run.epoch === request.epoch) {
-            this.runs.settle(run.run, "unknown", "lease_closed", null, clock());
-          }
-        }
-        return { released };
-      }),
-      config: (run) => this.#o.door(() => {
-        this.#o.admitted("read");
-        return this.#runConfig(run);
-      }),
-    };
-    return Object.freeze(leases);
   }
 }

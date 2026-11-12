@@ -327,7 +327,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Riding the PR that next touches each file (d3 §O8): `files/src/cipher.ts`'s SSE-C premise
     (lane R's cipher PR); ADR-032's `HOOKS`, a dated pointer.
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 also deletes `SandboxLeases` whole (d3 §O4) and takes T0's nits (d3 §M6).
+  (d3 §K1, §K2). T1 is four PRs, each green on its own:
+  - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
+    required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
+  - [ ] T1b: the ceilings and defaults: every `limits` parameter and defaulted constructor
+    parameter, `Internals.ledgerLimits` and `codemode`, the archive's tests at production
+    ceilings (`b23_research.md` question 3).
+  - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
+    `ERASURES` required with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
+    erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
+    rig admitting by the door, and the doors' entry with no third constructor argument.
+  - [ ] T1d: the owner memory probe driven through the doors.
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and

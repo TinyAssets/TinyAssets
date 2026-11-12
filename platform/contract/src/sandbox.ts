@@ -52,7 +52,7 @@ export interface NetworkPlan {
   readonly note: string;
 }
 
-/** A run's environment, as the lease's config gives it (`SandboxLeases.config`). */
+/** A run's environment, as the owner's object makes it for the run's start. */
 export interface RunConfig {
   readonly generation: number;
   readonly egress: { readonly mode: string;
