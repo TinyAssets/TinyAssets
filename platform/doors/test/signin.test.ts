@@ -8,14 +8,20 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
+import {
+  EGRESS_HOST, EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER,
+} from "../../contract/src/egress";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import type { OwnerDO } from "./entry";
 import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } from "./support";
 import type { SandboxSignin } from "../../contract/src/sandbox";
-import { egressTokenOf } from "../../owner/test/runs-support";
 
 let restore: () => void = () => undefined;
+
+/** The lease's egress token: only the sign-in's network's transform carries it. */
+function egressTokenOf(signin: SandboxSignin): string {
+  return signin.network!.network.rules[EGRESS_HOST]![0]!.transform.headers[SANDBOX_HEADER]!;
+}
 
 /** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
 const CLAUDE_PAGE = "https://claude.com/cai/oauth/authorize?code=true&client_id=" +
