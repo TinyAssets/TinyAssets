@@ -114,7 +114,8 @@ def test_a_skipped_removed_or_deleted_platform_test_is_caught(repo, edit, what) 
 def test_a_case_removed_from_any_file_a_runner_reads_is_caught(repo, path) -> None:
     root, base = repo
     base = _commit(root, {path: _TEST})
-    failures = _failures(root, base, {path: _TEST[:_TEST.index('  it("refuses a string"')] + "});\n"})
+    failures = _failures(
+        root, base, {path: _TEST[:_TEST.index('  it("refuses a string"')] + "});\n"})
     assert len(failures) == 1 and path in failures[0] and "cases removed (2 -> 1)" in failures[0]
 
 
