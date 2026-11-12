@@ -488,5 +488,4 @@ Each source's redirect URI is its own callback, as the doors derive it (`connect
 
 | Source | Redirect URI to register | How the provider matches it |
 |---|---|---|
-| `chatgpt` (parked) | `https://tinyassets.io/oauth/connect/callback/chatgpt` | exactly |
 | `openrouter_user_models_v1` | nothing to register | any callback |

@@ -88,7 +88,6 @@ const STATE = /^[A-Za-z0-9_-]{43}$/;
 const CODE = /^[\x21-\x7e]{1,2048}$/;
 /** The authorization response's parameters the callback reads, each at most once. */
 const RESPONSE_PARAMS: readonly string[] = Object.freeze(["state", "code", "iss", "error"]);
-const TOO_EARLY = "the source is not connectable yet";
 const MIXED_UP = "the authorization came back on another source's callback";
 
 function json(status: number, body: unknown, headers: HeadersInit = {}): Response {
@@ -108,7 +107,7 @@ function fields(body: Record<string, unknown>, required: readonly string[],
   return body;
 }
 
-/** The record for `source`, served by `method`; refused when it is not, or not yet. */
+/** The record for `source`, served by `method`; refused when it is not. */
 function connectable(sources: Sources, source: unknown, method: ConnectMethod): SourceRecord {
   const record = typeof source === "string" ? sources.get(source) : undefined;
   if (record === undefined) {
@@ -116,9 +115,6 @@ function connectable(sources: Sources, source: unknown, method: ConnectMethod): 
   }
   if (!record.connect.includes(method)) {
     throw new ConnectRefused(400, `this model source does not connect by ${method}`);
-  }
-  if (record.unwired !== undefined) {
-    throw new ConnectRefused(501, `${TOO_EARLY}: ${record.unwired}`);
   }
   return record;
 }

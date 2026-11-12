@@ -9,8 +9,7 @@
  * - `api_key`: a pasted key, sealed by the gateway (`doors/src/connect.ts`).
  * - `oauth`: an authorization-code flow with PKCE, its code exchanged by the gateway:
  *   `rfc6749` (RFC 6749 and 7636, tokens) or `pkce_user_key_v1` (the Python's protocol,
- *   OpenRouter's: the code buys an API key). A record marked `unwired` names why it is
- *   not served yet, and every connect of it is refused with that reason.
+ *   OpenRouter's: the code buys an API key).
  * - `cli`: an engine (ADR-033 decision 2, ADR-034 decisions 1 and 5): a provider's own
  *   unmodified command-line agent, run whole in the owner's sandbox, never a backend of
  *   ours, so it has no single-inference `invoke`. It never enters the gateway, so it names
@@ -257,8 +256,6 @@ export interface SourceRecord {
   readonly help_url?: string;
   readonly suggested: boolean;
   readonly connect: readonly ConnectMethod[];
-  /** Why every connect of this source is refused for now; absent when it is served. */
-  readonly unwired?: string;
   /** A record the platform does not curate; absent for the platform's own. */
   readonly curated?: false;
   /** What the gateway seals with the secret: every source but a CLI's. */
