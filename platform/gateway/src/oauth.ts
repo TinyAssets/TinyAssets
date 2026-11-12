@@ -6,13 +6,9 @@
  * - `exchange`: the authorization-code grant with PKCE (RFC 6749 §4.1.3, RFC 7636 §4.5),
  *   with the RFC 8707 resource when the source names one, sealed at once; or, for a
  *   key-exchange source (OpenRouter's PKCE flow), the API key its code buys.
- * - `refresh`: a source whose record says `refresh_with: "provider"` refreshes through
- *   pi-ai's own OAuth for its provider (Sign in with ChatGPT: pi-ai's
- *   `openaiChatGPTOAuth.refresh`, which keeps OpenAI's rotation rules), so that provider
- *   code stays in the library; any other source uses the generic refresh-token grant
- *   (RFC 6749 §6). The result is resealed at the next version, which the owner object
- *   stores by compare-and-swap under its refresh lease, so a rotating refresh token is
- *   used once.
+ * - `refresh`: the refresh-token grant (RFC 6749 §6), resealed at the next version, which
+ *   the owner object stores by compare-and-swap under its refresh lease, so a rotating
+ *   refresh token is used once.
  * - `revokeAtProvider`: RFC 7009 token revocation of the refresh token (which revokes its
  *   access tokens, §2.1), or of the access token when there is none.
  *
@@ -21,21 +17,17 @@
  * nothing from it reaches an error (`failure.ts`).
  */
 import { utf8Decoder } from "../../contract/src/text";
-import type { FetchFunction, OAuthCredential } from "@earendil-works/pi-ai";
-import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
-
-import { type Catalog, providerFor } from "./catalog";
 import { type Credential, type OAuthGrant } from "./credential";
 import { object } from "../../contract/src/checks";
 import {
   keyExchangeSource, type OAuthClient, scope, secret, source, type Source,
 } from "../../contract/src/egress-scope";
-import { nativeFetch, within } from "./egress";
+import { nativeFetch } from "./egress";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 import type { Exchanged, Refreshed, Revoked } from "../../contract/src/gateway";
 import { type Binding, type KeyringEnv, open, reseal, seal } from "./keyring";
 
-/** How long one token-endpoint call may take (pi-ai's own refresh bound). */
+/** How long one token-endpoint call may take. */
 const TOKEN_DEADLINE_MS = 15 * 1000;
 
 const CODE = /^[\x21-\x7e]{1,2048}$/;
@@ -252,72 +244,18 @@ async function keyExchange(env: KeyringEnv, bound: Binding, grant: unknown,
   return Object.freeze({ ...sealed, expires_at: null });
 }
 
-/** A fetch that sends only `POST` to `endpoint`, and never follows a redirect. */
-export function tokenGuard(endpoint: string): FetchFunction {
-  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const request = new Request(input, init);
-    if (request.method !== "POST" || request.url !== endpoint) {
-      throw new Refusal("endpoint_refused");
-    }
-    return nativeFetch(request, { redirect: "manual" });
-  };
-}
-
-/** pi-ai's own refresh for the credential's provider (`refresh_with: "provider"`). */
-async function providerRefresh(catalog: Catalog, credential: Extract<Credential, { kind: "oauth2" }>):
-    Promise<TokenAnswer> {
-  // Its endpoint is the provider's own (`PROVIDER_REFRESH`): `open` checked the opened grant.
-  const endpoint = credential.oauth.token_endpoint;
-  const auth = providerFor(catalog, credential.upstream).auth.oauth;
-  const refresh = credential.oauth.refresh;
-  if (auth === undefined || refresh === undefined) {
-    throw new Refusal("not_refreshable");
-  }
-  // pi-ai loads each provider's OAuth flow through an import a bundler cannot follow;
-  // this registers the statically bundled flows instead. Each call registers the same
-  // fixed table of pi-ai's flows: no owner's data is kept by it.
-  registerBunOAuthFlows();
-  const current: OAuthCredential = {
-    type: "oauth", access: credential.oauth.access, refresh,
-    expires: credential.oauth.expires_at ?? 0, clientId: credential.oauth.client_id,
-    ...(credential.oauth.scope === undefined ? {} : { scopes: credential.oauth.scope.split(" ") }),
-  };
-  let next: OAuthCredential;
-  try {
-    // pi-ai's flow posts with the global fetch: inside this scope it reaches only the
-    // sealed token endpoint, and never follows a redirect.
-    next = await within(tokenGuard(endpoint),
-                        () => auth.refresh(current, AbortSignal.timeout(TOKEN_DEADLINE_MS)));
-  } catch {
-    // pi-ai's message quotes the provider's body; only the fixed code goes on.
-    throw new Refusal("oauth_rejected");
-  }
-  if (!sealable(secret, next.access) || !sealable(secret, next.refresh)
-      || typeof next.expires !== "number" || !Number.isFinite(next.expires)) {
-    throw new Refusal("oauth_malformed");
-  }
-  const scopes = next["scopes"];
-  return {
-    access: next.access, refresh: next.refresh, expires_at: Math.floor(next.expires),
-    ...(Array.isArray(scopes) && scopes.every((each) => typeof each === "string")
-      ? { scope: scopes.join(" ") } : {}),
-  };
-}
-
 /**
  * Refreshes an OAuth credential and reseals it at `bound.version + 1`. The owner object
  * holds the refresh lease, so a rotating refresh token is sent once.
  */
-export async function refresh(env: KeyringEnv, bound: Binding, blob: unknown,
-                              catalog: Catalog): Promise<Refreshed> {
+export async function refresh(env: KeyringEnv, bound: Binding,
+                              blob: unknown): Promise<Refreshed> {
   const { credential } = await open(env, bound, blob);
   if (credential.kind !== "oauth2" || credential.oauth.refresh === undefined) {
     throw new Refusal("not_refreshable");
   }
-  const answer = credential.oauth.refresh_with === "provider"
-    ? await providerRefresh(catalog, credential)
-    : await token(credential.oauth, { grant_type: "refresh_token",
-                                      refresh_token: credential.oauth.refresh });
+  const answer = await token(credential.oauth, { grant_type: "refresh_token",
+                                                  refresh_token: credential.oauth.refresh });
   // RFC 6749 §6: a server that issues no new refresh token keeps the old one valid.
   const next: OAuthGrant = {
     ...credential.oauth, ...answer,

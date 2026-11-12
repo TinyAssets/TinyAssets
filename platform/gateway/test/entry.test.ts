@@ -138,12 +138,12 @@ describe("the gateway Worker", () => {
     const exchanged = await connect.exchange("alice", "c1", 1, {
       code: "good-code", verifier: "v".repeat(43), redirect_uri: "https://tinyassets.io/cb",
     }, { ...OPENAI, oauth: { client_id: "client-1", client_auth: { method: "none" },
-                             token_endpoint: "https://auth.test/token", refresh_with: "rfc6749" } });
+                             token_endpoint: "https://auth.test/token" } });
     expect(exchanged.kid).toBe("k2");
     expect(await rejected(() => connect.exchange("alice", "c1", 1, {
       code: "bad", verifier: "v".repeat(43), redirect_uri: "https://tinyassets.io/cb",
     }, { ...OPENAI, oauth: { client_id: "client-1", client_auth: { method: "none" },
-                             token_endpoint: "https://auth.test/token", refresh_with: "rfc6749" } })))
+                             token_endpoint: "https://auth.test/token" } })))
       .toBe("oauth_invalid_grant");
   });
 

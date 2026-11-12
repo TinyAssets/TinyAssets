@@ -40,14 +40,14 @@ const records = files(SOURCES);
 const groq = records.get("groq") as Record<string, unknown>;
 const openrouter = records.get("openrouter_user_models_v1") as Record<string, unknown>;
 const openai = records.get("openai") as Record<string, unknown>;
-/** An RFC 6749 source, refreshed by pi-ai's own refresh: no bundled record is one. */
+/** An RFC 6749 source: no bundled record is one. */
 const rfc6749 = { ...openai, id: "test_oauth", display_name: "Test OAuth", connect: ["oauth"],
   engines: [], oauth: {
     protocol: "rfc6749",
     authorization_endpoint: "https://auth.openai.com/api/accounts/authorize",
     token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
     client_id: "dynamic_agent_client", client_auth: { method: "none" },
-    scope: "openid offline_access", refresh_with: "provider" } };
+    scope: "openid offline_access" } };
 const claude = records.get("claude-code") as Record<string, unknown>;
 const anthropic = records.get("anthropic") as Record<string, unknown>;
 const pi = records.get("pi") as Record<string, unknown>;
@@ -107,7 +107,7 @@ describe("the source records", () => {
       upstream: record.upstream, endpoints: record.endpoints,
       key_exchange: { endpoint: "https://openrouter.ai/api/v1/auth/keys" } });
     expect(sealedSource(sourceRecord(rfc6749), "oauth").oauth).toMatchObject({
-      client_auth: { method: "none" }, refresh_with: "provider",
+      client_auth: { method: "none" },
       token_endpoint: "https://auth.openai.com/api/accounts/oauth/token" });
     expect(() => sealedSource(sourceRecord(groq), "oauth")).toThrow(SourceRecordError);
     expect(() => sealedSource(sourceRecord(rfc6749), "api_key")).toThrow(SourceRecordError);
@@ -858,10 +858,8 @@ describe("a record that does not fit", () => {
     ["a client secret in the data", { ...rfc6749, oauth: {
       ...(rfc6749["oauth"] as object),
       client_auth: { method: "client_secret_post", secret: "s" } } }],
-    ["the provider's refresh for another token endpoint", { ...rfc6749, oauth: {
-      ...(rfc6749["oauth"] as object), token_endpoint: "https://auth.test/token" } }],
-    ["a refresh that is neither", { ...rfc6749, oauth: {
-      ...(rfc6749["oauth"] as object), refresh_with: "magic" } }],
+    ["a refresh_with, which no record takes", { ...rfc6749, oauth: {
+      ...(rfc6749["oauth"] as object), refresh_with: "rfc6749" } }],
     ["a scope with a newline", { ...rfc6749, oauth: {
       ...(rfc6749["oauth"] as object), scope: "openid\nprofile" } }],
   ])("fails loudly: %s", (_what, record) => {

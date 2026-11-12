@@ -37,14 +37,14 @@ export type Credential =
   | (Common & { readonly kind: "api_key"; readonly secret: string })
   | (Common & { readonly kind: "oauth2"; readonly oauth: OAuthGrant });
 
-function grant(value: unknown, sealed: Upstream): OAuthGrant {
+function grant(value: unknown): OAuthGrant {
   const fields = shape(value, [...CLIENT_KEYS, "access", "expires_at"],
                        [...CLIENT_OPTIONAL, "refresh", "scope"]);
   const expires = fields["expires_at"];
   const refresh = fields["refresh"];
   const granted = fields["scope"];
   return Object.freeze({
-    ...oauthClient(fields, sealed),
+    ...oauthClient(fields),
     access: secret(fields["access"]),
     expires_at: expires === null ? null : count(expires, 0),
     ...(refresh === undefined ? {} : { refresh: secret(refresh) }),
@@ -67,7 +67,7 @@ export function credential(value: unknown): Credential {
       return Object.freeze({ ...common, kind: "api_key", secret: secret(fields["secret"]) });
     }
     if (fields["kind"] === "oauth2" && fields["secret"] === undefined) {
-      return Object.freeze({ ...common, kind: "oauth2", oauth: grant(fields["oauth"], common.upstream) });
+      return Object.freeze({ ...common, kind: "oauth2", oauth: grant(fields["oauth"]) });
     }
   } catch {
     // Falls through to the one refusal below.

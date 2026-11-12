@@ -43,7 +43,7 @@ export function text(value: unknown, pattern: RegExp, max = 1024): string {
 }
 
 export function count(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): number {
-  if (!whole(value, min, max)) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
     throw new Refusal("invalid_source");
   }
   return value;
