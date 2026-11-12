@@ -147,6 +147,19 @@ jobs:
           done
           [ "${#missing[@]}" -eq 0 ] \
             || refuse "mode ${MODE} needs the secret(s) ${missing[*]}, which the environment does not hold"
+          # A credential is one line with no space and no control character. One pasted with a
+          # trailing CR or space, or holding a line break, is refused here by its name, before
+          # any host is made or reached (window.sh's take refuses it again on the host).
+          # DO_SSH_KEY is a key file's lines (ssh-keygen reads it before any host is made) and
+          # IMPORT_EXCLUSION_LIST a list's (each line trimmed, each name held to the backup's
+          # owners), so neither is one line.
+          shaped=()
+          for name in "${needed[@]}"; do
+            case "${name}" in DO_SSH_KEY|IMPORT_EXCLUSION_LIST) continue ;; esac
+            [[ "${!name}" != *[[:space:][:cntrl:]]* ]] || shaped+=("${name}")
+          done
+          [ "${#shaped[@]}" -eq 0 ] \
+            || refuse "mode ${MODE}'s credential(s) ${shaped[*]} hold a space or a control character"
           [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ] || [[ "${CLOUDFLARE_ACCOUNT_ID}" =~ ^[0-9a-f]{32}$ ]] \
             || refuse "the repository variable CLOUDFLARE_ACCOUNT_ID is no 32-hex account id"
           echo "mode ${MODE}, run ${RUN_ID}, $([ "${REHEARSAL}" = true ] && echo rehearsal || echo 'the real window')"
