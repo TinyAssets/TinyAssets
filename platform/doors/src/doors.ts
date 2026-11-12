@@ -41,9 +41,10 @@ import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
 import { bindMcp, withTiers } from "./binder";
 import {
-  AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, type DoorsEnv, E2B_HOOK_PATH, INBOUND_PATH,
+  AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, E2B_HOOK_PATH, INBOUND_PATH,
   MCP_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK_PATH, WEB_CLIENT, WEB_REDIRECT,
 } from "./config";
+import type { DoorsEnv } from "./env";
 import { EGRESS_ORIGIN } from "../../contract/src/egress";
 import { outsideRead } from "./control";
 import { serveInbound } from "./inbound";

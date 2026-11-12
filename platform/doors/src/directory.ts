@@ -24,7 +24,7 @@
 import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
 import { principal } from "../../contract/src/text";
 
-import type { DoorsEnv } from "./config";
+import type { DoorsEnv } from "./env";
 
 const KEY_ID = HEX16;
 

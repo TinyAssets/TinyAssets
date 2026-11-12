@@ -302,7 +302,7 @@ Each joins the lane named. None blocks its u3 PR.
      - **P-H1** (`okf-watch apply` runs only `bundle.mjs` and leaves the plugins stale, release-critical), with P-H2 and P-T2, goes to B9. `okf-watch apply` runs `npm run generate`, and the workflow adds `platform/plugins`.
    - B22's idle cut lives in `gateway/src/forward.ts` (`IDLE_CUT_MS`). Its only reader is the gateway, so that is the right home by B6. Logged.
    - B13's `/app` plus `/app/*` text is superseded by §J1 (`app*`).
-6. **Lane C's first PR adds §G14's tools row.** It keeps `vitest.config.ts` files, which import `ci/`, apart from build tools, which must not.
+6. **Lane C's first PR adds §G14's tools row.** It keeps `vitest.config.ts` files, which import `ci/`, apart from build tools, which must not. (C2 left it; C2b adds it, `ci/kit/layers.ts` "a workspace's tools".)
 7. **R4 (the `tasks.md` re-cut) goes next, before more lanes edit `tasks.md`.** The file is 244 KB, and each PR adds history lines to it.
 8. **The small items** (15, 16) ride the PR that next touches each file:
    - the `cipher.ts` SSE-C premise goes with lane R's cipher PR;
@@ -340,10 +340,17 @@ C2 built B9's `npm run generate` and its staleness guard, and stopped at the `En
 - A binding to another Worker is typed by its contract interface, through a table in the contract.
 - The output has no global augmentation.
 - The hand `Env` interfaces and `envProblems` are deleted.
-- `SANDBOX` and `ERASURES` become required in the same change.
+- `ERASURES` becomes required in the same change. `SANDBOX` already is: T1a made it required (#5515), so only `ERASURES` was still optional (`owner/src/owner-do.ts:282` at C2).
 
 **Not (b), one tsconfig per Worker:** it types bindings by implementation, which the layer table refuses.
 
 **Not (c), keeping wrangler's files excluded beside the hand interfaces:** it keeps hand copies held only by a name check, the hidden link the untangle removes.
 
 It builds as its own PR, **C2b**, right after C2.
+
+**As built (C2b):**
+- Each Worker's env is `<worker>/src/env.ts`. Wrangler's `worker-configuration.d.ts` is no longer committed.
+- The table is `contract/services.json`. It also types the queues' messages, with `OwnerMessage` (`contract/src/queues.ts`) for the ring and the erasure. The services guard reads the same table in place of its own list.
+- The guards that hold a binding to its one module now take the generated env as that binding's declaration (`ci/kit/sources.ts` `envFile`).
+- Every test env but the doors' `OWNER` is a `Pick` of its Worker's generated env. The doors' tests still call owner doors outside `OwnerDoors`, so that binding stays typed from `OwnerDO`, owed to T2 (B23).
+- `SANDBOX` is required, as T1a made it. `ERASURES` is required in the type because the config binds it; the code's check for an unbound one goes with T1c.

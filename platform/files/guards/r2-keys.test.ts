@@ -7,7 +7,7 @@
  *   `/c/`), and no text names the bucket (`"BLOBS"`);
  * - only the files Worker names the bucket or an R2 type, so the owner object holds no
  *   way to the bucket but the `FILES` service; the one other bucket is the cutover's import
- *   staging (`IMPORT_STAGING`), typed `R2Bucket` in the doors' env alone (`doors/src/config.ts`,
+ *   staging (`IMPORT_STAGING`), typed `R2Bucket` in the doors' env alone (`doors/src/env.ts`,
  *   its one binding there), whose keys are a run, an owner's key and a bundle's part names
  *   (hex and page numbers, `doors/src/import.ts`), never a path; deleted at the cutover;
  * - in the files Worker, the bucket is reached in exactly one form,
@@ -25,7 +25,7 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, reporter, workerSources } from "../../ci/kit/sources";
+import { envFile, parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const KEYS = "files/src/keys.ts";
 const FILES = "files/src/";
@@ -33,7 +33,7 @@ const CALLS: ReadonlySet<string> = new Set(["put", "get", "head", "delete"]);
 const KEY_TEXT = /^o\/|\/c\//;
 const R2_TYPE = /^R2[A-Z]/;
 /** The import window's staging bucket's type, named in the doors' env alone. */
-const STAGING_TYPE = Object.freeze({ file: "doors/src/config.ts", name: "R2Bucket" });
+const STAGING_TYPE = Object.freeze({ file: envFile("doors"), name: "R2Bucket" });
 /** The key builders `keys.ts` exports, the only calls a bucket key may be. */
 const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey", "segmentKey",
                                                 "manifestObjectKey", "listedManifest"]);
@@ -171,8 +171,8 @@ describe("r2-keys guard", () => {
     ["files/src/index.ts", "const key = ns + '/c/' + sha;"],
     ["owner/src/probe.ts", "type B = R2Bucket;"],
     ["doors/src/import.ts", "type B = R2Bucket;"],
-    ["doors/src/config.ts", "type B = R2ObjectBody;"],
-    ["doors/src/config.ts", "const BLOBS = 1;"],
+    [envFile("doors"), "type B = R2ObjectBody;"],
+    [envFile("doors"), "const BLOBS = 1;"],
     ["owner/src/probe.ts", "function f(env) { return env.BLOBS; }"],
     ["files/src/index.ts", "class S { async f(path) { await this.env.BLOBS.put(path, b); } }"],
     ["files/src/index.ts", "class S { async f() { await this.env.BLOBS.list({}); } }"],

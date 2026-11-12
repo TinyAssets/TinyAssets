@@ -41,9 +41,10 @@ import {
 
 import { refusedRegistrationLine, registrationRefusal } from "../../contract/src/apps";
 import {
-  ACCESS_TOKEN_TTL_S, dcrEnabled, type DoorsEnv, ISSUER, MCP_RESOURCE, REFRESH_TOKEN_TTL_S,
+  ACCESS_TOKEN_TTL_S, dcrEnabled, ISSUER, MCP_RESOURCE, REFRESH_TOKEN_TTL_S,
   SCOPES,
 } from "./config";
+import type { DoorsEnv } from "./env";
 import { APP_RESOURCE } from "../../contract/src/identity";
 
 const REGISTRATION_ENDPOINT = "/oauth/register";

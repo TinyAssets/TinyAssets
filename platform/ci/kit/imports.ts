@@ -41,8 +41,8 @@ import { KINDS, parse, reporter, scriptsIn, workerSources } from "./sources.ts";
 export interface BannedName {
   /** What a name must not match (its match is the `%s` of `says`). */
   readonly pattern: RegExp;
-  /** The one source that may name it, if any. */
-  readonly home?: string;
+  /** The sources that may name it, if any. */
+  readonly homes?: readonly string[];
   readonly says: string;
 }
 
@@ -97,7 +97,7 @@ export function isolationProblems(rules: ImportRules, path: string, source: stri
         || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) {
       for (const name of rules.banned) {
         const match = name.pattern.exec(node.text);
-        if (match !== null && path !== name.home) {
+        if (match !== null && !(name.homes ?? []).includes(path)) {
           report(node, name.says.replace("%s", match[0]));
         }
       }

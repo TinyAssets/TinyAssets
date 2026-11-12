@@ -8,7 +8,8 @@
 import type { ChainStep } from "../src/archive";
 import { OPEN_GATES } from "../../ci/fixtures";
 import type { Erasure } from "../src/erase";
-import { type Internals, type OwnerEnv, OwnerDO as ProductionOwnerDO } from "../src/owner-do";
+import type { OwnerEnv } from "../src/env";
+import { type Internals, OwnerDO as ProductionOwnerDO } from "../src/owner-do";
 import { RecordingErasures } from "./erasure-fake";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { LEDGER_LIMITS } from "../src/ledger";

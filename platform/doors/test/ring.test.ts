@@ -8,7 +8,7 @@ import { recorded } from "./support";
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { DoorsEnv } from "../src/config";
+import type { DoorsEnv } from "../src/env";
 import { ringQueue } from "../src/ring";
 
 function batch(bodies: unknown[]) {
