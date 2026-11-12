@@ -20,9 +20,10 @@
  * transient one.
  *
  * A `quiet` code is one a protocol that shows a code (the egress door, the inbound hooks)
- * does not show: it shows the refusal's message in its place. They are the two families'
- * own, `refused` and `invalid`, and a few the object tells apart inside. No code is ever
- * read from a message (`ci/guards/refusals.test.ts`).
+ * does not show: it shows the refusal's message in its place, or the egress door's
+ * `egress_refused`. They are the two families' own, `refused` and `invalid`, and a few the
+ * object tells apart inside. No code is ever read from a message
+ * (`ci/guards/refusals.test.ts`).
  */
 
 interface Entry {
@@ -146,9 +147,6 @@ export const REFUSALS = Object.freeze({
   sync_token_expired: Object.freeze({ status: 401 }),
   method_not_allowed: Object.freeze({ status: 405 }),
   events_too_large: Object.freeze({ status: 413 }),
-  // A model source whose record says it does not connect yet (`unwired`, which goes with
-  // that field, d3 §A8).
-  source_unwired: Object.freeze({ status: 501 }),
 
   // The egress door's (`egress.ts`), answered with the object's receipt.
   egress_token_missing: Object.freeze({ status: 401 }),
@@ -244,8 +242,9 @@ export function isGatewayCode(code: unknown): code is GatewayCode {
 }
 
 /**
- * Every code the egress door answers by its code (`doors/src/egress.ts`), its status from
+ * Every code the egress door refuses with itself (`doors/src/egress.ts`), its status from
  * `REFUSALS`: the object's, each with its receipt, then the door's own and its closed gate.
+ * A refusal the object throws keeps its own code (see the header).
  */
 export const EGRESS_CODES = Object.freeze([
   "egress_token_missing", "egress_token_unknown", "egress_token_expired",

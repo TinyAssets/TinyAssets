@@ -124,8 +124,6 @@ describe("the code list", () => {
     ["method_not_allowed", 405, undefined], ["events_too_large", 413, undefined],
     ["egress_gateway_failed", 502, undefined], ["egress_deadline", 504, undefined],
     ["egress_aborted", 503, undefined], ["egress_ended", 503, undefined],
-    // A connect to a source not connectable yet, as the connect door has answered it.
-    ["source_unwired", 501, undefined],
     // The files plane's.
     ["keyring_unavailable", 500, undefined], ["data_key_refused", 400, undefined],
     ["root_changed", 409, undefined],
