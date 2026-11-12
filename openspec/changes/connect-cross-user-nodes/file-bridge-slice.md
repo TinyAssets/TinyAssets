@@ -386,8 +386,8 @@ this bridge and not to be coupled to it.
 ## 6. Tasks (12, inside task 2.4 of this change)
 
 These twelve are the implementation of task **2.4** — deliberately *not* new
-checkboxes. `python scripts/openspec_flow.py check-change connect-cross-user-nodes
---provider claude` counts **all** checkboxes in the change against the 12-task
+checkboxes. `openspec_flow.py check-change connect-cross-user-nodes
+--provider claude` (since deleted) counts **all** checkboxes in the change against the 12-task
 ceiling, and the change is already at 12; adding F1–F12 as checkboxes returned
 `BLOCKED ... has 24 tasks`. So they live here and task 2.4 ticks when all twelve
 are done.

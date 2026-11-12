@@ -136,12 +136,15 @@ platform-LLM tests, so both lines are deleted and their numbers left as gaps
 
 **(2) Reconciler (C2).**
 
-- `.github/workflows/shape-reconcile.yml` runs on `schedule` every 4 hours,
+Deleted 2026-11-12 (process fix P3): no gate read its issue, and the
+`Registry row(s):` line it read is gone from pull requests. As built:
+
+- `shape-reconcile.yml` ran on `schedule` every 4 hours,
   on `workflow_dispatch`, and on PR open, sync or close.
 - Token permissions: `issues: write`, `pull-requests: read`,
   `contents: read`. The default token is enough, because it only edits an
   issue and triggers nothing (ADR-004).
-- It runs `scripts/shape_reconcile.py`. That script imports `SHAPES`, lists
+- It runs `shape_reconcile.py`. That script imports `SHAPES`, lists
   open PRs with their files and remote branches, and runs
   `openspec_flow.py audit --json`.
 

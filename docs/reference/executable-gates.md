@@ -3,12 +3,12 @@
 Builder done-check: touched tests and `ruff` (in `platform/`: `npm ci`,
 `npm run typecheck`, then `npm test -w <workspace>`); after a red CI job, rerun
 only its failing tests, then push. `python scripts/linux_oracle.py --ci`
-reproduces the old stack's CI in Linux (structural guards, four PR shards, six queue shards, the queue
-aggregate; digests match CI `affected-tests` and `select`): for a CI failure that
-will not reproduce, never per push.
+reproduces the old stack's CI in Linux: for a CI failure that will not
+reproduce, never per push.
 
 A receipt binds to the exact head (or its tree-diff). A trivial commit after
 review gets a one-round delta review, the reviewer told only that delta.
+Over 8 release-critical files (scope guard's count): look for a carried lineage.
 
 | Gate | Entry point |
 |---|---|

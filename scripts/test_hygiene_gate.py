@@ -25,6 +25,11 @@ scope guard) and fails when:
    <why>`` line. With that line it still fails if the PR is also a feature
    (adds lines outside tests/), unless the reason is ``retired``: retiring a
    behaviour legitimately deletes its code and its tests together.
+   A platform test (``platform/**/*.test.ts``, or a platform file that imports a
+   test runner) is read as text by
+   ``platform_tests.py``: a file that loses cases or expectations, or gains a
+   skip, needs the same line. Only the line: the platform's refactors move and
+   rewrite tests beside their code on purpose;
 2. a **new** skip/xfail that is not an environment guard lacks ``owner=`` and
    one of ``expires=YYYY-MM-DD`` (at most ``MAX_EXPIRY_DAYS`` out) or
    ``runs-in=<where it does run>``;
@@ -66,6 +71,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import platform_tests  # noqa: E402
 import test_inventory as inv  # noqa: E402  (one definition of a marker)
 import test_shape  # noqa: E402
 
@@ -106,6 +112,8 @@ class Delta:
     removals_only: bool = True
     new_tests: int = 0
     removed_tests: int = 0
+    #: Platform test files holding fewer cases or expectations, or more skips.
+    platform_tampering: list[Finding] = field(default_factory=list)
 
 
 # ---- git --------------------------------------------------------------------
@@ -595,6 +603,20 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
                     )
                 )
 
+    # A platform test file is compared whole, base against head (a rename is
+    # paired by git); a file that stops being a platform test loses everything.
+    for _s, old, new in changes:
+        old_text = _show(base, old, root) if platform_tests.is_platform_source(old) else None
+        new_text = _show(head, new, root) if platform_tests.is_platform_source(new) else None
+        old_test = platform_tests.is_platform_test(old, old_text)
+        new_test = platform_tests.is_platform_test(new, new_text)
+        if not (old_test or new_test):
+            continue
+        before = platform_tests.counts(old_text if old_test else None)
+        after = platform_tests.counts(new_text if new_test else None)
+        for what in platform_tests.tampering(before, after):
+            delta.platform_tampering.append(Finding((new if new_test else old) or "", what))
+
     before_ledger, after_ledger = (
         _ledger(_show(base, LEDGER, root)),
         _ledger(_show(head, LEDGER, root)),
@@ -633,6 +655,13 @@ def evaluate(delta: Delta, body: str) -> list[str]:
                 "its own PR. Only whole-test removals declared `Test-Removal: retired` may ride "
                 "with product code, and only when the PR also deletes the code they covered."
             )
+    if delta.platform_tampering and not REMOVAL_RE.search(body or ""):
+        listed = "; ".join(f"{f.where} ({f.what})" for f in delta.platform_tampering[:20])
+        failures.append(
+            f"this PR removes, skips or loosens existing platform tests: {listed}. Say why "
+            "with `Test-Removal: retired|consolidated|wrong -- <why>` in the PR body, so the "
+            "review reads it."
+        )
     for f in delta.unexplained_markers:
         failures.append(f"{f.where} {f.what}")
     for f in delta.expired:
@@ -665,10 +694,14 @@ def main(argv: list[str] | None = None) -> int:
         body = args.body.read_text(encoding="utf-8", errors="replace")
     print(
         f"tests added {delta.new_tests}, removed {delta.removed_tests}, "
-        f"tampering findings {len(delta.tampering)}, product lines added {delta.feature_lines}"
+        f"tampering findings {len(delta.tampering)}, product lines added {delta.feature_lines}, "
+        f"platform test findings {len(delta.platform_tampering)}"
     )
     for n in delta.notes:
         print(f"note (not blocking) {n.where}: {n.what}")
+    # Listed even when the body says why, so the review reads which files lost what.
+    for f in delta.platform_tampering:
+        print(f"platform test {f.where}: {f.what}")
     failures = evaluate(delta, body)
     for f in failures:
         print(f"FAIL {f}")
