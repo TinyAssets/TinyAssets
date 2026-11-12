@@ -7,7 +7,7 @@ import { defineConfig } from "vitest/config";
 import { keyring } from "../ci/fixtures";
 import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
-import { auxiliary, fake, main, once, pool } from "../ci/workers";
+import { auxiliary, fake, main, once, pool, workerConfig } from "../ci/workers";
 
 /** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), made fresh for each run. */
 const ROUTING_KEY = randomBytes(32).toString("base64url");
@@ -31,8 +31,10 @@ export default defineConfig({
       // tests' own way to them, to read back what they received. ROUTING_MAC_KEY, the
       // config's one secret, is the owner Worker's too: here both are this Worker. The
       // gateway, codemode and files Workers are each bundled from their own config, as a
-      // deploy bundles them. Every Worker here has every binding its config gives it
-      // (`main`, `auxiliary`), and the tests state each secret: none is read from the host.
+      // deploy bundles them. The doors' and each auxiliary Worker have every binding their
+      // configs give them (`main`, `auxiliary`), and the tests state each secret: none is
+      // read from the host. The owner object hosted in this script has only the two bindings
+      // stated below, until it runs as an auxiliary of its own (T2).
       // The import consumer's tests take a bundle the slice-2 builder made in Node
       // (`test/import-setup.ts`), deleted at the cutover with the importer.
       project("doors", "workerd", {
@@ -44,11 +46,13 @@ export default defineConfig({
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                           WORKOS_API_KEY: "test-client-secret",
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
-              // CODEMODE_VM and OWNER_FILES: the owner object's (in this script for the tests), to
-              // the real codemode and files Workers, as the owner config binds them: the owner's
-              // FILES is the files Worker's whole service, the doors' its upload entrypoint.
-              serviceBindings: { PROVIDERS: "fake-providers", CODEMODE_VM: "tinyassets-codemode",
-                                 OWNER_FILES: "tinyassets-files" },
+              // CODEMODE_VM and OWNER_FILES: the owner object's (in this script for the
+              // tests), to the real codemode and files Workers, as the owner config binds
+              // them: the owner's FILES is the files Worker's whole service, the doors' its
+              // upload entrypoint.
+              serviceBindings: { PROVIDERS: "fake-providers",
+                                 CODEMODE_VM: workerConfig(join(PLATFORM, "codemode")).name,
+                                 OWNER_FILES: workerConfig(join(PLATFORM, "files")).name },
               workers: [
                 auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: KEYRING },
                                                        outboundService: "fake-providers" }),

@@ -103,25 +103,6 @@ describe("the Worker kit", () => {
     expect(() => objectBindings(renamed)).toThrow(/x: migration v2 has renamed_classes/);
   });
 
-  it("gives an auxiliary Worker every var, KV namespace, queue producer and service its " +
-     "config declares, as wrangler gives a test's main Worker its own", () => {
-    for (const folder of workerFolders()) {
-      const raw = readWrangler(join(PLATFORM, folder)) as {
-        vars?: Record<string, unknown>; kv_namespaces?: { binding: string; id: string }[];
-        services?: { binding: string; service: string; entrypoint?: string }[];
-        queues?: { producers?: { binding: string; queue: string }[] } };
-      const own = configBindings(workerConfig(join(PLATFORM, folder)));
-      expect(own["bindings"] ?? {}, folder).toEqual(raw.vars ?? {});
-      expect(own["kvNamespaces"] ?? {}, folder).toEqual(Object.fromEntries(
-        (raw.kv_namespaces ?? []).map((kv) => [kv.binding, { id: kv.id }])));
-      expect(own["queueProducers"] ?? {}, folder).toEqual(Object.fromEntries(
-        (raw.queues?.producers ?? []).map((q) => [q.binding, { queueName: q.queue }])));
-      expect(own["serviceBindings"] ?? {}, folder).toEqual(Object.fromEntries(
-        (raw.services ?? []).map((s) => [s.binding, s.entrypoint === undefined
-          ? { name: s.service } : { name: s.service, entrypoint: s.entrypoint }])));
-    }
-  });
-
   it("merges a test's bindings into its config's by name, and keeps every other", () => {
     const config = { name: "x", compatibility_date: "2026-10-23",
                      vars: { A: "config", B: "config" },
@@ -148,29 +129,64 @@ describe("the Worker kit", () => {
       .toEqual({});
   });
 
-  it("builds a test pool's own Worker from its config, its every secret the test's to state",
-     () => {
+  it("builds a test pool's own Worker with every binding its config declares, a test's " +
+     "binding replacing the config's of its name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writeFileSync(join(dir, "wrangler.jsonc"), JSON.stringify({
+        name: "x", main: "src/a.ts", compatibility_date: "2026-10-23",
+        compatibility_flags: ["nodejs_compat"],
+        rules: [{ type: "Data", globs: ["**/x.bin"], fallthrough: false }],
+        vars: { A: "config", B: "config" },
+        secrets: { required: ["SECRET"] },
+        kv_namespaces: [{ binding: "K", id: "k-id" }],
+        services: [{ binding: "S", service: "s" }, { binding: "T", service: "t", entrypoint: "E" }],
+        queues: { producers: [{ binding: "Q", queue: "q" }],
+                  consumers: [{ queue: "in", max_batch_size: 1, dead_letter_queue: "dlq" }] },
+        r2_buckets: [{ binding: "R", bucket_name: "r" }],
+        durable_objects: { bindings: [{ name: "O", class_name: "Obj" }] },
+        migrations: [{ tag: "v1", new_sqlite_classes: ["Obj"] }],
+        assets: { directory: "./app", binding: "ASSETS", run_worker_first: true,
+                  html_handling: "none" },
+      }));
+      const built = main(dir, { bindings: { B: "test", SECRET: "stated" },
+                                serviceBindings: { S: "gate" }, outboundService: "fake" });
+      expect(built).toEqual({
+        main: join(dir, "src/a.ts"),
+        miniflare: {
+          rootPath: dir, compatibilityDate: "2026-10-23", compatibilityFlags: ["nodejs_compat"],
+          modulesRules: [{ type: "Data", include: ["**/x.bin"], fallthrough: false }],
+          bindings: { A: "config", B: "test", SECRET: "stated" },
+          kvNamespaces: { K: { id: "k-id" } },
+          serviceBindings: { S: "gate", T: { name: "t", entrypoint: "E" } },
+          queueProducers: { Q: { queueName: "q" } },
+          queueConsumers: { in: { maxBatchSize: 1, deadLetterQueue: "dlq" } },
+          r2Buckets: ["R"],
+          durableObjects: { O: { className: "Obj", useSQLite: true } },
+          assets: { directory: join(dir, "app"), binding: "ASSETS", run_worker_first: true,
+                    routerConfig: { has_user_worker: true,
+                                    invoke_user_worker_ahead_of_assets: true },
+                    assetConfig: { html_handling: "none", compatibility_date: "2026-10-23",
+                                   compatibility_flags: ["nodejs_compat"] } },
+          outboundService: "fake",
+        },
+      });
+      expect(main(dir, { bindings: { SECRET: "stated" } }, "./test/entry.ts").main)
+        .toBe("./test/entry.ts");
+      expect(() => main(dir, { bindings: { B: "test" } }))
+        .toThrow("x: a test states each secret its config requires, and SECRET is not stated");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses every Worker whose config requires a secret the test does not state", () => {
     for (const folder of workerFolders()) {
       const dir = join(PLATFORM, folder);
       const config = workerConfig(dir);
       const secrets = config.secrets?.required ?? [];
       const stated = Object.fromEntries(secrets.map((name) => [name, `test-${name}`]));
-      const built = main(dir, { bindings: stated });
-      expect(built.main, folder).toBe(join(dir, String(config.main)));
-      const options = built.miniflare as Record<string, unknown>;
-      expect(options["compatibilityDate"], folder).toBe(config.compatibility_date);
-      expect(options["bindings"] ?? {}, folder).toEqual({ ...config.vars, ...stated });
-      expect(options["modulesRules"], folder).toEqual(config.rules === undefined ? undefined
-        : config.rules.map((rule) => ({ type: rule.type, include: rule.globs,
-                                        ...(rule.fallthrough === undefined ? {}
-                                          : { fallthrough: rule.fallthrough }) })));
-      expect(Object.keys(options["queueConsumers"] ?? {}), folder)
-        .toEqual((config.queues?.consumers ?? []).map((consumer) => consumer["queue"]));
-      if (config.assets !== undefined) {
-        expect(options["assets"], folder).toMatchObject({
-          directory: join(dir, String(config.assets["directory"])),
-          binding: config.assets["binding"] });
-      }
+      expect(() => main(dir, { bindings: stated }), folder).not.toThrow();
       for (const name of secrets) {
         const short = Object.fromEntries(Object.entries(stated).filter(([key]) => key !== name));
         expect(() => main(dir, { bindings: short }), folder)
@@ -178,8 +194,6 @@ describe("the Worker kit", () => {
                    `${name} is not stated`);
       }
     }
-    expect(main(join(PLATFORM, "owner"), { bindings: { ROUTING_MAC_KEY: "k" } }, "./x.ts").main)
-      .toBe("./x.ts");
   });
 
   it("fails loudly on a config key, queue field or assets field the kit does not carry", () => {

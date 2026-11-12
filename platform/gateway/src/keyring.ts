@@ -32,7 +32,11 @@ import { type Credential, credential } from "./credential";
 import type { Resealed, Sealed } from "../../contract/src/gateway";
 import { Refusal } from "../../contract/src/refusal";
 
-/** The one secret this Worker holds, as its config declares it. */
+/**
+ * The one secret this Worker holds, as its config declares it (`secrets.required`). Typed
+ * optional only for the owner memory probe's one Env, which binds it in its gateway role
+ * alone (`owner/memory/egress-probe.ts`) until T3 moves that leg to `gateway/memory/`.
+ */
 export interface KeyringEnv {
   readonly GATEWAY_KEYRING?: unknown;
 }
