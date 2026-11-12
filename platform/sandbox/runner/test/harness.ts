@@ -391,6 +391,8 @@ export interface FakeCli {
   readonly owners?: readonly string[];
   /** A process left running after it exits (to be killed by uid). */
   readonly daemon?: boolean;
+  /** A child left running after it exits, in its process group, holding its output. */
+  readonly heir?: boolean;
   /** What `status_argv` prints and exits with. */
   readonly status?: { readonly out: string; readonly exit: number };
   /**
@@ -518,6 +520,9 @@ const done = () => {
   }
   if (plan.daemon) {
     spawn("/bin/sh", ["-c", "sleep 600"], { detached: true, stdio: "ignore" }).unref();
+  }
+  if (plan.heir) {
+    spawn("/bin/sh", ["-c", "exec sleep 600"], { stdio: ["ignore", "inherit", "ignore"] }).unref();
   }
   for (const line of plan.lines) {
     process.stdout.write((typeof line === "string" ? line : JSON.stringify(line)) + "\n");

@@ -5,15 +5,16 @@
  * process dead, or of another boot or an unknown one (a pid repeats after a reboot, which a
  * lock on disk outlives), by one taker alone (`takeOver`). A taker that cannot read its own
  * boot's id takes nothing and fails loudly. A wait sleeps, so the waiter's event loop goes
- * on (a run's heartbeats), at `FIRST_MS` and backing off to at most its caller's longest
- * sleep, and fails loudly past its bound.
+ * on (a run's heartbeats), at `FIRST_MS` and backing off to at most `MOST_MS`, and fails
+ * loudly past its bound.
  */
 import { randomBytes } from "node:crypto";
 import { closeSync, linkSync, lstatSync, openSync, readFileSync, rmSync,
          writeSync } from "node:fs";
 
-/** A wait's first sleep, and by default its longest: the runner's flush cadence, four times. */
+/** A wait's first sleep. */
 const FIRST_MS = 20;
+/** A wait's longest sleep: each doubles from `FIRST_MS` up to it. */
 const MOST_MS = 1_000;
 /**
  * The longest a takeover's claim stands: a taker holds it for a few calls, so one older is a
@@ -156,13 +157,12 @@ export function unlock(path: string): void {
 
 /**
  * `act` run holding the lock at `path`, waited for at most `waitMs` (unbounded: `Infinity`);
- * past it, `refused` is thrown. Each sleep doubles from `FIRST_MS` to `mostMs` (`FIRST_MS`
- * itself: a flat retry).
+ * past it, `refused` is thrown. Each sleep doubles from `FIRST_MS` to `MOST_MS`.
  */
 export async function withLock<T>(path: string, waitMs: number, refused: () => Error,
-                                  act: () => T | Promise<T>, mostMs = MOST_MS): Promise<T> {
+                                  act: () => T | Promise<T>): Promise<T> {
   const until = Date.now() + waitMs;
-  for (let wait = FIRST_MS; !tryLock(path); wait = Math.min(wait * 2, mostMs)) {
+  for (let wait = FIRST_MS; !tryLock(path); wait = Math.min(wait * 2, MOST_MS)) {
     if (Date.now() >= until) {
       throw refused();
     }

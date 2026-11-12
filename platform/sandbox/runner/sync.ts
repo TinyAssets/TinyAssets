@@ -19,7 +19,8 @@
  *   into the shared workspace, where every engine's user could reach them (review H-3): only
  *   a path under that engine's own `session_paths` is taken, into the sync agent's own
  *   directory, for the root runner to put in that engine's store.
- * - **Out:** each engine's sessions the runner staged first, in commits of their own; then
+ * - **Out:** each engine's sessions the root runner staged first (`stageSessions`, from the
+ *   engines' stores, which only root reads), in commits of their own; then
  *   every regular file under `/workspace` whose bytes differ from what was last synced
  *   (links never; the `.sessions` tree never, from the workspace; nothing the sync-ignore
  *   names, `SYNC_IGNORE`); a file of up to 4 KiB inline, a larger one through the files
@@ -46,6 +47,9 @@ import { isKept, keptPaths } from "./engine";
 import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeWrite,
          walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
+import { STATE_DIR } from "./protocol";
+import { readJson, RECORDS, STORE } from "./session";
+import { SYNC_HOME } from "./users";
 import { SYNC_HEADER } from "../../contract/src/egress";
 import { CLIENT_READ_ONLY, WORKSPACE } from "../../contract/src/paths";
 import {
@@ -65,6 +69,96 @@ const BODY_MAX = SYNC_BODY_MAX - 128;
 export const SESSIONS = `${WORKSPACE}/.sessions`;
 /** The mirror's rows a page of a removal scan or a reset reads at once. */
 const PAGE = 1000;
+
+/** The engines' sessions as last hashed, so an unchanged one is not read again a run. */
+export const SESSIONS_SEEN = `${STATE_DIR}/sessions-seen.json`;
+
+/** A session in an engine's store as last hashed: its identity, and a secret refusal's. */
+interface SeenSession {
+  readonly size: number;
+  readonly mtime_ms: number;
+  readonly sha256: string;
+  /** The digest of the secrets it was refused against, when it held one's bytes. */
+  readonly refused?: string;
+}
+
+/** The engines' sessions as last hashed (`SESSIONS_SEEN`), or none. */
+function readSeen(): Record<string, SeenSession> {
+  try {
+    return existsSync(SESSIONS_SEEN) ? readJson<Record<string, SeenSession>>(SESSIONS_SEEN) : {};
+  } catch {
+    return {};  // unreadable: every session is hashed again, nothing skipped
+  }
+}
+
+/**
+ * The root runner's step before a run's sync-out: every engine's session the owner's files
+ * do not hold as it is now (`known`: the sync mirror's hash of each path, read under the sync
+ * agent's lock) staged into the sync agent's `out/<run>`: this run's, and any an earlier
+ * sync-out left unsent (refused at a full storage, changed while sent, fenced, cut short), so
+ * each is offered again until it lands, whether or not a later run touches it. A session the
+ * files hold already is never copied. A session's hash is read again only when its size or
+ * change time moved since it was last hashed (or that time was too recent to trust,
+ * `RACY_MS`). One holding a secret's bytes is never staged; it is returned (as
+ * `{home}/<path>`) once, until it or the secrets change.
+ */
+export async function stageSessions(
+  authority: string, run: string, secrets: readonly string[],
+  known: (paths: readonly string[]) => Promise<Record<string, string | null>>,
+): Promise<string[]> {
+  const out = `${SYNC_HOME}/out/${run}`;
+  remove(out);
+  const seen = readSeen();
+  const next: Record<string, SeenSession> = {};
+  const against = sha256Hex(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
+  const sessions: { rec: SourceRecord; rel: string; path: string; digest: string }[] = [];
+  for (const each of RECORDS.values()) {
+    const store = `${STORE}/${each.id}`;
+    for (const rel of walkFiles(store)) {
+      if (!isKept(keptPaths(each).sessions, rel)) {
+        continue;
+      }
+      const path = `${SESSIONS}/${authority}/${each.id}/${rel}`;
+      const at = Date.now();
+      const stat = lstatSync(join(store, rel));
+      const was = seen[path];
+      let sha = was !== undefined && was.size === stat.size && was.mtime_ms === stat.mtimeMs
+        && stat.mtimeMs < at - RACY_MS ? was.sha256 : null;
+      if (sha === null) {
+        const bytes = safeRead(store, join(store, rel));
+        if (bytes === null) {
+          continue;
+        }
+        sha = sha256Hex(bytes);
+      }
+      next[path] = { size: stat.size, mtime_ms: stat.mtimeMs, sha256: sha,
+                     ...(was?.sha256 === sha && was.refused !== undefined
+                       ? { refused: was.refused } : {}) };
+      sessions.push({ rec: each, rel, digest: sha, path });
+    }
+  }
+  const held = sessions.length === 0 ? {} : await known(sessions.map((each) => each.path));
+  const refused: string[] = [];
+  for (const session of sessions) {
+    if (held[session.path] === session.digest || next[session.path]!.refused === against) {
+      continue;
+    }
+    const store = `${STORE}/${session.rec.id}`;
+    const bytes = safeRead(store, join(store, session.rel));
+    if (bytes === null) {
+      continue;
+    }
+    if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
+      refused.push(`{home}/${session.rel}`);
+      next[session.path] = { ...next[session.path]!, refused: against };
+      continue;
+    }
+    safeWrite(SYNC_HOME, join(out, session.rec.id, session.rel), bytes, 0o644, undefined,
+              0o755);
+  }
+  safeWrite(STATE_DIR, SESSIONS_SEEN, new TextEncoder().encode(JSON.stringify(next)), 0o600);
+  return refused;
+}
 
 export class SyncFenced extends Error {
   override readonly name = "SyncFenced";

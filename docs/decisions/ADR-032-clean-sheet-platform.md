@@ -173,7 +173,8 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    The same Worker serves pi's code mode sandbox to the owner through the `HOOKS`
    service binding (`CodemodeRemote`, P11's local part passed in workerd, H1,
    2026-11-01): a script's VM runs there, its tools stay in the owner's object,
-   each held to its caller's authority.
+   each held to its caller's authority. (2026-11-12: the Worker is
+   `tinyassets-codemode` and the binding `CODEMODE_VM`, untangle B25.)
 
    **pi is pinned to 1.4.x by its storage schema,** in one bundle with its store.
    Our own host calls pi's `Harness` API directly, so pi upgrades are not gated
