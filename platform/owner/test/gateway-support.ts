@@ -56,8 +56,8 @@ async function checked(record: Source): Promise<{ models: ModelRecord[]; egress:
                 verify_url: ANTHROPIC.upstream.verify_url! },
     endpoints: [...record.endpoints, ...ANTHROPIC.endpoints],
   };
-  const { blob } = await env.GATEWAY.seal("catalog", "c-catalog", 1, "sk-good", probe);
-  return await env.GATEWAY.verify("catalog", "c-catalog", 1, blob) as unknown as
+  const { blob } = await env.CONNECT.seal("catalog", "c-catalog", 1, "sk-good", probe);
+  return await env.CONNECT.verify("catalog", "c-catalog", 1, blob) as unknown as
     { models: ModelRecord[]; egress: EgressScope };
 }
 
@@ -89,7 +89,7 @@ export async function gated() {
     const prepared = await stub.connectionPrepare(session(), {
       source: record.upstream.provider, kind: "api_key", display_name: display,
       provider: record.upstream.provider, revocable: false });
-    const sealed = await env.GATEWAY.seal(name, prepared.connection, 1, key, record);
+    const sealed = await env.CONNECT.seal(name, prepared.connection, 1, key, record);
     const committed = await stub.connectionCommit(session(), {
       connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid,
       models: models ?? await catalog(record), egress: await scopeOf(record) });
@@ -102,7 +102,7 @@ export async function gated() {
       source: "openai-oauth", kind: "oauth2", display_name: "OAuth",
       provider: record.upstream.provider, revocable: true, redirect_uri: REDIRECT });
     const finished = await stub.flowFinish(session(), { state: prepared.flow!.state });
-    const exchanged = await env.GATEWAY.exchange(name, prepared.connection, 1, {
+    const exchanged = await env.CONNECT.exchange(name, prepared.connection, 1, {
       code: "good-code", verifier: finished.verifier, redirect_uri: finished.redirect_uri },
       record);
     await stub.connectionCommit(session(), {

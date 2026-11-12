@@ -27,7 +27,7 @@ import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { type Catalog, providerFor } from "./catalog";
 import { type Credential, type OAuthGrant } from "./credential";
 import {
-  keyExchangeSource, type OAuthClient, PROVIDER_REFRESH, source, type Source,
+  keyExchangeSource, type OAuthClient, source, type Source,
 } from "../../contract/src/egress-scope";
 import { nativeFetch, within } from "./egress";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
@@ -35,7 +35,7 @@ import type { Exchanged, Refreshed, Revoked } from "../../contract/src/gateway";
 import { type Binding, type KeyringEnv, open, reseal, seal } from "./keyring";
 
 /** How long one token-endpoint call may take (pi-ai's own refresh bound). */
-export const TOKEN_DEADLINE_MS = 15 * 1000;
+const TOKEN_DEADLINE_MS = 15 * 1000;
 
 const TOKEN = /^[\x21-\x7e]{1,16384}$/;
 const CODE = /^[\x21-\x7e]{1,2048}$/;
@@ -262,12 +262,8 @@ export function tokenGuard(endpoint: string): FetchFunction {
 /** pi-ai's own refresh for the credential's provider (`refresh_with: "provider"`). */
 async function providerRefresh(catalog: Catalog, credential: Extract<Credential, { kind: "oauth2" }>):
     Promise<TokenAnswer> {
+  // Its endpoint is the provider's own (`PROVIDER_REFRESH`): `open` checked the opened grant.
   const endpoint = credential.oauth.token_endpoint;
-  // Sealed only for Sign in with ChatGPT (`credential.ts`), and checked again here.
-  if (!Object.hasOwn(PROVIDER_REFRESH, credential.upstream.provider)
-      || PROVIDER_REFRESH[credential.upstream.provider] !== endpoint) {
-    throw new Refusal("not_refreshable");
-  }
   const auth = providerFor(catalog, credential.upstream).auth.oauth;
   const refresh = credential.oauth.refresh;
   if (auth === undefined || refresh === undefined) {
