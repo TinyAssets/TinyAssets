@@ -208,10 +208,11 @@ describe("putChunks", () => {
                             (_, i) => new Uint8Array(CHUNK_BYTES).fill(i + 1));
     expect(await put(space, ...full)).toEqual({ created: full.length });
     const hashes = await Promise.all(full.map(sha));
-    expect(await files().getChunks(space, hashes.map((sha256) => ({ sha256 })))).toEqual(full);
+    const whole = await files().getChunks(space, hashes.map((sha256) => ({ sha256 })));
+    expect(await Promise.all(whole.map(sha))).toEqual(hashes);
     expect(await files().getChunks(space, hashes.map((sha256) => ({
       sha256, offset: CHUNK_BYTES - 3, length: 3, verify: true }))))
-      .toEqual(full.map((chunk) => chunk.subarray(CHUNK_BYTES - 3)));
+      .toEqual(full.map((chunk) => chunk.slice(CHUNK_BYTES - 3)));
   });
 });
 
