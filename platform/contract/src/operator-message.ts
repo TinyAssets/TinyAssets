@@ -25,9 +25,11 @@
  * the acceptance record before it, under a lock (`deploy/platform.json` `bucket_locks`): the
  * channel's audit log.
  *
- * Pure: WebCrypto and the contract's own leaves, imported by path, so the kit runs it under
- * Node's type stripping as the doors bundle it.
+ * Pure: WebCrypto's HMAC, the contract's digest (`digest.ts`, the platform's one SHA-256) and its
+ * own leaves, imported by path, so the kit runs it under Node's type stripping as the doors
+ * bundle it.
  */
+import { sha256Hex } from "./digest.ts";
 import { base64url, fromBase64url, hex, KID, type Ring } from "./envelope.ts";
 import { HEX32 } from "./ids.ts";
 import { REFUSALS, type RefusalCode } from "./refusal.ts";
@@ -114,8 +116,7 @@ export function argsText(args: OperatorArgs): string {
 
 /** The SHA-256 of the args' canonical text, as hex: what the MAC and the acceptance name. */
 export async function argsDigest(args: OperatorArgs): Promise<string> {
-  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256",
-                                                       new TextEncoder().encode(argsText(args)))));
+  return sha256Hex(argsText(args));
 }
 
 /** A message in its exact shape, or a throw: no field more, none missing, each its grammar. */
