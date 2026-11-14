@@ -12,7 +12,7 @@
  * NFC-normalizes keys, and uploads are verbatim (Fact 9): two names a sandbox can create
  * would meet in one object. The r2-keys guard keeps every other source from building one.
  */
-import { objectPrefix } from "../../contract/src/files";
+import { objectPrefix, segmentSpans } from "../../contract/src/files";
 import { Refusal } from "../../contract/src/refusal";
 import { HEX16, HEX64 } from "../../contract/src/ids";
 import { MANIFEST_PARTS } from "../../contract/src/limits";
@@ -44,11 +44,10 @@ export function generation(gen: unknown): string {
 
 /** A log segment's span: whole seqs, `a` before `b`. */
 export function segmentSpan(a: unknown, b: unknown): [number, number] {
-  if (typeof a !== "number" || typeof b !== "number" || !Number.isSafeInteger(a)
-      || !Number.isSafeInteger(b) || a < 0 || b <= a) {
+  if (!segmentSpans(a, b)) {
     throw new Refusal("invalid", "a manifest segment spans whole seqs, its first before its last");
   }
-  return [a, b];
+  return [a, b as number];
 }
 
 /** A manifest part's number: 0 to `MANIFEST_PARTS - 1`. */

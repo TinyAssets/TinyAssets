@@ -93,13 +93,18 @@ function manifestObject(value: unknown): ManifestObject | null {
   return Object.freeze({ sha256: value["sha256"], size: value["size"] });
 }
 
+/** Whether `a` and `b` are a log segment's span: whole seqs, its first before its last. */
+export function segmentSpans(a: unknown, b: unknown): a is number {
+  return whole(a, 0) && whole(b, a + 1);
+}
+
 function manifestSegment(value: unknown): ManifestSegment | null {
-  if (!keyed(value, "a,b,sha256,size") || !whole(value["a"], 0)
-      || !whole(value["b"], (value["a"] as number) + 1)) {
+  if (!keyed(value, "a,b,sha256,size") || !segmentSpans(value["a"], value["b"])) {
     return null;
   }
   const object = manifestObject({ sha256: value["sha256"], size: value["size"] });
-  return object === null ? null : Object.freeze({ a: value["a"], b: value["b"], ...object });
+  return object === null ? null
+    : Object.freeze({ a: value["a"], b: value["b"] as number, ...object });
 }
 
 /**
