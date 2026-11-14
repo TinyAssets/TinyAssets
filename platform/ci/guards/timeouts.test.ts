@@ -115,8 +115,8 @@ describe("test timeouts", () => {
 
 describe("size classes", () => {
   it("are derived from the measurement, never under the small class", () => {
-    expect(derived({ slowest_ms: 100, test: "t" }, 4)).toBe(SMALL_MS);
-    expect(derived({ slowest_ms: 3_650, test: "t" }, 4)).toBe(15_000);
+    expect(derived({ slowest_ms: 100, test: "t", measured: "m" }, 4)).toBe(SMALL_MS);
+    expect(derived({ slowest_ms: 3_650, test: "t", measured: "m" }, 4)).toBe(15_000);
     expect(LARGE.timeout).toBe(derived(BUDGETS.large));
     expect(() => budget("nowhere/workerd")).toThrow(/no measured budget/);
   });

@@ -130,7 +130,7 @@ The research's design is adopted:
 ## I. Owed items gathered from the u3 reviews (2026-11-12)
 
 Each joins the lane named. None blocks its u3 PR.
-- **Lane S:** `sandbox/runner/sync-ignore.test.ts` is tagged `large` (it builds 12,000 real files and a git oracle) and the budgets are re-derived with `ci/budgets.mjs --write`. It timed out under load for four builders; its 38 s medium budget leaves no room.
+- **Lane S:** `sandbox/runner/sync-ignore.test.ts` is tagged `large` (it builds 12,000 real files and a git oracle) and the budgets are re-derived with `node ci/budgets.mjs`. It timed out under load for four builders; its 38 s medium budget leaves no room.
 - **B2 (refusals):** `owner/src/wakes.ts:326` catches a doorbell open failure without logging and settles the wake `unknown`, so the ring is dropped. Fact 8: it must surface.
 - **B22:** the gateway deadline before a provider's headers is untested since the test-only parameter went; it gets a test that drives real time or B23's fake time. `owner/src/egress.ts:71` still says "5-minute".
 - **After merge of u3-services:** the runner and probes bundles move (`2cf8172d`, `079923e2`), so the next deploy needs a pair check and the pin PR. No template build.

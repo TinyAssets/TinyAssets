@@ -2,16 +2,19 @@
  * The platform's CI legs, held where they survive the cutover (moved from the Python suite's
  * `tests/test_tests_workflow.py`, audit D4).
  *
- * `platform-tests` runs every workspace's tests as parallel legs and `platform-sizes` runs
- * the large ones, sharded (`ci/classes.ts`). A matrix job's result is every leg's, and
- * `required-tests` (the protected context) fails unless both, the owner app's browser job
- * and the `process` leg succeeded. Those four are the gate's lasting shape: the old stack's
- * Python jobs beside them leave at the cutover, and this guard does not read them. `process`
- * runs the process's own tests with plain pytest on the runner, with nothing of the old
- * stack installed. Held here: every workspace `platform/package.json` lists has its tests run
- * by a leg, its `test` script whole or each `npm run` part of it; every workspace with a
- * large test has its `test:sizes` run, every shard of it; the typecheck has its leg; no leg
- * is excluded, conditional or allowed to fail; and each leg runs exactly its command.
+ * `platform-tests` runs every workspace's Vitest tests as parallel legs, `platform-checks`
+ * the legs that are not Vitest runs (the typecheck, the owner's memory leg), and
+ * `platform-sizes` the large tests, sharded (`ci/classes.ts`). A matrix job's result is every
+ * leg's, and `required-tests` (the protected context) fails unless all three, the owner
+ * app's browser job and the `process` leg succeeded. Those five are the gate's lasting
+ * shape: the old stack's Python jobs beside them leave at the cutover, and this guard does
+ * not read them. `process` runs the process's own tests with plain pytest on the runner, with
+ * nothing of the old stack installed. Held here: every workspace `platform/package.json`
+ * lists has its tests run by a leg, its `test` script whole or each `npm run` part of it;
+ * every workspace with a large test has its `test:sizes` run, every shard of it; the
+ * typecheck has its leg; every Vitest leg uploads its report (the input of `ci/budgets.mjs`)
+ * and no other leg takes the reporters; no leg is excluded, conditional or allowed to fail;
+ * and each leg runs exactly its command.
  * Nothing may change how a command runs (round 8, R8-2): the jobs and their steps carry only
  * the keys listed below, no `shell` (`shell: true {0}` makes every leg a no-op that
  * succeeds), no `env` (`npm_config_script_shell` does the same through npm), no
@@ -38,20 +41,29 @@ const SETUP = [
             "cache-dependency-path": "platform/package-lock.json" } },
   { run: "npm ci" },
 ];
-/** Each leg job's steps. The sizes legs also upload the Vitest JSON report `ci/budgets.mjs`
- *  reads, once their tests have passed. */
+const COMMAND = "${{ matrix.command }}";
+/** A Vitest leg's reporters: Vitest's two on a GitHub runner, and its JSON report. */
+const REPORTERS = "--reporter=default --reporter=github-actions --reporter=json " +
+  "--outputFile.json=${{ runner.temp }}/report.json";
+/** The upload of a Vitest leg's JSON report, the input `ci/budgets.mjs` reads. */
+function upload(name: string): Data {
+  return { uses: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+           with: { name: name + "-${{ strategy.job-index }}",
+                   path: "${{ runner.temp }}/report.json", "if-no-files-found": "error",
+                   overwrite: true } };
+}
+/**
+ * Each leg job's steps. The Vitest legs also upload their JSON report, once their tests have
+ * passed. A sizes leg's command ends in its shard, after its own `--`; a medium leg's has
+ * none, so the step's `--` hands the reporters to its script.
+ */
 const STEPS: Record<string, Data[]> = {
-  "platform-tests": [...SETUP, { run: "${{ matrix.command }}" }],
-  "platform-sizes": [
-    ...SETUP,
-    { run: "${{ matrix.command }} --reporter=default --reporter=github-actions " +
-           "--reporter=json --outputFile.json=${{ runner.temp }}/report.json" },
-    { uses: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-      with: { name: "sizes-report-${{ strategy.job-index }}",
-              path: "${{ runner.temp }}/report.json", "if-no-files-found": "error",
-              overwrite: true } },
-  ],
+  "platform-tests": [...SETUP, { run: COMMAND + " -- " + REPORTERS }, upload("tests-report")],
+  "platform-checks": [...SETUP, { run: COMMAND }],
+  "platform-sizes": [...SETUP, { run: COMMAND + " " + REPORTERS }, upload("sizes-report")],
 };
+/** The jobs whose legs run, between them, every workspace's tests and the typecheck. */
+const LEG_JOBS = ["platform-tests", "platform-checks"];
 const JOB_KEYS = ["defaults", "name", "runs-on", "steps", "strategy", "timeout-minutes"];
 
 function tests(): Data {
@@ -101,15 +113,16 @@ export function legJobProblems(job: Data, name: string): string[] {
   return found;
 }
 
-function commands(job: Data): Set<string> {
-  return new Set((job?.strategy?.matrix?.include ?? []).map((leg: Data) => leg.command));
+function commands(...jobs: Data[]): Set<string> {
+  return new Set(jobs.flatMap((job) => (job?.strategy?.matrix?.include ?? [])
+    .map((leg: Data) => leg.command)));
 }
 
-/** Workspaces whose tests no `platform-tests` leg runs, or legs no workspace's tests are. */
-export function coverageProblems(job: Data): string[] {
+/** Workspaces whose tests no leg of `jobs`' leg jobs runs, or legs no workspace's tests are. */
+export function coverageProblems(jobs: Data): string[] {
   const found: string[] = [];
   const manifest = json("package.json");
-  const have = commands(job);
+  const have = commands(...LEG_JOBS.map((name) => jobs[name]));
   if (manifest.scripts.typecheck !== "tsc --noEmit" || !have.has("npm run typecheck")) {
     found.push("the typecheck has no leg");
   }
@@ -140,6 +153,36 @@ export function coverageProblems(job: Data): string[] {
   for (const command of have) {
     if (!covered.has(command)) {
       found.push(`a leg runs what no workspace's tests are: ${command}`);
+    }
+  }
+  return found;
+}
+
+/** A script that runs Vitest: `vitest run`, or the runner's root wrapper around it. */
+const VITEST = /\bvitest run\b|root-tests\.mjs/;
+
+/** The script an `npm run <script>[ -w <workspace>]` leg runs. */
+function script(command: string): string {
+  const match = /^npm run ([\w:-]+)(?: -w ([\w-]+))?$/.exec(command);
+  const manifest = match?.[2] === undefined ? "package.json" : `${match[2]}/package.json`;
+  return String(match === null ? "" : json(manifest).scripts[match[1]!]);
+}
+
+/**
+ * Every Vitest leg is in `platform-tests`, which uploads its report, and no other leg is
+ * there: a Vitest leg among the checks would measure nothing, and the reporters break any
+ * other leg.
+ */
+export function reportProblems(jobs: Data): string[] {
+  const found: string[] = [];
+  for (const command of commands(jobs["platform-tests"])) {
+    if (!VITEST.test(script(command))) {
+      found.push(`a platform-tests leg is not a Vitest run, so takes no reporter: ${command}`);
+    }
+  }
+  for (const command of commands(jobs["platform-checks"])) {
+    if (VITEST.test(script(command))) {
+      found.push(`a Vitest leg uploads no report from platform-checks: ${command}`);
     }
   }
   return found;
@@ -200,7 +243,7 @@ export function tagFilterProblems(): string[] {
   for (const ws of json("package.json").workspaces as string[]) {
     const scripts: Record<string, string> = json(`${ws}/package.json`).scripts;
     for (const [name, script] of Object.entries(scripts)) {
-      if (!/\bvitest run\b|root-tests\.mjs/.test(script)) {
+      if (!VITEST.test(script)) {
         continue;
       }
       const wanted = name === "test:sizes" ? "--tags-filter=large" : "--tags-filter=!large";
@@ -212,12 +255,14 @@ export function tagFilterProblems(): string[] {
   return found;
 }
 
-describe("platform-tests and platform-sizes", () => {
+describe("platform-tests, platform-checks and platform-sizes", () => {
   it("run every workspace's tests, whole, each leg its command alone", () => {
     const jobs = tests().jobs;
-    expect(legJobProblems(jobs["platform-tests"], "platform-tests")).toEqual([]);
-    expect(legJobProblems(jobs["platform-sizes"], "platform-sizes")).toEqual([]);
-    expect(coverageProblems(jobs["platform-tests"])).toEqual([]);
+    for (const name of [...LEG_JOBS, "platform-sizes"]) {
+      expect(legJobProblems(jobs[name], name)).toEqual([]);
+    }
+    expect(coverageProblems(jobs)).toEqual([]);
+    expect(reportProblems(jobs)).toEqual([]);
     expect(sizesProblems(jobs["platform-sizes"], workspacesWithLarge())).toEqual([]);
     expect(tagFilterProblems()).toEqual([]);
   });
@@ -225,7 +270,7 @@ describe("platform-tests and platform-sizes", () => {
   it("run the owner's workerd memory leg, with its control", () => {
     // ADR-037: the differential workerd check that each chunk-wise path is O(1) in its
     // data's size, with a control that must read as growing.
-    const legs = tests().jobs["platform-tests"].strategy.matrix.include;
+    const legs = tests().jobs["platform-checks"].strategy.matrix.include;
     expect(legs).toContainEqual({ leg: "memory", command: "npm run test:memory -w owner" });
     expect(json("owner/package.json").scripts["test:memory"]).toBe("node memory/leg.mjs");
     const leg = readFileSync(join(PLATFORM, "owner", "memory", "leg.mjs"), "utf8");
@@ -248,7 +293,12 @@ describe("platform-tests and platform-sizes", () => {
       }
     }
   };
-  // The reviewer's mutations (round 8), each a job that must fail.
+  const move = (name: string, to: string): ((jobs: Data) => void) => (jobs) => {
+    const from = LEG_JOBS.find((job) => legs(jobs[job]).some((leg) => leg.leg === name))!;
+    legs(jobs[to]).push(...legs(jobs[from]).filter((leg) => leg.leg === name));
+    drop(name)(jobs[from]);
+  };
+  // The reviewer's mutations (round 8), each a job that must fail, in each leg job.
   const mutations: Record<string, Mutation> = {
     "job continue-on-error": (job) => { job["continue-on-error"] = true; },
     "job if": (job) => { job.if = "github.event_name != 'pull_request'"; },
@@ -266,21 +316,41 @@ describe("platform-tests and platform-sizes", () => {
     },
     "an extra step after the command": (job) => { job.steps.push({ run: "true" }); },
     "a shallow checkout": (job) => { job.steps[0].with["fetch-depth"] = 1; },
-    "drop codemode leg": drop("codemode"),
-    "drop runner leg": drop("runner"),
-    "drop typecheck leg": drop("typecheck"),
-    "drop ci leg": drop("ci"),
-    "runner leg runs workerd twice": command("runner", "npm run test:workerd -w sandbox --silent"),
-    "a leg's command swallowed": command("owner", "npm run test -w owner || true"),
     "no watchdog": (job) => { delete job["timeout-minutes"]; },
     "an exclude": (job) => { job.strategy.matrix.exclude = [{ leg: "runner" }]; },
   };
-  for (const [name, mutate] of Object.entries(mutations)) {
+  // Each a leg dropped, changed or moved to the wrong job, which must fail.
+  const legMutations: Record<string, (jobs: Data) => void> = {
+    "drop codemode leg": (jobs) => drop("codemode")(jobs["platform-tests"]),
+    "drop runner leg": (jobs) => drop("runner")(jobs["platform-tests"]),
+    "drop ci leg": (jobs) => drop("ci")(jobs["platform-tests"]),
+    "drop typecheck leg": (jobs) => drop("typecheck")(jobs["platform-checks"]),
+    "drop memory leg": (jobs) => drop("memory")(jobs["platform-checks"]),
+    "runner leg runs workerd twice": (jobs) =>
+      command("runner", "npm run test:workerd -w sandbox --silent")(jobs["platform-tests"]),
+    "a leg's command swallowed": (jobs) =>
+      command("owner", "npm run test -w owner || true")(jobs["platform-tests"]),
+    "the typecheck given the reporters": move("typecheck", "platform-tests"),
+    "the memory leg given the reporters": move("memory", "platform-tests"),
+    "a Vitest leg that uploads no report": move("doors", "platform-checks"),
+  };
+  const problems = (jobs: Data): string[] => [
+    ...LEG_JOBS.flatMap((name) => legJobProblems(jobs[name], name)),
+    ...coverageProblems(jobs), ...reportProblems(jobs)];
+  for (const job of LEG_JOBS) {
+    for (const [name, mutate] of Object.entries(mutations)) {
+      it(`catch the mutation in ${job}: ${name}`, () => {
+        const jobs = structuredClone(tests().jobs);
+        mutate(jobs[job]);
+        expect(problems(jobs)).not.toEqual([]);
+      });
+    }
+  }
+  for (const [name, mutate] of Object.entries(legMutations)) {
     it(`catch the mutation: ${name}`, () => {
-      const job = structuredClone(tests().jobs["platform-tests"]);
-      mutate(job);
-      expect([...legJobProblems(job, "platform-tests"), ...coverageProblems(job)])
-        .not.toEqual([]);
+      const jobs = structuredClone(tests().jobs);
+      mutate(jobs);
+      expect(problems(jobs)).not.toEqual([]);
     });
   }
 
@@ -300,6 +370,7 @@ describe("platform-tests and platform-sizes", () => {
 
 describe("required-tests", () => {
   const RESULTS = { PLATFORM_RESULT: "${{ needs.platform-tests.result }}",
+                    CHECKS_RESULT: "${{ needs.platform-checks.result }}",
                     APP_RESULT: "${{ needs.platform-app.result }}",
                     SIZES_RESULT: "${{ needs.platform-sizes.result }}",
                     PROCESS_RESULT: "${{ needs.process.result }}" };
@@ -310,7 +381,7 @@ describe("required-tests", () => {
     const agg = jobs["required-tests"];
     expect(agg.if).toBe("always()");
     expect(agg["continue-on-error"]).toBeUndefined();
-    for (const name of ["platform-tests", "platform-app", "platform-sizes", "process"]) {
+    for (const name of [...LEG_JOBS, "platform-app", "platform-sizes", "process"]) {
       expect(agg.needs).toContain(name);
       expect(jobs[name].if, `${name} must run on every event`).toBeUndefined();
       expect(jobs[name].needs, `${name} must wait on no other job`).toBeUndefined();
@@ -334,7 +405,7 @@ describe("required-tests", () => {
     const status = (values: string[]): number | null => spawnSync("bash", ["-s"], {
       input: names.map((name, i) => `${name}=${values[i]}\n`).join("") + gate[0].run,
     }).status;
-    // Every pair of results at every value, the rest succeeding: 150 runs of the script.
+    // Every pair of results at every value, the rest succeeding: 250 runs of the script.
     for (let a = 0; a < names.length; a++) {
       for (let b = a + 1; b < names.length; b++) {
         for (const first of results) {

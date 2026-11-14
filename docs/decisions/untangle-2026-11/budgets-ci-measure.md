@@ -1,0 +1,15 @@
+# budgets-ci-measure as built (2026-11-14)
+
+The flake re-check found `ci/budgets.json` stale: `sandbox/guards` recorded 227 ms where its template tests took 2.3 to 2.85 s, and `import/guards` 5.7 s where its runner tests took up to 11.9 s.
+
+1. **The medium legs upload their Vitest report, as the sizes legs do.** No CI report covered a medium budget: `platform-sizes` runs only `large` tests, and `platform-tests` uploaded nothing, so every medium figure came from a local run "until a CI measurement replaces it", and none ever could. Each `platform-tests` leg now runs its command with `--` and the sizes legs' reporters, and uploads `tests-report-<job index>` with the same pinned `actions/upload-artifact`.
+   - The reporters reach only a Vitest run, so the two legs that are not one, the typecheck and the owner's memory leg, move to a job of their own, `platform-checks`. `required-tests` needs it and its gate step reads its result.
+   - `ci/guards/legs.test.ts` holds this: every Vitest leg is in `platform-tests`, and no other leg is (`reportProblems`). Coverage is read across both jobs. The round-8 mutations run against each job.
+2. **Each figure in `budgets.json` names its own measurement.** The file had one `measured` string for all of them, and `budgets.mjs` replaced that string on every run while it kept the figures no report measured. So each partial re-derivation lost the provenance of the rest, and earlier PRs rewrote the string by hand: eleven clauses, each "X from Y, until a CI measurement replaces it". Now `slowest()` writes `measured` beside each figure, and `derive()` (split from the file I/O) keeps the figures the reports don't measure, with their own provenance.
+3. **The figures, as `budgets.mjs` derived them:**
+   - The large figure comes from three CI runs' `platform-sizes` reports. It is 61,292 ms, the runner's bounded lock wait. The old 71,367 ms was a cold `prepare` walk read by hand from logs, and none of these runs hit a walk that slow.
+   - The medium figures come from one local run, because no `tests-report-*` exists until this merges. The run started at load 2.9, and other agents drove the load to 4.5 to 7.9 during it. Re-deriving them from the first CI medium reports is owed (`live:`).
+4. **The tiers.** No measured medium test is slower than its project's medium budget, so the time rule tags none `large`.
+   - `owner/test/archive-mail.test.ts` says every object in it "runs production's ceilings". By the size rule (`ci/classes.ts`: "production sizes, real-size data"), its medium tests read as large. By the time rule they are medium (9.4 s at most on CI). Whether the size rule applies per file or per test is for the owner lane to decide. It is not retagged here.
+   - The import runner tests (7 s) and the sandbox template tests (2.6 s) are bound by process spawns and a bundle build, not by data size. They stay medium.
+5. **d3 §I named a `--write` flag that `budgets.mjs` never had.** That line is corrected to `node ci/budgets.mjs`.
