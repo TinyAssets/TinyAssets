@@ -130,7 +130,6 @@ export class DivergingOwnerDO extends OwnerDO {
 export class PurgingOwnerDO extends OwnerDO {
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     super(ctx, env, {
-      // Each move as it saw itself between its passes, kept in a table of the test's own.
       archiveBetweenPasses: (storage, move) => {
         storage.sql.exec("CREATE TABLE IF NOT EXISTS test_moves (stream TEXT, replaced " +
                            "INTEGER, records INTEGER)");
