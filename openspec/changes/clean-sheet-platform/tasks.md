@@ -198,11 +198,11 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   routes over; the manifest disables `uptime-canary.yml` (d3 §J2), whose old canary scripts the
   platform's canary replaces rather than reworks (list3 P29). Verify: the handback's plan job
   (read-only); the control record opened for the probe owner (tester B) alone, through the
-  operator path; its API key stored as `TA_PROBE_KEY`; `handles-canary.yml` with `side` `new`;
-  the platform's canary. If verify fails, before the hold ends: `--mode handback --record <id>`,
-  the old stack restarted on its untouched volumes, then `handles-canary.yml` with `side`
-  `old`. Writes made on the new platform since `routes` are lost unless exported (decided at
-  verify).
+  operator path; its API key stored as `TA_PROBE_KEY`, and the free-tier key connected to it;
+  the platform's canary with `full`, then armed (`PLATFORM_CANARY_TOKEN`). If verify fails,
+  before the hold ends: `--mode handback --record <id>`, the old stack restarted on its
+  untouched volumes, then `handles-canary.yml`. Writes made on the new platform since `routes`
+  are lost unless exported (decided at verify).
 - [ ] **The public `/connect` page,** right after `routes`, in the site-at-the-cutover PR
   (d3 §C6 F2): branch `platform-brain-site` no longer builds, so the page is rebuilt from
   `contract/apps.json`, and its sweep checks one section per app.
@@ -414,11 +414,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 - [ ] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2).
 - [ ] The manifest's dry run green (d3 §A10).
-- [ ] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6). Its alerts
-  include the ones that are only log lines today (list3 P18): `sandbox_waiting`,
+- [ ] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6).
+- [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
   `sandbox_renewal_refused`, `sandbox_runner_mismatch`, `exceededMemory`, and E2B's team metrics
-  (`/teams/{id}/metrics/max`) against the concurrency ceiling. E2B's credit and spend have no
-  API.
+  (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
+  read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
+  and spend have no API.
 - [ ] The deletion-jobs step, a runner mode before `admit` (§9 step 11; d3 §C4).
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and

@@ -10,8 +10,8 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { classProblems, exactProblems, flagProblems, keyProblems, NO_EXPORTS, patched,
-         secretProblems } from "../../ci/kit/config";
+import { classProblems, EVERY_WORKER, everyWorkerProblems, exactProblems, flagProblems,
+         keyProblems, NO_EXPORTS, patched, secretProblems } from "../../ci/kit/config";
 import { type Config, configFiles, platformConfigs, workerSources } from "../../ci/kit/sources";
 import { readWrangler, wranglerKeys } from "../../ci/wrangler";
 
@@ -177,6 +177,7 @@ export function configProblems(config: Config,
     }
   };
   check(config, "", TOP_KEYS, true);
+  problems.push(...everyWorkerProblems(config));
   const envs = config["env"] ?? {};
   if (!object(envs)) {
     problems.push("env is not a table of environments");
@@ -406,7 +407,8 @@ describe("owner Worker config", () => {
   });
 
   const base = { name: "tinyassets-owner", main: "src/index.ts",
-                 compatibility_flags: ["nodejs_compat", NO_EXPORTS], limits: LIMITS };
+                 compatibility_flags: ["nodejs_compat", NO_EXPORTS], limits: LIMITS,
+                 ...EVERY_WORKER };
   const bound = new Map([["files", CONFIGS.get("files")!]]);
 
   it.each([

@@ -148,13 +148,14 @@ type Named = Readonly<Record<string, unknown>> | readonly string[];
  * The config keys the kit reads, and those it knowingly leaves out. A key in neither fails
  * loudly (`configBindings`), so a binding a config gains never goes missing in tests. Left
  * out: what names or deploys the Worker (`workers_dev`, `preview_urls`, `build`, which
- * `bundle` runs), `limits` (wrangler's own conversion carries none to miniflare either), and
- * `secrets`, which a config names without a value: a test states each (`configured`).
+ * `bundle` runs), `limits` (wrangler's own conversion carries none to miniflare either),
+ * `secrets`, which a config names without a value: a test states each (`configured`), and
+ * its logs (`observability`) and schedule (`triggers`), which bind nothing.
  */
 const READ_KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "rules", "vars",
   "kv_namespaces", "services", "queues", "durable_objects", "migrations", "r2_buckets", "assets",
-  "workers_dev", "preview_urls", "build", "limits", "secrets",
+  "workers_dev", "preview_urls", "build", "limits", "secrets", "observability", "triggers",
 ]);
 
 /** A queue consumer's config fields, as miniflare names them (`max_concurrency`: none). */

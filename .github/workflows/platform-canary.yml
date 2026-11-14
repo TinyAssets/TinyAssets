@@ -1,0 +1,86 @@
+name: Platform canary
+
+# The platform's canary (platform/deploy/canary.ts, d3 §J2): the platform checked
+# from outside, through tinyassets.io's public routes, then its one alarm
+# (platform/deploy/alarm.ts): the `platform-down` issue after two reds in a row,
+# and Pushover's page ladder.
+#
+# Its runs start three ways, and every one goes through the same alarm:
+#   - the doors' Cron Trigger dispatches it every ten minutes
+#     (platform/doors/src/canary-clock.ts) with the founder's fine-grained
+#     token, PLATFORM_CANARY_TOKEN. GitHub runs this repository's schedules
+#     hours apart (a requested five minutes ran a median 4.9 h apart,
+#     2026-10-22 to 2026-11-11), so the clock is Cloudflare's;
+#   - this schedule, the watchdog: it also checks that the clock dispatched a
+#     run in the last 30 minutes (`--clock`), since a stopped clock starts
+#     nothing that could notice;
+#   - by hand, `full` running the day's full run now.
+# The kit runs the same canary after each deploy mode (deploy.ts), as Fact 11's.
+#
+# Before the deploy it pages no one: the alarm acts only once the production
+# environment holds PLATFORM_CANARY_TOKEN (CANARY_ARMED) and the doors serve
+# /mcp. Until then a run, the schedule's included, reports the dark platform
+# (the old stack serves /mcp; the doors' checks wait) and changes nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Run the day''s full run now'
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: '41 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      TA_PROBE_KEY: ${{ secrets.TA_PROBE_KEY }}
+      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
+      WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the platform's pinned tools
+        working-directory: platform
+        run: npm ci
+
+      - name: The canary
+        env:
+          EVENT: ${{ github.event_name }}
+          FULL: ${{ inputs.full }}
+        run: |
+          args=(--result "${RUNNER_TEMP}/canary.json")
+          if [ "${EVENT}" = schedule ]; then args+=(--clock); fi
+          if [ "${FULL}" = true ]; then args+=(--full); fi
+          node --experimental-strip-types platform/deploy/canary.ts "${args[@]}"
+
+      - name: The alarm
+        if: always()
+        env:
+          CANARY_ARMED: ${{ secrets.PLATFORM_CANARY_TOKEN != '' }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+        run: node --experimental-strip-types platform/deploy/alarm.ts "${RUNNER_TEMP}/canary.json"

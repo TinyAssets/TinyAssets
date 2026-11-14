@@ -57,6 +57,7 @@ import {
   ROUTES,
   SECRET_INPUTS, SECRETS, WORKERS, ZONE,
 } from "../facts";
+import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
 import platform from "../platform.json" with { type: "json" };
 
@@ -123,7 +124,8 @@ const ENV: Record<string, string> = {
   OWNER_ISSUER: "https://auth.test", WORKOS_API_KEY: "workos-key", E2B_API_KEY: E2B_KEY,
   ROUTING_MAC_KEY: "mac-key", GATEWAY_KEYRING: RING, FILES_KEYRING: RING, OPERATOR_KEYRING: RING,
   E2B_WEBHOOK_SECRET: "hook-secret", INBOUND_SLACK_SIGNING_SECRET: "slack-secret",
-  PATH: "/bin", HOME: "/home/test",
+  PLATFORM_CANARY_TOKEN: "clock-token", PUSHOVER_USER_KEY: "pager-user",
+  PUSHOVER_APP_TOKEN: "pager-token", PATH: "/bin", HOME: "/home/test",
 };
 /** What the plan job holds. */
 const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]));
@@ -466,9 +468,9 @@ function world(options: WorldOptions = {}) {
         ? "Worker Version ID: 0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n" : "";
       return { status: 0, stdout, stderr: "" };
     }
-    if (command === "python3") {
-      events.push(`python3 ${basename(argv[0]!)}${argv.slice(1).map((arg) => ` ${arg}`).join("")}${
-        options_.env === undefined ? "" : ` env=${Object.keys(options_.env).sort().join(",")}`}`);
+    if (command === process.execPath && argv.some((arg) => arg.endsWith("canary.ts"))) {
+      events.push(["node", ...argv.slice(argv.findIndex((arg) => arg.endsWith("canary.ts")))
+        .map((arg) => basename(arg))].join(" "));
       return { status: 0, stdout: "", stderr: "" };
     }
     if (command === process.execPath && argv.some((arg) => arg.endsWith("checks.ts"))) {
@@ -729,7 +731,7 @@ describe("a dark run", () => {
       `cf POST /accounts/${ACCOUNT}/r2/buckets`, `cf POST /accounts/${ACCOUNT}/queues`,
       `cf POST /accounts/${ACCOUNT}/queues`, "wrangler secret put ROUTING_MAC_KEY",
       "wrangler deploy --config files/", "wrangler deploy --config doors/", "cf PUT /accounts",
-      "e2b POST /events/webhooks", "log Changed:", "python3 cutover_handles_canary.py --side auto"]);
+      "e2b POST /events/webhooks", "log Changed:", "node canary.ts"]);
     const first = w.events.findIndex((event) =>
       /^(cf POST|wrangler secret|cf PUT)/.test(event));
     expect(at[11]).toBeLessThan(first);
@@ -848,7 +850,7 @@ describe("a dark run", () => {
   it("plans the same steps without --yes, and changes nothing", async () => {
     const w = world();
     const work = await runMode(w, "plan");
-    expect(w.events.filter((event) => /^(wrangler [a-z ]*(create|put|deploy|upload)|cf (PUT|POST|DELETE)|e2b (POST|PATCH)|workos POST|python3)/
+    expect(w.events.filter((event) => /^(wrangler [a-z ]*(create|put|deploy|upload)|cf (PUT|POST|DELETE)|e2b (POST|PATCH)|workos POST|node canary)/
       .test(event))).toEqual([]);
     expect(work.plan.filter((line) => line.startsWith("create the") || line.startsWith("set the")
       || line.startsWith("deploy "))).toEqual(DARK_FRESH.filter((line) =>
@@ -1045,7 +1047,7 @@ describe("a routes run", () => {
                      "cf PUT /zones/z/workers/routes/r1", "cf POST /zones/z/workers/routes",
                      "cf DELETE /zones/z/workers/routes/r4", "wrangler triggers deploy",
                      "e2b PATCH /events/webhooks/w1 {\"enabled\":true}", "log Changed:",
-                     "python3 cutover_handles_canary.py --side new --unkeyed"]);
+                     "node canary.ts --side doors --unkeyed"]);
     // The routes are read once, before any change; the doors' last version is deployed before
     // a route moves; the hook is enabled only after the last route and the custom domain.
     expect(w.events.filter((event) => event === "cf GET /zones/z/workers/routes")).toHaveLength(1);
@@ -1273,8 +1275,8 @@ describe("a handback run", () => {
     // The canary waits for the old stack's restart, and the run says where it runs.
     order(ran, ["log Changed:", "log The handles canary (Fact 11) waits for the old stack"]);
     expect(w.logs.at(-1)).toContain(
-      "dispatch the Handles canary workflow (handles-canary.yml) with side old");
-    expect(ran.some((event) => event.startsWith("python3"))).toBe(false);
+      "dispatch the Handles canary workflow (handles-canary.yml), the old stack's own check");
+    expect(ran.some((event) => event.startsWith("node canary"))).toBe(false);
     // Every path the record served is served after each change.
     const served = PROBES.filter((path) => servedBy(before as Route[], path) !== undefined);
     for (const table of w.tables) {
@@ -1504,7 +1506,7 @@ describe("a handback run", () => {
     const work = await runMode(w, "handback", ["--public", "--record", "7001"],
                                { CLOUDFLARE_API_TOKEN: "cf-token" });
     expect(w.events.slice(from).filter((event) => CHANGE.test(event)
-      || event.startsWith("python3"))).toEqual([]);
+      || event.startsWith("node canary"))).toEqual([]);
     expect(work.plan).toHaveLength(12);
     expect(work.plan[1]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job ` +
                               "before any change");
@@ -1698,7 +1700,7 @@ describe("a probe run", () => {
       `\nSign in once, in a browser, at:\n${PUBLIC_ORIGIN}${AUTHORIZE_PATH}?`)).toBe(true);
     expect(w.logs.at(-1)).toContain(PROBE_SIGNS);
     // The old stack still serves /mcp: the canary holds whichever side answers.
-    expect(w.events).toContain("python3 cutover_handles_canary.py --side auto");
+    expect(w.events).toContain("node canary.ts");
   });
 
   it("stops unless a dark run came first, every gate closed and the callback listed",
@@ -1876,7 +1878,8 @@ describe("the parts of a run", () => {
                               owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
                               sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] },
                             new Set(), NONE);
-    expect(both).toEqual([{ worker: "doors", name: "INBOUND_SLACK_SIGNING_SECRET" }]);
+    // The doors' optional secrets: the shared app's and the canary clock's.
+    expect(both).toEqual(OPTIONAL.map((name) => ({ worker: "doors", name })));
     expect(() => secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(), NONE))
       .toThrow("only one of the doors and the owner holds ROUTING_MAC_KEY: pass --rotate " +
                "ROUTING_MAC_KEY to set both again");
@@ -1885,10 +1888,9 @@ describe("the parts of a run", () => {
   });
 
   it("never replaces a held keyring, and rotates one only by adding a key", () => {
-    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
-                           "OPERATOR_KEYRING", "INBOUND_SLACK_SIGNING_SECRET"],
-                   owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
-                   sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
+    const held = { doors: [...SECRETS["doors"]!], owner: ["ROUTING_MAC_KEY"],
+                   gateway: ["GATEWAY_KEYRING"], sandbox: ["E2B_API_KEY"],
+                   files: ["FILES_KEYRING"] };
     const values = (ring: string) => (name: string) =>
       name === "GATEWAY_KEYRING" || name === "FILES_KEYRING" ? ring : undefined;
     expect(secretPlan(held, new Set(), values(RING))).toEqual([]);
@@ -2655,16 +2657,13 @@ describe("platform-deploy.yml", () => {
   it("hands the plan and apply jobs exactly what their rows read", () => {
     // The dispatch's own inputs, which both jobs pass to the kit.
     const dispatch = ["MODE", "ROTATE", "MIGRATE", "RECORD"];
-    // The handles canary's own bearer (scripts/_canary_common.py), so Fact 11's canary runs.
-    const canary = execFileSync("python3", ["-I", "-c",
-      "import sys; sys.path.insert(0, sys.argv[1]); " +
-      "from scripts._canary_common import CANARY_TOKEN_ENV; sys.stdout.write(CANARY_TOKEN_ENV)",
-      REPO], { encoding: "utf8" });
+    // The platform canary's own inputs, so Fact 11's canary runs after each mode.
+    const canary = Object.values(CANARY_INPUTS);
     const rows = offered.map((mode) => MODES[mode]);
     const each = (names: readonly string[]) => [...new Set(names)].sort();
     const publics = each(rows.flatMap((row) => row.inputs.public));
     const secrets = each(rows.filter((row) => row.applies).flatMap((row) =>
-      [...row.inputs.secret, ...row.inputs.optional, canary]).filter((name) =>
+      [...row.inputs.secret, ...row.inputs.optional, ...canary]).filter((name) =>
       !publics.includes(name)));
     // Every secret a config requires is among them: a deploy reads each.
     expect(SECRET_INPUTS.filter((name) => !secrets.includes(name))).toEqual([]);

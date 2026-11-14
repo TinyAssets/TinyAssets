@@ -61,7 +61,7 @@ describe("authorization server metadata", () => {
 
   it("challenges an anonymous /mcp with no body, and serves its document, behind a closed " +
      "control record", async () => {
-    // scripts/cutover_handles_canary.py tells the sides apart by this empty body (the old
+    // deploy/canary.ts tells the sides apart by this empty body (the old
     // daemon's carries `authentication_required`), and the deploy kit's routes runs it
     // while the dark control record admits no one.
     await setControl(DARK);

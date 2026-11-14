@@ -22,6 +22,19 @@ import { type Config, configFiles, parse } from "./sources.ts";
 /** The flag that keeps a Worker's own namespaces out of its `ctx.exports`. */
 export const NO_EXPORTS = "disable_ctx_exports";
 
+/**
+ * What every Worker's config sets alike, beside its own rules' keys: Workers Logs on
+ * (`observability`), so an alarm is investigated from the account's own logs (d3 §J2).
+ */
+export const EVERY_WORKER: Readonly<Record<string, unknown>> = Object.freeze({
+  observability: Object.freeze({ enabled: true }) });
+
+/** How `config` differs from what every Worker's sets alike (`EVERY_WORKER`). */
+export function everyWorkerProblems(config: Config): string[] {
+  return Object.entries(EVERY_WORKER)
+    .flatMap(([key, value]) => exactProblems(config, key, value));
+}
+
 export type Flags = { readonly exactly: readonly string[] } | { readonly carries: readonly string[] };
 
 export interface ConfigRules {
@@ -217,7 +230,7 @@ export function bucketTypeProblems(sources: ReadonlyMap<string, string>,
 
 /** Each way `config` holds more, or other, than `rules` allow. */
 export function configProblems(config: Config, rules: ConfigRules): string[] {
-  const problems = keyProblems(config, rules.keys);
+  const problems = keyProblems(config, [...rules.keys, ...Object.keys(EVERY_WORKER)]);
   if (config["name"] !== rules.name || config["main"] !== rules.main) {
     problems.push(`the Worker is ${rules.name} at ${rules.main}`);
   }
@@ -255,7 +268,7 @@ export function configProblems(config: Config, rules: ConfigRules): string[] {
   for (const [key, value] of Object.entries(rules.exact ?? {})) {
     problems.push(...exactProblems(config, key, value));
   }
-  return problems;
+  return [...problems, ...everyWorkerProblems(config)];
 }
 
 /** `config` with `patch` laid over it, a key the patch sets `undefined` removed. */
@@ -293,12 +306,13 @@ export function configTests(rules: ConfigRules, tests: ConfigTests): Config {
       expect(problems(config)).toEqual([]);
     });
 
+    const allowed = [...rules.keys, ...Object.keys(EVERY_WORKER)];
     it("allows only keys wrangler knows", () => {
-      expect(rules.keys.filter((key) => !offered.has(key))).toEqual([]);
+      expect(allowed.filter((key) => !offered.has(key))).toEqual([]);
     });
 
     it("refuses every other key wrangler offers, the named ones among them", () => {
-      const others = [...offered].filter((key) => !rules.keys.includes(key));
+      const others = [...offered].filter((key) => !allowed.includes(key));
       expect(tests.refused.filter((key) => !others.includes(key))).toEqual([]);
       for (const key of others) {
         expect(problems({ ...config, [key]: {} }), key).toContain(`${key} is not an allowed key`);
