@@ -118,6 +118,12 @@ export const MAX_INTENT_CHUNKS = 10_000;
  */
 export const SIGNIN_PASTE_MAX = 4095;
 
+/**
+ * An outside agent's `command_center_id`, in characters: an agent's registration
+ * (`owner/src/ledger.ts`) and an MCP Events subscription's arguments (`doors/src/events.ts`).
+ */
+export const COMMAND_CENTER_MAX = 512;
+
 // The owner's frozen bounds. Each number below is spelled in the owner's migrations, whose
 // SQL text is frozen from its first deploy (`owner/src/schema.ts`, pinned by
 // `owner/migrations.json`), and each module that enforces it in code reads it from here.

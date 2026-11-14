@@ -210,15 +210,15 @@ describe("a sync commit", () => {
   it("refuses an op past a quota alone, and still lands the rest", async () => {
     const r = await rig();
     const lease = await acquire(r);
-    await inFiles(r.stub, { max_entries: 1 }, (files) => {
+    await inFiles(r.stub, { max_file_bytes: 1 }, (files) => {
       const { outcomes } = files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
         { op: "write", path: `${W}/one`, base: null, inline: text("1") },
-        { op: "write", path: `${W}/two`, base: null, inline: text("2") },
+        { op: "write", path: `${W}/two`, base: null, inline: text("22") },
         { op: "remove", path: `${W}/gone`, base: null },
       ] });
       expect(outcomes.map((o) => o.outcome)).toEqual(["committed", "refused", "committed"]);
       expect(outcomes[1]).toMatchObject({
-        reason: "file_quota: the owner's file entries are at their quota" });
+        reason: "file_quota: the file is larger than the owner's file size quota" });
     });
   });
 

@@ -12,7 +12,7 @@
  *
  * Every connect route is on the owner surface (`app.ts`): the owner's first-party token
  * (an outside credential is refused before any object call), a POST of exactly
- * `application/json` within `APP_BODY_MAX`, the maintenance gate, and the session
+ * `application/json` within `EGRESS_BODY_MAX`, the maintenance gate, and the session
  * cookie, which the object checks at every session door (its row's caller). Each body is a
  * closed set of fields, checked with everything else that can be checked here before the object is
  * reached: the owner comes from the token alone, and the connection and its version from
@@ -50,7 +50,7 @@
  * revokes it at the provider or tells the owner to delete it there. Nothing minted is
  * dropped silently.
  */
-import { secret } from "../../contract/src/egress-scope";
+import { secret, SECRET_MAX } from "../../contract/src/egress-scope";
 import type { Verified } from "../../contract/src/gateway";
 import { type GatewayCode, isGatewayCode, REFUSALS, refusalOf } from "../../contract/src/refusal";
 
@@ -60,6 +60,7 @@ import {
   CONNECT_CALLBACK, CONNECT_CALLBACK_PATH, CONNECTED_PAGE, now, PUBLIC_ORIGIN,
 } from "./config";
 import type { DoorsEnv } from "./env";
+import { answer, exactKeys, plain, redirect } from "./kit";
 import { clearedConnectCookie, connectBound, connectCookie } from "./session";
 import { sealedSource } from "../../sources/src/check";
 import type { ConnectMethod, OAuthSpec, SourceRecord, Sources } from "../../sources/src/schema";
@@ -90,16 +91,10 @@ const CODE = /^[\x21-\x7e]{1,2048}$/;
 const RESPONSE_PARAMS: readonly string[] = Object.freeze(["state", "code", "iss", "error"]);
 const MIXED_UP = "the authorization came back on another source's callback";
 
-function json(status: number, body: unknown, headers: HeadersInit = {}): Response {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store", ...headers } });
-}
-
 /** Exactly `required`, and any of `optional`: the owner, connection and version are never fields. */
 function fields(body: Record<string, unknown>, required: readonly string[],
                 optional: readonly string[] = []): Record<string, unknown> {
-  const keys = Object.keys(body);
-  if (!required.every((key) => keys.includes(key))
-      || !keys.every((key) => required.includes(key) || optional.includes(key))) {
+  if (!exactKeys(body, required, optional)) {
     throw new ConnectRefused(400, `the request has exactly ${required.join(", ") || "no fields"}` +
                                   (optional.length > 0 ? ` (and optionally ${optional.join(", ")})`
                                                        : ""));
@@ -187,7 +182,7 @@ async function connectKey(context: ConnectContext): Promise<Response> {
   try {
     secret(key);  // the gateway's own grammar: what it would refuse is refused here first
   } catch {
-    throw new ConnectRefused(400, "the key is 1 to 16384 visible ASCII characters, " +
+    throw new ConnectRefused(400, `the key is 1 to ${SECRET_MAX} visible ASCII characters, ` +
                                   "with no space");
   }
   const sealing = sealedSource(record, "api_key");
@@ -206,7 +201,7 @@ async function connectKey(context: ConnectContext): Promise<Response> {
     // The owner holds the key: nothing was issued here, so the connection is given up.
     return abandoned(context, connection, error);
   }
-  return json(200, await stub.connectionCommit(binding, {
+  return answer(200, await stub.connectionCommit(binding, {
     connection, version, blob, kid, models: [...verified.models], egress: verified.egress }));
 }
 
@@ -248,17 +243,14 @@ async function beginOAuth(context: ConnectContext): Promise<Response> {
   const flow = prepared.flow!;
   // The binding lasts as long as the flow, in whole seconds (the object's are fractional).
   const life = Math.max(0, Math.floor(flow.expires_at - now()));
-  return json(200, { connection: prepared.connection,
-                     authorize_url: authorizeUrl(record, flow.state, flow.code_challenge),
-                     expires_at: flow.expires_at },
-              { "Set-Cookie": await connectCookie(flow.state, life) });
+  return answer(200, { connection: prepared.connection,
+                       authorize_url: authorizeUrl(record, flow.state, flow.code_challenge),
+                       expires_at: flow.expires_at },
+                { "Set-Cookie": connectCookie(flow.state, life) });
 }
 
 function page(status: number, message: string): Response {
-  return new Response(message, {
-    status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store",
-                       "Referrer-Policy": "no-referrer" },
-  });
+  return plain(status, message, { "Referrer-Policy": "no-referrer" });
 }
 
 /**
@@ -317,20 +309,19 @@ export async function connectCallback(request: Request, sources: Sources): Promi
   if (flow === null) {
     return page(400, "This is not a connection's callback.");
   }
-  if (!(await connectBound(request, flow.state))) {
+  if (!connectBound(request, flow.state)) {
     return page(403, "This connection was not started in this browser; start again.");
   }
   if (!issued(flow.record, url)) {
     return page(400, "This authorization did not come from this source's issuer.");
   }
   const code = url.searchParams.get("code");
-  const redirect = `${PUBLIC_ORIGIN}${url.pathname}`;
+  const redirectUri = `${PUBLIC_ORIGIN}${url.pathname}`;
   const handed = code !== null && CODE.test(code) && !url.searchParams.has("error")
-    ? { state: flow.state, code, redirect_uri: redirect }
-    : { state: flow.state, error: "access_denied", redirect_uri: redirect };
-  return new Response(null, { status: 302, headers: {
-    Location: `${CONNECTED_PAGE}#${new URLSearchParams(handed)}`, "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer" } });
+    ? { state: flow.state, code, redirect_uri: redirectUri }
+    : { state: flow.state, error: "access_denied", redirect_uri: redirectUri };
+  return redirect(`${CONNECTED_PAGE}#${new URLSearchParams(handed)}`,
+                  { "Referrer-Policy": "no-referrer" });
 }
 
 /** `connections/oauth/finish`: the flow used up in its session, its code exchanged and committed. */
@@ -342,7 +333,7 @@ async function finishOAuth(context: ConnectContext): Promise<Response> {
       || !CODE.test(code) || typeof arrived !== "string") {
     throw new ConnectRefused(400, "the state, code and redirect URI are the callback's");
   }
-  if (!(await connectBound(request, state))) {
+  if (!connectBound(request, state)) {
     throw new ConnectRefused(403, "this connection was not started in this browser");
   }
   const flow = await stub.flowFinish(binding, { state });
@@ -385,19 +376,19 @@ async function finishOAuth(context: ConnectContext): Promise<Response> {
   const view = await stub.connectionCommit(binding, {
     connection, version, blob, kid, models: [...verified.models], expires_at,
     egress: verified.egress });
-  return json(200, view, { "Set-Cookie": await clearedConnectCookie(state) });
+  return answer(200, view, { "Set-Cookie": clearedConnectCookie(state) });
 }
 
 /** `connections/revoke`: in the object first; its lane asks the provider. */
 async function revoke({ bound: { binding, stub }, body }: ConnectContext): Promise<Response> {
   const { connection } = fields(body, ["connection"]);
-  return json(200, await stub.connectionRevoke(binding, { connection: connection as string }));
+  return answer(200, await stub.connectionRevoke(binding, { connection: connection as string }));
 }
 
 /** `connections/list`: every connection, never its blob. */
 async function list({ bound: { binding, stub }, body }: ConnectContext): Promise<Response> {
   fields(body, []);
-  return json(200, await stub.connectionList(binding));
+  return answer(200, await stub.connectionList(binding));
 }
 
 /** The connect routes, by their path under the owner surface. */

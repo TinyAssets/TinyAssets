@@ -67,9 +67,12 @@ describe("schema migration on wake", () => {
 
   it("ends an object migrated from each earlier version with a fresh object's schema",
      async () => {
-    // Every table, index, trigger and view, as `sqlite_master` holds it.
+    // Every table, index, trigger and view of the owner's, as `sqlite_master` holds it; not
+    // the runtime's own (`_cf_*`), which workerd makes as it needs them (one appears after
+    // migration 8's column rebuild from version 6, holding nothing of the owner's).
     const schema = (state: DurableObjectState) => state.storage.sql.exec(
-      "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").toArray();
+      "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT GLOB '_cf_*' " +
+        "ORDER BY type, name").toArray();
     const fresh = await runInDurableObject(ownerObject().stub,
                                            (_instance: OwnerDO, state) => schema(state));
     expect(fresh.length).toBeGreaterThan(100);

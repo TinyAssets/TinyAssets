@@ -136,12 +136,12 @@ describe("open uploads, apart from what is stored", () => {
     await write(r, `${W}/a.bin`, FILE, 1);
   });
 
-  it("leave a begin that reclaims history in the same change at storage_full, never " +
-     "uploads_open (round 9)", async () => {
+  it("leave a begin that letting history go would admit at storage_full, never uploads_open, " +
+     "and let no history go (round 9, untangle F1)", async () => {
     const r = await rig();
     const at = r.bind(null, { tiers: SMALL });
-    // An upload open: 4,500 bytes held apart.
-    await r.stub.fileUploadBegin(at, { size: 4_500, chunks: ["cd".repeat(32)] });
+    // An upload open: 4,200 bytes held apart.
+    await r.stub.fileUploadBegin(at, { size: 4_200, chunks: ["cd".repeat(32)] });
     // A row whose placed body (past the inline 4 KiB, so chunk bytes) only its history keeps.
     const big = await r.stub.collectionWrite(at, { collection: "board", row_id: "r",
       body: JSON.stringify({ text: "y".repeat(5_000) }), expected_etag: "", private: false });
@@ -151,14 +151,16 @@ describe("open uploads, apart from what is stored", () => {
     await r.stub.collectionWrite(at, { collection: "board", row_id: "r", body: "{}",
                                        expected_etag: big.row.etag, private: false });
     const stored = (await r.stub.storageUsage(r.bind(null, { tiers: SMALL }))).used_bytes;
-    // A begin past the wall even with the open upload gone: its own change lets that
-    // history go first (retention), and is still refused at the storage figure.
+    // A begin past the wall that fits only were that history let go: nothing is let go to
+    // admit a write (ADR-036), so it is refused at the storage figure, never uploads_open.
     const { facts } = await full(() => r.stub.fileUploadBegin(at, {
-      size: 12_000, chunks: ["ef".repeat(32)] }));
-    expect(facts.held_bytes).toBe(4_500);
-    expect(facts.used_bytes).toBe(stored - 4_500);
+      size: 5_400, chunks: ["ef".repeat(32)] }));
+    expect(facts.held_bytes).toBe(4_200);
+    expect(facts.used_bytes).toBe(stored - 4_200);
     expect(facts.used_bytes + facts.needed_bytes).toBeGreaterThan(10_000);
-    // Refused whole: the history it let go is back, the upload still the only one open.
+    expect(facts.used_bytes + facts.held_bytes - 5_000 + facts.needed_bytes)
+      .toBeLessThanOrEqual(10_000);
+    // Refused whole: the history kept, the upload still the only one open.
     expect(await open(r)).toBe(1);
     expect((await r.stub.storageUsage(r.bind(null, { tiers: SMALL }))).used_bytes).toBe(stored);
   });

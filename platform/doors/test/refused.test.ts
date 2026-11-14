@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import { Refusal, type RefusalCode } from "../../contract/src/refusal";
-import { refusalResponse, retryAfter, shownCode } from "../src/refused";
+import { refusalResponse, shownCode } from "../src/refused";
 
 async function answered(code: RefusalCode, message: string, retryAfterS?: number):
     Promise<[number, string | null, unknown]> {
@@ -27,7 +27,7 @@ describe("a refusal's answer", () => {
     ["storage_busy", "storage_busy: your storage is catching up", 503, "30"],
     ["busy", "busy: this server is holding as much as it may at once", 503, "1"],
     ["events_busy", "events_busy: the object holds as many runner posts as it may", 503, "1"],
-    ["file_quota", "file_quota: the owner's entries are at their quota", 403, null],
+    ["file_quota", "file_quota: the file is larger than the owner's file size quota", 403, null],
     ["refused", "agent not found", 403, null],
     ["chunk_deleting", "a chunk of this upload is being deleted; begin again", 403, null],
     ["invalid", "storage_full: not a refusal", 400, null],
@@ -39,12 +39,10 @@ describe("a refusal's answer", () => {
   it("carries a refusal's own Retry-After over its code's", async () => {
     expect(await answered("storage_busy", "storage_busy: the archive moved this mail", 1))
       .toEqual([503, "1", { error: "storage_busy: the archive moved this mail" }]);
-    expect(retryAfter(new Refusal("refused"))).toEqual({});
   });
 
-  it("keeps a surface's own headers beside it", async () => {
-    const response = refusalResponse(new Refusal("busy", "busy: full"),
-                                     { "Cache-Control": "no-store" });
+  it("is never stored, on every surface", async () => {
+    const response = refusalResponse(new Refusal("busy", "busy: full"));
     expect([response.headers.get("Cache-Control"), response.headers.get("Retry-After")])
       .toEqual(["no-store", "1"]);
   });

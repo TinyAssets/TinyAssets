@@ -585,17 +585,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#tombstone = tombstoned(storage.sql);
     const admitted = () => isAdmitted(storage);
     this.#policy = new Policy(storage);
-    // The files byte quota is the tier's storage (ADR-034 decision 8), as last handed.
-    // Retention kept in R2 makes room first at the byte quota: the oldest placed history,
-    // then the oldest acked mail with a placed body (ADR-035).
+    // The files byte bound is the tier's storage (ADR-034 decision 8), as last handed.
+    // Nothing is let go to make room at it (ADR-036): the owner deletes what it chooses.
     this.#files = new Files(storage, env.FILES, () => fileLimits(
       this.#policy.read().document,
       keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write,
       // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
       (stored, needed, held, limit) => storageFullRefusal(storageFull(
         stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
-      // Mail is never let go at the figure (ADR-036): the owner deletes what it chooses.
-      (filer) => this.#collections.reclaim(filer),
       // What a file change says to the owner's other modules, in its own unit.
       (path, present, now, change) => fileChanged(this.#state, path, present, now, change),
       // Garbage the newest finished generation names is never collected early, while it is

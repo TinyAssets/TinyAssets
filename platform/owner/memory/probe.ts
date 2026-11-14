@@ -191,12 +191,11 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
 
 /**
  * The leg's files on `gate`'s storage, over `store`: at 25 GB, and alone, as
- * the leg measures them: nothing to reclaim, tell or keep, and the wall the plain refusal.
+ * the leg measures them: nothing to tell or keep, and the wall the plain refusal.
  */
 function legFiles(gate: WriteGate, store: ChunkStore): Files {
   return new Files(gate.storage, store, () => ({ ...FILE_DEFAULTS, max_bytes: 25_000_000_000 }),
-                   gate.write, () => new Refusal("storage_full"), () => false, () => {},
-                   () => null);
+                   gate.write, () => new Refusal("storage_full"), () => {}, () => null);
 }
 
 /**
