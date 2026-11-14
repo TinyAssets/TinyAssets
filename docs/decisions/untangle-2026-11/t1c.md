@@ -1,6 +1,6 @@
 # T1c as built (2026-11-14)
 
-T1c is split at its natural seam, in two PRs, each green on its own (B23's "about four PRs" for T1).
+T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each green on its own (B23's "about four PRs" for T1).
 
 ## T1c-a: the gates
 
@@ -33,7 +33,8 @@ T1c is split at its natural seam, in two PRs, each green on its own (B23's "abou
 8. **A refresh answered already past its expiry** is a real answer, not a changed one. The gate cannot change an answer, and a fake `Date` past the fake's half-hour token would also lapse the sandbox lease (60 s).
    - The gateway's fake upstream answers the refresh token `rt-lapsed` with a one-second token. That is one line in `gateway/test/fake-upstream.ts`, lane V's file.
    - The test holds the answer at the gate while the object's clock passes the second.
-9. **The lease clock** is `runs-support.ts` `later(seconds)`, a fake `Date` (a lease's life and one by default), in place of `UPDATE sandbox_leases SET lease_expires = 1`. The heartbeat test moves the clock 30 s and sees the lease renewed from there.
+9. **The lease clock** is `runs-support.ts` `later(seconds)`, a fake `Date` (a lease's life and one by default), in place of `UPDATE sandbox_leases SET lease_expires = 1`, in every test that moved it: the owner suite's `egress`, `runs`, `runs-authority`, `files-lease` and `storage-full`, and the doors' `egress`. The heartbeat test moves the clock 30 s and sees the lease renewed from there.
+   - The `SANDBOX` gate's armings name their owner too (`whileOut(owner, …)`, `gateFor`), so no other owner's lane meets them.
 10. **`admitted` held by a test** (`doorbell.test.ts`, "claims nothing more once the owner is suspended between a pass's claims"):
     - Two wakes are due in one pass. The `GATEWAY` gate holds the first ring, and the owner is suspended there.
     - The second wake stays pending and unclaimed, and is never rung.
@@ -42,8 +43,8 @@ T1c is split at its natural seam, in two PRs, each green on its own (B23's "abou
 ## Owed
 
 - **T1c-b**, as item 2 says.
-- **`ledger-support.ts` `ledgerParts`, `ledgerOn` and `inLedger`: research first (Fact 14).** They copy the object's wiring of the ledger, and about 70 test reaches use them. `ballast` alone posts up to 50,000 messages in the ledger to seed production's ceilings, about 9 s a seed. Through the doors, that is 50,000 door calls a seed.
-  - The decision has to say how a test seeds the hot ceiling with no copy of the wiring: bulk SQL copies the post path's row shapes, which T1b5 rejected.
-  - It also has to say which reaches become door answers.
-  - That is its own PR, T1c-c, after T1c-b (`tasks.md` holds the three lines). It is not built here.
+- **T1c-c: `ledger-support.ts` `ledgerParts`, `ledgerOn` and `inLedger`.** They copy the object's wiring of the ledger, and about 70 test reaches use them. `ballast` posts up to 50,000 messages in the ledger to seed production's ceilings, about 9 s a seed; through the doors that would be 50,000 door calls a seed. It is its own PR, after T1c-b (`tasks.md` holds the three lines), and is not built here.
+  - **Decided (the coordinator, 2026-11-14):** the object exports its one ledger wiring function, the one it calls to build its ledger from its state and env. The tests call that same function in place of `ledgerParts`, so there is one wiring and no copy.
+  - Test seeding is not routed through the doors, and no bulk SQL seeds (it would copy the post path's row shapes, which T1b5 rejected).
+  - `ballast` keeps seeding through the ledger's own API, on the ledger that function builds.
 - **The gate has no withdrawal of one arming.** `disarm` clears every arming, held call and record, so `watchMoves` disarms at its end.

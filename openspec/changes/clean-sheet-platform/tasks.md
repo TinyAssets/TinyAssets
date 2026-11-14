@@ -345,7 +345,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] T1c-a: the `FILES` and `GATEWAY` gates, with `GatedOwnerDO`, `RungOwnerDO`,
     `ArchivingOwnerDO`, `DivergingOwnerDO`, `PurgingOwnerDO`, `Internals.chainStep` and
     `Internals.archiveBetweenPasses` deleted; the owner suite's lease clock under the fake
-    `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`) (list 6, item 6j); the
+    `Date`, not moved by SQL (`lease_expires = 1`, in every test) (list 6, item 6j); the
     object's `admitted` held by a test (no test fails today if the object passes the ledger
     `() => true`: a suspension between a wakes pass's claims, the `GATEWAY` gate holding its
     send) (`docs/decisions/untangle-2026-11/t1c.md`).
@@ -355,9 +355,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     under a fake `Date`, the one-file starter by a Vite alias, the rig admitting by the door,
     the doors' entry with no third constructor argument, and `BackupParts`' test-only `sizes?`
     and `pool?` gone.
-  - [ ] T1c-c, research first (Fact 14): `ledger-support.ts` `ledgerParts`, a copy of the
-    object's wiring, deleted, with how a test seeds production's hot ceiling without it
-    (`t1c.md`, owed).
+  - [ ] T1c-c: `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted: the
+    object exports its one ledger wiring function and the tests call it; `ballast` seeds
+    through the ledger's own API, with no door seeding and no bulk SQL (`t1c.md`, owed).
   - [ ] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
     copy of the object's wiring, deleted.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required

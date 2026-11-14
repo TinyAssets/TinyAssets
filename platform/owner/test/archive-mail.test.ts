@@ -1421,7 +1421,7 @@ describe("the archive lane's failures (review N3)", () => {
     for (let pass = 0; pass < 4; pass++) {
       await passAgain(r);
     }
-    // Every pass's second pass made other bytes than its first hashed: R2 refused each
+    // Every pass sent other bytes than its first pass hashed: R2 refused each
     // chunk, nothing moved, and the owner was told once, with the error as it was said.
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_segments"))
       .toEqual([{ n: 0 }]);

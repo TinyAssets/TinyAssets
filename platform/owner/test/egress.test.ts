@@ -31,8 +31,7 @@ import {
   ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
-import { HELD_WAIT_MS } from "../../ci/fixtures";
-import { drainDue, failure, TIERS } from "./support";
+import { drainDue, failure, gateFor, TIERS } from "./support";
 import { NETWORK_RETRY_S, type SandboxRun } from "../src/launch";
 import { LANE_CALL_MS } from "../src/schedule";
 import {
@@ -1174,7 +1173,7 @@ describe("a lease given back (untangle A2, review F5)", () => {
       .toEqual([{ network_generation: generationOf(sl.network!.network) }]);
     await scripted(r.stub, { answer: { started: false, code: SANDBOX_WAITING } });
     let call: EgressOpened | EgressRefusal | null = null;
-    const run = await whileOut("start", () => r.stub.agentSubmit(
+    const run = await whileOut(r.name, "start", () => r.stub.agentSubmit(
       r.bind({ tiers: TIERS }), { message: "go", client_send_id: "q-2" }), async () => {
       const start = (await recorder(r.stub)).starts.at(-1)!;
       call = await r.stub.egressOpen({
@@ -1204,7 +1203,7 @@ describe("a lease given back (untangle A2, review F5)", () => {
     // opens a model call on its lease; then the sandbox answers it has no room.
     await scripted(r.stub, { answer: { started: false, code: SANDBOX_WAITING } });
     let call: EgressOpened | EgressRefusal | null = null;
-    const run = await whileOut("start", () => r.stub.agentSubmit(
+    const run = await whileOut(r.name, "start", () => r.stub.agentSubmit(
       r.bind({ tiers: TIERS }), { message: "go", client_send_id: "q-1" }), async () => {
       const start = (await recorder(r.stub)).starts.at(-1)!;
       call = await r.stub.egressOpen({
@@ -1443,7 +1442,7 @@ describe("a sandbox's network (E1)", () => {
     await capped(r, ROOMY);
     // The runner launched, its CLI calls its model at once: the start has not answered yet.
     let call: EgressOpened | EgressRefusal | null = null;
-    const { run, start } = await whileOut("start", () => ownerRun(
+    const { run, start } = await whileOut(r.name, "start", () => ownerRun(
       r.stub, r.bind(), { ...onKey(connection), scopes: [] }), async () => {
       const out = (await recorder(r.stub)).starts.at(-1)!;
       RUN = out.run;
@@ -1463,7 +1462,7 @@ describe("a sandbox's network (E1)", () => {
     // The write's re-apply reaches the Worker before this start does: no sandbox has the
     // lease yet (\`lost\`), so the lane tries it again later.
     await scripted(r.stub, { networkAnswer: { state: "lost" } });
-    const { start } = await whileOut("start", () => ownerRun(
+    const { start } = await whileOut(r.name, "start", () => ownerRun(
       r.stub, r.bind(), { ...onKey(connection), scopes: [] }), async () => {
       const { generation, policy } = await r.stub.policyRead(r.bind());
       await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
@@ -1512,7 +1511,7 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     // While the re-apply is out, the run's call through the new network: only that network's
     // transform sets the new generation, so it is admitted before the answer comes.
     let call: EgressOpened | EgressRefusal | null = null;
-    await whileOut("network", () => egressWrite(r), async () => {
+    await whileOut(r.name, "network", () => egressWrite(r), async () => {
       call = await r.stub.egressOpen(lease.as(2), request(connection));
     });
     const [sent, ...more] = (await recorder(r.stub)).networks;
@@ -1596,13 +1595,14 @@ describe("a live lease's network re-applied after an egress write (E2)", () => {
     const r = await gated();
     await leased(r);
     // Every re-apply held at the gate, its answer never given while the write waits.
-    await env.SANDBOX_GATE.arm({ method: "network", hold: "before" });
+    const sandbox = gateFor(env.SANDBOX_GATE, r.name);
+    await sandbox.arm("network", { hold: "before" });
     const { generation, policy } = await r.stub.policyRead(r.bind());
     const written = r.stub.policyWrite(r.session(), { expected_generation: generation,
       policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
     // The write answers, on no clock: a write that waited on the sandbox would never answer
     // here, since the re-apply then reaches the gate and stays held, never let go.
     expect(await written).toMatchObject({ policy: { egress: { mode: "allowlist" } } });
-    expect(await env.SANDBOX_GATE.held(HELD_WAIT_MS)).toHaveLength(1);
+    expect(await sandbox.held("network")).toHaveLength(1);
   });
 });

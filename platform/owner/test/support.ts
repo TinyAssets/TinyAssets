@@ -1,7 +1,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import { TIERS } from "../../ci/fixtures";
+import { HELD_WAIT_MS, TIERS } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
@@ -210,7 +210,7 @@ export function gateFor(gate: GateControl, name: string) {
       gate.arm({ ...act, method, name, times } as Arm),
     /** The held calls of `method` (any when absent), once one is held; loud when none is. */
     held: async (method?: string): Promise<Held[]> => {
-      for (let tries = 0; tries < 400; tries++) {
+      for (let waited = 0; waited < HELD_WAIT_MS; waited += 5) {
         const held = await mine(method);
         if (held.length > 0) {
           return held;

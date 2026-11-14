@@ -15,11 +15,10 @@ import { egressDoor, egressTokenOf } from "../../contract/src/egress";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { RunReceipt } from "../src/runs";
-import { HELD_WAIT_MS } from "../../ci/fixtures";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import type { Recorded, Script } from "./fake-sandbox";
 
-import { TIERS } from "./support";
+import { gateFor, TIERS } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 export { TIERS };
@@ -98,22 +97,21 @@ export async function scripted(stub: DurableObjectStub<OwnerDO>, script: Partial
 }
 
 /**
- * `call`, with `act` done while its next call of the sandbox's `method` is out: the sandbox
- * has taken it (its record holds it) and its answer is held at the gate until `act` is
- * done, as a sandbox answers late. What `call` answered.
+ * `call`, with `act` done while `owner`'s next call of the sandbox's `method` is out: the
+ * sandbox has taken it (its record holds it) and its answer is held at the gate until `act`
+ * is done, as a sandbox answers late. What `call` answered.
  */
-export async function whileOut<R>(method: "start" | "network", call: () => Promise<R>,
-                                  act: () => Promise<void>): Promise<R> {
-  await env.SANDBOX_GATE.arm({ method, hold: "after" });
+export async function whileOut<R>(owner: string, method: "start" | "network",
+                                  call: () => Promise<R>, act: () => Promise<void>):
+    Promise<R> {
+  const sandbox = gateFor(env.SANDBOX_GATE, owner);
+  await sandbox.arm(method, { hold: "after" });
   const answered = call();
-  const [held] = await env.SANDBOX_GATE.held(HELD_WAIT_MS);
-  if (held === undefined) {
-    throw new Error(`no ${method} reached the sandbox`);
-  }
+  await sandbox.held(method);
   try {
     await act();
   } finally {
-    await env.SANDBOX_GATE.release(held.id);
+    await sandbox.release(method);
   }
   return answered;
 }
