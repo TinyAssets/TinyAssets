@@ -15,6 +15,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import { keyed, object, whole } from "./checks.ts";
 import { sha256 } from "./digest.ts";
 import { Refusal } from "./refusal.ts";
 import { HEX64 } from "./ids.ts";
@@ -51,13 +52,12 @@ function header(value: unknown): string {
 
 /** A profile checked whole, or `invalid`. */
 export function profile(value: unknown): Profile {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!object(value)) {
     throw new Refusal("invalid", "a proof profile is an object");
   }
-  const fields = value as Record<string, unknown>;
-  const keys = Object.keys(fields);
+  const fields = value;
   if (fields["method"] === "token") {
-    if (keys.sort().join() !== "digest,header,method" || typeof fields["digest"] !== "string"
+    if (!keyed(fields, ["method", "header", "digest"]) || typeof fields["digest"] !== "string"
         || !HEX64.test(fields["digest"])) {
       throw new Refusal("invalid", "a token profile is its header and its value's SHA-256");
     }
@@ -67,10 +67,8 @@ export function profile(value: unknown): Profile {
   if (fields["method"] !== "hmac-sha256") {
     throw new Refusal("invalid", "a proof profile's method is hmac-sha256 or token");
   }
-  const allowed = ["method", "signature_header", "encoding", "prefix", "version",
-                   "timestamp_header", "max_skew_seconds"];
-  if (keys.some((key) => !allowed.includes(key))
-      || !["signature_header", "encoding", "prefix"].every((key) => keys.includes(key))) {
+  if (!keyed(fields, ["method", "signature_header", "encoding", "prefix"],
+             ["version", "timestamp_header", "max_skew_seconds"])) {
     throw new Refusal("invalid", "an HMAC profile names its signature header, encoding and prefix");
   }
   const { encoding, prefix, version } = fields;
@@ -89,8 +87,7 @@ export function profile(value: unknown): Profile {
                       "an HMAC profile's timestamp has a finite skew, and only with one");
   }
   const skew = fields["max_skew_seconds"];
-  if (timed && (typeof skew !== "number" || !Number.isSafeInteger(skew) || skew < 1
-                || skew > MAX_SKEW_S)) {
+  if (timed && !whole(skew, 1, MAX_SKEW_S)) {
     throw new Refusal("invalid", `an HMAC profile's skew is 1 to ${MAX_SKEW_S} seconds`);
   }
   return Object.freeze({
