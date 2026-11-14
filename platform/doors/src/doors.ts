@@ -39,7 +39,7 @@ import { serveApp } from "./app";
 import { serveEgress } from "./egress";
 import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
-import { bindMcp, withTiers } from "./binder";
+import { bindMcp, withAccount } from "./binder";
 import {
   AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, E2B_HOOK_PATH, INBOUND_PATH,
   MCP_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK_PATH, WEB_CLIENT, WEB_REDIRECT,
@@ -80,7 +80,7 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   return mcpResource(async (req, environment, token) => {
     const bound = await bindMcp(environment, token);
     return answered(asJson, async () => serveMcp(
-      req, withTiers(bound, await outsideRead(environment, bound.binding.owner), sources),
+      req, withAccount(bound, await outsideRead(environment, bound.binding.owner), sources),
       environment));
   }).fetch(request, env, ctx);
 }

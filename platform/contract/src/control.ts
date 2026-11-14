@@ -2,7 +2,7 @@
  * The platform's control record (research §7, checklist 11): one record, `c:control`, in a
  * KV namespace of its own (`CONTROL`), which the founder edits with no deploy. The doors read
  * it on every outside and owner call, and hand its tier numbers and switched-on sign-ins in
- * the binding (`doors/src/binder.ts`, `withTiers`); the owner's object at a code-mode script's
+ * the binding (`doors/src/binder.ts`, `withAccount`); the owner's object at a code-mode script's
  * tool calls and its lanes' passes (`owner/src/control-gate.ts`); the sandbox Worker once per start and once per look
  * (`sandbox/src/control.ts`); and a first deploy writes it closed (`deploy/deploy.ts`). Each
  * reads it here, by this module's key, parse and gates, and nowhere else.

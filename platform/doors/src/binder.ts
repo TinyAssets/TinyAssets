@@ -12,13 +12,18 @@
  *
  * Each function below is one kind of verified credential, and each returns the owner's
  * object by `getByName(owner)` with the binding: no other source names `getByName` or
- * builds a binding (`guards/binder.test.ts`). The object checks the owner again against
- * its own name and stored owner, so a bug here reaching the wrong object fails there.
+ * builds a binding (`guards/binder.test.ts`). Each binding is built as one of the
+ * contract's kinds, through that kind's parser (`BINDING_PARSERS`), the one the object
+ * parses it with: a field the kind lacks is a type error, and a value out of its grammar
+ * the parser's `invalid`. The object checks the owner again against its own name and
+ * stored owner, so a bug here reaching the wrong object fails there.
  */
-import { rehearsalRun } from "../../contract/src/import-message";
-import { apiKeyOrigin, type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import {
+  type AccountBinding, apiKeyOrigin, type Binding, BINDING_PARSERS, type BindingKind,
+  type InboundBinding, PLATFORM_CALLER, type SandboxToken,
+} from "../../contract/src/binding";
 import { sha256Hex } from "../../contract/src/digest";
-import { HEX16, HEX32, HEX64, RUN_ID } from "../../contract/src/ids";
+import { FOREIGN_OWNER, reservedOwner } from "../../contract/src/ids";
 
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
@@ -40,8 +45,6 @@ import type { Sources } from "../../sources/src/schema";
 import { signinsRead } from "../../sources/src/signin";
 import type { KeyEntry, RouteEntry } from "./directory";
 import type { SignIn } from "./upstream";
-
-const KEY_ID = HEX16;
 
 /** What an MCP grant's props hold (research §1.4), encrypted by the provider. */
 export interface McpProps {
@@ -67,10 +70,13 @@ export interface AppProps {
   readonly owner: string;
 }
 
-export interface Bound {
-  readonly binding: Binding;
+export interface Bound<B extends Binding = Binding> {
+  readonly binding: B;
   readonly stub: DurableObjectStub<OwnerDoors>;
 }
+
+/** The binding of kind `K`, as its parser returns it. */
+type Kind<K extends BindingKind> = ReturnType<(typeof BINDING_PARSERS)[K]>;
 
 /**
  * The outside identity an MCP client resolves to: `client` from the issuer and its
@@ -91,23 +97,26 @@ export function mcpOrigin(clientId: string, redirectUri: string):
 
 const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
-/** A loopback host, as the provider counts one: `localhost`, `127.0.0.0/8` and `::1`. */
-export function loopback(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "[::1]" || LOOPBACK_V4.test(hostname);
+/**
+ * Whether a redirect is a local client's, whose port names no installation of its `Origin`:
+ * http on a loopback host, as the provider counts one (`localhost`, `127.0.0.0/8`, `::1`).
+ * Not the apps' rule (`loopbackRedirect`, `contract/src/apps.ts`), which matches a listed
+ * app's own redirects.
+ */
+export function localOrigin(redirect: URL): boolean {
+  return redirect.protocol === "http:" && (redirect.hostname === "localhost"
+    || redirect.hostname === "[::1]" || LOOPBACK_V4.test(redirect.hostname));
 }
 
-/** A redirect URI as an installation: a loopback one without its port. */
+/** A redirect URI as an installation: a local client's without its port. */
 export function installationOf(redirectUri: string): string {
   const url = new URL(redirectUri);
-  if (url.protocol === "http:" && loopback(url.hostname)) {
+  if (localOrigin(url)) {
     url.port = "";
     return url.href;
   }
   return redirectUri;
 }
-
-/** Where a namespaced issuer's owners start: never an owner issuer's subject. */
-export const FOREIGN = "iss-";
 
 /**
  * The owner a verified upstream sign-in names, from its issuer and subject, against an
@@ -123,8 +132,7 @@ export async function ownerOf(env: DoorsEnv, issuer: string, subject: string): P
     throw new Error("a sign-in names its issuer and subject");
   }
   if (issuer === ownerIssuer(env)) {
-    // A rehearsal's name is no one's to sign into (`rehearsalName`): its discard is no erasure.
-    if (subject.startsWith(FOREIGN) || subject.includes(":") || rehearsalRun(subject) !== null) {
+    if (reservedOwner(subject) || subject.includes(":")) {
       throw new Error("the owner issuer's subject is outside the owner namespace");
     }
     return principal(subject);
@@ -133,7 +141,7 @@ export async function ownerOf(env: DoorsEnv, issuer: string, subject: string): P
     throw new Error(`the sign-in's issuer ${JSON.stringify(issuer)} is neither the owner ` +
                     "issuer nor a listed one");
   }
-  return principal(`${FOREIGN}${sha256Hex(issuer).slice(0, 32)}-${
+  return principal(`${FOREIGN_OWNER}${sha256Hex(issuer).slice(0, 32)}-${
     encodeURIComponent(principal(subject))}`);
 }
 
@@ -142,15 +150,15 @@ export function mcpClient(clientId: string): string {
   return sha256Hex(`tinyassets-mcp-client\0${ISSUER}\0${clientId}`);
 }
 
-function seconds(value: unknown, what: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${what} is whole seconds`);
-  }
-  return value;
+/** `binding` as kind `K`'s parser takes it. */
+function built<K extends BindingKind>(kind: K, binding: Kind<K>): Kind<K> {
+  return BINDING_PARSERS[kind](binding) as Kind<K>;
 }
 
-function bound(env: DoorsEnv, binding: Binding): Bound {
-  return { binding, stub: env.OWNER.getByName(binding.owner) };
+/** `binding` as kind `K`'s parser takes it, with its owner's object. */
+function bound<K extends BindingKind>(env: DoorsEnv, kind: K, binding: Kind<K>): Bound<Kind<K>> {
+  const parsed = built(kind, binding);
+  return { binding: parsed, stub: env.OWNER.getByName(parsed.owner) };
 }
 
 /**
@@ -159,7 +167,7 @@ function bound(env: DoorsEnv, binding: Binding): Bound {
  * A mismatch is a bug, never a request to act on.
  */
 export async function bindMcp(env: DoorsEnv, token: ValidatedAccessToken<unknown>):
-    Promise<Bound> {
+    Promise<Bound<AccountBinding>> {
   const props = token.props as Partial<McpProps> | null;
   if (token.audience !== MCP_RESOURCE || typeof props !== "object" || props === null
       || props.kind !== "mcp") {
@@ -169,21 +177,15 @@ export async function bindMcp(env: DoorsEnv, token: ValidatedAccessToken<unknown
   if (owner !== token.userId || props.source_ref !== token.clientId) {
     throw new Error("an MCP grant's props disagree with its token");
   }
-  if (typeof props.client !== "string" || props.client !== mcpClient(token.clientId)
-      || typeof props.family !== "string" || !HEX64.test(props.family)) {
+  if (props.client !== mcpClient(token.clientId)) {
     throw new Error("an MCP grant's origin is not its client's");
   }
-  const vendor = props.vendor;
-  if (vendor === undefined || (vendor !== null && (typeof vendor !== "object"
-      || typeof vendor.id !== "string" || typeof vendor.verified !== "boolean"))) {
-    throw new Error("an MCP grant's props name its vendor, or null");
-  }
-  return bound(env, {
+  // The family, the sign-in's time and the vendor as the grant holds them: the parser's.
+  return bound(env, "account", {
     owner, caller: owner,
-    origin: { client: props.client, family: props.family },
+    origin: { client: props.client, family: props.family! },
     source: { kind: "mcp", ref: token.clientId },
-    authenticated_at: seconds(props.authenticated_at, "an MCP grant's sign-in"),
-    vendor,
+    authenticated_at: props.authenticated_at!, vendor: props.vendor!,
   });
 }
 
@@ -192,15 +194,11 @@ export async function bindMcp(env: DoorsEnv, token: ValidatedAccessToken<unknown
  * owner, the key's own origin (`apiKeyOrigin`, which the object re-derives), and the
  * key's mint time as its sign-in, so a revoked key never passes the fence.
  */
-export function bindApiKey(env: DoorsEnv, keyId: string, entry: KeyEntry): Bound {
-  if (!KEY_ID.test(keyId)) {
-    throw new Error("an API key binding needs its key id");
-  }
-  const owner = principal(entry.o);
-  return bound(env, {
-    owner, caller: owner, origin: apiKeyOrigin(keyId),
-    source: { kind: "api_key", ref: keyId },
-    authenticated_at: seconds(entry.c, "an API key's mint time"),
+export function bindApiKey(env: DoorsEnv, keyId: string, entry: KeyEntry):
+    Bound<AccountBinding> {
+  return bound(env, "account", {
+    owner: entry.o, caller: entry.o, origin: apiKeyOrigin(keyId),
+    source: { kind: "api_key", ref: keyId }, authenticated_at: entry.c,
   });
 }
 
@@ -213,16 +211,18 @@ export function bindApiKey(env: DoorsEnv, keyId: string, entry: KeyEntry): Bound
  */
 export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
                             generation: number, presented: Presented = {}): Bound {
-  if (!HEX64.test(tokenHash) || !Number.isSafeInteger(generation) || generation < 1) {
-    throw new Error("a sandbox binding needs its token's hash and its network's generation");
-  }
-  const named = principal(owner);
+  return bound(env, "sandbox", { owner, caller: owner, origin: null,
+                                 sandbox: egressToken(tokenHash, generation, presented) });
+}
+
+/** The egress token as a binding carries it, with the SHA-256 of the secret presented. */
+function egressToken(tokenHash: string, generation: number, presented: Presented):
+    Extract<SandboxToken, { kind: "egress" }> {
   const extra = presented.secret !== undefined
     ? { secret: sha256Hex(presented.secret) }
     : presented.runner !== undefined
       ? { runner: sha256Hex(presented.runner) } : {};
-  return bound(env, { owner: named, caller: named, origin: null,
-                      sandbox: { kind: "egress", token: tokenHash, generation, ...extra } });
+  return { kind: "egress", token: tokenHash, generation, ...extra };
 }
 
 /**
@@ -234,12 +234,8 @@ export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
  */
 export function bindSync(env: DoorsEnv, owner: string, tokenHash: string,
                          egressHash: string): Bound {
-  if (!HEX64.test(tokenHash) || !HEX64.test(egressHash)) {
-    throw new Error("a sync binding needs its token's hash and its egress token's");
-  }
-  const named = principal(owner);
-  return bound(env, { owner: named, caller: named, origin: null,
-                      sandbox: { kind: "sync", token: tokenHash, egress: egressHash } });
+  return bound(env, "sandbox", { owner, caller: owner, origin: null,
+                                 sandbox: { kind: "sync", token: tokenHash, egress: egressHash } });
 }
 
 /**
@@ -270,25 +266,24 @@ export interface Presented {
  */
 export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generation: number,
                         run: string, presented: Presented): Bound {
-  if (!RUN_ID.test(run)) {
-    throw new Error("a run binding names its run");
-  }
-  const { binding, stub } = bindSandbox(env, owner, tokenHash, generation, presented);
-  return { binding: { ...binding, run }, stub };
+  return bound(env, "run", { owner, caller: owner, origin: null,
+                             sandbox: egressToken(tokenHash, generation, presented), run });
 }
 
 /**
- * The binding with what the platform control record holds for this call, as the doors read
- * it to gate the call (`control.ts`): its tier numbers (`tiersOf`; null for none, and the
- * object then forgets the numbers it kept and refuses, `tier.ts`), which the run doors'
- * admission reads, and the served records whose vendor sign-in is switched on
- * (`signinsRead`, of the catalog the doors serve, the `sources` route's own), which the object's sign-in doors and its runs' admission hold to. No
- * request names either.
+ * An account's or an inbound event's binding with what the platform control record holds
+ * for this call, as the doors read it to gate the call (`control.ts`): its tier numbers
+ * (`tiersOf`; null for none, and the object then forgets the numbers it kept and refuses,
+ * `tier.ts`), which the run doors' admission reads, and the served records whose vendor
+ * sign-in is switched on (`signinsRead`, of the catalog the doors serve, the `sources`
+ * route's own), which the object's sign-in doors and its runs' admission hold to. No request
+ * names either. Both kinds' parsers take the two as the doors read them, so the binding
+ * stays its kind.
  */
-export function withTiers({ binding, stub }: Bound, read: ControlRead, sources: Sources):
-    Bound {
-  return { binding: { ...binding, tiers: tiersOf(read),
-                      signins: signinsRead(sources, read) }, stub };
+export function withAccount<B extends AccountBinding | InboundBinding>(
+    { binding, stub }: Bound<B>, read: ControlRead, sources: Sources): Bound<B> {
+  return { binding: { ...binding, tiers: tiersOf(read), signins: signinsRead(sources, read) },
+           stub };
 }
 
 /**
@@ -299,20 +294,14 @@ export function withTiers({ binding, stub }: Bound, read: ControlRead, sources: 
 export function bindOwnerGrant(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
                                grantId: string): Bound {
   const owner = appOwner(token);
-  if (typeof grantId !== "string" || grantId === "") {
-    throw new Error("a first-party token unwraps to its grant");
-  }
-  return bound(env, { owner, caller: owner, origin: null, grant: grantId,
-                      expires_at: seconds(token.expiresAt, "a token's expiry") });
+  return bound(env, "account", { owner, caller: owner, origin: null, grant: grantId,
+                                 expires_at: token.expiresAt });
 }
 
 /** A sign-out's binding: the owner's, with the grant its presented token unwrapped to. */
 export function bindSignOut({ binding, stub }: Bound, grantId: string): Bound {
-  if (typeof grantId !== "string" || grantId === "") {
-    throw new Error("a first-party token unwraps to its grant");
-  }
-  return { binding: { owner: binding.owner, caller: binding.caller, origin: null,
-                      grant: grantId }, stub };
+  return { binding: built("account", { owner: binding.owner, caller: binding.caller,
+                                       origin: null, grant: grantId }), stub };
 }
 
 /**
@@ -327,7 +316,8 @@ export function bindTicket(env: DoorsEnv, ticket: string): { bound: Bound; hash:
   if (parsed === null || parsed.expires === LEASE_LIVED || parsed.expires <= Date.now() / 1000) {
     return null;
   }
-  return { bound: bound(env, { owner: parsed.owner, caller: parsed.owner, origin: null }),
+  return { bound: bound(env, "account", { owner: parsed.owner, caller: parsed.owner,
+                                          origin: null }),
            hash: parsed.hash };
 }
 
@@ -349,8 +339,8 @@ export function socketRequest({ binding }: Bound, conversation: string, hash: st
  * The same binding's object again, through a fresh stub: a settle after the object reset
  * (a deploy) reaches its new instance, never the broken stub.
  */
-export function rebound(env: DoorsEnv, { binding }: Bound): Bound {
-  return bound(env, binding);
+export function rebound<B extends Binding>(env: DoorsEnv, { binding }: Bound<B>): Bound<B> {
+  return { binding, stub: env.OWNER.getByName(binding.owner) };
 }
 
 /**
@@ -359,10 +349,10 @@ export function rebound(env: DoorsEnv, { binding }: Bound): Bound {
  * `session.ts` attached one.
  */
 export function bindOwner(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
-                          session: string | undefined): Bound {
+                          session: string | undefined): Bound<AccountBinding> {
   const owner = appOwner(token);
-  return bound(env, session === undefined ? { owner, caller: owner, origin: null }
-                                          : { owner, caller: owner, origin: null, session });
+  return session === undefined ? bound(env, "account", { owner, caller: owner, origin: null })
+    : bound(env, "session", { owner, caller: owner, origin: null, session });
 }
 
 /**
@@ -374,15 +364,15 @@ export function bindKeyRegistration(env: DoorsEnv, token: ValidatedAccessToken<u
                                     keyId: string, entry: KeyEntry,
                                     session: string | undefined): Bound {
   const owner = appOwner(token);
-  if (!KEY_ID.test(keyId) || principal(entry.o) !== owner) {
+  if (principal(entry.o) !== owner) {
     throw new Error("a key registration needs the owner's own key");
   }
   const base = {
     owner, caller: owner, origin: apiKeyOrigin(keyId),
-    source: { kind: "api_key", ref: keyId } as const,
-    authenticated_at: seconds(entry.c, "an API key's mint time"),
+    source: { kind: "api_key", ref: keyId } as const, authenticated_at: entry.c,
   };
-  return bound(env, session === undefined ? base : { ...base, session });
+  return session === undefined ? bound(env, "account", base)
+    : bound(env, "session", { ...base, session });
 }
 
 /**
@@ -392,8 +382,7 @@ export function bindKeyRegistration(env: DoorsEnv, token: ValidatedAccessToken<u
  * erasure doors while the owner is marked erasing (`erase.ts`), and at the import's doors.
  */
 export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
-  const named = principal(owner);
-  return bound(env, { owner: named, caller: PLATFORM_CALLER, origin: null });
+  return bound(env, "reserved", { owner, caller: PLATFORM_CALLER, origin: null });
 }
 
 /**
@@ -404,12 +393,8 @@ export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
  * alone, and only while the owner is pending.
  */
 export function bindImport(env: DoorsEnv, owner: string, bundle: string, tiers: unknown): Bound {
-  const named = principal(owner);
-  if (!HEX64.test(bundle)) {
-    throw new Error("an import binding names its bundle's digest");
-  }
-  return bound(env, { owner: named, caller: PLATFORM_CALLER, origin: null, import: { bundle },
-                      tiers });
+  return bound(env, "import", { owner, caller: PLATFORM_CALLER, origin: null,
+                                import: { bundle }, tiers });
 }
 
 /**
@@ -418,13 +403,9 @@ export function bindImport(env: DoorsEnv, owner: string, bundle: string, tiers: 
  * against its own (`inboundAccept` alone takes it); the control record's tier numbers ride
  * it for the run the mail starts.
  */
-export function bindInbound(env: DoorsEnv, entry: RouteEntry): Bound {
-  if (!HEX32.test(entry.b) || !Number.isSafeInteger(entry.r) || entry.r < 1) {
-    throw new Error("an inbound binding needs its route's binding and revision");
-  }
-  const owner = principal(entry.o);
-  return bound(env, { owner, caller: owner, origin: null,
-                      inbound: { binding: entry.b, revision: entry.r } });
+export function bindInbound(env: DoorsEnv, entry: RouteEntry): Bound<InboundBinding> {
+  return bound(env, "inbound", { owner: entry.o, caller: entry.o, origin: null,
+                                 inbound: { binding: entry.b, revision: entry.r } });
 }
 
 /**
@@ -434,8 +415,8 @@ export function bindInbound(env: DoorsEnv, entry: RouteEntry): Bound {
  */
 export async function bindSignIn(env: DoorsEnv, signIn: SignIn): Promise<Bound> {
   const owner = await ownerOf(env, signIn.issuer, signIn.subject);
-  return bound(env, { owner, caller: owner, origin: null,
-                      authenticated_at: seconds(signIn.authenticated_at, "a sign-in's time") });
+  return bound(env, "account", { owner, caller: owner, origin: null,
+                                 authenticated_at: signIn.authenticated_at });
 }
 
 function appOwner(token: ValidatedAccessToken<unknown>): string {

@@ -66,7 +66,7 @@ describe("an MCP binding", () => {
     expect(named.binding.vendor).toEqual({ id: "muse", verified: false });
     for (const vendor of [undefined, "muse", { id: "muse" }]) {
       await expect(bindMcp(doorsEnv, await mcpToken("muse-client", "https://muse.test/cb",
-        { vendor }))).rejects.toThrow("an MCP grant's props name its vendor, or null");
+        { vendor }))).rejects.toThrow("invalid account binding");
     }
   });
 
@@ -230,6 +230,7 @@ describe("the owner a sign-in names", () => {
     ["the owner namespace's prefix", "iss-0123-user"],
     ["a colon", "user:1"],
     ["a rehearsal's name", "rehearsal-r1-0123456789abcdef01234567"],
+    ["the rehearsals' prefix, though no rehearsal's name", "rehearsal-x"],
     ["blank", ""],
   ])("refuses an owner issuer's subject holding %s", async (_what, subject) => {
     await expect(ownerOf(doorsEnv, FAKE_ISSUER, subject)).rejects.toThrow();

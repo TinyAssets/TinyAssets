@@ -80,13 +80,6 @@ export const NOT_CONFIGURED = "not-configured";
 /** The inbound door's path: `/hooks/inbound/<token>`, one segment (`inbound.ts`). */
 export const INBOUND_PATH = "/hooks/inbound/";
 /**
- * The erasure queue (`erase.ts`), the one the owner Worker's `ERASURES` producer sends to:
- * the queue handler takes a batch of neither it nor the import queue as the sandbox's ring
- * (`index.ts`), so `guards/config.test.ts` holds this name to the configs.
- */
-export const ERASURE_QUEUE = "tinyassets-erasure";
-
-/**
  * A secret a data record names (a shared app's signing secret, `shared-apps.json`), or
  * null when the Worker holds none: its door then refuses loudly, never a guess.
  */
