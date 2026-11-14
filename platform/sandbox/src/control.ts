@@ -38,9 +38,10 @@
  * on the way (a full disk, envd failing) is logged loudly (`sandbox_runner_adopt_failed`)
  * and the sandbox goes on with the runner it has, asked again at its next start. The
  * loader's absent (24) has the Worker's own digest uploaded and installed and the command
- * asked again, once; its mismatch (25) is the alert `sandbox_runner_mismatch`, thrown, and
- * nothing launches. A runner speaking a protocol this Worker does not (`SPEAKS`) is
- * refused the same way (`sandbox_runner_protocol`).
+ * asked again, once; its mismatch (25) is the alert `sandbox_runner_mismatch`, logged and
+ * thrown as the contract's refusal of that code, and nothing launches. A runner speaking a
+ * protocol this Worker does not (`SPEAKS`) is refused the same way
+ * (`sandbox_runner_protocol`).
  *
  * **The look** (the alarm; the founder's rule of 2026-11-03): a sandbox may run
  * `runtime_ceiling_s` at a stretch, and a pause resets that window (probed). The window's
@@ -76,6 +77,7 @@ import {
   withEgressToken,
 } from "../../contract/src/egress";
 import { migrate } from "../../contract/src/migrate";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { SEALED_ROUTE } from "../../contract/src/routing-mac";
 import {
   METER_BATCH, type MeterEvent, type NetworkApplied, type NetworkDocument, type NetworkReapply,
@@ -83,7 +85,7 @@ import {
 } from "../../contract/src/sandbox";
 
 import { install } from "../e2b/install";
-import type { Handle } from "../e2b/transport";
+import type { Exec, Handle } from "../e2b/transport";
 import { type AnswerFields, ANSWERS, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc,
          type JobKind, JOBS, LEASE_FILE, type LeaseFile, LOADER, type QuietAnswer, SPEAKS,
          type SigninDoc, type StartDoc, type StateAnswer,
@@ -95,29 +97,12 @@ import { CONTROL_MIGRATIONS } from "./schema";
 import type { SandboxEnv } from "./env";
 import { SLOTS, type SandboxSlots } from "./slots";
 
-/** The start's fixed answers, beside `started: true`. */
-const CODES = Object.freeze({
-  waiting: "sandbox_waiting",
-  signin: "signin_required",
-  unconfigured: "sandbox_unconfigured",
-  lost: "sandbox_lost",
-} as const);
-
-/** A runner command that did not answer 0 or 3: its exit code kept. */
-class RunnerFailed extends Error {
-  override readonly name = "RunnerFailed";
-  constructor(readonly exitCode: number, message: string) {
-    super(message);
+/** A runner command answered 0 or 3, and its output: any other exit is a fault, thrown. */
+function answered(command: WorkerCommand, done: Exec): { code: number; out: string } {
+  if (done.exitCode !== EXIT.ok && done.exitCode !== EXIT.no) {
+    throw new Error(`ta-runner ${command} failed (${done.exitCode}): ${done.stderr}`);
   }
-}
-
-/**
- * The sandbox's runner refused for good (the founder's alert): its bytes are not their
- * digest (`sandbox_runner_mismatch`), or it speaks a protocol this Worker does not
- * (`sandbox_runner_protocol`). Nothing runs on it; an adoption never hides it.
- */
-class RunnerRefused extends Error {
-  override readonly name = "RunnerRefused";
+  return { code: done.exitCode, out: done.stdout };
 }
 
 /** Measured: the longest pause, 705 ms (`e2b-resume-measurement.md`, 40 cycles). */
@@ -355,6 +340,23 @@ function answerOf<T>(out: string, fields: AnswerFields<T>): T {
 }
 
 /**
+ * The state `box`'s runner answered (`out`), from a runner speaking a protocol this Worker
+ * speaks: one that does not is refused (`sandbox_runner_protocol`), and nothing runs on it.
+ */
+function stateOf(box: Box, out: string): StateAnswer {
+  const protocol = (JSON.parse(out) as Partial<Record<keyof StateAnswer, unknown>>).protocol;
+  if (typeof protocol !== "number" || !SPEAKS.includes(protocol)) {
+    console.error(`sandbox_runner_protocol: the runner ${box.runner} in sandbox ${
+      box.sandboxID} speaks protocol ${String(protocol)}; this Worker speaks ${
+      SPEAKS.join(" and ")}`);
+    throw new Refusal("sandbox_runner_protocol",
+                      "the sandbox's runner speaks a protocol this Worker does not; nothing " +
+                      "runs on it");
+  }
+  return answerOf<StateAnswer>(out, ANSWERS[COMMAND.state]);
+}
+
+/**
  * The metadata naming an owner's sandboxes, so an erasure finds strays the rows lost: an
  * opaque name, the first 32 hex of a SHA-256.
  */
@@ -549,28 +551,32 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * A runner command, by the digest the sandbox runs. The loader finding no runner of this
-   * Worker's digest has it installed and is asked again, once; any other digest absent, or
-   * bytes that are not their digest, are thrown.
+   * A runner command, by the digest the sandbox runs, whatever it exits with. The loader
+   * finding no runner of this Worker's digest has it installed and is asked again, once;
+   * bytes that are not their digest are refused (`sandbox_runner_mismatch`). Another
+   * digest absent is its exit (`EXIT.absent`), for the caller that knows that runner may be
+   * gone; every other caller asks `#run`.
    */
-  async #run(box: Box, argv: readonly [WorkerCommand, ...string[]], timeoutMs = COMMAND_MS):
-      Promise<{ code: number; out: string }> {
+  async #exec(box: Box, argv: readonly [WorkerCommand, ...string[]], timeoutMs = COMMAND_MS):
+      Promise<Exec> {
     let done = await this.#e2b().exec(box, [LOADER, box.runner, ...argv], { timeoutMs });
     if (done.exitCode === EXIT.absent && box.runner === this.#digest) {
       await this.#install(box);
       done = await this.#e2b().exec(box, [LOADER, box.runner, ...argv], { timeoutMs });
     }
     if (done.exitCode === EXIT.mismatch) {
-      const message = `sandbox_runner_mismatch: the runner ${box.runner} in sandbox ${
-        box.sandboxID} is not its digest; nothing runs on it`;
-      console.error(message);
-      throw new RunnerRefused(message);
+      console.error(`sandbox_runner_mismatch: the runner ${box.runner} in sandbox ${
+        box.sandboxID} is not its digest; nothing runs on it`);
+      throw new Refusal("sandbox_runner_mismatch",
+                        "the sandbox's runner is not its digest; nothing runs on it");
     }
-    if (done.exitCode !== EXIT.ok && done.exitCode !== EXIT.no) {
-      throw new RunnerFailed(done.exitCode, `ta-runner ${argv[0]} failed (${done.exitCode}): ${
-        done.stderr}`);
-    }
-    return { code: done.exitCode, out: done.stdout };
+    return done;
+  }
+
+  /** A runner command (`#exec`) answered 0 or 3; any other exit is thrown. */
+  async #run(box: Box, argv: readonly [WorkerCommand, ...string[]], timeoutMs = COMMAND_MS):
+      Promise<{ code: number; out: string }> {
+    return answered(argv[0], await this.#exec(box, argv, timeoutMs));
   }
 
   /** This Worker's runner uploaded into the sandbox and installed by the loader. */
@@ -584,8 +590,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * and committed to its row, its caller then running the adopted runner's `prepare`, which
    * drops the other runners' bytes. Otherwise as it is: a live run's runner stays. A
    * failure on the way keeps the runner it has (logged loudly, asked again at the next
-   * start): an adoption is never what fails a start. Only a refusal (`RunnerRefused`) is
-   * thrown. Whether it adopted.
+   * start): an adoption is never what fails a start. Only a refusal (the runner's, by its
+   * code) is thrown. Whether it adopted.
    */
   async #adopt(authority: string, box: Box): Promise<{ box: Box; adopted: boolean }> {
     const digest = this.#digest;
@@ -593,16 +599,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return { box, adopted: false };
     }
     try {
-      let live: number;
-      try {
-        live = (await this.#runnerState(box)).live;
-      } catch (error) {
-        if (!(error instanceof RunnerFailed) || error.exitCode !== EXIT.absent) {
-          throw error;
-        }
-        live = 0;  // its own runner gone from the disk: nothing can live on it
-      }
-      if (live > 0) {
+      const asked = await this.#exec(box, [COMMAND.state]);
+      // Its own runner gone from the disk: nothing can live on it.
+      if (asked.exitCode !== EXIT.absent
+          && stateOf(box, answered(COMMAND.state, asked).out).live > 0) {
         return { box, adopted: false };
       }
       const adopted = { ...box, runner: digest };
@@ -613,7 +613,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       this.#sql.exec("UPDATE sandboxes SET runner = ? WHERE authority = ?", digest, authority);
       return { box: adopted, adopted: true };
     } catch (error) {
-      if (error instanceof RunnerRefused) {
+      if (refusalOf(error) !== null) {
         throw error;
       }
       console.error(`sandbox_runner_adopt_failed: sandbox ${box.sandboxID} keeps its runner ${
@@ -777,7 +777,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
     const { ceilings, retention, fresh } = await this.#control();
     if (ceilings === null) {
-      return { started: false, code: CODES.unconfigured };
+      return { started: false, code: "sandbox_unconfigured" };
     }
     return this.#launch(owner, ceilings, {
       kind: "run", id: start.run, request: start, hosts: () => vendorHosts(start),
@@ -786,7 +786,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         if (start.credential === "vendor_login_in_sandbox") {
           const signedIn = await this.#run(handle, [COMMAND.signinCheck, start.engine]);
           if (signedIn.code === EXIT.no) {
-            return { started: false, code: CODES.signin };
+            return { started: false, code: "signin_required" };
           }
         }
         if (fresh) {
@@ -816,7 +816,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const hosts = hostsOf(signin.engine, signin.region);
     const { ceilings } = await this.#control();
     if (ceilings === null) {
-      return { started: false, code: CODES.unconfigured };
+      return { started: false, code: "sandbox_unconfigured" };
     }
     return this.#launch(owner, ceilings, { kind: "signin", id: signin.id, request: signin,
                                            hosts: () => hosts,
@@ -843,10 +843,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const first = network === null ? null : widened(network, kept) ?? network;
       const got = await this.#ensure(owner, request.authority, first, ceilings, request.route);
       if (got === "waiting") {
-        return { started: false, code: CODES.waiting };
+        return { started: false, code: "sandbox_waiting" };
       }
       if (got === "lost") {
-        return { started: false, code: CODES.lost };
+        return { started: false, code: "sandbox_lost" };
       }
       const { handle } = got;
       const lease = leaseFile(request);
@@ -1104,18 +1104,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("DELETE FROM launched WHERE authority = ?", authority);
   }
 
-  /** The runner's state, from a runner speaking a protocol this Worker speaks. */
+  /** The runner's state (`stateOf`). */
   async #runnerState(handle: Box): Promise<StateAnswer> {
-    const out = (await this.#run(handle, [COMMAND.state])).out;
-    const protocol = (JSON.parse(out) as Partial<Record<keyof StateAnswer, unknown>>).protocol;
-    if (typeof protocol !== "number" || !SPEAKS.includes(protocol)) {
-      const message = `sandbox_runner_protocol: the runner ${handle.runner} in sandbox ${
-        handle.sandboxID} speaks protocol ${String(protocol)}; this Worker speaks ${
-        SPEAKS.join(" and ")}`;
-      console.error(message);
-      throw new RunnerRefused(message);
-    }
-    return answerOf<StateAnswer>(out, ANSWERS[COMMAND.state]);
+    return stateOf(handle, (await this.#run(handle, [COMMAND.state])).out);
   }
 
   /**
@@ -1215,19 +1206,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       this.#ended(found!);
       const until = Math.min(Date.parse(found!.endAt) - RENEW_EDGE_MS, lookEnd);
-      let out: string;
-      try {
-        ({ out } = await this.#run(handle, [COMMAND.quietWait, String(Math.floor(until))],
-                                   Math.max(0, until - Date.now()) + COMMAND_MS));
-      } catch (error) {
-        // A start on the chain adopted another runner meanwhile, and its `prepare` dropped
-        // this one's bytes: no quiet moment read here, and nothing failed.
-        if (error instanceof RunnerFailed && error.exitCode === EXIT.absent
-            && this.#row(row.authority)?.runner !== handle.runner) {
-          return;
-        }
-        throw error;
+      const asked = await this.#exec(handle, [COMMAND.quietWait, String(Math.floor(until))],
+                                     Math.max(0, until - Date.now()) + COMMAND_MS);
+      // A start on the chain adopted another runner meanwhile, and its `prepare` dropped
+      // this one's bytes: no quiet moment read here, and nothing failed.
+      if (asked.exitCode === EXIT.absent && this.#row(row.authority)?.runner !== handle.runner) {
+        return;
       }
+      const { out } = answered(COMMAND.quietWait, asked);
       quiet.set(row.authority, answerOf<QuietAnswer>(out, ANSWERS[COMMAND.quietWait]).quiet);
     }));
     return this.#serial(async () => {
