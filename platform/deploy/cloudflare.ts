@@ -1,9 +1,10 @@
 /**
  * Cloudflare, as the deploy kit and the import window speak to it over its REST API with the
  * account's token: the zone and its account, the account's Workers and their secrets' names,
- * KV namespaces and values, R2 buckets, queues, and the zone's Worker routes, DNS records and
- * Workers custom domains. Every call is checked: a failed listing or read throws, never reads
- * as "absent", and a body that is not JSON throws. Every listing is read to its last page.
+ * KV namespaces, keys and values, R2 buckets, queues with their messages and consumers, and the
+ * zone's Worker routes, DNS records and Workers custom domains. Every call is checked: a failed
+ * listing or read throws, never reads as "absent", and a body that is not JSON throws. Every
+ * listing is read to its last page.
  * The kit's other Cloudflare tool is wrangler (`deploy.ts`), which deploys and sets secrets.
  *
  * Node runs this file as it is (type stripping), as the kit does.
@@ -11,6 +12,9 @@
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 const CF_API = "https://api.cloudflare.com/client/v4";
+
+/** A Cloudflare account's id: 32 hex. */
+export const ACCOUNT_ID = /^[0-9a-f]{32}$/;
 
 /** Cloudflare's answer envelope, as every API but a KV value's answers. */
 interface Envelope {
@@ -57,6 +61,20 @@ function rows(result: unknown, what: string): Record<string, unknown>[] {
     throw new Error(`${what} failed (its answer holds no listing)`);
   }
   return result as Record<string, unknown>[];
+}
+
+/** An HTTP pull consumer's settings, as the Queues API takes them. */
+export interface PullSettings {
+  readonly batch_size: number;
+  readonly max_retries: number;
+  readonly visibility_timeout_ms: number;
+}
+
+/** A message pulled from a queue: its id, its body as the API hands it, and its lease. */
+export interface Pulled {
+  readonly id: string;
+  readonly body: unknown;
+  readonly lease: string;
 }
 
 /** A Worker route on the zone, as Cloudflare's routes API lists it. */
@@ -332,7 +350,7 @@ export class Cloudflare {
     const id = found[0]?.["id"];
     const account = (found[0]?.["account"] as { id?: unknown } | undefined)?.id;
     if (found.length !== 1 || typeof id !== "string" || typeof account !== "string"
-        || !/^[0-9a-f]{32}$/.test(account)) {
+        || !ACCOUNT_ID.test(account)) {
       throw new Error(`the zone ${name} could not be read (${found.length} found)`);
     }
     return { id, account };
@@ -440,6 +458,68 @@ export class Cloudflare {
   async makeQueue(account: string, name: string): Promise<void> {
     await this.#send(`making the queue ${name}`, "POST", `/accounts/${account}/queues`,
                      { queue_name: name });
+  }
+
+  /** `body` sent as one JSON message to the queue `queue` (its id). */
+  async send(account: string, queue: string, body: unknown): Promise<void> {
+    await this.#send(`sending a message to the queue ${queue}`, "POST",
+                     `/accounts/${account}/queues/${queue}/messages`,
+                     { body, content_type: "json" });
+  }
+
+  /** The consumers of the queue `queue` (its id), by type (`worker` or `http_pull`). */
+  async consumers(account: string, queue: string): Promise<string[]> {
+    return (await this.#rows(`listing the consumers of the queue ${queue}`,
+                             `/accounts/${account}/queues/${queue}/consumers`))
+      .map((consumer) => String(consumer["type"]));
+  }
+
+  /** An HTTP pull consumer added to the queue `queue` (its id), with `settings`. */
+  async addPullConsumer(account: string, queue: string, settings: PullSettings): Promise<void> {
+    await this.#send(`adding a pull consumer to the queue ${queue}`, "POST",
+                     `/accounts/${account}/queues/${queue}/consumers`,
+                     { type: "http_pull", settings });
+  }
+
+  /**
+   * Up to `batch` messages pulled from the queue `queue` (its id), each leased for
+   * `visibilityMs`, and the queue's backlog: every message not yet acknowledged, leased too.
+   */
+  async pull(account: string, queue: string, batch: number, visibilityMs: number):
+      Promise<{ backlog: number; messages: Pulled[] }> {
+    const { result } = await this.#send(`pulling from the queue ${queue}`, "POST",
+                                        `/accounts/${account}/queues/${queue}/messages/pull`,
+                                        { batch_size: batch, visibility_timeout_ms: visibilityMs });
+    // An answer with no pull in it is a failed read, never an empty queue.
+    if (typeof result !== "object" || result === null) {
+      throw new Error(`pulling from the queue ${queue} failed (its answer holds no pull)`);
+    }
+    const pulled = result as { message_backlog_count?: unknown;
+                               messages?: { id?: unknown; body?: unknown; lease_id?: unknown }[] };
+    const backlog = pulled.message_backlog_count;
+    return { backlog: Number.isSafeInteger(backlog) ? backlog as number : 0,
+             messages: (pulled.messages ?? []).map((message) => ({
+               id: typeof message.id === "string" ? message.id : "", body: message.body,
+               lease: typeof message.lease_id === "string" ? message.lease_id : "" })) };
+  }
+
+  /** The pulled messages of `leases` acknowledged, so deleted, in calls of 100. */
+  async ack(account: string, queue: string, leases: readonly string[]): Promise<void> {
+    for (let at = 0; at < leases.length; at += 100) {
+      await this.#send(`acknowledging messages of the queue ${queue}`, "POST",
+                       `/accounts/${account}/queues/${queue}/messages/ack`,
+                       { acks: leases.slice(at, at + 100).map((lease_id) => ({ lease_id })),
+                         retries: [] });
+    }
+  }
+
+  /** The KV namespace's keys `keys` deleted, in calls of 1000. */
+  async deleteKeys(account: string, namespace: string, keys: readonly string[]): Promise<void> {
+    for (let at = 0; at < keys.length; at += 1000) {
+      await this.#send("deleting KV keys", "POST",
+                       `/accounts/${account}/storage/kv/namespaces/${namespace}/bulk/delete`,
+                       keys.slice(at, at + 1000));
+    }
   }
 
   /** The zone's Worker routes. */

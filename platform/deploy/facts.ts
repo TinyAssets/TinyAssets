@@ -1,14 +1,16 @@
 /**
  * The platform's deploy facts, each read from the one place it is written: the six Workers'
- * `wrangler.jsonc` (names, bindings, required secrets, buckets, queues, and so the deploy
- * order), `platform.json` (what no config can say, each entry with its reason),
- * `doors/shared-apps.json` (the shared apps' signing secrets) and `contract/identity.json`
- * (the doors' public identity). The deploy kit, its workflow's guard, the environment guard
- * and the founder's setup read them here or from those files; none holds a list of its own.
+ * `wrangler.jsonc` (names, bindings, required secrets, buckets, queues, Durable Object
+ * migrations, and so the deploy order), `platform.json` (what no config can say, each entry
+ * with its reason, and so each Worker's record, `WORKER_FACTS`), the shared apps' file it
+ * names (their signing secrets) and `contract/identity.json` (the doors' public identity).
+ * The deploy kit, its workflow's guard, the environment guard and the founder's setup read
+ * them here or from those files; none holds a list of its own.
  *
  * Node runs this file as it is (type stripping), as the kit does. Run with `--import`, it prints
  * the import job's names (`IMPORT_NAMES`) as JSON, for the job's bundle.
  */
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +18,6 @@ import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/wrangler.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import type { ImportNames } from "../contract/src/import-names.ts";
-import sharedApps from "../doors/shared-apps.json" with { type: "json" };
 import platform from "./platform.json" with { type: "json" };
 
 /** Each Worker's checked-in config, by its folder under `platform/`. */
@@ -70,12 +71,19 @@ export const WORKERS: readonly string[] = (() => {
   return Object.freeze(order);
 })();
 
-/** The doors Worker, which the routes are handed to. */
-export const DOORS = NAMES["doors"]!;
-
 /** The KV namespaces, by binding, and their titles in the account (`platform.json`). */
-export const NAMESPACES: Readonly<Record<string, string>> = Object.freeze(
-  platform.namespaces.titles);
+export const NAMESPACES: Readonly<Record<string, string>> = (() => {
+  const titles: Readonly<Record<string, string>> = platform.namespaces.titles;
+  for (const worker of CONFIGS.keys()) {
+    for (const { binding } of (configOf(worker)["kv_namespaces"] ?? []) as { binding: string }[]) {
+      if (titles[binding] === undefined) {
+        throw new Error(`platform/${worker} binds the KV namespace ${binding}, which ` +
+                        "platform.json gives no title");
+      }
+    }
+  }
+  return Object.freeze({ ...titles });
+})();
 
 /** Each kind of storage a config names, in deploy order, each name once. */
 function named(field: (config: Config) => readonly string[]): readonly string[] {
@@ -122,16 +130,87 @@ function required(worker: string): readonly string[] {
   return ((configOf(worker)["secrets"] as { required?: string[] } | undefined)?.required ?? []);
 }
 
-/**
- * The shared apps' signing secrets (`doors/shared-apps.json`): the doors hold each when it is
- * given, and without one that app's door refuses loudly, so no config requires them.
- */
-export const OPTIONAL: readonly string[] = Object.freeze(sharedApps.apps.map((app) => app.secret));
+/** What `platform.json` gives one Worker, by its folder (`workers`). */
+interface Given {
+  readonly identity?: boolean;
+  readonly shared_apps?: string;
+}
+
+/** What the kit gives one Worker beyond its checked-in config, by folder. */
+export interface WorkerFacts {
+  /** The shared apps' signing secrets it holds when each is given (its `shared_apps` file). */
+  readonly optional: readonly string[];
+  /** Whether it is deployed with the owner issuer and WorkOS's record (`identity`). */
+  readonly upstream: boolean;
+  /** The routes mode `routes` hands it: identity.json's, and the egress custom domain. */
+  readonly routes: readonly Readonly<Record<string, string | boolean>>[];
+  /** Whether its config declares Durable Object migrations, so `--migrate` may name it. */
+  readonly migrates: boolean;
+}
+
+/** The signing secrets of the shared apps in `worker`'s file `file`. */
+function sharedSecrets(worker: string, file: string): readonly string[] {
+  const { apps } = JSON.parse(readFileSync(join(PLATFORM, worker, file), "utf8")) as
+    { apps?: { secret?: unknown }[] };
+  if (!Array.isArray(apps) || !apps.every((app) => typeof app?.secret === "string")) {
+    throw new Error(`platform/${worker}/${file} lists no shared apps, each with its secret`);
+  }
+  return Object.freeze(apps.map((app) => app.secret as string));
+}
+
+const GIVEN: Readonly<Record<string, Given>> = platform.workers.folders;
+
+/** The Worker that serves `contract/identity.json`, by folder (`platform.json`): exactly one. */
+export const IDENTITY = (() => {
+  for (const worker of Object.keys(GIVEN)) {
+    configOf(worker);
+  }
+  const serving = Object.keys(GIVEN).filter((worker) => GIVEN[worker]!.identity === true);
+  if (serving.length !== 1) {
+    throw new Error(`platform.json gives the identity to ${serving.length} Workers, not one`);
+  }
+  return serving[0]!;
+})();
+
+/** The doors Worker, which serves the identity: the routes are handed to it. */
+export const DOORS = NAMES[IDENTITY]!;
+
+/** The zone and origin the doors serve (`identity.json`). */
+export const ZONE = identity.host;
+export const ORIGIN = `https://${ZONE}`;
+/** The doors' public routes (mode `routes`, the cutover's), on the zone. */
+export const ROUTES: readonly string[] = Object.freeze(
+  identity.routes.map((path) => `${ZONE}${path}`));
+/** The sandbox's egress host, a custom domain of the doors Worker (mode `routes`). */
+export const EGRESS_DOMAIN = identity.egress;
+
+/** Each Worker's record, by folder: what `platform.json` gives it, and what its config says. */
+export const WORKER_FACTS: Readonly<Record<string, WorkerFacts>> = Object.freeze(
+  Object.fromEntries([...CONFIGS].map(([worker, config]) => {
+    const given = GIVEN[worker] ?? {};
+    const serves = worker === IDENTITY;
+    return [worker, Object.freeze({
+      optional: given.shared_apps === undefined ? Object.freeze([])
+        : sharedSecrets(worker, given.shared_apps),
+      upstream: serves,
+      routes: Object.freeze(serves ? [...ROUTES.map((pattern) => ({ pattern, zone_name: ZONE })),
+                                      { pattern: EGRESS_DOMAIN, custom_domain: true }] : []),
+      migrates: ((config["migrations"] ?? []) as unknown[]).length > 0,
+    })];
+  })));
+
+/** The Workers `--migrate` may name: those whose config declares Durable Object migrations. */
+export const MIGRATES: readonly string[] = Object.freeze(
+  WORKERS.filter((worker) => WORKER_FACTS[worker]!.migrates));
+
+/** Every shared app's signing secret, each on the Worker whose file lists it. */
+export const OPTIONAL: readonly string[] = Object.freeze(
+  WORKERS.flatMap((worker) => WORKER_FACTS[worker]!.optional));
 
 /** Each Worker's secrets, in the order the kit sets them (`platform.json`). */
 export const SECRETS: Readonly<Record<string, readonly string[]>> = Object.freeze(
   Object.fromEntries(platform.secret_order.workers.map((worker) =>
-    [worker, Object.freeze([...required(worker), ...(worker === "doors" ? OPTIONAL : [])])])));
+    [worker, Object.freeze([...required(worker), ...WORKER_FACTS[worker]!.optional])])));
 
 /** Every secret a config requires, each once: what only the apply job holds. */
 export const SECRET_INPUTS: readonly string[] = Object.freeze(
@@ -148,14 +227,6 @@ export const MADE: Readonly<Record<string, string>> = Object.freeze(platform.mad
 export const KEYRINGS: readonly string[] = Object.freeze(
   Object.keys(MADE).filter((name) => MADE[name] === "keyring"));
 
-/** The zone and origin the doors serve (`identity.json`). */
-export const ZONE = identity.host;
-export const ORIGIN = `https://${ZONE}`;
-/** The doors' public routes (mode `routes`, the cutover's), on the zone. */
-export const ROUTES: readonly string[] = Object.freeze(
-  identity.routes.map((path) => `${ZONE}${path}`));
-/** The sandbox's egress host, a custom domain of the doors Worker (mode `routes`). */
-export const EGRESS_DOMAIN = identity.egress;
 /** Where a sign-in starts, and where the upstream returns it. */
 export const AUTHORIZE = `${ORIGIN}${identity.signin.authorize}`;
 export const CALLBACK = `${ORIGIN}${identity.signin.callback}`;
@@ -194,8 +265,8 @@ function boundAs<T extends { binding?: string }>(worker: string, entries: readon
 type Buckets = readonly { binding: string; bucket_name: string }[] | undefined;
 
 /**
- * The live names the import job reaches, each read where it is written: the staging bucket and
- * the import queue the doors bind, the dead-letter queue of the doors' consumer of that queue,
+ * The live names the import job reaches, each read where it is written: the staging bucket the
+ * doors bind, the dead-letter queue of the doors' consumer of the queue they bind as `IMPORTS`,
  * the files Worker's bucket, the directory's namespace title and the final backup's bucket
  * (`platform.json`). The job runs on its import host, away from this tree, so the window's
  * bundle step writes them beside the job (`--import`).
@@ -212,7 +283,6 @@ export const IMPORT_NAMES = (() => {
   }
   return Object.freeze({
     staging_bucket: boundAs("doors", doors["r2_buckets"] as Buckets, "IMPORT_STAGING").bucket_name,
-    queue,
     dead_letter_queue: deadLetters,
     files_bucket: boundAs("files", configOf("files")["r2_buckets"] as Buckets, "BLOBS").bucket_name,
     directory: platform.namespaces.titles.DIRECTORY,

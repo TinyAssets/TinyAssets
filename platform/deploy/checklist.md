@@ -120,7 +120,8 @@ It never counts as "absent".
    `wrangler deploy`. Later deploys upload a version, then deploy it (`wrangler versions
    upload`, then `versions deploy`), which never touches a route. Wrangler refuses a version
    upload with a pending Durable Object migration (read in wrangler 4.154's source). Name that
-   Worker in `migrate` to deploy it whole; `migrate` never takes the doors.
+   Worker in `migrate` to deploy it whole; `migrate` takes only a Worker whose config declares
+   Durable Object migrations.
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
    off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the

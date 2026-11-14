@@ -6,7 +6,6 @@
  * owner issuer's (`oidc.ts`), or `UNWIRED` until the deploy configures it, so a sign-in
  * fails loudly.
  */
-import { IMPORT_QUEUE } from "../../contract/src/import-message";
 import { QUEUES } from "../../contract/src/queue-names";
 
 import { NOT_CONFIGURED } from "./config";
@@ -41,15 +40,14 @@ export default Object.freeze({
     serve(request, env, ctx, () => upstreamOf(env), bundledSources()),
   // Three queues, each by its producer's name and to its one consumer: the sandbox line's
   // doorbell (`ring.ts`), the erasure's outside record (`erase.ts`) and the cutover's import
-  // window (`import.ts`, by the window's own name, since only it names the window's
-  // bindings). A batch of any other queue is no one's, and fails loudly.
+  // window (`import/`). A batch of any other queue is no one's, and fails loudly.
   queue: async (batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> => {
     switch (batch.queue) {
       case QUEUES.RING:
         return ringQueue(batch, env);
       case QUEUES.ERASURES:
         return erasureQueue(batch, env, () => upstreamOf(env));
-      case IMPORT_QUEUE:
+      case QUEUES.IMPORTS:
         return importQueue(batch, env);
     }
     throw new Error(`the doors consume no queue ${JSON.stringify(batch.queue)}`);

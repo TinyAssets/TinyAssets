@@ -36,16 +36,16 @@ import { join } from "node:path";
 import {
   answerName, BUNDLE_OWNER, type BundleOwner, bundlePrefix, doneName, type Entry, importMac,
   type ImportMessage, type ImportOp, importMessage, NO_ROWS, type Paged, pageNumber,
-  rehearsalRun, type Row, rowsSum, RUN,
+  rehearsalRun, type Row, rowsSum,
 } from "../contract/src/import-message";
 import { DEFAULT_TIER } from "../contract/src/control";
 import { objectPrefix } from "../contract/src/files";
 import type { ImportNames } from "../contract/src/import-names";
+import { QUEUES } from "../contract/src/queue-names";
 
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
 import {
-  ACCOUNT, API, bundlesIn, cloudflareOf, type Fetcher, type Inputs, pushMessage, queueId,
-  s3Request, type Staged,
+  bundlesIn, checkRun, cloudflareOf, type Fetcher, type Inputs, queueId, s3Request, type Staged,
 } from "./stage";
 
 /** How a step waits and reads the clock: the process's, or a test's. */
@@ -106,18 +106,6 @@ async function ok(window: Window, request: Request, what: string): Promise<Respo
     throw new Error(`${what} was refused (${answer.status}): nothing more is done`);
   }
   return answer;
-}
-
-/** A Cloudflare API call's result, or a loud failure. */
-async function api<T>(window: Window, path: string, init: RequestInit = {}): Promise<T> {
-  const answer = await window.fetcher(new Request(`${API}/accounts/${window.inputs.account}${path}`, {
-    ...init, headers: { authorization: `Bearer ${window.inputs.apiToken}`,
-                        "content-type": "application/json" } }));
-  const body = await answer.json().catch(() => null) as { success?: boolean; result?: T } | null;
-  if (!answer.ok || body?.success !== true) {
-    throw new Error(`a Cloudflare API call was refused (${answer.status}): nothing more is done`);
-  }
-  return body.result as T;
 }
 
 /** An object of a bucket, as text, or null when the bucket has none. */
@@ -183,14 +171,10 @@ async function answered(window: Window, name: string): Promise<Record<string, un
   }
 }
 
-/** A message sent, then its answer waited for; a refused one is the doors' word, thrown. */
+/** A message sent, then its answer waited for; a refused send throws, nothing more sent. */
 async function ask(window: Window, queue: string, message: ImportMessage):
     Promise<Record<string, unknown>> {
-  const answer = await window.fetcher(pushMessage(window.inputs, queue, message));
-  const body = await answer.json().catch(() => null) as { success?: boolean } | null;
-  if (!answer.ok || body?.success !== true) {
-    throw new Error(`a ${message.op} message was refused (${answer.status}): nothing more is sent`);
-  }
+  await cloudflareOf(window.inputs, window.fetcher).send(window.inputs.account, queue, message);
   return answered(window, answerName(message.prefix, message.ask!));
 }
 
@@ -225,15 +209,6 @@ async function checkPages(window: Window, prefix: string, ask: string, part: str
   }
 }
 
-function checkRun(window: Window, run: string): void {
-  if (!RUN.test(run)) {
-    throw new Error("a run's id is lowercase letters, digits and dashes, at most 64");
-  }
-  if (!ACCOUNT.test(window.inputs.account)) {
-    throw new Error("the account is 32 hex");
-  }
-}
-
 /** What a step did, by bundle ordinal: counts and words alone. */
 export interface StepSummary {
   readonly bundles: number;
@@ -247,9 +222,9 @@ export interface StepSummary {
  */
 export async function verify(out: string, run: string, window: Window, recordFile: string,
                              print: (line: string) => void): Promise<StepSummary> {
-  checkRun(window, run);
+  checkRun(run);
   const bundles = bundlesIn(out);
-  const queue = await queueId(window.inputs, window.fetcher, window.names.queue);
+  const queue = await queueId(window.inputs, window.fetcher, QUEUES.IMPORTS);
   const record = readRecord(recordFile, run);
   const lines: string[] = [];
   let cleanCount = 0;
@@ -303,7 +278,7 @@ function unverified(bundles: readonly Staged[], record: WindowRecord): number {
  */
 export async function admit(out: string, run: string, window: Window, recordFile: string,
                             print: (line: string) => void): Promise<StepSummary> {
-  checkRun(window, run);
+  checkRun(run);
   const bundles = bundlesIn(out);
   const record = readRecord(recordFile, run);
   const failed = unverified(bundles, record);
@@ -323,7 +298,7 @@ export async function admit(out: string, run: string, window: Window, recordFile
     throw new Error(`the dead-letter queue holds ${dead.messages} messages: no owner is ` +
                     "admitted until it is read and empty");
   }
-  const queue = await queueId(window.inputs, window.fetcher, window.names.queue);
+  const queue = await queueId(window.inputs, window.fetcher, QUEUES.IMPORTS);
   const lines: string[] = [];
   for (const [n, staged] of bundles.entries()) {
     const answer = await ask(window, queue, askOf(staged, run, "admit", window.inputs.importKey));
@@ -362,10 +337,10 @@ export interface WipeProof {
  */
 export async function wipe(out: string, run: string, window: Window, recordFile: string,
                            print: (line: string) => void): Promise<WipeProof> {
-  checkRun(window, run);
+  checkRun(run);
   const bundles = bundlesIn(out);
   const record = readRecord(recordFile, run);
-  const queue = await queueId(window.inputs, window.fetcher, window.names.queue);
+  const queue = await queueId(window.inputs, window.fetcher, QUEUES.IMPORTS);
   for (const [n, staged] of bundles.entries()) {
     if (record.discarded[staged.key]?.bundle === staged.bundle) {
       continue;  // discarded on an earlier run: its staging may be gone already
@@ -382,16 +357,12 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
     print(`bundle ${n + 1} of ${bundles.length}: discarded`);
   }
   const directory = await directoryId(window);
+  const cloudflare = cloudflareOf(window.inputs, window.fetcher);
   const prefix = `o:rehearsal-${run}-`;
   // The run's own records: a run whose id extends this one's (`r1-x` of `r1`) shares the prefix.
-  const runs = async () => (await cloudflareOf(window.inputs, window.fetcher)
-    .keys(window.inputs.account, directory, prefix))
+  const runs = async () => (await cloudflare.keys(window.inputs.account, directory, prefix))
     .filter((key) => rehearsalRun(key.slice(2)) === run);
-  const records = await runs();
-  for (let at = 0; at < records.length; at += 1000) {
-    await api(window, `/storage/kv/namespaces/${directory}/bulk/delete`,
-              { method: "POST", body: JSON.stringify(records.slice(at, at + 1000)) });
-  }
+  await cloudflare.deleteKeys(window.inputs.account, directory, await runs());
   const staging = window.names.staging_bucket;
   for (const key of await listKeys(window, staging, `${run}/`)) {
     await ok(window, s3Request(window.inputs, "DELETE", staging, key, {}, null,
@@ -429,14 +400,15 @@ export async function deadLetters(window: Window, out: string | null, run: strin
     Promise<DeadLetters> {
   const dead = window.names.dead_letter_queue;
   const queue = await queueId(window.inputs, window.fetcher, dead);
-  const consumers = await api<{ type?: string }[]>(window, `/queues/${queue}/consumers`);
-  if (consumers.some((consumer) => consumer.type !== "http_pull")) {
+  const cloudflare = cloudflareOf(window.inputs, window.fetcher);
+  const account = window.inputs.account;
+  const consumers = await cloudflare.consumers(account, queue);
+  if (consumers.some((type) => type !== "http_pull")) {
     throw new Error(`${dead} has a Worker consumer: it is read by none but this step`);
   }
   if (consumers.length === 0) {
-    await api(window, `/queues/${queue}/consumers`, { method: "POST", body: JSON.stringify({
-      type: "http_pull", settings: { batch_size: 100, max_retries: 100,
-                                     visibility_timeout_ms: 60_000 } }) });
+    await cloudflare.addPullConsumer(account, queue, {
+      batch_size: 100, max_retries: 100, visibility_timeout_ms: 60_000 });
     print(`${dead} had no reader: its HTTP pull consumer is added`);
   }
   const ordinals = new Map((out === null ? [] : bundlesIn(out))
@@ -446,18 +418,14 @@ export async function deadLetters(window: Window, out: string | null, run: strin
   // Every unacknowledged message, the ones an earlier read still leases too (a pull skips them).
   let backlog = 0;
   for (;;) {
-    const pulled = await api<{ message_backlog_count?: number;
-                               messages?: { id?: string; body?: unknown; lease_id?: string }[] }>(
-      window, `/queues/${queue}/messages/pull`,
-      { method: "POST", body: JSON.stringify({ batch_size: 100, visibility_timeout_ms: 60_000 }) });
-    backlog = Math.max(backlog, Number.isSafeInteger(pulled.message_backlog_count)
-      ? pulled.message_backlog_count! : 0);
-    const fresh = (pulled.messages ?? []).filter((message) => !seen.has(message.id ?? ""));
+    const pulled = await cloudflare.pull(account, queue, 100, 60_000);
+    backlog = Math.max(backlog, pulled.backlog);
+    const fresh = pulled.messages.filter((message) => !seen.has(message.id));
     if (fresh.length === 0) {
       break;
     }
     for (const message of fresh) {
-      seen.set(message.id ?? "", message.lease_id ?? "");
+      seen.set(message.id, message.lease);
       let label = "out of shape";
       try {
         const parsed = importMessage(pulledBody(message.body));
@@ -473,10 +441,7 @@ export async function deadLetters(window: Window, out: string | null, run: strin
   let deleted = 0;
   if (remove && seen.size > 0) {
     const leases = [...seen.values()].filter((lease) => lease !== "");
-    for (let at = 0; at < leases.length; at += 100) {
-      await api(window, `/queues/${queue}/messages/ack`, { method: "POST", body: JSON.stringify({
-        acks: leases.slice(at, at + 100).map((lease_id) => ({ lease_id })), retries: [] }) });
-    }
+    await cloudflare.ack(account, queue, leases);
     deleted = leases.length;
   }
   for (const [label, count] of Object.entries(by).sort()) {

@@ -1,7 +1,7 @@
 /**
  * The window's steps after staging (`window.ts`, slice 5) on the slice-2 builder's own bundles,
  * against a fake world: R2's S3 API (the staging and files buckets), the Queues HTTP API (the
- * import queue, whose fake doors answer each message as `doors/src/import.ts` does, and the
+ * import queue, whose fake doors answer each message as `doors/src/import/` does, and the
  * dead-letter queue's pull consumer) and the KV API (the directory). `verify` holds each check
  * to its bundle and keeps the result; `admit` admits nothing until every owner verified clean
  * and the dead-letter queue is empty, then each in turn; `wipe` discards, deletes and proves
@@ -27,6 +27,7 @@ import { DEFAULT_POLICY_DIGEST, policyDigest } from "../../contract/src/policy-d
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { cut } from "../../contract/src/content";
 import { objectPrefix } from "../../contract/src/files";
+import { QUEUES } from "../../contract/src/queue-names";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
 import { windowMain } from "../cli";
@@ -178,7 +179,7 @@ function world(bundles: readonly Staged[]) {
     }
     const path = url.pathname.replace(`/client/v4/accounts/${INPUTS.account}`, "");
     if (path === "/queues") {
-      return ok([{ queue_id: "q-import", queue_name: NAMES.queue },
+      return ok([{ queue_id: "q-import", queue_name: QUEUES.IMPORTS },
                  { queue_id: "q-dead", queue_name: NAMES.dead_letter_queue }]);
     }
     if (path === "/queues/q-import/messages") {

@@ -36,6 +36,7 @@ import { resolve } from "node:path";
 
 import { parseTiers, type Tiers } from "../contract/src/control";
 import type { ImportNames } from "../contract/src/import-names";
+import { ACCOUNT_ID } from "../deploy/cloudflare";
 
 import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
@@ -63,11 +64,17 @@ export function credentialsFrom(text: string): Record<string, string> {
     .map((name, n) => [name, (lines[n] ?? "").replace(/\r$/, "")]));
 }
 
-/** A staging run's credentials from `given` (`credentialsFrom`), each required, none printed. */
+/**
+ * A staging run's credentials from `given` (`credentialsFrom`), each required, none printed,
+ * and the account an account's id.
+ */
 export function stageInputs(given: Readonly<Record<string, string | undefined>>): Inputs {
   const missing = Object.values(STAGE_INPUTS).filter((name) => (given[name] ?? "") === "");
   if (missing.length > 0) {
     throw new Error(`a staging run takes ${missing.join(", ")} from its stdin`);
+  }
+  if (!ACCOUNT_ID.test(given[STAGE_INPUTS.account]!)) {
+    throw new Error("the account is 32 hex");
   }
   return Object.fromEntries(Object.entries(STAGE_INPUTS)
     .map(([input, name]) => [input, given[name]!])) as unknown as Inputs;
