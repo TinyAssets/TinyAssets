@@ -7,8 +7,8 @@
  * A message is `{v, op, owner, args, ask, at, kid, mac}`, sent to the operator queue
  * (`QUEUES.OPERATOR`):
  * - `v`, this format's version, 1;
- * - `op`, what the doors do (`OP`: dotted lowercase words); the doors' table of ops names
- *   each one they take, and answers any other refused;
+ * - `op`, what the doors do (`OP`: dotted lowercase words); `OPERATOR_OPS` names each one
+ *   they take and its args, and they answer any other refused;
  * - `owner`, the owner principal it is done to (`principal`);
  * - `args`, the op's own fields: a flat object of strings, safe integers and booleans, each
  *   key `ARG`, so its canonical text (`argsText`, its keys sorted) needs no general
@@ -46,6 +46,18 @@ const MAC_DOMAIN = "tinyassets-operator-v1";
  * unseen this long is refused, and one seen before goes on (`doors/src/operator.ts`).
  */
 export const OPERATOR_WINDOW_S = 600;
+
+/**
+ * The ops the doors take (`doors/src/operator.ts`), each by the names of its args, exactly:
+ * the kit's modes ask them (`deploy/operator.ts`). An op's values are its owner door's to check.
+ */
+export const OPERATOR_OPS = Object.freeze({
+  "owner.tier": Object.freeze(["tier"] as const),
+  "owner.suspend": Object.freeze(["reason"] as const),
+  "owner.lift": Object.freeze(["reason"] as const),
+  "owner.admit": Object.freeze([] as const),
+} satisfies Record<string, readonly string[]>);
+export type OperatorOp = keyof typeof OPERATOR_OPS;
 
 /** An op: dotted lowercase words, at most 64 characters. */
 const OP = /^(?=.{1,64}$)[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*$/;

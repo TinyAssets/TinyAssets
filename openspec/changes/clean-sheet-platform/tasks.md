@@ -372,6 +372,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and
   only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`).
+  - [ ] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
+    (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, after lane O's T1c
+    (`r3.md` item 9).
 - [ ] R5, where an action is decided (d3 §N): its six slices (`r5_research.md` §6), after B25
   and alongside lane O.
   - [ ] P-shape: the policy's `actions` table and `contract/acts.json`, the doors' rows naming
@@ -414,7 +417,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
-- [ ] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2).
+- [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
+  `owner.state` owed under lane R.
 - [ ] The manifest's dry run green (d3 §A10).
 - [ ] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6). Its alerts
   include the ones that are only log lines today (list3 P18): `sandbox_waiting`,
