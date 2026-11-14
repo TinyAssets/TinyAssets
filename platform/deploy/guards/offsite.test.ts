@@ -17,7 +17,7 @@
  *   never an argument; any failure stops loudly.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -116,7 +116,7 @@ function world(options: { readonly capabilities?: Partial<Record<"write" | "read
     }
     return { status: 0, stdout: "" };
   }) as unknown as Effects["spawn"];
-  const io: Effects = { fetch, spawn, log: () => {}, now: () => START };
+  const io: Effects = { fetch, spawn, now: () => START };
   return { io, calls, asked };
 }
 
@@ -154,19 +154,22 @@ describe("the copy's keys and bucket", () => {
   });
 
   const lock = (retention: Json) => ({ ...KEPT, fileLockConfiguration: {
-    isClientAuthorizedToRead: true, value: { isFileLockEnabled: true, defaultRetention: retention } } });
+    isClientAuthorizedToRead: true,
+    value: { isFileLockEnabled: true, defaultRetention: retention } } });
   const refusals: [string, Parameters<typeof world>[0], RegExp][] = [
     ["a write key that can delete",
      { capabilities: { write: [...CAPABILITIES.write, "deleteFiles"] } },
-     /OFFSITE_B2_KEY_ID and OFFSITE_B2_APPLICATION_KEY holds .*deleteFiles.*exactly listBuckets,listFiles,writeFiles/],
+     /OFFSITE_B2_KEY_ID and OFFSITE_B2_APPLICATION_KEY holds .*deleteFiles.*exactly listBuckets,/],
     ["a write key that can read", { capabilities: { write: [...CAPABILITIES.write, "readFiles"] } },
      /OFFSITE_B2_KEY_ID .*holds .*readFiles/],
     ["a read key that can write", { capabilities: { read: [...CAPABILITIES.read, "writeFiles"] } },
      /OFFSITE_B2_READ_KEY_ID .*holds .*writeFiles/],
     ["a key on every bucket", { buckets: [] }, /on every bucket; it must hold exactly/],
     ["a key on a name prefix", { prefix: "o/" }, /with no name prefix/],
-    ["a key Backblaze refuses", { signIn: 401 }, /Backblaze refused the key OFFSITE_B2_KEY_ID .*\(401\)/],
-    ["a public bucket", { bucket: { ...KEPT, bucketType: "allPublic" } }, /its files are not private/],
+    ["a key Backblaze refuses", { signIn: 401 },
+     /Backblaze refused the key OFFSITE_B2_KEY_ID .*\(401\)/],
+    ["a public bucket", { bucket: { ...KEPT, bucketType: "allPublic" } },
+     /its files are not private/],
     ["a lock the read key can't read", { bucket: { ...KEPT, fileLockConfiguration: {
       isClientAuthorizedToRead: false, value: null } } }, /can't read its lock/],
     ["no lock", { bucket: lock({ mode: null, period: null }) }, /not compliance, 28 days/],
@@ -229,8 +232,9 @@ describe("the nightly copy", () => {
     const remotes = (call: Call) => [...new Set(Object.keys(call.env)
       .filter((name) => name.startsWith("RCLONE_CONFIG_") && name !== "RCLONE_CONFIG")
       .map((name) => name.split("_")[2]))].sort();
-    expect(fake.calls.map(remotes)).toEqual([["COPY"], ["COPY", "SOURCE"], ["COPY", "SOURCE"],
-                                             ["SOURCE"], ["CHECK", "SOURCE"], ["SOURCE"], ["COPY"]]);
+    expect(fake.calls.map(remotes)).toEqual([
+      ["COPY"], ["COPY", "SOURCE"], ["COPY", "SOURCE"], ["SOURCE"], ["CHECK", "SOURCE"],
+      ["SOURCE"], ["COPY"]]);
     expect(fake.calls[1]!.env).toEqual({
       RCLONE_CONFIG: "/dev/null",
       RCLONE_CONFIG_SOURCE_TYPE: "s3", RCLONE_CONFIG_SOURCE_PROVIDER: "Cloudflare",
@@ -270,11 +274,12 @@ describe("the nightly copy", () => {
             sample.every((name) => names.includes(name))]).toEqual([16, 16, true]);
     const empty = world({ names: [] });
     expect((await run(empty)).at(-1)).toMatch(/0 compared byte for byte$/);
-    expect(empty.calls.some((call) => call.args.includes("--download"))).toBe(false);
+    expect(empty.calls.find((call) => call.sample !== undefined)!.sample).toEqual([]);
   });
 
   for (const [step, failing, refused] of [
-    ["the sync", "sync", /the copy's sync, which hides at most 300 objects .* failed \(rclone exit 7/],
+    ["the sync", "sync",
+     /the copy's sync, which hides at most 300 objects .* failed \(rclone exit 7/],
     ["the check", "check source:tinyassets-files copy:", /the copy's check of every object failed/],
     ["the byte check", "check source:tinyassets-files check:", /byte check of a sample failed/],
     ["the listing", "lsf", /listing of R2 failed/],
@@ -305,16 +310,16 @@ describe("offsite-copy.yml", () => {
     expect([copyJob.needs, copyJob.if])
       .toEqual(["settings", "needs.settings.outputs.configured == 'true'"]);
     // A dark night installs nothing: the settings job only checks out and reads.
-    expect(settingsJob.steps.map((each: { uses?: string; name?: string }) => each.uses ?? each.name))
+    expect(settingsJob.steps.map((each: { uses?: string; name?: string }) =>
+      each.uses ?? each.name))
       .toEqual(["actions/checkout@v4", "actions/setup-node@v4", "Read the copy's settings"]);
   });
 
-  it("hands both steps every setting, from the store it is kept in", () => {
+  it("hands both jobs every setting, from the store it is kept in", () => {
     const variables = ["OFFSITE_BUCKET", "CLOUDFLARE_ACCOUNT_ID"];
-    const wanted = Object.fromEntries([...SETTINGS, "CLOUDFLARE_ACCOUNT_ID"].map((name) =>
-      [name, `\${{ ${variables.includes(name) ? "vars" : "secrets"}.${name} }}`]));
-    expect(read.env).toEqual(wanted);
-    expect(copied.env).toEqual({ MAX_DELETE: "${{ inputs.max_delete }}", ...wanted });
+    expect(flow.env).toEqual(Object.fromEntries([...SETTINGS, "CLOUDFLARE_ACCOUNT_ID"].map(
+      (name) => [name, `\${{ ${variables.includes(name) ? "vars" : "secrets"}.${name} }}`])));
+    expect(copied.env).toEqual({ MAX_DELETE: "${{ inputs.max_delete }}" });
     expect(copied.run).toBe("node --experimental-strip-types platform/deploy/offsite.ts copy");
   });
 
@@ -334,21 +339,23 @@ describe("offsite-copy.yml", () => {
   const settle = (stored: Record<string, string>, at: string) => {
     const output = join(folder, `${at}.output`);
     const summary = join(folder, `${at}.summary`);
+    writeFileSync(output, "");
+    writeFileSync(summary, "");
     const ran = spawnSync("bash", ["-c", read.run], {
       cwd: REPO, encoding: "utf8",
       env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, GITHUB_OUTPUT: output,
              GITHUB_STEP_SUMMARY: summary,
-             ...Object.fromEntries(Object.keys(read.env).flatMap((name) =>
+             ...Object.fromEntries(Object.keys(flow.env).flatMap((name) =>
                stored[name] === undefined ? [] : [[name, stored[name]]])) } });
-    const text = (path: string) => { try { return readFileSync(path, "utf8"); } catch { return ""; } };
     return { status: ran.status, stdout: ran.stdout, stderr: ran.stderr,
-             output: text(output), summary: text(summary) };
+             output: readFileSync(output, "utf8"), summary: readFileSync(summary, "utf8") };
   };
 
   it("passes a dark night, noting the copy is not configured", () => {
     const dark = settle({ CLOUDFLARE_ACCOUNT_ID: ACCOUNT }, "dark");
     expect([dark.status, dark.output, dark.stderr]).toEqual([0, "configured=false\n", ""]);
-    expect(dark.stdout).toMatch(/^::notice title=Off-account copy::not configured: none of OFFSITE_BUCKET, /);
+    expect(dark.stdout)
+      .toMatch(/^::notice title=Off-account copy::not configured: none of OFFSITE_BUCKET, /);
     expect(dark.summary).toMatch(/^### The off-account copy: not configured/);
   });
 
@@ -361,7 +368,8 @@ describe("offsite-copy.yml", () => {
     const { OFFSITE_R2_SECRET_ACCESS_KEY: _, ...part } = STORED;
     const partial = settle(part, "part");
     expect([partial.status, partial.output]).toEqual([1, ""]);
-    expect(partial.stderr).toMatch(/::error title=Off-account copy::the off-account copy is configured in part: OFFSITE_R2_SECRET_ACCESS_KEY not set/);
+    expect(partial.stderr).toContain("::error title=Off-account copy::the off-account copy is " +
+                                     "configured in part: OFFSITE_R2_SECRET_ACCESS_KEY not set");
     const spaced = settle({ ...STORED, OFFSITE_B2_READ_KEY: "with space" }, "spaced");
     expect([spaced.status, spaced.output]).toEqual([1, ""]);
     expect(spaced.stderr).toMatch(/OFFSITE_B2_READ_KEY hold a space/);

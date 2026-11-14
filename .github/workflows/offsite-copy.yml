@@ -12,10 +12,9 @@ name: Off-account copy (nightly)
 # skipped, so the night passes green and installs nothing. With some of them, or with all and
 # any error, the run fails.
 #
-# Settings: the `production` secrets OFFSITE_R2_ACCESS_KEY_ID, OFFSITE_R2_SECRET_ACCESS_KEY,
-# OFFSITE_B2_KEY_ID, OFFSITE_B2_APPLICATION_KEY, OFFSITE_B2_READ_KEY_ID and OFFSITE_B2_READ_KEY,
-# and the repository variable OFFSITE_BUCKET; the Cloudflare account id is the repository
-# variable CLOUDFLARE_ACCOUNT_ID. Each credential reaches one rclone call's environment alone.
+# Its settings (`SETTINGS` in offsite.ts) are `production` secrets and the repository variable
+# OFFSITE_BUCKET, read by both jobs; the Cloudflare account id is the repository variable
+# CLOUDFLARE_ACCOUNT_ID. Each credential reaches one rclone call's environment alone.
 
 on:
   schedule:
@@ -37,6 +36,16 @@ concurrency:
   group: offsite-copy
   cancel-in-progress: false
 
+env:
+  OFFSITE_BUCKET: ${{ vars.OFFSITE_BUCKET }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+  OFFSITE_R2_ACCESS_KEY_ID: ${{ secrets.OFFSITE_R2_ACCESS_KEY_ID }}
+  OFFSITE_R2_SECRET_ACCESS_KEY: ${{ secrets.OFFSITE_R2_SECRET_ACCESS_KEY }}
+  OFFSITE_B2_KEY_ID: ${{ secrets.OFFSITE_B2_KEY_ID }}
+  OFFSITE_B2_APPLICATION_KEY: ${{ secrets.OFFSITE_B2_APPLICATION_KEY }}
+  OFFSITE_B2_READ_KEY_ID: ${{ secrets.OFFSITE_B2_READ_KEY_ID }}
+  OFFSITE_B2_READ_KEY: ${{ secrets.OFFSITE_B2_READ_KEY }}
+
 jobs:
   settings:
     runs-on: ubuntu-latest
@@ -53,15 +62,6 @@ jobs:
 
       - name: Read the copy's settings
         id: settings
-        env:
-          OFFSITE_BUCKET: ${{ vars.OFFSITE_BUCKET }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          OFFSITE_R2_ACCESS_KEY_ID: ${{ secrets.OFFSITE_R2_ACCESS_KEY_ID }}
-          OFFSITE_R2_SECRET_ACCESS_KEY: ${{ secrets.OFFSITE_R2_SECRET_ACCESS_KEY }}
-          OFFSITE_B2_KEY_ID: ${{ secrets.OFFSITE_B2_KEY_ID }}
-          OFFSITE_B2_APPLICATION_KEY: ${{ secrets.OFFSITE_B2_APPLICATION_KEY }}
-          OFFSITE_B2_READ_KEY_ID: ${{ secrets.OFFSITE_B2_READ_KEY_ID }}
-          OFFSITE_B2_READ_KEY: ${{ secrets.OFFSITE_B2_READ_KEY }}
         run: node --experimental-strip-types platform/deploy/offsite.ts settings
 
   copy:
@@ -97,12 +97,4 @@ jobs:
       - name: Copy the files bucket to B2
         env:
           MAX_DELETE: ${{ inputs.max_delete }}
-          OFFSITE_BUCKET: ${{ vars.OFFSITE_BUCKET }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          OFFSITE_R2_ACCESS_KEY_ID: ${{ secrets.OFFSITE_R2_ACCESS_KEY_ID }}
-          OFFSITE_R2_SECRET_ACCESS_KEY: ${{ secrets.OFFSITE_R2_SECRET_ACCESS_KEY }}
-          OFFSITE_B2_KEY_ID: ${{ secrets.OFFSITE_B2_KEY_ID }}
-          OFFSITE_B2_APPLICATION_KEY: ${{ secrets.OFFSITE_B2_APPLICATION_KEY }}
-          OFFSITE_B2_READ_KEY_ID: ${{ secrets.OFFSITE_B2_READ_KEY_ID }}
-          OFFSITE_B2_READ_KEY: ${{ secrets.OFFSITE_B2_READ_KEY }}
         run: node --experimental-strip-types platform/deploy/offsite.ts copy

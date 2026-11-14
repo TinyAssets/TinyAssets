@@ -34,16 +34,22 @@ import { RECOVERY_WINDOW_S } from "../contract/src/limits.ts";
 import type { Io } from "./deploy.ts";
 
 /** What the copy acts on: the kit's own outside world. */
-export type Effects = Pick<Io, "fetch" | "spawn" | "log" | "now">;
+export type Effects = Pick<Io, "fetch" | "spawn" | "now">;
 
 /**
- * The copy's settings, each a `production` secret but the bucket's name (a variable): all of
- * them or none.
+ * The copy's credentials, each by the `production` secrets its two halves are stored under:
+ * the S3 pair of a Cloudflare token that reads the files bucket alone, and the B2 write and
+ * read keys.
  */
-export const SETTINGS = Object.freeze([
-  "OFFSITE_BUCKET", "OFFSITE_R2_ACCESS_KEY_ID", "OFFSITE_R2_SECRET_ACCESS_KEY",
-  "OFFSITE_B2_KEY_ID", "OFFSITE_B2_APPLICATION_KEY", "OFFSITE_B2_READ_KEY_ID",
-  "OFFSITE_B2_READ_KEY"] as const);
+const KEYS = Object.freeze({
+  r2: Object.freeze(["OFFSITE_R2_ACCESS_KEY_ID", "OFFSITE_R2_SECRET_ACCESS_KEY"] as const),
+  write: Object.freeze(["OFFSITE_B2_KEY_ID", "OFFSITE_B2_APPLICATION_KEY"] as const),
+  read: Object.freeze(["OFFSITE_B2_READ_KEY_ID", "OFFSITE_B2_READ_KEY"] as const),
+});
+
+/** The copy's settings, all of them or none: the bucket's name (a variable) and the keys. */
+export const SETTINGS: readonly string[] = Object.freeze(
+  ["OFFSITE_BUCKET", ...Object.values(KEYS).flat()]);
 
 /** One credential: the names it is stored under, and its two halves. */
 interface Key {
@@ -52,15 +58,11 @@ interface Key {
   readonly secret: string;
 }
 
-export interface Settings {
+export type Settings = Readonly<Record<keyof typeof KEYS, Key>> & {
   readonly bucket: string;
   /** The Cloudflare account the files bucket is in: no secret, a repository variable. */
   readonly account: string;
-  /** The S3 pair of a Cloudflare token that reads the files bucket alone. */
-  readonly r2: Key;
-  readonly write: Key;
-  readonly read: Key;
-}
+};
 
 /** A B2 bucket's name, as Backblaze takes one. */
 const BUCKET = /^[A-Za-z0-9-]{6,63}$/;
@@ -87,14 +89,11 @@ export function settings(env: Readonly<Record<string, string | undefined>>): Set
   if (!ACCOUNT.test(value("CLOUDFLARE_ACCOUNT_ID"))) {
     throw new Error("the repository variable CLOUDFLARE_ACCOUNT_ID is no 32-hex account id");
   }
-  const key = (id: string, secret: string): Key =>
-    ({ names: `${id} and ${secret}`, id: value(id), secret: value(secret) });
-  return Object.freeze({
-    bucket: value("OFFSITE_BUCKET"), account: value("CLOUDFLARE_ACCOUNT_ID"),
-    r2: key("OFFSITE_R2_ACCESS_KEY_ID", "OFFSITE_R2_SECRET_ACCESS_KEY"),
-    write: key("OFFSITE_B2_KEY_ID", "OFFSITE_B2_APPLICATION_KEY"),
-    read: key("OFFSITE_B2_READ_KEY_ID", "OFFSITE_B2_READ_KEY"),
-  });
+  const keys = Object.fromEntries(Object.entries(KEYS).map(([use, [id, secret]]) =>
+    [use, { names: `${id} and ${secret}`, id: value(id), secret: value(secret) }])) as
+    Record<keyof typeof KEYS, Key>;
+  return Object.freeze({ ...keys, bucket: value("OFFSITE_BUCKET"),
+                         account: value("CLOUDFLARE_ACCOUNT_ID") });
 }
 
 /**
@@ -143,7 +142,8 @@ async function signedIn(key: Key, capabilities: readonly string[], bucket: strin
                     `${capabilities.join(",")} on ${bucket} alone, with no name prefix (b2 key ` +
                     `create --bucket ${bucket} <name> ${capabilities.join(",")})`);
   }
-  return { api: storage["apiUrl"], token: body["authorizationToken"], account: body["accountId"] };
+  return { api: storage["apiUrl"], token: body["authorizationToken"],
+           account: body["accountId"] };
 }
 
 /**
@@ -151,7 +151,7 @@ async function signedIn(key: Key, capabilities: readonly string[], bucket: strin
  * compliance mode for `KEEP_DAYS` from each upload, and one lifecycle rule over every name
  * that deletes a hidden version `KEEP_DAYS` after it is hidden and hides nothing itself.
  */
-export async function held(s: Settings, io: Effects): Promise<void> {
+async function held(s: Settings, io: Effects): Promise<void> {
   await signedIn(s.write, CAPABILITIES.write, s.bucket, io);
   const read = await signedIn(s.read, CAPABILITIES.read, s.bucket, io);
   const listed = await answered(await io.fetch(`${read.api}/b2api/v3/b2_list_buckets`, {
@@ -172,9 +172,9 @@ export async function held(s: Settings, io: Effects): Promise<void> {
       && retention["mode"] === "compliance" && retention["period"]?.["duration"] === KEEP_DAYS
       && retention["period"]?.["unit"] === "days" ? null
       : `its default retention is not compliance, ${KEEP_DAYS} days`,
-    rules.length === 1 && (rules[0]!["fileNamePrefix"] ?? "") === ""
+    rules.length === 1 && rules[0]!["fileNamePrefix"] === ""
       && rules[0]!["daysFromHidingToDeleting"] === KEEP_DAYS
-      && (rules[0]!["daysFromUploadingToHiding"] ?? null) === null ? null
+      && rules[0]!["daysFromUploadingToHiding"] === null ? null
       : `its lifecycle is not one rule over every name keeping prior versions ${KEEP_DAYS} days`,
   ].filter((each) => each !== null);
   if (wrong.length > 0) {
@@ -205,6 +205,9 @@ function remote(name: string, fields: Record<string, string>): Record<string, st
  */
 export async function copy(s: Settings, source: string, maxDelete: string,
                            io: Effects): Promise<string[]> {
+  if (!/^\d*$/.test(maxDelete)) {
+    throw new Error(`max_delete ${maxDelete} is not a whole number`);
+  }
   await held(s, io);
   const remotes = {
     source: remote("source", { TYPE: "s3", PROVIDER: "Cloudflare", NO_CHECK_BUCKET: "true",
@@ -217,7 +220,8 @@ export async function copy(s: Settings, source: string, maxDelete: string,
   const rclone = (what: string, using: readonly (keyof typeof remotes)[],
                   args: readonly string[], output = false): string => {
     const ran = io.spawn("rclone", args, {
-      encoding: "utf8", maxBuffer: 2 ** 30, stdio: ["ignore", output ? "pipe" : "inherit", "inherit"],
+      encoding: "utf8", maxBuffer: 2 ** 30,
+      stdio: ["ignore", output ? "pipe" : "inherit", "inherit"],
       env: { PATH: process.env["PATH"] ?? "", RCLONE_CONFIG: "/dev/null",
              ...Object.assign({}, ...using.map((name) => remotes[name])) } });
     if (ran.status !== 0) {
@@ -241,8 +245,7 @@ export async function copy(s: Settings, source: string, maxDelete: string,
   const before = sizeOf("count of the copy", "copy", to);
   const limit = maxDelete === "" ? Math.max(MAX_DELETE_FLOOR,
                                             Math.floor(before.count * MAX_DELETE_SHARE))
-    : /^\d+$/.test(maxDelete) ? Number(maxDelete)
-    : (() => { throw new Error(`max_delete ${maxDelete} is not a whole number`); })();
+    : Number(maxDelete);
   const began = io.now().toISOString().replace(/\.\d+Z$/, "Z");
   rclone(`sync, which hides at most ${limit} objects (a dispatch's max_delete lets a ` +
          "deletion that is meant through)", ["source", "copy"],
@@ -257,16 +260,14 @@ export async function copy(s: Settings, source: string, maxDelete: string,
     .split("\n").filter(Boolean);
   const sample = Array.from({ length: Math.min(SAMPLE, names.length) },
                             () => names.splice(randomInt(names.length), 1)[0]!);
-  if (sample.length > 0) {
-    const folder = mkdtempSync(join(tmpdir(), "offsite-"));
-    try {
-      writeFileSync(join(folder, "sample"), `${sample.join("\n")}\n`);
-      rclone("byte check of a sample", ["source", "check"],
-             ["check", from, `check:${s.bucket}`, "--one-way", "--download", "--files-from",
-              join(folder, "sample")]);
-    } finally {
-      rmSync(folder, { recursive: true, force: true });
-    }
+  const folder = mkdtempSync(join(tmpdir(), "offsite-"));
+  try {
+    writeFileSync(join(folder, "sample"), sample.map((name) => `${name}\n`).join(""));
+    rclone("byte check of a sample", ["source", "check"],
+           ["check", from, `check:${s.bucket}`, "--one-way", "--download", "--files-from",
+            join(folder, "sample")]);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
   }
   const after = { source: sizeOf("count of R2", "source", from),
                   copy: sizeOf("count of the copy", "copy", to) };
