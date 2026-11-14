@@ -60,18 +60,29 @@ interface Seen {
   files: Record<string, string>;
   commands: { sandbox: string; argv: string[]; runner: string | null; user: string }[];
   rings: { owner: string }[];
+  held: string[];
 }
 
 const seen = async (): Promise<Seen> => await e2b("/state") as unknown as Seen;
 
-async function rung(owner: string): Promise<void> {
+/** What the fake saw, once `found` holds of it: a call another request makes, awaited. */
+async function seenOnce(found: (state: Seen) => boolean, what: string): Promise<Seen> {
   const until = Date.now() + 5_000;
-  while (!(await seen()).rings.some((ring) => ring.owner === owner)) {
+  for (;;) {
+    const state = await seen();
+    if (found(state)) {
+      return state;
+    }
     if (Date.now() > until) {
-      throw new Error(`no ring reached ${owner}`);
+      throw new Error(`the fake never saw ${what}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+async function rung(owner: string): Promise<void> {
+  await seenOnce((state) => state.rings.some((ring) => ring.owner === owner),
+                 `a ring reach ${owner}`);
 }
 
 const hex = (n: number, c = "a") => c.repeat(n);
@@ -574,11 +585,7 @@ describe("cancel and release", () => {
     expect(at === null || at < Date.now() + 5_000).toBe(true);
     // The look is due at once: the runtime may run it before the test does.
     await runDurableObjectAlarm(stub(who));
-    const until = Date.now() + 5_000;
-    while ((await seen()).sandboxes[0]!.state !== "paused" && Date.now() < until) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    expect((await seen()).sandboxes[0]!.state).toBe("paused");
+    await seenOnce((state) => state.sandboxes[0]!.state === "paused", "the sandbox paused");
     expect(await alarmOf(who)).toBeNull();
   });
 });
@@ -1161,12 +1168,12 @@ describe("the runner, by digest", () => {
     const old = "0".repeat(64);
     const id = await bornUnder(who, old);
     await e2b("/age", { id, s: CEILING - WINDOW + 5 });
-    // The look's quiet-wait is answered late, after a start adopted and dropped the old.
-    await e2b("/script", { state: { live: 0, quiet: true },
-                           slow: { command: "quiet-wait", ms: 400 } });
+    // The look's quiet-wait is held, and answered once a start adopted and dropped the old.
+    await e2b("/script", { state: { live: 0, quiet: true }, hold: "quiet-wait" });
     const look = runDurableObjectAlarm(stub(who));
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await seenOnce((state) => state.held.includes("quiet-wait"), "the look's quiet-wait");
     await stub(who).start(who, start({ run: `run_${hex(32, "3")}`, tokens: null, network: null }));
+    await e2b("/release", {});
     await look;
     expect((await seen()).commands.some((command) => command.argv[1] === "quiet-wait"
                                         && command.runner === old)).toBe(true);
