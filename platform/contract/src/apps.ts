@@ -24,6 +24,8 @@
  */
 import raw from "../apps.json" with { type: "json" };
 
+import { keyed, object } from "./checks.ts";
+
 export interface AppConnect {
   /** A deep link where the vendor has one. */
   readonly link?: string;
@@ -143,15 +145,13 @@ export function ownRedirect(app: App, uri: string): boolean {
 
 /** The file, held to its shape: each app's every field, ids, hosts and names distinct. */
 export function checkedApps(value: unknown = raw): Apps {
-  const file = value as Record<string, unknown>;
-  if (typeof file !== "object" || file === null || !Array.isArray(file["apps"])) {
+  if (!object(value) || !Array.isArray(value["apps"])) {
     throw new Error("apps.json: an object with apps");
   }
-  const apps = (file["apps"] as unknown[]).map((entry, at): App => {
-    const app = entry as Record<string, unknown>;
+  const apps = (value["apps"] as unknown[]).map((app, at): App => {
     const where = `apps[${at}]`;
-    const keys = Object.keys(app ?? {}).sort().join();
-    if (keys !== "checked,connect,id,match,name,registration,source,surfaces") {
+    if (!keyed(app, ["id", "name", "surfaces", "registration", "match", "connect", "source",
+                     "checked"])) {
       throw new Error(`apps.json: ${where} has exactly id, name, surfaces, registration, ` +
                       "match, connect, source and checked");
     }
@@ -162,14 +162,12 @@ export function checkedApps(value: unknown = raw): Apps {
     if (app["registration"] !== "cimd" && app["registration"] !== "dcr") {
       throw new Error(`apps.json: ${id}.registration is cimd or dcr`);
     }
-    const match = app["match"] as Record<string, unknown>;
-    if (typeof match !== "object" || match === null
-        || Object.keys(match).sort().join() !== "hosts,names,redirects") {
+    const match = app["match"];
+    if (!keyed(match, ["hosts", "names", "redirects"])) {
       throw new Error(`apps.json: ${id}.match has exactly hosts, names and redirects`);
     }
-    const connect = app["connect"] as Record<string, unknown>;
-    if (typeof connect !== "object" || connect === null
-        || Object.keys(connect).some((key) => !["link", "say", "steps", "code"].includes(key))) {
+    const connect = app["connect"];
+    if (!keyed(connect, [], ["link", "say", "steps", "code"])) {
       throw new Error(`apps.json: ${id}.connect has link, say, steps and code only`);
     }
     if (!DATE.test(text(app["checked"], `${id}.checked`, 10))) {
@@ -207,7 +205,7 @@ export function checkedApps(value: unknown = raw): Apps {
   seen("id", apps.map((app) => app.id));
   seen("host", apps.flatMap((app) => app.match.hosts));
   seen("name", apps.flatMap((app) => app.match.names.map((name) => name.toLowerCase())));
-  return Object.freeze({ page: https(file["page"], "page"), apps: Object.freeze(apps) });
+  return Object.freeze({ page: https(value["page"], "page"), apps: Object.freeze(apps) });
 }
 
 /** The apps, as `apps.json` holds them, checked. */

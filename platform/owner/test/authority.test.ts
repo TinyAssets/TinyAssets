@@ -1,6 +1,6 @@
 /**
- * Outside-client authority (tasks 5, A2; kept by ADR-034 as a run's authority): a stamp
- * taken only whole; the owner's authority holding everything and none nothing; a client's
+ * Outside-client authority (tasks 5, A2; kept by ADR-034 as a run's authority): the
+ * owner's authority holding everything and none nothing; a client's
  * stamp holding only while its grant stands at the stamped generation; a scoped grant
  * holding each capability where the work acts; the owner's own capabilities never a
  * client's; the admission refusing every check; and the grants' own reads, over the
@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_DIR, agentId, Authority, AUTHORITY_CHANGED, authorityOf, NO_AUTHORITY, NOT_GRANTED,
-  NOT_OWNER, OWNER_ONLY, type Stamped, stamped,
+  NOT_OWNER, OWNER_ONLY, type Stamped,
 } from "../src/authority";
 import { Refusal } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
@@ -36,18 +36,6 @@ function under(mode: string, held: readonly string[] = [],
 }
 
 describe("a stamp", () => {
-  it("is taken only whole: a client, its generation, sign-in, universe and agent", () => {
-    const good = { client: MUSE.client, generation: 2, authenticated_at: null,
-                   universe: "alpha", agent: "main" };
-    expect(stamped(good)).toEqual(good);
-    expect(stamped(null)).toBeNull();
-    for (const bad of [{ ...good, extra: 1 }, { ...good, generation: 0 },
-                       { ...good, client: "x" }, { ...good, agent: "*" },
-                       { ...good, universe: "" }, { ...good, authenticated_at: -1 }, [], 1]) {
-      expect(() => stamped(bad)).toThrow(/a stamp is a client/);
-    }
-  });
-
   it("is the work's authority: the owner's, or a client's stamp", () => {
     expect(authorityOf(null)).toEqual({ by: "owner" });
     expect(authorityOf(STAMP)).toEqual(CLIENT);

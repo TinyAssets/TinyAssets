@@ -26,6 +26,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { keyed } from "../../contract/src/checks";
 import { largeTests } from "../timeouts";
 import { PLATFORM, REPO } from "../paths";
 import { type Data, json, workflow } from "../workflows";
@@ -61,9 +62,9 @@ function tests(): Data {
 /** Each way a leg job could run something other than its legs' commands, whole. */
 export function legJobProblems(job: Data, name: string): string[] {
   const found: string[] = [];
-  const keys = Object.keys(job ?? {}).sort();
-  if (JSON.stringify(keys) !== JSON.stringify(JOB_KEYS)) {
-    found.push(`${name} carries keys that may change its legs: ${keys.join(", ")}`);
+  if (!keyed(job, JOB_KEYS)) {
+    found.push(`${name} carries keys that may change its legs: ` +
+               Object.keys(job ?? {}).sort().join(", "));
   }
   if (job?.name !== name) {
     found.push(`${name} is named ${job?.name}`);
@@ -78,14 +79,14 @@ export function legJobProblems(job: Data, name: string): string[] {
     found.push(`${name}'s defaults.run must be the platform folder alone (no shell)`);
   }
   const strategy = job?.strategy ?? {};
-  if (Object.keys(strategy).some((key) => !["fail-fast", "matrix"].includes(key))) {
+  if (!keyed(strategy, [], ["fail-fast", "matrix"])) {
     found.push(`${name}'s strategy carries ${Object.keys(strategy).join(", ")}`);
   }
-  if (JSON.stringify(Object.keys(strategy.matrix ?? {})) !== JSON.stringify(["include"])) {
+  if (!keyed(strategy.matrix, ["include"])) {
     found.push(`${name}'s legs are listed whole in include: no axes, no exclude to drop one`);
   }
   const legs: Data[] = strategy.matrix?.include ?? [];
-  if (!legs.every((leg) => JSON.stringify(Object.keys(leg).sort()) === '["command","leg"]')) {
+  if (!legs.every((leg) => keyed(leg, ["leg", "command"]))) {
     found.push(`${name}'s legs carry keys other than leg and command`);
   }
   if (new Set(legs.map((leg) => leg.leg)).size !== legs.length) {
@@ -358,18 +359,18 @@ describe("process", () => {
   /** Each way the leg could run something other than the process's tests, whole. */
   function processProblems(job: Data): string[] {
     const found: string[] = [];
-    const keys = Object.keys(job ?? {}).sort();
-    if (JSON.stringify(keys) !== JSON.stringify(["name", "runs-on", "steps", "timeout-minutes"])) {
-      found.push(`process carries keys that may change what it runs: ${keys.join(", ")}`);
+    if (!keyed(job, ["name", "runs-on", "steps", "timeout-minutes"])) {
+      found.push("process carries keys that may change what it runs: " +
+                 Object.keys(job ?? {}).sort().join(", "));
     }
     if (job?.name !== "process" || job?.["runs-on"] !== "ubuntu-latest") {
       found.push("process is one job named process, on the plain runner");
     }
     const steps: Data[] = job?.steps ?? [];
-    const shape = steps.map((each) => Object.keys(each).sort().join(","));
-    if (JSON.stringify(shape) !== JSON.stringify(["uses", "uses,with", "run", "run"])) {
+    const shapes = [["uses"], ["uses", "with"], ["run"], ["run"]];
+    if (steps.length !== shapes.length || !shapes.every((shape, at) => keyed(steps[at], shape))) {
       found.push("process's steps are checkout, setup-python, the install and pytest, each " +
-                 `alone: ${shape.join(" | ")}`);
+                 `alone: ${steps.map((each) => Object.keys(each).sort().join(",")).join(" | ")}`);
       return found;
     }
     if (steps[2].run !== INSTALL) {

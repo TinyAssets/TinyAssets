@@ -69,6 +69,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { chunkName, mint, rewrap, unwrap } from "./datakey";
 import type { FilesEnv } from "./env";
+import { keyed } from "../../contract/src/checks";
 import { base64, fromBase64, hex, openObject, sealObject } from "../../contract/src/envelope";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
@@ -98,14 +99,12 @@ function storedRoot(text: string, gen: string): StoredRoot {
   } catch {
     throw new Error("a manifest root is out of shape");
   }
-  const r = root as Record<string, unknown>;
-  if (typeof root !== "object" || root === null
-      || Object.keys(root).sort().join() !== "format,gen,key,sealed,version"
-      || r["format"] !== "tinyassets-manifest" || r["version"] !== 2 || r["gen"] !== gen
-      || typeof r["key"] !== "string" || typeof r["sealed"] !== "string") {
+  if (!keyed(root, ["format", "version", "gen", "key", "sealed"])
+      || root["format"] !== "tinyassets-manifest" || root["version"] !== 2 || root["gen"] !== gen
+      || typeof root["key"] !== "string" || typeof root["sealed"] !== "string") {
     throw new Error("a manifest root is out of shape");
   }
-  return root as StoredRoot;
+  return root as unknown as StoredRoot;
 }
 
 function rootBytes(text: string): Uint8Array {

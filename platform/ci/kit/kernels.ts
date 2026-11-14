@@ -12,6 +12,10 @@
  * - The test that a value is a JSON object is `contract/src/checks.ts`'s (`object`, `keyed`),
  *   in every layer that may import the contract: a type guard of `Record<string, unknown>`
  *   anywhere else is its copy. `refusal.ts`'s, the contract's leaf, guards its own `Facts`.
+ * - The test that an object has exactly a set of keys is `checks.ts`'s too (`keyed`), in the
+ *   same layers: `Object.keys(…).sort()` joined or stringified, then compared or named to
+ *   compare, is its copy. Sorted keys in a message or a log line, or kept as a list (to read
+ *   in order, or a test's `toEqual`), are not.
  *
  * Read from the syntax tree: a tripwire for our own code (a hash named at run time is not
  * seen), not proof against deliberate evasion. A source's uses of one kernel are one
@@ -70,10 +74,50 @@ const testsObject = (node: ts.Node): boolean => ts.isFunctionLike(node) && node.
   && ts.isTypePredicateNode(node.type) && node.type.type !== undefined
   && node.type.type.getText().replace(/\s/g, "") === "Record<string,unknown>";
 
+/** `Object.keys(…).sort()`: an object's keys, sorted. */
+function sortsKeys(node: ts.Node | undefined): boolean {
+  if (node === undefined || !ts.isCallExpression(node) || node.arguments.length > 0
+      || !ts.isPropertyAccessExpression(node.expression) || node.expression.name.text !== "sort") {
+    return false;
+  }
+  const keys = node.expression.expression;
+  return ts.isCallExpression(keys) && ts.isPropertyAccessExpression(keys.expression)
+    && keys.expression.name.text === "keys" && ts.isIdentifier(keys.expression.expression)
+    && keys.expression.expression.text === "Object";
+}
+
+/** An object's sorted keys, joined or stringified into one string. */
+const joinsKeys = (node: ts.Node | undefined): boolean => node !== undefined
+  && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+  && ((node.expression.name.text === "join" && sortsKeys(node.expression.expression))
+      || (node.expression.name.text === "stringify" && ts.isIdentifier(node.expression.expression)
+          && node.expression.expression.text === "JSON" && sortsKeys(node.arguments[0])));
+
+const EQUALITY = new Set([ts.SyntaxKind.EqualsEqualsEqualsToken,
+                          ts.SyntaxKind.ExclamationEqualsEqualsToken,
+                          ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken]);
+
+/**
+ * That string compared, or kept in a name to compare: a key-set test. One built into a
+ * message or a log line is not.
+ */
+const comparesKeys = (node: ts.Node): boolean =>
+  (ts.isBinaryExpression(node) && EQUALITY.has(node.operatorToken.kind)
+   && (joinsKeys(node.left) || joinsKeys(node.right)))
+  || (ts.isVariableDeclaration(node) && joinsKeys(node.initializer));
+
 /** `Date.now`, called or passed. */
 const readsNow = (node: ts.Node): boolean => ts.isPropertyAccessExpression(node)
   && ts.isIdentifier(node.expression) && node.expression.text === "Date"
   && node.name.text === "now";
+
+/** Every layer that may import the contract, where its shape checks are held. */
+const CONTRACT_READERS = Object.freeze([
+  "the contract", "the source records", "a Worker's source", "the runner", "the probes",
+  "the E2B client", "the template", "the deploy kit", "the importer", "the wrangler module",
+  "the ci kit", "the ci guards", "a workspace's tools", "a workspace's tests and memory legs",
+  "a workspace's guards",
+]);
 
 export const KERNELS: readonly Kernel[] = Object.freeze([
   { name: "SHA-256", home: "platform/contract/src/digest.ts",
@@ -81,12 +125,10 @@ export const KERNELS: readonly Kernel[] = Object.freeze([
     does: hashesSha256 },
   { name: "Date.now()", home: "platform/owner/src/clock.ts", layers: ["a Worker's source"],
     under: "platform/owner/src/", does: readsNow },
-  { name: "the object test", home: "platform/contract/src/checks.ts",
-    layers: ["the contract", "the source records", "a Worker's source", "the runner", "the probes",
-             "the E2B client", "the template", "the deploy kit", "the importer",
-             "the wrangler module", "the ci kit", "the ci guards", "a workspace's tools",
-             "a workspace's tests and memory legs", "a workspace's guards"],
+  { name: "the object test", home: "platform/contract/src/checks.ts", layers: CONTRACT_READERS,
     under: "platform/", does: testsObject },
+  { name: "the key-set test", home: "platform/contract/src/checks.ts", layers: CONTRACT_READERS,
+    under: "platform/", does: comparesKeys },
 ]);
 
 /** How many times `source` does what `kernel` does. */

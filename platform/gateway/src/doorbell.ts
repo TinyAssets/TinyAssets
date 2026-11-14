@@ -30,7 +30,7 @@
  * Every fetch is the runtime's (`global_fetch_strictly_public`): never the egress
  * interposer's, since no model call's scope is open here.
  */
-import { object } from "../../contract/src/checks";
+import { keyed, object } from "../../contract/src/checks";
 import { base64, base64url, fromBase64, hex } from "../../contract/src/envelope";
 import { SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { callbackSecret, callbackUrl, kindNamed, type Push } from "../../contract/src/wake-records";
@@ -61,7 +61,7 @@ export type Send = (request: Request) => Promise<Response>;
  * room for whitespace, a technical ceiling (the only answer body a doorbell ever reads).
  */
 export const ECHO_MAX_BYTES = 1024;
-const DOORBELL_KEYS = "auth,kind,record,sealed_at,secret,url";
+const DOORBELL_KEYS = Object.freeze(["auth", "kind", "record", "sealed_at", "secret", "url"]);
 
 /** A subscribed callback's push, by its record; `invalid_request` when it has none. */
 function pushOf(record: unknown): Push {
@@ -74,22 +74,21 @@ function pushOf(record: unknown): Push {
 
 /** A doorbell blob's plaintext, checked against its record as it stands. */
 export function doorbellSecret(value: unknown): DoorbellSecret {
-  if (typeof value !== "object" || value === null || Array.isArray(value)
-      || Object.keys(value).sort().join() !== DOORBELL_KEYS) {
+  if (!keyed(value, DOORBELL_KEYS)) {
     throw new Refusal("credential_refused");
   }
-  const v = value as Record<string, unknown>;
-  const push = pushOf(v["record"]);
-  if (v["kind"] !== "doorbell" || v["auth"] !== push.auth || typeof v["sealed_at"] !== "number") {
+  const push = pushOf(value["record"]);
+  if (value["kind"] !== "doorbell" || value["auth"] !== push.auth
+      || typeof value["sealed_at"] !== "number") {
     throw new Refusal("credential_refused");
   }
   try {
-    callbackUrl(push, v["url"]);
-    callbackSecret(push, v["secret"]);
+    callbackUrl(push, value["url"]);
+    callbackSecret(push, value["secret"]);
   } catch {
     throw new Refusal("credential_refused");
   }
-  return Object.freeze(v as unknown as DoorbellSecret);
+  return Object.freeze(value as unknown as DoorbellSecret);
 }
 
 /** A subscription's binding: its own key space, never a model connection's. */

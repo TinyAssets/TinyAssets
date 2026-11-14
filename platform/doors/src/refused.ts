@@ -14,6 +14,7 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { type CallToolResult, ProtocolError } from "@modelcontextprotocol/server";
 
+import { keyed, whole } from "../../contract/src/checks";
 import { type FaultCode, type Refusal, refusalOf } from "../../contract/src/refusal";
 
 import { answer, failure, redirect } from "./kit";
@@ -91,10 +92,19 @@ export const EVENT_ERRORS = Object.freeze({
   invalidParams: -32602,
 });
 
-/** MCP Events': the design sketch's error, thrown, which the SDK answers. */
+/**
+ * MCP Events': the design sketch's error, thrown, which the SDK answers. A full agent's is
+ * `ResourceExhausted` with the owner's limit, `{limit, max}`, from its refusal's facts; a
+ * `subscription_limit` refusal without them is a bug, thrown, never an answer with no limit.
+ */
 export const asEvent: Surface<never> = (refusal) => {
   if (refusal.code === "subscription_limit") {
-    throw new ProtocolError(EVENT_ERRORS.exhausted, "ResourceExhausted", refusal.facts);
+    const facts = refusal.facts;
+    if (!keyed(facts, ["limit", "max"]) || typeof facts["limit"] !== "string"
+        || !whole(facts["max"], 0)) {
+      throw new Error("a subscription_limit refusal carries no {limit, max}");
+    }
+    throw new ProtocolError(EVENT_ERRORS.exhausted, "ResourceExhausted", facts);
   }
   if (refusal.invalid) {
     throw new ProtocolError(EVENT_ERRORS.invalidParams, refusal.message);

@@ -144,6 +144,16 @@ describe("MCP Events' answer", () => {
     const no = thrown(new Refusal("refused", "no agent here"));
     expect([no.code, no.data]).toEqual([EVENT_ERRORS.forbidden, { reason: "no agent here" }]);
   });
+
+  it("throws a full agent's refusal that carries no limit, a bug, rather than answer it", () => {
+    for (const facts of [undefined, {}, { limit: "subscriptions" }, { max: 3 },
+                         { limit: "subscriptions", max: "3" }]) {
+      const missing = thrown(new Refusal("subscription_limit", "subscription_limit: 3",
+                                         facts === undefined ? {} : { facts }));
+      expect(missing).not.toBeInstanceOf(ProtocolError);
+      expect(missing.message).toBe("a subscription_limit refusal carries no {limit, max}");
+    }
+  });
 });
 
 describe("a sign-in's answer", () => {
