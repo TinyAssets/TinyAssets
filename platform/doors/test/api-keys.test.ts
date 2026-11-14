@@ -109,13 +109,10 @@ describe("a refusal across the object's RPC", () => {
     expect([refusal.status, refusal.retryAfter]).toEqual([503, 7]);
   });
 
+  // Its code's wait, or its own, as it crossed (the codes' statuses are the contract's table).
   it.each([
-    ["storage_full", "storage_full: your storage is full", {}, 507, null],
-    ["uploads_open", "uploads_open: held by uploads still open", {}, 409, null],
     ["storage_busy", "storage_busy: catching up", {}, 503, "30"],
     ["storage_busy", "storage_busy: the archive moved this mail", { retryAfterS: 1 }, 503, "1"],
-    ["owner_suspended", "owner_suspended: the owner's account is suspended", {}, 403, null],
-    ["invalid", "invalid ledger request", {}, 400, null],
   ] as const)("answers %s on the API as its code says", async (code, message, more, status,
                                                               retry) => {
     const o = await signedIn();

@@ -489,10 +489,15 @@ describe("/hooks/inbound, a capability URL", () => {
     expect((await call(event(hookUrl, "c1"))).status).toBe(404);
     await setControl(null);
     expect((await call(event(hookUrl, "c2"))).status).toBe(404);
+    // A gate that cannot be read, or the owner's maintenance gate: `unavailable`, a minute.
+    const closed = async (response: Response) =>
+      [response.status, response.headers.get("Retry-After"), await response.json()];
     await writeControl(env.CONTROL, JSON.stringify({ outside: "on" }));
-    expect((await call(event(hookUrl, "c3"))).status).toBe(503);
+    expect(await closed(await call(event(hookUrl, "c3"))))
+      .toEqual([503, "60", { error: "unavailable" }]);
     await setControl({ ...OPEN, inbound: true, ordinary: "none" });
-    expect((await call(event(hookUrl, "c4"))).status).toBe(503);
+    expect(await closed(await call(event(hookUrl, "c4"))))
+      .toEqual([503, "60", { error: "unavailable" }]);
   });
 
   it("takes a body up to the platform's one request ceiling, and refuses one past it",
