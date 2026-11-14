@@ -48,8 +48,18 @@ export interface ChunkGet {
   readonly length?: number;
 }
 
-/** The most reads one `getChunks` takes: each holds a whole chunk, and a call `BATCH_BYTES`. */
+/**
+ * The most reads one `getChunks` or `checkChunks` takes: each holds a whole chunk, and a call
+ * `BATCH_BYTES`.
+ */
 export const GET_READS = BATCH_BYTES / CHUNK_BYTES;
+
+/**
+ * What `checkChunks` finds of one chunk under its owner's key: `stored`, opening to bytes that
+ * are its hash; `missing` from the bucket; or `broken`, there but not opening under the key or
+ * not its hash. It is an answer: what the check throws is a refusal, a lost answer or a bug.
+ */
+export type ChunkCheck = "stored" | "missing" | "broken";
 
 /** One object of a generation: its SHA-256 and size. */
 export interface ManifestObject {
@@ -138,6 +148,8 @@ export interface ChunkStore {
   putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }>;
   /** Chunks' bytes, in order: each whole (its hash rechecked) or a range of it. */
   getChunks(ns: string, key: string, reads: ChunkGet[]): Promise<Uint8Array[]>;
+  /** Chunks read as `getChunks` reads them whole, each answered, in order, by what it found. */
+  checkChunks(ns: string, key: string, sha256s: string[]): Promise<ChunkCheck[]>;
   /** Chunks deleted (at most 1,000), by hash under the owner's key. */
   deleteChunks(ns: string, key: string, sha256s: string[]): Promise<{ deleted: number }>;
   /** The wrapped key wrapped again under the ring's active kid (a rotation's sweep). */

@@ -447,10 +447,11 @@ export const importDoors = Object.freeze({
   },
   /**
    * A page of the check, read through the object's own paths: the files plane's listing; each
-   * chunk read back through `FILES` (`Files.fetch`) as a verified one-byte range, so the files
-   * Worker opens the whole chunk under the owner's data key and rechecks its hash, and this
-   * object holds none of its bytes (one chunk a call, so that Worker holds one at a time); the
-   * rows' leaves summed; and the rest.
+   * chunk checked through `FILES` (`Files.check`), so the files Worker opens the whole chunk
+   * under the owner's data key and rechecks its hash, and this object holds none of its bytes;
+   * the rows' leaves summed; and the rest. A chunk not stored as its hash is the files
+   * Worker's answer, recorded as not read; a throw (a refusal or a lost answer) fails the slice
+   * to the import queue (`doors/src/import/index.ts`), and verify waits for its page loudly.
    */
   async importCheck(o: OwnerState, door: Door<ImportCheckRequest>): Promise<ImportCheckAnswer> {
     const { part, page } = await o.door(() => checkOf(door.check().r));
@@ -460,16 +461,11 @@ export const importDoors = Object.freeze({
     }
     if (part === "chunks") {
       const listed = await o.door(() => o.files.chunksPage(page * CHECK_CHUNKS, CHECK_CHUNKS + 1));
-      const chunks: CheckChunk[] = [];
-      for (const chunk of listed.slice(0, CHECK_CHUNKS)) {
-        let read: string | null = chunk.sha256;
-        try {
-          await o.files.fetch([{ sha256: chunk.sha256, offset: 0, length: 1 }]);
-        } catch {
-          read = null;  // missing from the bucket, not opened by the key, or not its hash
-        }
-        chunks.push({ sha256: chunk.sha256, size: chunk.size, read });
-      }
+      const shown = listed.slice(0, CHECK_CHUNKS);
+      const found = await o.files.check(shown.map((chunk) => chunk.sha256));
+      const chunks = shown.map((chunk, n): CheckChunk => ({
+        sha256: chunk.sha256, size: chunk.size,
+        read: found[n] === "stored" ? chunk.sha256 : null }));
       return { part, chunks, more: listed.length > CHECK_CHUNKS };
     }
     if (part === "rows") {
