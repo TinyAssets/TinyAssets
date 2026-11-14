@@ -55,14 +55,15 @@ import { HEX64 } from "../../contract/src/ids";
 import type { JsonBody, SettleSent } from "../../contract/src/owner";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SYNC_BODY_MAX } from "../../contract/src/limits";
 import { EVENTS_BODY_MAX, eventsBounded } from "../../contract/src/run-events";
-import { faultOf, Refusal, REFUSALS, refusalOf } from "../../contract/src/refusal";
+import { type EgressCode, faultOf, Refusal, refusalOf } from "../../contract/src/refusal";
 
 import { type Bound, bindRun, bindSandbox, bindSync, type Presented, rebound } from "./binder";
 import type { DoorsEnv } from "./env";
-import { ownerGate } from "./control";
+import { ownerRead } from "./control";
 import { answer, jsonObject } from "./kit";
 import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 import { serveMcp } from "./mcp";
+import { answered, asEgress, asEgressFault } from "./refused";
 
 
 /** The run's own secret: its path's, else its header's, else none (refused by the object). */
@@ -80,33 +81,17 @@ export const EGRESS_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
 const OUTCOME_WAIT_MS = 10_000;
 
 /**
- * A refusal in the gateway's own error shape, so a provider SDK shows its code. A 429 or 503
- * says `Retry-After`: a second, or the refusal's own wait when it asks a longer one
- * (`storage_busy`'s 30). The runner waits that long, up to its heartbeat (`HEARTBEAT_MS`,
- * 20 s, which its posts keep the lease by): so a 30 s wait is posted again after 20 s.
+ * The door's own refusal, by one of its codes (`EGRESS_CODES`), thrown and answered in the
+ * gateway's own error shape (`refused.ts`, `asEgress`), its status and any `Retry-After` its
+ * code's. The runner waits a `Retry-After` out, up to its heartbeat (`HEARTBEAT_MS`, 20 s,
+ * which its posts keep the lease by): so `storage_busy`'s 30 s is posted again after 20 s.
  */
-function refused(code: string, status: number, receipt?: string | null,
-                 message: string = code, retryAfterS?: number): Response {
-  const retry = status === 429 || status === 503 || retryAfterS !== undefined;
-  return answer(status, { error: { code, message },
-                          ...(receipt === undefined || receipt === null ? {} : { receipt }) },
-                retry ? { "Retry-After": String(Math.max(1, retryAfterS ?? 1)) } : {});
+function refused(code: EgressCode): Refusal {
+  return new Refusal(code);
 }
 
-/** The object's refusal as a door answers it: `refused`, from its code, status and wait. */
-function refusedBy(refusal: Refusal, message: string = codeOf(refusal)): Response {
-  return refused(codeOf(refusal), refusal.status, null, message, refusal.retryAfter);
-}
-
-/**
- * The object's refusal as a run door answers it: its code when its message names one, else
- * `egress_refused`, with its code's status (`contract/src/refusal.ts`: the object's held
- * posts full, `events_busy`, or another batch of the run landing between a post's units,
- * `events_raced`, is a 503 the runner retries after `Retry-After`).
- */
-function codeOf(refusal: Refusal): string {
-  return refusal.named ? refusal.code : "egress_refused";
-}
+/** How the door stopped a stream before its answer: its deadline, the client, the object. */
+type Stop = "aborted" | "deadline" | "ended";
 
 /** The gateway's metered outcome, read from its one line (`outcomeOf`), or `unknown`. */
 async function spendOf(outcome: ReadableStream<Uint8Array> | null): Promise<MeterOutcome> {
@@ -134,42 +119,40 @@ async function settleOnce(env: DoorsEnv, bound: Bound, request: SettleSent):
   }
 }
 
-/** Serve one sandbox call; `deadlineMs` is the door's own bound on its stream. */
 /**
  * The egress token E2B's transform set, verified: its MAC first, so a forged, altered or
  * sync token reaches no object, not even the gate's; then its expiry, the network's
  * generation and the maintenance gate. Its owner, hash and generation, or the refusal.
  */
-async function sandboxToken(request: Request, env: DoorsEnv): Promise<Response | Sandbox> {
+async function sandboxToken(request: Request, env: DoorsEnv): Promise<Sandbox> {
   const token = request.headers.get(SANDBOX_HEADER);
   if (token === null || token === "") {
-    return refused("egress_token_missing", 401);
+    throw refused("egress_token_missing");
   }
   const parsed = verifyToken(env.ROUTING_MAC_KEY, "egress", token);
   if (parsed === null) {
-    return refused("egress_token_unknown", 401);
+    throw refused("egress_token_unknown");
   }
   // A lease's token lives while its lease is renewed, which the object checks; one minted
   // with a time of its own is refused past it, reaching no object.
   if (parsed.expires !== LEASE_LIVED && parsed.expires <= Date.now() / 1000) {
-    return refused("egress_token_expired", 401);
+    throw refused("egress_token_expired");
   }
   const generation = generationIn(request.headers.get(GENERATION_HEADER));
   if (generation === null) {
-    return refused("egress_policy_stale", 409);
+    throw refused("egress_policy_stale");
   }
-  const gated = await ownerGate(env, parsed.owner);
-  if (gated !== null) {
-    return gated;
-  }
+  await ownerRead(env, parsed.owner);
   return { owner: parsed.owner, hash: parsed.hash, generation };
 }
 
 /** The runner's secret its call presents, or the refusal: none, or not 64 hex. */
-function runnerOf(request: Request): Response | Presented {
+function runnerOf(request: Request): Presented {
   const runner = request.headers.get(RUNNER_HEADER);
-  return runner !== null && HEX64.test(runner) ? { runner }
-    : refused("runner_token_missing", 401);
+  if (runner === null || !HEX64.test(runner)) {
+    throw refused("runner_token_missing");
+  }
+  return { runner };
 }
 
 /** What a sandbox's egress token verified: its owner, hash and network generation. */
@@ -183,24 +166,21 @@ interface Sandbox {
  * The sandbox's JSON doors' one preamble: only the sandbox calls them, so an `Origin` (a
  * browser's) is refused; `POST`; `bound`, the door's own credential checked before the egress
  * token it is bound with; then the JSON body, to `max`. `call`'s answer, as JSON, or the
- * object's refusal with its whole message, so the runner and its sync agent can say what was
- * refused and why (the used and the total of a full storage among it); a path missing or of the wrong kind,
- * or one the sandbox may not see, is its code (`404`).
+ * object's refusal with its whole message (as every refusal here), so the runner and its sync
+ * agent can say what was refused and why (the used and the total of a full storage among
+ * it); a path missing or of the wrong kind, or one the sandbox may not see, is its code
+ * (`404`).
  */
-async function sandboxDoor(request: Request, max: number,
-                           bound: () => Promise<Bound | Response>,
+async function sandboxDoor(request: Request, max: number, bound: () => Promise<Bound>,
                            call: (bound: Bound, body: JsonBody) => Promise<unknown>):
     Promise<Response> {
   if (request.headers.get("Origin") !== null) {
-    return refused("not_found", 404);
+    throw refused("not_found");
   }
   if (request.method !== "POST") {
-    return refused("method_not_allowed", 405);
+    throw refused("method_not_allowed");
   }
   const held = await bound();
-  if (held instanceof Response) {
-    return held;
-  }
   const body = await jsonObject(request, max);
   if (body instanceof Response) {
     return body;
@@ -209,33 +189,25 @@ async function sandboxDoor(request: Request, max: number,
     return answer(200, await call(held, body));
   } catch (error) {
     const fault = faultOf(error);
-    if (fault !== null) {
-      return refused(fault, 404);
-    }
-    const refusal = refusalOf(error);
-    if (refusal === null) {
+    if (fault === null) {
       throw error;
     }
-    return refusedBy(refusal, refusal.message);
+    return asEgressFault(fault);
   }
 }
 
 /** A runner's door's binding: the runner's secret, then the egress token, bound by `bind`. */
 async function runnerBound(request: Request, env: DoorsEnv,
                            bind: (sandbox: Sandbox, presented: Presented) => Bound):
-    Promise<Bound | Response> {
+    Promise<Bound> {
   const presented = runnerOf(request);
-  if (presented instanceof Response) {
-    return presented;
-  }
-  const sandbox = await sandboxToken(request, env);
-  return sandbox instanceof Response ? sandbox : bind(sandbox, presented);
+  return bind(await sandboxToken(request, env), presented);
 }
 
 /** A frames post held to its frames' bounds (`eventsBounded`), or refused. */
 function framesOf(body: JsonBody): JsonBody {
   if (!eventsBounded(body)) {
-    throw new Refusal("events_too_large");
+    throw refused("events_too_large");
   }
   return body;
 }
@@ -248,12 +220,9 @@ function framesOf(body: JsonBody): JsonBody {
 async function serveRunMcp(request: Request, env: DoorsEnv, run: string, secret: string):
     Promise<Response> {
   if (request.headers.get("Origin") !== null) {
-    return refused("not_found", 404);
+    throw refused("not_found");
   }
   const sandbox = await sandboxToken(request, env);
-  if (sandbox instanceof Response) {
-    return sandbox;
-  }
   return serveMcp(request, bindRun(env, sandbox.owner, sandbox.hash, sandbox.generation, run,
                                    { secret }), env);
 }
@@ -328,27 +297,24 @@ function decoded(items: unknown, field: string): unknown {
 }
 
 /** The sync token, then the egress token of the same owner's sandbox, bound as the syncer. */
-async function syncBound(request: Request, env: DoorsEnv): Promise<Bound | Response> {
+async function syncBound(request: Request, env: DoorsEnv): Promise<Bound> {
   const token = request.headers.get(SYNC_HEADER);
   if (token === null || token === "") {
-    return refused("sync_token_missing", 401);
+    throw refused("sync_token_missing");
   }
   const parsed = verifyToken(env.ROUTING_MAC_KEY, "sync", token);
   if (parsed === null) {
-    return refused("sync_token_unknown", 401);
+    throw refused("sync_token_unknown");
   }
   // As the egress token: a lease's lives while its lease is renewed, which the object checks.
   if (parsed.expires !== LEASE_LIVED && parsed.expires <= Date.now() / 1000) {
-    return refused("sync_token_expired", 401);
+    throw refused("sync_token_expired");
   }
   // From inside the sandbox: its egress token, verified as the egress doors verify it (its
   // MAC, its expiry, its generation and the gate), naming the same owner.
   const inside = await sandboxToken(request, env);
-  if (inside instanceof Response) {
-    return inside;
-  }
   if (inside.owner !== parsed.owner) {
-    return refused("sync_token_unknown", 401);
+    throw refused("sync_token_unknown");
   }
   return bindSync(env, parsed.owner, parsed.hash, inside.hash);
 }
@@ -382,21 +348,30 @@ function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promise<Res
   });
 }
 
-export async function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                                  deadlineMs: number = EGRESS_DEADLINE_MS): Promise<Response> {
+/**
+ * Serve one sandbox call; `deadlineMs` is the door's own bound on its stream. Every refusal,
+ * the door's own and the object's, is answered in the gateway's own shape (`asEgress`).
+ */
+export function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
+                            deadlineMs: number = EGRESS_DEADLINE_MS): Promise<Response> {
+  return answered(asEgress, () => egress(request, env, ctx, deadlineMs));
+}
+
+async function egress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
+                      deadlineMs: number): Promise<Response> {
   const url = new URL(request.url);
   if (url.origin !== EGRESS_ORIGIN) {
-    return refused("not_found", 404);
+    throw refused("not_found");
   }
   const door = egressDoor(url.pathname);
   if (door !== null && door.door !== "model" && url.search !== "") {
-    return refused("not_found", 404);
+    throw refused("not_found");
   }
   switch (door?.door) {
     case "mcp": {
       const secret = secretOf(request, door.secret);
       if (secret === undefined) {
-        return refused("run_secret_missing", 401);
+        throw refused("run_secret_missing");
       }
       return serveRunMcp(request, env, door.run, secret);
     }
@@ -411,12 +386,9 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
     case "model":
       break;
     case undefined:
-      return refused("not_found", 404);
+      throw refused("not_found");
   }
   const verified = await sandboxToken(request, env);
-  if (verified instanceof Response) {
-    return verified;
-  }
   const secret = secretOf(request, door.secret);
   const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
                             secret === undefined ? {} : { secret });
@@ -430,21 +402,12 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   // call is admitted by, within the gateway's own bound.
   const carries = request.method !== "GET" && request.method !== "HEAD";
   if (carries && bytesHint !== null && bytesHint > EGRESS_BODY_MAX) {
-    return refused("egress_too_large", REFUSALS.egress_too_large.status);
+    throw refused("egress_too_large");
   }
-  let opened: Awaited<ReturnType<typeof stub.egressOpen>>;
-  try {
-    opened = await stub.egressOpen(binding, {
-      run, connection, method: request.method, path, bytes_hint: bytesHint });
-  } catch (error) {
-    const answer = refusalOf(error);
-    if (answer === null) {
-      throw error;
-    }
-    return refusedBy(answer);
-  }
+  const opened = await stub.egressOpen(binding, {
+    run, connection, method: request.method, path, bytes_hint: bytesHint });
   if (!opened.ok) {
-    return refused(opened.code, REFUSALS[opened.code].status, opened.receipt);
+    return asEgress(refused(opened.code), opened.receipt);
   }
   const { reservation, blob, version } = opened;
 
@@ -459,7 +422,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   let resealed: unknown;
   let outcome: ReadableStream<Uint8Array> | null = null;
   let settled: Promise<void> | null = null;
-  let stopped: Outcome | null = null;
+  let stopped: Stop | null = null;
   let upstream: ReadableStreamDefaultReader<Uint8Array> | null = null;
   const signal = opened.ended.getReader();
   const halt = new IdentityTransformStream();
@@ -491,8 +454,8 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
     return settled;
   };
   // The object's end signal, the door's deadline and the client's leaving stop the stream.
-  let stop: (end: Outcome) => void = () => undefined;
-  const halted = new Promise<Outcome>((resolve) => {
+  let stop: (end: Stop) => void = () => undefined;
+  const halted = new Promise<Stop>((resolve) => {
     stop = (end) => {
       if (stopped === null && settled === null) {
         stopped = end;
@@ -514,7 +477,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   const reserve = (call: { model: string; tier: string | null }): Promise<Reservation> => {
     if (stopped !== null) {
       // A call the door stopped is never reserved: nothing will be sent for it.
-      return Promise.resolve({ refused: `egress_${stopped as Outcome}` });
+      return Promise.resolve({ refused: `egress_${stopped}` });
     }
     const asked = bound.stub.egressReserve(binding, { reservation, model: call.model,
                                                       tier: call.tier })
@@ -522,15 +485,15 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
         if (reserved.ok) {
           return { metering: reserved.metering };
         }
-        kept.rejected = refused(reserved.code, REFUSALS[reserved.code].status, reserved.receipt);
+        kept.rejected = asEgress(refused(reserved.code), reserved.receipt);
         return { refused: reserved.code };
       }, (error: unknown): Reservation => {
         const answer = refusalOf(error);
         if (answer === null) {
           throw error;
         }
-        kept.rejected = refusedBy(answer);
-        return { refused: codeOf(answer) };
+        kept.rejected = asEgress(answer);
+        return { refused: answer.code };
       });
     reserving = asked.catch(() => undefined);
     return asked;
@@ -541,12 +504,12 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   });
   const sent = env.EGRESS.forward(binding.owner, connection, version, blob, forwarded,
                                   opened.metered ? reserve : null, halt.readable);
-  let answer: { response: Response; outcome: ReadableStream<Uint8Array> } | Outcome;
+  let answer: { response: Response; outcome: ReadableStream<Uint8Array> } | Stop;
   try {
     answer = await Promise.race([sent, halted]);
   } catch {
     await finish("failed");
-    return refused("egress_gateway_failed", 502);
+    throw refused("egress_gateway_failed");
   }
   await reserving;
   if (kept.rejected !== null) {
@@ -558,7 +521,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (typeof answer === "string") {
     sent.then((late) => late.response.body?.cancel(), () => undefined);
     await finish(answer);
-    return refused(`egress_${answer}`, answer === "deadline" ? 504 : 503);
+    throw refused(`egress_${answer}`);
   }
   const { response } = answer;
   outcome = answer.outcome;
@@ -597,7 +560,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
         if (stopped === null) {
           controller.close();
         } else {
-          controller.error(new Error(`egress_${stopped as Outcome}`));
+          controller.error(new Error(`egress_${stopped}`));
         }
         return;
       }

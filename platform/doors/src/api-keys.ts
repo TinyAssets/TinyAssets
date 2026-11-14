@@ -33,6 +33,7 @@
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX16, randomHex } from "../../contract/src/ids";
 import { KEY_NAME_MAX } from "../../contract/src/limits";
+import { Refusal } from "../../contract/src/refusal";
 
 import { bindApiKey, type Bound } from "./binder";
 import { apiKeyOrigin } from "../../contract/src/binding";
@@ -42,16 +43,6 @@ import { randomToken } from "./kit";
 
 export const PREFIX = "ta_key_";
 const KEY = /^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
-
-export class KeyRefused extends Error {
-  override readonly name = "KeyRefused";
-  readonly status: 400 | 403 | 404;
-
-  constructor(status: 400 | 403 | 404, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
 
 export function looksLikeKey(token: string): boolean {
   return token.startsWith(PREFIX);
@@ -94,7 +85,7 @@ export async function verifyKey(env: DoorsEnv, token: string): Promise<Bound | n
 
 function keyId(value: unknown): string {
   if (typeof value !== "string" || !HEX16.test(value)) {
-    throw new KeyRefused(400, "key_id is 16 hex");
+    throw new Refusal("invalid", "key_id is 16 hex");
   }
   return value;
 }
@@ -103,7 +94,7 @@ function keyId(value: unknown): string {
 async function ownEntry(env: DoorsEnv, owner: string, id: string): Promise<KeyEntry | null> {
   const entry = await readKey(env, id);
   if (entry !== null && entry.o !== owner) {
-    throw new KeyRefused(404, "API key not found");
+    throw new Refusal("not_found", "API key not found");
   }
   return entry;
 }
@@ -125,7 +116,7 @@ export async function mintKey(env: DoorsEnv, { binding, stub }: Bound, request: 
   const { name, scopes, proposal } = (request ?? {}) as { name?: unknown; scopes?: unknown;
                                                           proposal?: unknown };
   if (typeof name !== "string" || name.trim() === "") {
-    throw new KeyRefused(400, `key name required (at most ${KEY_NAME_MAX} characters)`);
+    throw new Refusal("invalid", `key name required (at most ${KEY_NAME_MAX} characters)`);
   }
   const minted = newKey();
   const row = await stub.keyMint(binding, {
@@ -144,7 +135,7 @@ export async function revokeKey(env: DoorsEnv, { binding, stub }: Bound, request
   const entry = await ownEntry(env, binding.owner, id);
   const done = await stub.grantRevoke(binding, { client: apiKeyOrigin(id).client });
   if (!done.revoked && entry === null) {
-    throw new KeyRefused(404, "API key not found");
+    throw new Refusal("not_found", "API key not found");
   }
   if (entry !== null) {
     await deleteKey(env, id);
@@ -172,7 +163,7 @@ export async function registeringEntry(env: DoorsEnv, owner: string, value: unkn
   const id = keyId(value);
   const entry = await readKey(env, id);
   if (entry === null || entry.o !== owner) {
-    throw new KeyRefused(403, "the API key is not this owner's live key");
+    throw new Refusal("refused", "the API key is not this owner's live key");
   }
   return { keyId: id, entry };
 }

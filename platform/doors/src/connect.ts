@@ -52,7 +52,9 @@
  */
 import { secret, SECRET_MAX } from "../../contract/src/egress-scope";
 import type { Verified } from "../../contract/src/gateway";
-import { type GatewayCode, isGatewayCode, REFUSALS, refusalOf } from "../../contract/src/refusal";
+import {
+  type GatewayCode, isGatewayCode, Refusal, REFUSALS, refusalOf,
+} from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
 import { navigation } from "./authorize";
@@ -64,17 +66,6 @@ import { answer, exactKeys, plain, redirect } from "./kit";
 import { clearedConnectCookie, connectBound, connectCookie } from "./session";
 import { sealedSource } from "../../sources/src/check";
 import type { ConnectMethod, OAuthSpec, SourceRecord, Sources } from "../../sources/src/schema";
-
-/** A connect request refused at the doors, with its status. */
-export class ConnectRefused extends Error {
-  override readonly name = "ConnectRefused";
-  readonly status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
 
 /** What a connect route takes beside the owner's binding. */
 interface ConnectContext {
@@ -95,9 +86,9 @@ const MIXED_UP = "the authorization came back on another source's callback";
 function fields(body: Record<string, unknown>, required: readonly string[],
                 optional: readonly string[] = []): Record<string, unknown> {
   if (!exactKeys(body, required, optional)) {
-    throw new ConnectRefused(400, `the request has exactly ${required.join(", ") || "no fields"}` +
-                                  (optional.length > 0 ? ` (and optionally ${optional.join(", ")})`
-                                                       : ""));
+    throw new Refusal("invalid",
+                      `the request has exactly ${required.join(", ") || "no fields"}` +
+                      (optional.length > 0 ? ` (and optionally ${optional.join(", ")})` : ""));
   }
   return body;
 }
@@ -106,10 +97,10 @@ function fields(body: Record<string, unknown>, required: readonly string[],
 function connectable(sources: Sources, source: unknown, method: ConnectMethod): SourceRecord {
   const record = typeof source === "string" ? sources.get(source) : undefined;
   if (record === undefined) {
-    throw new ConnectRefused(404, "no such model source");
+    throw new Refusal("not_found", "no such model source");
   }
   if (!record.connect.includes(method)) {
-    throw new ConnectRefused(400, `this model source does not connect by ${method}`);
+    throw new Refusal("invalid", `this model source does not connect by ${method}`);
   }
   return record;
 }
@@ -119,7 +110,7 @@ function displayName(value: unknown, record: SourceRecord): string {
     return record.display_name;
   }
   if (typeof value !== "string") {
-    throw new ConnectRefused(400, "display_name is text");
+    throw new Refusal("invalid", "display_name is text");
   }
   return value;
 }
@@ -150,15 +141,15 @@ function gatewayFault(error: unknown): unknown {
 }
 
 /**
- * A gateway failure as the connect answers it, with its code's status: a failure of the
- * provider or its token endpoint (`502`), its deadline (`504`) or a malformed request
- * (`400`); anything else is a fault here or in the config, so it is thrown, loudly.
+ * A gateway failure the connect answers, as the gateway's own refusal, by its code: a
+ * failure of the provider or its token endpoint (`502`), its deadline (`504`) or a malformed
+ * request (`400`); anything else is a fault here or in the config, so it is thrown, loudly.
  */
-function answered(error: unknown): never {
+function passedOn(error: unknown): never {
   const code = gatewayRefusal(error);
   if (code !== null && (REFUSALS[code].status === 502 || code === "deadline"
                         || code === "invalid_request")) {
-    throw new ConnectRefused(REFUSALS[code].status, code);
+    throw error;
   }
   throw gatewayFault(error);
 }
@@ -170,7 +161,7 @@ function answered(error: unknown): never {
 async function abandoned({ bound: { binding, stub } }: ConnectContext, connection: string,
                          error: unknown): Promise<never> {
   await stub.connectionRevoke(binding, { connection });
-  return answered(error);
+  return passedOn(error);
 }
 
 /** `connections/key`: a pasted key, sealed and checked by the gateway, its blob committed. */
@@ -182,7 +173,7 @@ async function connectKey(context: ConnectContext): Promise<Response> {
   try {
     secret(key);  // the gateway's own grammar: what it would refuse is refused here first
   } catch {
-    throw new ConnectRefused(400, `the key is 1 to ${SECRET_MAX} visible ASCII characters, ` +
+    throw new Refusal("invalid", `the key is 1 to ${SECRET_MAX} visible ASCII characters, ` +
                                   "with no space");
   }
   const sealing = sealedSource(record, "api_key");
@@ -331,10 +322,10 @@ async function finishOAuth(context: ConnectContext): Promise<Response> {
   const { state, code, redirect_uri: arrived } = body;
   if (typeof state !== "string" || !STATE.test(state) || typeof code !== "string"
       || !CODE.test(code) || typeof arrived !== "string") {
-    throw new ConnectRefused(400, "the state, code and redirect URI are the callback's");
+    throw new Refusal("invalid", "the state, code and redirect URI are the callback's");
   }
   if (!connectBound(request, state)) {
-    throw new ConnectRefused(403, "this connection was not started in this browser");
+    throw new Refusal("refused", "this connection was not started in this browser");
   }
   const flow = await stub.flowFinish(binding, { state });
   const { connection, version } = flow;
@@ -346,7 +337,7 @@ async function finishOAuth(context: ConnectContext): Promise<Response> {
     const expected = record.oauth!.protocol === "pkce_user_key_v1"
       ? `${flow.redirect_uri}/${state}` : flow.redirect_uri;
     if (flow.redirect_uri !== redirectFor(record) || arrived !== expected) {
-      throw new ConnectRefused(403, MIXED_UP);
+      throw new Refusal("refused", MIXED_UP);
     }
   } catch (error) {
     await stub.connectionRevoke(binding, { connection });
@@ -371,7 +362,7 @@ async function finishOAuth(context: ConnectContext): Promise<Response> {
     await stub.connectionCommit(binding, {
       connection, version, blob, kid, models: [], expires_at,
       failed: gatewayRefusal(error) ?? "internal" });
-    return answered(error);
+    return passedOn(error);
   }
   const view = await stub.connectionCommit(binding, {
     connection, version, blob, kid, models: [...verified.models], expires_at,
