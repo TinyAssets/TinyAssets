@@ -42,7 +42,9 @@
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
  * "absent". So:
- * - a namespace, bucket or queue is created only when its listing answered and lacks it;
+ * - a namespace, bucket or queue is created only when its listing answered and lacks it, and
+ *   a locked bucket's one lock rule (`platform.json` `bucket_locks`) set only when its rules
+ *   answered and are not that rule alone;
  * - a secret is set only on a Worker whose secret listing answered and lacks it, or that the
  *   account's Workers listing lacks (whether a Worker exists is that listing's word alone);
  *   the kit never makes a secret's value (`keyring-new` makes a first keyring,
@@ -97,12 +99,12 @@ import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/temp
 import { type JobRun, maskLine, runOf, set, summarize } from "./actions.ts";
 import {
   Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback, handover, type Kept,
-  type Moved, narrower, type Route, type RouteChange, unlike,
+  type LockRule, type Moved, narrower, type Route, type RouteChange, unlike,
 } from "./cloudflare.ts";
 import {
-  AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN, FIRST_PARTY,
-  IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED,
-  ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS, ZONE,
+  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CALLBACK, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
+  FIRST_PARTY, IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES,
+  RETIRED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS, ZONE,
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 /**
@@ -1131,6 +1133,41 @@ function storage(noun: string, names: readonly string[],
 const buckets = storage("R2 bucket", BUCKETS,
                         async (cloudflare, account) => new Set(await cloudflare.buckets(account)),
                         (cloudflare, account, bucket) => cloudflare.makeBucket(account, bucket));
+
+/** A bucket's one lock rule: every object kept for `days`. */
+function keptRule(days: number): LockRule {
+  return { id: `kept-${days}-days`, enabled: true, prefix: "",
+           condition: { type: "Age", maxAgeSeconds: days * 86_400 } };
+}
+
+/** Whether the lock rule `held`, as the API lists it, keeps what `rule` keeps. */
+function keeps(held: Readonly<Record<string, unknown>>, rule: LockRule): boolean {
+  const condition = held["condition"] as { type?: unknown; maxAgeSeconds?: unknown } | undefined;
+  return held["enabled"] === true && (held["prefix"] ?? "") === rule.prefix
+    && condition?.type === rule.condition.type
+    && condition.maxAgeSeconds === rule.condition.maxAgeSeconds;
+}
+
+/**
+ * Each locked bucket's one rule (`BUCKET_LOCKS`), set when the bucket holds no rule or another:
+ * a bucket the plan would make holds none yet.
+ */
+const bucketLocks = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const held = new Set(await got.cloudflare.buckets(got.account));
+  for (const [bucket, days] of Object.entries(BUCKET_LOCKS)) {
+    const rule = keptRule(days);
+    const rules = held.has(bucket) ? await got.cloudflare.bucketLocks(got.account, bucket) : [];
+    if (rules.length === 1 && keeps(rules[0]!, rule)) {
+      continue;
+    }
+    say(`lock every object of the R2 bucket ${bucket} for ${days} days${
+      rules.length === 0 ? "" : `, in place of its ${rules.length} lock rules`}`);
+    if (run.apply) {
+      await got.cloudflare.lockBucket(got.account, bucket, [rule]);
+    }
+  }
+});
+
 /** The queues the configs send to. */
 const queues = storage("queue", QUEUES,
                        async (cloudflare, account) => new Set((await cloudflare.queues(account))
@@ -1615,21 +1652,23 @@ const READS = Steps.none.then(locks).then(zone).then(upstream).then(e2b).then(te
 
 /** A dark run: the checks and WorkOS's, then storage, secrets, Workers and the control record. */
 const DARK_LATER = READS_LATER.then(redirectLater).then(authorize).then(namespaces).then(buckets)
-  .then(queues).then(staged).then(secretsLater).then(workers).then(retired).then(control)
-  .then(hookLater);
-const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets).then(queues)
-  .then(staged).then(secrets).then(workers).then(retired).then(control).then(hook(false, ""));
+  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(workers).then(retired)
+  .then(control).then(hookLater);
+const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
+  .then(bucketLocks).then(queues).then(staged).then(secrets).then(workers).then(retired)
+  .then(control).then(hook(false, ""));
 
 /**
  * A routes run: the route plan read and its record kept before the first change, WorkOS's
  * redirect too, then a dark run's, then the handover, the custom domain and the hook enabled.
  */
 const ROUTES_LATER = READS_LATER.then(routePlan).then(recordedLater).then(redirectLater)
-  .then(authorize).then(namespaces).then(buckets).then(queues).then(staged).then(secretsLater)
-  .then(workers).then(retired).then(control).then(hookLater).then(handOver).then(customDomain);
+  .then(authorize).then(namespaces).then(buckets).then(bucketLocks).then(queues).then(staged)
+  .then(secretsLater).then(workers).then(retired).then(control).then(hookLater).then(handOver)
+  .then(customDomain);
 const ROUTED = READS.then(routePlan).then(recorded).then(redirect).then(authorize)
-  .then(namespaces).then(buckets).then(queues).then(staged).then(secrets).then(workers)
-  .then(retired).then(control).then(handOver).then(customDomain)
+  .then(namespaces).then(buckets).then(bucketLocks).then(queues).then(staged).then(secrets)
+  .then(workers).then(retired).then(control).then(handOver).then(customDomain)
   .then(hook(true, ", after the routes"));
 
 /** A probe run: a dark run came first, every gate is closed, then the sign-in's two paths. */

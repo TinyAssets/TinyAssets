@@ -203,7 +203,7 @@ export class Launcher implements RunHost {
   /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
   stop(grants: readonly LiveRun[]): void {
     for (const grant of grants) {
-      queueMicrotask(() => void this.cancel(grant));
+      queueMicrotask(() => void this.cancel(grant.run));
     }
   }
 
@@ -317,7 +317,7 @@ export class Launcher implements RunHost {
       }
     });
     if (answer === null) {
-      await this.cancel({ run: admitted.run, lease_id: admitted.lease.lease_id });
+      await this.cancel(admitted.run);
     }
     await this.#o.sync();
     return admitted.run;
@@ -353,9 +353,9 @@ export class Launcher implements RunHost {
   }
 
   /** Stop a run's CLI through the sandbox; a failure is logged, the run settles regardless. */
-  async cancel(run: Pick<LiveRun, "run" | "lease_id">): Promise<void> {
+  async cancel(run: string): Promise<void> {
     try {
-      await this.#o.env.SANDBOX.cancel(this.#o.owner(), { run: run.run, lease_id: run.lease_id });
+      await this.#o.env.SANDBOX.cancel(this.#o.owner(), { run });
     } catch {
       console.error("a run's cancel did not reach the sandbox");
     }

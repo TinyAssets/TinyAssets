@@ -21,7 +21,7 @@ import type {
 /** What one owner's object asked of the sandbox. */
 export interface Recorded {
   readonly starts: SandboxStart[];
-  readonly cancels: { run: string; lease_id: string }[];
+  readonly cancels: { run: string }[];
   readonly releases: { lease_id: string }[];
   readonly networks: NetworkReapply[];
   readonly signins: SandboxSignin[];
@@ -87,14 +87,9 @@ export default class FakeSandbox extends WorkerEntrypoint implements SandboxServ
     return answered(answers[Math.min(starts.length, answers.length) - 1]!);
   }
 
-  async cancel(owner: string, request: { run: string; lease_id: string }):
-      Promise<{ cancelled: boolean }> {
-    recordOf(owner).cancels.push({ run: request.run, lease_id: request.lease_id });
+  async cancel(owner: string, request: { run: string }): Promise<{ cancelled: boolean }> {
+    recordOf(owner).cancels.push({ run: request.run });
     return { cancelled: true };
-  }
-
-  async status(): Promise<{ state: "running" | "exited" | "gone" }> {
-    return { state: "running" };
   }
 
   async release(owner: string, request: { lease_id: string }): Promise<{ paused: boolean }> {

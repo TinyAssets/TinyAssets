@@ -18,10 +18,11 @@
  *   kit fills both from the issuer's live discovery (`deploy/deploy.ts`); and
  *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's slice lists its issuer, so any other
  *   issuer is refused, never taken for a new owner.
- * - Three secrets, declared by name (`secrets.required`, which binds nothing):
+ * - Four secrets, declared by name (`secrets.required`, which binds nothing):
  *   `ROUTING_MAC_KEY`, the routing key sandbox tokens are MAC'd under, the owner Worker's
- *   too (`SHARED_SECRETS`); `WORKOS_API_KEY`, the upstream's client secret; and
- *   `E2B_WEBHOOK_SECRET`, E2B's lifecycle webhook's signature secret (slice P).
+ *   too (`SHARED_SECRETS`); `WORKOS_API_KEY`, the upstream's client secret;
+ *   `E2B_WEBHOOK_SECRET`, E2B's lifecycle webhook's signature secret (slice P); and
+ *   `OPERATOR_KEYRING`, the ring the operator channel's messages are MAC'd under.
  * - No `ratelimits`: no number of ours bounds any caller (the founder's rule, slice L's
  *   review); Cloudflare's own DDoS protection is in front of every Worker.
  * - `ASSETS`: the owner app's files (`app/`), Workers Static Assets, the Worker first on every
@@ -29,12 +30,19 @@
  *   headers; no HTML handling or not-found page of the assets' own.
  * - The consumer of every queue the platform's Workers produce onto, and of no other: the
  *   sandbox line's ring (slice S, `src/ring.ts`), which turns `{owner}` into that owner's
- *   `sandboxRung` and nothing else, the erasure queue, and the import window's.
+ *   `sandboxRung` and nothing else, the erasure queue, the operator channel's and the import
+ *   window's.
+ * - The operator channel (`src/operator.ts`, `OPERATOR_CHANNEL`), permanent: the operator
+ *   queue's producer (`OPERATOR`) and the operator bucket (`OPERATOR_LOG`), where its
+ *   acceptance records and answers are kept. The kit sends to the queue over the Queues API;
+ *   no doors source sends on `OPERATOR` yet. The binding is the queue's name's one home
+ *   (`QUEUES.OPERATOR`, which the entry dispatches by and the kit sends to), what the kit
+ *   makes the queue from, and what makes the doors' consumer of it one of a queue the
+ *   platform's Workers produce onto.
  * - The cutover's import window (`src/import/`), deleted at the cutover with
  *   `platform/import/` and named here as its bindings alone (`IMPORT_WINDOW`): the import
- *   queue's producer (`IMPORTS`, the consumer's own continuation, the doors' one producer)
- *   and the staging bucket (`IMPORT_STAGING`), the doors' one bucket, which no other Worker
- *   binds.
+ *   queue's producer (`IMPORTS`, the consumer's own continuation) and the staging bucket
+ *   (`IMPORT_STAGING`), which no other Worker binds.
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
  *   (the doors define no Durable Object class).
  * - Flags carrying `disable_ctx_exports` (no way to the Worker's own namespaces) and
@@ -52,6 +60,9 @@ import { imports, type Owed } from "../../ci/kit/owed";
  * cutover with `platform/import/`, as the cutover's manifest names them (`platform/cutover.json`).
  */
 export const IMPORT_WINDOW = Object.freeze({ bucket: "IMPORT_STAGING", producer: "IMPORTS" });
+
+/** The operator channel's bindings (`src/operator.ts`), each named once here. */
+export const OPERATOR_CHANNEL = Object.freeze({ bucket: "OPERATOR_LOG", producer: "OPERATOR" });
 
 /** The secrets the doors share with another Worker, by its folder: the routing key, the owner's. */
 export const SHARED_SECRETS: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -85,12 +96,15 @@ export const CONFIG: ConfigRules = Object.freeze({
                        "kv_namespaces", "secrets", "queues", "assets", "r2_buckets"]),
   flags: Object.freeze({ carries: Object.freeze(["disable_ctx_exports",
                                                  "global_fetch_strictly_public"]) }),
-  secrets: Object.freeze([...SHARED_SECRETS["owner"]!, "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"]),
+  secrets: Object.freeze([...SHARED_SECRETS["owner"]!, "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+                          "OPERATOR_KEYRING"]),
   vars: Object.freeze({ DCR_ENABLED: ["false"], OWNER_ISSUER: ["not-configured"],
                         FOREIGN_ISSUERS: ["[]"], UPSTREAM: ["not-configured"] }),
   kv: Object.freeze(["OAUTH_KV", "DIRECTORY", "CONTROL"]),
-  buckets: Object.freeze([IMPORT_WINDOW.bucket]),
-  queues: Object.freeze({ producers: Object.freeze([IMPORT_WINDOW.producer]), consumes: true }),
+  buckets: Object.freeze([IMPORT_WINDOW.bucket, OPERATOR_CHANNEL.bucket]),
+  queues: Object.freeze({ producers: Object.freeze([IMPORT_WINDOW.producer,
+                                                    OPERATOR_CHANNEL.producer]),
+                          consumes: true }),
   exact: Object.freeze({
     assets: { directory: "./app", binding: "ASSETS", run_worker_first: true,
               html_handling: "none", not_found_handling: "none" },

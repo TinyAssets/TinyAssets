@@ -1,8 +1,9 @@
 /**
  * Cloudflare, as the deploy kit and the import window speak to it over its REST API with the
  * account's token: the zone and its account, the account's Workers and their secrets' names,
- * KV namespaces, keys and values, R2 buckets, queues with their messages and consumers, and the
- * zone's Worker routes, DNS records and Workers custom domains. Every call is checked: a failed
+ * KV namespaces, keys and values, R2 buckets with their lock rules and objects, queues with
+ * their messages and consumers, and the zone's Worker routes, DNS records and Workers custom
+ * domains. Every call is checked: a failed
  * listing or read throws, never reads as "absent", and a body that is not JSON throws. Every
  * listing is read to its last page.
  * The kit's other Cloudflare tool is wrangler (`deploy.ts`), which deploys and sets secrets.
@@ -61,6 +62,17 @@ function rows(result: unknown, what: string): Record<string, unknown>[] {
     throw new Error(`${what} failed (its answer holds no listing)`);
   }
   return result as Record<string, unknown>[];
+}
+
+/**
+ * An R2 bucket's lock rule, as the API takes and lists it: objects under `prefix` ("" is every
+ * object) kept, unchangeable and undeletable, until they are `maxAgeSeconds` old.
+ */
+export interface LockRule {
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly prefix: string;
+  readonly condition: { readonly type: "Age"; readonly maxAgeSeconds: number };
 }
 
 /** An HTTP pull consumer's settings, as the Queues API takes them. */
@@ -448,6 +460,37 @@ export class Cloudflare {
   async makeBucket(account: string, name: string): Promise<void> {
     await this.#send(`making the R2 bucket ${name}`, "POST", `/accounts/${account}/r2/buckets`,
                      { name });
+  }
+
+  /** The R2 bucket's lock rules, as the API lists them (wrangler's `getBucketLockRules`). */
+  async bucketLocks(account: string, bucket: string): Promise<Record<string, unknown>[]> {
+    const what = `reading the lock rules of the R2 bucket ${bucket}`;
+    const { result } = await this.#ok(what, `/accounts/${account}/r2/buckets/${bucket}/lock`);
+    return rows((result as { rules?: unknown } | null)?.rules ?? [], what);
+  }
+
+  /** The R2 bucket's lock rules replaced by `rules` (wrangler's `putBucketLockRules`). */
+  async lockBucket(account: string, bucket: string, rules: readonly LockRule[]): Promise<void> {
+    await this.#send(`setting the lock rules of the R2 bucket ${bucket}`, "PUT",
+                     `/accounts/${account}/r2/buckets/${bucket}/lock`, { rules });
+  }
+
+  /**
+   * An R2 object's body, as the JSON it is stored as (wrangler's `getR2Object`), or undefined
+   * only when the API answers that it is absent (404 with R2's 10007, "no such key"); any
+   * other answer throws.
+   */
+  async object(account: string, bucket: string, key: string): Promise<unknown> {
+    const answer = await this.#call(`/accounts/${account}/r2/buckets/${bucket}/objects/${key}`);
+    if (answer.status === 200) {
+      return answer.body;
+    }
+    if (answer.status === 404 && (envelope(answer).errors ?? []).some((error) =>
+      error.code === 10007)) {
+      return undefined;
+    }
+    throw new Error(`reading ${key} of the R2 bucket ${bucket} failed (${answer.status}, ` +
+                    `${codes(answer)})`);
   }
 
   /** The account's queues: each one's id, by its name. */

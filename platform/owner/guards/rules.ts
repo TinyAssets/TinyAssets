@@ -44,7 +44,7 @@
  * owner's state. Only `control-gate.ts` reads it, by `readControl`, and nothing writes it.
  */
 import type { Exemption } from "../../ci/kit/module-state";
-import { imports, type Owed, refusals } from "../../ci/kit/owed";
+import { imports, kernels, type Owed, refusals } from "../../ci/kit/owed";
 
 /**
  * The module state the owner Worker keeps by design (`ci/kit/module-state.ts`): its isolate's
@@ -120,7 +120,8 @@ export const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
 
 /**
  * What the owner's tests, guards and memory legs still owe the platform's guards
- * (`ci/kit/owed.ts`): another workspace's internals, each until the fix named removes it.
+ * (`ci/kit/owed.ts`): another workspace's internals, its own errors and its own kernels' work,
+ * each until the fix named removes it.
  */
 export const OWED: readonly Owed[] = Object.freeze([
   // The egress memory leg, the doors' and the gateway's, in the owner's tree: B23.
@@ -144,4 +145,16 @@ export const OWED: readonly Owed[] = Object.freeze([
   ...refusals("B2", "platform/owner/src/collections.ts", ["class Conflict extends Error"]),
   ...refusals("B2", "platform/owner/src/files.ts", ["class FileConflict extends Error"]),
   ...refusals("B2", "platform/owner/src/ledger.ts", ["class ParentMoved extends Error"]),
+  // The owner's own hashes and clock reads beside its kernels (`ci/kit/kernels.ts`): B7 (O4).
+  ...kernels("B7", "SHA-256", {
+    "platform/owner/src/archive.ts": 1, "platform/owner/src/backup.ts": 1,
+    "platform/owner/src/connections.ts": 1, "platform/owner/src/edit.ts": 2,
+    "platform/owner/src/sandbox-time.ts": 1, "platform/owner/src/segments.ts": 2 }),
+  ...kernels("B7", "Date.now()", {
+    "platform/owner/src/backup.ts": 11, "platform/owner/src/codemode.ts": 2,
+    "platform/owner/src/collections.ts": 1, "platform/owner/src/connections.ts": 4,
+    "platform/owner/src/control-gate.ts": 1, "platform/owner/src/egress.ts": 1,
+    "platform/owner/src/erase.ts": 7, "platform/owner/src/files.ts": 9,
+    "platform/owner/src/relay.ts": 1, "platform/owner/src/sandbox-time.ts": 4,
+    "platform/owner/src/schedule.ts": 1, "platform/owner/src/wakes.ts": 1 }),
 ]);

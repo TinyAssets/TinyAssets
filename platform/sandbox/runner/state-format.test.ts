@@ -206,8 +206,9 @@ describe("the Worker's protocol with the runner", () => {
     expect(new Set(named).size).toBe(named.length);
     // Each the runner takes is the Worker's or the runner's own: one of them alone.
     expect([...WORKER_COMMANDS, ...INTERNAL_COMMANDS].sort()).toEqual([...named].sort());
-    // Protocol 1 records those and the retired probe commands, which the runner takes none
-    // of (`probes.ts` runs them, its own table): every other is in its record.
+    // Protocol 1 records those and the retired ones (`RETIRED_IN_1`: the probe commands,
+    // which `probes.ts` runs, and `status`), which the runner takes none of: every other is in
+    // its record.
     expect(RETIRED_IN_1.filter((command) => (named as readonly string[]).includes(command)))
       .toEqual([]);
     expect([...named, ...(PROTOCOL === 1 ? RETIRED_IN_1 : [])].sort())

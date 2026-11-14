@@ -17,6 +17,8 @@ const SLACK_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
 
 /** A keyring made fresh for each run, the gateway's and the files Worker's. */
 const KEYRING = keyring();
+/** The operator channel's keyring, its own, made fresh for each run. */
+const OPERATOR_KEYRING = keyring();
 
 /** The fake providers the gateway's fetches reach, and the owner suite's fake sandbox. */
 const FAKE_PROVIDERS = join(PLATFORM, "doors", "test", "fake-providers.ts");
@@ -59,7 +61,7 @@ export default defineConfig({
               durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
               bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY,
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
-                          WORKOS_API_KEY: "test-client-secret",
+                          WORKOS_API_KEY: "test-client-secret", OPERATOR_KEYRING,
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
               // CODEMODE_VM, OWNER_FILES and SANDBOX: the owner object's (in this script for
               // the tests), to the real codemode and files Workers, as the owner config binds

@@ -259,6 +259,46 @@ function boundAs<T extends { binding?: string }>(worker: string, entries: readon
 }
 
 type Buckets = readonly { binding: string; bucket_name: string }[] | undefined;
+type Queues = { producers?: { binding?: string; queue: string }[];
+                consumers?: { queue: string; dead_letter_queue?: string }[] } | undefined;
+
+/** The bucket `worker` binds as `binding`. */
+function bucketOf(worker: string, binding: string): string {
+  return boundAs(worker, configOf(worker)["r2_buckets"] as Buckets, binding).bucket_name;
+}
+
+/** The dead-letter queue of the doors' consumer of the queue they send to as `binding`. */
+function deadLettersOf(binding: string): string {
+  const queues = configOf("doors")["queues"] as Queues;
+  const queue = boundAs("doors", queues?.producers, binding).queue;
+  const deadLetters = queues?.consumers?.find((each) => each.queue === queue)?.dead_letter_queue;
+  if (deadLetters === undefined) {
+    throw new Error(`platform/doors consumes ${queue} with no dead-letter queue`);
+  }
+  return deadLetters;
+}
+
+/**
+ * Each locked bucket's days, by its name (`platform.json` `bucket_locks`), each the bucket a
+ * Worker binds by the binding it names: a binding no config has fails loudly.
+ */
+export const BUCKET_LOCKS: Readonly<Record<string, number>> = Object.freeze(Object.fromEntries(
+  Object.entries(platform.bucket_locks.days).map(([binding, days]) => {
+    const worker = WORKERS.find((each) => ((configOf(each)["r2_buckets"] ?? []) as
+      { binding: string }[]).some((bucket) => bucket.binding === binding));
+    if (worker === undefined) {
+      throw new Error(`platform.json locks the bucket bound as ${binding}, which no config binds`);
+    }
+    return [bucketOf(worker, binding), days];
+  })));
+
+/**
+ * The operator channel's names the kit's sending side reads (`operator.ts`) beside the queue's
+ * own (`QUEUES.OPERATOR`): the bucket its answers are in, and the dead-letter queue a message
+ * the doors gave up on is left in.
+ */
+export const OPERATOR_NAMES = Object.freeze({ bucket: bucketOf("doors", "OPERATOR_LOG"),
+                                              dead_letter_queue: deadLettersOf("OPERATOR") });
 
 /**
  * The live names the import job reaches, each read where it is written: the staging bucket the
@@ -267,24 +307,13 @@ type Buckets = readonly { binding: string; bucket_name: string }[] | undefined;
  * (`platform.json`). The job runs on its import host, away from this tree, so the window's
  * bundle step writes them beside the job (`--import`).
  */
-export const IMPORT_NAMES = (() => {
-  const doors = configOf("doors");
-  const queues = doors["queues"] as { producers?: { binding?: string; queue: string }[];
-                                      consumers?: { queue: string; dead_letter_queue?: string }[] }
-                                    | undefined;
-  const queue = boundAs("doors", queues?.producers, "IMPORTS").queue;
-  const deadLetters = queues?.consumers?.find((each) => each.queue === queue)?.dead_letter_queue;
-  if (deadLetters === undefined) {
-    throw new Error(`platform/doors consumes ${queue} with no dead-letter queue`);
-  }
-  return Object.freeze({
-    staging_bucket: boundAs("doors", doors["r2_buckets"] as Buckets, "IMPORT_STAGING").bucket_name,
-    dead_letter_queue: deadLetters,
-    files_bucket: boundAs("files", configOf("files")["r2_buckets"] as Buckets, "BLOBS").bucket_name,
-    directory: platform.namespaces.titles.DIRECTORY,
-    final_backup_bucket: platform.buckets.unbound.final_backup,
-  } satisfies ImportNames);
-})();
+export const IMPORT_NAMES = Object.freeze({
+  staging_bucket: bucketOf("doors", "IMPORT_STAGING"),
+  dead_letter_queue: deadLettersOf("IMPORTS"),
+  files_bucket: bucketOf("files", "BLOBS"),
+  directory: platform.namespaces.titles.DIRECTORY,
+  final_backup_bucket: platform.buckets.unbound.final_backup,
+} satisfies ImportNames);
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (process.argv.slice(2).join(" ") !== "--import") {

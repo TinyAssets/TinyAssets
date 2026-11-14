@@ -15,6 +15,7 @@ import { oidcUpstream, upstreamConfig } from "./oidc";
 import { ringQueue } from "./ring";
 import { erasureQueue } from "./erase";
 import { importQueue } from "./import";
+import { operatorQueue } from "./operator";
 import { UNWIRED, type Upstream } from "./upstream";
 import { bundledSources } from "../../sources/src/catalog";
 
@@ -38,15 +39,18 @@ export function upstreamOf(env: DoorsEnv): Upstream {
 export default Object.freeze({
   fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
     serve(request, env, ctx, () => upstreamOf(env), bundledSources()),
-  // Three queues, each by its producer's name and to its one consumer: the sandbox line's
-  // doorbell (`ring.ts`), the erasure's outside record (`erase.ts`) and the cutover's import
-  // window (`import/`). A batch of any other queue is no one's, and fails loudly.
+  // Four queues, each by its producer's name and to its one consumer: the sandbox line's
+  // doorbell (`ring.ts`), the erasure's outside record (`erase.ts`), the operator channel
+  // (`operator.ts`) and the cutover's import window (`import/`). A batch of any other queue is
+  // no one's, and fails loudly.
   queue: async (batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> => {
     switch (batch.queue) {
       case QUEUES.RING:
         return ringQueue(batch, env);
       case QUEUES.ERASURES:
         return erasureQueue(batch, env, () => upstreamOf(env));
+      case QUEUES.OPERATOR:
+        return operatorQueue(batch, env);
       case QUEUES.IMPORTS:
         return importQueue(batch, env);
     }

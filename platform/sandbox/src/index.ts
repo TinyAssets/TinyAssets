@@ -40,14 +40,8 @@ export class Sandbox extends WorkerEntrypoint<SandboxEnv> implements SandboxServ
     return this.#owner(owner).start(owner, start);
   }
 
-  async cancel(owner: string, request: { run: string; lease_id: string }):
-      Promise<{ cancelled: boolean }> {
+  async cancel(owner: string, request: { run: string }): Promise<{ cancelled: boolean }> {
     return this.#owner(owner).cancel(request);
-  }
-
-  async status(owner: string, request: { run: string; lease_id: string }):
-      Promise<{ state: "running" | "exited" | "gone" }> {
-    return this.#owner(owner).status(request);
   }
 
   async release(owner: string, request: { lease_id: string }): Promise<{ paused: boolean }> {
