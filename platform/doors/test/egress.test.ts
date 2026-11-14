@@ -16,6 +16,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import { MAINTENANCE } from "../../contract/src/control";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, RUNNER_HEADER,
@@ -724,11 +725,12 @@ describe("a refused call", () => {
     expect(await forwarded()).toEqual([]);
   });
 
-  it("is refused in maintenance before any object", async () => {
+  it("is refused in maintenance before any object, in the gateway's own shape", async () => {
     const box = await sandbox();
     await setControl({ outside: "on", ordinary: "canary", canary: [], inbound: false });
     const response = await send(egressRequest(box));
-    expect(response.status).toBe(503);
+    expect([response.status, response.headers.get("Retry-After"), await response.json()])
+      .toEqual([503, "60", { error: { code: "unavailable", message: MAINTENANCE } }]);
     expect(await reservations(box.owner)).toEqual([]);
   });
 });

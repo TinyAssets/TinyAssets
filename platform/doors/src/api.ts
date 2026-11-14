@@ -12,14 +12,13 @@
 import { answerJson } from "./answers";
 import { verifyKey } from "./api-keys";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
-import { refusalOf } from "../../contract/src/refusal";
 
 import type { DoorsEnv } from "./env";
 import { outsideRead } from "./control";
 import { withTiers } from "./binder";
 import { bearer, failure, jsonObject, mediaType } from "./kit";
 import { profileOf } from "./mcp";
-import { refusalResponse } from "./refused";
+import { answered, asJson } from "./refused";
 import { callDoor } from "./tools";
 import type { Sources } from "../../sources/src/schema";
 
@@ -33,37 +32,24 @@ export async function serveApi(request: Request, env: DoorsEnv, sources: Sources
     return failure(401, "a valid API key is required",
                    { "WWW-Authenticate": "Bearer realm=\"tinyassets-api\"" });
   }
-  const gated = await outsideRead(env, bound.binding.owner);
-  if (gated instanceof Response) {
-    return gated;
-  }
-  const held = withTiers(bound, gated, sources);
-  const profile = await profileOf(held);
-  if (profile instanceof Response) {
-    return profile;
-  }
-  const match = TOOL_PATH.exec(new URL(request.url).pathname);
-  const tool = match === null ? undefined : profile.tools.find((row) => row.name === match[1]);
-  if (tool === undefined) {
-    return failure(404, "no such tool");
-  }
-  if (request.method !== "POST") {
-    return failure(405, "method not allowed");
-  }
-  if (mediaType(request) !== "application/json") {
-    return failure(415, "the API takes application/json");
-  }
-  const args = await jsonObject(request, EGRESS_BODY_MAX);
-  if (args instanceof Response) {
-    return args;
-  }
-  try {
-    return answerJson(tool.name, await callDoor(held.stub, held.binding, tool.door, args));
-  } catch (error) {
-    const refused = refusalOf(error);
-    if (refused === null) {
-      throw error;
+  return answered(asJson, async () => {
+    const held = withTiers(bound, await outsideRead(env, bound.binding.owner), sources);
+    const { tools } = await profileOf(held);
+    const match = TOOL_PATH.exec(new URL(request.url).pathname);
+    const tool = match === null ? undefined : tools.find((row) => row.name === match[1]);
+    if (tool === undefined) {
+      return failure(404, "no such tool");
     }
-    return refusalResponse(refused);
-  }
+    if (request.method !== "POST") {
+      return failure(405, "method not allowed");
+    }
+    if (mediaType(request) !== "application/json") {
+      return failure(415, "the API takes application/json");
+    }
+    const args = await jsonObject(request, EGRESS_BODY_MAX);
+    if (args instanceof Response) {
+      return args;
+    }
+    return answerJson(tool.name, await callDoor(held.stub, held.binding, tool.door, args));
+  });
 }
