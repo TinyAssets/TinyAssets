@@ -103,20 +103,20 @@ interface StarterDeps {
   readonly admitted: () => boolean;
   /**
    * Whether the files can take a write: the tier's numbers, which bound the files' bytes,
-   * are known (a door's binding hands them). A read; true when omitted.
+   * are known (a door's binding hands them). A read.
    */
-  readonly ready?: () => boolean;
+  readonly ready: () => boolean;
   readonly clock: () => number;
 }
 
 export class Starter {
   readonly #deps: StarterDeps;
-  /** The package it reconciles; null for none (a test's object of other things). */
-  readonly #pkg: StarterPackage | null;
+  /** The package it reconciles. */
+  readonly #pkg: StarterPackage;
   /** The pass running now, which the lane and a door share: one at a time. */
   #running: Promise<void> | null = null;
 
-  constructor(deps: StarterDeps, pkg: StarterPackage | null) {
+  constructor(deps: StarterDeps, pkg: StarterPackage) {
     this.#deps = deps;
     this.#pkg = pkg;
   }
@@ -137,9 +137,9 @@ export class Starter {
         "ORDER BY path").toArray();
   }
 
-  /** The version this object carries, 0 for none. */
+  /** The version this object carries. */
   carried(): number {
-    return this.#pkg?.version ?? 0;
+    return this.#pkg.version;
   }
 
   /** The version last reconciled whole, 0 for none. A read. */
@@ -149,8 +149,8 @@ export class Starter {
 
   /** When the lane next has work: now while the carried version is not reconciled, past a retry. */
   next(now: number): number | null {
-    if (this.#pkg === null || !this.#deps.admitted() || this.#deps.ready?.() === false) {
-      return null;  // nothing to do, or no write could land yet: no failure to tell of
+    if (!this.#deps.admitted() || !this.#deps.ready()) {
+      return null;  // no write could land yet: no failure to tell of
     }
     const state = this.#state();
     if (state !== undefined && state.version >= this.#pkg.version) {
@@ -187,7 +187,7 @@ export class Starter {
     if (this.next(now) === null || this.next(now)! > now) {
       return;
     }
-    const pkg = this.#pkg!;
+    const pkg = this.#pkg;
     try {
       await this.#reconcile(pkg);
     } catch (error) {
@@ -404,7 +404,7 @@ export class Starter {
       }
       throw error;
     }
-    await this.#record(file, this.#pkg!.version, "installed", contentIdOf(bytes), null);
+    await this.#record(file, this.#pkg.version, "installed", contentIdOf(bytes), null);
     return true;
   }
 
@@ -468,7 +468,7 @@ export class Starter {
       Promise<void> {
     await this.#deps.files.write(`${file.path}${NEWER}`, bytes, {
       expected: null, writer: "owner", op: STARTER_OP });
-    await this.#record(file, receipt?.version ?? this.#pkg!.version, state, installed, id);
+    await this.#record(file, receipt?.version ?? this.#pkg.version, state, installed, id);
   }
 
   #record(file: StarterFile, version: number, state: ReceiptState, installed: string | null,

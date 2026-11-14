@@ -17,7 +17,7 @@ import { apiKeyOrigin } from "../../contract/src/binding";
 import { migrate } from "../../contract/src/migrate";
 import { policyDigest } from "../../contract/src/policy-document";
 import { DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
-import { failure, ownerObject } from "./support";
+import { failure, ownerObject, starterSeed } from "./support";
 
 describe("the sender is the verified identity", () => {
   it("attributes, chains, times the reply and moves recipient states", async () => {
@@ -537,8 +537,10 @@ describe("the ledger's binding", () => {
       expect(tables).toContain(table);
     }
     expect(tables).not.toContain("ledger_receipts");
+    // The owner's own agents its seed defines are its only identities yet.
+    const seeded = starterSeed().agents.length;
     expect(await r.table("ledger_usage")).toEqual([
-      { only: 1, agents: 0, enabled_agents: 0, messages: 0, settled_wakes: 0, unacked: 0,
+      { only: 1, agents: seeded, enabled_agents: seeded, messages: 0, settled_wakes: 0, unacked: 0,
         acked_bytes: 0, last_seq: 0, archive_blocked: 0, archive_fails: 0,
         archive_error: null }]);
   });

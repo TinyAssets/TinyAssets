@@ -26,7 +26,9 @@ import { TIER_UNREAD } from "../src/tier";
 import { eraseBegun, erasedWhole, finished } from "./erasure-support";
 import { MUSE, rig, signedIn } from "./ledger-support";
 import { at, readOn } from "./pages-support";
-import { admittedOwner, failure, filesOn, ownerObject, sqlIn, text, TIERS } from "./support";
+import {
+  admittedOwner, failure, filesOn, ownerObject, sqlIn, starterSeed, text, TIERS,
+} from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -41,6 +43,8 @@ async function signedInOwner() {
   return { owner, stub, bind, session: { ...bind, session } };
 }
 
+/** What every owner's seed holds before a test writes (`starterSeed`). */
+const SEED = starterSeed();
 const sha = (body: string) => createHash("sha256").update(body, "utf8").digest("hex");
 /** A body just past the threshold in bytes, and well under it in characters. */
 const LARGE = "é".repeat(PLACE_BYTES);
@@ -96,16 +100,18 @@ describe("the placement rule", () => {
     expect((await stub.collectionHistory(as("bob"), { collection: "board", row_id: "large" }))
       .entries.map((entry) => entry.body)).toEqual([LARGE]);
     // Its bytes count in the files byte quota, the tier's storage, once however named.
-    expect((await stub.fileUsage(as(name))).chunk_bytes).toBe(2 * PLACE_BYTES);
+    expect((await stub.fileUsage(as(name))).chunk_bytes).toBe(SEED.placedBytes + 2 * PLACE_BYTES);
     // A small body written over it keeps the content for the history entry; a delete, which
     // drops the row's history, lets it go to garbage, collected after its grace.
     await put("large", "now small", (large as { row: { etag: string } }).row.etag);
-    expect(await sqlIn(stub, "SELECT refs FROM file_contents")).toEqual([{ refs: 1 }]);
+    expect(await sqlIn(stub, "SELECT refs FROM file_contents WHERE content_id = ?",
+                       stored[0]!["content_id"]!)).toEqual([{ refs: 1 }]);
     const current = (await stub.collectionGet(as(name), { collection: "board",
                                                           row_id: "large" })).row!;
     await stub.collectionDelete(as(name), { collection: "board", row_id: "large",
                                             expected_etag: current.etag });
-    expect(await sqlIn(stub, "SELECT state FROM file_chunks")).toEqual([{ state: "garbage" }]);
+    expect(await sqlIn(stub, "SELECT state FROM file_chunks WHERE sha256 = ?", sha(LARGE)))
+      .toEqual([{ state: "garbage" }]);
     expect(small).toMatchObject({ row: { body_bytes: PLACE_BYTES } });
   });
 
@@ -172,17 +178,18 @@ describe("the placement rule", () => {
       const sql = state.storage.sql;
       expect(sql.exec("SELECT COUNT(*) AS n FROM collection_rows WHERE content_id IS NOT NULL " +
                         "UNION ALL SELECT COUNT(*) FROM file_contents").toArray())
-        .toEqual([{ n: 0 }, { n: 0 }]);
-      expect(sql.exec("SELECT state, stored, holds, refs FROM file_chunks").toArray())
-        .toEqual([{ state: "uploading", stored: 1, holds: 1, refs: 0 }]);
+        .toEqual([{ n: 0 }, { n: SEED.contents.size }]);
+      const mine = () => sql.exec("SELECT state, stored, holds, refs FROM file_chunks " +
+                                    "WHERE sha256 = ?", sha(LARGE)).toArray();
+      expect(mine()).toEqual([{ state: "uploading", stored: 1, holds: 1, refs: 0 }]);
       // Housekeeping lets the upload go at its expiry, and deletes the chunk past its grace.
       const now = Date.now() / 1000;
       await files.run(now + 1);
-      expect(sql.exec("SELECT state FROM file_chunks").toArray())
-        .toEqual([{ state: "uploading" }]);  // not before the upload's expiry
+      expect(mine().map((row) => row["state"]))
+        .toEqual(["uploading"]);  // not before the upload's expiry
       await files.run(now + PLACE_TTL_S + GC_GRACE_S + 60);
       expect(sql.exec("SELECT COUNT(*) AS n FROM file_intents").toArray()).toEqual([{ n: 0 }]);
-      expect(sql.exec("SELECT COUNT(*) AS n FROM file_chunks").toArray()).toEqual([{ n: 0 }]);
+      expect(mine()).toEqual([]);
       expect(await inR2(ns, LARGE)).toMatch(/^missing: /);
     });
   });
@@ -193,18 +200,18 @@ describe("the placement rule", () => {
     const put = (rowId: string, body: string, binding: Binding) =>
       stub.collectionWrite(binding, { collection: "board", row_id: rowId, body,
                                       expected_etag: "", private: false });
-    const tight = { free: { runs: 5, storage_bytes: 3 * PLACE_BYTES },
-                    paid: TIERS.paid };
+    const tight = tiers(3 * PLACE_BYTES);
     await put("a", LARGE, { ...as(name), tiers: tight });
     expect(refusalOf((await failure(() => put("b", LARGE.replace("é", "e"), {
-      ...as(name), tiers: tight }))))?.facts).toMatchObject({ limit_bytes: 3 * PLACE_BYTES,
-                                                               tier: "free" });
+      ...as(name), tiers: tight }))))?.facts)
+      .toMatchObject({ limit_bytes: SEED.bytes + 3 * PLACE_BYTES, tier: "free" });
     // The same body again is the same chunk: it adds no byte.
     await put("c", LARGE, { ...as(name), tiers: tight });
     // A small body kept in its row counts too (the one storage number, slice P): its row
     // and its history entry would take the owner past the figure.
     expect(refusalOf((await failure(() => put("d", SMALL, { ...as(name),
-      tiers: tight }))))?.facts).toMatchObject({ limit_bytes: 3 * PLACE_BYTES, tier: "free" });
+      tiers: tight }))))?.facts)
+      .toMatchObject({ limit_bytes: SEED.bytes + 3 * PLACE_BYTES, tier: "free" });
     expect((await failure(() => put("e", `${LARGE}x`, { ...as(name), tiers: null }))).message)
       .toBe(TIER_UNREAD);
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
@@ -234,7 +241,7 @@ describe("the placement rule", () => {
     expect((await put("most", most)) as { row: { revision: number } })
       .toMatchObject({ row: { revision: 1 } });
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_content_chunks"))
-      .toEqual([{ n: 2 }]);
+      .toEqual([{ n: SEED.placed + 2 }]);
     const etag = (await stub.collectionGet(as("bob"), { collection: "board",
                                                         row_id: "most" })).row!.etag;
     expect(await readOn((offset) => stub.collectionGet(as("bob"), {
@@ -268,8 +275,8 @@ describe("the placement rule", () => {
   });
 });
 
-/** A tier record whose free storage is `bytes`. */
-const tiers = (bytes: number) => ({ free: { runs: 5, storage_bytes: bytes },
+/** A tier record whose free storage is what the seed stores and `bytes` more. */
+const tiers = (bytes: number) => ({ free: { runs: 5, storage_bytes: SEED.bytes + bytes },
                                     paid: TIERS.paid });
 
 describe("the placement rule, held to the owner's own limits (review rvlim)", () => {
@@ -322,9 +329,10 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       body: LARGE, expected_etag: "", private: false });
     const [row] = await sqlIn(stub, "SELECT filer FROM collection_rows");
     expect(row!["filer"]).toMatch(/^client:[0-9a-f]{64}$/);
+    // The owner's own share holds its seed's placed files alone.
     expect(await sqlIn(stub, "SELECT who FROM file_shares WHERE chunk_bytes > 0 ORDER BY who"))
-      .toEqual([{ who: "*" }, { who: row!["filer"] }]);
-    expect((await stub.fileUsage(as(name))).share.chunk_bytes).toBe(0);
+      .toEqual([{ who: "*" }, { who: row!["filer"] }, { who: "owner" }]);
+    expect((await stub.fileUsage(as(name))).share.chunk_bytes).toBe(SEED.placedBytes);
   });
 
   it("A3: placed history is never let go at the tier's storage: the write is refused " +
@@ -349,7 +357,8 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     expect(written).toBeGreaterThan(1);
     const [kept] = await sqlIn(stub, "SELECT COUNT(*) AS n FROM collection_history");
     expect(kept!["n"]).toBe(written);
-    expect((await stub.fileUsage(bind)).chunk_bytes).toBeLessThanOrEqual(6 * 2 * PLACE_BYTES);
+    expect((await stub.fileUsage(bind)).chunk_bytes)
+      .toBeLessThanOrEqual(SEED.placedBytes + 6 * 2 * PLACE_BYTES);
   });
 
   it("A4: a read door with no tier numbers in the record drops the kept ones: fail closed",
@@ -384,7 +393,9 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       const page = await r.read(MUSE);
       await r.ack(MUSE, page.messages.at(-1)!.seq);
     }
-    expect(refusalOf(refused!)?.facts).toMatchObject({ limit_bytes: 4 * 2 * PLACE_BYTES });
+    expect(refusalOf(refused!)?.facts)
+      .toMatchObject({ limit_bytes: SEED.bytes + 4 * 2 * PLACE_BYTES });
+    expect(sent).toBeGreaterThan(1);
     const [held] = await r.sql("SELECT COUNT(*) AS n FROM ledger_messages");
     expect(held!["n"]).toBe(sent);
   });
@@ -417,8 +428,9 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     await stub.collectionDelete(as(name), { collection: "board", row_id: "a",
                                             expected_etag: made.row.etag });
     // Its chunk is garbage now; the sweep has begun deleting it.
-    expect(await sqlIn(stub, "SELECT state FROM file_chunks")).toEqual([{ state: "garbage" }]);
-    await sqlIn(stub, "UPDATE file_chunks SET state = 'deleting'");
+    expect(await sqlIn(stub, "SELECT state FROM file_chunks WHERE sha256 = ?", sha(LARGE)))
+      .toEqual([{ state: "garbage" }]);
+    await sqlIn(stub, "UPDATE file_chunks SET state = 'deleting' WHERE sha256 = ?", sha(LARGE));
     const again = put("b");
     // The delete lands while the write waits; the write then begins again and lands.
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -435,7 +447,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     const chunks = async () => (await r.sql("SELECT COUNT(*) AS n FROM file_chunks"))[0]!["n"];
     expect((await failure(() => r.post(null, "dm:agent_none", { body: LARGE }))).message)
       .toBe("room is not an enabled agent's dm");
-    expect(await chunks()).toBe(0);
+    expect(await chunks()).toBe(SEED.chunks.size);
     const posted = await r.post(null, `dm:${muse}`, { body: LARGE });
     const after = await chunks();
     // A resend is its original, answered before any upload begins.

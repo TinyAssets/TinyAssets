@@ -184,7 +184,7 @@ import type {
 import { Sessions, sessionsDoors } from "./sessions";
 import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
 import { type Receipt as StarterReceipt, Starter, starterDoors } from "./starter";
-import { carried, type StarterPackage } from "./starter-package";
+import { carried } from "./starter-package";
 import { priced, Usage as ModelUsage, usageDoors, type UsageReceipt } from "./usage";
 import { migrate } from "../../contract/src/migrate";
 import { Archive } from "./archive";
@@ -370,16 +370,6 @@ const PLACE_TRIES = 5;
 export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail, never " +
   "converse";
 
-/** What a test changes past the doors: the starter package. */
-export interface Internals {
-  /**
-   * The starter package the object seeds and keeps current (`starter.ts`): the one this code
-   * carries when omitted, as production builds it; another for a test of updates; null for
-   * none, the tests of everything else, which start from an empty workspace.
-   */
-  readonly starter?: StarterPackage | null;
-}
-
 /**
  * The object's state, as its modules are handed it: its doors' handlers, each in the module
  * its row names (`contract/doors.json`), and the run launcher (`launch.ts`). Its stores; its
@@ -551,11 +541,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * for the import, then the namespace it deleted; from then on every door answers `busy`.
    */
   #discarded: { readonly ns: string | null } | null = null;
-  /**
-   * The runtime constructs it with `ctx` and `env` alone; the workerd tests hand it the
-   * starter package they test (`internals`).
-   */
-  constructor(ctx: DurableObjectState, env: OwnerEnv, internals: Internals = {}) {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
     super(ctx, env);
     this.#gate = new WriteGate(ctx.storage);
     const storage = this.#gate.storage;
@@ -608,7 +594,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       // lands, so a seed waits for them rather than failing (the first door's call keeps them).
       ready: () => keptTiers(storage) !== null,
       notice: (type, detail) => this.#notices.add(type, detail, clock()),
-    }, internals.starter === undefined ? carried() : internals.starter);
+    }, carried());
     const owner = () => {
       const named = ctx.id.name;
       if (named === undefined) {

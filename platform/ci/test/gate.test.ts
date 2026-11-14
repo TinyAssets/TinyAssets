@@ -5,6 +5,7 @@
  * front of the owner forward every call as it is, hold one until it is let go, change one's
  * bytes in flight, and pass a refusal, injected or real, through unchanged.
  */
+import { evictDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -257,5 +258,22 @@ describe("the owner Worker as an auxiliary, behind the owner gate", () => {
     const read = await direct(o.name).fileRead(o.base, { path: "/workspace/notes/big.md" });
     expect(read.entry).toMatchObject({ size: 8_192 });
     expect((await e.FILES_GATE.seen()).map((call) => call.method)).toContain("putChunks");
+  });
+
+  it("answers a held call with a copy, keeping no hold on the object that called", async () => {
+    // Handed on, the real call's result kept the calling object referenced, so an owner that
+    // put a chunk through the gate could not be evicted; a direct call never holds one.
+    const o = await owner(direct);
+    await e.FILES_GATE.arm({ method: "putChunks", hold: "after" });
+    const writing = direct(o.name).fileWrite(o.base, { path: "/workspace/notes/big.md",
+                                                       expected_etag: "",
+                                                       content: "x".repeat(8_192) });
+    expect((await e.FILES_GATE.held(HELD_WAIT_MS)).map((call) => call.method))
+      .toEqual(["putChunks"]);
+    await e.FILES_GATE.release();
+    await writing;
+    await evictDurableObject(direct(o.name));
+    const read = await direct(o.name).fileRead(o.base, { path: "/workspace/notes/big.md" });
+    expect(read.entry).toMatchObject({ size: 8_192 });
   });
 });

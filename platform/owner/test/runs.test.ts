@@ -173,9 +173,11 @@ describe("admission", () => {
 
   it("refuses an agent with no agent.json, or one disabled", async () => {
     const r = await gated();
-    expect((await failure(() => ownerRun(r.stub, r.bind()))).message).toBe(AGENT_UNDEFINED);
-    expect((await failure(() => ownerRun(r.stub, r.bind(), { ...SIGNED_IN, enabled: false })))
-      .message).toBe(AGENT_DISABLED);
+    // An agent of the owner's own beside the seed's `main`.
+    expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "helper"))).message)
+      .toBe(AGENT_UNDEFINED);
+    expect((await failure(() => ownerRun(r.stub, r.bind(), { ...SIGNED_IN, enabled: false },
+                                         "helper"))).message).toBe(AGENT_DISABLED);
     expect(await r.sql("SELECT id FROM runs")).toEqual([]);
   });
 

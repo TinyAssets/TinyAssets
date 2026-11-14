@@ -69,9 +69,31 @@ T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each gree
      - A design is owed before it is built. The one this PR suggests: a new owner's seed is tested on the object's own seed (the carried package, with no alias, in the starter tests' project); updates and reviews are hand-built passes at versions above it, run once that seed has settled; then `Internals`, `test/worker.ts`, `test/namespaces.ts` and `SEEDED` go, and `main` is `src/index.ts`.
    - **`BackupParts`' `sizes?` and `pool?`: research first, with T1c-c.** The generation harness (`generation-support.ts` `generate`) builds `Backups` by hand, a second copy of the object's wiring, at sizes 64 to 128 times smaller than production's (`SMALL`: 16, 32 and 64 KiB against 1, 4 and 8 MiB) and with a pool of its own. Its multi-burst fixtures would grow as much at production's sizes (1,600 notices would become about 200,000). It is decided with T1c-c's one wiring function, which can build the backups lane as the object does.
 
+## T1c-b2: the real entry and the starter
+
+1. **Decided (the coordinator, 2026-11-14), superseding the one-file alias and the `seeded` project:** the whole owner suite runs on the real carried package, as production does.
+   - The 42 tests the one-file starter broke need the same changes under the alias as without it.
+   - The alias is a test seam that `ci/guards/isolation.test.ts` rightly refuses.
+   - So the kit change for a second project (nested excludes, the deepest-folder match in `budgets.mjs`, an `owner/seeded` budget row, the guard's edit) is backed out as surplus. The starter tests stay in `owner/test/`.
+2. **Decided (the coordinator, 2026-11-14), kept from the earlier decision:**
+   - A new owner's seed is tested on the object's own seed.
+   - Updates and reviews are hand-built passes at versions derived from the carried one (`SEED + 1`, `SEED + 2`, …), run once that seed has settled.
+3. **One rig helper waits for the seed** (`support.ts` `seeded`, the `starterReceipts` door at `version === carried`). Every rig and `ownerObject` await it before the test's first call, which ends the alarm race. `unseededRig` is the starter's own tests' way to an owner before its seed.
+4. **Tests that count files, bytes or manifest pages** derive the seeded part from `carried()`, with no literal for the starter's size. A test that means "nothing but what I wrote" asserts its own paths plus the starter's, or filters to its own.
+5. **As built:**
+   - `main` is the config's own, `src/index.ts`, with one namespace, `OWNER`, on the real `OwnerDO`.
+   - `Internals`, `Starter`'s null package, `test/worker.ts`, `test/namespaces.ts` and `SEEDED` are deleted. `StarterDeps.ready` is required.
+6. **Only a failed first seed lets the owner's own file come first.** An owner's file doors wait for its seed, and the import writes only the imported tree. So a test of the owner's file there before its seed writes it after a first seed failed part way, the files plane refusing the seed's upload at the `FILES` gate (`starter-support.ts` `failedOwner`).
+7. **The tests that were not the starter's** move to `run-schedules.test.ts` and `file-readers.test.ts`. The profile's move and the goals' arrival are rewritten on paths the carried package does not seed; what each holds is unchanged.
+8. **`starterSeed()` is the one helper for the seeded part** (`support.ts`): the seed's files, directories, entries (each one file version, so a test's own come after them), bytes inline and placed, content ids, chunks and the owner's agents it defines; `mine(items, nameOf)` keeps a test's own paths, contents or chunks. Quota and storage-full tests count the seed's bytes as any file's: each tier figure is the seed's bytes and the test's room. One figure is read from the object instead: the owner's index bytes in `files-share.test.ts`, since deriving them would copy the manifest's byte formula.
+9. **An owner before any door bound it** is `unseededObject` (beside `unseededRig`): for what a first call binds (`owner.test.ts`), a never-seen owner's egress (`egress.test.ts`) and the schedule's probe, whose object then has no lane job of its own.
+10. **The gate answers with the answer's own fields** (`ci/gate-worker.ts`). Handed on as it was, the real call's RPC result kept the calling object referenced, so every owner that had put a chunk through the `FILES` gate (every seeded owner) could not be evicted: `owner.test.ts` and `wakes.test.ts` waited out 38 s timeouts. A direct call never holds one.
+11. **`windowEnd` lives in `bodies.ts`** (a product bug, found here): the pages, bodies and search modules' import cycle made esbuild, as wrangler bundles the owner, set `SEARCH_ANSWER_BYTES` from `PAGE_BYTES` before `PAGE_BYTES` was set, so it was `NaN` in production and a search never paged by its answer's bytes.
+12. **Measured** through `heavy.sh`: the owner workerd suite 242 s wall against main's 272 s; `owner.test.ts` 128 s to 12 s, `wakes.test.ts` 104 s to 14 s.
+
 ## Owed
 
-- **T1c-b2** (the real entry and the starter) and **`BackupParts`' `sizes?` and `pool?`**, as T1c-b's item 6 says.
+- **`BackupParts`' `sizes?` and `pool?`**, with T1c-c, as T1c-b's item 6 says.
 - **T1c-c: `ledger-support.ts` `ledgerParts`, `ledgerOn` and `inLedger`.** They copy the object's wiring of the ledger, and about 70 test reaches use them. `ballast` posts up to 50,000 messages in the ledger to seed production's ceilings, about 9 s a seed; through the doors that would be 50,000 door calls a seed. It is its own PR, after T1c-b (`tasks.md` holds the three lines), and is not built here.
   - **Decided (the coordinator, 2026-11-14):** the object exports its one ledger wiring function, the one it calls to build its ledger from its state and env. The tests call that same function in place of `ledgerParts`, so there is one wiring and no copy.
   - Test seeding is not routed through the doors, and no bulk SQL seeds (it would copy the post path's row shapes, which T1b5 rejected).

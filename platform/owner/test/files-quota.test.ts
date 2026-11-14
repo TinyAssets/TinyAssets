@@ -20,10 +20,15 @@ import { migrate } from "../../contract/src/migrate";
 import { rig, type Rig } from "./ledger-support";
 import { TIER_UNREAD } from "../src/tier";
 import {
-  crowd, failure, fileCounters, inFiles, laneAt, namedCode, sqlIn, text, TIERS,
+  crowd, failure, fileCounters, inFiles, laneAt, namedCode, sqlIn, starterSeed, text, TIERS,
 } from "./support";
 
 const W = "/workspace";
+/**
+ * What every owner's seed holds before a test writes (`starterSeed`): its bytes count in the
+ * owner's storage, and its entries took the file versions 1 to `SEED.entries`, one each.
+ */
+const SEED = starterSeed();
 /** The refusal at the index's ceiling: what is full and what frees it, never an upgrade. */
 const INDEX_FULL = `${FILE_INDEX_FULL}: your file index is full: it holds as many files and ` +
   "versions as one owner's index can. Delete files or old versions of files you no longer " +
@@ -79,15 +84,16 @@ describe("a file bound", () => {
   it("refuses chunk bytes past max_bytes at the upload's begin, before any byte is sent",
      async () => {
     const r = await rig();
-    await inFiles(r.stub, { max_bytes: INLINE_BYTES + 1 }, (files) =>
+    const full = SEED.bytes + INLINE_BYTES + 1;
+    await inFiles(r.stub, { max_bytes: full }, (files) =>
       files.write(`${W}/a`, new Uint8Array(INLINE_BYTES + 1).fill(1),
                   { expected: null, writer: "owner" }));
-    await refusedWithNothingLeft(r, { max_bytes: INLINE_BYTES + 1 }, (files) =>
+    await refusedWithNothingLeft(r, { max_bytes: full }, (files) =>
       files.write(`${W}/b`, new Uint8Array(INLINE_BYTES + 1).fill(2),
                   { expected: null, writer: "owner" }),
-    storageFullRefusal(storageFull(INLINE_BYTES + 1, INLINE_BYTES + 1, 0, INLINE_BYTES + 1,
-                                   null, null)).message);
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 1 }]);
+    storageFullRefusal(storageFull(full, INLINE_BYTES + 1, 0, full, null, null)).message);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks"))
+      .toEqual([{ n: SEED.chunks.size + 1 }]);
   });
 
   it("names old versions among what frees storage, as retention keeps them by default", () => {
@@ -124,7 +130,8 @@ describe("a file bound", () => {
       files.rename(`${W}/b`, `${W}/c`, { expected: null, replace: true, writer: "o" }),
     INDEX_FULL);
     await inFiles(r.stub, {}, (files) => files.remove(`${W}/c`, { expected: null, writer: "o" }));
-    expect(await r.stub.fileUsage(r.bind(null))).toMatchObject({ entries: 2, history: 6 });
+    expect(await r.stub.fileUsage(r.bind(null)))
+      .toMatchObject({ entries: SEED.entries + 2, history: SEED.entries + 6 });
     await back();
     await counted(r);
   });
@@ -143,7 +150,7 @@ describe("file history", () => {
                                               recursive: false });
     }
     const rows = async () => sqlIn(r.stub, "SELECT version, prune_after FROM file_history " +
-                                             "ORDER BY version");
+                                             "WHERE version > ? ORDER BY version", SEED.entries);
     const kept = await rows();
     expect(kept).toHaveLength(40);
     expect(kept.every((row) => row["prune_after"] === null)).toBe(true);
@@ -179,7 +186,8 @@ describe("file history", () => {
       }
     });
     expect(await sqlIn(r.stub, "SELECT path, size, prune_after IS NOT NULL AS due FROM " +
-                                 "file_history ORDER BY version")).toEqual([
+                                 "file_history WHERE version > ? ORDER BY version",
+                       SEED.entries)).toEqual([
       ...[1, 1, 1].map((size) => ({ path: `${W}/a`, size, due: 0 })),
       ...[1, 1, 0].map((due) => ({ path: `${W}/b`, size: 1, due })),
       { path: `${W}/c`, size: 2, due: 0 }, { path: `${W}/c`, size: 3, due: 0 }]);
@@ -193,7 +201,7 @@ describe("file history", () => {
         await write(r, `${W}/f${i}`, `${round}`);
       }
     }
-    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(10);
+    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(SEED.entries + 10);
     // Kept inside the window, up to keep_recent each, and never past it.
     await setPolicy(r, { keep_versions: 1, keep_recent: 3 });
     await runDurableObjectAlarm(r.stub);
@@ -212,7 +220,8 @@ describe("file history", () => {
     await write(r, `${W}/old`, "1");
     await write(r, `${W}/old`, "2");  // version 1 is now kept for its age, due to go
     const due = () => sqlIn(r.stub, "SELECT released, prune_after IS NOT NULL AS due " +
-                                      "FROM file_history ORDER BY version");
+                                      "FROM file_history WHERE path = ? ORDER BY version",
+                            `${W}/old`);
     expect(await due()).toEqual([{ released: 0, due: 1 }, { released: 0, due: 0 }]);
     await r.stub.fileRemove(r.bind(null), { path: `${W}/old`, expected_etag: null,
                                             recursive: false });
@@ -234,13 +243,13 @@ describe("file history", () => {
                                               recursive: false });
     };
     for (let i = 0; i < 5; i++) {
-      await pair(`n${i}`);  // versions 2i + 1 and 2i + 2, due at once
+      await pair(`n${i}`);  // versions 2i + 1 and 2i + 2 past the seed's, due at once
     }
     expect(await r.stub.fileHistoryPurge(r.bind(null), { path: `${W}/n4` }))
-      .toEqual({ purged: 2 });  // the floor rises to n4's delete, version 10
+      .toEqual({ purged: 2 });  // the floor rises to n4's delete, the seed's versions and 10
     await inFiles(r.stub, limits, (files) => files.run(Date.now() / 1000 + 1));
     expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
-      .toEqual([{ feed_floor: 10 }]);
+      .toEqual([{ feed_floor: SEED.entries + 10 }]);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history WHERE path = ?",
                        `${W}/n0`)).toEqual([{ n: 0 }]);
   });
@@ -254,14 +263,18 @@ describe("file history", () => {
                                               recursive: false });
     }
     // Rows marked under two retentions, as a re-mark still under way leaves them: b's
-    // delete (version 4) due before a's (version 2), both writes not yet.
-    await sqlIn(r.stub, "UPDATE file_history SET prune_after = CASE version WHEN 4 THEN 1 " +
-                          "WHEN 2 THEN 2 ELSE 9000000000 END");
+    // delete (its fourth version past the seed's) due before a's (its second), both writes
+    // not yet.
+    const v = (n: number) => SEED.entries + n;
+    await sqlIn(r.stub, "UPDATE file_history SET prune_after = CASE version WHEN ? THEN 1 " +
+                          "WHEN ? THEN 2 ELSE 9000000000 END WHERE version > ?", v(4), v(2),
+                SEED.entries);
     await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
-      .toEqual([{ feed_floor: 4 }]);
-    expect(await sqlIn(r.stub, "SELECT version FROM file_history ORDER BY version"))
-      .toEqual([{ version: 1 }, { version: 3 }]);
+      .toEqual([{ feed_floor: v(4) }]);
+    expect(await sqlIn(r.stub, "SELECT version FROM file_history WHERE version > ? " +
+                                 "ORDER BY version", SEED.entries))
+      .toEqual([{ version: v(1) }, { version: v(3) }]);
   });
 
   it("is re-marked by a retention change, on the one schedule", async () => {
@@ -271,15 +284,16 @@ describe("file history", () => {
     await write(r, `${W}/c`, "1");
     await r.stub.fileRemove(r.bind(null), { path: `${W}/c`, expected_etag: null,
                                             recursive: false });
-    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(2);
+    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(SEED.entries + 2);
     // A retention change re-marks the rows already kept, on the one schedule.
     await setPolicy(r, { keep_versions: 1, keep_recent: 1, retention_days: 0 });
     // Due at once: the alarm may already have run by itself; run it if it has not.
     await runDurableObjectAlarm(r.stub);
-    for (let i = 0; i < 50 && (await r.stub.fileUsage(r.bind(null))).history !== 1; i++) {
+    const one = SEED.entries + 1;
+    for (let i = 0; i < 50 && (await r.stub.fileUsage(r.bind(null))).history !== one; i++) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(1);
+    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(one);
     await write(r, `${W}/d`, "1");
     expect(await sqlIn(r.stub, "SELECT retained_keep, retained_recent, retained_days, " +
                                  "retain_cursor FROM file_space"))
@@ -339,7 +353,7 @@ describe("file history", () => {
       await files.run(1000);
     });
     expect(await sqlIn(r.stub, "SELECT prune_after - at AS due FROM file_history " +
-                                 "ORDER BY version"))
+                                 "WHERE path = ? ORDER BY version", `${W}/a`))
       .toEqual([{ due: 2 * 86_400 }, { due: 2 * 86_400 }, { due: null }]);
   });
 
@@ -387,10 +401,13 @@ describe("file history", () => {
       }
     });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
-    // A first pass under keep 2 stops after 500 paths; keep 1 then comes back in force.
+    // A first pass under keep 2 stops after 500 paths, the seed's first in path order; keep
+    // 1 then comes back in force.
     await inFiles(r.stub, { keep_versions: 2, retention_days: 30 }, (files) => files.run(1000));
+    const paths = [...SEED.paths, ...Array.from({ length: 600 }, (_, i) =>
+      `${W}/p${String(i).padStart(3, "0")}`)].sort();
     expect(await sqlIn(r.stub, "SELECT retain_cursor FROM file_space"))
-      .toEqual([{ retain_cursor: `${W}/p499` }]);
+      .toEqual([{ retain_cursor: paths[499] }]);
     await inFiles(r.stub, { keep_versions: 1, retention_days: 30 }, async (files) => {
       await files.run(1000);
       await files.run(1000);
@@ -399,7 +416,7 @@ describe("file history", () => {
     // Every path's older version is due again, the first 500's included.
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history " +
                                  "WHERE prune_after IS NULL"))
-      .toEqual([{ n: 600 }]);
+      .toEqual([{ n: SEED.entries + 600 }]);
   });  // 600 versions written: past the default timeout under load (slice D)
 
   it("never wedges housekeeping: a pass at every bound still expires, prunes and collects",
@@ -423,14 +440,16 @@ describe("file history", () => {
       .toEqual([{ n: 0 }]);
     await sqlIn(r.stub, "UPDATE file_temps SET expires_at = 1");
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1");
+    await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE path = ?", `${W}/a`);
     const before = await r.stub.fileUsage(r.bind(null));
-    expect(before.entries).toBeGreaterThan(600);
-    expect(before.history).toBe(2);
+    expect(before.entries).toBeGreaterThan(SEED.entries + 600);
+    expect(before.history).toBe(SEED.entries + 2);
     const back = await crowd(r.stub, INDEX_BYTES, 0);
     await inFiles(r.stub, { max_bytes: 0 }, (files) => files.run(Date.now() / 1000));
     const after = await r.stub.fileUsage(r.bind(null));
-    expect([after.entries, after.history, after.intents]).toEqual([0, 0, 0]);
+    // All of it goes but the seed, whose files are the owner's own and live.
+    expect([after.entries, after.history, after.intents])
+      .toEqual([SEED.entries, SEED.entries, 0]);
     await back();
     await counted(r);
   });
@@ -506,14 +525,16 @@ describe("the files policy", () => {
     const big = (n: number) => new Uint8Array(INLINE_BYTES + 1).fill(n);
     const put = (path: string, n: number, tiers: unknown = TIERS) =>
       r.stub.fileWrite(r.bind(null, { tiers }), { path, expected_etag: null, content: big(n) });
-    // The tier's figure, as the binder hands it from the control record.
-    const small = { free: { runs: 5, storage_bytes: INLINE_BYTES + 1 },
+    // The tier's figure, as the binder hands it from the control record: the seed and one
+    // file.
+    const room = SEED.bytes + INLINE_BYTES + 1;
+    const small = { free: { runs: 5, storage_bytes: room },
                     paid: { runs: 10, storage_bytes: 250_000_000_000 } };
     await put(`${W}/a`, 1, small);
     expect((await r.stub.fileUsage(r.bind(null, { tiers: small }))).limits.max_bytes)
-      .toBe(INLINE_BYTES + 1);
+      .toBe(room);
     expect(refusalOf((await failure(() => put(`${W}/b`, 2, small))))?.facts)
-      .toMatchObject({ limit_bytes: INLINE_BYTES + 1, tier: "free",
+      .toMatchObject({ limit_bytes: room, tier: "free",
                        upgrade: { tier: "paid", limit_bytes: 250_000_000_000 } });
     // The owner's own figure binds only below the tier's.
     await setPolicy(r, { max_bytes: 10 * INLINE_BYTES });

@@ -355,8 +355,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     fake consumer; the erasure and control record under a fake `Date`; the rig admitting by
     the door; the doors' entry with no third constructor argument (`t1c.md`, T1c-b).
   - [ ] T1c-b2, decided first (`t1c.md`, T1c-b item 6): the real entry, `main: src/index.ts`,
-    with `Internals` and the test classes left deleted, and the one-file starter by a Vite
-    alias, the starter tests' hand-built passes rebuilt beside an object that seeds its own.
+    with `Internals` and the test classes left deleted, and the whole owner suite on the real
+    carried package (no alias): every rig waits for the seed, the seeded part of every count
+    comes from `support.ts` `starterSeed()`, and the starter tests' hand-built passes run at
+    versions past the carried one (`t1c.md`, T1c-b2).
   - [ ] T1c-c: `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted: the
     object exports its one ledger wiring function and the tests call it; `ballast` seeds
     through the ledger's own API, with no door seeding and no bulk SQL (`t1c.md`, owed); and
