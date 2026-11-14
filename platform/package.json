@@ -10,6 +10,8 @@
     "gateway",
     "codemode",
     "sandbox",
+    "sources",
+    "starter",
     "import",
     "deploy",
     "ci"

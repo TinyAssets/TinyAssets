@@ -11,13 +11,12 @@
  * on and never turns it off. The real crossing is held in workerd by the doors' tests
  * (`doors/test/api-keys.test.ts`, the owner's object's RPC).
  */
-import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { readWrangler } from "../../ci/workers";
+import { readWrangler, workerFolders } from "../../ci/wrangler";
 import { MAINTENANCE } from "../src/control";
 import {
   EGRESS_CODES, ERASING, FAULT_CODES, faultOf, FileFault, Refusal, REFUSALS,
@@ -35,10 +34,7 @@ function crossed(name: string, message: string, fields: Record<string, unknown>)
 }
 
 describe("the Workers' runtime", () => {
-  const workers = readdirSync(PLATFORM, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory()
-      && readdirSync(join(PLATFORM, entry.name)).includes("wrangler.jsonc"))
-    .map((entry) => entry.name).sort();
+  const workers = workerFolders();
 
   it("carries a refusal's own fields across RPC in every Worker", () => {
     expect(workers).toEqual(["codemode", "doors", "files", "gateway", "owner", "sandbox"]);

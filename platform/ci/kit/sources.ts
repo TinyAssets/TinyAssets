@@ -8,18 +8,19 @@ import { extname, join, relative } from "node:path";
 import ts from "typescript";
 
 import { PLATFORM } from "../paths.ts";
-import { type Config, parseWrangler } from "../workers.ts";
+import { type Config, parseWrangler } from "../wrangler.ts";
 
-export type { Config } from "../workers.ts";
+export type { Config } from "../wrangler.ts";
 
 /** Directories no config guard looks in: dependencies, and wrangler's own local state. */
 const UNWALKED: ReadonlySet<string> = new Set(["node_modules", ".wrangler"]);
 
 /**
- * Every `wrangler.*` file under `root`, by path from `root`, sorted. The walk never enters
- * `node_modules` or `.wrangler`: listing them whole and filtering after (28,000 entries under
- * `platform/` once installed) was most of each config guard's time, enough to pass a test's
- * 5 s bound on a loaded CI runner.
+ * Every wrangler config under `root` (`wrangler.json`, `.jsonc` or `.toml`, in any case; a
+ * script named for wrangler, `ci/wrangler.ts`, is none), by path from `root`, sorted. The
+ * walk never enters `node_modules` or `.wrangler`: listing them whole and filtering after
+ * (28,000 entries under `platform/` once installed) was most of each config guard's time,
+ * enough to pass a test's 5 s bound on a loaded CI runner.
  */
 export function configFiles(root: string): string[] {
   const found: string[] = [];
@@ -30,7 +31,7 @@ export function configFiles(root: string): string[] {
         if (!UNWALKED.has(entry.name)) {
           walk(join(dir, entry.name), path);
         }
-      } else if (/^wrangler\./i.test(entry.name)) {
+      } else if (/^wrangler\.(?:jsonc?|toml)$/i.test(entry.name)) {
         found.push(path);
       }
     }

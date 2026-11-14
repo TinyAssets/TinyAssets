@@ -40,15 +40,23 @@ export const CONFIG: ConfigRules = Object.freeze({
 });
 
 /**
+ * Where its sources name its own classes' objects (the doors' binder guard,
+ * `doors/guards/binder.test.ts`): one owner's sandboxes' E2B calls (`SANDBOXES`) and the
+ * platform's line for one more sandbox (`SLOTS`), neither of which binds anything of an
+ * owner's object.
+ */
+const OWN = Object.freeze(["this.env.SANDBOXES", "this.env.SLOTS"]);
+export const OWN_OBJECTS = Object.freeze({ "sandbox/src/index.ts": OWN,
+                                           "sandbox/src/control.ts": OWN });
+
+/**
  * What the sandbox still owes the platform's guards (`ci/kit/owed.ts`), each until the fix
  * named removes it.
  */
 export const OWED: readonly Owed[] = Object.freeze([
-  // The migration lock, in the owner's guards: B8 moves it to `ci/kit/locks.ts`.
-  ...imports("B8", "platform/sandbox/guards/migrations.test.ts",
-             ["platform/owner/guards/lock.ts"]),
-  // The template's pin, read through the test kit: B18 gives it one reader in `pair.ts`.
-  ...imports("B18", "platform/sandbox/template/checks.ts", ["platform/ci/workers.ts"]),
+  // The template's pin, read from the Worker's config: B18 gives it one reader in `pair.ts`,
+  // and the template its row's way to `ci/wrangler.ts`.
+  ...imports("B18", "platform/sandbox/template/checks.ts", ["platform/ci/wrangler.ts"]),
   // The runner's answers as error classes of the Worker's own, each a contract refusal by
   // its code (B2, S7).
   ...refusals("B2", "platform/sandbox/src/control.ts",

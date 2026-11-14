@@ -396,7 +396,16 @@ It builds as its own PR, **C2b**, right after C2.
 1. **B7's kit text guard goes to lane C after C5.** It is one `ci/kit` guard (no SHA-256 outside `contract/src/digest.ts` in a Worker's `src` or the runner; no `Date.now()` in `owner/src` outside `clock.ts`) with an `owed` ratchet, and `ci/kit/owed.ts` is lane C's, with C5 in flight. The PR that adds it lists each lane's entries; after D1 the doors owe it none.
 2. **The cookie reader stays in `session.ts`, not the doors' kit** (a departure from B7's list, accepted as better): the binder guard holds that only `session.ts` reads the `Cookie` header, so one private `cookies(request, name)` serves the session and connect cookies.
 
-## §U. D2 as built (2026-11-14)
+## §U. C5 as built (2026-11-14)
+
+1. **The source records live in `sources/records/`,** so the records reader reads only records and `sources/package.json` needs no skip. The runner's bundle moves with the paths; its pair check is the one owed at the dark redeploy.
+2. **The tools' and apps' constants are not derived from `profiles.json`** (corrects `d2` B8): `NEVER_RUN`, `MAILBOX_TOOLS` and the like are the guard's statement of what each profile must hold, and deriving them from the file would test the file against itself.
+3. **Owed for C5b,** each a split of B8 left out of C5:
+   - `owner/guards/rules.ts`'s four rules imports (files, gateway, codemode, sandbox) for `SERVICES`: "`rules.ts` drops the values the configs already state" needs `owner/guards/config.test.ts`'s `boundProblems` reworked, deciding which bound-Worker facts are the owner's own security statement and which the bound config's;
+   - `s2:S93` (`sandbox/guards/rules.ts` `exact`);
+   - `d2:N81` (`doors/guards/rules.ts` `exact`, and `config.test.ts`'s restated names).
+
+## D2 as built (2026-11-14)
 
 1. **Corrects `d2` B2's "JSON `{error,message}`":** the JSON doors' one refusal shape is `{error: <message>}`, the code's status and its `Retry-After`, as every refusal on `/api`, `/app/api`, `/mcp` and the owner's socket answered before D2. The closed gate's `{error: "unavailable", message}` was the one other shape, and it goes.
 2. **`egress_rate` names its wait** (lane C's file, in D2): `429`, `Retry-After: 1`, transient, as every other retryable code.

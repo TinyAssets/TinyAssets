@@ -21,22 +21,23 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { bundledRecords, catalogOf } from "../../sources/src/catalog";
-import { sealedSource, sourceRecord } from "../../sources/src/check";
-import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
-import { type Install, type SourceRecord, SourceRecordError } from "../../sources/src/schema";
-import { SUPPORTED_APIS } from "../src/egress-scope";
-import { forbids } from "../src/text";
+import { bundledRecords, catalogOf } from "../src/catalog";
+import { CREDENTIAL_NAME, sealedSource, sourceRecord } from "../src/check";
+import { RUN_BASICS, runEnv } from "../src/run-env";
+import { type Install, type SourceRecord, SourceRecordError } from "../src/schema";
+import { SUPPORTED_APIS } from "../../contract/src/egress-scope";
+import { forbids } from "../../contract/src/text";
+import { RECORDS_DIR, recordFiles } from "../write-records";
 
 const SOURCES = join(PLATFORM, "sources");
 
 function files(dir: string): Map<string, unknown> {
-  return new Map(readdirSync(dir).filter((name) => name.endsWith(".json")).sort()
+  return new Map(recordFiles(dir)
     .map((name) => [name.slice(0, -".json".length),
                     JSON.parse(readFileSync(join(dir, name), "utf8")) as unknown]));
 }
 
-const records = files(SOURCES);
+const records = files(RECORDS_DIR);
 const groq = records.get("groq") as Record<string, unknown>;
 const openrouter = records.get("openrouter_user_models_v1") as Record<string, unknown>;
 const openai = records.get("openai") as Record<string, unknown>;
@@ -319,7 +320,7 @@ describe("the engine records", () => {
           ...Object.keys(record.cli!.per_credential?.[credential]?.env ?? {})]);
         expect(new Set(Object.keys(run.env)), what).toEqual(own);
         for (const name of [...Object.keys(run.env), ...run.inherit]) {
-          expect(name, what).not.toMatch(/(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|AUTH|BASE_URL|ENDPOINT)(?:_|$)/);
+          expect(name, what).not.toMatch(CREDENTIAL_NAME);
           expect(forbids(run.forbid_env, name), `${what}: ${name}`).toBe(false);
         }
       }

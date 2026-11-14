@@ -14,7 +14,7 @@ import { classProblems, exactProblems, flagProblems, keyProblems, NO_EXPORTS,
          secretProblems } from "../../ci/kit/config";
 import { PLATFORM } from "../../ci/paths";
 import { type Config, configFiles, platformConfigs, workerSources } from "../../ci/kit/sources";
-import { readWrangler, wranglerKeys } from "../../ci/workers";
+import { readWrangler, wranglerKeys } from "../../ci/wrangler";
 
 import { BOUND_KEYS, type Bound, CLASSES, ENV_KEYS, LIMITS, OWNER_QUEUES, RING_QUEUES,
          SECRETS, SERVICES, TOP_KEYS } from "./rules";

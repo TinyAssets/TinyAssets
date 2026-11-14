@@ -21,7 +21,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { readWrangler } from "../../ci/workers";
+import { readWrangler } from "../../ci/wrangler";
 import { workflow } from "../../ci/workflows";
 import { LOADER } from "../runner/protocol";
 import { NAME, tag } from "../template/image";

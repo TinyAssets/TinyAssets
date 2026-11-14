@@ -40,7 +40,7 @@ export function catalogOf(records: readonly unknown[]): Sources {
   };
 }
 
-/** The platform's records (`platform/sources/*.json`). */
+/** The platform's records (`platform/sources/records/*.json`). */
 export function bundledSources(): Sources {
   return catalogOf(RECORDS);
 }

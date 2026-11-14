@@ -9,9 +9,9 @@
  * call's guard; outside any scope it is the runtime's own fetch, unchanged. The guards
  * themselves call `nativeFetch`, never the global, so they cannot reach themselves.
  *
- * This is the one module the platform's module-state guard exempts, for exactly the
- * three lines it pins (`owner/guards/module-state.test.ts`, `EXEMPT`): the scope, the
- * captured runtime fetch, and the one write of the global. The scope holds no data
+ * The gateway exempts this module from the platform's module-state rule for exactly three
+ * symbols (`guards/rules.ts`, `MODULE_STATE`): the scope, the captured runtime fetch, and
+ * the one write of the global. The scope holds no data
  * between calls (each call's guard lives only in its own async context), and the
  * interposer is the same function for every owner.
  *
