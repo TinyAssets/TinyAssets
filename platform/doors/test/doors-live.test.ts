@@ -21,7 +21,8 @@ import { NO_ERASURE } from "../../owner/src/erasure";
 import { LEDGER_LIMITS } from "../../owner/src/ledger";
 import { defineAgent } from "../../owner/test/runs-support";
 import { failure } from "../../owner/test/support";
-import { ERASURE_QUEUE, MCP_RESOURCE, now } from "../src/config";
+import { QUEUES } from "../../contract/src/queue-names";
+import { MCP_RESOURCE, now } from "../src/config";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { readOwner, readRoute } from "../src/directory";
 import { eraseOutside, erasureQueue } from "../src/erase";
@@ -210,7 +211,7 @@ describe("the erasure", () => {
     const message = (body: unknown, id: string) => ({
       id, timestamp: new Date(), attempts: 1, body,
       ack: () => { acked.push(id); }, retry: () => { retried.push(id); } });
-    await erasureQueue({ queue: ERASURE_QUEUE, messages: [
+    await erasureQueue({ queue: QUEUES.ERASURES, messages: [
       message({ owner: who }, "m1"), message({ owner: who, extra: 1 }, "m2")],
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
                        doorsEnv, () => FAKE_UPSTREAM);
@@ -223,7 +224,7 @@ describe("the erasure", () => {
     refuseOnce("erasureOutside", who, slotBusy());
     const acked: string[] = [];
     const retried: string[] = [];
-    await erasureQueue({ queue: ERASURE_QUEUE, messages: [{
+    await erasureQueue({ queue: QUEUES.ERASURES, messages: [{
       id: "m1", timestamp: new Date(), attempts: 1, body: { owner: who },
       ack: () => { acked.push("m1"); }, retry: () => { retried.push("m1"); } }],
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
@@ -239,7 +240,7 @@ describe("the erasure", () => {
       instance.erasures.sent.splice(0));
     const failing = { ...FAKE_UPSTREAM, forget: () => Promise.reject(new Error("WorkOS down")) };
     const retried: string[] = [];
-    await erasureQueue({ queue: ERASURE_QUEUE, messages: [{
+    await erasureQueue({ queue: QUEUES.ERASURES, messages: [{
       id: "m1", timestamp: new Date(), attempts: 1, body: sent[0],
       ack: () => undefined, retry: () => { retried.push("m1"); } }],
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,

@@ -125,6 +125,8 @@ describe("the code list", () => {
     ["egress_gateway_failed", 502, undefined], ["egress_deadline", 504, undefined],
     ["egress_aborted", 503, undefined], ["egress_ended", 503, undefined],
     ["egress_rate", 429, 1],
+    // The sandbox Worker's, its runner refused (the founder's alert).
+    ["sandbox_runner_mismatch", 502, undefined], ["sandbox_runner_protocol", 502, undefined],
     // The files plane's.
     ["keyring_unavailable", 500, undefined], ["data_key_refused", 400, undefined],
     ["root_changed", 409, undefined],

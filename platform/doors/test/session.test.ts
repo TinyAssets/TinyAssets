@@ -5,6 +5,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { SESSION_TTL_S } from "../../contract/src/limits";
 import { authorizationServer } from "../src/oauth";
 import { sessionOf, withoutCookie } from "../src/session";
 import {
@@ -199,7 +200,7 @@ describe("the owner surface", () => {
       const extended = await appPost("session/extend", app.access_token, app.session, {});
       expect(extended.status).toBe(200);
       expect(extended.headers.get("Set-Cookie")).toBe(
-        `__Host-ta-owner=${app.session}; Secure; HttpOnly; Path=/; SameSite=Strict; Max-Age=28800`);
+        `__Host-ta-owner=${app.session}; Secure; HttpOnly; Path=/; SameSite=Strict; Max-Age=${SESSION_TTL_S}`);
       const closed = await appPost("session/close", app.access_token, app.session, {});
       expect(await closed.json()).toEqual({ closed: 1, signed_out: true });
       expect(closed.headers.get("Set-Cookie")).toBe(
