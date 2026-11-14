@@ -566,9 +566,6 @@ describe("a restore into a live owner", () => {
     // From the pin, the owner is held: its doors and its admission.
     const door = await failure(() => o.stub.fileRead(o.bind(), { path: `${W}/after.txt` }));
     expect([door.code, door.message]).toEqual(["restoring", RESTORING]);
-    // The refusal names the hold and its age, so a hold no one released is seen where it bites.
-    expect((door as unknown as { facts: unknown }).facts)
-      .toEqual({ step: "pinned", held_s: expect.any(Number) });
     expect((await failure(() => o.stub.admissionSet(platform(o.name), { reason: "abuse",
                                                                         suspended: true }))).code)
       .toBe("restoring");
@@ -656,17 +653,18 @@ describe("a restore into a live owner", () => {
     expect(Object.keys(await laneJobs(stub)).length).toBeGreaterThan(0);
   });
 
-  it("names a hold's age in its refusal, from the pin through the wipe", async () => {
-    const { o, gen } = await source();
+  it("answers when the hold began, the pin's time, through the wipe and the begin",
+     async () => {
+    const { o, gen, ns } = await source();
     const hold = await pinnedTo(o.stub, o.name, gen.gen);
-    const [{ since }] = await sqlIn(o.stub, "SELECT since FROM owner_restore") as
-      [{ since: number }];
-    // An hour on, a door the hold closes says how long it has stood.
+    const since = (await o.stub.restoreSource(platform(o.name))).restore!.since;
+    // An hour on, the hold still dates from the pin.
     vi.useFakeTimers({ toFake: ["Date"], now: since * 1000 + 3_600_000 });
     const stub = await wipedWith(o.stub, o.name, hold.confirm!);
-    const refused = await failure(() => stub.admissionSet(platform(o.name), { admit: true }));
-    expect((refused as unknown as { facts: unknown }).facts)
-      .toEqual({ step: "wiped", held_s: 3_600 });
+    expect((await stub.restoreSource(platform(o.name))).restore!.since).toBe(since);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    expect((await stub.restoreSource(platform(o.name))).restore)
+      .toMatchObject({ step: "index", since });
   });
 
   it("writes the pin's fresh generation as the newest though the clock reads before the " +

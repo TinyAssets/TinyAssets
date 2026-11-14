@@ -226,15 +226,12 @@ export function restoring(storage: OwnerStorage): boolean {
 
 /**
  * Refused, for the moment (`restoring`, a transient code: a sign-in's redirect answers it
- * `temporarily_unavailable`), while a restore holds the owner, its facts naming the hold's
- * step and how long it has stood (`held_s`), so a hold no one released is seen at every door
- * it closes. A read.
+ * `temporarily_unavailable`), while a restore holds the owner. A read. When the hold began
+ * is `restore.source`'s to answer (`since`): no door shows a refusal's facts.
  */
 export function refuseRestoring(storage: OwnerStorage): void {
-  const held = record(storage.sql);
-  if (held !== null && held.step !== "done") {
-    throw new Refusal("restoring", RESTORING, {
-      facts: { step: held.step, held_s: Math.max(0, Math.round(clock() - held.since)) } });
+  if (restoring(storage)) {
+    throw new Refusal("restoring", RESTORING);
   }
 }
 

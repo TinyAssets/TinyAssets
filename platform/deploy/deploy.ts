@@ -1476,7 +1476,7 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
       if (run.io.now().getTime() >= until) {
         throw new Error(`${owner}'s present state was not written within ${PIN_WAIT_MS / 60_000} ` +
                         "minutes, and the owner stays held: run again to carry it on, or give " +
-                        `the pin up with --confirm release-${owner}`);
+                        `the pin up with --confirm release-${owner} and no --generation`);
       }
       say(`${owner} is held; its present state is being written as a fresh generation`);
       hold = await ask("restore.pin", { gen: from.gen }) as RestoreHold;
@@ -1484,7 +1484,8 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
     if (run.confirm === null) {
       say(`${owner} is held, its present state written as generation ${hold.fresh} of ` +
           `${hold.namespace}: to wipe its object and restore ${from.gen}, run again with ` +
-          `--confirm ${hold.confirm}; to give the pin up, --confirm release-${owner}`);
+          `--confirm ${hold.confirm}; to give the pin up, --confirm release-${owner} and no ` +
+          "--generation");
       return;
     }
     if (run.confirm !== hold.confirm) {

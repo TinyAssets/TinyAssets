@@ -2964,7 +2964,8 @@ describe("mode restore", () => {
     expect(ops(held)).toEqual([["restore.source", {}], ["restore.pin", { gen: "b".repeat(16) }],
                                ["restore.pin", { gen: "b".repeat(16) }]]);
     expect(stopped.plan.join("\n")).toContain(`run again with --confirm ${CONFIRMED}; to give ` +
-                                              "the pin up, --confirm release-user_alice");
+                                              "the pin up, --confirm release-user_alice and " +
+                                              "no --generation");
     const w = world({ held: true, doors: restoring(LIVE) });
     await runMode(w, "restore", ["--yes", ...flags, "--confirm", CONFIRMED]);
     expect(ops(w)).toEqual([["restore.source", {}], ["restore.pin", { gen: "b".repeat(16) }],
@@ -2997,7 +2998,7 @@ describe("mode restore", () => {
     await expect(runMode(writing, "restore", ["--yes", ...flags, "--confirm", CONFIRMED]))
       .rejects.toThrow(`user_alice's present state was not written within ${PIN_WAIT_MS /
         60_000} minutes, and the owner stays held: run again to carry it on, or give the pin ` +
-        "up with --confirm release-user_alice");
+        "up with --confirm release-user_alice and no --generation");
     const pins = ops(writing).filter(([op]) => op === "restore.pin").length;
     expect(pins).toBeGreaterThan(1);
     expect(pins).toBeLessThanOrEqual(PIN_WAIT_MS / POLL_MS + 1);
