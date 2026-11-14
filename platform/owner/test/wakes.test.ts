@@ -250,10 +250,10 @@ describe("a wake is sent once and never replayed", () => {
       await r.post(null, `dm:${muse}`, { body: crypto.randomUUID(), cmid: crypto.randomUUID() });
       const open = (await wakes(r)).find((w) => w["state"] === "pending")!;
       const at = clock() + 1;
-      const claim = await r.inLedger({}, (ledger) => ledger.claim(open["wake_id"], at));
+      const claim = await r.inLedger((ledger) => ledger.claim(open["wake_id"], at));
       expect(claim.outcome).toBe("claimed");
       if (mark && claim.outcome === "claimed") {
-        await r.inLedger({}, (ledger) => ledger.mark(claim.target.wake_id, claim.target.claim_id));
+        await r.inLedger((ledger) => ledger.mark(claim.target.wake_id, claim.target.claim_id));
       }
       const state = async () => (await wakes(r)).find((w) => w["wake_id"] === open["wake_id"])!
         ["state"];
@@ -331,7 +331,7 @@ describe("a claim settles only by its holder", () => {
      async () => {
     const r = await rig();
     const now = clock();
-    await r.inLedger({}, (ledger) => {
+    await r.inLedger((ledger) => {
       const muse = ringing(ledger);
       const dot = ledger.register(DOT, MCP, { ...RINGS, display_name: "Dot" }).agent_id;
       ledger.setWakeLimits(dot, null, 60);  // the owner's batch window for Dot
@@ -396,7 +396,7 @@ describe("a claim settles only by its holder", () => {
   it("lets a stale claim neither mark nor settle after a lapse and a new claim", async () => {
     const r = await rig();
     const t = clock();
-    const marked = await r.inLedger({}, (ledger) => {
+    const marked = await r.inLedger((ledger) => {
       const muse = ringing(ledger);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t);
       const [wake] = ledger.dueOpen(t, 1);
@@ -419,7 +419,7 @@ describe("a claim settles only by its holder", () => {
   it("wakes only the mail its claim covered", async () => {
     const r = await rig();
     const t = clock();
-    await r.inLedger({}, (ledger) => {
+    await r.inLedger((ledger) => {
       const muse = ringing(ledger);
       ledger.post(null, `dm:${muse}`, "c1", "first", null, t);
       const claim = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
@@ -437,7 +437,7 @@ describe("a claim settles only by its holder", () => {
      async () => {
     const r = await rig();
     const t = clock();
-    await r.inLedger({}, (ledger) => {
+    await r.inLedger((ledger) => {
       const muse = ringing(ledger);
       for (const [n, answer] of [[1, { state: "pending" }],
                                  [2, { state: "rate_limited", retry_after: 300 }]] as const) {
@@ -525,7 +525,7 @@ describe("W3 limits", () => {
   it("counts a changed cap afresh", async () => {
     const r = await rig();
     const t = clock();
-    const claims = await r.inLedger({}, (ledger) => {
+    const claims = await r.inLedger((ledger) => {
       const muse = ringing(ledger, MUSE, 1);
       ledger.post(null, `dm:${muse}`, "c0", "x", null, t);
       const first = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
@@ -555,7 +555,7 @@ describe("the wakes lane of the object's one schedule", () => {
   it("defers a row only later, never before its claim's lease", async () => {
     const r = await rig();
     const t = clock();
-    const due = await r.inLedger({}, (ledger) => {
+    const due = await r.inLedger((ledger) => {
       const muse = ringing(ledger);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
       const [wake] = ledger.dueOpen(t, 1);
@@ -658,7 +658,7 @@ describe("the wakes lane of the object's one schedule", () => {
      "in the past", async () => {
     const r = await rig();
     const t = clock() - 600;
-    const claimed = await r.inLedger({}, (ledger) => {
+    const claimed = await r.inLedger((ledger) => {
       const ids = Array.from({ length: 17 }, (_, n) => ringing(ledger, origin(n)));
       for (const id of ids) {
         ledger.post(null, `dm:${id}`, `c-${id}`, "hello", null, t);  // 17 wakes due at t
@@ -692,7 +692,7 @@ describe("the wakes lane of the object's one schedule", () => {
   it("arms for a live lease, and at once for due work, never earlier than now", async () => {
     const r = await rig();
     const t = clock();
-    const times = await r.inLedger({}, (ledger) => {
+    const times = await r.inLedger((ledger) => {
       const muse = ringing(ledger);
       const dot = ringing(ledger, DOT);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
@@ -714,21 +714,21 @@ describe("the wakes lane of the object's one schedule", () => {
   it("drains more due rows than one pass across passes that rearm at once", async () => {
     const r = await rig();
     const t = clock();
-    await r.inLedger({}, (ledger) => {
+    await r.inLedger((ledger) => {
       for (let n = 0; n < 17; n++) {
         ledger.post(null, `dm:${ringing(ledger, origin(n))}`, `c${n}`, "hello", null, t);
       }
     });
     expect(await r.tick(t)).toBe(16);
-    expect(await r.inLedger({}, (ledger) => ledger.nextDue(t, true))).toBe(t);
+    expect(await r.inLedger((ledger) => ledger.nextDue(t, true))).toBe(t);
     expect(await r.tick(t)).toBe(1);
-    expect(await r.inLedger({}, (ledger) => ledger.nextDue(t, true))).toBeNull();
+    expect(await r.inLedger((ledger) => ledger.nextDue(t, true))).toBeNull();
   });
 
   it("rearms on wake from the schedule as stored", async () => {
     const r = await rig();
     const t = clock();
-    const lease = await r.inLedger({}, (ledger) => {
+    const lease = await r.inLedger((ledger) => {
       const muse = ringing(ledger);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t);
       const claim = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
@@ -768,7 +768,7 @@ describe("the registry's quieter rules", () => {
     const muse = await r.register(MUSE);
     for (const from of [{ client: MUSE.client, family: DOT.family },
                         { client: DOT.client, family: MUSE.family }]) {
-      const refused = await r.inLedger({}, (ledger) => {
+      const refused = await r.inLedger((ledger) => {
         try {
           ledger.disable(muse, "x", from);
           return "disabled";

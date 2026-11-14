@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { LIMITS as COLLECTIONS } from "../src/collections";
-import { checkLimits, LEDGER_LIMITS } from "../src/ledger";
+import { LEDGER_LIMITS } from "../src/ledger";
 import {
   MOVE_PASS_UNITS, MOVE_RECORD_BYTES, moveTableUnits, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS,
 } from "../src/holds";
@@ -188,8 +188,12 @@ describe("the limits that ship", () => {
     expect(worstCase()).toBeLessThanOrEqual(HALF);
   });
 
-  it("pass the ledger's own load-time check", () => {
-    expect(() => checkLimits(LEDGER_LIMITS)).not.toThrow();
+  it("leave the hot ceiling a segment past the unread one, and every enabled agent a row", () => {
+    // The ledger runs at these alone (no ledger is built at others), so these hold for it.
+    const L = LEDGER_LIMITS;
+    expect(Math.min(L.maxUnacked, L.archiveRecords)).toBeGreaterThanOrEqual(1);
+    expect(L.maxUnacked + L.archiveRecords).toBeLessThanOrEqual(L.maxMessages);
+    expect(L.maxAgents).toBeLessThanOrEqual(L.maxAgentRows);
   });
 
   it("fit only with their structural changes: without each, the guard breaks", () => {

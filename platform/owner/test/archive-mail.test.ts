@@ -539,7 +539,7 @@ describe("the archive lane", () => {
       await r.ack(reader, (await r.read(reader)).messages.at(-1)!.seq);
     }
     await settle(r);
-    const last = await r.inLedger({}, (ledger: Ledger) => ledger.seqOf(chain.at(-1)!)!);
+    const last = await r.inLedger((ledger: Ledger) => ledger.seqOf(chain.at(-1)!)!);
     // One of Eve's messages, acked, and the lane run at once: moves, merges and compactions,
     // which replace segments, the muse's among them.
     let sent = 0;

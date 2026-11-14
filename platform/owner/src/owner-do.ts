@@ -144,7 +144,7 @@ import {
   codemodeDoors, type CodeRequest, type CodeResult,
 } from "./codemode";
 import {
-  type Agent, type ChainMail, Ledger, ledgerDoors, type LedgerLimits, type MailPage,
+  type Agent, type ChainMail, Ledger, ledgerDoors, type MailPage,
   type NativeAgent, outsideOrigin, type Posted, READ_TRIES, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock } from "./clock";
@@ -378,11 +378,6 @@ export interface Internals {
   readonly putGraceMs?: number;
   /** How long a script's read of the control record serves its calls (`control-gate.ts`). */
   readonly controlFreshMs?: number;
-  /**
-   * The ledger's ceilings, smaller in a test than production's (`LEDGER_LIMITS`), so the
-   * `archive` lane's moves are seen with a handful of messages.
-   */
-  readonly ledgerLimits?: LedgerLimits;
   /**
    * Run between an archive move's two passes, with what the move replaces and holds, so a
    * test can make its sources differ there and see the second pass refused by the chunk's
@@ -619,8 +614,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
     this.#ledger = new Ledger(storage, this.#grants, admitted, () => this.#collections.clock(),
-                              this.#bodies.adopt, (needed) => this.#files.fullRefusal(needed),
-                              internals.ledgerLimits);
+                              this.#bodies.adopt, (needed) => this.#files.fullRefusal(needed));
     this.#backups = new Backups({
       storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
       log: this.#log,

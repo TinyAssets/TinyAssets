@@ -197,7 +197,7 @@ describe("the ledger's bounds on identities", () => {
      "registry, forgetting the oldest retired one first", async () => {
     const r = await rig();
     const { maxAgents, maxAgentRows } = LEDGER_LIMITS;
-    const seen = await r.inLedger({}, (ledger: Ledger) => {
+    const seen = await r.inLedger((ledger: Ledger) => {
       const refused = (act: () => unknown) => {
         try {
           act();
@@ -830,7 +830,7 @@ describe("a mail run's input (review N4)", () => {
 describe("a retired agent's mail", () => {
   it("fails what no run took, queued or held, and releases what its run took", async () => {
     const r = await rig();
-    const ids = await r.inLedger({}, (ledger: Ledger) => {
+    const ids = await r.inLedger((ledger: Ledger) => {
       ledger.appear("main");
       const room = `dm:${nativeId("main")}`;
       const [taken, queued, held] = ["taken", "queued", "held"].map((cmid) =>
@@ -853,7 +853,7 @@ describe("a sender gone (review M2)", () => {
   it("fails its mail no run took: a retired agent's, and a disabled outside agent's",
      async () => {
     const r = await rig();
-    const seen = await r.inLedger({}, (ledger: Ledger) => {
+    const seen = await r.inLedger((ledger: Ledger) => {
       ledger.appear("alice");
       ledger.appear("bob");
       const room = `dm:${[nativeId("alice"), nativeId("bob")].sort().join("+")}`;

@@ -12,13 +12,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  archiveDue, checkLimits, hotFull, LEDGER_LIMITS, type Ledger, moveTake, OWNER, postRoom,
+  archiveDue, hotFull, LEDGER_LIMITS, type Ledger, moveTake, OWNER, postRoom,
   sealable,
 } from "../src/ledger";
 import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import { MOVE_BYTES, RECORD_TRAILER_BYTES } from "../src/segments";
-import { counters, DOT, MCP, MUSE, origin, rig } from "./ledger-support";
+import { ballast, counters, DOT, MCP, MUSE, origin, rig } from "./ledger-support";
 import { failure } from "./support";
 
 const PULL = { command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
@@ -42,28 +42,13 @@ const BUSY = "storage_busy: your storage is catching up, moving older mail out; 
 
 describe("the ledger's limits", () => {
   it("leave the hot ceiling a segment to move past the unread ceiling", () => {
-    expect(checkLimits(LEDGER_LIMITS)).toBe(LEDGER_LIMITS);
     const L = LEDGER_LIMITS;
     expect([L.maxMessages, L.maxUnacked, L.archiveRecords, L.archiveBytes])
       .toEqual([50_000, 25_000, 25_000, 8 * 1024 * 1024]);
     expect(L.maxUnacked + L.archiveRecords).toBeLessThanOrEqual(L.maxMessages);
-    for (const [bad, reason] of [
-      [{ maxUnacked: L.maxMessages }, "the unread ceiling leaves the hot ceiling no segment"],
-      [{ archiveRecords: 0 }, "the unread ceiling leaves the hot ceiling no segment"],
-      [{ maxAgents: 1_001 }, "maxAgents exceeds maxAgentRows"],
-    ] as const) {
-      expect(() => checkLimits({ ...LEDGER_LIMITS, ...bad })).toThrow(reason);
-    }
     // A segment's seal, not a bound: the one byte count the ledger keeps (ADR-035).
     expect(Object.keys(LEDGER_LIMITS).filter((key) => key.endsWith("Bytes")))
       .toEqual(["archiveBytes"]);
-  });
-
-  it("refuses to build a ledger over limits that leave no segment to move", async () => {
-    const r = await rig();
-    const refused = await failure(() => r.inLedger({ maxMessages: 9_999 }, () => "built"));
-    expect(refused.message).toMatch(/invalid ledger limits: the unread ceiling leaves/);
-    expect(await r.inLedger({}, () => "built")).toBe("built");
   });
 });
 
@@ -118,36 +103,11 @@ describe("the ledger's decisions, at small ceilings", () => {
   });
 });
 
-/** An outside agent of the test's own, its mail the ballast a ceiling is filled with. */
-const BALLAST: Origin = origin(0xba11);
-
-/**
- * At production's ceilings, room for `unread` more unread messages and `hot` more hot ones:
- * the rest is a ballast agent's mail, its acked part first, so a test meets each ceiling
- * where a small one would.
- */
-function ballast(ledger: Ledger, unread: number, hot: number): void {
-  const room = `dm:${ledger.register(BALLAST, MCP, { ...PULL, display_name: "Ballast" })
-    .agent_id}`;
-  const acked = maxMessages - hot - (maxUnacked - unread);
-  let last = 0;
-  for (let n = 0; n < acked; n++) {
-    last = ledger.seqOf(ledger.post(null, room, `a${n}`, "x", null).message_id)!;
-    if (n % 1_000 === 999 || n === acked - 1) {
-      ledger.read(BALLAST, 1);
-      ledger.ack(BALLAST, last);
-    }
-  }
-  for (let n = 0; n < maxUnacked - unread; n++) {
-    ledger.post(null, room, `u${n}`, "x", null);
-  }
-}
-
 describe("the ledger's bounds", () => {
   it("releases a disabled agent's unacked mail from the unread count, and keeps it",
      async () => {
     const r = await rig();
-    const [muse, dot] = await r.inLedger({}, (ledger: Ledger) => {
+    const [muse, dot] = await r.inLedger((ledger: Ledger) => {
       const a = ledger.register(MUSE, MCP, PULL).agent_id;
       for (const n of [1, 2, 3]) {
         ledger.post(null, `dm:${a}`, `c${n}`, `body ${n}`, null);  // never read nor acked
@@ -204,7 +164,7 @@ describe("the ledger's bounds", () => {
 
   it("leaves no row for a deleted agent", async () => {
     const r = await rig();
-    await r.inLedger({}, (ledger: Ledger) => {
+    await r.inLedger((ledger: Ledger) => {
       const muse = ledger.register(MUSE, MCP, RINGS).agent_id;
       ledger.disable(muse, "paused");
       ledger.register(MUSE, MCP, RINGS);
@@ -216,7 +176,7 @@ describe("the ledger's bounds", () => {
 
   it("caps enabled agents, and registry rows until the owner deletes one", async () => {
     const r = await rig();
-    await r.inLedger({}, (ledger: Ledger) => {
+    await r.inLedger((ledger: Ledger) => {
       // The owner's own agents take the reserved mailboxes but one.
       for (let n = 0; n < maxAgents - 1; n++) {
         ledger.appear(`agent-${n}`);
@@ -241,7 +201,7 @@ describe("the ledger's bounds", () => {
 
   it("answers a retried ack, and dedupes a resend of what it holds hot", async () => {
     const r = await rig();
-    await r.inLedger({}, (ledger: Ledger) => {
+    await r.inLedger((ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       const sent = ledger.post(null, room, "c1", "hello", null);
       expect(ledger.post(null, room, "c1", "hello", null)).toEqual(sent);  // held: the same
@@ -255,7 +215,7 @@ describe("the ledger's bounds", () => {
   it("keeps the newest receipts only, at their ceiling", { tags: ["large"] }, async () => {
     const r = await rig();
     try {
-      await r.inLedger({}, (ledger: Ledger) => {
+      await r.inLedger((ledger: Ledger) => {
         const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
         // Each message read and acked, two receipts, to one message past the ceiling.
         for (let n = 0; 2 * n <= maxReceipts; n++) {
@@ -276,7 +236,7 @@ describe("the ledger's bounds", () => {
   it("keeps settled wakes for their retention and at most the ceiling", async () => {
     const r = await rig();
     const now = clock();
-    await r.inLedger({}, (ledger: Ledger) => {
+    await r.inLedger((ledger: Ledger) => {
       const muse = ledger.register(MUSE, MCP, RINGS).agent_id;
       ledger.setWakeLimits(muse, null, 0);
       for (let n = 1; n <= maxSettledWakes + 1; n++) {
@@ -291,7 +251,7 @@ describe("the ledger's bounds", () => {
     });
     expect(await r.sql("SELECT COUNT(*) AS n, MIN(settled_at) AS first FROM ledger_wakes"))
       .toEqual([{ n: maxSettledWakes, first: now + 2 }]);
-    await r.inLedger({}, (ledger: Ledger) => {
+    await r.inLedger((ledger: Ledger) => {
       // A week on, the next settle prunes them all but its own.
       const later = now + maxSettledWakes + 1 + LEDGER_LIMITS.settledWakeRetentionS + 10;
       const [agent] = ledger.agents(null);
@@ -332,7 +292,7 @@ describe("the ledger's bounds", () => {
      "off in plain words", { tags: ["large"] }, async () => {
     const r = await rig();
     try {
-      const seen = await r.inLedger({}, (ledger: Ledger) => {
+      const seen = await r.inLedger((ledger: Ledger) => {
         ballast(ledger, 4, 6);
         let seed = 7;
         const pick = (n: number) => {  // mulberry32: seeded, so every run is the same run

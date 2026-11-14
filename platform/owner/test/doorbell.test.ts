@@ -486,7 +486,7 @@ describe("a revoke is never outlived", () => {
      async () => {
     const r = await rung();
     const t = clock();
-    const out = await r.inLedger({}, (ledger) => {
+    const out = await r.inLedger((ledger) => {
       ledger.register(MUSE, MCP, { command_center_id: "alpha", display_name: "Muse",
                                    delivery_method: "mcp_event", recipe_id: null });
       const claude = ledger.register(DOT, MCP, { command_center_id: "alpha",
