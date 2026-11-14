@@ -12,13 +12,15 @@ The platform's tests refuse installed dependencies that are not `platform/packag
 
 ## As built
 
-1. `platform/ci/deps.ts`: `mismatch(root)` names the first entry the install does not hold as locked (a version, a missing package, a workspace link that does not hold its workspace's package); an optional package may be absent, never another version. `installed()` throws with that entry, ending "run `npm ci` in platform/."
+1. `platform/ci/deps.ts`: `mismatch(root)` names the first entry the install does not hold as locked (a version, a missing package, a workspace link that does not hold its workspace's package, a package installed in a `node_modules` but not locked); an optional package may be absent only when its locked `os` or `cpu` excludes this machine, never another version. `installed()` throws with that entry, ending "run `npm ci` in platform/."
 2. In CI it always passes: `npm ci` ran. Nothing in it reads the environment.
 3. `platform/ci/guards/deps.test.ts` holds it on a lockfile and install of its own in a temp folder.
 4. `AGENTS.md` is unchanged: the refusal names its fix, so a rule there would repeat it (Direction 6).
 
+Review (2026-11-14): an optional package was allowed absent on every machine, so one npm installs here (a Linux binary marked optional) could be missing unnoticed; and a stale package left in a `node_modules`, nested ones included, would be loaded, or would shadow the hoisted one its parent loads in CI. Both are now refused; the walk adds about 9 ms.
+
 ## Left
 
 - A workspace link is held to its workspace's *package*, not to this checkout's folder. Through a `node_modules` linked from another checkout, npm's relative links (`../../ci`) reach that checkout's workspaces, but no source imports a workspace by its package name, so nothing loads them. Holding the folder would refuse every linked install.
-- A package installed but not locked is not refused: an import of it fails in CI, which never installs it.
+- vitest started in `platform/` itself (`npx vitest run owner/x.test.ts`) finds no config, so it makes no workspace's projects and skips the check, as it already skipped the size classes. A config there would be a script at the platform's top, which the layer table refuses (`ci/guards/isolation.test.ts`); whether to allow one is the coordinator's call.
 - `link-deps.sh` (outside the repo) compares the two lockfiles' digests before linking. This check makes that one a copy; the coordinator can drop it.
