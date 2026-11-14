@@ -4,7 +4,8 @@
  * the import table (`layers.ts`) it holds, by their names there, and the folder it holds them
  * under:
  *
- * - SHA-256 is `contract/src/digest.ts`'s, in every Worker's source and the runner. An HMAC
+ * - SHA-256 is `contract/src/digest.ts`'s, in the contract beside it (every Worker's code
+ *   too), every Worker's source and the runner. An HMAC
  *   is a key's, not the digest's. The template's pin reader and the builds keep their own,
  *   since they import nothing by rule: their layers are not held.
  * - Now is the owner's clock's (`owner/src/clock.ts`), in the owner's source.
@@ -68,7 +69,8 @@ const readsNow = (node: ts.Node): boolean => ts.isPropertyAccessExpression(node)
 
 export const KERNELS: readonly Kernel[] = Object.freeze([
   { name: "SHA-256", home: "platform/contract/src/digest.ts",
-    layers: ["a Worker's source", "the runner"], under: "platform/", does: hashesSha256 },
+    layers: ["the contract", "a Worker's source", "the runner"], under: "platform/",
+    does: hashesSha256 },
   { name: "Date.now()", home: "platform/owner/src/clock.ts", layers: ["a Worker's source"],
     under: "platform/owner/src/", does: readsNow },
 ]);

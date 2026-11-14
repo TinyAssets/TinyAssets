@@ -8,15 +8,12 @@
  * cut into `CHUNK_BYTES` chunks, each named by its SHA-256, and the content by its size and
  * ordered chunks.
  */
-import { createHash } from "node:crypto";
-
 import { sha256Hex } from "./digest";
 import { CHUNK_BYTES, INLINE_BYTES } from "./limits";
 
 /** The content id of small content kept inline: its kind, size and bytes. */
 export function inlineId(bytes: Uint8Array): string {
-  return createHash("sha256").update(`ta-inline\n${bytes.byteLength}\n`).update(bytes)
-    .digest("hex");
+  return sha256Hex(Buffer.concat([Buffer.from(`ta-inline\n${bytes.byteLength}\n`), bytes]));
 }
 
 /**

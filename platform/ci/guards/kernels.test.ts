@@ -52,7 +52,8 @@ describe("the kernel guard", () => {
       found("platform/sandbox/runner/a.ts", both),
       found("platform/sandbox/template/pair.ts", both),
     ]).toEqual([
-      [], [], ["owner platform/owner/src/clock.ts: SHA-256 ×1"], [],
+      [], ["contract platform/contract/src/a.ts: SHA-256 ×1"],
+      ["owner platform/owner/src/clock.ts: SHA-256 ×1"], [],
       ["doors platform/doors/src/a.ts: SHA-256 ×1"],
       ["sandbox platform/sandbox/runner/a.ts: SHA-256 ×1"], [],
     ]);
