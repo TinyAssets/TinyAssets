@@ -227,15 +227,21 @@ describe("the platform canary", () => {
   it("runs in its workflow with exactly what it reads, armed by the clock's own token", () => {
     const file = workflow(DISPATCH.workflow) as { on: Record<string, unknown>; jobs: Record<string,
       { environment: string; env: Record<string, string>;
-        steps: { name?: string; run?: string; env?: Record<string, string> }[] }> };
+        steps: { name?: string; if?: string; run?: string; env?: Record<string, string> }[] }> };
     expect(Object.keys(file.on).sort()).toEqual(["schedule", "workflow_dispatch"]);
     const job = file.jobs["canary"]!;
     expect(job.environment).toBe("production");
-    expect(Object.keys(job.env).sort()).toEqual([...Object.values(INPUTS), "GITHUB_TOKEN"].sort());
+    expect(Object.keys(job.env).sort())
+      .toEqual([...Object.values(INPUTS), "GITHUB_TOKEN", "CANARY_ARMED"].sort());
+    expect(job.env["CANARY_ARMED"]).toBe(`\${{ secrets.${DISPATCH.token} != '' }}`);
     const step = (name: string) => job.steps.find((each) => each.name === name)!;
     expect(step("The canary").run).toContain("platform/deploy/canary.ts");
+    // Until armed, the schedule runs nothing: neither the canary nor its alarm.
+    const armedOrByHand = "github.event_name != 'schedule' || env.CANARY_ARMED == 'true'";
+    expect([step("Install the platform's pinned tools").if, step("The canary").if])
+      .toEqual([armedOrByHand, armedOrByHand]);
+    expect(step("The alarm").if).toBe("always() && steps.canary.outcome != 'skipped'");
     expect(step("The alarm").env).toEqual({
-      CANARY_ARMED: `\${{ secrets.${DISPATCH.token} != '' }}`,
       [PAGER.user]: `\${{ secrets.${PAGER.user} }}`,
       [PAGER.token]: `\${{ secrets.${PAGER.token} }}` });
   });

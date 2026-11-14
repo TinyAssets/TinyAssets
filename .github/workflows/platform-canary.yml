@@ -19,8 +19,10 @@ name: Platform canary
 #
 # Before the deploy it pages no one: the alarm acts only once the production
 # environment holds PLATFORM_CANARY_TOKEN (CANARY_ARMED) and the doors serve
-# /mcp. Until then a run, the schedule's included, reports the dark platform
-# (the old stack serves /mcp; the doors' checks wait) and changes nothing.
+# /mcp. Until it holds the token the schedule runs nothing (no clock exists to
+# watch, and a red run would only mail the schedule's last editor), and a run
+# by hand reports the dark platform (the old stack serves /mcp; the doors'
+# checks wait) and changes nothing.
 
 on:
   workflow_dispatch:
@@ -56,6 +58,7 @@ jobs:
       OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
       WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CANARY_ARMED: ${{ secrets.PLATFORM_CANARY_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,10 +67,13 @@ jobs:
           node-version: '22'
 
       - name: Install the platform's pinned tools
+        if: github.event_name != 'schedule' || env.CANARY_ARMED == 'true'
         working-directory: platform
         run: npm ci
 
       - name: The canary
+        id: canary
+        if: github.event_name != 'schedule' || env.CANARY_ARMED == 'true'
         env:
           EVENT: ${{ github.event_name }}
           FULL: ${{ inputs.full }}
@@ -78,9 +84,8 @@ jobs:
           node --experimental-strip-types platform/deploy/canary.ts "${args[@]}"
 
       - name: The alarm
-        if: always()
+        if: always() && steps.canary.outcome != 'skipped'
         env:
-          CANARY_ARMED: ${{ secrets.PLATFORM_CANARY_TOKEN != '' }}
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
         run: node --experimental-strip-types platform/deploy/alarm.ts "${RUNNER_TEMP}/canary.json"

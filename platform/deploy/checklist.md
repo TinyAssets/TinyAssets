@@ -288,7 +288,8 @@ It never counts as "absent".
   - **Its clock and alarm.** The doors' Cron Trigger dispatches the workflow every ten
     minutes with `PLATFORM_CANARY_TOKEN`; without the token it dispatches nothing. A failed
     dispatch pages Pushover directly at `:00` and `:30`. The workflow's own hourly schedule
-    is the watchdog: it also fails when no run was dispatched in 30 minutes. The alarm
+    is the watchdog: it also fails when no run was dispatched in 30 minutes. Until
+    `production` holds the token, the schedule runs nothing. The alarm
     (`deploy/alarm.ts`) acts only once `production` holds `PLATFORM_CANARY_TOKEN` and the
     doors serve `/mcp`: two reds in a row (or the clock stopped) open the `platform-down`
     issue and page, re-paging at 1 h, 4 h and 24 h until someone comments; green closes it.

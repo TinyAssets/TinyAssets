@@ -6,9 +6,9 @@
  *
  * It reads the run's outcomes (`canary.ts --result`) and acts only when the canary is armed
  * (`CANARY_ARMED`: the production environment holds the clock's dispatch token, which the
- * founder mints at the deploy) and the doors serve `/mcp`. Before both, every run, the
- * workflow's schedule included, changes nothing and pages no one: that is the canary's state
- * from its merge until the deploy.
+ * founder mints at the deploy) and the doors serve `/mcp`. Before both, every run changes
+ * nothing and pages no one, and until the token exists the workflow's schedule runs neither
+ * the canary nor this: that is the canary's state from its merge until the deploy.
  *
  * - **Red** (a check failed): the first red run is only reported. A second red in a row (the
  *   previous completed run of the workflow on main failed within the clock's 30 minutes), or a
