@@ -445,16 +445,6 @@ describe("each owner's fit", () => {
     sparse(join(f.tree(BOB), "main", "workspace", "node_modules"), TAR_MEMBER_MAX + 1);
     expect(census(f.copy, TIERS).report["problems"]).toEqual({ over_tar_member: 1 });
   });
-
-  it("refuses an owner whose entries pass max_entries, folders counted", () => {
-    const f = fresh();
-    const many = join(f.tree(BOB), "main", "workspace", "many");
-    mkdirSync(many);
-    for (let i = 0; i < FILE_DEFAULTS.max_entries; i += 1) {
-      writeFileSync(join(many, String(i)), "");
-    }
-    expect(census(f.copy, TIERS).report["problems"]).toEqual({ over_entries: 1 });
-  });
 });
 
 describe("the walk of an owner's files", () => {

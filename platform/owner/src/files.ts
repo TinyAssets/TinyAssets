@@ -24,16 +24,16 @@
  *   content is held by every entry and every kept history row naming it, in any root,
  *   so content anything still names is never collected.
  * - History. Every workspace change appends a history row (`file_history`), which is
- *   also the change feed; the temporary area keeps none. Retention keeps each live
+ *   also the change feed; the temporary area keeps none. Retention is the owner's, off
+ *   until it sets it (Fact 15), so every version is kept by default. Set, it keeps each live
  *   path's newest `keep_versions`, and its versions younger than `retention_days` up to
  *   `keep_recent` in all; a version past those goes in the change that pushed it out. A
  *   row kept only for its age is due for pruning (`prune_after`) at that age, and
- *   housekeeping prunes due rows; a retention change is applied
- *   to the rows already kept, by housekeeping too. A gone path's rows are `released`:
- *   a change that would take history past its quota first prunes that many of them,
- *   earliest due first, so churn of deleted paths never fills it. `restore` writes an
- *   old version as a new one; `redact` drops one old version's content, whose bytes go
- *   once no other row holds the same content; `purge` drops a path's old versions.
+ *   housekeeping prunes due rows; a retention change is applied to the rows already kept,
+ *   by housekeeping too. Nothing else lets a version go: no bound makes room by pruning.
+ *   `restore` writes an old version as a new one; `redact` drops one old version's
+ *   content, whose bytes go once no other row holds the same content; `purge` drops a
+ *   path's old versions.
  * - Uploads (restic's order: bytes, then index, then snapshot). An upload intent
  *   declares a file's size and its chunks, cut at 4 MiB, and records them as held
  *   before any byte is sent. A chunk counts as stored only once `FILES` accepted a put
@@ -43,14 +43,16 @@
  *   references and holds both reach zero becomes garbage, deleted after a 24 h grace; a
  *   stored garbage chunk revives when wanted again, one never stored is sent again, and
  *   one being deleted is never held.
- * - Quotas (owner policy, `FILE_DEFAULTS`): chunk bytes live and in history, inline
- *   bytes, the manifest's own bytes (every row as SQLite stores it, each path byte and
- *   overflow page included: `manifest.ts`), entries, history rows and a file's size, each
- *   refused loudly at its bound in the change's own unit, with a fixed code
- *   (`FILE_QUOTA`) and nothing left behind. A change that only removes (a delete, a
- *   redaction, a purge, housekeeping) is never refused, so an owner at a bound can always
- *   make room. They read counters the schema's triggers keep, as do the bounds on open
- *   uploads. An outside client's change is held to its share of each as well, and all
+ * - Bounds: two, each refused loudly in the change's own unit with a fixed code and
+ *   nothing left behind. The owner's storage (the tier's figure, or the owner's own lower
+ *   one: `storage_full`, the one wall a user meets) bounds every byte stored; the file
+ *   index's ceiling (`INDEX_BYTES`, `file_index_full`) bounds what the index takes in the
+ *   object, every row as SQLite stores it, each path, inline byte and overflow page included
+ *   (`manifest.ts`). A file's size is the owner's own setting (`FILE_QUOTA`). A change that
+ *   only removes (a delete, a redaction, a purge, housekeeping) is never refused, so an owner
+ *   at a bound can always make room. They read counters the schema's triggers keep, as do
+ *   the bounds on open uploads. An outside client's change is held to its share of each as
+ *   well, and all
  *   clients' to what the owner's reserve leaves (`FILE_SHARE`), so no client fills the
  *   owner's object. Each scope (an outside client's own, all clients', the owner's
  *   writers') is charged its own rows, and once for each content and chunk its rows and
@@ -81,7 +83,6 @@ import type { SyncOp } from "../../contract/src/owner";
 
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
-import { KEEP_CEILING } from "../../contract/src/file-defaults";
 import {
   BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, GC_GRACE_S, INLINE_BYTES, INTENT_ID_BYTES, LEASE_TTL_S,
   MAX_INTENT_CHUNKS, MAX_LIST, MAX_PATH_BYTES, MAX_SYNC_OPS,
@@ -90,7 +91,7 @@ import {
 import { letGo, planEdit } from "./edit";
 import { FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage, Write } from "./gate";
-import { CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
+import { CLIENT_WRITER, CLIENTS, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
 import { refuseErasing } from "./erasure";
 import { TIER_UNREAD } from "./tier";
@@ -122,14 +123,29 @@ import { APP_RESOURCE } from "../../contract/src/identity";
 
 
 /**
- * The fixed codes a quota's refusal starts with: the owner's whole storage, the tier's
+ * The fixed codes a bound's refusal starts with: the owner's whole storage, the tier's
  * figure or the owner's own lower one (`storage_full`, `storage-full.ts`: the one wall a
- * user meets); another owner-wide bound (`file_quota`); and an outside client's share of
- * one, or all clients' together (`file_share`).
+ * user meets); the file index's ceiling (`file_index_full`); the owner's own file size and
+ * the open uploads (`file_quota`); and an outside client's share of one, or all clients'
+ * together (`file_share`).
  */
 export const FILE_QUOTA = "file_quota" satisfies RefusalCode;
 export const FILE_SHARE = "file_share" satisfies RefusalCode;
+export const FILE_INDEX_FULL = "file_index_full" satisfies RefusalCode;
 const FILE_TOO_LARGE = `${FILE_QUOTA}: the file is larger than the owner's file size quota`;
+/**
+ * The file index's ceiling: the most the index takes in the owner's object, in the bytes its
+ * rows are charged as SQLite lays them out (`manifest_bytes`, each small file's inline bytes
+ * in its content's row). The files plane's one technical ceiling (`limits-audit.md`): the
+ * object's 10 GB, of which the owner-bound guard gives the index this at `WORST_FILL`
+ * (1,208 MB, its largest term). It is no setting, and no upgrade raises it: past it a change
+ * is refused (`file_index_full`) and room comes only from deleting files or old versions.
+ */
+export const INDEX_BYTES = 512 * 1024 ** 2;
+/** The refusal at the index's ceiling, in plain words: what is full, and what frees it. */
+const INDEX_FULL = `${FILE_INDEX_FULL}: your file index is full: it holds as many files and ` +
+  "versions as one owner's index can. Delete files or old versions of files you no longer " +
+  "need to make room.";
 /**
  * The most bytes one whole-file write moves through the object (four chunks, two `FILES`
  * calls); larger files go by upload, a chunk at a time.
@@ -158,6 +174,11 @@ export const HOUSEKEEPING_SLACK_S = 3600;
  * would only mark its chunks `deleting` to be tried again `GC_RETRY_S` later.
  */
 export const DELETE_FLOOR_MS = 1000;
+/**
+ * A live path's current version, which retention never lets go: what `keep_versions` keeps
+ * while it is off (its range's least, `FILE_SETTINGS`).
+ */
+const CURRENT = 1;
 /** Rows one alarm run prunes or expires per kind, and paths it re-marks for retention. */
 const HOUSEKEEPING_BATCH = 500;
 /** Open upload intents, and the chunks they hold in all. */
@@ -172,17 +193,14 @@ export interface FileLimits {
    * owner's own lower figure; null while the tier's is not known here (`TIER_UNREAD`).
    */
   readonly max_bytes: number | null;
-  readonly max_inline_bytes: number;
-  readonly max_manifest_bytes: number;
-  readonly max_entries: number;
   readonly max_file_bytes: number;
-  readonly max_history: number;
-  readonly retention_days: number;
-  readonly keep_versions: number;
-  readonly keep_recent: number;
-  /** The percent of every quota one outside client may hold. */
+  /** Retention (owner policy): each null while it is off, which keeps every version. */
+  readonly retention_days: number | null;
+  readonly keep_versions: number | null;
+  readonly keep_recent: number | null;
+  /** The percent of the storage and of the index one outside client may hold. */
   readonly client_share: number;
-  /** The percent of every quota kept for the owner: all clients together hold the rest. */
+  /** The percent of both kept for the owner: all clients together hold the rest. */
   readonly owner_reserve: number;
 }
 
@@ -211,19 +229,6 @@ export interface ChunkSpace {
 }
 
 /**
- * What retention frees when the files byte quota would refuse a change (ADR-035): the oldest
- * placed collection history entry, or the oldest acked message with a placed body, of the
- * writers `filer` names (any, `*`; every outside writer, `client:*`; or one), one at a time;
- * false when none
- * is left. Run in the change's own unit, before its quota is checked.
- */
-type Reclaim = (filer: string) => boolean;
-
-/**
- * The refusal at the owner's storage figure: its message from what is stored (open uploads
- * apart), what the change needs, what open uploads hold, and the figure (`storage-full.ts`).
- */
-/**
  * A workspace path a change made or took away, in that change's own unit: whether it is
  * there now, and the change itself (its writer, and a file's content and size).
  */
@@ -231,6 +236,10 @@ export type Changed = (path: string, present: boolean, now: number,
                        change: { writer: string; content_id: string | null; size: number })
   => void;
 
+/**
+ * The refusal at the owner's storage figure: its message from what is stored (open uploads
+ * apart), what the change needs, what open uploads hold, and the figure (`storage-full.ts`).
+ */
 export type Full = (stored: number, needed: number, held: number, limit: number) => Refusal;
 
 type FileKind = "file" | "dir";
@@ -414,9 +423,9 @@ type Space = {
   intents: number;
   intent_chunks: number;
   epoch: number;
-  retained_keep: number;
-  retained_recent: number;
-  retained_days: number;
+  retained_keep: number | null;
+  retained_recent: number | null;
+  retained_days: number | null;
   retain_cursor: string | null;
 };
 
@@ -436,16 +445,15 @@ const NO_SHARE: Counters = Object.freeze({ entries: 0, history: 0, chunk_bytes: 
 /** What the tier's storage counts, as a column expression over a counters row. */
 const STORED = "chunk_bytes + inline_bytes + body_bytes";
 
-/** Each counter a quota bounds: its setting, and what it is called in a refusal. */
-const QUOTAS: readonly (readonly [keyof Counters, keyof FileLimits, string])[] = Object.freeze([
-  Object.freeze(["inline_bytes", "max_inline_bytes", "small-file bytes"] as const),
-  Object.freeze(["stored", "max_bytes", "stored bytes"] as const),
-  Object.freeze(["manifest_bytes", "max_manifest_bytes", "file manifest bytes"] as const),
-  Object.freeze(["entries", "max_entries", "file entries"] as const),
-  Object.freeze(["history", "max_history", "file history rows"] as const),
+type Bound = readonly [keyof Counters, (limits: FileLimits) => number | null, string];
+/**
+ * The two bounds a change is held to, the index's first (no upgrade helps it): each counter,
+ * its bound, and what it is called in a client's share refusal.
+ */
+const BOUNDS: readonly Bound[] = Object.freeze([
+  Object.freeze(["manifest_bytes", () => INDEX_BYTES, "file index bytes"] as const),
+  Object.freeze(["stored", (limits: FileLimits) => limits.max_bytes, "stored bytes"] as const),
 ]);
-/** Released history rows one fitting step reads. */
-const FIT_BATCH = 64;
 
 type Intent = { size: number; chunks: string[]; pending: string[]; writer: string };
 
@@ -560,8 +568,6 @@ export class Files {
   readonly #manifested: () => number | null;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
-  /** What retention frees at the byte quota (the collections' history, acked mail). */
-  readonly #reclaim: Reclaim;
   /** The `FILES` puts in flight on this instance, which the erasure waits for. */
   readonly #puts = new Set<Promise<unknown>>();
   /**
@@ -586,14 +592,12 @@ export class Files {
   #pastFigure = false;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write, full: Full, reclaim: Reclaim, changed: Changed,
-              manifested: () => number | null) {
+              write: Write, full: Full, changed: Changed, manifested: () => number | null) {
     this.#storage = storage;
     this.#manifested = manifested;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
-    this.#reclaim = reclaim;
     this.#changed = changed;
     this.#full = full;
   }
@@ -623,8 +627,8 @@ export class Files {
   /**
    * In a unit: `act`, a change made outside the files plane that may store user content (a
    * collection write, a post, a mail's reply, their inline bodies counted by the schema's
-   * triggers), held to the tier's storage as a file change is, in `filer`'s scopes: retention
-   * makes room first, then a change past the bound is refused (`file_quota`, `file_share`).
+   * triggers), held to the tier's storage as a file change is, in `filer`'s scopes: a change
+   * past it is refused (`storage_full`, `file_share`), and nothing is let go to admit it.
    */
   held<T>(filer: string, act: () => T): T {
     return this.#change(filer, () => act());
@@ -649,12 +653,11 @@ export class Files {
   }
 
   /**
-   * Run `act` in one transaction. At the end, history is first fitted
-   * to its quotas from gone paths' rows (`#fit`); then the quotas are checked (`#bounds`),
-   * which never refuses a change that leaves every counter no higher, so a redaction, a
-   * purge, an abort or housekeeping always passes. `writer` is whose change it is: an
-   * outside client's is held to its share too (`client_share`, `owner_reserve`); null is
-   * the owner's or the system's, held to the owner's quotas alone. `freeing` exempts the
+   * Run `act` in one transaction, then check its bounds (`#bounds`), which never refuse a
+   * change that leaves every counter no higher, so a redaction, a purge, an abort or
+   * housekeeping always passes. Nothing is let go to make room. `writer` is whose change it
+   * is: an outside client's is held to its share too (`client_share`, `owner_reserve`); null
+   * is the owner's or the system's, held to the owner's bounds alone. `freeing` exempts the
    * changes that free while writing a record: a remove (its delete row adds to history) and
    * a sync commit (whose ops are bounded one by one, a remove's among them exempt).
    */
@@ -666,7 +669,6 @@ export class Files {
       return this.#storage.transactionSync(() => {
         const before = this.#before(writer);
         const value = act(Date.now() / 1000);
-        this.#fit(before, writer);
         if (!freeing) {
           this.#bounds(before, writer);
         }
@@ -710,31 +712,27 @@ export class Files {
 
   /**
    * The scopes a change by `writer` is held to, narrowest first, each with the part of
-   * every quota it may hold, its counters now and the released history rows it may prune:
-   * an outside client's own share, all clients' together, then the owner's whole quota.
+   * every bound it may hold, its counters before and now, and its refusal for a client's
+   * share (null for the owner's whole): an outside client's own share, all clients'
+   * together, then the owner's whole.
    */
   #scopes(before: Before, writer: string | null): {
-    percent: number; before: Counters; now: () => Counters; refusal: (what: string) => Refusal;
-    rows: string; args: SqlStorageValue[]; filer: string;
+    percent: number; before: Counters; now: () => Counters;
+    share: ((what: string) => Refusal) | null;
   }[] {
     const limits = this.#limits();
-    const owner = { percent: 100, before: before.space, now: () => this.#space(),
-                    refusal: (what: string) => new Refusal(FILE_QUOTA,
-                      `${FILE_QUOTA}: the owner's ${what} are at their quota`),
-                    rows: "1 = 1", args: [], filer: "*" };
+    const owner = { percent: 100, before: before.space, now: () => this.#space(), share: null };
     if (!isClient(writer)) {
       return [owner];
     }
     return [
       { percent: limits.client_share, before: before.share, now: () => this.#share(writer),
-        refusal: (what) => new Refusal(FILE_SHARE, `${FILE_SHARE}: this client's ${what} are ` +
-          "at its share of the owner's quota"), rows: "writer = ?", args: [writer], filer: writer },
+        share: (what: string) => new Refusal(FILE_SHARE, `${FILE_SHARE}: this client's ${
+          what} are at its share of the owner's quota`) },
       { percent: 100 - limits.owner_reserve, before: before.clients,
         now: () => this.#share(CLIENTS),
-        refusal: (what) => new Refusal(FILE_SHARE, `${FILE_SHARE}: outside clients' ${what} are ` +
-          "at their share; the rest is kept for the owner"), rows: "writer GLOB ?",
-        args: [CLIENT_WRITER],
-        filer: CLIENT_WRITER },
+        share: (what: string) => new Refusal(FILE_SHARE, `${FILE_SHARE}: outside clients' ${
+          what} are at their share; the rest is kept for the owner`) },
       owner,
     ];
   }
@@ -742,91 +740,42 @@ export class Files {
   /**
    * Refuse a change that took a counter past its bound, in any scope it is held to. A
    * change that leaves a counter no higher than it found it passes, so an owner (or a
-   * client) over a lowered quota can still delete.
+   * client) over a lowered bound can still delete.
    */
   #bounds(before: Before, writer: string | null): void {
     const limits = this.#limits();
     for (const scope of this.#scopes(before, writer)) {
       const after = scope.now();
-      for (const [counter, setting, what] of QUOTAS) {
+      for (const [counter, boundOf, what] of BOUNDS) {
         if (after[counter] <= scope.before[counter]) {
           continue;
         }
-        const bound = limits[setting];
+        const bound = boundOf(limits);
         if (bound === null) {
           throw new Refusal("tier_unread",
                             TIER_UNREAD);  // the tier's storage is not known: no guess
         }
-        if (setting === "max_bytes" && this.#pastFigure) {
+        if (counter === "stored" && this.#pastFigure) {
           continue;  // an archive move's placement: its second unit frees what it places
         }
-        if (after[counter] > shareOf(bound, scope.percent)) {
-          // The owner's whole storage is the one wall a user meets: `storage_full`, or
-          // `uploads_open` when open uploads alone leave no room. A client's share of it, and
-          // the index's own ceilings, keep their codes.
-          if (setting === "max_bytes" && scope.filer === "*") {
-            const needed = after[counter] - scope.before[counter];
-            // What open uploads held before this change: what is uploading now, less the
-            // chunks this change itself moved to uploading (an upload's begin), summed as it
-            // moved them, so retention reclaimed in the same change never counts as held.
-            const held = Math.max(0, this.#sql.exec<{ bytes: number }>(
-              "SELECT coalesce(SUM(size), 0) AS bytes FROM file_chunks WHERE state = " +
-                "'uploading'").one().bytes - this.#moved);
-            throw this.#full(Math.max(0, scope.before[counter] - held), needed, held, bound);
-          }
-          throw scope.refusal(what);
+        if (after[counter] <= shareOf(bound, scope.percent)) {
+          continue;
         }
-      }
-    }
-  }
-
-  /**
-   * Retention run early, only on rows it has already let go: when a change took history
-   * rows or manifest bytes past their quota in a scope it is held to (or past where it
-   * found them, if a lowered policy left them higher), prune the earliest-due rows of gone
-   * paths (`released`) that scope holds until it fits, raising the feed's floor as
-   * housekeeping does: a client's own rows for its share, any client's for all clients'
-   * share, any row for the owner's. A live path's rows are never taken early, and the
-   * policy keeps every live path's rows within `max_history`, so once housekeeping has
-   * applied the retention in force, and with the entries quota met, there are always enough
-   * gone rows and the history quota never refuses a change. The work is bounded by the
-   * change's own: it prunes no more rows, nor bytes but its last row's, than the change
-   * took past the bound.
-   */
-  #fit(before: Before, writer: string | null): void {
-    const limits = this.#limits();
-    for (const scope of this.#scopes(before, writer)) {
-      // Retention kept in R2 makes room first (ADR-035): past the byte quota, the scope's
-      // oldest placed history and acked mail go before the change is held to it.
-      const bytes = limits.max_bytes;
-      while (bytes !== null && !this.#pastFigure && scope.now().stored > Math.max(
-               shareOf(bytes, scope.percent), scope.before.stored)
-             && this.#reclaim(scope.filer)) {
-        // one entry or message a step, until the scope fits or nothing is left
-      }
-      for (;;) {
-        const now = scope.now();
-        const rows = now.history - Math.max(shareOf(limits.max_history, scope.percent),
-                                            scope.before.history);
-        const bytes = now.manifest_bytes - Math.max(
-          shareOf(limits.max_manifest_bytes, scope.percent), scope.before.manifest_bytes);
-        if (rows <= 0 && bytes <= 0) {
-          break;
+        if (scope.share !== null) {
+          throw scope.share(what);
         }
-        const found = this.#sql.exec<{ version: number; path: string; bytes: number }>(
-          `SELECT version, path, ${HISTORY_BYTES("file_history")} AS bytes FROM file_history ` +
-            `WHERE released = 1 AND ${scope.rows} ORDER BY prune_after, version LIMIT ?`,
-          ...scope.args, FIT_BATCH).toArray();
-        if (found.length === 0) {
-          break;
+        if (counter === "manifest_bytes") {
+          throw new Refusal(FILE_INDEX_FULL, INDEX_FULL);
         }
-        let take = 0;
-        let freed = 0;
-        while (take < found.length && (take < rows || freed < bytes)) {
-          freed += found[take]!.bytes;
-          take++;
-        }
-        this.#expire(found.slice(0, take));
+        // The owner's whole storage is the one wall a user meets: `storage_full`, or
+        // `uploads_open` when open uploads alone leave no room.
+        const needed = after[counter] - scope.before[counter];
+        // What open uploads held before this change: what is uploading now, less the chunks
+        // this change itself moved to uploading (an upload's begin), summed as it moved them.
+        const held = Math.max(0, this.#sql.exec<{ bytes: number }>(
+          "SELECT coalesce(SUM(size), 0) AS bytes FROM file_chunks WHERE state = " +
+            "'uploading'").one().bytes - this.#moved);
+        throw this.#full(Math.max(0, scope.before[counter] - held), needed, held, bound);
       }
     }
   }
@@ -1117,52 +1066,61 @@ export class Files {
   }
 
   /**
-   * Apply retention to `path` after a change. Its newest `keep` versions (none once it is
-   * gone) are kept; the next ones, up to `keep_recent` in all, are due `retention_days`
-   * after they were written; any older one goes now. So a path holds at most
-   * `max(keep_versions, keep_recent)` rows, and every live path's history fits in
-   * `max_history` (policy.ts). On a change only the newest rows move between those
-   * bands, so this looks no further than the most rows policy can keep; a policy change
-   * re-marks every row through housekeeping (`#remark`). A gone path's rows are all
-   * `released`, which a live path's never are: retention has let them go, so a change at
-   * the history quota may prune them early (`#fit`); a path made again takes them back.
+   * Apply retention to `path` after a change, as the owner's policy keeps it, each setting
+   * null while it is off: off, retention keeps every row. A live path's newest
+   * `keep_versions` are kept (its current version alone while that is off; none once the
+   * path is gone); the next ones, up to `keep_recent` in all (no count while that is off),
+   * are due `retention_days` after they were written (never while that is off); any older
+   * one goes now. On a change only the newest rows move between those bands: a write moves
+   * one row out of the kept band, so with no count only that one is marked; a delete marks
+   * them all; a path made again takes back its kept band. A policy change re-marks every row
+   * through housekeeping (`#remark`). A row is let go only by the retention the owner set,
+   * never to make room.
    */
   #retain(path: string, live: boolean): void {
     const limits = this.#limits();
-    const keep = live ? limits.keep_versions : 0;
-    const cap = Math.max(keep, limits.keep_recent);
-    const released = live ? 0 : 1;
+    const keep = live ? limits.keep_versions ?? CURRENT : 0;
+    const cap = limits.keep_recent === null ? null : Math.max(keep, limits.keep_recent);
+    const days = limits.retention_days;
     const newest = "SELECT version FROM file_history WHERE path = ? ORDER BY version DESC " +
       "LIMIT ? OFFSET ?";
     if (keep > 0) {
+      // `released` is no longer marked; it is cleared with the prune time, as the schema's
+      // check ties them, on rows an earlier retention marked.
       this.#sql.exec("UPDATE file_history SET prune_after = NULL, released = 0 WHERE " +
                        `(prune_after IS NOT NULL OR released = 1) AND version IN (${newest})`,
                      path, keep, 0);
     }
-    if (cap > keep) {
-      this.#sql.exec("UPDATE file_history SET prune_after = coalesce(prune_after, at + ?), " +
-                       "released = ? WHERE (prune_after IS NULL OR released != ?) AND " +
-                       `version IN (${newest})`, limits.retention_days * 86_400, released,
-                     released, path, cap - keep, keep);
+    if (days !== null && (cap === null || cap > keep)) {
+      this.#sql.exec("UPDATE file_history SET prune_after = at + ? WHERE prune_after IS NULL " +
+                       `AND version IN (${newest})`, days * 86_400, path,
+                     cap !== null ? cap - keep : live ? 1 : -1, keep);
     }
-    this.#sql.exec(`DELETE FROM file_history WHERE version IN (${newest})`, path, KEEP_CEILING,
-                   cap);
+    if (cap !== null) {
+      this.#sql.exec(`DELETE FROM file_history WHERE version IN (${newest})`, path, -1, cap);
+    }
   }
 
   /** Every row of `path` marked, or dropped, as the policy in force keeps it. */
   #remark(path: string, limits: FileLimits): void {
     const live = this.#entry(path) !== undefined;
-    const keep = live ? limits.keep_versions : 0;
-    const cap = Math.max(keep, limits.keep_recent);
-    const days = limits.retention_days * 86_400;
+    const keep = live ? limits.keep_versions ?? CURRENT : 0;
+    const cap = limits.keep_recent === null ? null : Math.max(keep, limits.keep_recent);
+    const days = limits.retention_days === null ? null : limits.retention_days * 86_400;
     const newest = "SELECT version FROM file_history WHERE path = ? ORDER BY version DESC LIMIT ?";
-    this.#sql.exec(`DELETE FROM file_history WHERE path = ? AND version NOT IN (${newest})`,
-                   path, path, cap);
-    this.#sql.exec(`UPDATE file_history SET prune_after = NULL WHERE path = ? ` +
-                   `AND prune_after IS NOT NULL AND version IN (${newest})`, path, path, keep);
-    this.#sql.exec(`UPDATE file_history SET prune_after = at + ? WHERE path = ? ` +
-                   `AND version NOT IN (${newest}) AND (prune_after IS NULL ` +
-                   `OR prune_after != at + ?)`, days, path, path, keep, days);
+    if (cap !== null) {
+      this.#sql.exec(`DELETE FROM file_history WHERE path = ? AND version NOT IN (${newest})`,
+                     path, path, cap);
+    }
+    // The kept band never comes due, nor does any row while `retention_days` is off.
+    this.#sql.exec("UPDATE file_history SET prune_after = NULL, released = 0 WHERE path = ? " +
+                   `AND prune_after IS NOT NULL AND version IN (${newest})`, path, path,
+                   days === null ? -1 : keep);
+    if (days !== null) {
+      this.#sql.exec("UPDATE file_history SET prune_after = at + ?, released = 0 WHERE " +
+                     `path = ? AND version NOT IN (${newest}) AND (prune_after IS NULL ` +
+                     "OR prune_after != at + ?)", days, path, path, keep, days);
+    }
   }
 
   #upsert(path: string, kind: FileKind, version: number, contentId: string | null, size: number,
@@ -2329,7 +2287,6 @@ export class Files {
               throw new Refusal("refused", AGENTS_OWNER_ONLY);
             }
             const outcome = this.#syncOp(op, path, epoch, writer, now);
-            this.#fit(before, writer);
             if (op["op"] !== "remove") {
               this.#bounds(before, writer);
             }
@@ -2363,10 +2320,11 @@ export class Files {
   #copyPath(path: string, epoch: number): string {
     const at = this.#blocked(path) ?? path;
     const rest = path.slice(at.length);
-    // Each copy is an entry, so the free name is within the entries quota's count. Every
-    // candidate starts with the name as cut for the longest suffix that count allows, so the
-    // names taken are found in one range read of the parent's entries (review rvlim N6).
-    const most = this.#limits().max_entries + 1;
+    // Each copy is an entry, so a free name is among the first one past the entries the owner
+    // holds. Every candidate starts with the name as cut for the longest suffix that count
+    // allows, so the names taken are found in one range read of the parent's entries (review
+    // rvlim N6).
+    const most = this.#space().entries + 1;
     const longest = conflictName(nameOf(at), epoch, most);
     const cut = longest.slice(0, longest.length - `.ta-conflict-${epoch}-${most}`.length);
     const from = cut === "" ? "" : nameOf(storedPath(`${parentOf(at)}/${cut}`));

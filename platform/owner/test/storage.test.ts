@@ -62,30 +62,27 @@ describe("the one storage number", () => {
       .toBe("only the owner may read its storage");
   });
 
-  it("makes room by retention first, then refuses at the tier's figure, writing nothing",
-     async () => {
+  it("refuses at the tier's figure, writing nothing and letting no history go (ADR-036, " +
+     "untangle F1)", async () => {
     const r = await rig();
     const small = r.bind(null, { tiers: tiers(8000) });
-    // Each rewrite keeps its row and adds a history entry: past the bound, the oldest
-    // entries the row no longer is go first, so the rewrites all land.
-    for (let i = 0; i < 8; i++) {
-      await write(r, small, "a", `${i}`.repeat(1500));
-    }
-    const kept = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM collection_history " +
-                                     "WHERE key = 'a'");
-    expect(kept[0]!["n"] as number).toBeLessThan(8);
-    expect((await r.stub.storageUsage(small)).used_bytes).toBeLessThanOrEqual(8000);
-    // New rows take the rest; once only live rows and their own entries are left, the next
-    // write is refused at the one wall (`storage_full`), and nothing of it is kept.
+    // Each rewrite keeps its row and adds a history entry. Nothing is let go to admit one:
+    // past the bound the rewrite is refused at the one wall (`storage_full`).
     let refused: Error | null = null;
-    for (let i = 0; i < 10 && refused === null; i++) {
+    let written = 0;
+    for (let i = 0; i < 8 && refused === null; i++) {
       try {
-        await write(r, small, `row-${i}`, "y".repeat(1500));
+        await write(r, small, "a", `${i}`.repeat(1500));
+        written++;
       } catch (error) {
         refused = error as Error;
       }
     }
+    expect(written).toBeGreaterThan(1);
     expect(refusalOf(refused!)?.facts).toMatchObject({ limit_bytes: 8000, tier: "free" });
+    const kept = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM collection_history " +
+                                     "WHERE key = 'a'");
+    expect(kept[0]!["n"]).toBe(written);
     const usage = await r.stub.storageUsage(small);
     expect(usage.used_bytes).toBeLessThanOrEqual(8000);
     expect(usage.limit_bytes).toBe(8000);

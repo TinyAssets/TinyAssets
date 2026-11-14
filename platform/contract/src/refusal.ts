@@ -71,6 +71,9 @@ export const REFUSALS = Object.freeze({
   events_raced: Object.freeze({ status: 503, retryAfterS: 1, transient: true }),
   // Another writer changed the file under each try.
   file_busy: Object.freeze({ status: 409 }),
+  // The files plane's one technical ceiling: its index in the object is full (`files.ts`
+  // `INDEX_BYTES`). Room comes only from deleting files or old versions: never an upgrade.
+  file_index_full: Object.freeze({ status: 507 }),
   file_quota: REFUSED,
   file_share: REFUSED,
   inbound_proof_invalid: REFUSED,

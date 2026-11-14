@@ -528,26 +528,26 @@ A content id SHALL name its kind (inline or chunks) and its size, and a change w
 - **THEN** the second change fails and the first content reads as it was
 
 ### Requirement: History is kept by owner policy, never dropped to make room
-History SHALL keep each live path's newest `keep_versions` and its versions younger than the policy's retention up to `keep_recent` in all, dropping a version past those in the change that pushed it out, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes.
+History SHALL keep every version until the owner sets a retention: `keep_versions`, `retention_days` and `keep_recent` are each off by default (Fact 15). Set, history SHALL keep each live path's newest `keep_versions` and its versions younger than `retention_days` up to `keep_recent` in all, dropping a version past those in the change that pushed it out or once it is due, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes, raising the feed's floor past any pruned row that was its path's newest.
 
-#### Scenario: A path written twelve times
-- **WHEN** a path is written twelve times under the default policy
+#### Scenario: A path written by default
+- **WHEN** a path is written twenty-five times and then deleted under the default policy
+- **THEN** all twenty-six versions are kept and none is ever due
+
+#### Scenario: A path written twelve times under a retention the owner set
+- **WHEN** a path is written twelve times with `keep_versions` 10, `keep_recent` 20 and `retention_days` 30
 - **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
 
-### Requirement: Gone paths' history makes room at the quota
-A change that would take history rows past `max_history`, the manifest's bytes past `max_manifest_bytes`, or a client's share of either, SHALL first prune the earliest-due rows of gone paths, which retention has already let go, until it fits: the client's own for its share, any client's for all clients', any for the owner's. It SHALL raise the feed's floor past any pruned row that was its path's newest, prune no more than the change took past the bound, and never a live path's row.
+### Requirement: Nothing is let go to admit a write
+A change past the file index's ceiling or the owner's storage SHALL be refused, and no file version, collection history entry or mail SHALL be let go to admit it: the owner frees room by deleting files, old versions or mail.
 
-#### Scenario: Deleted paths' churn
-- **WHEN** a policy of 5 entries, `keep_versions` 1, `keep_recent` 2 and `max_history` 10 holds, and eight files of unique names are each written and removed
-- **THEN** every write lands, history holds the ten newest rows, and a feed reader behind the pruned rows is told to rescan
+#### Scenario: Deleted paths' history at a full index
+- **WHEN** the index is at its ceiling with deleted paths' history kept, and a new file is written
+- **THEN** the write is refused `file_index_full`, and every kept row stays, through housekeeping too
 
-#### Scenario: A live path's version kept for its age
-- **WHEN** history is at its quota and a live path's oldest kept version is the earliest due
-- **THEN** a change prunes a gone path's row, and the live path keeps its version
-
-#### Scenario: Gone long paths at the byte quota
-- **WHEN** the manifest is at `max_manifest_bytes` with ten deleted 3,000-byte paths' history kept, and five new 3,000-byte files are written
-- **THEN** each write lands after pruning the earliest gone rows, the manifest stays within its quota, and once no gone row is left a write is refused `file_quota`
+#### Scenario: A begin that letting history go would admit
+- **WHEN** an upload's begin would fit the owner's storage only if a collection row's placed history were let go
+- **THEN** it is refused `storage_full`, and the history is kept
 
 ### Requirement: Every entry holds its content
 Each file entry SHALL hold a reference to its content, in every root, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
@@ -557,7 +557,7 @@ Each file entry SHALL hold a reference to its content, in every root, as each ke
 - **THEN** the file reads back byte for byte
 
 #### Scenario: Live files' churn inside the window
-- **WHEN** ten files of one kept version each, with `keep_recent` 1 and `max_history` 10, are each written ten times inside the retention window
+- **WHEN** ten files, with `keep_versions` 1 and `keep_recent` 1, are each written ten times inside the retention window
 - **THEN** every write lands and history holds ten rows
 
 ### Requirement: The owner frees history, and temporary files keep none
@@ -567,15 +567,15 @@ A version MAY be restored as a new one, or have its content redacted unless it i
 - **WHEN** the owner purges a path's history
 - **THEN** every version but its current one goes, never refused for a quota, and a gone path's history goes whole
 
-### Requirement: File quotas are owner policy, refused loudly
-Chunk, inline and manifest bytes, entries, history rows, open uploads and their chunks, and a file's size SHALL each be bounded by owner policy or a fixed ceiling, read from counters the schema's triggers keep. A change past a bound SHALL be refused in its own unit before it commits (an upload before any byte is sent), leaving nothing, its reason starting with a fixed code: `storage_full` for the owner's whole storage (the one wall, below), `file_quota` for another owner's bound, `file_share` for a client's share.
+### Requirement: The files plane's bounds are refused loudly
+The owner's storage, the file index's one technical ceiling (`INDEX_BYTES`, the index's charge in the object, no setting), open uploads and their chunks, and a file's size (the owner's own setting) SHALL each be bounded, read from counters the schema's triggers keep. A change past a bound SHALL be refused in its own unit before it commits (an upload before any byte is sent), leaving nothing, its reason starting with a fixed code: `storage_full` for the owner's whole storage (the one wall, below), `file_index_full` for the index's ceiling, `file_quota` for a file's size and the open uploads, `file_share` for a client's share.
 
-#### Scenario: The owner's entries at their quota
-- **WHEN** a write would add an entry past `max_entries`
-- **THEN** it is refused `file_quota`, and no parent directory, history row or content of it is kept
+#### Scenario: The owner's index at its ceiling
+- **WHEN** a write would take the file index past its ceiling
+- **THEN** it is refused `file_index_full` (507 at the doors), saying in plain words that the file index is full and that deleting files or old versions makes room, never offering an upgrade, and no parent directory, history row or content of it is kept
 
 ### Requirement: The tier's storage is the one wall, in one set of words
-Every refusal at the owner's storage figure (the tier's, from the control record, or the owner's own lower setting) SHALL start with the fixed code `storage_full`, then say in plain words what is used (the bytes stored, never the refused change), what the change needs, what is free, the whole, how to free space, and the upgrade path: the next tier's storage, or that the owner's own lower limit is what binds (never an upgrade then); with no larger tier, or none known, it SHALL say nothing of plans. Then the same facts as one JSON object (`used_bytes`, `needed_bytes`, `held_bytes`, `free_bytes`, `limit_bytes`, `tier`, `tier_bytes`, `own_limit`, `upgrade`, `free`) the app reads. The doors SHALL answer it 507. Bytes held by uploads still open (counted from their begin) SHALL be reported apart from what is stored; when they alone leave no room, the refusal SHALL be `uploads_open` (409 at the doors), saying the storage itself has room, never "full" and never an upgrade. An upload the sync agent gives up SHALL be aborted at once (the `upload_abort` sync door). The uploads a sync agent begins SHALL name their lease, and those SHALL be aborted when the lease is released, lapses, or is deleted as a new lease is taken (on every path that takes one, a sign-in's among them), so none holds room for its day; a client's own uploads and placed bodies, begun outside any sync, SHALL never be cancelled by its sandbox's lease ending. A change that adds no storage (a read, a delete, a purge) SHALL never be refused at it. An outside client's share of the storage keeps `file_share`, and the index's own ceilings `file_quota`: neither is the user's storage being full.
+Every refusal at the owner's storage figure (the tier's, from the control record, or the owner's own lower setting) SHALL start with the fixed code `storage_full`, then say in plain words what is used (the bytes stored, never the refused change), what the change needs, what is free, the whole, how to free space (old versions of files among it, since retention is off by default), and the upgrade path: the next tier's storage, or that the owner's own lower limit is what binds (never an upgrade then); with no larger tier, or none known, it SHALL say nothing of plans. Then the same facts as one JSON object (`used_bytes`, `needed_bytes`, `held_bytes`, `free_bytes`, `limit_bytes`, `tier`, `tier_bytes`, `own_limit`, `upgrade`, `free`) the app reads. The doors SHALL answer it 507. Bytes held by uploads still open (counted from their begin) SHALL be reported apart from what is stored; when they alone leave no room, the refusal SHALL be `uploads_open` (409 at the doors), saying the storage itself has room, never "full" and never an upgrade. An upload the sync agent gives up SHALL be aborted at once (the `upload_abort` sync door). The uploads a sync agent begins SHALL name their lease, and those SHALL be aborted when the lease is released, lapses, or is deleted as a new lease is taken (on every path that takes one, a sign-in's among them), so none holds room for its day; a client's own uploads and placed bodies, begun outside any sync, SHALL never be cancelled by its sandbox's lease ending. A change that adds no storage (a read, a delete, a purge) SHALL never be refused at it. An outside client's share of the storage keeps `file_share`, and the index's ceiling `file_index_full`: neither is the user's storage being full.
 
 #### Scenario: Full on the free tier
 - **WHEN** a write would take the owner's storage past the free tier's figure
@@ -590,11 +590,7 @@ Every refusal at the owner's storage figure (the tier's, from the control record
 - **THEN** only the uploads that sandbox's sync began are aborted, and the client's own write still commits
 
 ### Requirement: Every manifest row is bounded in bytes as the object stores it
-Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, temporary directory, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against `max_manifest_bytes`. The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).
-
-#### Scenario: The other file bounds inside the manifest's
-- **WHEN** the files policy is at its defaults, or every bound at its high
-- **THEN** `max_entries` small files at one version, `max_history` versions, and `max_inline_bytes` each fit inside `max_manifest_bytes`, so each can bind
+Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, temporary directory, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against the file index's ceiling (`INDEX_BYTES`). The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).
 
 #### Scenario: A client writing 4,096-byte paths
 - **WHEN** an outside client writes file after file at 4,096-byte paths
@@ -604,16 +600,16 @@ Every manifest row (entry, history row, content with its inline bytes and chunk 
 - **WHEN** files are written to a charge, every other one removed and purged, and the charge refilled, round after round
 - **THEN** the database grows by more than the charge as pages stay half used, and never by more than the charge times `WORST_FILL`
 
-### Requirement: An outside client holds a share of every file quota
-Each outside client SHALL hold at most `client_share` percent of every file quota, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy, so the owner always has room of its own.
+### Requirement: An outside client holds a share of the storage and of the index
+Each outside client SHALL hold at most `client_share` percent of the owner's storage and of the file index's ceiling, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy, so the owner always has room of its own.
 
 #### Scenario: A client fills its share
 - **WHEN** an outside client holding `write_files` writes until it is refused `file_share`
 - **THEN** the owner's writes, grant changes, revokes and policy writes all still land
 
 #### Scenario: Two clients together
-- **WHEN** `client_share` is 40 and `owner_reserve` 50 of ten entries, and two clients write four and one files
-- **THEN** a fifth file of the first, or a second of the other, is refused `file_share`, and the owner writes five more
+- **WHEN** `client_share` is 40 and `owner_reserve` 50, and one client's index share is full, then all clients' together
+- **THEN** that client's next file, then the other's, is refused `file_share`, and the owner writes on until the whole index is full (`file_index_full`)
 
 ### Requirement: Each scope is charged once for what its own rows reference
 Each scope (an outside client's own, all clients', the owner's writers') SHALL be charged its own entries, history rows and temporary directories, and once for each content and chunk its rows or open uploads reference, while any do, deduplicated within the scope and never across scopes; a chunk no scope references SHALL be charged to the scope that let it go last until it is deleted or revived. The owner-wide total SHALL count each stored row once.
@@ -637,7 +633,7 @@ Every owner table SHALL be bounded by a count or bytes the code enforces, with n
 - **THEN** the owner-bound guard fails
 
 ### Requirement: A quota never blocks a change that frees
-A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it, and gone paths' churn makes its own room.
+A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. No files setting SHALL be tied to another by a policy rule.
 
 #### Scenario: A full owner removes files
 - **WHEN** every counter is at its bound and the owner removes a file
@@ -1253,11 +1249,11 @@ What E2B bills SHALL be the truth: its signed lifecycle events (paused, killed),
 - **THEN** its receipt carries 15 s and the day 25 s
 
 ### Requirement: The owner has one storage number
-Every byte of user content the owner stores SHALL count toward the tier's storage (free 25 GB, paid 250 GB, from the control record), or the owner's own lower setting: file chunks live and in history, small files kept inline, and collection rows, their history and mail bodies whether kept inline in the object or placed in R2. Platform bookkeeping (indexes, receipts, counters) SHALL NOT count. A change past it SHALL first let retention make room (the oldest history entries no row still is, then the oldest acked mail, of the scope that is full), then be refused with the files quota's fixed code (`file_quota`, or `file_share` past an outside writer's share), leaving nothing behind. The owner SHALL read `{used_bytes, limit_bytes, breakdown: {files, messages, collections}}`, the parts summing to what is used.
+Every byte of user content the owner stores SHALL count toward the tier's storage (free 25 GB, paid 250 GB, from the control record), or the owner's own lower setting: file chunks live and in history, small files kept inline, and collection rows, their history and mail bodies whether kept inline in the object or placed in R2. Platform bookkeeping (indexes, receipts, counters) SHALL NOT count. A change past it SHALL be refused `storage_full` (or `file_share` past an outside writer's share), leaving nothing behind and letting nothing go to admit it. The owner SHALL read `{used_bytes, limit_bytes, breakdown: {files, messages, collections}}`, the parts summing to what is used.
 
 #### Scenario: Small bodies fill the storage
 - **WHEN** an owner whose tier stores 8,000 bytes keeps writing 1,500-byte collection rows
-- **THEN** old history entries go first, and once only live rows and their own entries are left the next write is refused `file_quota`, and the used bytes stay at or under 8,000
+- **THEN** the write past the figure is refused `storage_full`, every history entry is kept, and the used bytes stay at or under 8,000
 
 ### Requirement: An owner isolate's memory is bounded by structure
 Large data SHALL move through the owner's object only as streams or 4 MiB chunks, never whole (ADR-037). A path that holds chunks SHALL take units of its isolate's one pool (`UNIT_BYTES` a unit, `OWNER_POOL_UNITS` of them) for what it holds while its bytes are in hand, and only then: a chunk-wise `file_edit` SHALL take and release them for each chunk it reads and each chunk it makes and puts, never across the edit, its begin or its commit; a chunked `file_append` for its one join and write; a placed body's windows one unit, a whole body's read its chunks' units. A step SHALL wait for units first come first served within its size class for at most `SLOT_WAIT_MS`, with at most `OWNER_WAITERS` larger and `OWNER_SMALL_WAITERS` one-unit holds waiting, each class capped apart; past either it SHALL be refused `busy` before it changes anything, which the doors answer `503` with `Retry-After`. A one-unit hold SHALL never wait behind a larger one: larger holds SHALL leave `OWNER_RESERVE_UNITS` free. A larger hold SHALL never be starved by one-unit holds: while one waits, a new one-unit hold SHALL take only the reserve. The relay's tails SHALL be one budget an isolate (`TAIL_UNITS`), the object holding the most dropping its oldest first. `file_edit` SHALL edit a file of at most `EDIT_BYTES_MAX`, a bound derived from the worst edit's measured time, no longer `WHOLE_BYTES`. The workerd memory leg SHALL run each such path on the real code at its worst and hold its peak within its declared units at every size; the counts test SHALL hold the pool, the tails, each object's relay terms and the measured resting baseline within the isolate's 128 MB, and name what it does not count.

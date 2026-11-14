@@ -1,10 +1,10 @@
 /**
- * The files byte quota (plan §6, migration 7): every manifest row charged what the object
- * stores it in, against `max_manifest_bytes`; each outside client held to its share of
- * every quota and all clients to what the owner's reserve leaves; gone paths' history
- * pruned by bytes to make room; and the model calls' counters bounded. An outside client
- * holding `write_files` cannot fill the owner's object, so the owner's grants, revokes and
- * policy writes always have room.
+ * The file index's charge (plan §6, migration 7): every manifest row charged what the
+ * object stores it in, against the index's one ceiling (`INDEX_BYTES`); each outside client
+ * held to its share of it and of the storage, and all clients to what the owner's reserve
+ * leaves; nothing let go to make room; and the model calls' counters bounded. An outside
+ * client holding `write_files` cannot fill the owner's object, so the owner's grants,
+ * revokes and policy writes always have room.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -13,7 +13,9 @@ import {
   CALLS_OPEN, CHUNK_BYTES, INLINE_BYTES, MAX_PATH_BYTES, SPEND_KEPT,
 } from "../../contract/src/limits";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
-import { FILE_QUOTA, FILE_SHARE, type Files, MAX_OPEN_INTENTS } from "../src/files";
+import {
+  FILE_INDEX_FULL, FILE_QUOTA, FILE_SHARE, type Files, INDEX_BYTES, MAX_OPEN_INTENTS,
+} from "../src/files";
 import { sha256Hex } from "../../contract/src/digest";
 import { WriteGate } from "../src/gate";
 import {
@@ -24,7 +26,9 @@ import type { OwnerDO } from "../src/owner-do";
 import { FILE_SETTINGS } from "../../contract/src/policy-document";
 import { MIGRATIONS } from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, filesOn, inFiles, namedCode, sqlIn, text } from "./support";
+import {
+  crowd, failure, fileCounters, filesOn, inFiles, namedCode, sqlIn, text,
+} from "./support";
 
 const W = "/workspace";
 const CLIENT = `client:${MUSE.client}`;
@@ -83,6 +87,11 @@ const share = async (r: Rig, who: string) =>
   (await sqlIn(r.stub, "SELECT * FROM file_shares WHERE who = ?", who))[0];
 const manifest = async (r: Rig) =>
   (await sqlIn(r.stub, "SELECT manifest_bytes AS m FROM file_space"))[0]!["m"] as number;
+/** A share's part of the index's ceiling, at `percent`. */
+const shareOf = (percent: number) => Math.floor(INDEX_BYTES * percent / 100);
+/** The index's refusal at a client's share. */
+const CLIENT_FULL = `${FILE_SHARE}: this client's file index bytes are at its share of the ` +
+  "owner's quota";
 
 describe("the manifest charge", () => {
   it("is SQLite's record layout, in SQL as in the module", async () => {
@@ -107,8 +116,7 @@ describe("the manifest charge", () => {
       const r = await rig();
       await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
         const files = filesOn(state.storage, new WriteGate(state.storage).write, undefined,
-                              { max_entries: 1_000_000, max_history: 5_000_000,
-                                keep_versions: 20, keep_recent: 20 });
+                              { keep_versions: 20, keep_recent: 20 });
         const sql = state.storage.sql;
         const charged = () => sql.exec<{ m: number }>(
           "SELECT manifest_bytes AS m FROM file_space").one().m;
@@ -157,25 +165,26 @@ describe("an outside client's share", () => {
   it("refuses a client writing long paths at its share, and the owner still writes",
      async () => {
     const r = await rig();
-    await setPolicy(r, { max_manifest_bytes: 2_000_000, client_share: 10 });
+    await setPolicy(r, { client_share: 1 });
     const dir = deep(MAX_PATH_BYTES - 100);
     await r.stub.fileMkdir(r.bind(null), { path: dir, expected_etag: null });
-    const reason = `${FILE_SHARE}: this client's file manifest bytes are at its share of ` +
-      "the owner's quota";
-    let n = 0;
+    await write(r, MUSE, longPath(dir, MAX_PATH_BYTES, 0));
+    // Its share stood in for as filled but for some long paths' room.
+    const back = await crowd(r.stub, shareOf(1), 200_000, CLIENT);
+    let n = 1;
     for (; n < 100; n++) {
       const error = await write(r, MUSE, longPath(dir, MAX_PATH_BYTES, n))
         .then(() => null, (refusal: Error) => refusal);
       if (error !== null) {
-        expect(error.message).toBe(reason);
+        expect(error.message).toBe(CLIENT_FULL);
         break;
       }
     }
     expect(n).toBeGreaterThan(5);
     expect(n).toBeLessThan(100);
     const mine = await share(r, CLIENT);
-    expect(mine!["manifest_bytes"] as number).toBeLessThanOrEqual(200_000);
-    await refused(r, () => write(r, MUSE, longPath(dir, MAX_PATH_BYTES, 1000)), reason);
+    expect(mine!["manifest_bytes"] as number).toBeLessThanOrEqual(shareOf(1));
+    await refused(r, () => write(r, MUSE, longPath(dir, MAX_PATH_BYTES, 1000)), CLIENT_FULL);
     const usage = await r.stub.fileUsage(r.bind(MUSE));
     expect(usage.share?.manifest_bytes).toBe(mine!["manifest_bytes"]);
     expect((await r.stub.fileUsage(r.bind(null))).share)
@@ -185,64 +194,67 @@ describe("an outside client's share", () => {
     for (let i = 0; i < 20; i++) {
       await write(r, null, longPath(dir, MAX_PATH_BYTES, 2000 + i));
     }
-    // The client still writes what frees, and short files once it has room.
+    // The client still writes what frees.
     const gone = longPath(dir, MAX_PATH_BYTES, 0);
     await r.stub.fileRemove(r.bind(MUSE), { path: gone, recursive: false,
       expected_etag: (await r.stub.fileStat(r.bind(null), { path: gone })).entry!.etag });
+    await back();
     await counted(r);
   });
 
   it("refuses a client writing many versions of a long path at its share, and the owner " +
      "still writes", async () => {
     const r = await rig();
-    await setPolicy(r, { max_manifest_bytes: 2_000_000, client_share: 10, keep_versions: 100,
-                         keep_recent: 100, max_entries: 1000, max_history: 100_000 });
+    await setPolicy(r, { client_share: 1 });
     const dir = deep(MAX_PATH_BYTES - 100);
     await r.stub.fileMkdir(r.bind(null), { path: dir, expected_etag: null });
     const path = longPath(dir, MAX_PATH_BYTES, 1);
-    const reason = `${FILE_SHARE}: this client's file manifest bytes are at its share of ` +
-      "the owner's quota";
-    let versions = 0;
+    await write(r, MUSE, path, "v0");
+    const back = await crowd(r.stub, shareOf(1), 200_000, CLIENT);
+    let versions = 1;
     for (; versions < 100; versions++) {
       const error = await write(r, MUSE, path, `v${versions}`)
         .then(() => null, (refusal: Error) => refusal);
       if (error !== null) {
-        expect(error.message).toBe(reason);
+        expect(error.message).toBe(CLIENT_FULL);
         break;
       }
     }
     expect(versions).toBeGreaterThan(5);
     expect(versions).toBeLessThan(100);
+    // Every version written is kept: retention is off, and none is let go for room.
     expect((await share(r, CLIENT))!["history"]).toBe(versions);
-    await refused(r, () => write(r, MUSE, path, "one more"), reason);
+    await refused(r, () => write(r, MUSE, path, "one more"), CLIENT_FULL);
     // The owner writes on, the client's file among them: the entry is its own then.
     for (let i = 0; i < 30; i++) {
       await write(r, null, path, `owner ${i}`);
     }
     expect((await share(r, CLIENT))!["entries"]).toBe(0);
+    await back();
     await counted(r);
   });
 
-  it("holds all clients together to what the owner's reserve leaves", async () => {
+  it("holds all clients together to what the owner's reserve leaves, and every write to the " +
+     "owner's whole", async () => {
     const r = await rig();
-    await setPolicy(r, { max_entries: 10, max_history: 200, keep_versions: 1, keep_recent: 1,
-                         client_share: 40, owner_reserve: 50 });
-    for (let i = 0; i < 4; i++) {
-      await write(r, MUSE, `${W}/muse-${i}`);
-    }
-    await refused(r, () => write(r, MUSE, `${W}/muse-4`),
-                  `${FILE_SHARE}: this client's file entries are at its share of the owner's ` +
-                  "quota");
+    await setPolicy(r, { client_share: 40, owner_reserve: 50 });
+    await write(r, MUSE, `${W}/muse-0`);
+    const backMuse = await crowd(r.stub, shareOf(40), 0, CLIENT);
+    await refused(r, () => write(r, MUSE, `${W}/muse-1`), CLIENT_FULL);
     await write(r, DOT, `${W}/dot-0`);
+    const backClients = await crowd(r.stub, shareOf(50), 0, "*");
     await refused(r, () => write(r, DOT, `${W}/dot-1`),
-                  `${FILE_SHARE}: outside clients' file entries are at their share; the rest ` +
-                  "is kept for the owner");
-    for (let i = 0; i < 5; i++) {
-      await write(r, null, `${W}/owner-${i}`);
-    }
-    await refused(r, () => write(r, null, `${W}/owner-5`),
-                  `${FILE_QUOTA}: the owner's file entries are at their quota`);
-    expect((await share(r, "*"))!["entries"]).toBe(5);
+                  `${FILE_SHARE}: outside clients' file index bytes are at their share; the ` +
+                  "rest is kept for the owner");
+    await write(r, null, `${W}/owner-0`);
+    const backOwner = await crowd(r.stub, INDEX_BYTES, 0);
+    const full = `${FILE_INDEX_FULL}: your file index is full: it holds as many files and ` +
+      "versions as one owner's index can. Delete files or old versions of files you no " +
+      "longer need to make room.";
+    await refused(r, () => write(r, null, `${W}/owner-1`), full);
+    await backOwner();
+    await backClients();
+    await backMuse();
     await counted(r);
   });
 
@@ -250,7 +262,9 @@ describe("an outside client's share", () => {
      async () => {
     const r = await rig();
     await r.register(MUSE);
-    await setPolicy(r, { max_manifest_bytes: 1_000_000, client_share: 5 });
+    await setPolicy(r, { client_share: 1 });
+    await write(r, MUSE, `${W}/${"f".repeat(200)}`, "x".repeat(4000));
+    const back = await crowd(r.stub, shareOf(1), 50_000, CLIENT);
     let full = false;
     for (let i = 0; i < 200 && !full; i++) {
       full = await write(r, MUSE, `${W}/${String(i).padStart(200, "f")}`, "x".repeat(4000))
@@ -264,12 +278,12 @@ describe("an outside client's share", () => {
       expected_revision: row!.revision, name: "" });
     expect(narrowed.mode).toBe("scoped");
     expect((await r.stub.grantRevoke(r.bind(null), { client: MUSE.client })).revoked).toBe(true);
-    await setPolicy(r, { max_manifest_bytes: 2_000_000, client_share: 50 });
+    await setPolicy(r, { client_share: 50 });
     expect((await r.stub.fileUsage(r.bind(null))).limits.client_share).toBe(50);
     await write(r, null, `${W}/owner.md`, "the owner's own");
     expect((await failure(() => write(r, MUSE, `${W}/after.md`))).message)
       .not.toMatch(/^file_/);
-    expect(await manifest(r)).toBeLessThanOrEqual(2_000_000);
+    await back();
     await counted(r);
   });
 
@@ -353,110 +367,6 @@ describe("an outside client's share", () => {
   });
 });
 
-describe("history retention by bytes", () => {
-  it("prunes gone paths' history, earliest due first, so a change fits the manifest quota",
-     async () => {
-    const r = await rig();
-    const limits = { keep_versions: 1, keep_recent: 2 };
-    const dir = deep(2900);
-    await inFiles(r.stub, limits, async (files: Files) => {
-      await files.write(`${dir}/live`, text("kept"), { expected: null, writer: "owner" });
-      for (let i = 0; i < 10; i++) {
-        const path = longPath(dir, 3000, i);
-        await files.write(path, text(`gone ${i}`), { expected: null, writer: "owner" });
-        files.remove(path, { expected: null, writer: "owner" });
-      }
-    });
-    const quota = await manifest(r) + 1000;
-    const released = async () => (await sqlIn(r.stub,
-      "SELECT COUNT(*) AS n FROM file_history WHERE released = 1"))[0]!["n"] as number;
-    expect(await released()).toBe(20);
-    const { cursor } = await r.stub.fileChanges(r.bind(null), { after: 0, limit: 1 });
-    await inFiles(r.stub, { ...limits, max_manifest_bytes: quota }, async (files: Files) => {
-      for (let i = 0; i < 5; i++) {
-        await files.write(longPath(dir, 3000, 100 + i), text("new"),
-                          { expected: null, writer: "owner" });
-      }
-    });
-    expect(await manifest(r)).toBeLessThanOrEqual(quota);
-    expect(await released()).toBeLessThan(20);
-    expect(await released()).toBeGreaterThan(0);
-    // The earliest gone path went first, and a reader behind it rescans.
-    expect(await sqlIn(r.stub, "SELECT 1 FROM file_history WHERE path = ?",
-                       longPath(dir, 3000, 0))).toEqual([]);
-    expect((await r.stub.fileChanges(r.bind(null), { after: cursor - 1, limit: 1 })).reset)
-      .toBe(true);
-    // The live path keeps its version; and with nothing gone left, the quota refuses.
-    expect((await r.stub.fileStat(r.bind(null), { path: `${dir}/live` })).entry).not.toBeNull();
-    const reason = `${FILE_QUOTA}: the owner's file manifest bytes are at their quota`;
-    await expect(inFiles(r.stub, { ...limits, max_manifest_bytes: quota }, async (files: Files) => {
-      for (let i = 0; i < 50; i++) {
-        await files.write(longPath(dir, 3000, 200 + i), text("more"),
-                          { expected: null, writer: "owner" });
-      }
-    })).rejects.toThrow(reason);
-    expect(await released()).toBe(0);
-    await counted(r);
-  });
-
-  it("prunes a client's own gone history for its share, never the owner's", async () => {
-    const r = await rig();
-    const limits = { keep_versions: 1, keep_recent: 2, owner_reserve: 0 };
-    const dir = deep(2900);
-    await inFiles(r.stub, limits, async (files: Files) => {
-      for (let i = 0; i < 6; i++) {
-        for (const writer of ["owner", CLIENT]) {
-          const path = longPath(dir, 3000, i * 10 + writer.length);
-          await files.write(path, text("gone"), { expected: null, writer });
-          files.remove(path, { expected: null, writer });
-        }
-      }
-    });
-    // A client's share of 1% that its rows nearly fill, of a quota the owner is far from.
-    const quota = 100 * (((await share(r, CLIENT))!["manifest_bytes"] as number) + 1000);
-    const ownerRows = async () => (await sqlIn(r.stub,
-      "SELECT COUNT(*) AS n FROM file_history WHERE writer = 'owner'"))[0]!["n"];
-    const clientRows = async () => (await sqlIn(r.stub,
-      "SELECT COUNT(*) AS n FROM file_history WHERE writer = ? AND released = 1", CLIENT))[0]!["n"];
-    const before = [await ownerRows(), await clientRows()];
-    const tight = { ...limits, client_share: 1, max_manifest_bytes: quota };
-    await inFiles(r.stub, tight, async (files: Files) => {
-      for (let i = 0; i < 3; i++) {
-        await files.write(longPath(dir, 3000, 500 + i), text("new"),
-                          { expected: null, writer: CLIENT });
-      }
-    });
-    expect(await ownerRows()).toBe(before[0]);
-    expect(await clientRows()).toBeLessThan(before[1] as number);
-    expect((await share(r, CLIENT))!["manifest_bytes"] as number)
-      .toBeLessThanOrEqual(quota / 100);
-    await counted(r);
-  });
-});
-
-describe("a lowered share", () => {
-  it("prunes no more of a client's gone history than its change added", async () => {
-    const r = await rig();
-    const limits = { keep_versions: 1, keep_recent: 2, owner_reserve: 0 };
-    await inFiles(r.stub, limits, async (files: Files) => {
-      for (let i = 0; i < 10; i++) {
-        await files.write(`${W}/gone-${i}`, text("gone"), { expected: null, writer: CLIENT });
-        files.remove(`${W}/gone-${i}`, { expected: null, writer: CLIENT });
-      }
-    });
-    const rows = async () => (await share(r, CLIENT))!["history"] as number;
-    const before = await rows();
-    expect(before).toBe(20);
-    // A share of 2% of 200 history rows: 4, far below the 20 the client holds.
-    await inFiles(r.stub, { ...limits, max_history: 200, client_share: 2 },
-                  async (files: Files) => {
-      await files.write(`${W}/new`, text("new"), { expected: null, writer: CLIENT });
-    });
-    expect(await rows()).toBe(before);
-    await counted(r);
-  });
-});
-
 describe("the manifest charge at worst fill", () => {
   it("counts a page at three quarters of its room, and a third full at worst", () => {
     expect(PAGE_ROOM).toBe(PAGE_USABLE * 3 / 4);
@@ -469,8 +379,7 @@ describe("the manifest charge at worst fill", () => {
     const r = await rig();
     const ratios = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const files = filesOn(state.storage, new WriteGate(state.storage).write, undefined, {
-        max_entries: 1_000_000, max_history: 5_000_000, keep_versions: 1, keep_recent: 1,
-        client_share: 100, owner_reserve: 0 });
+        keep_versions: 1, keep_recent: 1, client_share: 100, owner_reserve: 0 });
       const sql = state.storage.sql;
       const charged = () => sql.exec<{ m: number }>(
         "SELECT manifest_bytes AS m FROM file_space").one().m;
@@ -656,17 +565,19 @@ describe("deduplication in each scope", () => {
     expect((await begin()).missing).toEqual([]);
   });
 
-  it("holds an owner's write to the whole quota, beside the clients' share", async () => {
+  it("holds a client's write to the owner's whole index, beside the clients' share",
+     async () => {
     const r = await rig();
-    await setPolicy(r, { max_entries: 10, max_history: 200, keep_versions: 1, keep_recent: 1,
-                         client_share: 30, owner_reserve: 0 });
-    for (let i = 0; i < 8; i++) {
-      await write(r, null, `${W}/owner-${i}`);
-    }
+    await setPolicy(r, { client_share: 30, owner_reserve: 0 });
+    await write(r, null, `${W}/owner-0`);
     await write(r, MUSE, `${W}/muse-0`);
-    await write(r, MUSE, `${W}/muse-1`);
-    await refused(r, () => write(r, MUSE, `${W}/muse-2`),
-                  `${FILE_QUOTA}: the owner's file entries are at their quota`);
+    const back = await crowd(r.stub, INDEX_BYTES, 0);
+    await refused(r, () => write(r, MUSE, `${W}/muse-1`),
+                  `${FILE_INDEX_FULL}: your file index is full: it holds as many files and ` +
+                  "versions as one owner's index can. Delete files or old versions of files " +
+                  "you no longer need to make room.");
+    await back();
+    await counted(r);
   });
 });
 
@@ -723,7 +634,7 @@ describe("a random sequence of changes", () => {
     const broken: string[] = [];
     let done = 0;
     await inFiles(r.stub, { client_share: 60, owner_reserve: 10, keep_versions: 2,
-                            keep_recent: 3, max_manifest_bytes: 400_000 },
+                            keep_recent: 3 },
                   async (files: Files) => {
       const temps: string[] = [];
       for (let step = 0; step < 120; step++) {
@@ -772,51 +683,18 @@ describe("a random sequence of changes", () => {
   });
 });
 
-describe("the files policy's byte quota and shares", () => {
-  it("are owner policy, with defaults and a high bound", async () => {
+describe("the files policy's shares", () => {
+  it("are owner policy, with defaults and a high bound; the index's ceiling is none",
+     async () => {
     const r = await rig();
-    expect(FILE_DEFAULTS).toMatchObject({ max_manifest_bytes: 512 * 1024 ** 2,
-                                          client_share: 25, owner_reserve: 25 });
-    expect(FILE_SETTINGS.max_manifest_bytes).toEqual([0, 512 * 1024 ** 2]);
-    for (const files of [{ max_manifest_bytes: 512 * 1024 ** 2 + 1 }, { client_share: 101 },
+    expect(FILE_DEFAULTS).toMatchObject({ client_share: 25, owner_reserve: 25 });
+    expect(Object.keys(FILE_SETTINGS)).not.toContain("max_manifest_bytes");
+    for (const files of [{ max_manifest_bytes: 1 }, { client_share: 101 },
                          { owner_reserve: -1 }, { client_share: 2.5 }]) {
       expect((await failure(() => setPolicy(r, files))).message).toBe("invalid files policy");
     }
-    await setPolicy(r, { max_manifest_bytes: 0 });
-    await refused(r, () => write(r, null, `${W}/a`),
-                  `${FILE_QUOTA}: the owner's file manifest bytes are at their quota`);
     await setPolicy(r, { client_share: 0 });
-    await refused(r, () => write(r, MUSE, `${W}/a`),
-                  `${FILE_SHARE}: this client's small-file bytes are at its share of the ` +
-                  "owner's quota");
+    await refused(r, () => write(r, MUSE, `${W}/a`), CLIENT_FULL);
     await write(r, null, `${W}/a`);
   });
 });
-
-describe("the files policy's bounds inside the manifest's", () => {
-  it("let each of them bind before the manifest bound does, at its high and its default",
-     async () => {
-    const r = await rig();
-    const bytes = async () => Number((await sqlIn(r.stub, "SELECT manifest_bytes FROM " +
-                                                        "file_space"))[0]!["manifest_bytes"]);
-    const start = await bytes();
-    const first = await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null,
-                                                         content: text("1") });
-    const file = await bytes() - start;
-    await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, content: text("2"),
-      expected_etag: (first as { entry: { etag: string } }).entry.etag });
-    const version = await bytes() - start - file;
-    expect([file, version]).toEqual([expect.any(Number), expect.any(Number)]);
-    for (const [entries, history, inline, manifest] of [
-      [FILE_SETTINGS.max_entries[1], FILE_SETTINGS.max_history[1],
-       FILE_SETTINGS.max_inline_bytes[1], FILE_SETTINGS.max_manifest_bytes[1]],
-      [FILE_DEFAULTS.max_entries, FILE_DEFAULTS.max_history, FILE_DEFAULTS.max_inline_bytes,
-       FILE_DEFAULTS.max_manifest_bytes]] as const) {
-      // A small file's least charge, at one version, and each further version's.
-      expect(entries * file).toBeLessThanOrEqual(manifest);
-      expect(history * version).toBeLessThanOrEqual(manifest);
-      expect(inline).toBeLessThanOrEqual(manifest * 3 / 4);
-    }
-  });
-});
-

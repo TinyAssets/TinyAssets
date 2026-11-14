@@ -1,7 +1,7 @@
 /**
- * What the owner's file manifest takes in its object, in bytes: the one measure the
- * manifest quota (owner policy's `max_manifest_bytes`) and each outside client's share of
- * it are held in (plan §6; `files.ts`, migration 7).
+ * What the owner's file manifest takes in its object, in bytes: the one measure the file
+ * index's ceiling (`files.ts` `INDEX_BYTES`) and each outside client's share of it are held
+ * in (plan §6; `files.ts`, migration 7).
  *
  * Every manifest row is charged what SQLite lays it out in, in its 4,096-byte pages: each
  * b-tree record the row makes (the row itself, and each index entry it adds), its text

@@ -103,21 +103,13 @@ platform fact stood behind them:
 - the egress per-minute rates (`perRunPerMinute`, `refusalsPerMinute`): every refusal is
   receipted, the newest 500 kept;
 - a grant's scope count (`maxScopes`), now bounded only by its bytes;
-- conflict copies of one path (`MAX_CONFLICT_COPIES`), now within the entries quota;
+- conflict copies of one path (`MAX_CONFLICT_COPIES`), now within the entries the owner holds;
 - the setup check's models tried (`LEARN_TRIES`): each try is local.
 
 Flagged for the founder:
-- the files policy's retention defaults are not off: `retention_days` 30, `keep_versions`
-  10 and `keep_recent` 20 let old versions go before the bounds need the room. Off would
-  keep history until `max_history` or the tier's storage prunes the earliest-due first, as
-  the collections' history now is. `keep_recent` is already the most the policy's rule
-  allows at `max_entries` 30,000.
 - `client_share` 25% and `owner_reserve` 25% are on by default. They split the owner's
   files, now also the placed bodies and the collections' rows, between the owner and
   outside writers; off, one client could fill the owner's space.
-- `max_entries` stays 30,000: the files policy's rule (`max_history` at least `max_entries`
-  times the larger of `keep_versions` and `keep_recent`) caps it at 600,000 / 20. Counting
-  the files' history in bytes, as the collections' now is, would lift it to about 480,000.
 
 ## Chosen retentions
 
@@ -143,14 +135,14 @@ reason; none refuses a write.
 | Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
 | control record `tiers` (`owner/src/tier.ts`) | free 5, paid 10 | simultaneous runs | a run past them refused `tier_runs` | tier | ADR-034 decision 8, edited in the record with no deploy. |
-| `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | every byte of user content the owner stores, wherever it lives (slice P, the founder's one storage number of 2026-11-03): file chunks live and in history, small files kept inline, and the collections' rows, their history and mail, inline or placed in R2 (`file_space.stored`); never the platform's bookkeeping (indexes, receipts, counters) | history entries the rows no longer are and acked mail let go first, oldest first, then refused `storage_full` (used, total, what to free, the upgrade; 507 at the doors; `storage-full.ts`; `file_share` past an outside writer's share); with no tier numbers kept, `tier_unread`. The owner reads used and left (`storageUsage`, the app's `storage`) | tier | The control record's figure, kept from every door's binding. |
+| `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | every byte of user content the owner stores, wherever it lives (slice P, the founder's one storage number of 2026-11-03): file chunks live and in history, small files kept inline, and the collections' rows, their history and mail, inline or placed in R2 (`file_space.stored`); never the platform's bookkeeping (indexes, receipts, counters) | refused `storage_full`, nothing let go to admit a write (ADR-036; untangle F1): used, total, what to free (old versions of files among it), the upgrade; 507 at the doors; `storage-full.ts`; `file_share` past an outside writer's share); with no tier numbers kept, `tier_unread`. The owner reads used and left (`storageUsage`, the app's `storage`) | tier | The control record's figure, kept from every door's binding. |
 | `owner/src/egress.ts` `EGRESS_LIMITS.openPerRun` | 16 a run (free 80, paid 160) | sandbox model calls streaming at once | a call refused `egress_rate` | tier | Scaled by the tier's runs. Guard term `egress_reservations`, 89.4 MB, costed at `RUNS_CEILING`. |
 | `owner/src/policy.ts` files `max_bytes` | none (the owner may set 0 to 1 PiB) | the owner's own file quota | only below the tier's storage | owner setting | Off by default: the tier's figure binds. |
 | `contract/src/file-defaults.ts` `FILE_DEFAULTS.max_file_bytes` | 40 GiB, its most | one file's size | only the owner's own lower cap | owner setting | Off by default: the most one upload holds (`MAX_INTENT_CHUNKS`). |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.retention_days` | 30 days (high 3,650) | how long kept versions stay | older versions pruned | owner setting | Flagged above: on by default. |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.keep_versions` | 10 (high 1,000) | versions kept for each live path | older versions pruned | owner setting | Flagged above. |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.keep_recent` | 20 (high 1,000) | recent versions kept for a path | older versions pruned | owner setting | Flagged above; the policy's rule against `max_history`. |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.client_share` | 25% | one outside writer's share of every file quota and of the collections' rows | a client's or visitor's write refused past it | owner setting | Flagged above. A visiting owner writes in a scope of its own. |
+| `contract/src/file-defaults.ts` `FILE_DEFAULTS.retention_days` | off (high 3,650 days) | how long a version past `keep_versions` is kept after it was written | nothing until the owner sets it; then such versions pruned at that age | owner setting | Off by default (Fact 15; untangle F1): every version is kept until the owner deletes it or sets a retention. |
+| `contract/src/file-defaults.ts` `FILE_DEFAULTS.keep_versions` | off: the current version alone (high 1,000) | a live path's newest versions always kept, whatever their age | nothing | owner setting | Off by default (Fact 15). |
+| `contract/src/file-defaults.ts` `FILE_DEFAULTS.keep_recent` | off: no count (high 1,000) | the most versions a path keeps in all | nothing until the owner sets it; then older versions pruned | owner setting | Off by default (Fact 15). No rule ties it to another setting. |
+| `contract/src/file-defaults.ts` `FILE_DEFAULTS.client_share` | 25% | one outside writer's share of the storage and of the file index's ceiling and of the collections' rows | a client's or visitor's write refused past it | owner setting | Flagged above. A visiting owner writes in a scope of its own. |
 | `contract/src/file-defaults.ts` `FILE_DEFAULTS.owner_reserve` | 25% | the room all outside writers leave the owner | their writes refused within it | owner setting | Flagged above. |
 | `owner/src/policy.ts` `MODEL_DEFAULTS.turn_requests` | none (owner may set 1 to 1,000,000) | model calls in one sandbox run | only the owner's own cap refuses `run_requests` | owner setting | ADR-034 decision 7: the owner's own limits are off by default. |
 | `owner/src/policy.ts` `MODEL_DEFAULTS.turn_tokens` | none (owner may set 1 to 1e9) | tokens in one sandbox run | only the owner's own cap | owner setting | As above. |
@@ -166,10 +158,7 @@ reason; none refuses a write.
 | `codemode/wrangler.jsonc` `limits.cpu_ms` | 300,000 ms | the codemode Worker's CPU an invocation | a script past it resets its sandbox | vendor limit | Workers Paid's most, 5 minutes (Workers limits). |
 | `owner/wrangler.jsonc` `limits.subrequests` | 10,000,000 | the owner object's calls an invocation | the platform's error past it | technical ceiling | Workers Paid's most (Workers limits: "10,000 (up to 10M)"). P1 probed 1,000,000; a live check at the most is owed. |
 | `contract/src/control.ts` `RUNS_CEILING` | 1,000 | the most simultaneous runs a tier record may give | a record past it is malformed | technical ceiling | The 10 GB: each live run's row, grant, lease and egress calls are costed at it. Far past any tier. |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.max_inline_bytes` | 256 MiB (high 384 MiB) | small files kept in the object | a small file refused `file_quota` | technical ceiling | The 10 GB, inside the manifest's term. Every file over 4 KiB is in R2 already. |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.max_manifest_bytes` | 512 MiB (high 512 MiB) | every manifest row as SQLite stores it | file changes refused once the manifest fills it | technical ceiling | The 10 GB: guard term `file_manifest`, 1,208.0 MB at `WORST_FILL` 2.25, the largest. Placed bodies' contents and chunks are charged in it too. |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.max_entries` | 30,000 (high 500,000) | live paths | a new path refused `file_quota` | technical ceiling | The policy's own rule against `max_history`'s 600,000 at `keep_recent` 20 (flagged above). |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.max_history` | 600,000 (high 600,000) | kept history rows | old versions pruned earliest-due first | technical ceiling | The 10 GB, inside `max_manifest_bytes`. |
+| `owner/src/files.ts` `INDEX_BYTES` | 512 MiB of the index's charge | the file index in the owner's object: every manifest row as SQLite stores it (`manifest_bytes`: entries, history rows, contents with each small file's inline bytes, chunk lists, chunks, temporary directories, scope rows, each path and overflow page) | a change that adds to it refused `file_index_full` (507 at the doors): "your file index is full ... Delete files or old versions of files", never an upgrade; `file_share` past an outside writer's share | technical ceiling | The 10 GB: the owner-bound guard's term `file_manifest`, this at `WORST_FILL` 2.25, 1,208.0 MB, the largest. No setting and no tier raises it: it is the object's room. About 200,000 to 350,000 small live files an owner (`datashapes_research.md` §2.4) until the index's cold level (F3). Placed bodies' contents and chunks are charged in it too. |
 | `contract/src/limits.ts` `MAX_INTENT_CHUNKS` | 10,000 chunks (40 GiB) | one upload's chunks | a file over 40 GiB cannot be uploaded | technical ceiling | The 10 GB: guard term `file_intents`, 82.2 MB. One open upload's chunk list is one row. |
 | `owner/src/files.ts` `MAX_OPEN_INTENTS` | 64 | uploads open at once (placed bodies' among them) | a 65th refused until one commits | technical ceiling | The 10 GB, inside `file_intents`. |
 | `owner/src/files.ts` `MAX_HELD_CHUNKS` | 20,000 | chunks all open uploads hold | a new upload refused while they hold it | technical ceiling | The 10 GB, inside `file_intents`. |
@@ -177,7 +166,7 @@ reason; none refuses a write.
 | `owner/src/files.ts` `INTENT_TTL_S` | 86,400 s | how long a file upload may stay open | a large upload over a slow link must finish within a day | technical ceiling | An open upload holds its chunks in `file_intents` and the quota until it ends; a 40 GiB file at 1 MB/s takes 11 hours. |
 | `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. `file_edit` is no longer bound by it (ADR-037, ruling 2): it edits chunk by chunk (`EDIT_BYTES_MAX`, below). A whole write's bytes are not yet under a unit (PR 3b). |
 | `contract/src/limits.ts` `MAX_SYNC_OPS` | 1,000 | ops in one sandbox sync commit | the sync agent splits a larger commit | technical ceiling | One synchronous gate unit per commit, which must stay short in the object's request CPU. |
-| `owner/src/files.ts` `KEEP_CEILING` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The 10 GB, inside the manifest's bytes. |
+| `contract/src/file-defaults.ts` `KEEP_CEILING` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The settings' range only: the rows any path keeps are bounded by the index's ceiling (`INDEX_BYTES`). |
 | `owner/src/files.ts` `tempDir` | 239 bytes | a temporary directory's prefix | a longer prefix refused | technical ceiling | One path component, `MAX_NAME_BYTES` 255, with its 16 hex. |
 | `doors/src/file-bytes.ts` one upload request | one chunk, 4 MiB at most | one `PUT files/upload/<intent_id>/<index>` | an upload sends one request a chunk, in any order, again after any failure; the door answers a chunk it holds without a second put | technical ceiling | Cloudflare's request body ceiling, 100 MB on Free and Pro (its Workers limits page, read 2026-11-03), never bounds a file: the policy's `max_file_bytes` and the intent's plan do. |
 | `owner/src/owner-do.ts` `fileWrite` | 4 MiB | one `fileWrite` call's content | a larger file goes by upload | technical ceiling | One chunk; Workers RPC's message and the isolate's 128 MB. |

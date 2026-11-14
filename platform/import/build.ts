@@ -401,12 +401,12 @@ export interface Fit {
 
 /**
  * The owner's fit against the platform's own limits, on the tree as the files plane would
- * hold it: its entries (folders count, and the starter's seed with them), its small files'
- * unique bytes inline (`max_inline_bytes`), its largest file (`max_file_bytes`), and every
- * byte stored against the tier's storage. An owner past one is refused before the window
- * (research §3: the import never raises a setting; the fix is the owner's, told).
- * `max_manifest_bytes` and `max_history` cannot bind first: 30,000 entries at one version
- * each take well under either.
+ * hold it: its entries (folders count, and the starter's seed with them) and its small files'
+ * unique bytes inline, counted for the report; its largest file (`max_file_bytes`), and
+ * every byte stored against the tier's storage. An owner past one is refused before the
+ * window (research §3: the import never raises a setting; the fix is the owner's, told).
+ * The file index's ceiling (`owner/src/files.ts` `INDEX_BYTES`) is the object's, which
+ * refuses past it loudly as the import writes (`file_index_full`).
  */
 export function fitOf(owner: Owner, built: Built, tiers: Tiers): Fit {
   const seeded = carried().files.map((file) => file.path);
@@ -428,8 +428,6 @@ export function fitOf(owner: Owner, built: Built, tiers: Tiers): Fit {
       fit.problems.push({ code, at });
     }
   };
-  over("over_entries", fit.entries, FILE_DEFAULTS.max_entries);
-  over("over_inline_bytes", fit.inline_bytes, FILE_DEFAULTS.max_inline_bytes);
   over("over_file_bytes", fit.largest, FILE_DEFAULTS.max_file_bytes);
   const tier = tiers[owner.plan?.tier ?? "free"];
   if (tier === undefined) {

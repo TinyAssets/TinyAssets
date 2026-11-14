@@ -27,8 +27,8 @@
  * the newest revision any erase gave (`revision_floor`), so none repeats. The history and
  * the erasures are bounded together by what they take, not by rows times revisions: their
  * entries as SQLite lays them out (`maxHistoryCharge`), the oldest change pruned first. It is
- * a retention, never refused, and its placed bodies are the first room made at the files
- * byte quota (`reclaim`).
+ * a retention, never refused. Nothing of it is let go to admit a write: at the owner's
+ * storage a write is refused (`storage_full`).
  *
  * Where a body lives is the placement rule (ADR-035, `bodies.ts`): a body past
  * `PLACE_BYTES` is placed in R2 before its write (the door's `Bodies.begin`), and the row
@@ -153,17 +153,10 @@ export function checkBody(body: unknown): string {
   return body;
 }
 
-/**
- * The rows of the writers a files scope names: any (`*`), every outside writer
- * (`client:*`), or one. Bound three times; no bound `GLOB` pattern (a Durable Object's
- * SQLite takes one of at most 50 bytes, and a writer is 71).
- */
-const FILERS = "(? = '*' OR (? = 'client:*' AND filer GLOB 'client:*') OR filer = ?)";
-
 /** History entries one prune step reads, oldest first. */
 const PRUNE_BATCH = 64;
 
-/** An entry the prune or `reclaim` lets go: its change, and whether it is a deletion's. */
+/** An entry the prune lets go: its change, and whether it is a deletion's. */
 type Entry = { readonly change: number; readonly erased: 0 | 1 };
 
 /**
@@ -467,27 +460,6 @@ export class Collections {
         "content_id FROM collection_history WHERE content_id IS NOT NULL)), 0) AS bytes")
       .one().bytes;
   }
-
-  /**
-   * In a change at the files byte quota (`Files.#fit`, ADR-035): the oldest history entry
-   * of the writers `filer` names (`FILERS`) whose placed body no live row
-   * also names, let go, so its bytes can go; false when none is left.
-   */
-  readonly reclaim = (filer: string): boolean => {
-    // The oldest history entry that holds bytes no live row holds: an inline body (never
-    // the row's own revision), or placed content the row no longer names.
-    const entry = this.#sql.exec<Entry>(
-      "SELECT change, 0 AS erased FROM collection_history h WHERE body_bytes > 0 AND " +
-        `${FILERS} AND NOT EXISTS (SELECT 1 FROM collection_rows r WHERE ` +
-        "r.collection = h.collection AND r.row_id = h.key AND (r.revision = h.revision OR " +
-        "r.content_id = h.content_id)) ORDER BY change LIMIT 1", filer, filer, filer)
-      .toArray()[0];
-    if (entry === undefined) {
-      return false;
-    }
-    this.#let(entry);
-    return true;
-  };
 
   /**
    * Rows past `after` this caller may see, in `seq` order, and the next cursor.

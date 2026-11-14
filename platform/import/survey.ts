@@ -40,7 +40,7 @@ export type Code =
   | "integrity" | "path_collision" | "unreadable" | "orphan_row" | "never_admitted"
   | "unfinished_erasure" | "erasure_unread"
   // the new platform's limits
-  | "over_entries" | "over_inline_bytes" | "over_file_bytes" | "over_storage" | "no_tier"
+  | "over_file_bytes" | "over_storage" | "no_tier"
   | "over_tar_member";
 
 export interface Problem {

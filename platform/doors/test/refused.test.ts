@@ -27,7 +27,7 @@ describe("a refusal's answer", () => {
     ["storage_busy", "storage_busy: your storage is catching up", 503, "30"],
     ["busy", "busy: this server is holding as much as it may at once", 503, "1"],
     ["events_busy", "events_busy: the object holds as many runner posts as it may", 503, "1"],
-    ["file_quota", "file_quota: the owner's entries are at their quota", 403, null],
+    ["file_quota", "file_quota: the file is larger than the owner's file size quota", 403, null],
     ["refused", "agent not found", 403, null],
     ["chunk_deleting", "a chunk of this upload is being deleted; begin again", 403, null],
     ["invalid", "storage_full: not a refusal", 400, null],
