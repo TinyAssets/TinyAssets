@@ -27,7 +27,7 @@
  * gate's (`unavailable`) among them, is a contract code, answered by its status and
  * `Retry-After` (`refused.ts`), and so is the object's refused answer; a shared app's, past
  * its gates, is a `200`, so its failure budget with its vendor is kept, unless it is for the
- * moment only (`mailbox_full`), when the app is told to send it again.
+ * moment only (`mailbox_full`, a full pool's `busy`), when the app is told to send it again.
  */
 import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";

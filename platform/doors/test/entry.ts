@@ -18,7 +18,7 @@ type OwnerEnv = ConstructorParameters<typeof RealOwnerDO>[1];
 
 /** The doors a test may have refused once, as the object's own. */
 type Refusable = "outsideAgents" | "toolProfile" | "fileUploadTarget" | "erasureOutside"
-  | "runEvents";
+  | "runEvents" | "inboundAccept";
 
 /**
  * An owner's next call of a door (`agents_list`, the tool profile, an upload's target),
@@ -62,6 +62,12 @@ export class OwnerDO extends RealOwnerDO {
       ReturnType<RealOwnerDO["runEvents"]> {
     const refusal = refusedOnce("runEvents", args[0].owner);
     return refusal !== undefined ? Promise.reject(refusal) : super.runEvents(...args);
+  }
+
+  override inboundAccept(...args: Parameters<RealOwnerDO["inboundAccept"]>):
+      ReturnType<RealOwnerDO["inboundAccept"]> {
+    const refusal = refusedOnce("inboundAccept", args[0].owner);
+    return refusal !== undefined ? Promise.reject(refusal) : super.inboundAccept(...args);
   }
 
   override fileUploadTarget(...args: Parameters<RealOwnerDO["fileUploadTarget"]>):

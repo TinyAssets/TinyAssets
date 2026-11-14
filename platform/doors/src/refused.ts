@@ -75,9 +75,16 @@ export const asTool: Surface<CallToolResult> = (refusal) =>
 export const asInbound: Surface<Response> = (refusal) =>
   answer(refusal.status, { error: shownCode(refusal) }, retryAfter(refusal));
 
-/** The inbound hooks', to a shared app: `200`, so its failure budget with its vendor is kept. */
-export const asShared: Surface<Response> = (refusal) =>
-  answer(200, { state: "refused", error: shownCode(refusal) });
+/**
+ * The inbound hooks', to a shared app: `200`, so its failure budget with its vendor is kept,
+ * unless the refusal is for the moment only (a full pool, a closed gate): then its status and
+ * wait, so the vendor sends the event again rather than losing it.
+ */
+export const asShared: Surface<Response> = (refusal) => {
+  const body = { state: "refused", error: shownCode(refusal) };
+  return refusal.transient ? answer(refusal.status, body, retryAfter(refusal))
+    : answer(200, body);
+};
 
 /** MCP Events' error codes: the design sketch's (`-32023` to `-32026`), and JSON-RPC's. */
 export const EVENT_ERRORS = Object.freeze({
