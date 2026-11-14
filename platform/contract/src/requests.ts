@@ -21,8 +21,7 @@ export interface DoorRequests {
   readonly policyPropose: DoorFields<"change", "request_id">;
   readonly collectionGet: DoorFields<"collection" | "row_id", "body_offset" | "etag">;
   readonly collectionPull: DoorFields<"collection" | "after" | "limit">;
-  readonly collectionHistory:
-    DoorFields<"collection" | "row_id", "before_revision" | "body_offset">;
+  readonly collectionHistory: DoorFields<"collection" | "row_id", "before" | "body_offset">;
   readonly collectionWrite:
     DoorFields<"collection" | "row_id" | "body" | "expected_etag" | "private", "history_op">;
   readonly collectionDelete: DoorFields<"collection" | "row_id" | "expected_etag">;

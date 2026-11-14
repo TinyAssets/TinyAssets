@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { PLATFORM } from "../paths.ts";
 
 export interface Owed {
-  /** The guard that finds it (`"layers"`, the import-layer table's). */
+  /** The guard that finds it (`"layers"`, the import-layer table's; `"refusals"`). */
   readonly guard: string;
   /** The violation, exactly as the guard names it. */
   readonly what: string;
@@ -27,7 +27,7 @@ export interface Found {
 }
 
 /** The guards a workspace may owe: each one's test holds `ratchet` over what it finds. */
-export const GUARDS: readonly string[] = Object.freeze(["layers"]);
+export const GUARDS: readonly string[] = Object.freeze(["layers", "refusals"]);
 
 /** Each entry owed to a guard no test holds, which would never be found stale. */
 export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {
@@ -43,6 +43,14 @@ export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {
  */
 export function imports(fix: string, from: string, to: readonly string[]): Owed[] {
   return to.map((each) => Object.freeze({ guard: "layers", what: `${from} imports ${each}`, fix }));
+}
+
+/**
+ * What the Worker source `from` owes the refusal guard (`refusals.ts`) for each break `what`,
+ * until `fix` removes them: `from` from the repository root, as the guard names it.
+ */
+export function refusals(fix: string, from: string, what: readonly string[]): Owed[] {
+  return what.map((each) => Object.freeze({ guard: "refusals", what: `${from}: ${each}`, fix }));
 }
 
 /** The file that holds a workspace's `OWED`. */

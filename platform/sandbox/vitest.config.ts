@@ -42,7 +42,7 @@ export default defineConfig({
       // back-off alarm, its schema).
       project("sandbox", "workerd", {
         plugins: [
-          cloudflareTest(once(() => pool(main(SANDBOX, {
+          cloudflareTest(once(async () => pool(main(SANDBOX, {
             bindings: { E2B_API_KEY },
             durableObjects: {
               SLOTS: { className: "SandboxSlots", scriptName: SLOTS_GATE, useSQLite: true },
@@ -51,8 +51,8 @@ export default defineConfig({
             serviceBindings: { E2B: fakeConfig(FAKE_E2B).name, SLOTS_GATE: control(SLOTS_GATE) },
             outboundService: fakeConfig(FAKE_E2B).name,
             workers: [
-              auxiliary(SANDBOX, { bindings: { E2B_API_KEY },
-                                   outboundService: fakeConfig(FAKE_E2B).name }),
+              await auxiliary(SANDBOX, { bindings: { E2B_API_KEY },
+                                         outboundService: fakeConfig(FAKE_E2B).name }),
               gate(SLOTS_GATE, methodsOf(join(SANDBOX, "src", "slots.ts"), "SlotLine"),
                    { worker: SANDBOX, className: "SandboxSlots" }),
               // The ring queue's consumer in tests: each ring recorded at once. The fake's

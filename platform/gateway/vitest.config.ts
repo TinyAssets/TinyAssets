@@ -22,7 +22,7 @@ export default defineConfig({
       // (`test/fake-upstream.ts`).
       project("gateway", "workerd", {
         plugins: [
-          cloudflareTest(once(() => pool(main(join(PLATFORM, "gateway"), {
+          cloudflareTest(once(async () => pool(main(join(PLATFORM, "gateway"), {
             bindings: { GATEWAY_KEYRING: KEYRING },
             outboundService: fakeConfig(FAKE_UPSTREAM).name,
             workers: [fake(FAKE_UPSTREAM)],
