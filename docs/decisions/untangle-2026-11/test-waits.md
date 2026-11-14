@@ -4,7 +4,7 @@ The flake re-check (#5601, `flake-recheck.md`) drew the line between a test that
 
 ## The rule
 
-The untangle skill's special cases (step 2) name a test's sleep: a test waits on an event it caused or a record it reads, a time bound is a liveness bound only, never raised, "has not happened" is read from a record, never an elapsed window, and time that must pass is the fake clock's. The skills pin rises by the line's 250 bytes.
+The untangle skill's special cases (step 2) name a test's sleep: a test waits on an event it caused or a record it reads, a time bound is a liveness bound only, never raised, "has not happened" is read from a record, never an elapsed window, and time that must pass is the fake clock's. The skills pin is set to the skills' new size, 34,467: the line's 250 bytes on main's 34,217 (a raise of 247, since the pin had 3 bytes of slack).
 
 ## The sweep's lines
 
@@ -25,4 +25,5 @@ The untangle skill's special cases (step 2) name a test's sleep: a test waits on
 - The gateway's wait-die and V-M2 tests (`held.test.ts`): on the fake clock, the body must be fed by the test so its reads and the sender's timer are ordered.
 - The app's browser windows (`app.e2e.mjs`): page-side events, run where a browser is.
 - The memory guard's leg scripts (`owner/guards/memory-workerd.test.ts`): the child's own events.
+- The other copies of `until` (`gateway/test/held.test.ts`, `gateway/test/entry.test.ts`, `doors/test/runs.test.ts`, `doors/test/egress.test.ts`): one home across workspaces is a shared test module (`ci/workerd.ts`, beside `sqlIn`), with owner's moved there too.
 - The guard: a straight-line timer wait outside a poll loop, in a test, is precise, but until the above are fixed it would land with owed entries.

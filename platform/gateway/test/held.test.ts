@@ -207,6 +207,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
       for (let tries = 0; tries < 500 && gatewaySlots().state().held === 0; tries++) {
         await scheduler.wait(10);
       }
+      expect(gatewaySlots().state().held).toBeGreaterThan(0);
       await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 1);
       expect(said).toBeUndefined();
       await vi.advanceTimersByTimeAsync(heldDeadlineMs(100) - SLOT_WAIT_MS + 1);
