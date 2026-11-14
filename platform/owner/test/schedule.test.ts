@@ -140,8 +140,8 @@ function probe(state: DurableObjectState, names: string[]): Probe {
 }
 
 /** Run `act` on a probe over a fresh owner's object. */
-function withProbe<R>(names: string[], act: (p: Probe) => Promise<R>): Promise<R> {
-  const { stub } = ownerObject();
+async function withProbe<R>(names: string[], act: (p: Probe) => Promise<R>): Promise<R> {
+  const { stub } = await ownerObject();
   return runInDurableObject(stub, (_i: OwnerDO, state) => act(probe(state, names)));
 }
 
@@ -452,7 +452,7 @@ describe("the object's schedule", () => {
 
   it("is driven by the object's alarm; its fetch takes the binder's socket upgrade alone",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.policyRead(as(name));
     // The base class's own two, and none of Lifecycle's handlers installed on the instance.
     expect(await runInDurableObject(stub, (instance: OwnerDO) =>

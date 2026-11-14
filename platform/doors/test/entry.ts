@@ -12,7 +12,6 @@ import { FAKE_UPSTREAM } from "./fake-upstream";
 
 import { OwnerDO as RealOwnerDO } from "../../owner/src/owner-do";
 import type { Refusal } from "../../contract/src/refusal";
-import { RecordingErasures } from "../../owner/test/erasure-fake";
 
 /** The owner object's env, as its class takes it. */
 type OwnerEnv = ConstructorParameters<typeof RealOwnerDO>[1];
@@ -71,16 +70,11 @@ export class OwnerDO extends RealOwnerDO {
     return refusal !== undefined ? Promise.reject(refusal) : super.fileUploadTarget(...args);
   }
 
-  /** The erasure queue, recording only: the tests run the doors' consumer on what it sent. */
-  readonly erasures: RecordingErasures;
-
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const erasures = new RecordingErasures();
     // The owner Worker's FILES, the files Worker's whole service: this script's FILES is the
     // doors', its upload entrypoint alone (review M5-1).
     const files = (env as unknown as { OWNER_FILES: OwnerEnv["FILES"] }).OWNER_FILES;
-    super(ctx, { ...env, FILES: files, ERASURES: erasures }, { putGraceMs: 0, eraseRetryMs: 500 });
-    this.erasures = erasures;
+    super(ctx, { ...env, FILES: files });
   }
 }
 

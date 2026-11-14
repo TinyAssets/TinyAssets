@@ -145,7 +145,7 @@ export function markErasing(storage: OwnerStorage, now: number): void {
 export const NO_ERASURE = "no erasure of this owner is under way";
 
 /** What the owner types to erase its account. */
-const ERASE_CONFIRM = "erase my account";
+export const ERASE_CONFIRM = "erase my account";
 
 function erasureConfirmed(r: Record<string, unknown>): void {
   if (r["confirm"] !== ERASE_CONFIRM) {

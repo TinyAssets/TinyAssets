@@ -24,7 +24,7 @@ const RESERVED = Object.freeze(["alarm", "fetch", "webSocketClose", "webSocketEr
 
 describe("schema migration on wake", () => {
   it("applies every migration before the first call", async () => {
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect(version(state)).toBe(MIGRATIONS.length);
       const tables = state.storage.sql.exec<{ name: string }>(
@@ -38,7 +38,7 @@ describe("schema migration on wake", () => {
   });
 
   it("keeps data and applies nothing twice across an eviction", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     const written = await stub.collectionWrite(as(name), {
       collection: "board", row_id: "t", body: "1", expected_etag: "", private: false,
     });
@@ -53,7 +53,7 @@ describe("schema migration on wake", () => {
   });
 
   it("applies only the migrations past the stored version, in order", async () => {
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const extra = [...MIGRATIONS, ["CREATE TABLE probe_a (n INTEGER)"],
                      ["INSERT INTO probe_a VALUES (2)"]];
@@ -73,11 +73,11 @@ describe("schema migration on wake", () => {
     const schema = (state: DurableObjectState) => state.storage.sql.exec(
       "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT GLOB '_cf_*' " +
         "ORDER BY type, name").toArray();
-    const fresh = await runInDurableObject(ownerObject().stub,
+    const fresh = await runInDurableObject((await ownerObject()).stub,
                                            (_instance: OwnerDO, state) => schema(state));
     expect(fresh.length).toBeGreaterThan(100);
     for (let applied = 1; applied < MIGRATIONS.length; applied++) {
-      const { stub } = ownerObject();
+      const { stub } = await ownerObject();
       await runInDurableObject(stub, (_instance: OwnerDO, state) => {
         // Back to an object a deploy of `applied` migrations made: the owner's tables gone
         // (the runtime's and Lifecycle's kept), then those migrations alone.
@@ -100,7 +100,7 @@ describe("schema migration on wake", () => {
   });
 
   it("rolls a failing migration back whole and leaves the version where it was", async () => {
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const broken = [...MIGRATIONS, ["CREATE TABLE probe_b (n INTEGER)", "NOT SQL"]];
       expect(() => migrate(state.storage, broken)).toThrow();
@@ -112,7 +112,7 @@ describe("schema migration on wake", () => {
 
   it("refuses to start once a migration it applied reads differently (Flyway's validate)",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.collectionPull(as(name), PULL);
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect(state.storage.sql.exec("SELECT version, sha256 FROM schema_digests").toArray())
@@ -128,7 +128,7 @@ describe("schema migration on wake", () => {
 
   it("refuses to start once an applied migration's digest is gone, never passing by default " +
      "(review M3)", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.collectionPull(as(name), PULL);
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       // The review's attack: the digest row deleted, then an edited migration.
@@ -143,7 +143,7 @@ describe("schema migration on wake", () => {
   });
 
   it("refuses to run against a schema newer than its code", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       state.storage.sql.exec("UPDATE schema_version SET version = ?", MIGRATIONS.length + 1);
       expect(() => migrate(state.storage, MIGRATIONS)).toThrow(/newer than this code/);
@@ -159,7 +159,7 @@ describe("schema migration on wake", () => {
     expect(ceiling).toBe(PLACE_BYTES);
     // A placed body is any size up to what one call moves whole, cut into chunks.
     expect(LIMITS.maxRowBytes).toBe(2 * CHUNK_BYTES);
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const insert = (body: string, bytes: number, content: string | null) =>
         state.storage.sql.exec(
@@ -187,7 +187,7 @@ describe("the object's name", () => {
   });
 
   it("binds the object: only the owner it is named by is served", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     for (const binding of [as("bob", "cara"), as("cara", "cara"), as(name, `${name}x`)]) {
       const refused = await failure(() => stub.collectionPull(binding, PULL));
       expect([refused.code, refused.message])
@@ -217,7 +217,7 @@ describe("the object's name", () => {
 
 describe("the object's stored owner", () => {
   it("is stored on first use", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.collectionPull(as("bob"), PULL);
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect(state.storage.sql.exec("SELECT owner FROM object_owner").toArray())
@@ -227,7 +227,7 @@ describe("the object's stored owner", () => {
 
   it("is a second check: a stored owner other than the name refuses, across evictions",
      async () => {
-       const { stub, as, name } = ownerObject();
+       const { stub, as, name } = await ownerObject();
        await stub.collectionPull(as(name), PULL);
        await runInDurableObject(stub, (_instance: OwnerDO, state) => {
          state.storage.sql.exec("UPDATE object_owner SET owner = 'someone-else'");
@@ -239,7 +239,7 @@ describe("the object's stored owner", () => {
      });
 
   it("refuses an invalid principal before binding anything", async () => {
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     for (const binding of [{ owner: "", caller: "bob" }, { owner: " alice", caller: "bob" },
                            { owner: "alice", caller: "bo\nb" },
                            { owner: "a".repeat(513), caller: "bob" }]) {
@@ -252,7 +252,7 @@ describe("the object's stored owner", () => {
   });
 
   it("keeps the error's kind across RPC", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.collectionPull(as(name), PULL);
     expect((await failure(() => stub.collectionPull(as("bob", "bob"), PULL))).code)
       .toBe("refused");
@@ -272,7 +272,7 @@ describe("the object's RPC surface", () => {
       .filter((method) => method !== "constructor" && !RESERVED.includes(method)).sort();
     expect(methods).toEqual(doorTable().map((row) => row.door).sort());
     expect(Object.getOwnPropertyNames(DurableObject.prototype)).toEqual(["constructor"]);
-    const { stub, name } = ownerObject();
+    const { stub, name } = await ownerObject();
     const call = (method: string) => {
       // The test pool's stub makes a property's RPC lookup eagerly on access, a promise
       // that rejects at once for a method the object lacks and is awaited only once the
@@ -293,7 +293,7 @@ describe("the object's RPC surface", () => {
 
 describe("no reach past the object", () => {
   it("has no ctx.exports, so no stub to another owner's object", async () => {
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect((state as DurableObjectState & { exports?: unknown }).exports).toBeUndefined();
     });

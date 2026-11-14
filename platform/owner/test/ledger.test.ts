@@ -545,7 +545,7 @@ describe("the ledger's binding", () => {
 
   it("moves each receipt's fact onto its recipient row as it deletes the receipts", async () => {
     const receipts = MIGRATIONS.findIndex((each) => each.includes("DROP TABLE ledger_receipts"));
-    const moved = await runInDurableObject(ownerObject().stub, (_instance: OwnerDO, state) => {
+    const moved = await runInDurableObject((await ownerObject()).stub, (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
       // Back to an object of the migrations before it, the owner's tables gone first.
       for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
