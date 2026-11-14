@@ -170,7 +170,8 @@ function checkActions(actions: unknown): void {
  *
  * Retention, each setting off until the owner sets it, and each binding alone as set:
  * `keep_versions` is how many of a live path's newest versions are always kept (off: its
- * current one alone); `retention_days` how long any other version is kept after it was
+ * current one alone), and, with `keep_recent` and `retention_days` off, the most any path
+ * keeps; `retention_days` how long any other version is kept after it was
  * written (off: for ever); `keep_recent` the most a path keeps in all, those always kept
  * among them (off: no count). All off, every version is kept. A deleted path keeps up
  * to `keep_recent` versions for `retention_days`. A version past them goes in the change that

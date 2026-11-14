@@ -528,7 +528,7 @@ A content id SHALL name its kind (inline or chunks) and its size, and a change w
 - **THEN** the second change fails and the first content reads as it was
 
 ### Requirement: History is kept by owner policy, never dropped to make room
-History SHALL keep every version until the owner sets a retention: `keep_versions`, `retention_days` and `keep_recent` are each off by default (Fact 15). Set, history SHALL keep each live path's newest `keep_versions` and its versions younger than `retention_days` up to `keep_recent` in all, dropping a version past those in the change that pushed it out or once it is due, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes, pruning no row while a pass is still to run, and raising the feed's floor past any pruned row that was its path's newest.
+History SHALL keep every version until the owner sets a retention: `keep_versions`, `retention_days` and `keep_recent` are each off by default (Fact 15). Set, history SHALL keep each live path's newest `keep_versions` and its versions younger than `retention_days` up to `keep_recent` in all (with `keep_recent` and `retention_days` off, `keep_versions` itself is the most any path keeps), dropping a version past those in the change that pushed it out or once it is due, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes, pruning no row while a pass is still to run, and raising the feed's floor past any pruned row that was its path's newest.
 
 #### Scenario: A path written by default
 - **WHEN** a path is written twenty-five times and then deleted under the default policy
@@ -537,6 +537,10 @@ History SHALL keep every version until the owner sets a retention: `keep_version
 #### Scenario: A path written twelve times under a retention the owner set
 - **WHEN** a path is written twelve times with `keep_versions` 10, `keep_recent` 20 and `retention_days` 30
 - **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
+
+#### Scenario: `keep_versions` set alone
+- **WHEN** a path is written three times with only `keep_versions` 2 set
+- **THEN** its newest two versions are kept and the first goes in the change that pushed it out
 
 ### Requirement: Nothing is let go to admit a write
 A change past the file index's ceiling or the owner's storage SHALL be refused, and no file version, collection history entry or mail SHALL be let go to admit it: the owner frees room by deleting files, old versions or mail.

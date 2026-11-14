@@ -172,10 +172,17 @@ describe("file history", () => {
         await files.write(`${W}/b`, text(`${i}`), o);
       }
     });
-    expect(await sqlIn(r.stub, "SELECT path, prune_after IS NOT NULL AS due FROM file_history " +
-                                 "ORDER BY version")).toEqual([
-      { path: `${W}/a`, due: 0 }, { path: `${W}/a`, due: 0 }, { path: `${W}/a`, due: 0 },
-      { path: `${W}/b`, due: 1 }, { path: `${W}/b`, due: 1 }, { path: `${W}/b`, due: 0 }]);
+    // `keep_versions` alone is a count: the third version goes, the newest two stay.
+    await inFiles(r.stub, { keep_versions: 2 }, async (files) => {
+      for (const body of ["x", "xx", "xxx"]) {
+        await files.write(`${W}/c`, text(body), o);
+      }
+    });
+    expect(await sqlIn(r.stub, "SELECT path, size, prune_after IS NOT NULL AS due FROM " +
+                                 "file_history ORDER BY version")).toEqual([
+      ...[1, 1, 1].map((size) => ({ path: `${W}/a`, size, due: 0 })),
+      ...[1, 1, 0].map((due) => ({ path: `${W}/b`, size: 1, due })),
+      { path: `${W}/c`, size: 2, due: 0 }, { path: `${W}/c`, size: 3, due: 0 }]);
   });
 
   it("is never filled by live files' churn inside the window", async () => {

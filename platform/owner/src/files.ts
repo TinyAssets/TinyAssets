@@ -179,6 +179,17 @@ export const DELETE_FLOOR_MS = 1000;
  * while it is off (its range's least, `FILE_SETTINGS`).
  */
 const CURRENT = 1;
+/**
+ * A path's retention bands as `limits` keep them: its newest `keep` always kept, and at most
+ * `cap` rows in all (null: no count). With `keep_recent` off, `keep_versions` set is the
+ * count while `retention_days` is off, so each setting set alone prunes (Fact 15); a gone
+ * path keeps its newest `keep_versions` then.
+ */
+function bands(live: boolean, limits: FileLimits): { keep: number; cap: number | null } {
+  const keep = live ? limits.keep_versions ?? CURRENT : 0;
+  return { keep, cap: limits.keep_recent !== null ? Math.max(keep, limits.keep_recent)
+    : limits.retention_days === null ? limits.keep_versions : null };
+}
 /** Rows one alarm run prunes or expires per kind, and paths it re-marks for retention. */
 const HOUSEKEEPING_BATCH = 500;
 /** Open upload intents, and the chunks they hold in all. */
@@ -1067,9 +1078,9 @@ export class Files {
    * Apply retention to `path` after a change, as the owner's policy keeps it, each setting
    * null while it is off: off, retention keeps every row. A live path's newest
    * `keep_versions` are kept (its current version alone while that is off; none once the
-   * path is gone); the next ones, up to `keep_recent` in all (no count while that is off),
-   * are due `retention_days` after they were written (never while that is off); any older
-   * one goes now. On a change only the newest rows move between those bands: a write moves
+   * path is gone); the next ones, up to `keep_recent` in all (`bands`), are due
+   * `retention_days` after they were written (never while that is off); any older one goes
+   * now. On a change only the newest rows move between those bands: a write moves
    * one row out of the kept band, so with no count only that one is marked; a delete marks
    * them all; a path made again takes back its kept band. A policy change re-marks every row
    * through housekeeping (`#remark`). A row is let go only by the retention the owner set,
@@ -1077,8 +1088,7 @@ export class Files {
    */
   #retain(path: string, live: boolean): void {
     const limits = this.#limits();
-    const keep = live ? limits.keep_versions ?? CURRENT : 0;
-    const cap = limits.keep_recent === null ? null : Math.max(keep, limits.keep_recent);
+    const { keep, cap } = bands(live, limits);
     const days = limits.retention_days;
     const newest = "SELECT version FROM file_history WHERE path = ? ORDER BY version DESC " +
       "LIMIT ? OFFSET ?";
@@ -1102,8 +1112,7 @@ export class Files {
   /** Every row of `path` marked, or dropped, as the policy in force keeps it. */
   #remark(path: string, limits: FileLimits): void {
     const live = this.#entry(path) !== undefined;
-    const keep = live ? limits.keep_versions ?? CURRENT : 0;
-    const cap = limits.keep_recent === null ? null : Math.max(keep, limits.keep_recent);
+    const { keep, cap } = bands(live, limits);
     const days = limits.retention_days === null ? null : limits.retention_days * 86_400;
     const newest = "SELECT version FROM file_history WHERE path = ? ORDER BY version DESC LIMIT ?";
     if (cap !== null) {
