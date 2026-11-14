@@ -40,7 +40,7 @@
  *   egress door's request and its settle comes at once.
  */
 import type { ConfigRules } from "../../ci/kit/config";
-import { imports, type Owed } from "../../ci/kit/owed";
+import { imports, type Owed, refusals } from "../../ci/kit/owed";
 
 /**
  * The import window's bindings (`src/import.ts`), each named once here: deleted at the
@@ -107,4 +107,8 @@ export const OWED: readonly Owed[] = Object.freeze([
   ...imports("B24", "platform/doors/test/import-setup.ts", [
     "platform/import/bundle.ts", "platform/import/stage.ts", "platform/import/guards/fixture.ts"]),
   ...imports("B24", "platform/doors/test/import.test.ts", ["platform/import/check.ts"]),
+  // Error classes of the doors' own, each a contract refusal by its code: B2 (D2).
+  ...refusals("B2", "platform/doors/src/api-keys.ts", ["class KeyRefused extends Error"]),
+  ...refusals("B2", "platform/doors/src/connect.ts", ["class ConnectRefused extends Error"]),
+  ...refusals("B2", "platform/doors/src/import.ts", ["class Dropped extends Error"]),
 ]);

@@ -19,12 +19,12 @@ export default defineConfig({
     projects: [
       project("codemode", "workerd", {
         plugins: [
-          cloudflareTest(once(() => pool({
+          cloudflareTest(once(async () => pool({
             miniflare: {
               compatibilityDate: workerConfig(CODEMODE).compatibility_date,
               compatibilityFlags: ["nodejs_compat"],
               serviceBindings: { CODEMODE_VM: workerConfig(CODEMODE).name },
-              workers: [auxiliary(CODEMODE, {})],
+              workers: [await auxiliary(CODEMODE, {})],
             },
           }))),
         ],

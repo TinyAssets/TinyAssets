@@ -8,11 +8,12 @@
  * Node runs this file as it is (type stripping): `deploy/facts.ts`, `doors/test/app.e2e.mjs` and
  * `owner/memory/baselines.mjs` import it, so its own imports name their `.ts` files.
  */
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { promisify } from "node:util";
 
 import ts from "typescript";
 
@@ -110,12 +111,16 @@ export interface Built {
  * (miniflare takes the first module as the main one). A file the config's `rules` import as
  * data (the sandbox's runner, written as `<hash>-runner.mjs`) is data, wasm is compiled, and
  * every other script is an ES module.
+ *
+ * Never synchronous: a test pool's Workers are built in vitest's main process, which serves
+ * every test worker's module loads, so a blocking build there stalls every other project's
+ * imports for as long as it runs (five Workers, about 6 s).
  */
-export function bundle(dir: string, out: string, entry?: string): Built[] {
-  execFileSync(process.execPath, [WRANGLER, "deploy", "--dry-run", "--outdir", out,
-                                  "--config", join(dir, "wrangler.jsonc"),
-                                  ...(entry === undefined ? [] : [entry])],
-               { cwd: dir, stdio: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
+export async function bundle(dir: string, out: string, entry?: string): Promise<Built[]> {
+  await promisify(execFile)(process.execPath, [WRANGLER, "deploy", "--dry-run", "--outdir", out,
+                                               "--config", join(dir, "wrangler.jsonc"),
+                                               ...(entry === undefined ? [] : [entry])],
+                            { cwd: dir, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
   const data = (workerConfig(dir).rules ?? []).filter((rule) => rule.type === "Data")
     .flatMap((rule) => rule.globs.map((glob) => glob.split("/").at(-1)!));
   const isData = (file: string) => data.some((name) => file === name || file.endsWith(`-${name}`));
@@ -127,10 +132,10 @@ export function bundle(dir: string, out: string, entry?: string): Built[] {
 }
 
 /** The Worker at `dir` bundled (`bundle`), its modules read, named as files beside its config. */
-export function bundled(dir: string, entry?: string): Module[] {
+export async function bundled(dir: string, entry?: string): Promise<Module[]> {
   const out = mkdtempSync(join(tmpdir(), `bundle-${basename(dir)}-`));
   try {
-    return bundle(dir, out, entry).map(({ file, type }) => ({
+    return (await bundle(dir, out, entry)).map(({ file, type }) => ({
       type, path: join(dir, file), contents: readFileSync(join(out, file)) }));
   } finally {
     rmSync(out, { recursive: true, force: true });
@@ -323,12 +328,13 @@ function configured(config: WorkerConfig, dir: string, extra: object) {
  * classes by `scriptName`, as other Workers' configs do. Its secrets and only what a test
  * changes are the caller's `extra`.
  */
-export function auxiliary<Extra extends object>(dir: string, extra: Extra, entry?: string) {
+export async function auxiliary<Extra extends object>(dir: string, extra: Extra,
+                                                       entry?: string) {
   const config = workerConfig(dir);
   return {
     name: config.name,
     modulesRoot: dir,
-    modules: bundled(dir, entry),
+    modules: await bundled(dir, entry),
     ...configured(config, dir, extra),
   };
 }
@@ -388,10 +394,11 @@ export function hostSecrets(options: unknown): string[] {
 }
 
 /**
- * A test's Workers' options, checked before they run (`cloudflareTest(once(() => pool(...)))`,
- * and the doors' browser test's Miniflare): refused when they read a config through the pool
- * (`wrangler`, or `experimental`'s config file: wrangler's conversion fills either's secrets
- * and vars from the host) or carry any host secret (`hostSecrets`).
+ * A test's Workers' options, checked before they run
+ * (`cloudflareTest(once(async () => pool(...)))`, and the doors' browser test's Miniflare):
+ * refused when they read a config through the pool (`wrangler`, or `experimental`'s config
+ * file: wrangler's conversion fills either's secrets and vars from the host) or carry any
+ * host secret (`hostSecrets`).
  */
 export function pool<Options extends object>(options: Options): Options {
   const reads = ["wrangler", "experimental"].filter((option) => option in options);
