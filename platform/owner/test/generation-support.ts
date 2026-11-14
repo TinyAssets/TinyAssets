@@ -17,7 +17,8 @@ import type { Files } from "../src/files";
 import { WriteGate } from "../src/gate";
 import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
-import { MCP, MUSE, NO_FILE_CHANGE, signedIn } from "./ledger-support";
+import { MCP, MUSE, signedIn } from "./ledger-support";
+import { NO_FILE_CHANGE } from "./stores";
 import { admittedOwner, drainDue, filesOn, sqlIn, through, TIERS } from "./support";
 
 export type Line = Record<string, unknown> & { t: string };
