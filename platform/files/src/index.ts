@@ -29,6 +29,9 @@
  *   whole chunk (GCM authenticates the whole) and rechecks its hash, then answers the range
  *   alone, so the caller holds only the range and still reads verified bytes. Each read is
  *   charged the whole chunk it holds meanwhile, so a call holds at most `BATCH_BYTES`.
+ * - `checkChunks` reads chunks whole as `getChunks` does and answers each by what it found
+ *   (`ChunkCheck`): stored as its hash, missing, or broken. A chunk not read is an answer, so
+ *   what it throws is only a refusal, a lost answer or a bug (the import's check).
  * - `deleteChunks` removes up to 1,000 chunks in one call (R2's batch limit), named by their
  *   hashes under the owner's key; the owner object's garbage collection is its only caller,
  *   for keys in its own chunk table.
@@ -74,8 +77,9 @@ import {
 } from "./keys";
 import { Refusal } from "../../contract/src/refusal";
 import {
-  type ChunkGet, type ChunkPut, type ChunkStore, type ChunkUpload, GET_READS, type ManifestLists,
-  manifestLists, type ManifestObject, type ManifestRoot, type ManifestSegment, namespace,
+  type ChunkCheck, type ChunkGet, type ChunkPut, type ChunkStore, type ChunkUpload, GET_READS,
+  type ManifestLists, manifestLists, type ManifestObject, type ManifestRoot, type ManifestSegment,
+  namespace,
 } from "../../contract/src/files";
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
@@ -138,12 +142,14 @@ async function sealed(dataKey: ArrayBuffer, objectKey: string, plain: Uint8Array
   return { body, sha256: await sha256Hex(body) };
 }
 
+const OPENS_NOT = "a stored object does not open under its owner's key";
+
 /** The plain bytes of `stored`, the object at `objectKey`; any other key or byte fails loudly. */
 async function opened(dataKey: ArrayBuffer, objectKey: string,
                       stored: Uint8Array): Promise<Uint8Array> {
   const plain = await openObject(dataKey, objectKey, stored);
   if (plain === null) {
-    throw new Error("a stored object does not open under its owner's key");
+    throw new Error(OPENS_NOT);
   }
   return plain;
 }
@@ -246,7 +252,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
   /**
    * Chunks' bytes, in order: each whole or a range of it. Each read fetches, opens and
    * rechecks its whole chunk, which it holds until it answers, so each is charged a whole
-   * chunk, whatever its range.
+   * chunk, whatever its range. A chunk not read fails loudly: its manifest holds it.
    */
   async getChunks(ns: string, key: string, reads: ChunkGet[]): Promise<Uint8Array[]> {
     namespace(ns);
@@ -256,25 +262,52 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       }
       return { sha256: chunkHash(read.sha256), range: range(read) };
     });
-    if (gets.length > GET_READS) {
+    const dataKey = await this.#reading(ns, key, gets.length);
+    return Promise.all(gets.map(async (get) => {
+      const read = await this.#chunk(ns, dataKey, get.sha256);
+      if (!("bytes" in read)) {
+        throw new Error(read.why);
+      }
+      return get.range === undefined ? read.bytes
+        : read.bytes.slice(get.range.offset, get.range.offset + get.range.length);
+    }));
+  }
+
+  /** Chunks read whole as `getChunks` reads them, each answered, in order, by what it found. */
+  async checkChunks(ns: string, key: string, sha256s: string[]): Promise<ChunkCheck[]> {
+    namespace(ns);
+    const hashes = list<unknown>(sha256s, "a check").map((sha256) => chunkHash(sha256));
+    const dataKey = await this.#reading(ns, key, hashes.length);
+    return Promise.all(hashes.map(async (sha256) => {
+      const read = await this.#chunk(ns, dataKey, sha256);
+      return "bytes" in read ? "stored" : read.check;
+    }));
+  }
+
+  /** The data key for a read of `reads` whole chunks, refused past `GET_READS`. */
+  #reading(ns: string, key: string, reads: number): Promise<ArrayBuffer> {
+    if (reads > GET_READS) {
       throw new Refusal("invalid", `a get reads at most ${GET_READS} chunks, `
                         + `${BATCH_BYTES} bytes of whole chunks`);
     }
-    const dataKey = await this.#key(ns, key);
-    return Promise.all(gets.map(async (get) => {
-      const name = await chunkName(dataKey, get.sha256);
-      const object = await this.env.BLOBS.get(chunkKey(ns, name));
-      if (object === null) {
-        throw new Error("a chunk the manifest holds is missing from the bucket");
-      }
-      const bytes = await opened(dataKey, chunkKey(ns, name),
-                                 new Uint8Array(await object.arrayBuffer()));
-      if (await sha256Hex(bytes) !== get.sha256) {
-        throw new Error("a chunk's bytes no longer match its hash");
-      }
-      return get.range === undefined ? bytes
-        : bytes.slice(get.range.offset, get.range.offset + get.range.length);
-    }));
+    return this.#key(ns, key);
+  }
+
+  /** The chunk `sha256` of `ns`, fetched and opened whole and its hash rechecked, or why not. */
+  async #chunk(ns: string, dataKey: ArrayBuffer, sha256: string): Promise<
+      { bytes: Uint8Array } | { check: Exclude<ChunkCheck, "stored">; why: string }> {
+    const name = await chunkName(dataKey, sha256);
+    const object = await this.env.BLOBS.get(chunkKey(ns, name));
+    if (object === null) {
+      return { check: "missing", why: "a chunk the manifest holds is missing from the bucket" };
+    }
+    const bytes = await openObject(dataKey, chunkKey(ns, name),
+                                   new Uint8Array(await object.arrayBuffer()));
+    if (bytes === null) {
+      return { check: "broken", why: OPENS_NOT };
+    }
+    return await sha256Hex(bytes) === sha256 ? { bytes }
+      : { check: "broken", why: "a chunk's bytes no longer match its hash" };
   }
 
   /**

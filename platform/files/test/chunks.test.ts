@@ -44,6 +44,8 @@ const files = () => ({
     service().putChunks(space, await keyOf(space), chunks),
   getChunks: async (space: string, reads: Parameters<FilesService["getChunks"]>[2]) =>
     service().getChunks(space, await keyOf(space), reads),
+  checkChunks: async (space: string, sha256s: string[]) =>
+    service().checkChunks(space, await keyOf(space), sha256s),
   deleteChunks: async (space: string, names: string[]) =>
     service().deleteChunks(space, await keyOf(space), names),
 });
@@ -331,6 +333,41 @@ describe("getChunks", () => {
     await env.BLOBS.put(await named(space, hash), await sealedAt(space, hash, bytes("corrupted")));
     expect((await failure(() => files().getChunks(space, [chunk(hash)]))).message)
       .toBe("a chunk's bytes no longer match its hash");
+  });
+});
+
+describe("checkChunks", () => {
+  it("answers each chunk by what it found, in order: stored, missing or broken", async () => {
+    const space = ns();
+    const bodies = [bytes("kept"), bytes("lost"), bytes("resealed"), bytes("overwritten")];
+    await put(space, bodies[0]!, bodies[1]!);
+    await put(space, bodies[2]!, bodies[3]!);
+    const [kept, lost, resealed, overwritten] = await Promise.all(bodies.map(sha));
+    await env.BLOBS.delete(await named(space, lost!));
+    // Other bytes sealed under the chunk's key open but miss its hash; bytes sealed under no
+    // key do not open.
+    await env.BLOBS.put(await named(space, resealed!),
+                        await sealedAt(space, resealed!, bytes("other")));
+    await env.BLOBS.put(await named(space, overwritten!), new Uint8Array(OBJECT_OVERHEAD + 4));
+    expect(await files().checkChunks(space, [lost!, kept!])).toEqual(["missing", "stored"]);
+    expect(await files().checkChunks(space, [resealed!, overwritten!]))
+      .toEqual(["broken", "broken"]);
+    expect(await files().checkChunks(ns(), [kept!])).toEqual(["missing"]);
+  });
+
+  it("refuses a check of no chunks, of more than a batch, or of a malformed hash", async () => {
+    expect((await failure(() => files().checkChunks(ns(), []))).message)
+      .toBe("a check is a list of at least one chunk");
+    expect((await failure(() => files().checkChunks(ns(), Array.from(
+      { length: GET_READS + 1 }, () => "a".repeat(64))))).message).toBe(TOO_MANY);
+    expect(await refused(() => files().checkChunks(ns(), ["A".repeat(64)]))).toBe("invalid");
+  });
+
+  it("refuses a key that does not open for the namespace, answering no chunk", async () => {
+    const [mine, theirs] = [ns(), ns()];
+    expect(await refused(async () => service().checkChunks(mine, await keyOf(theirs),
+                                                           ["a".repeat(64)])))
+      .toBe("data_key_refused");
   });
 });
 
