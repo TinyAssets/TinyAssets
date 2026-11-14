@@ -9,7 +9,8 @@ EVERY pull request needs one (2026-10-02). Two callers, one receipt format:
   for the full receipt: the body's `Drain-Review-Verdict: APPROVE` lines, bound
   to this head, to an earlier head of the same tree-diff, or to the diff key,
   citing a comment on THIS PR by a trusted author that itself opens with the
-  same approval.
+  same approval; and, for a change to more than prose, the body's Untangle
+  check (`untangle_check_problems`).
 
 Why every PR: until 2026-10-02 only drain/ branches and a narrow set of
 gate-defining and authority paths needed a receipt, and on 2026-10-01
@@ -511,6 +512,108 @@ def is_prose(path: str) -> bool:
     return path.startswith(_PROSE_DIRS) or "/" not in path
 
 
+# ---- The body's Untangle check (the untangle skill, "The PR body") -------------------
+#
+# A pull request that changes anything but prose carries an **Untangle check**: a
+# heading, or a line that opens in bold, named so. In it, an item left, owed or for
+# later names its fix: a PR (`#123`), a branch (`untangle/...`, `fix/...`) or a live wait
+# (`live: ...`). An item is a bullet or a paragraph. It is owed when it sits under a
+# label (a heading, a bold opener, or a line ending in `:`) that opens `Owed` or `Later`,
+# or under one that opens `Left` and itself says owed or later; a decided keep under
+# `Left` is not owed. Code spans are not read, and "owed no" or "nothing owed" is not a
+# debt. Calibrated on the 40 PRs merged up to #5588 (2026-11-14).
+
+_UNTANGLE_HEAD_RE = re.compile(r"^\s{0,3}(?:#{1,6}\s*|\*\*)Untangle check\b", re.IGNORECASE)
+_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s")
+_BULLET_RE = re.compile(r"^(\s*)(?:[-*+]|\d+[.)])\s+(.*)$")
+_BOLD_LABEL_RE = re.compile(r"^\*\*(?P<label>[^*]+)\*\*(?P<colon>:?)\s*(?P<rest>.*)$")
+_OWING_LABEL_RE = re.compile(r"^\W*(?P<word>left|owed|later)\b", re.IGNORECASE)
+_OWED_WORD_RE = re.compile(r"\b(?:owed|later)\b", re.IGNORECASE)
+_NOT_OWED_RE = re.compile(r"\bowed\s+(?:no|nothing)\b|\b(?:nothing|none)\s+(?:is\s+)?owed\b",
+                          re.IGNORECASE)
+_NAMES_FIX_RE = re.compile(r"#\d+|\b(?:untangle|fix)/[\w./-]+|\blive:", re.IGNORECASE)
+_NOTHING_RE = re.compile(r"^\W*(?:nothing|none)\b", re.IGNORECASE)
+
+
+def _untangle_section(body: str) -> list[str] | None:
+    """The lines of the body's Untangle check, or None when it has none."""
+    lines = body.splitlines()
+    for at, line in enumerate(lines):
+        if _UNTANGLE_HEAD_RE.match(line):
+            heading = _HEADING_RE.match(line)
+            level = len(heading.group(1)) if heading else 6
+            section: list[str] = []
+            for each in lines[at + 1:]:
+                inner = _HEADING_RE.match(each)
+                if inner and len(inner.group(1)) <= level:
+                    break
+                section.append(each)
+            return section
+    return None
+
+
+def _owed_items(section: list[str]) -> list[str]:
+    """The items of an Untangle check that are owed, by the rule above."""
+    items: list[list] = []  # [the owing word of the item's label, its text]
+    label: str | None = None  # the owing word of the paragraph label above
+    top: str | None = None  # the owing word of a top-level `- **Left:**` bullet
+    open_item = False
+    for line in section:
+        if not line.strip():
+            open_item = False
+            continue
+        bullet = _BULLET_RE.match(line)
+        heading = _HEADING_RE.match(line)
+        text = bullet.group(2).strip() if bullet else line.strip()
+        if heading:
+            text = text.lstrip("#").strip()
+        bold = _BOLD_LABEL_RE.match(text)
+        owing = _OWING_LABEL_RE.match(bold["label"] if bold else text)
+        word = owing["word"].lower() if owing else None
+        rest = bold["rest"].strip() if bold else ""
+        if bullet and not bullet.group(1):
+            top = word if bold else None
+            items.append([top or label, rest if top else text])
+        elif bullet:
+            items.append([top or label, text])
+        elif open_item and not (heading or bold):
+            items[-1][1] += f" {text}"
+            continue
+        elif heading or text.endswith(":") or (bold and (
+                word or not rest or bold["colon"] or bold["label"].endswith(":"))):
+            label, top = word, None
+            items.append([word, rest])
+        else:
+            items.append([label, text])
+        open_item = bool(items[-1][1])
+    owed = []
+    for word, text in items:
+        said = _NOT_OWED_RE.sub("", re.sub(r"`[^`]*`", "", text))
+        if word is None or not said.strip() or _NOTHING_RE.match(said):
+            continue
+        if (word != "left" or _OWED_WORD_RE.search(said)) and not _NAMES_FIX_RE.search(text):
+            owed.append(text)
+    return owed
+
+
+def untangle_check_problems(body: str, paths: list[str]) -> list[str]:
+    """Why the body's Untangle check does not hold for a change to `paths`; [] when it does."""
+    if all(is_prose(path) for path in paths):
+        return []
+    section = _untangle_section(body)
+    if section is None:
+        return ["the body has no Untangle check (a heading or a bold line named so), and the "
+                f"change is not only prose: {next(p for p in paths if not is_prose(p))}"]
+    return [f"an owed item names no PR (#123), branch (untangle/..., fix/...) or live: wait: "
+            f"{item[:200]}" for item in _owed_items(section)]
+
+
+def changed_paths(base: str, head: str, *, cwd: Path | None = None) -> list[str]:
+    """Every path `git diff merge-base(base, head)..head` changes; a rename is both."""
+    return [p.decode("utf-8", "surrogateescape")
+            for p in change_entries(_raw_change(base, head, cwd=cwd))]
+
+
 def _modes(meta: bytes | None) -> set[bytes]:
     return set() if meta is None else set(meta[1:].split(b" ")[:2])
 
@@ -842,14 +945,24 @@ def _carry_comparer(args: argparse.Namespace) -> Callable[[str], bool] | None:
 
 
 def _blocking_review(args: argparse.Namespace) -> int:
-    """`--blocking-review`: does the body carry a corroborated receipt?"""
+    """`--blocking-review`: does the body carry a corroborated receipt and an Untangle check?"""
     print(
         f"every PR needs a Drain-Review receipt for head {args.head}"
-        + (f" or diff key {args.diff_key}" if args.diff_key else ""),
+        + (f" or diff key {args.diff_key}" if args.diff_key else "")
+        + ", and a change to more than prose an Untangle check whose owed items name their fix",
         file=sys.stderr,
     )
 
     body = _read_text(args.body_file)
+    try:
+        problems = untangle_check_problems(body or "", changed_paths(args.base, args.head))
+    except (subprocess.CalledProcessError, ValueError, OSError) as exc:
+        problems = [f"cannot read the PR's changed paths: {exc}"]
+    for problem in problems:
+        print(f"untangle check: {problem}", file=sys.stderr)
+    if problems:
+        print("deny")
+        return 2
     comments = _read_text(args.review_comments_file)
     key = args.diff_key or None
     carry = _carry_comparer(args)

@@ -186,6 +186,42 @@ jobs:
           fi
           python -m scripts.ci_structural_guards --selection "$SELECTION"
 
+  # The platform's spec change, validated when the run's diff touches openspec/: the diff the
+  # structural guards read (the merge group's base, or HEAD^1 of the PR's merge commit), and
+  # the whole change on every other event. Only `clean-sheet-platform`: `--all` fails on the
+  # old stack's changes and specs, which the cutover deletes. Required through
+  # `required-tests`' needs.
+  openspec:
+    name: openspec
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate clean-sheet-platform when the diff touches openspec/
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "merge_group" ] && [ -n "${BASE:-}" ]; then
+            CHANGED="$(git diff --name-only "$BASE" HEAD)"
+          elif [ "$EVENT" = "pull_request" ]; then
+            CHANGED="$(git diff --name-only HEAD^1 HEAD)"
+          else
+            CHANGED="openspec/"
+          fi
+          if ! grep -q '^openspec/' <<< "$CHANGED"; then
+            echo "The diff touches nothing under openspec/."
+            exit 0
+          fi
+          npx --yes @fission-ai/openspec@1.15.0 validate clean-sheet-platform
+
   # The process's own tests: the gates' scripts that outlast the old stack (the review
   # receipt, the Bash guard, the queue-attempt ledger, the rule files'
   # byte pins, the session sync gate, the platform's setup, main-red's decision). Plain
@@ -744,7 +780,7 @@ jobs:
     # The gate's lasting shape is the last four: the platform's legs and the process leg.
     # The first four are the old stack's Python jobs, which leave at the cutover.
     needs: [select, required-tests-shard, affected-tests, structural-guards, platform-tests,
-            platform-app, platform-sizes, process]
+            platform-app, platform-sizes, process, openspec]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -770,6 +806,16 @@ jobs:
         run: |
           if [ "$STRUCTURAL_RESULT" != success ]; then
             echo "::error::Required checks failed (structural=$STRUCTURAL_RESULT). Fix the named job and rerun Tests."
+            exit 1
+          fi
+
+      # Whether it validated is the diff's to say; a skipped or cancelled job fails.
+      - name: Require the openspec leg on every event
+        env:
+          OPENSPEC_RESULT: ${{ needs.openspec.result }}
+        run: |
+          if [ "$OPENSPEC_RESULT" != success ]; then
+            echo "::error::Required checks failed (openspec=$OPENSPEC_RESULT). Fix the named job and rerun Tests."
             exit 1
           fi
 

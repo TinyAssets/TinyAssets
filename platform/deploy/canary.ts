@@ -19,10 +19,13 @@
  * - **The doors:** the anonymous challenge and the resource document; the app page (`/app`,
  *   `/app?upgrade=1`) with its CSP; the first-party client document; the egress host's
  *   refusal; the sign-in's start (the doors' `/authorize` to WorkOS, WorkOS to AuthKit's
- *   page, the issuer's discovery and JWKS); E2B's template and the hook, enabled. Then, with
- *   the canary owner's API key (`TA_PROBE_KEY`): the handle set (one read-only `GET
- *   /api/tools/<name>` a name: each doors tool `405`, each old-only one and an unknown name
- *   `404`); a file written, read and removed in the owner's workspace; and the full run.
+ *   page, the issuer's discovery and JWKS); E2B's template and the hook, enabled; the
+ *   off-account copy, a night of which must have passed inside two nights once it is
+ *   configured (`offsite.ts` `watch`: an erased owner's hide there is owed within a week; it
+ *   says so while unconfigured). Then, with the canary owner's API key (`TA_PROBE_KEY`): the
+ *   handle set (one read-only `GET /api/tools/<name>` a name: each doors tool `405`, each
+ *   old-only one and an unknown name `404`); a file written, read and removed in the owner's
+ *   workspace; and the full run.
  * - **The full run:** one short turn of the canary owner's main agent (`converse`), on the
  *   model source the founder connected to that owner (a free tier's), which boots a sandbox,
  *   runs the engine and calls the model through the egress host. It runs once a day: its
@@ -42,7 +45,8 @@
  * sign-in's start; 6 an authentication boundary or a gate refused; 7 the keyed checks
  * unchecked (no `TA_PROBE_KEY`); 8 the side asked for is not serving; 9 neither side's
  * resource document; 10 a split, the doors and the old stack each serving a part; 11 E2B; 12
- * the owner's files; 13 the full run; 14 the clock stopped; 1 the canary itself stopped.
+ * the owner's files; 13 the full run; 14 the clock stopped; 15 the off-account copy; 1 the
+ * canary itself stopped. GitHub is read with the job's own token (`actions.ts` `github`).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -52,16 +56,15 @@ import { REPO } from "../ci/paths.ts";
 import { DISPATCH } from "../contract/src/canary.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { pinned } from "../sandbox/template/pair.ts";
+import { github, type Reach, TOKEN } from "./actions.ts";
 import { authorizeCheck, heldHook, probeLink, upstreamFrom } from "./deploy.ts";
 import { AUTHORIZE, CALLBACK, E2B_HOOK_URL, EGRESS_DOMAIN, FIRST_PARTY, ORIGIN } from "./facts.ts";
+import { watch } from "./offsite.ts";
 
 type Json = Record<string, unknown>;
-type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 /** The canary's world: replaced whole by its tests. */
-export interface World {
-  readonly fetch: Fetch;
-  readonly env: Readonly<Record<string, string | undefined>>;
+export interface World extends Reach {
   readonly now: () => Date;
 }
 
@@ -81,7 +84,10 @@ export interface Outcome {
   readonly state: "passed" | "failed" | "waiting";
   readonly line: string;
   readonly code: number;
-  /** A failure that is enough alone for the alarm: it already spans 30 minutes (the clock). */
+  /**
+   * A failure that is enough alone for the alarm: it already spans 30 minutes (the clock) or
+   * two nights (the off-account copy).
+   */
   readonly alone: boolean;
 }
 
@@ -90,20 +96,24 @@ export interface Result {
   readonly outcomes: readonly Outcome[];
 }
 
-/** A check's failure, with its exit code. */
+/** A check's failure, with its exit code, and whether it is enough alone for the alarm. */
 export class Failure extends Error {
   readonly code: number;
-  constructor(code: number, message: string) {
+  readonly alone: boolean;
+  constructor(code: number, message: string, alone = false) {
     super(message);
     this.code = code;
+    this.alone = alone;
   }
 }
 
-/** The canary owner's API key, and what the checks read beside it, but the clock's. */
+/**
+ * The canary owner's API key, and what the checks read beside it: the job's own token reads
+ * the clock's runs and the off-account copy's.
+ */
 export const INPUTS = Object.freeze({
-  key: "TA_PROBE_KEY", e2b: "E2B_API_KEY", issuer: "OWNER_ISSUER", client: "WORKOS_CLIENT_ID" });
-/** The clock check's token: the workflow run's own, which reads the workflow's runs. */
-const CLOCK_TOKEN = "GITHUB_TOKEN";
+  key: "TA_PROBE_KEY", e2b: "E2B_API_KEY", issuer: "OWNER_ISSUER", client: "WORKOS_CLIENT_ID",
+  github: TOKEN });
 
 /** The resource document `/mcp` names (RFC 9728's path form). */
 const MCP = `${ORIGIN}/mcp`;
@@ -146,6 +156,20 @@ async function send(world: World, url: string, init: RequestInit = {}): Promise<
                                     signal: AbortSignal.timeout(REQUEST_MS) });
   } catch (error) {
     throw new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${(error as Error).message}`);
+  }
+}
+
+/** The world's reach, each request bounded by `send`. */
+function bounded(world: World): Reach {
+  return { fetch: (url, init) => send(world, url, init), env: world.env };
+}
+
+/** `act`, any error of it that is not a check's own failure made this check's `code`. */
+async function failingAs<T>(code: number, act: () => Promise<T>): Promise<T> {
+  try {
+    return await act();
+  } catch (error) {
+    throw error instanceof Failure ? error : new Failure(code, (error as Error).message);
   }
 }
 
@@ -245,13 +269,9 @@ async function egressHost(world: World): Promise<string> {
 }
 
 async function signIn(world: World): Promise<string> {
-  const fetcher: Fetch = (url, init) => send(world, url, init);
-  let upstream: Awaited<ReturnType<typeof upstreamFrom>>;
-  try {
-    upstream = await upstreamFrom(world.env[INPUTS.issuer], world.env[INPUTS.client], fetcher);
-  } catch (error) {
-    throw error instanceof Failure ? error : new Failure(5, (error as Error).message);
-  }
+  const fetcher = bounded(world).fetch;
+  const upstream = await failingAs(5, () =>
+    upstreamFrom(world.env[INPUTS.issuer], world.env[INPUTS.client], fetcher));
   const record = upstream.record as { authorization_endpoint: string; jwks_uri: string };
   const keys = await send(world, record.jwks_uri);
   if (keys.status !== 200 || !Array.isArray((await json(keys, record.jwks_uri, 5))["keys"])) {
@@ -266,18 +286,14 @@ async function signIn(world: World): Promise<string> {
     throw new Failure(5, `${AUTHORIZE} answered ${answer.status}, not a redirect to WorkOS's ` +
                          "authorize with the doors' callback");
   }
-  try {
-    return `the doors' /authorize sends the browser to WorkOS; ${
-      await authorizeCheck(upstream, false, fetcher)}`;
-  } catch (error) {
-    throw error instanceof Failure ? error : new Failure(5, (error as Error).message);
-  }
+  return `the doors' /authorize sends the browser to WorkOS; ${
+    await failingAs(5, () => authorizeCheck(upstream, false, fetcher))}`;
 }
 
 /** E2B holds the pinned template, and the doors' lifecycle hook, enabled only once routed. */
-async function sandbox(world: World, side: Side): Promise<string> {
-  try {
-    const e2b = new E2bAdmin(world.env[INPUTS.e2b] ?? "", (url, init) => send(world, url, init));
+function sandbox(world: World, side: Side): Promise<string> {
+  return failingAs(11, async () => {
+    const e2b = new E2bAdmin(world.env[INPUTS.e2b] ?? "", bounded(world).fetch);
     const template = pinned();
     if (!(await e2b.ready(template))) {
       throw new Failure(11, `E2B holds no ready build of the pinned template ${template}`);
@@ -290,9 +306,16 @@ async function sandbox(world: World, side: Side): Promise<string> {
     }
     return `E2B holds the pinned template ${template}, and the lifecycle hook, ${
       enabled ? "enabled" : "disabled"}`;
-  } catch (error) {
-    throw error instanceof Failure ? error : new Failure(11, (error as Error).message);
+  });
+}
+
+/** A night of the off-account copy passed inside two nights, or it isn't configured yet. */
+async function offsiteCopy(world: World): Promise<Ending> {
+  const watched = await failingAs(15, () => watch(bounded(world), world.now()));
+  if (watched.state === "overdue") {
+    throw new Failure(15, watched.line, true);
   }
+  return watched.state === "waiting" ? { waits: watched.line } : watched.line;
 }
 
 /** The canary owner's key, or exit 7: a keyed check unchecked is not a pass. */
@@ -442,38 +465,35 @@ async function fullRun(world: World, forced: boolean): Promise<string> {
 
 /** The clock dispatched a run in the last 30 minutes. */
 async function clock(world: World): Promise<string> {
-  const token = world.env[CLOCK_TOKEN];
-  if (token === undefined || token === "") {
-    throw new Failure(14, `${CLOCK_TOKEN} is not set`);
-  }
-  const url = `https://api.github.com/repos/${DISPATCH.repository}/actions/workflows/${
-    DISPATCH.workflow}/runs?event=workflow_dispatch&branch=${DISPATCH.ref}&per_page=1`;
-  const answer = await send(world, url, { headers: {
-    Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } });
-  if (answer.status !== 200) {
-    throw new Failure(14, `GitHub listed the canary's runs with ${answer.status}`);
-  }
-  const last = ((await json(answer, url, 14))["workflow_runs"] as Json[] | undefined)?.[0];
+  const listed = await failingAs(14, () => github(bounded(world), "GET", `/actions/workflows/${
+    DISPATCH.workflow}/runs?event=workflow_dispatch&branch=${DISPATCH.ref}&per_page=1`));
+  const last = ((listed as Json | null)?.["workflow_runs"] as Json[] | undefined)?.[0];
   const at = typeof last?.["created_at"] === "string" ? Date.parse(last["created_at"]) : NaN;
   if (!(world.now().getTime() - at <= CLOCK_MS)) {
     throw new Failure(14, `the canary's clock stopped: no run dispatched since ${
       Number.isNaN(at) ? "ever" : new Date(at).toISOString()} (the doors' Cron Trigger and ${
-      DISPATCH.token})`);
+      DISPATCH.token})`, true);
   }
   return `the clock dispatched a run at ${new Date(at).toISOString()}`;
 }
 
-/** One check: its name, and what it runs. */
-type Check = readonly [string, () => Promise<string>, { readonly alone?: boolean }?];
+/** How a check ends that doesn't fail: its line, or what it waits for. */
+type Ending = string | { readonly waits: string };
 
-async function outcome([check, act, { alone = false } = {}]: Check): Promise<Outcome> {
+/** One check: its name, and what it runs. */
+type Check = readonly [string, () => Promise<Ending>];
+
+async function outcome([check, act]: Check): Promise<Outcome> {
   try {
-    return { check, state: "passed", line: await act(), code: 0, alone: false };
+    const ended = await act();
+    return typeof ended === "string"
+      ? { check, state: "passed", line: ended, code: 0, alone: false }
+      : waiting(check, ended.waits);
   } catch (error) {
     if (!(error instanceof Failure)) {
       throw error;
     }
-    return { check, state: "failed", line: error.message, code: error.code, alone };
+    return { check, state: "failed", line: error.message, code: error.code, alone: error.alone };
   }
 }
 
@@ -502,8 +522,8 @@ export async function canary(world: World, options: Options): Promise<Result> {
     return { side, outcomes: [
       ...await run([["the old stack", () => oldAnswers(world)],
                     ["E2B", () => sandbox(world, side)]]),
-      waiting("the doors", "the doors' checks, the keyed ones and the clock wait for routes: " +
-                           "the old stack serves /mcp") ] };
+      waiting("the doors", "the doors' checks, the off-account copy, the keyed ones and the " +
+                           "clock wait for routes: the old stack serves /mcp") ] };
   }
   const keyed: Check[] = [["the handle set", () => handles(world)],
                           ["the owner's files", () => ownerFiles(world)],
@@ -512,12 +532,13 @@ export async function canary(world: World, options: Options): Promise<Result> {
     ...await run([["the challenge", () => challenge(world)], ["the app", () => app(world)],
                   ["the client document", () => clientDocument(world)],
                   ["the egress host", () => egressHost(world)],
-                  ["the sign-in", () => signIn(world)], ["E2B", () => sandbox(world, side)]]),
+                  ["the sign-in", () => signIn(world)], ["E2B", () => sandbox(world, side)],
+                  ["the off-account copy", () => offsiteCopy(world)]]),
     ...options.unkeyed
       ? [waiting("the keyed checks", "the handle set, the owner's files and the full run wait " +
                                      `for the canary owner's key (${INPUTS.key})`)]
       : await run(keyed),
-    ...options.clock ? await run([["the clock", () => clock(world), { alone: true }]]) : [] ] };
+    ...options.clock ? await run([["the clock", () => clock(world)]]) : [] ] };
 }
 
 /** The run's exit code: its first failure's, else 0. */

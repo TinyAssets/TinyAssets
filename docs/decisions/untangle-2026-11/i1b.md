@@ -1,6 +1,6 @@
 # I1b as built (2026-11-14)
 
-I1b is lane I's half of B11: the importer adopts `deploy/cloudflare.ts` for the rest of its Cloudflare calls. I1a did B10's half (#5547), and X2 (#5558) built the client and moved the importer's three reads onto it (d3, "X2 as built", 6).
+I1b is lane I's half of B11: the importer adopts `deploy/cloudflare.ts` for the rest of its Cloudflare calls. I1a did B10's half (#5547), and X2 (#5558) built the client and moved the importer's three reads onto it (`x2.md` item 6).
 
 1. **The importer's writes are the client's methods.** `send`, `consumers`, `addPullConsumer`, `pull`, `ack` and `deleteKeys` sit in `deploy/cloudflare.ts`, beside the reads. The client holds the vendor's side of each call:
    - the paths;
