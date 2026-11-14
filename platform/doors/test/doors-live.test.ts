@@ -17,7 +17,7 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
 import { ERASING } from "../../contract/src/refusal";
 import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
-import { NO_ERASURE, PUT_GRACE_MS } from "../../owner/src/erasure";
+import { ERASE_CONFIRM, NO_ERASURE, PUT_GRACE_MS } from "../../owner/src/erasure";
 import { LEDGER_LIMITS } from "../../owner/src/ledger";
 import { defineAgent, later } from "../../owner/test/runs-support";
 import { failure } from "../../owner/test/support";
@@ -164,7 +164,7 @@ describe("the erasure", () => {
     const tokens = await connect(client, { owner: who });
     FORGOTTEN.length = 0;
     const erased = await appPost("account/erase", app.access_token, app.session,
-                                 { confirm: "erase my account" });
+                                 { confirm: ERASE_CONFIRM });
     expect(erased.status).toBe(200);
     expect(await erased.json()).toEqual({ erasing: true });
     expect(erased.headers.getSetCookie().join()).toMatch(/__Host-ta-owner=;/);
@@ -202,7 +202,7 @@ describe("the erasure", () => {
   it("finishes a half-done erasure: a lost message is sent again until the outside record lands",
      async () => {
     const { who, app } = await owned();
-    await appPost("account/erase", app.access_token, app.session, { confirm: "erase my account" });
+    await appPost("account/erase", app.access_token, app.session, { confirm: ERASE_CONFIRM });
     // The request is gone and its message lost: the object's own job sends again.
     await sent(who);
     await finish(who);
@@ -256,7 +256,7 @@ describe("the erasure", () => {
   it("retries an outside record whose identity deletion fails, and finishes on the next try",
      async () => {
     const { who, app } = await owned();
-    await appPost("account/erase", app.access_token, app.session, { confirm: "erase my account" });
+    await appPost("account/erase", app.access_token, app.session, { confirm: ERASE_CONFIRM });
     const messages = await sent(who);
     const failing = { ...FAKE_UPSTREAM, forget: () => Promise.reject(new Error("WorkOS down")) };
     const retried: string[] = [];
@@ -275,7 +275,7 @@ describe("the erasure", () => {
   it("closes the crash window: a wiped object that lost its tombstone is pending, never admitted",
      async () => {
     const { who, app } = await owned();
-    await appPost("account/erase", app.access_token, app.session, { confirm: "erase my account" });
+    await appPost("account/erase", app.access_token, app.session, { confirm: ERASE_CONFIRM });
     await consume(who);
     // The crash the window names: the wipe durable, the tombstone lost.
     await runInDurableObject(env.OWNER.getByName(who), async (_instance: OwnerDO, state) => {
@@ -295,7 +295,7 @@ describe("the erasure", () => {
 
   it("erases nothing without the session or the owner's words", async () => {
     const { who, app } = await owned();
-    for (const [session, body] of [[null, { confirm: "erase my account" }],
+    for (const [session, body] of [[null, { confirm: ERASE_CONFIRM }],
                                    [app.session, { confirm: "yes" }],
                                    [app.session, {}]] as const) {
       const refused = await appPost("account/erase", app.access_token, session, body);

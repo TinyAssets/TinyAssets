@@ -9,7 +9,7 @@ T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each gree
    - `Internals.chainStep` and `Internals.archiveBetweenPasses`, with `ChainStep`, `ArchiveMoveSeen` and the archive's two parts.
 
    It also builds the owner suite's lease clock under a fake `Date` (list 6, item 6j) and the object's `admitted` held by a test.
-2. **What T1c-b builds, from `main` once T1c-a merges:** the real entry. That is `main: src/index.ts` and `Internals` deleted with the classes left (`OwnerDO`'s null starter, `SeededOwnerDO`, `FauxOwnerDO`, `SwitchedOwnerDO`, `CachedOwnerDO`), `test/worker.ts`, `test/namespaces.ts` and `test/admitted.ts`. It covers:
+2. **What T1c-b builds, from `main` once T1c-a merges** (as planned; T1c-b's item 6 splits the real entry, the starter and `BackupParts` out of it): the real entry. That is `main: src/index.ts` and `Internals` deleted with the classes left (`OwnerDO`'s null starter, `SeededOwnerDO`, `FauxOwnerDO`, `SwitchedOwnerDO`, `CachedOwnerDO`), `test/worker.ts`, `test/namespaces.ts` and `test/admitted.ts`. It covers:
    - the erasure and the control record under a fake `Date`;
    - the unbound-`ERASURES` throw and `RecordingErasures`, the queue consumed by a fake Worker;
    - the one-file starter by a Vite alias;

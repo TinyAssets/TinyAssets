@@ -263,8 +263,10 @@ describe("the code door", () => {
   it("serves a script's calls from one read of the control record within a second",
      async () => {
     // The same switch with the object's clock still: the read the script began with serves
-    // every call, and all five land; the next script's door reads the record again.
+    // every call, and all five land; the next script's door reads the record again. The
+    // clock is held still from the script's start, so a slow host moves it no second on.
     const r = await rig();
+    later(0);
     const result = await switchedMidScript(r, () => undefined);
     expect(result).toMatchObject({ ok: true, value: ["ok", "ok", "ok", "ok", "ok"],
       landed: [{ name: "collection_write", status: "ok", count: 5 }] });
