@@ -2178,4 +2178,68 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE file_space ADD COLUMN retained_days INTEGER",
     "UPDATE file_space SET retain_cursor = '' WHERE EXISTS (SELECT 1 FROM file_history)",
   ]),
+  // 9, after F1's 8 (untangle 3b, `datashapes_research.md`): the ledger's receipts deleted,
+  // each fact on the row it describes. A recipient row holds when its reader read the
+  // message (`read_at`) and why it failed (`failed_reason`), so an archive segment holds
+  // them with the message; a reply holds its time to reply (`reply_s`), written as it is
+  // posted, so it travels with the reply and no read needs its parent;
+  // an ack is its reader's row (`through_seq`, `acked_at`); a wake's outcome its wake row
+  // (`receipt_json`). The receipts' facts are copied first: each recipient's earliest read,
+  // its last failure's reason, and each reply's time (its parent's time if the receipt went).
+  // The capture triggers that write those rows are made again with the new columns.
+  // A message's lines are counted again each time its recipient row changes (`ledger.ts`
+  // `#restate`), so a segment holds exactly what it counted: a body's row keeps all but its
+  // `meta_bytes`, whose change moves the files' counters by the difference, and a changed
+  // acked message's `line_bytes` moves the acked bytes the archive's seal reads.
+  // A migration ends the generation under way (`backup.ts`).
+  Object.freeze([
+    "DROP TRIGGER ledger_receipts_logged_insert",
+    "DROP TRIGGER ledger_receipts_logged_update",
+    "DROP TRIGGER ledger_receipts_logged_delete",
+    "DROP TRIGGER ledger_recipients_logged_insert",
+    "DROP TRIGGER ledger_recipients_logged_update",
+    "DROP TRIGGER ledger_messages_logged_insert",
+    "DROP TRIGGER ledger_messages_logged_update",
+    "ALTER TABLE ledger_recipients ADD COLUMN read_at REAL",
+    "ALTER TABLE ledger_recipients ADD COLUMN failed_reason TEXT",
+    "ALTER TABLE ledger_messages ADD COLUMN reply_s REAL",
+    "UPDATE ledger_messages SET reply_s = coalesce((SELECT json_extract(c.detail_json, " +
+      "'$.reply_s') FROM ledger_receipts c WHERE c.kind = 'reply' AND c.ref = " +
+      "ledger_messages.message_id), (SELECT round(ledger_messages.created_at - p.created_at, " +
+      "3) FROM ledger_messages p WHERE p.message_id = ledger_messages.parent_id))",
+    "UPDATE ledger_recipients SET read_at = (SELECT MIN(c.at) FROM ledger_receipts c WHERE " +
+      "c.kind = 'read' AND c.ref = ledger_recipients.message_id AND " +
+      "c.agent_id = ledger_recipients.agent_id), failed_reason = CASE WHEN state = 'failed' " +
+      "THEN (SELECT json_extract(c.detail_json, '$.reason') FROM ledger_receipts c WHERE " +
+      "c.kind = 'failed' AND c.ref = ledger_recipients.message_id AND " +
+      "c.agent_id = ledger_recipients.agent_id ORDER BY c.seq DESC LIMIT 1) END",
+    "DROP TABLE ledger_receipts",
+    "DROP TRIGGER message_bodies_kept",
+    "CREATE TRIGGER message_bodies_kept BEFORE UPDATE OF message_id, room_id, body, " +
+      "created_at, body_bytes, content_id, filer ON message_bodies " +
+      "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
+    "CREATE TRIGGER message_bodies_meta_moved AFTER UPDATE OF meta_bytes ON message_bodies " +
+      "WHEN NEW.meta_bytes != OLD.meta_bytes BEGIN " +
+      "UPDATE file_space SET body_bytes = body_bytes + (NEW.meta_bytes - OLD.meta_bytes); " +
+      "UPDATE file_shares SET body_bytes = body_bytes + (NEW.meta_bytes - OLD.meta_bytes) " +
+      "WHERE who IN (CASE WHEN NEW.filer GLOB 'client:*' THEN '*' ELSE 'owner' END, " +
+      "NEW.filer); END",
+    "CREATE TRIGGER ledger_messages_lines_moved AFTER UPDATE OF line_bytes ON ledger_messages " +
+      "WHEN NEW.unacked = 0 AND NEW.line_bytes != OLD.line_bytes BEGIN " +
+      "UPDATE ledger_usage SET acked_bytes = acked_bytes + (NEW.line_bytes - OLD.line_bytes); END",
+    "CREATE TRIGGER ledger_recipients_logged_insert AFTER INSERT ON ledger_recipients WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'ledger_recipients', 'row', json_object('message_id', NEW.message_id, 'agent_id', NEW.agent_id, 'seq', NEW.seq, 'state', NEW.state, 'changed_at', NEW.changed_at, 'unacked', NEW.unacked, 'read_at', NEW.read_at, 'failed_reason', NEW.failed_reason)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER ledger_recipients_logged_update AFTER UPDATE ON ledger_recipients WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'ledger_recipients', 'key', json_array(OLD.message_id, OLD.agent_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.message_id IS NEW.message_id AND OLD.agent_id IS NEW.agent_id); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'ledger_recipients', 'row', json_object('message_id', NEW.message_id, 'agent_id', NEW.agent_id, 'seq', NEW.seq, 'state', NEW.state, 'changed_at', NEW.changed_at, 'unacked', NEW.unacked, 'read_at', NEW.read_at, 'failed_reason', NEW.failed_reason)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER ledger_messages_logged_insert AFTER INSERT ON ledger_messages WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'ledger_messages', 'row', json_object('seq', NEW.seq, 'message_id', NEW.message_id, 'command_center_id', NEW.command_center_id, 'room_id', NEW.room_id, 'sender_kind', NEW.sender_kind, 'sender_id', NEW.sender_id, 'client_message_id', NEW.client_message_id, 'body_sha256', NEW.body_sha256, 'parent_id', NEW.parent_id, 'chain_root', NEW.chain_root, 'chain_depth', NEW.chain_depth, 'created_at', NEW.created_at, 'body_bytes', NEW.body_bytes, 'unacked', NEW.unacked, 'authority', NEW.authority, 'attended', NEW.attended, 'line_bytes', NEW.line_bytes, 'reply_s', NEW.reply_s)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER ledger_messages_logged_update AFTER UPDATE ON ledger_messages WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'ledger_messages', 'key', json_array(OLD.seq)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.seq IS NEW.seq); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'ledger_messages', 'row', json_object('seq', NEW.seq, 'message_id', NEW.message_id, 'command_center_id', NEW.command_center_id, 'room_id', NEW.room_id, 'sender_kind', NEW.sender_kind, 'sender_id', NEW.sender_id, 'client_message_id', NEW.client_message_id, 'body_sha256', NEW.body_sha256, 'parent_id', NEW.parent_id, 'chain_root', NEW.chain_root, 'chain_depth', NEW.chain_depth, 'created_at', NEW.created_at, 'body_bytes', NEW.body_bytes, 'unacked', NEW.unacked, 'authority', NEW.authority, 'attended', NEW.attended, 'line_bytes', NEW.line_bytes, 'reply_s', NEW.reply_s)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+  ]),
 ]);

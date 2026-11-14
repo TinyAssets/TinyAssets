@@ -31,8 +31,7 @@ const IMPORTERS = new Set(["owner/src/owner-do.ts", "owner/src/wakes.ts",
                            "owner/src/archive.ts", "owner/src/launch.ts"]);
 const NAMERS = new Set([LEDGER, "owner/src/schema.ts", "owner/src/export.ts"]);
 const TABLES = Object.freeze(["outside_agents", "native_agents", "ledger_messages",
-  "ledger_recipients",
-  "ledger_receipts", "ledger_readers", "ledger_wakes", "ledger_usage",
+  "ledger_recipients", "ledger_readers", "ledger_wakes", "ledger_usage",
   "message_bodies", "wake_callbacks"]);
 /** The modules that name the state's ledger (`o.ledger`, the launcher's `this.#o.ledger`). */
 const REACHERS = new Set([LEDGER, "owner/src/collections.ts", "owner/src/files.ts",

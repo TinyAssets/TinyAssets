@@ -643,9 +643,8 @@ export class Launcher implements RunHost {
           this.#o.ledger.hold(mail.message_id, mail.agent_id, clock());
           return;
         }
-        // Its fixed code, as a protocol shows one; a quiet one's own words.
-        this.#o.ledger.undeliverable(mail.message_id, mail.agent_id,
-                                     error.named ? error.code : reason, clock());
+        // Its code on the recipient row; its words, a quiet one's own, in the notice.
+        this.#o.ledger.undeliverable(mail.message_id, mail.agent_id, error.code, clock());
         this.#o.notices.add("mail_refused", `${mail.agent}: ${reason}`, clock());
       });
     }
