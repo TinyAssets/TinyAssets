@@ -1,0 +1,92 @@
+name: Off-account copy (nightly)
+
+# The off-account copy (d3 §G; operator_research.md §4; platform/deploy/offsite.ts): every
+# night, the files bucket (every owner's chunks and generations, ciphertext and wrapped keys
+# alone) copied by rclone to a Backblaze B2 bucket outside the Cloudflare account, with a key
+# that can add and hide but never delete. The bucket's lock and lifecycle keep each version
+# 22 days, inside the erasure's 30 with a week for the hide. Each night, before rclone runs, both B2 keys are held to
+# exactly their capabilities and the bucket to its rules.
+#
+# Dark until the founder's Backblaze steps (platform/deploy/checklist.md, "The off-account
+# copy"): with none of its settings stored, `settings` notes "not configured" and `copy` is
+# skipped, so the night passes green and installs nothing. With some of them, or with all and
+# any error, the run fails.
+#
+# Its settings (`SETTINGS` in offsite.ts) are `production` secrets and the repository variable
+# OFFSITE_BUCKET, read by both jobs; the Cloudflare account id is the repository variable
+# CLOUDFLARE_ACCOUNT_ID. Each credential reaches one rclone call's environment alone.
+
+on:
+  schedule:
+    # 05:37 UTC: after the generations' night (00:00 to 04:00 UTC, owner/src/backup.ts) and a
+    # pass, and off the hour, where scheduled runs are delayed or dropped under load.
+    - cron: '37 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offsite-copy
+  cancel-in-progress: false
+
+env:
+  OFFSITE_BUCKET: ${{ vars.OFFSITE_BUCKET }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+  OFFSITE_R2_ACCESS_KEY_ID: ${{ secrets.OFFSITE_R2_ACCESS_KEY_ID }}
+  OFFSITE_R2_SECRET_ACCESS_KEY: ${{ secrets.OFFSITE_R2_SECRET_ACCESS_KEY }}
+  OFFSITE_B2_KEY_ID: ${{ secrets.OFFSITE_B2_KEY_ID }}
+  OFFSITE_B2_APPLICATION_KEY: ${{ secrets.OFFSITE_B2_APPLICATION_KEY }}
+  OFFSITE_B2_READ_KEY_ID: ${{ secrets.OFFSITE_B2_READ_KEY_ID }}
+  OFFSITE_B2_READ_KEY: ${{ secrets.OFFSITE_B2_READ_KEY }}
+
+jobs:
+  settings:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 5
+    outputs:
+      configured: ${{ steps.settings.outputs.configured }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Read the copy's settings
+        id: settings
+        run: node --experimental-strip-types platform/deploy/offsite.ts settings
+
+  copy:
+    needs: settings
+    if: needs.settings.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    # The first copy of the whole bucket at ten times today's size; a night's copy is minutes.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the platform's pinned tools
+        working-directory: platform
+        run: npm ci
+
+      - name: Install rclone, pinned by its digest
+        env:
+          RCLONE: v1.75.2
+          RCLONE_SHA256: 349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
+        run: |
+          set -euo pipefail
+          zip="rclone-${RCLONE}-linux-amd64.zip"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${zip}" "https://downloads.rclone.org/${RCLONE}/${zip}"
+          echo "${RCLONE_SHA256}  ${RUNNER_TEMP}/${zip}" | sha256sum -c -
+          unzip -q -j -d "${RUNNER_TEMP}/rclone" "${RUNNER_TEMP}/${zip}" "rclone-${RCLONE}-linux-amd64/rclone"
+          echo "${RUNNER_TEMP}/rclone" >> "${GITHUB_PATH}"
+
+      - name: Copy the files bucket to B2
+        run: node --experimental-strip-types platform/deploy/offsite.ts copy

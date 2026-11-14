@@ -495,6 +495,97 @@ accepted by design. **After the window,** revoke everything and leave nothing bi
 - delete the `production` secrets above (`gh secret delete <name> --env production`). The
   `CLOUDFLARE_ACCOUNT_ID` variable stays: it is no credential, and other workflows read it.
 
+## The off-account copy
+
+**Off-account copy (nightly)** (`.github/workflows/offsite-copy.yml`, `deploy/offsite.ts`; d3
+§G) copies the files bucket every night at 05:37 UTC to a Backblaze B2 bucket outside the
+Cloudflare account, so the loss of that account loses no owner. The bucket holds only
+ciphertext and wrapped keys: every chunk and generation is sealed under its owner's data key,
+and each generation's root carries that key wrapped under `FILES_KEYRING`, which stays in the
+Worker and in `production`. The copy keeps every object at its own key, so a restore is a byte
+copy back.
+
+**It is dark until all seven settings below are stored.** Until then each night notes "not
+configured" and copies nothing. A night with only some of them fails, naming what is missing,
+so store all seven at one sitting. From then on, any error fails the night: a key with more or
+less than its capabilities, a bucket without its lock or lifecycle rule, rclone's own failure,
+or a check that finds an object missing or different.
+
+| Setting | What it is | Scope |
+|---|---|---|
+| `OFFSITE_BUCKET` (repository variable) | The B2 bucket's name (step 2) | none |
+| `OFFSITE_B2_KEY_ID`, `OFFSITE_B2_APPLICATION_KEY` | The write key (step 4) | `listBuckets,listFiles,writeFiles` on the bucket alone: it adds and hides, and can't delete or read |
+| `OFFSITE_B2_READ_KEY_ID`, `OFFSITE_B2_READ_KEY` | The read key (step 4) | `listBuckets,listFiles,readBucketRetentions,readFiles` on the bucket alone: the nightly byte check, the bucket's lock, and a restore |
+| `OFFSITE_R2_ACCESS_KEY_ID`, `OFFSITE_R2_SECRET_ACCESS_KEY` | The S3 pair of one Cloudflare API token (step 5) | Workers R2 Storage Bucket Item Read on `tinyassets-files` alone. No IP condition: GitHub's runners have no fixed address |
+
+The account id is the repository variable `CLOUDFLARE_ACCOUNT_ID` (the import window's step 0).
+
+**The 22 days, and the erasure.** The bucket keeps each version 22 days, locked in compliance
+mode from its upload, and its lifecycle rule deletes a version 22 days after it is hidden or
+replaced. An erased owner's objects leave R2 at the wipe, and the first night that passes hides
+them. So they are gone from the copy by the wipe plus at most a week for the hide, 22 days and
+the lifecycle's daily pass: inside the 30 days the erase answer names (`complete_at`), as long
+as a night passes at least once a week. A red night is an alarm (R6's canary), with days to fix
+it, not a breach.
+
+**A mass deletion fails the night, after it is hidden.** A night that hides more than a tenth of
+the copy (at least 100 objects) hides them all and then fails, naming the count. Nothing is lost:
+each hidden version stays 22 days, and rclone's `--b2-version-at` reads it back. The copy never
+holds a deletion back, because an erasure must reach it within the week.
+
+The steps, on your own computer (about $0.50 a month at today's size):
+
+1. **The account.** backblaze.com → Sign Up → B2 Cloud Storage, then Account → Billing → add a
+   payment method.
+2. **The bucket.** Buckets → Create a Bucket: name `tinyassets-offsite-` and 8 random lowercase
+   letters and digits; Files **Private**; Default Encryption **Disable** (the objects arrive
+   encrypted); Object Lock **Enable**.
+3. **Its two rules.** On the bucket, Object Lock → Default Retention → **Compliance, 22 days**.
+   Lifecycle Settings → **Keep prior versions for this number of days: 22**. A compliance lock
+   can't be shortened, and nothing under it can be deleted before its time.
+4. **The two keys,** with Backblaze's `b2` command line (`pip install b2`) signed in with the
+   master key (`b2 account authorize`). The web form's "Write Only" doesn't say whether it
+   leaves out `deleteFiles`, so make each with its exact list:
+   ```sh
+   b2 key create --bucket <bucket> tinyassets-offsite-write listBuckets,listFiles,writeFiles
+   b2 key create --bucket <bucket> tinyassets-offsite-read listBuckets,listFiles,readBucketRetentions,readFiles
+   ```
+   Each prints a key id and a key. Store them with `gh secret set OFFSITE_B2_KEY_ID --env
+   production` and `OFFSITE_B2_APPLICATION_KEY` (the write key), and `OFFSITE_B2_READ_KEY_ID`
+   and `OFFSITE_B2_READ_KEY` (the read key), pasting each at the hidden prompt. Then sign the
+   command line out (`b2 account clear`).
+5. **The R2 read key,** through Cloudflare's API, as the import window's step 5 makes its key,
+   with one policy and no condition or end date:
+   ```sh
+   read -rs BOOT
+   acct='<account id>'
+   api=https://api.cloudflare.com/client/v4
+   auth() { printf 'Authorization: Bearer %s\n' "$BOOT"; }
+   rd="$(curl -sS -H @<(auth) "$api/user/tokens/permission_groups" | python -c "import json,sys; print(next(g['id'] for g in json.load(sys.stdin)['result'] if g['name'] == 'Workers R2 Storage Bucket Item Read'))")"
+   resp="$(python -c 'import json,sys
+   r, a = sys.argv[1:]
+   print(json.dumps({"name": "tinyassets-offsite-read",
+                     "policies": [{"effect": "allow", "permission_groups": [{"id": r}],
+                                   "resources": {"com.cloudflare.edge.r2.bucket." + a
+                                                 + "_default_tinyassets-files": "*"}}]}))' \
+     "$rd" "$acct" \
+     | curl -sS -X POST -H @<(auth) -H 'Content-Type: application/json' --data @- \
+         "$api/user/tokens")"
+   printf %s "$resp" | python -c "import json,sys; d=json.load(sys.stdin); sys.stdout.write(d['result']['id'] if d.get('success') else sys.exit('refused: ' + str(d.get('errors'))))" \
+     | gh secret set OFFSITE_R2_ACCESS_KEY_ID --env production
+   printf %s "$resp" | python -c "import hashlib,json,sys; sys.stdout.write(hashlib.sha256(json.load(sys.stdin)['result']['value'].encode()).hexdigest())" \
+     | gh secret set OFFSITE_R2_SECRET_ACCESS_KEY --env production
+   unset BOOT resp
+   ```
+   Delete the bootstrap token after this step.
+6. **The bucket's name, last:** `gh variable set OFFSITE_BUCKET` with its name. The next night
+   copies.
+
+**The first copied nights** show, in the run's summary, both sides' counts and bytes and how
+many objects were compared byte for byte. A restore from the copy is a later step of its own.
+For it you mint an R2 write key on `tinyassets-files`, ending the next day, and revoke it
+after. No standing key can write the files bucket.
+
 ## Registrations you make by hand at the providers
 
 Each source's redirect URI is its own callback, as the doors derive it (`connect.ts`,

@@ -124,6 +124,17 @@ export const SIGNIN_PASTE_MAX = 4095;
  */
 export const COMMAND_CENTER_MAX = 512;
 
+/**
+ * How long after the wipe an erasure is complete: a SQLite Durable Object can be restored
+ * "to any point in the past 30 days" (Cloudflare's SQLite storage API, point-in-time
+ * recovery), and that copy holds the owner's wrapped data key. So the prefix deletes are the
+ * erasure, and crypto-erasure (`files/src/datakey.ts`) its backstop, complete only once the
+ * wipe is older than this window. The account-erase answer says so (`owner/src/erasure.ts`
+ * `erasureAnswer`), and the off-account copy keeps no deleted object past it
+ * (`deploy/offsite.ts` `KEEP_DAYS`).
+ */
+export const RECOVERY_WINDOW_S = 30 * 86_400;
+
 // The owner's frozen bounds. Each number below is spelled in the owner's migrations, whose
 // SQL text is frozen from its first deploy (`owner/src/schema.ts`, pinned by
 // `owner/migrations.json`), and each module that enforces it in code reads it from here.

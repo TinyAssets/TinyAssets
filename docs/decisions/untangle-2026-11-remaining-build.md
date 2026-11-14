@@ -110,7 +110,7 @@ The research's design is adopted whole. In short:
 - **`owner`** (tier, suspend or lift, admit) and **`sweep`** (data-key rewrap, gateway reseal, later the doorbell half) go through the channel.
 - **Restore:** whole-owner, one generation, into the owner's own object only while it is pending and empty. It refuses another owner's generation, an erased owner and a non-empty object.
 - **The files cipher is `aes-gcm`, decided now.** Under SSE-C the stored bytes can't leave the account without each owner's key, so no off-account copy could exist. This settles `v:S4` and the SSE-C probe (`tasks.md:1978`). The cipher PR proves the Worker's CPU and memory stay inside their measured budgets at production chunk sizes.
-- **Off-account copy:** Backblaze B2, written nightly by a scheduled workflow, with a key that can write but never delete, 28-day Object Lock and version retention (inside the erasure's 30-day promise). About $0.50 a month today and $5–$6.50 at ten times the data.
+- **Off-account copy:** Backblaze B2, written nightly by a scheduled workflow, with a key that can write but never delete, 22-day Object Lock and version retention (inside the erasure's 30-day promise, with a week for the hide; corrected by R4's review, `untangle-2026-11/r4.md` item 4). About $0.50 a month today and $5–$6.50 at ten times the data.
 - **Build order (nine PRs):** the cipher; the channel; `control` and `owner` (blocking for the cutover); the copy; restore's two halves; `sweep`; restore from the copy with a monthly drill; the manifest entries. They form lane R, after B25 and alongside the other lanes. Lane R's doors and owner files are sequenced with lanes D and O.
 
 ## H. The live stage: decided (`stage_research.md`, 2026-11-11)
