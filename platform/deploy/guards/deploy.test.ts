@@ -2964,6 +2964,7 @@ describe("mode restore", () => {
 describe("platform-deploy.yml", () => {
   type Job = { if?: string; needs?: string | string[]; environment?: string;
                "timeout-minutes"?: number; env?: Record<string, string>;
+               permissions?: Record<string, string>;
                steps: { name?: string; run?: string; env?: Record<string, string>; uses?: string;
                         with?: Record<string, string | number | boolean> }[] };
   const file = workflow("platform-deploy.yml") as {
@@ -3167,6 +3168,8 @@ describe("platform-deploy.yml", () => {
 
   it("applies in production the mode's own run", () => {
     expect(apply!.environment).toBe("production");
+    // Its token reads only: the canary after each mode lists the off-account copy's nights.
+    expect(apply!.permissions).toEqual({ contents: "read", actions: "read" });
     for (const inputs of [...offered.filter((mode) => MODES[mode].applies).map(dispatchOf),
                           ...OPTIONS]) {
       const ran = invoked(apply!, inputs);
