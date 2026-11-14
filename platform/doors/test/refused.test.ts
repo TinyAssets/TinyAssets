@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import { Refusal, type RefusalCode } from "../../contract/src/refusal";
-import { refusalResponse, retryAfter, shownCode } from "../src/refused";
+import { refusalResponse, shownCode } from "../src/refused";
 
 async function answered(code: RefusalCode, message: string, retryAfterS?: number):
     Promise<[number, string | null, unknown]> {
@@ -39,12 +39,10 @@ describe("a refusal's answer", () => {
   it("carries a refusal's own Retry-After over its code's", async () => {
     expect(await answered("storage_busy", "storage_busy: the archive moved this mail", 1))
       .toEqual([503, "1", { error: "storage_busy: the archive moved this mail" }]);
-    expect(retryAfter(new Refusal("refused"))).toEqual({});
   });
 
-  it("keeps a surface's own headers beside it", async () => {
-    const response = refusalResponse(new Refusal("busy", "busy: full"),
-                                     { "Cache-Control": "no-store" });
+  it("is never stored, on every surface", async () => {
+    const response = refusalResponse(new Refusal("busy", "busy: full"));
     expect([response.headers.get("Cache-Control"), response.headers.get("Retry-After")])
       .toEqual(["no-store", "1"]);
   });

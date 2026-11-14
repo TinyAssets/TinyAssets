@@ -72,11 +72,6 @@ export interface Bound {
   readonly stub: DurableObjectStub<OwnerDoors>;
 }
 
-async function sha256(text: string): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 /**
  * The outside identity an MCP client resolves to: `client` from the issuer and its
  * `client_id` (the Python's `issuer \0 client`), `family` from those and the redirect
@@ -85,12 +80,12 @@ async function sha256(text: string): Promise<string> {
  * client listens on whatever port is free (RFC 8252 §7.3), so its port names no
  * installation.
  */
-export async function mcpOrigin(clientId: string, redirectUri: string):
-    Promise<{ client: string; family: string }> {
+export function mcpOrigin(clientId: string, redirectUri: string):
+    { client: string; family: string } {
   const installation = installationOf(redirectUri);
   return {
-    client: await mcpClient(clientId),
-    family: await sha256(`tinyassets-mcp-family\0${ISSUER}\0${clientId}\0${installation}`),
+    client: mcpClient(clientId),
+    family: sha256Hex(`tinyassets-mcp-family\0${ISSUER}\0${clientId}\0${installation}`),
   };
 }
 
@@ -138,13 +133,13 @@ export async function ownerOf(env: DoorsEnv, issuer: string, subject: string): P
     throw new Error(`the sign-in's issuer ${JSON.stringify(issuer)} is neither the owner ` +
                     "issuer nor a listed one");
   }
-  return principal(`${FOREIGN}${(await sha256(issuer)).slice(0, 32)}-${
+  return principal(`${FOREIGN}${sha256Hex(issuer).slice(0, 32)}-${
     encodeURIComponent(principal(subject))}`);
 }
 
 /** The 64-hex outside client an OAuth `client_id` is, at our issuer. */
-export function mcpClient(clientId: string): Promise<string> {
-  return sha256(`tinyassets-mcp-client\0${ISSUER}\0${clientId}`);
+export function mcpClient(clientId: string): string {
+  return sha256Hex(`tinyassets-mcp-client\0${ISSUER}\0${clientId}`);
 }
 
 function seconds(value: unknown, what: string): number {
@@ -174,7 +169,7 @@ export async function bindMcp(env: DoorsEnv, token: ValidatedAccessToken<unknown
   if (owner !== token.userId || props.source_ref !== token.clientId) {
     throw new Error("an MCP grant's props disagree with its token");
   }
-  if (typeof props.client !== "string" || props.client !== await mcpClient(token.clientId)
+  if (typeof props.client !== "string" || props.client !== mcpClient(token.clientId)
       || typeof props.family !== "string" || !HEX64.test(props.family)) {
     throw new Error("an MCP grant's origin is not its client's");
   }

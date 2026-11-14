@@ -30,12 +30,15 @@
  * calls are bounded by the tier's simultaneous runs, the owner's own settings and vendors'
  * limits.
  */
-import { HEX16 } from "../../contract/src/ids";
+import { sha256Hex } from "../../contract/src/digest";
+import { HEX16, randomHex } from "../../contract/src/ids";
+import { KEY_NAME_MAX } from "../../contract/src/limits";
 
 import { bindApiKey, type Bound } from "./binder";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import type { DoorsEnv } from "./env";
 import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
+import { randomToken } from "./kit";
 
 export const PREFIX = "ta_key_";
 const KEY = /^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
@@ -60,21 +63,13 @@ export function parseKey(token: string): { keyId: string; secret: string } | nul
   return match === null ? null : { keyId: match[1]!, secret: match[2]! };
 }
 
-function hex(bytes: Uint8Array): string {
-  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** The stored digest: SHA-256 hex of the secret's UTF-8 (`api_keys._digest`). */
-export async function secretHash(secret: string): Promise<string> {
-  return hex(new Uint8Array(await crypto.subtle.digest(
-    "SHA-256", new TextEncoder().encode(secret))));
-}
-
-/** `secrets.token_hex(8)` and `secrets.token_urlsafe(32)`. */
+/**
+ * `secrets.token_hex(8)` and `secrets.token_urlsafe(32)`; the directory stores the secret's
+ * SHA-256 hex (`api_keys._digest`).
+ */
 export function newKey(): { keyId: string; secret: string; key: string } {
-  const keyId = hex(crypto.getRandomValues(new Uint8Array(8)));
-  const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const keyId = randomHex(8);
+  const secret = randomToken(32);
   return { keyId, secret, key: `${PREFIX}${keyId}_${secret}` };
 }
 
@@ -91,7 +86,7 @@ export async function verifyKey(env: DoorsEnv, token: string): Promise<Bound | n
     return null;
   }
   const entry = await readKey(env, parsed.keyId);
-  if (entry === null || !equal(entry.h, await secretHash(parsed.secret))) {
+  if (entry === null || !equal(entry.h, sha256Hex(parsed.secret))) {
     return null;
   }
   return bindApiKey(env, parsed.keyId, entry);
@@ -130,14 +125,14 @@ export async function mintKey(env: DoorsEnv, { binding, stub }: Bound, request: 
   const { name, scopes, proposal } = (request ?? {}) as { name?: unknown; scopes?: unknown;
                                                           proposal?: unknown };
   if (typeof name !== "string" || name.trim() === "") {
-    throw new KeyRefused(400, "key name required (at most 80 characters)");
+    throw new KeyRefused(400, `key name required (at most ${KEY_NAME_MAX} characters)`);
   }
   const minted = newKey();
   const row = await stub.keyMint(binding, {
     key_id: minted.keyId, name, scopes,
     ...(proposal === undefined ? {} : { proposal }) });
   await putKey(env, minted.keyId,
-               { o: binding.owner, h: await secretHash(minted.secret), c: row.created_at });
+               { o: binding.owner, h: sha256Hex(minted.secret), c: row.created_at });
   return { key: minted.key, key_id: minted.keyId, name: row.name, created_at: row.created_at,
            scopes: row.scopes };
 }

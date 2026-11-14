@@ -23,17 +23,22 @@
  * though that navigation came from the identity provider.
  */
 import { PUBLIC_ORIGIN } from "./config";
+import { sha256Hex } from "../../contract/src/digest";
+import { SESSION_TTL_S } from "../../contract/src/limits";
 import { codePoints } from "../../contract/src/text";
 
+import { mediaType } from "./kit";
+
 export const COOKIE = "__Host-ta-owner";
-/** The Python's 28 800 s, the object's session life (`SESSION_LIMITS.ttlS`). */
-const COOKIE_MAX_AGE_S = 28_800;
 export const OWNER_SURFACE = "/app/api/";
 const SAFE_METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "OPTIONS"]);
 
-/** The media type of `Content-Type`, lowercased, without parameters; "" when absent. */
-export function mediaType(request: Request): string {
-  return (request.headers.get("Content-Type") ?? "").split(";")[0]!.trim().toLowerCase();
+/** Every value of the cookie `name` the request carries. */
+function cookies(request: Request, name: string): string[] {
+  return (request.headers.get("Cookie") ?? "").split(";")
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith(`${name}=`))
+    .map((part) => part.slice(name.length + 1));
 }
 
 /** The request without its `Cookie` header: what `/mcp`, `/api` and `/hooks` see. */
@@ -48,10 +53,7 @@ export function withoutCookie(request: Request): Request {
 
 /** The session cookie's one value, or undefined: absent, repeated or out of bounds. */
 function cookieValue(request: Request): string | undefined {
-  const values = (request.headers.get("Cookie") ?? "").split(";")
-    .map((part) => part.trim())
-    .filter((part) => part.startsWith(`${COOKIE}=`))
-    .map((part) => part.slice(COOKIE.length + 1));
+  const values = cookies(request, COOKIE);
   if (values.length !== 1) {
     return undefined;
   }
@@ -76,7 +78,7 @@ export function sessionOf(request: Request): string | undefined {
 /** The cookie a sign-in sets, or renews with the session's life. */
 export function sessionCookie(value: string): string {
   return `${COOKIE}=${value}; Secure; HttpOnly; Path=/; SameSite=Strict; ` +
-    `Max-Age=${COOKIE_MAX_AGE_S}`;
+    `Max-Age=${SESSION_TTL_S}`;
 }
 
 /** The cookie a sign-out sets. */
@@ -95,10 +97,8 @@ export function clearedCookie(): string {
  */
 const CONNECT_COOKIE = "__Host-ta-connect";
 
-async function flowDigest(state: string): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256",
-                                           new TextEncoder().encode(`tinyassets-connect\0${state}`));
-  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+function flowDigest(state: string): string {
+  return sha256Hex(`tinyassets-connect\0${state}`);
 }
 
 function connectName(digest: string): string {
@@ -106,26 +106,22 @@ function connectName(digest: string): string {
 }
 
 /** The binding cookie a flow's begin sets, for `maxAge` seconds. */
-export async function connectCookie(state: string, maxAge: number): Promise<string> {
-  const digest = await flowDigest(state);
+export function connectCookie(state: string, maxAge: number): string {
+  const digest = flowDigest(state);
   return `${connectName(digest)}=${digest}; Secure; HttpOnly; Path=/; SameSite=Lax; ` +
     `Max-Age=${maxAge}`;
 }
 
 /** The cookie a flow's finish sets: its binding cleared. */
-export async function clearedConnectCookie(state: string): Promise<string> {
-  return `${connectName(await flowDigest(state))}=; Secure; HttpOnly; Path=/; SameSite=Lax; ` +
+export function clearedConnectCookie(state: string): string {
+  return `${connectName(flowDigest(state))}=; Secure; HttpOnly; Path=/; SameSite=Lax; ` +
     "Max-Age=0";
 }
 
 /** Whether this browser began the flow for `state`: its one binding cookie matches. */
-export async function connectBound(request: Request, state: string): Promise<boolean> {
-  const digest = await flowDigest(state);
-  const name = connectName(digest);
-  const values = (request.headers.get("Cookie") ?? "").split(";")
-    .map((part) => part.trim())
-    .filter((part) => part.startsWith(`${name}=`))
-    .map((part) => part.slice(name.length + 1));
+export function connectBound(request: Request, state: string): boolean {
+  const digest = flowDigest(state);
+  const values = cookies(request, connectName(digest));
   if (values.length !== 1 || values[0]!.length !== digest.length) {
     return false;
   }

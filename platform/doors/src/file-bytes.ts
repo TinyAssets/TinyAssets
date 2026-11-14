@@ -24,21 +24,16 @@
  * any step (an expired intent, the erasure's mark, a chunk R2 refused) answers its fixed
  * code. The object's chunk doors (`fileUploadChunks`) stay for in-object callers.
  */
-import { createHash } from "node:crypto";
-
+import { sha256, sha256Hex } from "../../contract/src/digest";
 import { CHUNK_BYTES } from "../../contract/src/limits";
 import { refusalOf } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./env";
+import { answer, boundedBytes, failure, mediaType } from "./kit";
 import { refusalResponse } from "./refused";
 
 const CHUNK_PATH = /^([0-9a-f]{32})\/(0|[1-9][0-9]{0,5})$/;
-
-function failure(status: number, message: string, headers: HeadersInit = {}): Response {
-  return Response.json({ error: message }, { status, headers: { "Cache-Control": "no-store",
-                                                               ...headers } });
-}
 
 /** A `Content-Digest` member for SHA-256 (RFC 9530): `sha-256=:<base64>:`. */
 export function contentDigest(digest: Buffer): string {
@@ -52,31 +47,6 @@ function claimed(request: Request): string | undefined {
     : /(?:^|,)\s*sha-256=:([A-Za-z0-9+/=]+):/.exec(header)?.[1] ?? "";
 }
 
-/** The body's bytes when they are exactly `size`, or null for a shorter or longer one. */
-async function exactly(request: Request, size: number): Promise<Uint8Array | null> {
-  const declared = request.headers.get("Content-Length");
-  if (declared !== null && declared !== String(size)) {
-    return null;
-  }
-  const out = new Uint8Array(size);
-  let at = 0;
-  const reader = (request.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() }))
-    .getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    if (at + value.byteLength > size) {
-      await reader.cancel().catch(() => undefined);
-      return null;
-    }
-    out.set(value, at);
-    at += value.byteLength;
-  }
-  return at === size ? out : null;
-}
-
 /**
  * The cutover import's bytes (`import.ts`), on this door's path: one chunk the staging bucket
  * holds, checked against its declared SHA-256 and size, put to `FILES` under the owner's
@@ -86,7 +56,7 @@ export async function putImportChunk(env: DoorsEnv, target: { namespace: string;
                                      chunk: { sha256: string; size: number },
                                      bytes: Uint8Array): Promise<void> {
   if (chunk.size > CHUNK_BYTES || bytes.byteLength !== chunk.size
-      || createHash("sha256").update(bytes).digest("hex") !== chunk.sha256) {
+      || sha256Hex(bytes) !== chunk.sha256) {
     throw new Error("an import chunk's bytes are not the chunk its upload declared");
   }
   await env.FILES.putChunks(target.namespace, target.key, [{ sha256: chunk.sha256, bytes }]);
@@ -98,8 +68,7 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
   if (request.method !== "PUT") {
     return failure(405, "method not allowed");
   }
-  if ((request.headers.get("Content-Type") ?? "").split(";")[0]!.trim().toLowerCase()
-      !== "application/octet-stream") {
+  if (mediaType(request) !== "application/octet-stream") {
     return failure(415, "an upload's bytes are application/octet-stream");
   }
   const named = CHUNK_PATH.exec(path);
@@ -117,11 +86,11 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
     if (chunk.size > CHUNK_BYTES) {
       throw new Error("an upload's plan names a chunk larger than a chunk");
     }
-    const bytes = await exactly(request, chunk.size);
-    if (bytes === null) {
+    const bytes = await boundedBytes(request, chunk.size);
+    if (bytes === null || bytes.byteLength !== chunk.size) {
       return failure(400, `chunk ${index} is ${chunk.size} bytes`);
     }
-    const digest = createHash("sha256").update(bytes).digest();
+    const digest = sha256(bytes);
     const headers = { "Content-Digest": contentDigest(digest) };
     const sent = claimed(request);
     if (sent !== undefined && sent !== digest.toString("base64")) {
@@ -138,14 +107,13 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
                                 [{ sha256: chunk.sha256, bytes }]);
       await stub.fileUploadStored(binding, { intent_id: intentId, chunks: [chunk.sha256] });
     }
-    return Response.json({ intent_id: intentId, index, stored: needed,
-                           pending: target.pending.length - (needed ? 1 : 0) },
-                         { headers: { "Cache-Control": "no-store", ...headers } });
+    return answer(200, { intent_id: intentId, index, stored: needed,
+                         pending: target.pending.length - (needed ? 1 : 0) }, headers);
   } catch (error) {
     const refused = refusalOf(error);
     if (refused === null) {
       throw error;
     }
-    return refusalResponse(refused, { "Cache-Control": "no-store" });
+    return refusalResponse(refused);
   }
 }

@@ -83,7 +83,7 @@ export interface EgressRefusal {
 }
 
 /**
- * A request body the doors parsed (`doors/src/body.ts`, `jsonObject`, its one maker) and
+ * A request body the doors parsed (`doors/src/kit.ts`, `jsonObject`, its one maker) and
  * hand a door as it came, or with fields of their own decoded in: the object's runner checks
  * its fields against the door's row as it does any request's. Only the doors that take one
  * name it, beside their fields (`Handed`), so a request the doors build is still held to its

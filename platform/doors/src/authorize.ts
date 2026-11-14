@@ -44,9 +44,10 @@ import {
   type AppProps, bindPlatformFor, bindSignIn, type McpProps, mcpOrigin, ownerOf,
 } from "./binder";
 import { type Vendor, vendorOf } from "../../contract/src/apps";
-import { boundedText, TOO_LARGE } from "./body";
+import { sha256 } from "../../contract/src/digest";
+import { AUTHORIZE_BODY_MAX } from "../../contract/src/limits";
 import {
-  AUTHORIZE_BODY_MAX, CLOCK_MARGIN_S, FIRST_PARTY_CLIENTS, MCP_RESOURCE, now,
+  CLOCK_MARGIN_S, FIRST_PARTY_CLIENTS, MCP_RESOURCE, now,
   PUBLIC_HOST, SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
 } from "./config";
 import type { DoorsEnv } from "./env";
@@ -56,7 +57,8 @@ import { putOwner, readOwner } from "./directory";
 import { refusalOf } from "../../contract/src/refusal";
 import { authorizationServer } from "./oauth";
 import { replaceInstallation } from "./revoke";
-import { mediaType, sessionCookie } from "./session";
+import { boundedText, mediaType, plain, randomToken, redirect, TOO_LARGE } from "./kit";
+import { sessionCookie } from "./session";
 import type { SignIn, Upstream } from "./upstream";
 
 interface Verifier {
@@ -65,28 +67,6 @@ interface Verifier {
 
 const escape = (value: string): string =>
   value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
-
-function text(status: number, message: string, headers: Headers = new Headers()): Response {
-  headers.set("Content-Type", "text/plain; charset=utf-8");
-  headers.set("Cache-Control", "no-store");
-  return new Response(message, { status, headers });
-}
-
-function redirect(location: string, headers: Headers = new Headers()): Response {
-  headers.set("Location", location);
-  headers.set("Cache-Control", "no-store");
-  return new Response(null, { status: 302, headers });
-}
-
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-async function s256(verifier: string): Promise<string> {
-  return base64url(new Uint8Array(await crypto.subtle.digest(
-    "SHA-256", new TextEncoder().encode(verifier))));
-}
 
 function granted(scope: readonly string[]): string[] {
   return scope.filter((s) => SCOPES.includes(s));
@@ -139,8 +119,8 @@ export function navigation(request: Request): boolean {
 /** Start the upstream sign-in for an approved request, checking the URL it builds. */
 async function signIn(oauth: OAuthHelpers, upstream: Upstream, request: AuthRequest,
                       headers?: Headers): Promise<Response> {
-  const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = await s256(verifier);
+  const verifier = randomToken(32);
+  const challenge = sha256(verifier).toString("base64url");
   const data: Verifier = { verifier };
   const started = await oauth.beginUpstream(request, headers === undefined ? { data }
                                                                            : { data, headers });
@@ -164,10 +144,10 @@ function failed(error: unknown): Response {
     return redirect(error.redirectTo);
   }
   if (error instanceof AuthorizationError) {
-    return text(400, error.description);
+    return plain(400, error.description);
   }
   if (error instanceof CimdFetchError) {
-    return text(400, "This app could not be verified.");
+    return plain(400, "This app could not be verified.");
   }
   throw error;
 }
@@ -187,7 +167,7 @@ export async function authorize(request: Request, env: DoorsEnv,
   try {
     if (request.method === "GET") {
       if (!navigation(request)) {
-        return text(403, "Open this page in your browser to sign in.");
+        return plain(403, "Open this page in your browser to sign in.");
       }
       const parsed = await oauth.parseAuthRequest(request);
       const forApp = parsed.resource === APP_RESOURCE;
@@ -200,7 +180,7 @@ export async function authorize(request: Request, env: DoorsEnv,
       // document or a registration may) would have the consent page say the access goes
       // to TinyAssets.
       if (!forApp && ours(parsed.redirectUri)) {
-        return text(400, "This app may not send access to TinyAssets itself.");
+        return plain(400, "This app may not send access to TinyAssets itself.");
       }
       if (forApp) {
         return await signIn(oauth, upstreamOf(upstream), parsed);
@@ -214,11 +194,11 @@ export async function authorize(request: Request, env: DoorsEnv,
       // The consent form, and nothing larger: the provider reads only the binding
       // cookie from the request, so its body is ours to read once.
       if (mediaType(request) !== "application/x-www-form-urlencoded") {
-        return text(415, "The consent form is posted as a form.");
+        return plain(415, "The consent form is posted as a form.");
       }
       const body = await boundedText(request, AUTHORIZE_BODY_MAX);
       if (body === null) {
-        return text(413, TOO_LARGE);
+        return plain(413, TOO_LARGE);
       }
       const form = new URLSearchParams(body);
       const handle = form.get("handle") ?? "";
@@ -231,7 +211,7 @@ export async function authorize(request: Request, env: DoorsEnv,
       const approved = await oauth.approveConsent(request, handle);
       return await signIn(oauth, upstreamOf(upstream), approved.request, approved.headers);
     }
-    return text(405, "method not allowed");
+    return plain(405, "method not allowed");
   } catch (error) {
     return failed(error);
   }
@@ -334,7 +314,7 @@ export async function callback(request: Request, env: DoorsEnv,
     // message names a check or a status, never a token or a secret (`upstream.ts`).
     const reason = error instanceof Error ? error.message : "the upstream sign-in failed";
     console.error(`the upstream sign-in failed: ${reason}`);
-    return text(502, `The sign-in could not be completed: ${reason}.`, headers);
+    return plain(502, `The sign-in could not be completed: ${reason}.`, headers);
   }
   const at = now();
   if (!Number.isSafeInteger(signedIn.authenticated_at)
@@ -361,7 +341,7 @@ export async function callback(request: Request, env: DoorsEnv,
                                                  "this account was erased"), headers);
     }
     const props: McpProps = {
-      kind: "mcp", owner, ...await mcpOrigin(original.clientId, original.redirectUri),
+      kind: "mcp", owner, ...mcpOrigin(original.clientId, original.redirectUri),
       source_ref: original.clientId, authenticated_at: signedIn.authenticated_at,
       vendor: await signedInVendor(oauth, original.clientId, original.redirectUri),
     };

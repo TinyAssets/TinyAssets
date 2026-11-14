@@ -88,6 +88,7 @@
  * Sign-out tells the object first, whether or not a session cookie came, so the sockets
  * opened under the device's grant close before the grant is revoked (`socketsEnd`).
  */
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { refusalOf } from "../../contract/src/refusal";
 import { utf8Decoder } from "../../contract/src/text";
 import { answerJson } from "./answers";
@@ -95,8 +96,7 @@ import {
   type Bound, bindKeyRegistration, bindOwner, bindOwnerGrant, bindSignOut, bindTicket,
   socketRequest, withTiers,
 } from "./binder";
-import { jsonObject } from "./body";
-import { APP_BODY_MAX, FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
+import { FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
 import type { DoorsEnv } from "./env";
 import { APP_RESOURCE } from "../../contract/src/identity";
 import type { ControlRead } from "../../contract/src/control";
@@ -111,7 +111,8 @@ import { streamUpload } from "./file-bytes";
 import { HOOK_ROUTES } from "./inbound";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
-import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
+import { answer, bearer, exactKeys, failure, jsonObject, mediaType, NO_STORE } from "./kit";
+import { clearedCookie, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "../../sources/src/schema";
 import { signinsRead } from "../../sources/src/signin";
 import { refusalResponse } from "./refused";
@@ -125,12 +126,6 @@ import { callbackSecret, callbackUrl, kindNamed, wakeKinds } from "../../contrac
 import { follows, subscriptionId } from "../../contract/src/wake-kinds";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
-
-const NO_STORE = Object.freeze({ "Cache-Control": "no-store" });
-
-function json(status: number, body: unknown, headers: HeadersInit = {}): Response {
-  return Response.json(body, { status, headers: { ...NO_STORE, ...headers } });
-}
 
 /**
  * Every owner-surface answer but the socket's upgrade carries these: JSON is never sniffed
@@ -151,16 +146,6 @@ function surfaced(answer: Response): Response {
   }
   return new Response(answer.body, { status: answer.status, statusText: answer.statusText,
                                      headers });
-}
-
-function failure(status: number, message: string, headers: HeadersInit = {}): Response {
-  return json(status, { error: message }, headers);
-}
-
-export function bearer(request: Request): string | null {
-  const header = request.headers.get("Authorization") ?? "";
-  const match = /^Bearer ([^\s]+)$/.exec(header);
-  return match === null ? null : match[1]!;
 }
 
 /**
@@ -218,15 +203,7 @@ async function signOut({ env, owner: { binding, stub }, presented: token }: Serv
   await ending.stub.socketsEnd(ending.binding);
   const closed = binding.session === undefined ? { closed: 0 } : await stub.sessionClose(binding);
   await oauth.revokeGrant(presented.grantId, binding.owner);
-  return json(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
-}
-
-/** Whether a body names exactly `required` and at most `optional` besides. */
-function shaped(request: Record<string, unknown>, required: readonly string[],
-                optional: readonly string[] = []): boolean {
-  const keys = Object.keys(request);
-  return required.every((key) => keys.includes(key))
-    && keys.every((key) => required.includes(key) || optional.includes(key));
+  return answer(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
 }
 
 const NO_FIELDS = "this route takes an empty object";
@@ -238,7 +215,8 @@ const NO_FIELDS = "this route takes an empty object";
  */
 const account: Route = async ({ owner: { binding, stub } }) => {
   const { tier } = await stub.tierRead(binding);
-  return json(200, { tier, tiers: binding.tiers ?? null, usage: await stub.fileUsage(binding) });
+  return answer(200, { tier, tiers: binding.tiers ?? null,
+                       usage: await stub.fileUsage(binding) });
 };
 
 /** `grants/set`: a client's mode, scopes or profile; never a revoke, which is `grants/revoke`. */
@@ -246,22 +224,22 @@ const grantSet: Route = async ({ owner: { binding, stub }, body: request }) => {
   if (request["mode"] === "revoked") {
     return failure(400, "a revoke goes by grants/revoke, which also ends the client's tokens");
   }
-  return json(200, await stub.grantSet(binding, request));
+  return answer(200, await stub.grantSet(binding, request));
 };
 
 /** `files/read` `{path}`: one file as UTF-8 text, or why it is not shown as text. */
 const fileRead: Route = async ({ owner: { binding, stub }, body: request }) => {
-  if (!shaped(request, ["path"])) {
+  if (!exactKeys(request, ["path"])) {
     return failure(400, "a read names the file's path");
   }
   const { entry, inline } = await stub.fileRead(binding, { path: request["path"] as string });
   if (inline === undefined) {
-    return json(200, { entry, text: null, why: "larger than one chunk" });
+    return answer(200, { entry, text: null, why: "larger than one chunk" });
   }
   try {
-    return json(200, { entry, text: utf8Decoder("strip").decode(inline) });
+    return answer(200, { entry, text: utf8Decoder("strip").decode(inline) });
   } catch {
-    return json(200, { entry, text: null, why: "not UTF-8 text" });
+    return answer(200, { entry, text: null, why: "not UTF-8 text" });
   }
 };
 
@@ -269,12 +247,12 @@ const fileRead: Route = async ({ owner: { binding, stub }, body: request }) => {
 const fileWrite: Route = async ({ owner: { binding, stub }, body: request }) => {
   const text = request["text"];
   const fields = ["path", "expected_etag", "text"];
-  if (!shaped(request, fields) || typeof text !== "string") {
+  if (!exactKeys(request, fields) || typeof text !== "string") {
     return failure(400, "a write names the path, the expected etag and the text");
   }
   // The etag goes to the object as it came: the object's compare-and-swap decides.
   const { path, expected_etag: expected } = request;
-  return json(200, await stub.fileWrite(binding, {
+  return answer(200, await stub.fileWrite(binding, {
     path: path as string, expected_etag: expected as string | null,
     content: new TextEncoder().encode(text) }));
 };
@@ -330,7 +308,7 @@ const EXPORT_PAGES = 64;
  */
 async function exportStream({ owner: { binding, stub }, body: request }: Served):
     Promise<Response> {
-  if (Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
+  if (!exactKeys(request, [], ["cursor", "export_id"])) {
     return failure(400, "an export request is at most its cursor and its export_id");
   }
   let page = await stub.ownerExport(binding, request);
@@ -355,7 +333,7 @@ async function exportStream({ owner: { binding, stub }, body: request }: Served)
     },
   });
   return new Response(body, { status: 200, headers: {
-    "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
+    "Content-Type": "application/x-ndjson", ...NO_STORE } });
 }
 
 /**
@@ -366,11 +344,8 @@ async function exportStream({ owner: { binding, stub }, body: request }: Served)
  */
 async function doorbell({ env, owner: { binding, stub }, body: request }: Served):
     Promise<Response> {
-  const keys = Object.keys(request);
   const kind = typeof request["kind"] === "string" ? kindNamed(request["kind"]) : null;
-  if (!["agent_id", "kind", "url", "secret"].every((key) => keys.includes(key))
-      || !keys.every((key) => ["agent_id", "kind", "url", "secret", "board", "rooms"]
-        .includes(key))
+  if (!exactKeys(request, ["agent_id", "kind", "url", "secret"], ["board", "rooms"])
       || typeof request["agent_id"] !== "string" || kind === null || kind.push === null
       || kind.push.callback !== "owner") {
     return failure(400, "a doorbell names an agent, its kind, the URL and the token");
@@ -388,7 +363,7 @@ async function doorbell({ env, owner: { binding, stub }, body: request }: Served
   const args = { agent_id: request["agent_id"], board: follow.board, rooms: follow.rooms };
   const id = subscriptionId("owner", url, kind.id, args);
   const sealed = await sealDoorbell(env, binding.owner, id, { record: kind.id, url, secret });
-  return json(200, await stub.agentDoorbell(binding, {
+  return answer(200, await stub.agentDoorbell(binding, {
     agent_id: request["agent_id"], kind: kind.id, subscription_id: id, board: follow.board,
     rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: DOORBELL_VERSION }));
 }
@@ -410,7 +385,7 @@ async function socketTicket({ env, token, presented, body: request }: Served):
     return failure(401, "sign in required");
   }
   const { binding, stub } = bindOwnerGrant(env, token, unwrapped.grantId);
-  return json(200, await stub.socketTicket(binding, request));
+  return answer(200, await stub.socketTicket(binding, request));
 }
 
 /**
@@ -456,13 +431,13 @@ async function registering({ env, owner, body, token }: Served): Promise<Respons
   const { key_id: id, ...register } = body;
   const { keyId, entry } = await registeringEntry(env, owner.binding.owner, id);
   const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, owner.binding.session);
-  return json(200, await stub.registerAgent(binding, register));
+  return answer(200, await stub.registerAgent(binding, register));
 }
 
 /** A route that answers a binder module's sequence's value as JSON. */
 function answered(value: (served: Served) => Promise<unknown>,
                   headers: HeadersInit = {}): { serve: Route } {
-  return { serve: async (served) => json(200, await value(served), headers) };
+  return { serve: async (served) => answer(200, await value(served), headers) };
 }
 
 /**
@@ -478,7 +453,7 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "agent/socket-ticket": { serve: socketTicket },
     "sources": { body: "empty",
                  serve: async ({ sources, gate }) =>
-                   json(200, sourceList(sources, signinsRead(sources, gate))) },
+                   answer(200, sourceList(sources, signinsRead(sources, gate))) },
     "export": { serve: exportStream },
     "export/chunks": { door: "exportChunks" },
     "export/end": { door: "exportEnd" },
@@ -513,7 +488,7 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "grants/revoke": answered(({ env, owner, body }) => revokeClient(env, owner, body["client"])),
     "session/extend": { serve: async ({ owner: { binding, stub } }) => {
       const extended = await stub.sessionExtend(binding);
-      return json(200, extended, { "Set-Cookie": sessionCookie(binding.session ?? "") });
+      return answer(200, extended, { "Set-Cookie": sessionCookie(binding.session ?? "") });
     } },
     "session/close": { serve: signOut },
     "agent/submit": { door: "agentSubmit" },
@@ -596,7 +571,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   if (mediaType(request) !== "application/json") {
     return failure(415, "the owner surface takes application/json");
   }
-  const parsed = await jsonObject(request, APP_BODY_MAX);
+  const parsed = await jsonObject(request, EGRESS_BODY_MAX);
   if (parsed instanceof Response) {
     return parsed;
   }
@@ -607,11 +582,11 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   }
   const owner = withTiers(unread, gated, sources);
   try {
-    if (route.body === "empty" && !shaped(parsed, [])) {
+    if (route.body === "empty" && !exactKeys(parsed, [])) {
       return failure(400, NO_FIELDS);
     }
     if ("door" in route) {
-      return json(200, await callDoor(owner.stub, owner.binding, route.door, parsed));
+      return answer(200, await callDoor(owner.stub, owner.binding, route.door, parsed));
     }
     return await route.serve({ env, owner, body: parsed, presented: presented!, token, request,
                                sources, gate: gated, rest: found!.rest });
@@ -621,7 +596,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
     }
     const refused = refusalOf(error);
     if (refused !== null) {
-      return refusalResponse(refused, NO_STORE);
+      return refusalResponse(refused);
     }
     throw error;
   }
