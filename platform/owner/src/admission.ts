@@ -34,6 +34,7 @@
  * (`admission-caller.test.ts`). A suspension adds a reason, a resumption takes one away,
  * and an erased owner is never set again.
  */
+import { keyed } from "../../contract/src/checks";
 import type { DoorClass as TableClass } from "../../contract/src/doors";
 import { wiped } from "./erasure";
 import { Refusal } from "../../contract/src/refusal";
@@ -127,13 +128,9 @@ export function doorRefusal(state: Admission, door: DoorClass): Refusal | null {
  * refuses before any door acts.
  */
 function setAdmission(storage: OwnerStorage, request: unknown): Admission {
-  if (typeof request !== "object" || request === null || Array.isArray(request)) {
-    throw new Refusal("invalid", CHANGE);
-  }
-  const keys = Object.keys(request).sort().join();
   const now = admission(storage);
-  if (keys === "admit") {
-    if ((request as Record<string, unknown>)["admit"] !== true) {
+  if (keyed(request, ["admit"])) {
+    if (request["admit"] !== true) {
       throw new Refusal("invalid", "an admit is {admit: true}");
     }
     if (now.state !== "pending") {
@@ -142,10 +139,10 @@ function setAdmission(storage: OwnerStorage, request: unknown): Admission {
     storage.sql.exec("UPDATE owner_admission SET state = 'admitted'");
     return { state: "admitted", reasons: [] };
   }
-  if (keys !== "reason,suspended") {
+  if (!keyed(request, ["reason", "suspended"])) {
     throw new Refusal("invalid", CHANGE);
   }
-  const { reason, suspended } = request as Record<string, unknown>;
+  const { reason, suspended } = request;
   if (typeof reason !== "string" || !SUSPENSIONS.includes(reason)
       || typeof suspended !== "boolean") {
     throw new Refusal("invalid",

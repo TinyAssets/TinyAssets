@@ -20,9 +20,7 @@
  * makes (ADR-034 decision 6).
  */
 import type { RunCapability } from "../../contract/src/capabilities";
-import { HEX64 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
-import { codePoints, isPrintable } from "../../contract/src/text";
 import type { Account } from "./owner-do";
 import { sha256Hex } from "../../contract/src/digest";
 
@@ -61,14 +59,6 @@ export function authorityOf(stamp: Stamped | null): AuthorityState {
   return stamp === null ? { by: "owner" } : { by: "client", stamp: { ...stamp } };
 }
 
-const STAMP_KEYS = "agent,authenticated_at,client,generation,universe";
-
-/** An agent id, or a universe: 1 to `max` printable characters, never a wildcard. */
-function label(value: unknown, max: number): value is string {
-  return typeof value === "string" && value.length > 0 && value !== "*"
-    && codePoints(value) <= max && isPrintable(value);
-}
-
 /** An agent's id: its directory's name under `/workspace/agents/`. */
 export const AGENT_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -79,30 +69,6 @@ export function agentId(value: unknown): string {
                       "underscores");
   }
   return value;
-}
-
-/** A stamp as an admitted call gives it, else invalid; null is the owner's own. */
-export function stamped(value: unknown): Stamped | null {
-  if (value === null) {
-    return null;
-  }
-  const refused = () => new Refusal("invalid",
-                                    "a stamp is a client, its grant generation, its sign-in " +
-                                    "time, a universe and an agent");
-  if (typeof value !== "object" || Array.isArray(value)
-      || Object.keys(value).sort().join() !== STAMP_KEYS) {
-    throw refused();
-  }
-  const { client, generation, authenticated_at: at, universe, agent } =
-    value as Record<string, unknown>;
-  if (typeof client !== "string" || !HEX64.test(client) || typeof generation !== "number"
-      || !Number.isSafeInteger(generation) || generation < 1
-      || (at !== null && (typeof at !== "number" || !Number.isFinite(at) || at < 0))
-      || (universe !== null && !label(universe, 512)) || !label(agent, 128)) {
-    throw refused();
-  }
-  return { client, generation, authenticated_at: at as number | null,
-           universe: universe as string | null, agent };
 }
 
 /** A capability where work acts: a scoped grant's triple. */

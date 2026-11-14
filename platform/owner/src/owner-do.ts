@@ -97,6 +97,7 @@
  * `admissionSet`, the one door that caller reaches but its tier, erasure and key doors, and,
  * with an import binding while the owner is `pending`, the cutover's import doors (`import.ts`).
  */
+import { keyed } from "../../contract/src/checks";
 import { HEX64 } from "../../contract/src/ids";
 import { rehearsalRun } from "../../contract/src/import-message";
 import { principal } from "../../contract/src/text";
@@ -288,22 +289,20 @@ export interface Bound {
   readonly erased: boolean;
 }
 
-/** A bound call with no account of its own (a sandbox's, the platform's, or none). */
 /**
  * The import's binding exactly as the binder makes it (`bindImport`): the platform's reserved
  * caller, no outside client, the bundle's digest and the control record's tiers; else refused.
  */
 function importBinding(binding: Binding): void {
-  if (typeof binding !== "object" || binding === null || binding.caller !== PLATFORM_CALLER
-      || binding.origin !== null
-      || Object.keys(binding).sort().join() !== "caller,import,origin,owner,tiers"
-      || typeof binding.import !== "object" || binding.import === null
-      || Object.keys(binding.import).join() !== "bundle"
+  if (!keyed(binding, ["owner", "caller", "origin", "import", "tiers"])
+      || binding.caller !== PLATFORM_CALLER || binding.origin !== null
+      || !keyed(binding.import, ["bundle"])
       || typeof binding.import.bundle !== "string" || !HEX64.test(binding.import.bundle)) {
     throw new Refusal("refused", IMPORT_PLATFORM_ONLY);
   }
 }
 
+/** A bound call with no account of its own (a sandbox's, the platform's, or none). */
 function bound(owner: string, caller: string): Bound {
   return { account: { owner, caller, origin: null, grant: null, run: null }, readable: null,
            lease: null, route: null, erased: false };
@@ -2094,10 +2093,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     if (sandbox !== "none") {
       // The binder's sandbox binding in its exact shape (`bindSandbox`, `bindRun`), checked
       // before anything is written: a stranger's request writes nothing.
-      const keys = sandbox === "run" ? "caller,origin,owner,run,sandbox"
-        : "caller,origin,owner,sandbox";
-      if (Object.keys(binding).sort().join() !== keys || binding.origin !== null
-          || caller !== owner) {
+      const keys = ["owner", "caller", "origin", "sandbox", ...(sandbox === "run" ? ["run"] : [])];
+      if (!keyed(binding, keys) || binding.origin !== null || caller !== owner) {
         throw new Refusal("invalid", "invalid sandbox binding");
       }
       sandboxBinding(binding.sandbox);

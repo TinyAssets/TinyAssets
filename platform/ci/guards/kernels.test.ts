@@ -53,6 +53,18 @@ describe("the kernel guard", () => {
       .toEqual([]);
   });
 
+  it("counts a source's sorted keys compared whole, and not those in a message or a list", () => {
+    expect(found("platform/owner/src/a.ts", [
+      'if (Object.keys(v).sort().join() !== "a,b") {}',
+      'const keys = Object.keys(v).sort().join(",");',
+      "const same = JSON.stringify(Object.keys(v).sort()) === '[\"a\",\"b\"]';",
+      'const said = `has ${Object.keys(v).sort().join(", ")}`;',
+      "throw new Error(Object.keys(v).sort().join());",
+      "for (const key of Object.keys(v).sort()) {}",
+      "expect(Object.keys(v).sort()).toEqual([\"a\", \"b\"]);",
+    ].join("\n"))).toEqual(["owner platform/owner/src/a.ts: the key-set test ×3"]);
+  });
+
   it("holds each kernel's layers under its folder, and not its home", () => {
     const both = 'createHash("sha256"); Date.now();';
     expect([

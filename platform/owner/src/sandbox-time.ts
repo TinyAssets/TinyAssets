@@ -39,6 +39,7 @@ import { createHash } from "node:crypto";
 
 import type { OwnerStorage, Write } from "./gate";
 import type { Call, Door, OwnerState } from "./owner-do";
+import { keyed, whole } from "../../contract/src/checks";
 import type { BilledEvent } from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
 import { METER_BATCH, type MeterEvent } from "../../contract/src/sandbox";
@@ -99,25 +100,20 @@ const AUTHORITY = /^[A-Za-z0-9._:-]{1,64}$/;
 
 /** A read of the log, checked whole: anything out of shape fails loudly. */
 export function meterRead(value: unknown, after: number): { events: MeterEvent[]; next: number } {
-  if (typeof value !== "object" || value === null || Array.isArray(value)
-      || Object.keys(value).sort().join() !== "events,next") {
+  if (!keyed(value, ["events", "next"])) {
     throw new Error("the sandbox's meter answered out of shape");
   }
-  const { events, next } = value as { events: unknown; next: unknown };
-  if (!Array.isArray(events) || events.length > METER_BATCH || typeof next !== "number"
-      || !Number.isSafeInteger(next) || next < after) {
+  const { events, next } = value;
+  if (!Array.isArray(events) || events.length > METER_BATCH || !whole(next, after)) {
     throw new Error("the sandbox's meter answered out of shape");
   }
   let last = after;
-  for (const event of events as Record<string, unknown>[]) {
-    if (typeof event !== "object" || event === null
-        || Object.keys(event).sort().join() !== "at,authority,kind,seq"
-        || typeof event["seq"] !== "number" || !Number.isSafeInteger(event["seq"])
-        || event["seq"] <= last || event["seq"] > next
+  for (const event of events as unknown[]) {
+    if (!keyed(event, ["seq", "authority", "kind", "at"]) || !whole(event["seq"], 0, next)
+        || event["seq"] <= last
         || typeof event["authority"] !== "string" || !AUTHORITY.test(event["authority"])
         || typeof event["kind"] !== "string" || !KINDS.includes(event["kind"])
-        || typeof event["at"] !== "number" || !Number.isSafeInteger(event["at"])
-        || event["at"] < 0) {
+        || !whole(event["at"], 0)) {
       throw new Error("the sandbox's meter answered out of shape");
     }
     last = event["seq"];
@@ -346,20 +342,18 @@ export class SandboxTime {
 
 /** A billed event as the doors handed it, checked whole: anything else fails loudly. */
 function billedEvent(value: unknown): BilledEvent {
-  const event = value as Record<string, unknown>;
-  const whole = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
   const id = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(v);
-  if (typeof value !== "object" || value === null || Object.keys(value).sort().join()
-        !== "at,authority,execution_id,execution_ms,id,kind,memory_mb,sandbox_id,started_at,vcpu"
-      || !id(event["id"]) || !id(event["execution_id"]) || !id(event["sandbox_id"])
-      || !whole(event["at"])
-      || typeof event["authority"] !== "string" || !AUTHORITY.test(event["authority"])
-      || (event["kind"] !== "paused" && event["kind"] !== "killed")
-      || !whole(event["started_at"]) || !whole(event["execution_ms"])
-      || !whole(event["vcpu"]) || !whole(event["memory_mb"])) {
+  if (!keyed(value, ["id", "execution_id", "sandbox_id", "at", "authority", "kind", "started_at",
+                     "execution_ms", "vcpu", "memory_mb"])
+      || !id(value["id"]) || !id(value["execution_id"]) || !id(value["sandbox_id"])
+      || !whole(value["at"], 0)
+      || typeof value["authority"] !== "string" || !AUTHORITY.test(value["authority"])
+      || (value["kind"] !== "paused" && value["kind"] !== "killed")
+      || !whole(value["started_at"], 0) || !whole(value["execution_ms"], 0)
+      || !whole(value["vcpu"], 0) || !whole(value["memory_mb"], 0)) {
     throw new Error("a billed sandbox event is out of shape");
   }
-  return event as unknown as BilledEvent;
+  return value as unknown as BilledEvent;
 }
 
 // -- THE DOORS: the `sandbox-time` rows' handlers (`contract/doors.json`) -------------------------

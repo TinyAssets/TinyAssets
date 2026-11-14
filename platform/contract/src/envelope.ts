@@ -35,9 +35,10 @@
  * copy of the bucket is ciphertext that a copier moves without any key (d3 §G).
  *
  * Pure: it takes the ring's text, and so the key bytes, as input, holds no state and uses
- * only WebCrypto and the standard text codecs. It imports nothing, so the deploy kit runs
- * it under Node's type stripping just as the Workers bundle it.
+ * only WebCrypto, the standard text codecs and the shape checks (`checks.ts`), by its file
+ * name, so the deploy kit runs it under Node's type stripping just as the Workers bundle it.
  */
+import { keyed, object } from "./checks.ts";
 
 /** A kid's most characters. */
 const KID_MAX = 32;
@@ -137,13 +138,11 @@ export function parseRing(raw: unknown): Ring | null {
   } catch {
     return null;
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
-      || Object.keys(parsed).sort().join() !== "active,keys") {
+  if (!keyed(parsed, ["active", "keys"])) {
     return null;
   }
-  const { active, keys } = parsed as { active: unknown; keys: unknown };
-  if (typeof keys !== "object" || keys === null || Array.isArray(keys)
-      || Object.keys(keys).length > KIDS_MAX) {
+  const { active, keys } = parsed;
+  if (!object(keys) || Object.keys(keys).length > KIDS_MAX) {
     return null;
   }
   const decoded = new Map<string, Uint8Array>();
