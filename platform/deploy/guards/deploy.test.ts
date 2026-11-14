@@ -1476,8 +1476,8 @@ describe("a handback run", () => {
     for (const [change, why] of [
       // An addition of the handover's, pointed elsewhere since: not the doors' to delete.
       [changed("tinyassets.io/hooks/e2b/*", "someone-else"), "tinyassets.io/hooks/e2b/* is " +
-       "someone-else's, " +
-       `neither as the handover left it (${DOORS}'s) nor as the record has it (absent)`],
+       `someone-else's, neither as the handover left it (${DOORS}'s) nor as the record has it ` +
+       "(absent)"],
       // A recorded route the handover never changed.
       [changed("tinyassets.io/site*", "site-2"), "tinyassets.io/site* is site-2's, the record " +
        "has it site's and the handover never changed it"],
