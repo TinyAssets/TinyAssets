@@ -79,8 +79,10 @@ export const LAYERS: readonly Layer[] = Object.freeze([
           ...CONTRACT, ...SOURCES, ...NOT_TESTS],
     also: {
       owner: ["platform/starter/starter.json"],
-      // The Worker↔runner wire: the Worker writes the documents the runner reads.
-      sandbox: ["platform/sandbox/runner/protocol.ts"],
+      // The Worker↔runner wire: the Worker writes the documents the runner reads. E2B's
+      // transport and a bundle's install, never the tools' calls (`admin.ts`, B11).
+      sandbox: ["platform/sandbox/runner/protocol.ts",
+                "platform/sandbox/e2b/{transport,install}.ts"],
     },
   },
   {
@@ -102,6 +104,16 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     name: "the probes",
     files: ["platform/sandbox/runner/{probes,route}.ts"],
     may: ["platform/sandbox/runner/**", ...CONTRACT, ...SOURCES, ...NOT_TESTS],
+  },
+  {
+    // E2B's client outside a Worker's runtime (B11): the transport, the tools' calls and a
+    // bundle's install, shared by the sandbox Worker, the template and the deploy kit. It
+    // runs in workerd and in Node, so it imports no package.
+    name: "the E2B client",
+    files: ["platform/sandbox/e2b/**", ...NOT_TESTS],
+    may: ["platform/sandbox/e2b/**", "platform/sandbox/runner/protocol.ts", ...CONTRACT,
+          ...NOT_TESTS],
+    packages: [],
   },
   {
     name: "the template",
