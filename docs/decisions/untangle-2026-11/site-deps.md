@@ -94,7 +94,8 @@ No workflow audited the site, and none runs the site on a pull request at all:
   published upstream never turns an unrelated pull request red;
 - **weekly, and on dispatch.** A failing run opens one issue (found by its title), or comments
   on the open one. The first clean run closes it. Only this job gets `issues: write`, and it never
-  runs on a pull request.
+  runs on a pull request. That job runs one at a time (`concurrency`), so a dispatch during the
+  weekly run cannot race it into a second issue.
 
 It is not a step in `deploy-site-react`. There, a newly published advisory in an unreachable
 build tool would block a copy fix from shipping. The weekly issue covers the same exposure

@@ -34,6 +34,8 @@ jobs:
   issue:
     needs: audit
     if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    # A dispatch during the weekly run would otherwise race it past the search and open a second issue.
+    concurrency: site-audit-issue
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

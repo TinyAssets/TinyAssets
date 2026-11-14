@@ -1,6 +1,6 @@
 # Website preview loop — read this first
 
-`WebSite/site-react/` is the only site source for `tinyassets.io` (Next.js 15,
+`WebSite/site-react/` is the only site source for `tinyassets.io` (a Next.js
 static export). The Svelte rollback tree was retired on 2026-09-02; there is
 one tree to edit, preview, test and build.
 
