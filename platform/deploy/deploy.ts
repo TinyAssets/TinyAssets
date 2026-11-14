@@ -39,6 +39,9 @@
  *   and the write read back.
  * - `owner` (the operator path): `--act`'s op asked of the doors for `--owner` through the
  *   operator channel, and their answer said.
+ * - `restore` (the operator path): `--owner`'s restore from `--generation` through the
+ *   operator channel, begun, stepped until done and the owner admitted; with no
+ *   `--generation`, the owner's namespace and finished generations, as its object holds them.
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -106,7 +109,10 @@ import { WRANGLER } from "../ci/wrangler.ts";
 // runs them here.
 import { closedToAll, CONTROL_KEY, parseControl } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
-import { argsText, OPERATOR_KEYRING } from "../contract/src/operator-message.ts";
+import {
+  argsText, OPERATOR_KEYRING, type OperatorArgs,
+} from "../contract/src/operator-message.ts";
+import type { RestoreAnswer } from "../contract/src/owner.ts";
 import { principal } from "../contract/src/text.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
@@ -122,7 +128,8 @@ import {
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
-  type Act, askOperator, controlEdits, differences, type Edit, edited, ownerAct,
+  type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
+  ownerAct, RESTORE_LOSES, restoreFrom,
 } from "./operator.ts";
 /**
  * The control record a first deploy writes when there is none: every outside door closed, and
@@ -171,7 +178,7 @@ export const IO: Io = Object.freeze({
 });
 
 export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback" | "control"
-  | "owner";
+  | "owner" | "restore";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -198,6 +205,8 @@ export interface Run {
   /** `--owner` and `--act`: the owner `owner` asks the doors an op of, and the op. */
   readonly owner: string | null;
   readonly act: Act | null;
+  /** `--generation`: the generation `restore` restores `--owner` from; none asks its source. */
+  readonly generation: Generation | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly io: Io;
@@ -1384,6 +1393,19 @@ const controlEdit = step<"cloudflare" | "account">(async ({ run, say }, got) => 
   say("read the control record back: it is the one written");
 });
 
+/** `op` on `owner` with `args` asked of the doors through the operator channel: its result. */
+async function asked(run: Run, got: Pick<Values, "cloudflare" | "account">, op: string,
+                     owner: string, args: OperatorArgs): Promise<unknown> {
+  const answer = await askOperator(got.cloudflare, got.account,
+                                   keyring(input(run, OPERATOR_KEYRING), OPERATOR_KEYRING), op,
+                                   owner, args, run.io);
+  if ("refused" in answer) {
+    throw new Error(`the doors refused ${op} for ${owner} (${answer.refused.code}): ${
+      answer.refused.message}`);
+  }
+  return answer.result;
+}
+
 /**
  * Mode `owner`: `--act`'s op asked of the doors for `--owner` through the operator channel,
  * and their answer said; a refusal stops the run, named. The plan job only plans it.
@@ -1395,14 +1417,49 @@ const ownerAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   if (!run.apply) {
     return;
   }
-  const answer = await askOperator(got.cloudflare, got.account,
-                                   keyring(input(run, OPERATOR_KEYRING), OPERATOR_KEYRING), op,
-                                   owner, args, run.io);
-  if ("refused" in answer) {
-    throw new Error(`the doors refused ${op} for ${owner} (${answer.refused.code}): ${
-      answer.refused.message}`);
+  say(`the doors answered ${op} for ${owner}: ${
+    JSON.stringify(await asked(run, got, op, owner, args))}`);
+});
+
+/**
+ * Mode `restore` (`owner/src/restore.ts`): with no `--generation`, `restore.source` asked for
+ * `--owner` and its answer said; with one, the restore begun from it, stepped until done, and
+ * the owner admitted (`owner.admit`: the object first, then the directory). A refusal or a
+ * failed check stops the run, named, and the owner is not admitted. The plan job only plans it.
+ */
+const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const owner = run.owner!;
+  const from = run.generation;
+  if (from === null) {
+    say(`ask the doors restore.source for ${owner}, through the operator channel`);
+    if (run.apply) {
+      say(`the doors answered restore.source for ${owner}: ${
+        JSON.stringify(await asked(run, got, "restore.source", owner, {}))}`);
+    }
+    return;
   }
-  say(`the doors answered ${op} for ${owner}: ${JSON.stringify(answer.result)}`);
+  say(`restore ${owner} from generation ${from.gen} of namespace ${from.namespace}, into its ` +
+      "own object only while it is pending and empty, then admit it, through the operator " +
+      `channel: ${RESTORE_LOSES}`);
+  if (!run.apply) {
+    return;
+  }
+  await asked(run, got, "restore.begin", owner, { namespace: from.namespace, gen: from.gen });
+  for (;;) {
+    const at = await asked(run, got, "restore.step", owner, {}) as RestoreAnswer;
+    if (at.step === "failed") {
+      throw new Error(`the restore of ${owner} failed its check, and the owner is not ` +
+                      `admitted: ${at.failed}`);
+    }
+    if (at.done) {
+      say(`restored ${owner} from ${at.gen}: ${at.rows} rows, ${at.chunks} chunks read back, ` +
+          `the owner ${at.state} as at the generation`);
+      break;
+    }
+    say(`the restore of ${owner} is at its ${at.step} step`);
+  }
+  say(`the doors answered owner.admit for ${owner}: ${
+    JSON.stringify(await asked(run, got, "owner.admit", owner, {}))}`);
 });
 
 /**
@@ -1819,6 +1876,7 @@ const HANDBACK = Steps.none.then(zone).then(recordRead).then(e2b).then(hookListe
 /** The operator path's modes: the same steps for the plan job, which applies nothing. */
 const CONTROL = Steps.none.then(zone).then(controlEdit).list;
 const OWNER = Steps.none.then(zone).then(ownerAsk).list;
+const RESTORE = Steps.none.then(zone).then(restoreAsk).list;
 
 /** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
@@ -1881,6 +1939,11 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
     deploys: false, applies: true, own: ["--owner", "--act"],
     steps: { public: OWNER, secrets: OWNER }, report: { unchanged: NOTHING, after: [] },
+  },
+  restore: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
+    deploys: false, applies: true, own: ["--owner", "--generation"],
+    steps: { public: RESTORE, secrets: RESTORE }, report: { unchanged: NOTHING, after: [] },
   },
 });
 
@@ -2033,6 +2096,8 @@ const OWN = Object.freeze({
                         "place of the live one", needed: false },
   "--owner": { names: "the owner principal the op is asked for", needed: true },
   "--act": { names: "the op asked of the doors", needed: true },
+  "--generation": { names: "the generation to restore from, <namespace>/<gen> as " +
+                           "restore.source answers them", needed: false },
 });
 export type Own = keyof typeof OWN;
 
@@ -2061,6 +2126,12 @@ function ownValue(name: Own, text: string): unknown {
       }
     case "--act":
       return ownerAct(text);
+    case "--generation":
+      try {
+        return restoreFrom(text);
+      } catch {
+        throw refused();
+      }
   }
 }
 
@@ -2100,7 +2171,8 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
     migrate: names(argv, "--migrate"), record: (own["--record"] as string | undefined) ?? null,
     edits: (own["--set"] as Edit[] | undefined) ?? [], replace: own["--replace"],
     owner: (own["--owner"] as string | undefined) ?? null,
-    act: (own["--act"] as Act | undefined) ?? null, env, io });
+    act: (own["--act"] as Act | undefined) ?? null,
+    generation: (own["--generation"] as Generation | undefined) ?? null, env, io });
   if (row.report !== null) {
     if (run.apply && run.reach === "public") {
       throw new Error("--public is the plan job's: it never changes anything");

@@ -12,7 +12,10 @@
  * the runs lane, its mail delivered as runs and their replies posted (`launch.ts`). The owner export
  * (`export.ts`, slice P) names
  * them too, only to read them for the owner (its source holds no SQL but `SELECT`, held by
- * the policy-boundary guard's read-only check).
+ * the policy-boundary guard's read-only check); the restore (`restore.ts`, lane R) names them
+ * in its load table, only to load a generation into a pending, empty owner (its SQL names no
+ * table but its own, held by the policy-boundary guard's loader check), and reaches the
+ * ledger once, for its seq allocator (`Ledger.restored`).
  *
  * The doors' handlers sit in their modules, and reach the ledger through the state the
  * object hands them (`OwnerState`), not by an import (review F3). The modules that name the
@@ -29,13 +32,15 @@ import { workerSources } from "../../ci/kit/sources";
 const LEDGER = "owner/src/ledger.ts";
 const IMPORTERS = new Set(["owner/src/owner-do.ts", "owner/src/wakes.ts",
                            "owner/src/archive.ts", "owner/src/launch.ts"]);
-const NAMERS = new Set([LEDGER, "owner/src/schema.ts", "owner/src/export.ts"]);
+const NAMERS = new Set([LEDGER, "owner/src/schema.ts", "owner/src/export.ts",
+                        "owner/src/restore.ts"]);
 const TABLES = Object.freeze(["outside_agents", "native_agents", "ledger_messages",
   "ledger_recipients", "ledger_readers", "ledger_wakes", "ledger_usage",
   "message_bodies", "wake_callbacks"]);
 /** The modules that name the state's ledger (`o.ledger`, the launcher's `this.#o.ledger`). */
 const REACHERS = new Set([LEDGER, "owner/src/collections.ts", "owner/src/files.ts",
-                          "owner/src/grants.ts", "owner/src/inbound.ts", "owner/src/launch.ts"]);
+                          "owner/src/grants.ts", "owner/src/inbound.ts", "owner/src/launch.ts",
+                          "owner/src/restore.ts"]);
 /** The state's ledger, as a handler, the launcher or a holder of the state names it. */
 const REACH = /(?:\bo|\bstate|\bthis\.#o|\bthis\.#state)\.ledger\b/;
 /** A static import or export from, or a dynamic import of, the ledger module. */

@@ -65,6 +65,7 @@ import {
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
+import { RESTORE_LOSES } from "../operator";
 import platform from "../platform.json" with { type: "json" };
 
 type Json = Record<string, unknown>;
@@ -138,7 +139,8 @@ const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]
 
 /** The options of its own each mode needs, by the dispatch's input that gives each. */
 const NEEDED: Partial<Record<Mode, Readonly<Record<string, string>>>> = {
-  handback: { RECORD: "7001" }, owner: { OWNER: "user_alice", ACT: "tier=paid" } };
+  handback: { RECORD: "7001" }, owner: { OWNER: "user_alice", ACT: "tier=paid" },
+  restore: { OWNER: "user_alice" } };
 /** `mode`'s needed options, as its command line gives them. */
 const needed = (mode: Mode): string[] => Object.entries(NEEDED[mode] ?? {})
   .flatMap(([name, value]) => [`--${name.toLowerCase()}`, value]);
@@ -736,7 +738,7 @@ describe("the command line", () => {
 
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
     expect(Object.keys(MODES)).toEqual(["plan", "dark", "probe", "routes", "h2", "pair",
-                                        "handback", "control", "owner"]);
+                                        "handback", "control", "owner", "restore"]);
     for (const mode of Object.keys(MODES) as Mode[]) {
       expect(parse(["--mode", mode, ...needed(mode)], ENV, w.io).mode).toBe(mode);
     }
@@ -2858,7 +2860,78 @@ describe("the operator path's modes", () => {
     expect(() => parse(["--mode", "owner", "--owner", " x", "--act", "admit"], ENV, w.io))
       .toThrow("--owner is the owner principal the op is asked for");
     expect(() => parse(["--mode", "control", "--owner", "user_alice"], ENV, w.io))
-      .toThrow("mode control takes no --owner: it is mode owner's");
+      .toThrow("mode control takes no --owner: it is mode owner and restore's");
+  });
+});
+
+/** A generation `restore` takes: a namespace and an id, as `restore.source` answers them. */
+const FROM = `${"a".repeat(32)}/${"b".repeat(16)}`;
+
+describe("mode restore", () => {
+  /** The doors as a restore's ops find them: begun, two steps, done, then admitted. */
+  const restoring = (failed = false) => {
+    let steps = 0;
+    return (message: OperatorMessage) => {
+      switch (message.op) {
+        case "restore.begin":
+          return { result: { step: "stage", done: false } };
+        case "restore.step":
+          steps++;
+          return { result: steps < 2 ? { step: "apply", done: false }
+            : failed ? { step: "failed", done: false, failed: "board's row t1 differs" }
+            : { step: "done", done: true, gen: "b".repeat(16), rows: 12, chunks: 3, keys: [],
+                state: "admitted", reasons: [] } };
+        case "owner.admit":
+          return { result: { state: "admitted", reasons: [] } };
+        default:
+          return { result: { namespace: "a".repeat(32), generations: [], state: "admitted",
+                             restore: null } };
+      }
+    };
+  };
+
+  it("plans the restore and what the owner loses; with --yes begins it, steps it until done " +
+     "and admits the owner, each op through the operator channel", async () => {
+    const flags = ["--owner", "user_alice", "--generation", FROM];
+    const planned = world({ held: true });
+    expect((await runMode(planned, "restore", ["--public", ...flags], PUBLIC)).plan).toEqual([
+      `restore user_alice from generation ${"b".repeat(16)} of namespace ${"a".repeat(32)}, ` +
+      "into its own object only while it is pending and empty, then admit it, through the " +
+      `operator channel: ${RESTORE_LOSES}`]);
+    expect(planned.sent).toEqual([]);
+    const w = world({ held: true, doors: restoring() });
+    const work = await runMode(w, "restore", ["--yes", ...flags]);
+    expect(w.sent.map(({ message }) => [message.op, message.args])).toEqual([
+      ["restore.begin", { namespace: "a".repeat(32), gen: "b".repeat(16) }],
+      ["restore.step", {}], ["restore.step", {}], ["owner.admit", {}]]);
+    expect(work.plan).toContain(`restored user_alice from ${"b".repeat(16)}: 12 rows, 3 chunks ` +
+                                "read back, the owner admitted as at the generation");
+  });
+
+  it("asks the owner's source with no --generation, and stops a failed restore unadmitted",
+     async () => {
+    const w = world({ held: true, doors: restoring() });
+    await runMode(w, "restore", ["--yes", "--owner", "user_alice"]);
+    expect(w.sent.map(({ message }) => message.op)).toEqual(["restore.source"]);
+    const failing = world({ held: true, doors: restoring(true) });
+    await expect(runMode(failing, "restore", ["--yes", "--owner", "user_alice", "--generation",
+                                              FROM])).rejects.toThrow(
+      "the restore of user_alice failed its check, and the owner is not admitted: board's row " +
+      "t1 differs");
+    expect(failing.sent.map(({ message }) => message.op)).not.toContain("owner.admit");
+  });
+
+  it("takes a generation only as <namespace>/<gen>, and only for mode restore", () => {
+    const w = world();
+    for (const text of ["a/b", `${"a".repeat(32)}`, `${FROM}/c`, FROM.toUpperCase()]) {
+      expect(() => parse(["--mode", "restore", "--owner", "user_alice", "--generation", text],
+                         ENV, w.io), text).toThrow(
+        "--generation is the generation to restore from, <namespace>/<gen> as restore.source " +
+        "answers them");
+    }
+    expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", "admit",
+                        "--generation", FROM], ENV, w.io))
+      .toThrow("mode owner takes no --generation: it is mode restore's");
   });
 });
 
@@ -3003,7 +3076,8 @@ describe("platform-deploy.yml", () => {
   const RUNNER_TEMP = "/runner/temp";
   const PLAN = ["--plan", `${RUNNER_TEMP}/deploy-plan.json`];
   /** The dispatch's inputs, each handed to the kit as its option of the same name. */
-  const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "SET", "REPLACE", "OWNER", "ACT"];
+  const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "SET", "REPLACE", "OWNER", "ACT",
+                    "GENERATION"];
   const dispatched = (inputs: Record<string, string>) =>
     DISPATCH.flatMap((name) => [`--${name.toLowerCase()}`, inputs[name]!]);
   /** `mode` dispatched with what it needs and nothing else. */
@@ -3012,14 +3086,17 @@ describe("platform-deploy.yml", () => {
   /** Dispatches that give the options a mode may go without. */
   const OPTIONS: Record<string, string>[] = [{ ...dispatchOf("dark"), ROTATE: "ROUTING_MAC_KEY", MIGRATE: "owner" },
                    { ...dispatchOf("control"), SET: "outside=on canary+=user_bob",
-                     REPLACE: JSON.stringify(DARK) }];
+                     REPLACE: JSON.stringify(DARK) },
+                   { ...dispatchOf("restore"), GENERATION: FROM }];
   /** What the kit reads of a run's own options. */
   const ownOf = (run: ReturnType<typeof parse>) =>
-    [run.record, run.edits.length, run.replace, run.owner, run.act?.op ?? null];
+    [run.record, run.edits.length, run.replace, run.owner, run.act?.op ?? null,
+     run.generation?.gen ?? null];
   const wanted = (inputs: Record<string, string>) =>
     [inputs["RECORD"] || null, inputs["SET"]!.split(" ").filter(Boolean).length,
      inputs["REPLACE"] ? JSON.parse(inputs["REPLACE"]) : undefined, inputs["OWNER"] || null,
-     inputs["ACT"] ? `owner.${inputs["ACT"].split("=")[0]}` : null];
+     inputs["ACT"] ? `owner.${inputs["ACT"].split("=")[0]}` : null,
+     inputs["GENERATION"] ? inputs["GENERATION"].split("/")[1] : null];
 
   it("plans in a job of its own, with no production secret, the chosen mode's plan", () => {
     expect(plan!.environment).toBeUndefined();

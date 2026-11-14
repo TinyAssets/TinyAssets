@@ -179,9 +179,10 @@ import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type {
   AdmissionRequest, BeatRequest, BilledEvent, BindingRequest, ConnectionCommitRequest,
   ConnectionPrepareRequest, ConnectionRequest, EgressOpened, EgressRefusal, EgressReserved,
-  FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors, SigninEventsRequest,
-  TierRequest,
+  FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors, RestoreAnswer,
+  RestoreBeginRequest, RestoreSource, SigninEventsRequest, TierRequest,
 } from "../../contract/src/owner";
+import { RESTORING, restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
 import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
 import { type Receipt as StarterReceipt, Starter, starterDoors } from "./starter";
@@ -724,7 +725,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       wakes: this.#sender, files: this.#files, connections: this.#connections,
       runs: this.#launcher, manifest: this.#backups, sandbox: this.#sandboxTime,
       archive: this.#archive, starter: this.#starter,
-    }, clock, write, () => wiped(storage.sql) || erasing(storage));
+    }, clock, write, () => wiped(storage.sql) || erasing(storage) || restoring(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
       storage, write, clock, lifecycle,
@@ -1452,6 +1453,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return this.#units("gatewayReseal", binding, undefined, connectionsDoors.gatewayReseal);
   }
 
+  // -- RESTORE: the platform's, into a pending and empty owner (`restore.ts`) -----------
+
+  /** The owner's namespace and finished generations, its admission and any restore's step. */
+  restoreSource(binding: Binding): Promise<RestoreSource> {
+    return this.#units("restoreSource", binding, undefined, restoreDoors.restoreSource);
+  }
+
+  /** A restore begun from one generation of the owner's: a pending and empty object only. */
+  restoreBegin(binding: Binding, request: RestoreBeginRequest): Promise<RestoreAnswer> {
+    return this.#units("restoreBegin", binding, request, restoreDoors.restoreBegin);
+  }
+
+  /** The restore carried on from its record, a bounded pass; how far it is. */
+  restoreStep(binding: Binding): Promise<RestoreAnswer> {
+    return this.#units("restoreStep", binding, undefined, restoreDoors.restoreStep);
+  }
+
   // -- OWNER_POLICY ------------------------------------------------------------
 
   policyRead(binding: Binding): Promise<Projection> {
@@ -2048,8 +2066,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       throw new Refusal("refused", "this object belongs to another owner");
     }
     if (door === "import") {
-      // Only an owner the platform has not admitted yet is imported into: never a live one.
+      // Only an owner the platform has not admitted yet is imported into: never a live one,
+      // nor one a restore is loading (its discard would delete the generation it reads).
       // The discard takes a rehearsal's name in any state too: no issuer's subject is one.
+      if (restoring(this.#storage)) {
+        throw new Refusal("refused", RESTORING);
+      }
       if (admission(this.#storage).state !== "pending"
           && !(discarding && rehearsalRun(owner) !== null)) {
         throw new Refusal("refused", IMPORT_PENDING_ONLY);

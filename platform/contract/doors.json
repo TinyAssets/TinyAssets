@@ -1111,6 +1111,22 @@
       "capability": null, "handler": "tier", "gate": "door", "args": "none"
     },
     {
+      "door": "restoreSource", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "restore", "gate": "units", "args": "none"
+    },
+    {
+      "door": "restoreBegin", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "restore", "gate": "units",
+      "args": {
+        "refused": "invalid restore request",
+        "required": { "namespace": {}, "gen": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "restoreStep", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "restore", "gate": "units", "args": "none"
+    },
+    {
       "door": "egressOpen", "class": "work", "caller": "egress", "capability": null,
       "handler": "egress", "gate": "units", "args": "loose"
     },

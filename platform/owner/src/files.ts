@@ -2568,6 +2568,26 @@ export class Files {
     }));
   }
 
+  /**
+   * In a unit: the namespace and wrapped key a restore read its generation under
+   * (`restore.ts`), taken as this object's own, so every chunk its contents name is found
+   * where it is, under the same key.
+   */
+  adoptSpace(ns: string, key: string): void {
+    this.#sql.exec("UPDATE file_space SET ns = ?, data_key = ? WHERE ns IS NULL", ns, key);
+  }
+
+  /**
+   * In a unit, once a restore has loaded the rows (`restore.ts`): the version allocator past
+   * every version they name, so none is given again, and the change feed's floor there, so
+   * every reader's cursor is behind it and reads again whole.
+   */
+  restored(): void {
+    this.#sql.exec("UPDATE file_space SET seq = max(seq, coalesce((SELECT max(version) FROM " +
+                     "file_entries), 0), coalesce((SELECT max(version) FROM file_history), 0))");
+    this.#sql.exec("UPDATE file_space SET feed_floor = max(feed_floor, seq)");
+  }
+
   /** The owner's namespace, or null when nothing was ever stored. A read. */
   storedNamespace(): string | null {
     return this.#space().ns;
