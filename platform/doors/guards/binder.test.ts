@@ -54,8 +54,35 @@ const IMPORT_WINDOW = new Set(["IMPORT_STAGING", "IMPORTS"]);
  * binding: a name read there (`QUEUES.IMPORTS`, the doors' queue dispatch) reaches no binding.
  */
 const QUEUE_NAMES = "QUEUES";
+const QUEUES_IMPORT = 'import { QUEUES } from "../../contract/src/queue-names";\n';
 const OBJECT_IDS = new Set(["idFromName", "idFromString", "newUniqueId"]);
 const REMEMBERING = new Set(["remember", "isConsentRemembered"]);
+
+/**
+ * Whether `file` names `QUEUES` only as the generated table it imports, so `QUEUES.<binding>`
+ * there is a name: a `QUEUES` declared any other way (`const QUEUES = env`) may be a binding.
+ */
+function queueNamesOf(file: ts.SourceFile): boolean {
+  let imported = false;
+  let other = false;
+  const visit = (node: ts.Node): void => {
+    const at = node.parent as { name?: ts.Node } | undefined;
+    if (ts.isIdentifier(node) && node.text === QUEUE_NAMES && at?.name === node
+        && !ts.isPropertyAccessExpression(node.parent)) {
+      const spec = node.parent;
+      const from = ts.isImportSpecifier(spec) && spec.propertyName === undefined
+        ? (spec.parent.parent.parent.moduleSpecifier as ts.StringLiteral).text : "";
+      if (from.endsWith("/contract/src/queue-names")) {
+        imported = true;
+      } else {
+        other = true;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return imported && !other;
+}
 
 function nameOf(node: ts.Node): string | null {
   if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node)) {
@@ -70,6 +97,7 @@ export function binderProblems(fileName: string, source: string): string[] {
   const problems: string[] = [];
   const report = reporter(file, problems);
   const doors = fileName.startsWith("doors/src/");
+  const queueNames = queueNamesOf(file);
   const visit = (node: ts.Node): void => {
     const name = nameOf(node);
     const on = name === "getByName" && ts.isPropertyAccessExpression(node.parent)
@@ -102,7 +130,8 @@ export function binderProblems(fileName: string, source: string): string[] {
     }
     if (doors && ts.isIdentifier(node) && IMPORT_WINDOW.has(node.text)
         && !fileName.startsWith(IMPORT) && fileName !== ENV
-        && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node
+        && !(queueNames && ts.isPropertyAccessExpression(node.parent)
+             && node.parent.name === node
              && node.parent.expression.getText(file) === QUEUE_NAMES)) {
       report(node, `reaches the import window's ${node.text} outside import/`);
     }
@@ -163,6 +192,8 @@ describe("binder guard", () => {
     ["doors/src/ring.ts", "export const f = (env: any) => env.IMPORT_STAGING.get('k');"],
     ["doors/src/erase.ts", "export const f = (env: any) => env.IMPORTS.send({});"],
     ["doors/src/index.ts", "export const f = (env: any) => env.QUEUES.IMPORTS.send({});"],
+    ["doors/src/index.ts", "export const f = (env: any) => { const QUEUES = env; return QUEUES.IMPORTS; };"],
+    ["doors/src/index.ts", `${QUEUES_IMPORT}export const f = (QUEUES: any) => QUEUES.IMPORTS;`],
     ["doors/src/import/index.ts", "export const f = (env: any) => env.FILES.putChunks('n', 'k', []);"],
     [CODEMODE_ENTRY, "export const f = (env: any) => env.OWNER.getByName('bob');"],
     [CODEMODE_ENTRY, "export const f = (env: any) => env.RUNNER.getByName('bob');"],
@@ -187,7 +218,7 @@ describe("binder guard", () => {
     ["doors/src/connect.ts", "export const f = (env: any) => env.GATEWAY.verify('a', 'c', 1, 'b');"],
     ["doors/src/egress.ts", "export const f = (env: any) => env.EGRESS.forward('a', 'c', 1, 'b', r);"],
     ["doors/src/import/index.ts", "export const f = (env: any) => env.IMPORT_STAGING.get('k');"],
-    ["doors/src/index.ts", "export const f = (b: any) => b.queue === QUEUES.IMPORTS;"],
+    ["doors/src/index.ts", `${QUEUES_IMPORT}export const f = (b: any) => b.queue === QUEUES.IMPORTS;`],
   ])("allows, in %s, %s", (fileName, source) => {
     expect(binderProblems(fileName, source)).toEqual([]);
   });
