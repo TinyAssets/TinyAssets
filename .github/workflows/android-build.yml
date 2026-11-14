@@ -134,7 +134,6 @@ jobs:
   publish-apk:
     # Only the built artifact crosses into this job; the checkout, node_modules
     # and Gradle never run with write authority.
-    if: github.ref == 'refs/heads/main'
     needs: build-debug-apk
     runs-on: ubuntu-latest
     permissions:
