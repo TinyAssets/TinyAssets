@@ -70,23 +70,11 @@ export const AUTOMATON_STATES = 8_192;
 export const STEP_NS = 6;
 /**
  * The most bytes of the list applied, in file order: a technical ceiling, the matcher's
- * memory in the sync agent's heap: (`SANDBOX_HEAP` − `AGENT_PEAK`) / `HEAP_PER_LIST_BYTE`,
- * is 7.8 MiB with the worst class's heads diverging, so 6 MiB (`limits-audit.md`). The three
- * were measured in throwaway sandboxes of the pinned template, with the sandbox's own Node,
- * on 2026-11-03: three runs, 5.9 sandbox-minutes, each sandbox killed and proven gone; the
- * sandbox then compiled 6 MiB of every class beside the peak. The one-off probe that measured
- * them is deleted (untangle B1).
+ * memory in the sync agent's heap, 7.8 MiB with the worst class's heads diverging, so 6 MiB
+ * (`limits-audit.md`). The heap is the sandbox's, measured there: `sandbox/runner/sizing.ts`,
+ * whose test holds this to it.
  */
 export const LIST_BYTES = 6 * 1024 * 1024;
-/** The sync agent's heap limit in the sandbox (Node's own, the agent spawned with no flag). */
-export const SANDBOX_HEAP = 460_587_008;
-/** The sync agent's own heap at its peak over a sync-out of 500,000 entries, measured there. */
-export const AGENT_PEAK = 70_027_000;
-/**
- * The worst class's heap (and typed arrays) a list byte, its lines' heads diverging (round 7,
- * R7-3: a path's `L*` and a name's `*L`, 45.0 and 43.4; Aho–Corasick's `**\/L` 36.6).
- */
-export const HEAP_PER_LIST_BYTE = 48;
 
 export type Kind = "custom" | "default";
 
