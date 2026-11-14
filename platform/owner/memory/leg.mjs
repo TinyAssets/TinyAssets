@@ -48,10 +48,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { installed } from "../../ci/deps.ts";
 import { egressLeg } from "./egress.mjs";
 import { freePorts } from "./ports.mjs";
 import { ownWorkerd } from "./workerd.mjs";
 
+installed();
 const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(OWNER, "package.json"));
 const MIB = 1024 * 1024;
