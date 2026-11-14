@@ -10,8 +10,8 @@ name: Platform deploy (manual, founder-approved)
 #            with the E2B key alone: the sandbox's template and the runner
 #            this commit ships checked together on throwaway sandboxes,
 #            unless E2B already holds their pair's tag (`--mode pair`).
-#   apply  - needs the plan and the pair (none for probe, h2 and handback,
-#            which deploy nothing), in the main-only `production` environment:
+#   apply  - needs the plan and, for dark and routes, the pair, in the
+#            main-only `production` environment:
 #            the mode with `--yes`, which stops a deploy unless the pair's tag
 #            is at E2B. The founder's dispatch is the approval: a
 #            required reviewer on `production` would hold every scheduled job
@@ -25,21 +25,26 @@ name: Platform deploy (manual, founder-approved)
 # makes the same in memory) and rotated with `keyring-add`, then stored here.
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
-# probe, routes, h2 and handback here; pair is its own job. `routes` keeps a
-# record of what it changes (the zone's routes, the egress custom domain, E2B's
-# lifecycle webhook) before any change, and its job summary names the record's
-# id (the run's); `handback` takes that id as `record` and puts each back as the
-# record has it (the cutover's rollback).
+# probe, routes, h2, handback, control and owner here; pair is its own job.
+# `routes` keeps a record of what it changes (the zone's routes, the egress
+# custom domain, E2B's lifecycle webhook) before any change, and its job
+# summary names the record's id (the run's); `handback` takes that id as
+# `record` and puts each back as the record has it (the cutover's rollback).
+# The operator path (deploy/operator.ts): `control` edits the control record
+# in KV itself (`set`, from `replace` in place of the live one), never through
+# the doors; `owner` asks the doors `act` for `owner` through the operator
+# channel. Each shares this file's concurrency group, so no operator run ever
+# interleaves with a deploy.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | probe | routes | h2 | handback'
+        description: 'plan | dark | probe | routes | h2 | handback | control | owner'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, probe, routes, h2, handback]
+        options: [plan, dark, probe, routes, h2, handback, control, owner]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -52,6 +57,26 @@ on:
         type: string
       record:
         description: 'handback: the route record to hand back (the routes run id its summary names)'
+        required: false
+        default: ''
+        type: string
+      set:
+        description: 'control: edits, space-separated (outside=on canary+=<owner> tiers.free.runs=5)'
+        required: false
+        default: ''
+        type: string
+      replace:
+        description: 'control: the whole record, as JSON, the edits start from in place of the live one'
+        required: false
+        default: ''
+        type: string
+      owner:
+        description: 'owner: the owner principal'
+        required: false
+        default: ''
+        type: string
+      act:
+        description: 'owner: tier=<tier> | suspend=<reason> | lift=<reason> | admit'
         required: false
         default: ''
         type: string
@@ -76,6 +101,10 @@ jobs:
       ROTATE: ${{ inputs.rotate }}
       MIGRATE: ${{ inputs.migrate }}
       RECORD: ${{ inputs.record }}
+      SET: ${{ inputs.set }}
+      REPLACE: ${{ inputs.replace }}
+      OWNER: ${{ inputs.owner }}
+      ACT: ${{ inputs.act }}
     steps:
       - uses: actions/checkout@v4
 
@@ -90,7 +119,8 @@ jobs:
       - name: The plan (changes nothing)
         run: >-
           node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --public
-          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}"
+          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
+          --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
 
   # The pair check, in a job of its own before apply: the pinned E2B template, the runner
   # this commit's sandbox Worker ships and the probes beside it, unless E2B already holds
@@ -124,8 +154,7 @@ jobs:
       always() && github.ref == 'refs/heads/main' && inputs.mode != 'plan'
       && needs.plan.result == 'success'
       && (needs.pair.result == 'success'
-          || ((inputs.mode == 'h2' || inputs.mode == 'probe' || inputs.mode == 'handback')
-              && needs.pair.result == 'skipped'))
+          || (inputs.mode != 'dark' && inputs.mode != 'routes' && needs.pair.result == 'skipped'))
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -150,6 +179,10 @@ jobs:
       ROTATE: ${{ inputs.rotate }}
       MIGRATE: ${{ inputs.migrate }}
       RECORD: ${{ inputs.record }}
+      SET: ${{ inputs.set }}
+      REPLACE: ${{ inputs.replace }}
+      OWNER: ${{ inputs.owner }}
+      ACT: ${{ inputs.act }}
     steps:
       - uses: actions/checkout@v4
 
@@ -164,4 +197,5 @@ jobs:
       - name: Apply
         run: >-
           node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --yes
-          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}"
+          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
+          --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"

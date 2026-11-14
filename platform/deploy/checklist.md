@@ -305,8 +305,16 @@ It never counts as "absent".
   the probe keys `deploy/h2-probes.ts` names (`INPUTS`: two owners' API keys, plus an app
   token and a key id for the revoke probe) as `production` secrets. It prints one row per
   probe.
-- **Open the gates** in the control record when you are ready: canary owners first, then
-  `outside: "on"`, and `inbound: true` for `/hooks/inbound`.
+- **Open the gates with mode `control`** when you are ready (the cutover's Step 14): canary
+  owners first (`set`: `outside=on canary+=<owner>`), then everyone (`ordinary=all`), and
+  `inbound=true` for `/hooks/inbound`. The plan job shows each field's old and new value; the
+  apply job writes only a record `parseControl` takes, keeps the one it replaces as
+  `deploy:control:<run id>` (put it back with `replace`), and reads the write back. It edits
+  KV itself, never through the doors, so `outside=off`, the kill switch, works when they
+  don't. A missing or malformed record is shown as it is; `replace` gives the whole record.
+- **Mode `owner`** asks the doors one op for one owner through the operator channel (`owner`
+  and `act`: `tier=<tier>`, `suspend=<reason>`, `lift=<reason>` or `admit`) and prints their
+  answer, or stops on their refusal. It needs `OPERATOR_KEYRING` in `production`.
 - **Later deploys change the Workers one after another, never at once.** The kit deploys
   them in turn, each after the Workers it binds (`WORKERS` in `deploy/facts.ts`), so
   between two of them old and new versions serve together. A change to a contract between

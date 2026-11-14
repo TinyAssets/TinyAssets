@@ -8,7 +8,8 @@
  * mode a run (`MODES`, each a row of steps):
  *
  *   node --experimental-strip-types platform/deploy/deploy.ts --mode <mode> [--public | --yes]
- *        [--rotate <secrets>] [--migrate <Workers>] [--record <id>]
+ *        [--rotate <secrets>] [--migrate <Workers>] [--record <id>] [--set <edits>]
+ *        [--replace <record>] [--owner <owner> --act <act>]
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
  *
@@ -32,6 +33,12 @@
  * - `pair`: the pinned template with the runner this checkout ships and the probes beside
  *   it, checked together on throwaway sandboxes unless E2B already holds their pair's tag
  *   (`sandbox/template/checks.ts pair`).
+ * - `control` (the operator path, `operator.ts`): the control record edited in KV by
+ *   `--set`'s edits, from `--replace`'s whole record in place of the live one, never through
+ *   the doors; written only when `parseControl` takes it, the record it replaces kept first
+ *   and the write read back.
+ * - `owner` (the operator path): `--act`'s op asked of the doors for `--owner` through the
+ *   operator channel, and their answer said.
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -92,8 +99,10 @@ import { PLATFORM, REPO } from "../ci/paths.ts";
 import { WRANGLER } from "../ci/wrangler.ts";
 // The envelope and the E2B client import only by their own names, so Node's type stripping
 // runs them here.
-import { CONTROL_KEY } from "../contract/src/control.ts";
+import { CONTROL_KEY, parseControl } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
+import { argsText, OPERATOR_KEYRING } from "../contract/src/operator-message.ts";
+import { principal } from "../contract/src/text.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
 import { type JobRun, maskLine, runOf, set, summarize } from "./actions.ts";
@@ -107,6 +116,9 @@ import {
   RETIRED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS, ZONE,
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
+import {
+  type Act, askOperator, controlEdits, differences, type Edit, edited, ownerAct,
+} from "./operator.ts";
 /**
  * The control record a first deploy writes when there is none: every outside door closed, and
  * the founder's tier numbers. The founder's data, so a file of its own, which the tests read too.
@@ -138,8 +150,9 @@ export interface Io {
   readonly spawn: typeof spawnSync;
   readonly exec: typeof execFileSync;
   readonly log: (line: string) => void;
-  /** The clock: a route record's time. */
+  /** The clock: a route record's time, and how long the operator's answer is waited for. */
   readonly now: () => Date;
+  readonly sleep: (ms: number) => Promise<void>;
 }
 
 export const IO: Io = Object.freeze({
@@ -149,9 +162,11 @@ export const IO: Io = Object.freeze({
     typeof execFileSync,
   log: (line: string) => console.log(line),
   now: () => new Date(),
+  sleep: (ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }),
 });
 
-export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback";
+export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback" | "control"
+  | "owner";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -162,8 +177,15 @@ export interface Run {
   readonly apply: boolean;
   readonly rotate: ReadonlySet<string>;
   readonly migrate: ReadonlySet<string>;
-  /** `--record`: the id of the route record `handback` hands back (mode `handback` alone). */
+  /** `--record`: the id of the route record `handback` hands back. */
   readonly record: string | null;
+  /** `--set`: `control`'s edits of the control record, in order. */
+  readonly edits: readonly Edit[];
+  /** `--replace`: the whole record `control`'s edits start from in place of the live one. */
+  readonly replace: unknown;
+  /** `--owner` and `--act`: the owner `owner` asks the doors an op of, and the op. */
+  readonly owner: string | null;
+  readonly act: Act | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly io: Io;
@@ -1268,6 +1290,15 @@ const retired = step<"cloudflare" | "account" | "deployed">(async ({ run, say },
   }
 });
 
+/** `value` written to `key`, or a loud stop. */
+async function putOrStop({ cloudflare, account }: Pick<Values, "cloudflare" | "account">,
+                         namespace: string, key: string, value: unknown): Promise<void> {
+  const status = await cloudflare.put(account, namespace, key, value);
+  if (status !== 200) {
+    throw new Error(`writing ${key} failed (${status})`);
+  }
+}
+
 /** The control record, written closed only when the API answered there is none. */
 const control = step<"cloudflare" | "account" | "ids">(async ({ run, say }, got) => {
   const id = got.ids["CONTROL"];
@@ -1275,12 +1306,86 @@ const control = step<"cloudflare" | "account" | "ids">(async ({ run, say }, got)
     say("write the control record closed (outside off, canary none, inbound off, the " +
         "founder's tier numbers): the API answered there is none");
     if (run.apply) {
-      const status = await got.cloudflare.put(got.account, id!, CONTROL_KEY, DARK_CONTROL);
-      if (status !== 200) {
-        throw new Error(`writing the control record failed (${status})`);
-      }
+      await putOrStop(got, id!, CONTROL_KEY, DARK_CONTROL);
     }
   }
+});
+
+// --- The operator path (`operator.ts`) -----------------------------------------------------
+
+/** Where a `control` run keeps the record it replaced, in the control namespace, by run id. */
+const KEPT_PREFIX = "deploy:control:";
+
+/**
+ * Mode `control`: the control record edited in KV, never through the doors, so the kill
+ * switch works when they don't. The edits apply to the live record, or to `--replace`'s whole
+ * record in its place, which a missing or malformed live record needs; the result is written
+ * only when `parseControl`, every reader's parser, takes it and it differs. Before the write
+ * the live record is kept under the run's id (a re-run attempt keeps what its first kept);
+ * after it, the record is read back and held to what was written.
+ */
+const controlEdit = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const title = NAMESPACES["CONTROL"]!;
+  const namespace = await controlNamespace(got.cloudflare, got.account);
+  if (namespace === undefined) {
+    throw new Error(`the control record is kept in ${title}, which a dark run makes: run dark ` +
+                    "first; nothing is changed");
+  }
+  const live = await got.cloudflare.value(got.account, namespace, CONTROL_KEY);
+  if (run.replace === undefined && parseControl(live) === null) {
+    throw new Error(`the control record is ${live === undefined ? "missing"
+      : `one no reader takes: ${JSON.stringify(live)}`}; give the whole record with ` +
+                    "--replace; nothing is changed");
+  }
+  const record = edited(run.replace ?? live, run.edits);
+  if (parseControl(record) === null) {
+    throw new Error("the control record as edited is one no reader takes (parseControl): " +
+                    `${JSON.stringify(record)}; nothing is changed`);
+  }
+  const changes = differences(live, record);
+  if (changes.length === 0) {
+    say("the control record stands as asked: no difference");
+    return;
+  }
+  const kept = `${KEPT_PREFIX}${runOf(run.env, run.io.now()).id}`;
+  say(...changes.map((change) => `set the control record's ${change}`),
+      live === undefined ? "keep no previous record: there is none"
+        : `keep the previous record as ${kept} in ${title}, to put back with --replace`);
+  if (!run.apply) {
+    return;
+  }
+  if (live !== undefined && await got.cloudflare.value(got.account, namespace, kept) ===
+      undefined) {
+    await putOrStop(got, namespace, kept, live);
+  }
+  await putOrStop(got, namespace, CONTROL_KEY, record);
+  const back = await got.cloudflare.value(got.account, namespace, CONTROL_KEY);
+  if (JSON.stringify(back) !== JSON.stringify(record)) {
+    throw new Error(`the control record read back is not the one written: ${
+      JSON.stringify(back)}`);
+  }
+  say("read the control record back: it is the one written");
+});
+
+/**
+ * Mode `owner`: `--act`'s op asked of the doors for `--owner` through the operator channel,
+ * and their answer said; a refusal stops the run, named. The plan job only plans it.
+ */
+const ownerAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const { op, args } = run.act!;
+  const owner = run.owner!;
+  say(`ask the doors ${op} ${argsText(args)} for ${owner}, through the operator channel`);
+  if (!run.apply) {
+    return;
+  }
+  const answer = await askOperator(got.cloudflare, got.account,
+                                   keyring(input(run, OPERATOR_KEYRING), OPERATOR_KEYRING), op,
+                                   owner, args, run.io);
+  if ("refused" in answer) {
+    throw new Error(`the doors refused ${op} for ${owner} (${answer.refused.code}): ${
+      answer.refused.message}`);
+  }
+  say(`the doors answered ${op} for ${owner}: ${JSON.stringify(answer.result)}`);
 });
 
 /**
@@ -1643,8 +1748,8 @@ export interface Row {
   readonly deploys: boolean;
   /** Whether `--yes` may apply what it plans. */
   readonly applies: boolean;
-  /** Whether it reads a route record, which `--record` names (and only then takes one). */
-  readonly record: boolean;
+  /** The options of its own it reads (`OWN`): it refuses another mode's. */
+  readonly own: readonly Own[];
   /** Its steps, chosen once by `--public`: the plan job's, which reaches no secret, or the rest. */
   readonly steps: Readonly<Record<Run["reach"], readonly Held[]>>;
   /**
@@ -1694,6 +1799,10 @@ const HANDBACK_LATER = Steps.none.then(zone).then(recordRead).then(backPlan).the
 const HANDBACK = Steps.none.then(zone).then(recordRead).then(e2b).then(hookListed).then(backPlan)
   .then(hookBack).then(handBack).then(handedBack);
 
+/** The operator path's modes: the same steps for the plan job, which applies nothing. */
+const CONTROL = Steps.none.then(zone).then(controlEdit).list;
+const OWNER = Steps.none.then(zone).then(ownerAsk).list;
+
 /** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
   "CLOUDFLARE_API_TOKEN", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
@@ -1704,24 +1813,24 @@ const NOTHING = "\nNothing was changed.";
 
 export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   plan: {
-    inputs: DEPLOY_INPUTS, deploys: true, applies: false, record: false,
+    inputs: DEPLOY_INPUTS, deploys: true, applies: false, own: [],
     steps: { public: DARK_LATER.list, secrets: DARK.list },
     report: { unchanged: NOTHING, after: [] },
   },
   dark: {
-    inputs: DEPLOY_INPUTS, deploys: true, applies: true, record: false,
+    inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
     steps: { public: DARK_LATER.list, secrets: DARK.list },
     report: { unchanged: NOTHING, after: [canary("auto")] },
   },
   probe: {
     inputs: { public: PUBLIC_INPUTS, secret: ["WORKOS_API_KEY"], optional: [] },
-    deploys: false, applies: true, record: false,
+    deploys: false, applies: true, own: [],
     steps: { public: PROBE_LATER.list, secrets: PROBE.list },
     report: { unchanged: "\nNothing was changed. The apply job prints the sign-in link.",
               after: [canary("auto"), signInLink] },
   },
   routes: {
-    inputs: DEPLOY_INPUTS, deploys: true, applies: true, record: false,
+    inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
     steps: { public: ROUTES_LATER.list, secrets: ROUTED.list },
     report: { unchanged: NOTHING, after: [canary("new", "--unkeyed")] },
   },
@@ -1729,20 +1838,32 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   h2: {
     inputs: { public: [], secret: [H2_INPUTS.a, H2_INPUTS.b],
               optional: [H2_INPUTS.token, H2_INPUTS.keyId] },
-    deploys: false, applies: true, record: false,
+    deploys: false, applies: true, own: [],
     steps: { public: [], secrets: [h2] }, report: null,
   },
   pair: {
     inputs: { public: [], secret: ["E2B_API_KEY"], optional: [] },
-    deploys: false, applies: true, record: false,
+    deploys: false, applies: true, own: [],
     steps: { public: [], secrets: Steps.none.then(e2b).then(pairCheck).list }, report: null,
   },
   // The canary follows the old stack's restart.
   handback: {
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: ["E2B_API_KEY"], optional: [] },
-    deploys: false, applies: true, record: true,
+    deploys: false, applies: true, own: ["--record"],
     steps: { public: HANDBACK_LATER.list, secrets: HANDBACK.list },
     report: { unchanged: NOTHING, after: [canaryAfter] },
+  },
+  // The control record, read and written with the Cloudflare token alone: the plan job reads
+  // it too.
+  control: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [], optional: [] },
+    deploys: false, applies: true, own: ["--set", "--replace"],
+    steps: { public: CONTROL, secrets: CONTROL }, report: { unchanged: NOTHING, after: [] },
+  },
+  owner: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
+    deploys: false, applies: true, own: ["--owner", "--act"],
+    steps: { public: OWNER, secrets: OWNER }, report: { unchanged: NOTHING, after: [] },
   },
 });
 
@@ -1783,6 +1904,49 @@ function names(argv: readonly string[], name: string): ReadonlySet<string> {
 }
 
 /**
+ * The options a mode reads of its own (`Row.own`), each by what it names, and whether a mode
+ * that reads it needs it.
+ */
+const OWN = Object.freeze({
+  "--record": { names: "the routes run's record to hand back, by the run id its job summary " +
+                       "names (letters, digits and -)", needed: true },
+  "--set": { names: "the control record's edits", needed: false },
+  "--replace": { names: "the whole control record, as JSON, that the edits start from in " +
+                        "place of the live one", needed: false },
+  "--owner": { names: "the owner principal the op is asked for", needed: true },
+  "--act": { names: "the op asked of the doors", needed: true },
+});
+export type Own = keyof typeof OWN;
+
+/** The value `text` of the option `name` as its mode reads it, or a refusal naming the option. */
+function ownValue(name: Own, text: string): unknown {
+  const refused = () => new Error(`${name} is ${OWN[name].names}`);
+  switch (name) {
+    case "--record":
+      if (!RECORD_ID.test(text)) {
+        throw refused();
+      }
+      return text;
+    case "--set":
+      return controlEdits(text);
+    case "--replace":
+      try {
+        return JSON.parse(text) as unknown;
+      } catch {
+        throw refused();
+      }
+    case "--owner":
+      try {
+        return principal(text);
+      } catch {
+        throw refused();
+      }
+    case "--act":
+      return ownerAct(text);
+  }
+}
+
+/**
  * The run `argv` asks for, over `env`: its mode and options, held to what the mode's row
  * takes. Every refusal is before any step. An option given empty is not given: the workflow
  * hands each dispatch input on as it is.
@@ -1798,19 +1962,27 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
     throw new Error("--mode is given once: a run is one mode");
   }
   const row = MODES[mode as Mode];
-  const record = option(argv, "--record") || null;
+  const own: Partial<Record<Own, unknown>> = {};
+  for (const name of Object.keys(OWN) as Own[]) {
+    const text = option(argv, name);
+    if (row.own.includes(name)) {
+      if (text === "" && OWN[name].needed) {
+        throw new Error(`mode ${mode} needs ${name}: ${OWN[name].names}`);
+      }
+      own[name] = text === "" ? undefined : ownValue(name, text);
+    } else if (text !== "" && row.report !== null) {
+      throw new Error(`mode ${mode} takes no ${name}: it is mode ${(Object.keys(MODES) as Mode[])
+        .filter((each) => MODES[each].own.includes(name)).join(" and ")}'s`);
+    }
+  }
   const run: Run = Object.freeze({
     mode: mode as Mode, reach: argv.includes("--public") ? "public" : "secrets",
     apply: argv.includes("--yes"), rotate: names(argv, "--rotate"),
-    migrate: names(argv, "--migrate"), record, env, io });
-  if (row.record && (record === null || !RECORD_ID.test(record))) {
-    throw new Error(`mode ${mode} hands back a routes run's record: --record <id>, the run id ` +
-                    "its job summary names (letters, digits and -)");
-  }
+    migrate: names(argv, "--migrate"), record: (own["--record"] as string | undefined) ?? null,
+    edits: (own["--set"] as Edit[] | undefined) ?? [], replace: own["--replace"],
+    owner: (own["--owner"] as string | undefined) ?? null,
+    act: (own["--act"] as Act | undefined) ?? null, env, io });
   if (row.report !== null) {
-    if (!row.record && record !== null) {
-      throw new Error(`mode ${mode} reads no route record: --record is mode handback's`);
-    }
     if (run.apply && run.reach === "public") {
       throw new Error("--public is the plan job's: it never changes anything");
     }

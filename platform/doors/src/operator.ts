@@ -18,27 +18,51 @@
  *    is never given another meaning.
  * Then the message is answered (`answers/<ask>.json`, a put that only makes): refused
  * (`refused`) when the directory's `o:` record says the owner is erased; otherwise by its op
- * in `OPS`, its result or its refusal, and refused (`invalid`) when `OPS` takes no such op.
+ * in `OPS`, its result or its refusal, and refused (`invalid`) when `OPS` takes no such op or
+ * its args are not exactly the op's (`OPERATOR_OPS`).
  * A refusal of the moment, or any failure, is retried by the queue, and then left in the
  * dead-letter queue the kit names when no answer comes. Every op is idempotent from the
  * owner's own state, since the queue delivers at least once.
  */
 import {
   acceptance, acceptanceKey, acceptanceOf, answerKey, answerOf, macHolds, type OperatorArgs,
-  type OperatorMessage, operatorMessage, OPERATOR_WINDOW_S, type Refused,
+  type OperatorMessage, operatorMessage, type OperatorOp, OPERATOR_OPS, OPERATOR_WINDOW_S,
+  type Refused,
 } from "../../contract/src/operator-message";
 import { parseRing } from "../../contract/src/envelope";
+import type { TierRequest } from "../../contract/src/owner";
 import { refusalOf } from "../../contract/src/refusal";
 
+import { admit } from "./authorize";
+import { bindPlatformFor } from "./binder";
 import { now } from "./config";
 import type { DoorsEnv } from "./env";
 import { readOwner } from "./directory";
+import { exactKeys } from "./kit";
 
-/** An op: what it does to the owner with its args, and its result. */
+/** An op: what it does to the owner with its args, exactly `OPERATOR_OPS` names, and its result. */
 type Op = (env: DoorsEnv, owner: string, args: OperatorArgs) => Promise<unknown>;
 
-/** The ops the channel takes, by name: none is wired yet (d3 §G's next PR adds them). */
-const OPS: Readonly<Record<string, Op>> = Object.freeze({});
+/** The platform's change of `owner`'s admission: a suspension's reason, held or lifted. */
+function suspension(env: DoorsEnv, owner: string, { reason }: OperatorArgs,
+                    suspended: boolean): Promise<unknown> {
+  const { binding, stub } = bindPlatformFor(env, owner);
+  return stub.admissionSet(binding, { reason: reason as string, suspended });
+}
+
+/**
+ * Each op the channel takes, by its owner door, whose answer is its result: the args are the
+ * door's own request, which it checks.
+ */
+const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
+  "owner.tier": async (env, owner, args) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.tierSet(binding, args as unknown as TierRequest);
+  },
+  "owner.suspend": (env, owner, args) => suspension(env, owner, args, true),
+  "owner.lift": (env, owner, args) => suspension(env, owner, args, false),
+  "owner.admit": (env, owner) => admit(env, owner),
+});
 
 /** A put that only makes: null when the key is already there. */
 const ONLY_NEW = Object.freeze({ onlyIf: Object.freeze({ etagDoesNotMatch: "*" }) });
@@ -76,12 +100,16 @@ async function verdict(env: DoorsEnv, message: OperatorMessage):
   if ((await readOwner(env, message.owner))?.s === "erased") {
     return refused("refused", "the owner is erased");
   }
-  const op = Object.hasOwn(OPS, message.op) ? OPS[message.op] : undefined;
-  if (op === undefined) {
+  if (!Object.hasOwn(OPS, message.op)) {
     return refused("invalid", `the operator channel takes no op ${message.op}`);
   }
+  const op = message.op as OperatorOp;
+  if (!exactKeys(message.args, OPERATOR_OPS[op])) {
+    return refused("invalid", `${op} takes exactly ${
+      OPERATOR_OPS[op].join(", ") || "no args"}`);
+  }
   try {
-    return { result: await op(env, message.owner, message.args) };
+    return { result: await OPS[op](env, message.owner, message.args) };
   } catch (error) {
     const refusal = refusalOf(error);
     if (refusal === null || refusal.transient) {

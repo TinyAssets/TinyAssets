@@ -31,11 +31,15 @@ import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { deployProblems, locksOf, readLock } from "../../ci/kit/locks";
 import { WRANGLER, workerFolders } from "../../ci/wrangler";
-import { type Domain, openBlob, sealBlob } from "../../contract/src/envelope";
+import { type Domain, openBlob, parseRing, sealBlob } from "../../contract/src/envelope";
 import {
   AUTHORIZE_PATH, E2B_HOOK_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
 } from "../../doors/src/config";
 import { APP_RESOURCE } from "../../contract/src/identity";
+import {
+  answerKey, answerOf, macHolds, type OperatorMessage, operatorMessage,
+} from "../../contract/src/operator-message";
+import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
 import { CONTROL_KEY, outsideOpen, ownerOpen, parseControl } from "../../contract/src/control";
 import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
 import { E2bAdmin } from "../../sandbox/e2b/admin";
@@ -53,7 +57,7 @@ import {
 import { BUNDLES, bundles, pairTag, treeImage } from "../../sandbox/template/pair";
 import {
   boundBy, BUCKET_LOCKS, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS,
-  MADE, MIGRATES, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers,
+  MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers,
   ROUTES,
   SECRET_INPUTS, SECRETS, WORKERS, ZONE,
 } from "../facts";
@@ -128,6 +132,13 @@ const ENV: Record<string, string> = {
 /** What the plan job holds. */
 const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]));
 
+/** The options of its own each mode needs, by the dispatch's input that gives each. */
+const NEEDED: Partial<Record<Mode, Readonly<Record<string, string>>>> = {
+  handback: { RECORD: "7001" }, owner: { OWNER: "user_alice", ACT: "tier=paid" } };
+/** `mode`'s needed options, as its command line gives them. */
+const needed = (mode: Mode): string[] => Object.entries(NEEDED[mode] ?? {})
+  .flatMap(([name, value]) => [`--${name.toLowerCase()}`, value]);
+
 /** The old proxy's live routes, and the site's. */
 const LIVE: readonly Route[] = [
   { id: "r1", pattern: "tinyassets.io/mcp*", script: "tinyassets-mcp-proxy" },
@@ -177,6 +188,11 @@ interface WorldOptions {
   readonly retired?: boolean;
   /** Cloudflare refuses a Worker's delete: another Worker still references it. */
   readonly refusingDelete?: boolean;
+  /**
+   * How the doors answer each message sent to the operator queue: its outcome, or none (it is
+   * never answered). Each is answered at once by default, with its args as its result.
+   */
+  readonly doors?: (message: OperatorMessage) => Parameters<typeof answerOf>[2] | null;
 }
 
 /** The world's clock. */
@@ -226,8 +242,8 @@ function world(options: WorldOptions = {}) {
    */
   const kill = { after: undefined as number | undefined };
   const killed = () => kill.after !== undefined && kill.after-- <= 0;
-  /** Writes that answer as done and change nothing: the hook's, the custom domain's. */
-  const inert = new Set<"hook" | "domain" | "dns">();
+  /** Writes that answer as done and change nothing: the hook's, the custom domain's, KV's. */
+  const inert = new Set<"hook" | "domain" | "dns" | "kv">();
   /** The zone's DNS records: the egress host's given ones, and others on other names. */
   const dns = [
     ...(options.dns ?? []).map((type, at) => ({ id: `x${at}`, type, name: EGRESS_DOMAIN,
@@ -242,6 +258,9 @@ function world(options: WorldOptions = {}) {
   const buckets = new Set(options.listed?.buckets ?? (held ? BUCKETS : []));
   const queues = new Set(options.listed?.queues ?? (held ? QUEUES : []));
   const created: string[] = [];
+  /** The messages sent to a queue, by its id, and the doors' answers, by key in their bucket. */
+  const sent: { queue: string; message: OperatorMessage }[] = [];
+  const answers = new Map<string, unknown>();
   /** Each bucket's lock rules: a held account's as the kit sets them, unless `locks` says. */
   const locks = new Map<string, unknown[]>(Object.entries(BUCKET_LOCKS).map(([bucket, days]) =>
     [bucket, [...options.locks?.[bucket] ?? (held ? [{ id: "kept", enabled: true,
@@ -279,6 +298,22 @@ function world(options: WorldOptions = {}) {
       }
       return json({ success: true, result: method === "POST" ? {}
         : { buckets: [...buckets].map((name) => ({ name })) } });
+    }
+    const sending = /^\/accounts\/a+\/queues\/([^/]+)\/messages$/.exec(path);
+    if (sending !== null && method === "POST") {
+      const message = operatorMessage((JSON.parse(body!) as { body: unknown }).body);
+      sent.push({ queue: sending[1]!, message });
+      const outcome = (options.doors ?? ((m) => ({ result: m.args })))(message);
+      if (outcome !== null) {
+        answers.set(answerKey(message.ask), answerOf(message, message.at, outcome));
+      }
+      return json({ success: true, result: null });
+    }
+    const object = `${account}/r2/buckets/${OPERATOR_NAMES.bucket}/objects/`;
+    if (path.startsWith(object) && method === "GET") {
+      const answer = answers.get(path.slice(object.length));
+      return answer === undefined ? json({ success: false, errors: [{ code: 10007 }] }, 404)
+        : json(answer);
     }
     if (path === `${account}/queues`) {
       if (method === "POST") {
@@ -376,7 +411,9 @@ function world(options: WorldOptions = {}) {
         if (options.refusing !== undefined && key.endsWith(`/${options.refusing}`)) {
           return json({ success: false, errors: [{ code: 10000 }] }, 500);
         }
-        kv.set(key, body ?? "");
+        if (!inert.has("kv")) {
+          kv.set(key, body ?? "");
+        }
         return json({ success: true });
       }
       const stored = kv.get(key);
@@ -506,9 +543,12 @@ function world(options: WorldOptions = {}) {
     logs.push(line);
     events.push(`log ${line.trim().split("\n")[0]}`);
   };
-  const io: Io = { fetch: fetcher, spawn, exec, log, now: () => NOW };
+  // The clock moves on only while the kit waits for an answer.
+  let clock = NOW.getTime();
+  const io: Io = { fetch: fetcher, spawn, exec, log, now: () => new Date(clock),
+                   sleep: async (ms) => { clock += ms; } };
   return { io, events, logs, secretsPut, routes, hooks, accounts, kv, tables, kill, domains,
-           inert, dns, created };
+           inert, dns, created, sent };
 }
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
@@ -660,15 +700,14 @@ describe("the command line", () => {
 
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
     expect(Object.keys(MODES)).toEqual(["plan", "dark", "probe", "routes", "h2", "pair",
-                                        "handback"]);
-    for (const mode of Object.keys(MODES)) {
-      const record = mode === "handback" ? ["--record", "7001"] : [];
-      expect(parse(["--mode", mode, ...record], ENV, w.io).mode).toBe(mode);
+                                        "handback", "control", "owner"]);
+    for (const mode of Object.keys(MODES) as Mode[]) {
+      expect(parse(["--mode", mode, ...needed(mode)], ENV, w.io).mode).toBe(mode);
     }
     for (const argv of [[], ["--mode"], ["--mode", "apply"], ["--mode", "constructor"],
                         ["--yes", "--routes"], ["--mode", "--yes"]]) {
       expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
-        "--mode is one of plan, dark, probe, routes, h2, pair, handback");
+        "--mode is one of plan, dark, probe, routes, h2, pair, handback, control, owner");
     }
     for (const argv of [["--mode", "dark", "--mode", "routes"], ["--mode", "dark", "--mode", "dark"]]) {
       expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
@@ -767,7 +806,7 @@ describe("a dark run", () => {
                                            [H2_INPUTS.b]: "probe-key-b" };
     for (const mode of Object.keys(MODES) as Mode[]) {
       const { inputs } = MODES[mode];
-      const record = mode === "handback" ? ["--record", "7001"] : [];
+      const record = needed(mode);
       for (const [names, flags, where] of [
         [inputs.public, ["--public"], "the workflow's inputs"],
         [inputs.secret, [], "the production environment's secrets"]] as const) {
@@ -1475,16 +1514,19 @@ describe("a handback run", () => {
 
   it("takes one record by its id, and nothing it does not use", () => {
     const w = world();
-    for (const argv of [["--mode", "handback"], ["--mode", "handback", "--record"],
-                        ["--mode", "handback", "--record", "a/b"],
-                        ["--mode", "handback", "--record", "x".repeat(65)]]) {
-      expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
-        "mode handback hands back a routes run's record: --record <id>, the run id its job " +
-        "summary names (letters, digits and -)");
+    const what = "the routes run's record to hand back, by the run id its job summary names " +
+      "(letters, digits and -)";
+    for (const argv of [["--mode", "handback"], ["--mode", "handback", "--record"]]) {
+      expect(() => parse(argv, ENV, w.io), argv.join(" "))
+        .toThrow(`mode handback needs --record: ${what}`);
     }
-    for (const mode of ["plan", "dark", "probe", "routes"]) {
+    for (const id of ["a/b", "x".repeat(65)]) {
+      expect(() => parse(["--mode", "handback", "--record", id], ENV, w.io), id)
+        .toThrow(`--record is ${what}`);
+    }
+    for (const mode of ["plan", "dark", "probe", "routes", "control", "owner"]) {
       expect(() => parse(["--mode", mode, "--record", "7001"], ENV, w.io)).toThrow(
-        `mode ${mode} reads no route record: --record is mode handback's`);
+        `mode ${mode} takes no --record: it is mode handback's`);
     }
     expect(() => parse(["--mode", "handback", "--record", "7001", "--rotate", "FILES_KEYRING"],
                        ENV, w.io))
@@ -2457,6 +2499,182 @@ describe("the template and the pair", () => {
   });
 });
 
+describe("the operator path's modes", () => {
+  /** The control record as KV holds it, parsed; and what the run kept, by its key. */
+  const live = (w: ReturnType<typeof world>, key = CONTROL_KEY): unknown => {
+    const held = w.kv.get(`${CONTROL_NS}/${key}`);
+    return held === undefined ? undefined : JSON.parse(held);
+  };
+  const KEPT = `deploy:control:${runOf(ENV, NOW).id}`;
+  const writes = (w: ReturnType<typeof world>) =>
+    w.events.filter((event) => event.startsWith("cf PUT"));
+  const EDITS = "outside=on ordinary=all canary+=user_bob tiers.free.runs=6";
+  const OPENED = { ...DARK, outside: "on", ordinary: "all", canary: ["user_bob"],
+                   tiers: { ...DARK.tiers, free: { ...DARK.tiers.free, runs: 6 } } };
+
+  it("control plans each field's difference from the live record, and with no --yes writes " +
+     "nothing", async () => {
+    for (const reach of [["--public"], []]) {
+      const w = world({ held: true });
+      const work = await runMode(w, "control", [...reach, "--set", EDITS],
+                                 reach.length > 0 ? PUBLIC : ENV);
+      expect(work.plan).toEqual([
+        'set the control record\'s outside: "off" → "on"',
+        'set the control record\'s ordinary: "canary" → "all"',
+        'set the control record\'s canary: [] → ["user_bob"]',
+        "set the control record's tiers.free.runs: 5 → 6",
+        `keep the previous record as ${KEPT} in ${NAMESPACES["CONTROL"]}, to put back with ` +
+        "--replace"]);
+      expect(writes(w)).toEqual([]);
+      expect(live(w)).toEqual(DARK);
+    }
+  });
+
+  it("control keeps the previous record, writes the edited one, and reads it back: the " +
+     "cutover's gates opened", async () => {
+    const w = world({ held: true });
+    const work = await runMode(w, "control", ["--yes", "--set", EDITS]);
+    expect(work.plan.at(-1)).toBe("read the control record back: it is the one written");
+    expect(live(w, KEPT)).toEqual(DARK);
+    expect(live(w)).toEqual(OPENED);
+    const read = { kind: "read", control: parseControl(live(w))! } as const;
+    expect([outsideOpen(read, "user_alice"), ownerOpen(read, "user_alice")]).toEqual([true, true]);
+    // The previous kept before the write, and the write read back after it.
+    const at = order(w.events, [`cf PUT ${RECORD_AT.replace(/[^/]+$/, encodeURIComponent(KEPT))}`,
+                                `cf PUT ${RECORD_AT.replace(/[^/]+$/, encodeURIComponent(CONTROL_KEY))}`,
+                                `cf GET ${RECORD_AT.replace(/[^/]+$/, encodeURIComponent(CONTROL_KEY))}`]);
+    expect(at).toHaveLength(3);
+    // Again in the same run (a re-run attempt): no difference, nothing written, the kept as it was.
+    const again = await runMode(w, "control", ["--yes", "--set", EDITS]);
+    expect(again.plan).toEqual(["the control record stands as asked: no difference"]);
+    await runMode(w, "control", ["--yes", "--set",
+                                  "outside=off canary-=user_bob canary-=user_eve signins.claude=false"]);
+    expect(live(w, KEPT)).toEqual(DARK);
+    expect(live(w)).toEqual({ ...OPENED, outside: "off", canary: [], signins: { claude: false } });
+  });
+
+  it.each([
+    ["a gate's value no reader takes", "outside=maybe"],
+    ["a field no reader takes", "closed=true"],
+    ["a list where a gate is", "inbound+=x"],
+    ["a tier past its ceiling", "tiers.paid.runs=1001"],
+  ])("control never writes %s", async (_what, edit) => {
+    const w = world({ held: true });
+    await expect(runMode(w, "control", ["--yes", "--set", edit]))
+      .rejects.toThrow(/no reader takes \(parseControl\)|is no list to add to/);
+    expect(writes(w)).toEqual([]);
+    expect(live(w)).toEqual(DARK);
+  });
+
+  it("control shows a missing or malformed record as it is, and replaces it only with " +
+     "--replace", async () => {
+    for (const held of [undefined, '{"outside":"on"}']) {
+      const w = world({ held: true });
+      if (held === undefined) {
+        w.kv.delete(`${CONTROL_NS}/${CONTROL_KEY}`);
+      } else {
+        w.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, held);
+      }
+      await expect(runMode(w, "control", ["--yes", "--set", "outside=off"])).rejects.toThrow(
+        `the control record is ${held === undefined ? "missing" : `one no reader takes: ${held}`}` +
+        "; give the whole record with --replace; nothing is changed");
+      expect(writes(w)).toEqual([]);
+      const work = await runMode(w, "control", ["--yes", "--replace", JSON.stringify(DARK),
+                                                "--set", "inbound=true"]);
+      expect(live(w)).toEqual({ ...DARK, inbound: true });
+      expect(live(w, KEPT)).toEqual(held === undefined ? undefined : JSON.parse(held));
+      expect(work.plan).toContain(held === undefined ? "keep no previous record: there is none"
+        : `keep the previous record as ${KEPT} in ${NAMESPACES["CONTROL"]}, to put back with ` +
+          "--replace");
+    }
+  });
+
+  it("control stops loudly when the record read back is not the one written", async () => {
+    const w = world({ held: true });
+    w.inert.add("kv");
+    await expect(runMode(w, "control", ["--yes", "--set", "outside=on"])).rejects.toThrow(
+      `the control record read back is not the one written: ${JSON.stringify(DARK)}`);
+  });
+
+  it("control refuses an account no dark run made, and edits out of grammar", async () => {
+    await expect(runMode(world(), "control", ["--yes", "--set", "outside=on"])).rejects.toThrow(
+      `the control record is kept in ${NAMESPACES["CONTROL"]}, which a dark run makes`);
+    const w = world({ held: true });
+    for (const edit of ["outside", "=on", "tiers..free=1", "a+b=1"]) {
+      expect(() => parse(["--mode", "control", "--set", edit], ENV, w.io), edit)
+        .toThrow(`--set's edit ${edit} is not <path>=<value>`);
+    }
+    expect(() => parse(["--mode", "control", "--replace", "{"], ENV, w.io)).toThrow(
+      "--replace is the whole control record, as JSON, that the edits start from in place of " +
+      "the live one");
+    expect(() => parse(["--mode", "dark", "--set", "outside=on"], ENV, w.io))
+      .toThrow("mode dark takes no --set: it is mode control's");
+  });
+
+  it("owner plans its ask, and with --yes sends it MAC'd to the operator queue and says the " +
+     "doors' answer", async () => {
+    const flags = ["--owner", "user_alice", "--act", "tier=paid"];
+    const planned = world({ held: true });
+    expect((await runMode(planned, "owner", ["--public", ...flags], PUBLIC)).plan).toEqual([
+      'ask the doors owner.tier {"tier":"paid"} for user_alice, through the operator channel']);
+    expect(planned.sent).toEqual([]);
+    const w = world({ held: true, doors: () => ({ result: { tier: "paid" } }) });
+    const work = await runMode(w, "owner", ["--yes", ...flags]);
+    expect(work.plan.at(-1)).toBe('the doors answered owner.tier for user_alice: {"tier":"paid"}');
+    expect(w.sent).toHaveLength(1);
+    const { queue, message } = w.sent[0]!;
+    expect(queue).toBe(`q${QUEUES.indexOf(QUEUE_NAMES.OPERATOR) + 1}`);
+    expect(message).toMatchObject({ op: "owner.tier", owner: "user_alice",
+                                    args: { tier: "paid" }, at: NOW.getTime() / 1000 });
+    expect(await macHolds(parseRing(RING)!, message)).toBe(true);
+  });
+
+  it.each([
+    ["suspend=abuse", "owner.suspend", { reason: "abuse" }],
+    ["lift=billing", "owner.lift", { reason: "billing" }],
+    ["admit", "owner.admit", {}],
+  ])("owner sends --act %s as %s", async (act, op, args) => {
+    const w = world({ held: true });
+    await runMode(w, "owner", ["--yes", "--owner", "user_alice", "--act", act]);
+    expect(w.sent.map(({ message }) => [message.op, message.args])).toEqual([[op, args]]);
+  });
+
+  it("owner stops loudly on a refusal, and with no answer in its wait", async () => {
+    const refusing = world({ held: true, doors: () => ({
+      refused: { code: "refused", message: "an owner the platform never admitted is not " +
+                                           "suspended" } }) });
+    await expect(runMode(refusing, "owner", ["--yes", "--owner", "user_alice", "--act",
+                                             "suspend=abuse"])).rejects.toThrow(
+      "the doors refused owner.suspend for user_alice (refused): an owner the platform never " +
+      "admitted is not suspended");
+    const silent = world({ held: true, doors: () => null });
+    await expect(runMode(silent, "owner", ["--yes", "--owner", "user_alice", "--act", "admit"]))
+      .rejects.toThrow(/the doors did not answer the operator message [0-9a-f]{32}/);
+  });
+
+  it("owner needs one owner and one act, each in its grammar", () => {
+    const w = world();
+    const acts = "--act is one of tier=<tier>, suspend=<reason>, lift=<reason>, admit";
+    for (const act of ["tier", "admit=now", "state", "erase=x", "tier=paid=x"]) {
+      const argv = ["--mode", "owner", "--owner", "user_alice", "--act", act];
+      if (act === "tier=paid=x") {
+        // The value is all after the first =: the owner's door refuses it.
+        expect(parse(argv, ENV, w.io).act).toEqual({ op: "owner.tier", args: { tier: "paid=x" } });
+        continue;
+      }
+      expect(() => parse(argv, ENV, w.io), act).toThrow(acts);
+    }
+    expect(() => parse(["--mode", "owner", "--act", "admit"], ENV, w.io))
+      .toThrow("mode owner needs --owner: the owner principal the op is asked for");
+    expect(() => parse(["--mode", "owner", "--owner", "user_alice"], ENV, w.io))
+      .toThrow("mode owner needs --act: the op asked of the doors");
+    expect(() => parse(["--mode", "owner", "--owner", " x", "--act", "admit"], ENV, w.io))
+      .toThrow("--owner is the owner principal the op is asked for");
+    expect(() => parse(["--mode", "control", "--owner", "user_alice"], ENV, w.io))
+      .toThrow("mode control takes no --owner: it is mode owner's");
+  });
+});
+
 describe("platform-deploy.yml", () => {
   type Job = { if?: string; needs?: string | string[]; environment?: string;
                "timeout-minutes"?: number; env?: Record<string, string>;
@@ -2593,25 +2811,37 @@ describe("platform-deploy.yml", () => {
     }
   }
   const KIT = ["node", "--experimental-strip-types", "platform/deploy/deploy.ts"];
+  /** The dispatch's inputs, each handed to the kit as its option of the same name. */
+  const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "SET", "REPLACE", "OWNER", "ACT"];
   const dispatched = (inputs: Record<string, string>) =>
-    ["--mode", inputs["MODE"]!, "--rotate", inputs["ROTATE"]!, "--migrate", inputs["MIGRATE"]!,
-     "--record", inputs["RECORD"]!];
-  const OPTIONS = { MODE: "dark", ROTATE: "ROUTING_MAC_KEY", MIGRATE: "owner", RECORD: "" };
+    DISPATCH.flatMap((name) => [`--${name.toLowerCase()}`, inputs[name]!]);
+  /** `mode` dispatched with what it needs and nothing else. */
+  const dispatchOf = (mode: Mode): Record<string, string> => ({
+    ...Object.fromEntries(DISPATCH.map((name) => [name, ""])), MODE: mode, ...NEEDED[mode] });
+  /** Dispatches that give the options a mode may go without. */
+  const OPTIONS: Record<string, string>[] = [{ ...dispatchOf("dark"), ROTATE: "ROUTING_MAC_KEY", MIGRATE: "owner" },
+                   { ...dispatchOf("control"), SET: "outside=on canary+=user_bob",
+                     REPLACE: JSON.stringify(DARK) }];
+  /** What the kit reads of a run's own options. */
+  const ownOf = (run: ReturnType<typeof parse>) =>
+    [run.record, run.edits.length, run.replace, run.owner, run.act?.op ?? null];
+  const wanted = (inputs: Record<string, string>) =>
+    [inputs["RECORD"] || null, inputs["SET"]!.split(" ").filter(Boolean).length,
+     inputs["REPLACE"] ? JSON.parse(inputs["REPLACE"]) : undefined, inputs["OWNER"] || null,
+     inputs["ACT"] ? `owner.${inputs["ACT"].split("=")[0]}` : null];
 
   it("plans in a job of its own, with no production secret, the chosen mode's plan", () => {
     expect(plan!.environment).toBeUndefined();
     expect(Object.values(plan!.env ?? {}).some((value) => /secrets\.(?!CLOUDFLARE_API_TOKEN)/
       .test(value))).toBe(false);
-    for (const inputs of [...offered.map((mode) => ({ MODE: mode, ROTATE: "", MIGRATE: "",
-                                                      RECORD: mode === "handback" ? "7001" : "" })),
-                          OPTIONS]) {
+    for (const inputs of [...offered.map(dispatchOf), ...OPTIONS]) {
       const ran = invoked(plan!, inputs);
       expect(ran.map((each) => each.argv)).toEqual([["npm", "ci"], [
-        ...KIT, "--mode", inputs.MODE, "--public", ...dispatched(inputs).slice(2)]]);
+        ...KIT, "--mode", inputs["MODE"]!, "--public", ...dispatched(inputs).slice(2)]]);
       // Each is a run the kit takes, and one that changes nothing.
       const run = parse(ran[1]!.argv.slice(KIT.length), PUBLIC, io);
-      expect([run.mode, run.reach, run.apply, run.record])
-        .toEqual([inputs.MODE, "public", false, inputs.RECORD || null]);
+      expect([run.mode, run.reach, run.apply, ...ownOf(run)])
+        .toEqual([inputs["MODE"], "public", false, ...wanted(inputs)]);
     }
   });
 
@@ -2643,16 +2873,15 @@ describe("platform-deploy.yml", () => {
 
   it("applies in production the mode's own run", () => {
     expect(apply!.environment).toBe("production");
-    for (const inputs of [...offered.filter((mode) => MODES[mode].applies).map((mode) => (
-      { MODE: mode, ROTATE: "", MIGRATE: "", RECORD: mode === "handback" ? "7001" : "" })),
-                          OPTIONS]) {
+    for (const inputs of [...offered.filter((mode) => MODES[mode].applies).map(dispatchOf),
+                          ...OPTIONS]) {
       const ran = invoked(apply!, inputs);
       expect(ran.map((each) => each.argv)).toEqual([["npm", "ci"], [
-        ...KIT, "--mode", inputs.MODE, "--yes", ...dispatched(inputs).slice(2)]]);
+        ...KIT, "--mode", inputs["MODE"]!, "--yes", ...dispatched(inputs).slice(2)]]);
       const run = parse(ran[1]!.argv.slice(KIT.length), ENV, io);
-      expect([run.mode, run.reach, run.apply, run.record, [...run.rotate], [...run.migrate]])
-        .toEqual([inputs.MODE, "secrets", true, inputs.RECORD || null,
-                  inputs.ROTATE.split(",").filter(Boolean), inputs.MIGRATE.split(",")
+      expect([run.mode, run.reach, run.apply, ...ownOf(run), [...run.rotate], [...run.migrate]])
+        .toEqual([inputs["MODE"], "secrets", true, ...wanted(inputs),
+                  inputs["ROTATE"]!.split(",").filter(Boolean), inputs["MIGRATE"]!.split(",")
                     .filter(Boolean)]);
     }
     // The account is read from the zone, never held as an input.
@@ -2662,7 +2891,7 @@ describe("platform-deploy.yml", () => {
 
   it("hands the plan and apply jobs exactly what their rows read", () => {
     // The dispatch's own inputs, which both jobs pass to the kit.
-    const dispatch = ["MODE", "ROTATE", "MIGRATE", "RECORD"];
+    const dispatch = DISPATCH;
     // The handles canary's own bearer (scripts/_canary_common.py), so Fact 11's canary runs.
     const canary = execFileSync("python3", ["-I", "-c",
       "import sys; sys.path.insert(0, sys.argv[1]); " +

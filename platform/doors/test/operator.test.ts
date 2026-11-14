@@ -15,14 +15,14 @@ import { keyring } from "../../ci/fixtures";
 import { parseRing, type Ring } from "../../contract/src/envelope";
 import {
   acceptanceKey, acceptanceOf, answerKey, argsText, type OperatorAnswer, operatorAnswer,
-  type OperatorMessage, OPERATOR_WINDOW_S, type Refused, signOperator,
+  type OperatorArgs, type OperatorMessage, OPERATOR_WINDOW_S, type Refused, signOperator,
 } from "../../contract/src/operator-message";
 import { QUEUES } from "../../contract/src/queue-names";
 import { now } from "../src/config";
-import { putOwner } from "../src/directory";
+import { putOwner, readOwner } from "../src/directory";
 import type { DoorsEnv } from "../src/env";
 import worker from "../src/index";
-import { doorsEnv } from "./support";
+import { doorsEnv, sqlIn } from "./support";
 
 const RING = parseRing(doorsEnv.OPERATOR_KEYRING)!;
 const OTHER = parseRing(keyring())!;
@@ -105,17 +105,17 @@ describe("the operator channel", () => {
   it("answers a signed message once, refusing an op it does not take, and drops its replay",
      async () => {
     const owner = fresh();
-    const message = await sign(owner, "owner.tier", { tier: "paid" });
+    const message = await sign(owner, "owner.state", { part: "all" });
     const logged = logs();
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     const first = await held(message.ask);
-    expect(first.accepted).toMatchObject({ op: "owner.tier", owner, at: message.at,
+    expect(first.accepted).toMatchObject({ op: "owner.state", owner, at: message.at,
                                            kid: RING.active });
     const answer = operatorAnswer(first.answer, message);
-    expect(answer).toMatchObject({ ask: message.ask, op: "owner.tier", owner,
-                                   args: { tier: "paid" } });
+    expect(answer).toMatchObject({ ask: message.ask, op: "owner.state", owner,
+                                   args: { part: "all" } });
     expect(refusedOf(answer)).toEqual({
-      code: "invalid", message: "the operator channel takes no op owner.tier" });
+      code: "invalid", message: "the operator channel takes no op owner.state" });
     expect(answer.done).toBeGreaterThanOrEqual(message.at);
     const etag = (await doorsEnv.OPERATOR_LOG.head(answerKey(message.ask)))!.etag;
     // The same message again, as a redelivery or a capture: dropped, the answer as it was.
@@ -196,8 +196,8 @@ describe("the operator channel", () => {
     // The record readable again, the first message delivered again: answered.
     await putOwner(doorsEnv, owner, { s: "admitted", t: now() });
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
-    expect(refusedOf(operatorAnswer((await held(message.ask)).answer, message)).code)
-      .toBe("invalid");
+    expect(operatorAnswer((await held(message.ask)).answer, message))
+      .toMatchObject({ result: { tier: "paid" } });
   });
 
   it("makes the acceptance record and the answer once, a racing delivery held to them",
@@ -228,5 +228,89 @@ describe("the operator channel", () => {
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     expect(refusedOf(operatorAnswer((await held(message.ask)).answer, message)).code)
       .toBe("invalid");
+  });
+});
+
+
+/** The owner's admission row as its own object holds it. */
+async function admission(owner: string) {
+  const [row] = await sqlIn(owner, "SELECT state, reasons, tier FROM owner_admission");
+  return { ...row, reasons: JSON.parse(String(row!["reasons"])) as string[] };
+}
+
+/** `op` with `args` for `owner` delivered once, and its answer. */
+async function asked(owner: string, op: string, args: OperatorArgs = {}) {
+  const message = await sign(owner, op, args);
+  expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
+  return operatorAnswer((await held(message.ask)).answer, message);
+}
+
+describe("the operator's owner ops, on a real owner object", () => {
+  it("admits an owner, sets its tier, and suspends and lifts it, each answered with the " +
+     "owner's own state", async () => {
+    const owner = fresh();
+    expect(await admission(owner)).toEqual({ state: "pending", reasons: [], tier: "free" });
+    expect(await asked(owner, "owner.admit")).toMatchObject({
+      result: { state: "admitted", reasons: [] } });
+    expect((await readOwner(doorsEnv, owner))?.s).toBe("admitted");
+    expect(await asked(owner, "owner.tier", { tier: "paid" })).toMatchObject({
+      result: { tier: "paid" } });
+    expect(await asked(owner, "owner.suspend", { reason: "abuse" })).toMatchObject({
+      result: { state: "suspended", reasons: ["abuse"] } });
+    expect(await admission(owner)).toEqual({ state: "suspended", reasons: ["abuse"],
+                                             tier: "paid" });
+    // An admit leaves a suspended owner as it stands.
+    expect(await asked(owner, "owner.admit")).toMatchObject({
+      result: { state: "suspended", reasons: ["abuse"] } });
+    expect(await asked(owner, "owner.lift", { reason: "abuse" })).toMatchObject({
+      result: { state: "admitted", reasons: [] } });
+    expect(await admission(owner)).toEqual({ state: "admitted", reasons: [], tier: "paid" });
+  });
+
+  it.each([
+    ["a suspension of an owner never admitted", "owner.suspend", { reason: "billing" },
+     { code: "refused", message: "an owner the platform never admitted is not suspended" }],
+    ["a tier the owner has not", "owner.tier", { tier: "gold" }, { code: "invalid" }],
+    ["a reason the owner has not", "owner.lift", { reason: "fraud" }, { code: "invalid" }],
+    ["an arg more", "owner.tier", { tier: "paid", reason: "abuse" },
+     { code: "invalid", message: "owner.tier takes exactly tier" }],
+    ["an arg missing", "owner.suspend", {},
+     { code: "invalid", message: "owner.suspend takes exactly reason" }],
+    ["an arg an admit has not", "owner.admit", { now: true },
+     { code: "invalid", message: "owner.admit takes exactly no args" }],
+  ] as const)("answers %s refused, the owner as it was", async (_what, op, args, refusal) => {
+    const owner = fresh();
+    expect(refusedOf(await asked(owner, op, args))).toMatchObject(refusal);
+    expect(await admission(owner)).toEqual({ state: "pending", reasons: [], tier: "free" });
+    expect(await readOwner(doorsEnv, owner)).toBeNull();
+  });
+
+  it("changes nothing more on a redelivery of a message it acted on but did not answer",
+     async () => {
+    const owner = fresh();
+    await asked(owner, "owner.admit");
+    const message = await sign(owner, "owner.suspend", { reason: "billing" });
+    // The answer's put fails once, after the op ran: the queue tries again.
+    let failed = false;
+    const bucket = doorsEnv.OPERATOR_LOG;
+    const flaky = { ...doorsEnv, OPERATOR_LOG: {
+      head: (key: string) => bucket.head(key), get: (key: string) => bucket.get(key),
+      put: (key: string, value: string, options: R2PutOptions) => {
+        if (key === answerKey(message.ask) && !failed) {
+          failed = true;
+          return Promise.reject(new Error("the delivery is killed"));
+        }
+        return bucket.put(key, value, options);
+      } } as unknown as R2Bucket };
+    const logged = logs();
+    expect(await deliver(message, flaky)).toEqual({ acked: 0, retried: 1 });
+    expect(logged()).toEqual(["an operator message failed; the queue tries again"]);
+    expect(await admission(owner)).toEqual({ state: "suspended", reasons: ["billing"],
+                                             tier: "free" });
+    expect(await deliver(message, flaky)).toEqual({ acked: 1, retried: 0 });
+    expect(operatorAnswer((await held(message.ask)).answer, message)).toMatchObject({
+      result: { state: "suspended", reasons: ["billing"] } });
+    expect(await admission(owner)).toEqual({ state: "suspended", reasons: ["billing"],
+                                             tier: "free" });
   });
 });

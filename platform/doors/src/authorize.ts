@@ -219,19 +219,20 @@ export async function authorize(request: Request, env: DoorsEnv,
 }
 
 /**
- * The platform's explicit admit of a new owner at sign-up: the owner's object first (a
- * fresh one is pending), then the directory's record, so a failure between them admits it
- * again at the next sign-in (the admit is idempotent) and a record never names an owner
- * its object did not admit. An owner marked erasing, or erased, is refused by its object,
- * and never admitted again.
+ * The platform's explicit admit of an owner, at sign-up and by the operator (`operator.ts`):
+ * the owner's object first (a fresh one is pending), then the directory's record, so a
+ * failure between them admits it again at the next sign-in (the admit is idempotent) and a
+ * record never names an owner its object did not admit; the object's admission. An owner
+ * marked erasing, or erased, is refused by its object, and never admitted again.
  */
-async function admit(env: DoorsEnv, owner: string): Promise<void> {
+export async function admit(env: DoorsEnv, owner: string): Promise<{ readonly state: string }> {
   const platform = bindPlatformFor(env, owner);
-  const { state } = await platform.stub.admissionSet(platform.binding, { admit: true });
-  if (state === "pending") {
+  const admission = await platform.stub.admissionSet(platform.binding, { admit: true });
+  if (admission.state === "pending") {
     throw new Error("the platform's admit left the owner pending");
   }
   await putOwner(env, owner, { s: "admitted", t: now() });
+  return admission;
 }
 
 /**

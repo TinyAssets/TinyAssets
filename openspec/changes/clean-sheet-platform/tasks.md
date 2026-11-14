@@ -370,6 +370,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and
   only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`).
+  - [ ] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
+    (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, after lane O's T1c
+    (`r3.md` item 9).
 - [ ] R5, where an action is decided (d3 §N): its six slices (`r5_research.md` §6), after B25
   and alongside lane O.
   - [ ] P-shape: the policy's `actions` table and `contract/acts.json`, the doors' rows naming
