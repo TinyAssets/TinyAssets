@@ -11,13 +11,12 @@
  * on and never turns it off. The real crossing is held in workerd by the doors' tests
  * (`doors/test/api-keys.test.ts`, the owner's object's RPC).
  */
-import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { readWrangler } from "../../ci/workers";
+import { readWrangler, workerFolders } from "../../ci/wrangler";
 import { MAINTENANCE } from "../src/control";
 import {
   EGRESS_CODES, ERASING, FAULT_CODES, faultOf, FileFault, Refusal, REFUSALS,
@@ -35,10 +34,7 @@ function crossed(name: string, message: string, fields: Record<string, unknown>)
 }
 
 describe("the Workers' runtime", () => {
-  const workers = readdirSync(PLATFORM, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory()
-      && readdirSync(join(PLATFORM, entry.name)).includes("wrangler.jsonc"))
-    .map((entry) => entry.name).sort();
+  const workers = workerFolders();
 
   it("carries a refusal's own fields across RPC in every Worker", () => {
     expect(workers).toEqual(["codemode", "doors", "files", "gateway", "owner", "sandbox"]);
@@ -85,12 +81,13 @@ describe("a transient refusal", () => {
     const transient = Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { transient?: true }).transient === true)
       .map(([code]) => code).sort();
-    expect(transient).toEqual(["busy", "events_busy", "events_raced", "root_changed",
-                               "storage_busy", "unavailable"]);
+    expect(transient).toEqual(["busy", "egress_rate", "events_busy", "events_raced",
+                               "root_changed", "storage_busy", "unavailable"]);
     expect(Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { retryAfterS?: number }).retryAfterS !== undefined)
       .map(([code]) => code).sort())
-      .toEqual(["busy", "events_busy", "events_raced", "storage_busy", "unavailable"]);
+      .toEqual(["busy", "egress_rate", "events_busy", "events_raced", "storage_busy",
+                "unavailable"]);
     expect([new Refusal("busy").transient, new Refusal("storage_busy").transient,
             new Refusal("unavailable", MAINTENANCE).transient,
             new Refusal("tier_runs").transient, new Refusal("refused").transient])
@@ -114,6 +111,8 @@ describe("the code list", () => {
     ["file_quota", 403, undefined], ["owner_suspended", 403, undefined],
     ["storage_full", 507, undefined], ["file_index_full", 507, undefined],
     ["uploads_open", 409, undefined],
+    ["inbound_proof_invalid", 401, undefined], ["binding_withdrawn", 404, undefined],
+    ["binding_not_configured", 404, undefined],
     ["file_busy", 409, undefined], ["storage_busy", 503, 30], ["busy", 503, 1],
     ["events_busy", 503, 1], ["events_raced", 503, 1],
     // The platform gates, closed: the doors' 503 and its minute.
@@ -125,6 +124,7 @@ describe("the code list", () => {
     ["method_not_allowed", 405, undefined], ["events_too_large", 413, undefined],
     ["egress_gateway_failed", 502, undefined], ["egress_deadline", 504, undefined],
     ["egress_aborted", 503, undefined], ["egress_ended", 503, undefined],
+    ["egress_rate", 429, 1],
     // The files plane's.
     ["keyring_unavailable", 500, undefined], ["data_key_refused", 400, undefined],
     ["root_changed", 409, undefined],

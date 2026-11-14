@@ -8,7 +8,28 @@
  */
 import type { ConfigRules } from "../../ci/kit/config";
 import type { ImportRules } from "../../ci/kit/imports";
+import type { Exemption } from "../../ci/kit/module-state";
 import { envFile } from "../../ci/kit/sources";
+
+/**
+ * The module state the gateway keeps by design (`ci/kit/module-state.ts`), none of it an
+ * owner's data:
+ * - its global-fetch interposer (`egress.ts`). pi-ai's Google adapters take no custom fetch,
+ *   so the gateway replaces the global `fetch`, once, by a function that is the current
+ *   call's endpoint guard inside that call's `AsyncLocalStorage` scope and the runtime's own
+ *   fetch outside any. That needs a module-level scope, the captured runtime fetch and one
+ *   write of the global (gateway spec, "Every adapter request goes through the call's guard");
+ * - its isolate's chunk slots (`held.ts`; the pool itself is the contract's,
+ *   `contract/src/slots.ts`, which holds no state): the pool is the isolate's, shared by every
+ *   call in it, and holds a count of slots in use and the calls waiting, never an owner's data.
+ */
+const INTERPOSER = "gateway/src/egress.ts";
+export const MODULE_STATE: readonly Exemption[] = Object.freeze([
+  { file: INTERPOSER, symbol: "SCOPE", reason: "the current call's guard, for its scope alone" },
+  { file: INTERPOSER, symbol: "NATIVE", reason: "the runtime's own fetch, captured once" },
+  { file: INTERPOSER, symbol: "globalThis.fetch", reason: "the interposer, written once" },
+  { file: "gateway/src/held.ts", symbol: "ISOLATE", reason: "the isolate's one chunk pool" },
+].map((each) => Object.freeze(each)));
 
 /**
  * Its config: the keys that name the Worker, its entry and its runtime, and `secrets`, which

@@ -52,10 +52,11 @@ import {
 } from "./config";
 import type { DoorsEnv } from "./env";
 import { APP_RESOURCE } from "../../contract/src/identity";
-import { outsideOpen, ownerOpen, readControl } from "../../contract/src/control";
+import { outsideRead, ownerRead } from "./control";
 import { putOwner, readOwner } from "./directory";
-import { refusalOf } from "../../contract/src/refusal";
+import { Refusal } from "../../contract/src/refusal";
 import { authorizationServer } from "./oauth";
+import { answered, asRedirect } from "./refused";
 import { replaceInstallation } from "./revoke";
 import { boundedText, mediaType, plain, randomToken, redirect, TOO_LARGE } from "./kit";
 import { sessionCookie } from "./session";
@@ -221,30 +222,16 @@ export async function authorize(request: Request, env: DoorsEnv,
  * The platform's explicit admit of a new owner at sign-up: the owner's object first (a
  * fresh one is pending), then the directory's record, so a failure between them admits it
  * again at the next sign-in (the admit is idempotent) and a record never names an owner
- * its object did not admit.
+ * its object did not admit. An owner marked erasing, or erased, is refused by its object,
+ * and never admitted again.
  */
-async function admit(env: DoorsEnv, owner: string): Promise<boolean> {
+async function admit(env: DoorsEnv, owner: string): Promise<void> {
   const platform = bindPlatformFor(env, owner);
-  let state: string;
-  try {
-    ({ state } = await platform.stub.admissionSet(platform.binding, { admit: true }));
-  } catch (error) {
-    if (erasedRefusal(error)) {
-      return false;  // marked erasing, or erased: never admitted again
-    }
-    throw error;
-  }
+  const { state } = await platform.stub.admissionSet(platform.binding, { admit: true });
   if (state === "pending") {
     throw new Error("the platform's admit left the owner pending");
   }
   await putOwner(env, owner, { s: "admitted", t: now() });
-  return true;
-}
-
-/** The object's refusal of an owner being erased, or erased. */
-function erasedRefusal(error: unknown): boolean {
-  const code = refusalOf(error)?.code;
-  return code === "erasing" || code === "owner_erased";
 }
 
 /**
@@ -323,22 +310,29 @@ export async function callback(request: Request, env: DoorsEnv,
     return redirect(authorizationErrorRedirect(original, "access_denied",
                                                "sign in again"), headers);
   }
+  return answered(asRedirect(original, headers), () => granting(env, oauth, upstream,
+                                                                 original, headers, signedIn));
+}
+
+/**
+ * A verified sign-in's grant: the erased owner refused, the platform gate its client needs,
+ * a new owner admitted, then the grant (and, for the owner's app, its session). A refusal on
+ * the way is the client's redirect (`asRedirect`).
+ */
+async function granting(env: DoorsEnv, oauth: OAuthHelpers, upstream: Upstream,
+                        original: AuthRequest, headers: Headers, signedIn: SignIn):
+    Promise<Response> {
   const owner = await ownerOf(env, signedIn.issuer, signedIn.subject);
   const record = await readOwner(env, owner);
   if (record?.s === "erased") {
     await erasedSignIn(upstream, env, signedIn);
-    return redirect(authorizationErrorRedirect(original, "access_denied",
-                                               "this account was erased"), headers);
+    throw new Refusal("owner_erased");
   }
-  const control = await readControl(env.CONTROL);
   const scope = granted(original.scope);
   if (original.resource === MCP_RESOURCE && !firstParty(original)) {
-    if (!outsideOpen(control, owner)) {
-      return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
-    }
-    if (record === null && !await admit(env, owner)) {
-      return redirect(authorizationErrorRedirect(original, "access_denied",
-                                                 "this account was erased"), headers);
+    await outsideRead(env, owner);
+    if (record === null) {
+      await admit(env, owner);
     }
     const props: McpProps = {
       kind: "mcp", owner, ...mcpOrigin(original.clientId, original.redirectUri),
@@ -356,24 +350,12 @@ export async function callback(request: Request, env: DoorsEnv,
     return redirect(redirectTo, headers);
   }
   if (original.resource === APP_RESOURCE && firstParty(original)) {
-    if (!ownerOpen(control, owner)) {
-      return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
-    }
-    if (record === null && !await admit(env, owner)) {
-      return redirect(authorizationErrorRedirect(original, "access_denied",
-                                                 "this account was erased"), headers);
+    await ownerRead(env, owner);
+    if (record === null) {
+      await admit(env, owner);
     }
     const { binding, stub } = await bindSignIn(env, signedIn);
-    let session: string;
-    try {
-      ({ session } = await stub.sessionOpen(binding));
-    } catch (error) {
-      if (erasedRefusal(error)) {
-        return redirect(authorizationErrorRedirect(original, "access_denied",
-                                                   "this account was erased"), headers);
-      }
-      throw error;
-    }
+    const { session } = await stub.sessionOpen(binding);
     const props: AppProps = { kind: "app", owner };
     // Each device keeps its own grant: the app on a phone and in a browser stay signed in
     // together, and sign-out revokes the presented token's grant alone (`app.ts`).

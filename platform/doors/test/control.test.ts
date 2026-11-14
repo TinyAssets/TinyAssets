@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { writeControl } from "../../ci/fixtures";
 import {
-  CONTROL_KEY, type Control, outsideOpen, ownerOpen, parseControl,
+  CONTROL_KEY, type Control, MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen, parseControl,
 } from "../../contract/src/control";
 import type { DoorsEnv } from "../src/env";
 import { mintKeyFor } from "./keys";
@@ -140,9 +140,11 @@ describe.each([
     expect(await reached(alice)).toBe(false);
   });
 
-  it("refuses an /api call 503", async () => {
+  it("refuses an /api call 503, its message why and a minute's Retry-After", async () => {
     const { key } = await mintKeyFor(owner());
-    expect((await api(key, await state())).status).toBe(503);
+    const response = await api(key, await state());
+    expect([response.status, response.headers.get("Retry-After"), await response.json()])
+      .toEqual([503, "60", { error: OUTSIDE_OFF }]);
   });
 
   it("refuses an outside client's authorization", async () => {
@@ -166,6 +168,10 @@ describe.each([
                                  Cookie: `__Host-ta-owner=${app.session}` }, body: "{}" }),
       await state());
     expect(response.status).toBe(open ? 200 : 503);
+    if (!open) {
+      expect([response.headers.get("Retry-After"), await response.json()])
+        .toEqual(["60", { error: MAINTENANCE }]);
+    }
   });
 
   it(`${open ? "admits" : "refuses"} the owner's sign-in`, async () => {

@@ -10,11 +10,12 @@
  */
 import { join } from "node:path";
 
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { readWrangler, wranglerKeys } from "../workers.ts";
+import { readWrangler, wranglerKeys } from "../wrangler.ts";
 import { PLATFORM } from "../paths.ts";
-import { type Config, configFiles, platformConfigs } from "./sources.ts";
+import { type Config, configFiles, parse } from "./sources.ts";
 
 /** The flag that keeps a Worker's own namespaces out of its `ctx.exports`. */
 export const NO_EXPORTS = "disable_ctx_exports";
@@ -46,8 +47,6 @@ export interface ConfigRules {
   readonly kv?: readonly string[];
   /** Every other key whose value is fixed, exactly. */
   readonly exact?: Readonly<Record<string, unknown>>;
-  /** What the Worker checks against the platform's other configs. */
-  readonly across?: (config: Config, platform: ReadonlyMap<string, Config>) => string[];
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -136,9 +135,46 @@ function kvProblems(namespaces: unknown, bindings: readonly string[]): string[] 
   return fits ? [] : [`kv_namespaces are exactly ${bindings.join(", ")}, distinct placeholders`];
 }
 
+/**
+ * How the platform's Worker configs (`configs`, by Worker name) disagree on their
+ * compatibility date: every Worker runs at one date, so the runtime's behaviour one Worker
+ * relies on (a refusal's own fields across RPC, `contract/guards/refusal.test.ts`) is every
+ * other's too, and a move of the date is one change to all of them.
+ */
+export function dateProblems(configs: ReadonlyMap<string, Config>): string[] {
+  const dates = new Set([...configs.values()].map((config) => config["compatibility_date"]));
+  return dates.size <= 1 ? [] : [`the Workers' compatibility dates differ: ${[...configs]
+    .map(([name, config]) => `${name} ${String(config["compatibility_date"])}`).join(", ")}`];
+}
+
+/** An R2 type's name: a bucket, an object, a listing. */
+const R2_TYPE = /^R2[A-Z]/;
+
+/**
+ * Each Worker source in `sources` (by path from `platform/`) that names an R2 type though its
+ * Worker's rules allow it no bucket (`buckets`, in `allowed`'s rules, by Worker): a Worker
+ * reaches R2 only through a bucket its config binds and its rules allow.
+ */
+export function bucketTypeProblems(sources: ReadonlyMap<string, string>,
+                                   allowed: ReadonlyMap<string, ConfigRules>): string[] {
+  return [...sources].flatMap(([path, source]) => {
+    if (allowed.get(path.split("/")[0]!)?.buckets !== undefined) {
+      return [];
+    }
+    const named = new Set<string>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && R2_TYPE.test(node.text)) {
+        named.add(node.text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(parse(path, source));
+    return [...named].map((name) => `${path} names ${name}, and its Worker's rules allow no bucket`);
+  });
+}
+
 /** Each way `config` holds more, or other, than `rules` allow. */
-export function configProblems(config: Config, rules: ConfigRules,
-                               platform: ReadonlyMap<string, Config> = platformConfigs()): string[] {
+export function configProblems(config: Config, rules: ConfigRules): string[] {
   const problems = keyProblems(config, rules.keys);
   if (config["name"] !== rules.name || config["main"] !== rules.main) {
     problems.push(`the Worker is ${rules.name} at ${rules.main}`);
@@ -171,7 +207,6 @@ export function configProblems(config: Config, rules: ConfigRules,
   for (const [key, value] of Object.entries(rules.exact ?? {})) {
     problems.push(...exactProblems(config, key, value));
   }
-  problems.push(...(rules.across?.(config, platform) ?? []));
   return problems;
 }
 

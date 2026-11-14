@@ -63,7 +63,7 @@ import {
   importKeyBytes, importMessage, type ImportMessage, macHolds, rehearsalRun,
 } from "../../contract/src/import-message";
 import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
-import { refusalOf } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 
 import { bindImport, bindPlatformFor, type Bound } from "./binder";
 import { namedSecret, now } from "./config";
@@ -84,11 +84,6 @@ export const IMPORT_HOLD_BYTES = 4 * 1024 * 1024;
 const SUSPENSIONS: readonly string[] = Object.freeze(["abuse", "billing"]);
 /** The bundle format the consumer reads (`import/bundle.ts`'s `FORMAT`). */
 export const BUNDLE_FORMAT = 1;
-
-/** A gate that does not hold, or a bundle that is not itself: the message is dropped. */
-export class Dropped extends Error {
-  override readonly name = "Dropped";
-}
 
 /** A bundle's index (`bundle.json`), as the job wrote it and the MAC names it. */
 interface Index {
@@ -118,7 +113,7 @@ export function stepsOf(index: Index): Step[] {
       .flatMap((match) => match === null ? [] : [Number(match[1])]).sort((a, b) => a - b);
     // Each page is numbered from 0 with no gap, so none is left out unseen.
     if (numbers.some((number, n) => number !== n)) {
-      throw new Dropped("a bundle's pages are numbered from 0 with no gap");
+      throw new Refusal("invalid", "a bundle's pages are numbered from 0 with no gap");
     }
     return numbers.map((n) => ({ kind, part: `${kind}/${n}.json` }));
   };
@@ -136,7 +131,8 @@ async function object(env: DoorsEnv, message: ImportMessage, name: string): Prom
   }
   if (found.size > IMPORT_HOLD_BYTES) {
     await found.body.cancel();
-    throw new Dropped(`the bundle's ${name} is past the ${IMPORT_HOLD_BYTES} bytes a delivery holds`);
+    throw new Refusal("invalid", `the bundle's ${name} is past the ${IMPORT_HOLD_BYTES} ` +
+                                 "bytes a delivery holds");
   }
   return new Uint8Array(await found.arrayBuffer());
 }
@@ -153,14 +149,14 @@ const plain = (value: unknown): value is Record<string, unknown> =>
 async function indexOf(env: DoorsEnv, message: ImportMessage): Promise<Index> {
   const bytes = await object(env, message, "bundle.json");
   if (sha256Hex(bytes) !== message.bundle) {
-    throw new Dropped("the bundle's index is not the bundle its message names");
+    throw new Refusal("invalid", "the bundle's index is not the bundle its message names");
   }
   const index: unknown = JSON.parse(new TextDecoder().decode(bytes));
   if (!plain(index) || index["format"] !== BUNDLE_FORMAT || index["owner"] !== message.owner
       || !plain(index["parts"])
       || !Object.values(index["parts"]).every((sha) => typeof sha === "string" && HEX64.test(sha))
       || !("owner.json" in index["parts"])) {
-    throw new Dropped("the bundle's index is out of shape, or another owner's");
+    throw new Refusal("invalid", "the bundle's index is out of shape, or another owner's");
   }
   return { parts: index["parts"] as Record<string, string> };
 }
@@ -170,15 +166,15 @@ async function part(env: DoorsEnv, message: ImportMessage, index: Index, name: s
     Promise<Record<string, unknown>> {
   const want = index.parts[name];
   if (want === undefined) {
-    throw new Dropped(`the bundle's index names no ${name}`);
+    throw new Refusal("invalid", `the bundle's index names no ${name}`);
   }
   const bytes = await object(env, message, name);
   if (sha256Hex(bytes) !== want) {
-    throw new Dropped(`the bundle's ${name} is not the part its index names`);
+    throw new Refusal("invalid", `the bundle's ${name} is not the part its index names`);
   }
   const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
   if (!plain(value)) {
-    throw new Dropped(`the bundle's ${name} is out of shape`);
+    throw new Refusal("invalid", `the bundle's ${name} is out of shape`);
   }
   return value;
 }
@@ -199,7 +195,7 @@ async function verified(env: DoorsEnv, message: ImportMessage, index: Index): Pr
 function listOf(page: Record<string, unknown>, key: string): unknown[] {
   const list = page[key];
   if (!Array.isArray(list)) {
-    throw new Dropped(`a bundle's page holds no ${key}`);
+    throw new Refusal("invalid", `a bundle's page holds no ${key}`);
   }
   return list;
 }
@@ -207,14 +203,14 @@ function listOf(page: Record<string, unknown>, key: string): unknown[] {
 function entryOf(value: unknown): Entry {
   if (!plain(value) || typeof value["path"] !== "string"
       || (value["kind"] !== "dir" && value["kind"] !== "file")) {
-    throw new Dropped("a bundle's manifest entry is out of shape");
+    throw new Refusal("invalid", "a bundle's manifest entry is out of shape");
   }
   if (value["kind"] === "file" && (typeof value["size"] !== "number"
       || !Number.isSafeInteger(value["size"]) || value["size"] < 0
       || (value["mode"] !== 0 && value["mode"] !== 1) || typeof value["content_id"] !== "string"
       || typeof value["mtime_ms"] !== "number" || !Number.isSafeInteger(value["mtime_ms"])
       || value["mtime_ms"] < 0)) {
-    throw new Dropped("a bundle's file entry is out of shape");
+    throw new Refusal("invalid", "a bundle's file entry is out of shape");
   }
   return value as unknown as Entry;
 }
@@ -275,7 +271,7 @@ class Slice {
       if (each.kind === "notice") {
         const owner = await part(this.#env, this.#message, this.#index, "owner.json");
         if (typeof owner["notice"] !== "string") {
-          throw new Dropped("the bundle's owner holds no notice");
+          throw new Refusal("invalid", "the bundle's owner holds no notice");
         }
         await this.#call(stub.importNotice(binding, { detail: owner["notice"] }));
         continue;
@@ -366,7 +362,7 @@ class Slice {
   async #inline(entry: Entry): Promise<unknown> {
     const bytes = await object(this.#env, this.#message, `inline/${entry.content_id}`);
     if (bytes.byteLength !== entry.size || inlineId(bytes) !== entry.content_id) {
-      throw new Dropped("an inline file's bytes are not its content id");
+      throw new Refusal("invalid", "an inline file's bytes are not its content id");
     }
     return { kind: "file", path: entry.path, size: entry.size, mode: entry.mode,
              content_id: entry.content_id, mtime_ms: entry.mtime_ms, bytes };
@@ -382,7 +378,7 @@ class Slice {
     const chunks = entry.chunks;
     if (!Array.isArray(chunks) || !chunks.every((sha) => typeof sha === "string" && HEX64.test(sha))
         || chunkedId(entry.size!, chunks) !== entry.content_id) {
-      throw new Dropped("a chunked file's chunks are not its content id");
+      throw new Refusal("invalid", "a chunked file's chunks are not its content id");
     }
     const request = { path: entry.path, size: entry.size!, mode: entry.mode!,
                       content_id: entry.content_id!, chunks: [...chunks] };
@@ -405,7 +401,7 @@ class Slice {
       }
       const bytes = await object(this.#env, this.#message, `chunks/${sha}`);
       if (sha256Hex(bytes) !== sha) {
-        throw new Dropped("a chunk's bytes are not its hash");
+        throw new Refusal("invalid", "a chunk's bytes are not its hash");
       }
       await putImportChunk(this.#env, upload, chunk, bytes);
       this.#moved += bytes.byteLength;
@@ -423,21 +419,21 @@ class Slice {
 function gated(env: DoorsEnv, body: unknown): ImportMessage {
   const key = namedSecret(env, IMPORT_KEY);
   if (key === null) {
-    throw new Dropped("the doors hold no IMPORT_KEY: the import window is closed");
+    throw new Refusal("refused", "the doors hold no IMPORT_KEY: the import window is closed");
   }
   try {
     importKeyBytes(key);
   } catch (error) {
-    throw new Dropped((error as Error).message);
+    throw new Refusal("refused", (error as Error).message);
   }
   let message: ImportMessage;
   try {
     message = importMessage(body);
   } catch {
-    throw new Dropped("an import message is out of shape");
+    throw new Refusal("invalid", "an import message is out of shape");
   }
   if (!macHolds(key, message)) {
-    throw new Dropped("an import message's MAC does not hold under IMPORT_KEY");
+    throw new Refusal("refused", "an import message's MAC does not hold under IMPORT_KEY");
   }
   return message;
 }
@@ -453,7 +449,7 @@ async function recorded(env: DoorsEnv, message: ImportMessage): Promise<void> {
       || (message.op === "discard" && rehearsalRun(message.owner) !== null)))) {
     return;
   }
-  throw new Dropped("the directory holds a record of this owner: it is never imported into");
+  throw new Refusal("refused", "the directory holds a record of this owner: it is never imported into");
 }
 
 /** The continuation of `message` from `cursor`, sent as JSON (the job's reader takes JSON). */
@@ -476,7 +472,8 @@ async function admitted(env: DoorsEnv, message: ImportMessage, index: Index):
       || (admission?.state !== "admitted" && admission?.state !== "suspended")
       || !Array.isArray(reasons) || !reasons.every((reason) => SUSPENSIONS.includes(reason))
       || (admission.state === "suspended") !== (reasons.length > 0)) {
-    throw new Dropped("the bundle's owner is not one the old stack admitted: never admitted");
+    throw new Refusal("refused",
+                      "the bundle's owner is not one the old stack admitted: never admitted");
   }
   const { binding, stub } = bindPlatformFor(env, message.owner);
   await stub.tierSet(binding, { tier: owner["tier"] as "free" | "paid" });
@@ -490,8 +487,10 @@ async function admitted(env: DoorsEnv, message: ImportMessage, index: Index):
 
 /**
  * One message's gates, then its op: `done` when its bundle or check is through (or its discard
- * or admit made), `more` when its continuation was sent. A gate that does not hold throws
- * `Dropped`; past the MAC and the index, an op the job waits on is answered as refused too.
+ * or admit made), `more` when its continuation was sent. A gate that does not hold, or a
+ * bundle that is not itself, is a terminal refusal of the doors' own (`invalid` or
+ * `refused`), and the message is dropped; past the MAC and the index, an op the job waits on
+ * is answered as refused too.
  */
 export async function importOne(env: DoorsEnv, body: unknown,
                                 bounds: SliceBounds = SLICE): Promise<"done" | "more"> {
@@ -535,10 +534,9 @@ export async function importOne(env: DoorsEnv, body: unknown,
     return "done";
   } catch (error) {
     const refused = refusalOf(error);
-    if (error instanceof Dropped || (refused !== null && !refused.transient)) {
+    if (refused !== null && !refused.transient) {
       await answer(env, answerName(message.prefix, ask), {
-        op: message.op, bundle: message.bundle,
-        refused: error instanceof Dropped ? error.message : refused!.message });
+        op: message.op, bundle: message.bundle, refused: refused.message });
     }
     throw error;
   }
@@ -554,18 +552,13 @@ export async function importQueue(batch: MessageBatch<unknown>, env: DoorsEnv,
       await importOne(env, message.body, bounds);
       message.ack();
     } catch (error) {
-      if (error instanceof Dropped) {
-        console.error(`an import message (${where}) is dropped: ${error.message}`);
-        message.ack();
-        continue;
-      }
-      // The owner's object's word: a terminal refusal (not pending, a conflicting file, a
-      // malformed step) is dropped, never retried; one for the moment only is retried, as
-      // any other failure is, and the queue's dead-letter queue keeps what it gives up on.
+      // A terminal refusal, a gate's or the owner's object's (not pending, a conflicting
+      // file, a malformed step), is dropped, never retried; one for the moment only is
+      // retried, as any other failure is, and the queue's dead-letter queue keeps what it
+      // gives up on.
       const refused = refusalOf(error);
       if (refused !== null && !refused.transient) {
-        console.error(`an import message (${where}) is refused by the owner's object; ` +
-                      `dropped: ${refused.message}`);
+        console.error(`an import message (${where}) is refused; dropped: ${refused.message}`);
         message.ack();
         continue;
       }

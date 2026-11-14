@@ -50,7 +50,7 @@ export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMA
  * end, written as its literal SQL text like these (no constant interpolated, no helper
  * called), and pinned by the deploy (`migrations.json`); the migrations guard holds every
  * pinned one to its digest, and the append-only lock guard holds the lock itself to the base
- * branch's (`guards/migrations-append-only.test.ts`). A new migration that spells a bound adds
+ * branch's (`ci/guards/locks.test.ts`). A new migration that spells a bound adds
  * it to the frozen bounds and its line to the frozen-bounds guard.
  */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([

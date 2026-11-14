@@ -27,21 +27,13 @@ import { type McpServer, ProtocolError, type StandardSchemaV1 } from "@modelcont
 import {
   callbackSecret, callbackUrl, eventKind, type WakeKind,
 } from "../../contract/src/wake-records";
-import { COMMAND_CENTER_MAX, SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
+import { COMMAND_CENTER_MAX } from "../../contract/src/limits";
 import { follows, subscriptionId } from "../../contract/src/wake-kinds";
-import { refusalOf } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./env";
 import { DOORBELL_VERSION, verifyDoorbell } from "./connect";
-
-
-/** The design sketch's codes (`-32023` to `-32026`); the verification's is the record's. */
-const NOT_FOUND = -32023;
-const FORBIDDEN = -32024;
-const EXHAUSTED = -32025;
-const UNSUPPORTED = -32026;
-const INVALID_PARAMS = -32602;
+import { answered, asEvent, EVENT_ERRORS } from "./refused";
 
 /** What a subscription may name: its command center, and the board and rooms it follows. */
 function inputSchema() {
@@ -86,14 +78,15 @@ const PARAMS: StandardSchemaV1<Record<string, unknown>> = Object.freeze({
 });
 
 function invalid(message: string): ProtocolError {
-  return new ProtocolError(INVALID_PARAMS, message);
+  return new ProtocolError(EVENT_ERRORS.invalidParams, message);
 }
 
 /** The caller's principal, or Forbidden: an outside client's own call, never a run's. */
 function principal(bound: Bound): string {
   const binding = bound.binding as { origin?: { client?: unknown } | null; run?: unknown };
   if (binding.run !== undefined || typeof binding.origin?.client !== "string") {
-    throw new ProtocolError(FORBIDDEN, "Forbidden", { reason: "an agent's own client only" });
+    throw new ProtocolError(EVENT_ERRORS.forbidden, "Forbidden",
+                            { reason: "an agent's own client only" });
   }
   return binding.origin.client;
 }
@@ -102,7 +95,7 @@ function principal(bound: Bound): string {
 function kindOf(name: unknown): WakeKind & { push: NonNullable<WakeKind["push"]> } {
   const kind = typeof name === "string" ? eventKind(name) : null;
   if (kind === null || kind.push === null || kind.push.events === null) {
-    throw new ProtocolError(NOT_FOUND, "NotFound", { kind: "event" });
+    throw new ProtocolError(EVENT_ERRORS.notFound, "NotFound", { kind: "event" });
   }
   return kind as WakeKind & { push: NonNullable<WakeKind["push"]> };
 }
@@ -130,30 +123,10 @@ function deliveryOf(kind: WakeKind & { push: NonNullable<WakeKind["push"]> }, va
     throw invalid("delivery is an object");
   }
   if (delivery["mode"] !== undefined && delivery["mode"] !== "webhook") {
-    throw new ProtocolError(UNSUPPORTED, "Unsupported", { feature: "delivery.mode" });
+    throw new ProtocolError(EVENT_ERRORS.unsupported, "Unsupported", { feature: "delivery.mode" });
   }
-  try {
-    return { url: callbackUrl(kind.push, delivery["url"]),
-             secret: withSecret ? callbackSecret(kind.push, delivery["secret"]) : "" };
-  } catch (error) {
-    throw invalid(error instanceof Error ? error.message : "invalid delivery");
-  }
-}
-
-/** An object refusal as the design sketch's error; anything else is a bug, rethrown. */
-function refused(error: unknown): never {
-  const known = refusalOf(error);
-  if (known === null) {
-    throw error;
-  }
-  if (known.code === "subscription_limit") {
-    throw new ProtocolError(EXHAUSTED, "ResourceExhausted",
-                            { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT });
-  }
-  if (known.invalid) {
-    throw invalid(known.message);
-  }
-  throw new ProtocolError(FORBIDDEN, "Forbidden", { reason: known.message });
+  return { url: callbackUrl(kind.push, delivery["url"]),
+           secret: withSecret ? callbackSecret(kind.push, delivery["secret"]) : "" };
 }
 
 /** The lifetime granted: `ttlMs` at most, the record's default when omitted, none for null. */
@@ -176,74 +149,61 @@ function grantedTtl(kind: WakeKind & { push: NonNullable<WakeKind["push"]> },
 export function serveEvents(mcp: McpServer, bound: Bound, env: DoorsEnv): void {
   mcp.server.registerCapabilities({ events: {} } as never);
 
-  mcp.server.setRequestHandler("events/list", { params: PARAMS }, async (params) => {
-    if (params["cursor"] !== undefined && params["cursor"] !== null) {
-      throw invalid("events/list has one page");
-    }
-    let listed;
-    try {
-      listed = await bound.stub.wakeEvents(bound.binding);
-    } catch (error) {
-      refused(error);
-    }
-    return {
-      events: listed.events.map((event) => ({
-        name: event.name, description: event.description, delivery: ["webhook"],
-        inputSchema: inputSchema(), payloadSchema: payloadSchema(),
-      })),
-    } as never;
-  });
+  // Each handler answers an object's refusal as the design sketch's error (`asEvent`).
+  mcp.server.setRequestHandler("events/list", { params: PARAMS }, (params) =>
+    answered(asEvent, async () => {
+      if (params["cursor"] !== undefined && params["cursor"] !== null) {
+        throw invalid("events/list has one page");
+      }
+      const listed = await bound.stub.wakeEvents(bound.binding);
+      return {
+        events: listed.events.map((event) => ({
+          name: event.name, description: event.description, delivery: ["webhook"],
+          inputSchema: inputSchema(), payloadSchema: payloadSchema(),
+        })),
+      } as never;
+    }));
 
-  mcp.server.setRequestHandler("events/subscribe", { params: PARAMS }, async (params) => {
-    const caller = principal(bound);
-    const kind = kindOf(params["name"]);
-    const args = argumentsOf(params["arguments"]);
-    const { url, secret } = deliveryOf(kind, params["delivery"], true);
-    const ttl = grantedTtl(kind, params["ttlMs"]);
-    let listed;
-    try {
+  mcp.server.setRequestHandler("events/subscribe", { params: PARAMS }, (params) =>
+    answered(asEvent, async () => {
+      const caller = principal(bound);
+      const kind = kindOf(params["name"]);
+      const args = argumentsOf(params["arguments"]);
+      const { url, secret } = deliveryOf(kind, params["delivery"], true);
+      const ttl = grantedTtl(kind, params["ttlMs"]);
       // Authorized before the callback is sent a byte: this caller's subscribing agent there.
-      listed = await bound.stub.wakeEvents(bound.binding, args["command_center_id"] as string);
-    } catch (error) {
-      refused(error);
-    }
-    if (!listed.events.some((event) => event.name === kind.push.events!.name)) {
-      throw new ProtocolError(FORBIDDEN, "Forbidden", { reason: "no read_graph" });
-    }
-    const id = subscriptionId(caller, url, kind.push.events!.name, args);
-    const verified = await verifyDoorbell(env, bound.binding.owner, id,
-                                          { record: kind.id, url, secret });
-    if (!verified.verified) {
-      throw new ProtocolError(kind.push.events!.verify_error_code, "CallbackEndpointError",
-                              { reason: verified.reason });
-    }
-    const expiresAt = ttl === null ? null : (Date.now() + ttl) / 1000;
-    // Written before anything is stored, so an answer that cannot be written stores nothing.
-    const refreshBefore = expiresAt === null ? null : new Date(expiresAt * 1000).toISOString();
-    try {
+      const listed = await bound.stub.wakeEvents(bound.binding,
+                                                 args["command_center_id"] as string);
+      if (!listed.events.some((event) => event.name === kind.push.events!.name)) {
+        throw new ProtocolError(EVENT_ERRORS.forbidden, "Forbidden", { reason: "no read_graph" });
+      }
+      const id = subscriptionId(caller, url, kind.push.events!.name, args);
+      const verified = await verifyDoorbell(env, bound.binding.owner, id,
+                                            { record: kind.id, url, secret });
+      if (!verified.verified) {
+        throw new ProtocolError(kind.push.events!.verify_error_code, "CallbackEndpointError",
+                                { reason: verified.reason });
+      }
+      const expiresAt = ttl === null ? null : (Date.now() + ttl) / 1000;
+      // Written before anything is stored, so an answer that cannot be written stores nothing.
+      const refreshBefore = expiresAt === null ? null : new Date(expiresAt * 1000).toISOString();
       await bound.stub.wakeSubscribe(bound.binding, {
         subscription_id: id, name: kind.push.events!.name,
         arguments: args as { command_center_id: string },
         blob: verified.sealed.blob, kid: verified.sealed.kid, version: DOORBELL_VERSION,
         expires_at: expiresAt,
       });
-    } catch (error) {
-      refused(error);
-    }
-    return { id, refreshBefore, cursor: null, truncated: false } as never;
-  });
+      return { id, refreshBefore, cursor: null, truncated: false } as never;
+    }));
 
-  mcp.server.setRequestHandler("events/unsubscribe", { params: PARAMS }, async (params) => {
-    const caller = principal(bound);
-    const kind = kindOf(params["name"]);
-    const args = argumentsOf(params["arguments"]);
-    const { url } = deliveryOf(kind, params["delivery"], false);
-    try {
+  mcp.server.setRequestHandler("events/unsubscribe", { params: PARAMS }, (params) =>
+    answered(asEvent, async () => {
+      const caller = principal(bound);
+      const kind = kindOf(params["name"]);
+      const args = argumentsOf(params["arguments"]);
+      const { url } = deliveryOf(kind, params["delivery"], false);
       await bound.stub.wakeUnsubscribe(bound.binding, {
         subscription_id: subscriptionId(caller, url, kind.push.events!.name, args) });
-    } catch (error) {
-      refused(error);
-    }
-    return {} as never;
-  });
+      return {} as never;
+    }));
 }

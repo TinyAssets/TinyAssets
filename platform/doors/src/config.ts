@@ -18,7 +18,7 @@ import identity from "../../contract/identity.json" with { type: "json" };
 import type { DoorsEnv } from "./env";
 
 // Each fact of the identity is read as text (a template), so this module holds strings
-// alone, never the shared file object (`owner/guards/module-state.test.ts`).
+// alone, never the shared file object (`ci/kit/module-state.ts`).
 /** The one configured public origin; the Capacitor WebView loads it too. */
 export const PUBLIC_HOST = `${identity.host}`;
 export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`;
