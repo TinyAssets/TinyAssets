@@ -55,7 +55,7 @@ import {
   SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES,
 } from "../src/segments";
 import { UNIT_BYTES } from "../../contract/src/slots";
-import type { ChunkStore } from "../../contract/src/files";
+import type { ChunkCheck, ChunkStore } from "../../contract/src/files";
 
 declare function gc(): void;
 
@@ -142,6 +142,15 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
     });
   }
 
+  async checkChunks(ns: string, _key: string, sha256s: string[]): Promise<ChunkCheck[]> {
+    await checkpoint(this.env);
+    return sha256s.map((sha256) => {
+      const bytes = STORED.get(`${ns}/${sha256}`);
+      return bytes === undefined ? "missing"
+        : !TIMED.on && sha(bytes) !== sha256 ? "broken" : "stored";
+    });
+  }
+
   async deleteChunks(ns: string, _key: string, sha256s: string[]): Promise<{ deleted: number }> {
     let deleted = 0;
     for (const sha256 of sha256s) {
@@ -160,7 +169,6 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
 
   // The rest of the files Worker's surface: no path the leg runs calls it.
   async rewrapKey(): Promise<never> { throw new Error("not in the leg"); }
-  async checkChunks(): Promise<never> { throw new Error("not in the leg"); }
   async rewrapManifestRoot(): Promise<never> { throw new Error("not in the leg"); }
   async deleteNamespace(): Promise<never> { throw new Error("not in the leg"); }
   async putManifestPart(): Promise<never> { throw new Error("not in the leg"); }
@@ -201,7 +209,12 @@ function received(env: LegEnv): ChunkStore {
       return got;
     },
     deleteChunks: (ns, key, sha256s) => store.deleteChunks(ns, key, sha256s),
-    checkChunks: (ns, key, sha256s) => store.checkChunks(ns, key, sha256s),
+    checkChunks: async (ns, key, sha256s) => {
+      await owned(env, "before-get");
+      const got = await store.checkChunks(ns, key, sha256s);
+      await owned(env, "after-get");
+      return got;
+    },
     rewrapKey: (ns, key) => store.rewrapKey(ns, key),
     rewrapManifestRoot: (ns, gen) => store.rewrapManifestRoot(ns, gen),
     deleteNamespace: (ns) => store.deleteNamespace(ns),
@@ -1002,7 +1015,7 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
         return await stub.legWindow(content!, offset!);
       }
       if (path === "check") {
-        // Every chunk read back through the store, a page at a time: how many were proved.
+        // Every chunk checked through the store, a page at a time: how many were stored.
         let proved = 0;
         for (let page = 0; ; page += 1) {
           const read = await stub.importCheck(who, { part: "chunks", page });

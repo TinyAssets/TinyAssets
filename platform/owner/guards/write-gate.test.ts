@@ -321,7 +321,7 @@ const OWN_UNITS: ReadonlySet<string> = new Set([
   "connections.fresh", "connections.reseal", "erasure.begin", "launcher.seeded", "launcher.launch",
   "launcher.cancel",
   // Each reads in units of its own, or R2 alone.
-  "files.fetch", "archive.archived", "archive.chain", "launcher.readAgent",
+  "files.fetch", "files.check", "archive.archived", "archive.chain", "launcher.readAgent",
   "launcher.settledWithin",
   // A placed body sent to R2 before its unit, and released after it.
   "bodies.send", "bodies.release",

@@ -347,8 +347,8 @@ try {
   check("window: peak(8 MiB body), worst of two runs", window[8].most,
         costs.WINDOW_UNITS * UNIT, "WINDOW_UNITS");
 
-  // The cutover's check (`importCheck`): every chunk read back through the store as a verified
-  // range, so the owner isolate holds none of a chunk's bytes, whatever the file's size.
+  // The cutover's check (`importCheck`): every chunk checked through the store, which answers
+  // what it found, so the owner isolate holds none of a chunk's bytes, whatever the file's size.
   const checked = { 8: await twice("check", 8), 32: await twice("check", 32) };
   check("check: peak(32 MiB) - peak(8 MiB), least of two runs",
         checked[32].least - checked[8].least, QUARTER, "a quarter chunk");
