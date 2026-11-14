@@ -4,7 +4,7 @@ The flake re-check (#5601, `flake-recheck.md`) drew the line between a test that
 
 ## The rule
 
-The untangle skill's special cases (step 2) name a test's sleep: a test waits on an event it caused or a record it can read, a time bound is a liveness bound only and never raised, "has not happened" is read from a record, never from an elapsed window, and time that must pass is the fake clock's.
+The untangle skill's special cases (step 2) name a test's sleep: a test waits on an event it caused or a record it reads, a time bound is a liveness bound only, never raised, "has not happened" is read from a record, never an elapsed window, and time that must pass is the fake clock's. The skills pin rises by the line's 250 bytes.
 
 ## The sweep's lines
 

@@ -83,7 +83,7 @@ design never accounted for, so use them to work out what the system needs to be.
 - A retry or sleep
 - A disabled test
 
-A test's sleep is one too: a test waits on an event it caused or a record it can read, a time bound is a liveness bound only and never raised, "has not happened" is read from a record, never from an elapsed window, and time that must pass is the fake clock's.
+A test's sleep is one too: a test waits on an event it caused or a record it reads, a time bound is a liveness bound only, never raised, "has not happened" is read from a record, never an elapsed window, and time that must pass is the fake clock's.
 
 ## 3. Redesign from first principles
 
