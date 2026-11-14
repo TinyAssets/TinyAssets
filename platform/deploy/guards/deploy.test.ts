@@ -3125,8 +3125,8 @@ describe("platform-deploy.yml", () => {
      inputs["ACT"] ? `owner.${inputs["ACT"].split("=")[0]}` : null,
      inputs["GENERATION"] ? inputs["GENERATION"].split("/")[1] : null];
 
-  it("plans in a job of its own, with no production secret, the chosen mode's plan", () => {
-    expect(plan!.environment).toBeUndefined();
+  it("plans in a job of its own, with the Cloudflare token alone, the chosen mode's plan", () => {
+    expect(plan!.environment).toBe("production");
     expect(Object.values(plan!.env ?? {}).some((value) => /secrets\.(?!CLOUDFLARE_API_TOKEN)/
       .test(value))).toBe(false);
     for (const inputs of [...offered.map(dispatchOf), ...OPTIONS]) {

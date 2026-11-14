@@ -35,6 +35,7 @@ concurrency:
 
 jobs:
   enroll:
+    environment: production
     name: Enroll for auto-merge
     runs-on: ubuntu-latest
     timeout-minutes: 5
