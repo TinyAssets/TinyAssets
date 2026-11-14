@@ -144,7 +144,7 @@ A door that does one of the acts an owner's action rule names (`contract/acts.js
 - **THEN** one MCP call answers the script's value, with two calls counted `ok` and the write listed as landed
 
 ### Requirement: The tier's numbers ride the control record to the run doors
-The control record (`c:control`) MAY hold `tiers`: each tier's simultaneous runs (1 to 1,000, the owner database's ceiling) and storage bytes, which the founder edits with no deploy. A record whose `tiers` are malformed SHALL be malformed whole. The doors SHALL read the record once per outside or owner call and hand its `tiers` in the binding (`withTiers`), never from a request; a record without them hands `null`, and the object then forgets the numbers it kept and refuses every run `tier_unread`.
+The control record (`c:control`) MAY hold `tiers`: each tier's simultaneous runs (1 to 1,000, the owner database's ceiling) and storage bytes, which the founder edits with no deploy. A record whose `tiers` are malformed SHALL be malformed whole. The doors SHALL read the record once per outside or owner call and hand its `tiers` in the binding (`withAccount`), never from a request; a record without them hands `null`, and the object then forgets the numbers it kept and refuses every run `tier_unread`.
 
 #### Scenario: The founder edits the free tier's runs
 - **WHEN** the record's free tier says one run, and a free owner starts a second while the first runs
