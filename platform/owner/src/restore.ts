@@ -638,10 +638,14 @@ async function piece(o: OwnerState, door: Door<undefined>, source: GenerationSou
     }
     case "chunks": {
       const listed = await o.door(() => o.files.chunksPage(held.at, SLICE_CHUNKS));
-      for (const chunk of listed) {
-        // Read whole by the files Worker under the owner's key and checked against its hash;
-        // one byte of it comes back. A chunk that fails is thrown: the next step reads again.
-        await o.files.fetch([{ sha256: chunk.sha256, offset: 0, length: 1 }]);
+      // Each read whole by the files Worker under the owner's key and held to its hash, no
+      // byte of it coming back. One not stored as its hash is thrown, so the next step reads
+      // the slice again (an R2 read gone wrong for the moment); the record does not move.
+      const found = await o.files.check(listed.map((chunk) => chunk.sha256));
+      const unread = found.filter((check) => check !== "stored");
+      if (unread.length > 0) {
+        throw new Error(`${unread.length} of a restore's chunks are not stored as their hash ` +
+                        `(${[...new Set(unread)].join(", ")}): the next step reads them again`);
       }
       await o.door(() => {
         if (still()) {

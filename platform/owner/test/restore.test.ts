@@ -216,14 +216,17 @@ describe("a restore", () => {
     expect(await rowsOf(stub, FENCED)).toBe(rows);
     expect(await countersOf(stub)).toEqual(counters);
     expect(await stub.storageUsage(o.bind())).toEqual(usage);
-    // Every chunk a content names was read back, and nothing was put to R2 or deleted from it.
+    // Every chunk a content names was checked as stored, and nothing was put to R2 or deleted
+    // from it.
     const crossed = (await files.calls()).slice(earlier);
-    expect(crossed.filter((call) => !call.method.startsWith("get"))).toEqual([]);
+    expect(crossed.filter((call) => !/^(?:get|check)/.test(call.method))).toEqual([]);
     const named = await sqlIn(stub, "SELECT DISTINCT sha256 FROM file_content_chunks");
     expect(named.length).toBeGreaterThan(1);
     expect((done as { chunks: number }).chunks).toBe(named.length);
-    expect(crossed.filter((call) => call.method === "getChunks").length)
-      .toBeGreaterThanOrEqual(named.length);
+    const checked = crossed.filter((call) => call.method === "checkChunks")
+      .flatMap((call) => (call.args as [string, string, string[]])[2]);
+    expect(new Set(checked)).toEqual(new Set(named.map((row) => row["sha256"])));
+    expect(crossed.filter((call) => call.method === "getChunks")).toEqual([]);
     // No answer carries a row: the doors write them to the operator log.
     expect(JSON.stringify([begun, ...answers])).not.toContain(PLAIN);
   });
@@ -400,7 +403,7 @@ describe("a restore cut short", () => {
     const files = gateFor(env.FILES_GATE, ns);
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
     // Each read of a part, then of a chunk, held and the object reset under it, as a crash.
-    for (const method of ["getManifestPart", "getChunks"]) {
+    for (const method of ["getManifestPart", "checkChunks"]) {
       await files.arm(method, { hold: "before" });
       const cut = stub.restoreStep(platform(o.name)).catch(() => null);
       await files.held(method);
@@ -431,6 +434,25 @@ describe("a restore cut short", () => {
     expect(await stub.restoreStep(platform(o.name))).toMatchObject({ step: "done" });
   });
 
+  it("holds at its chunks step while a chunk is not stored as its hash, each step asking " +
+     "again, never done or admitted", async () => {
+    const { o, gen, ns } = await source();
+    const [space] = await sqlIn(o.stub, "SELECT data_key FROM file_space");
+    const [chunk] = await sqlIn(o.stub, "SELECT sha256 FROM file_content_chunks LIMIT 1");
+    const stub = await lose(o);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    // A chunk the generation names gone from the bucket, as a read gone wrong leaves it.
+    await env.FILES.deleteChunks(ns, space!["data_key"] as string, [chunk!["sha256"] as string]);
+    for (let n = 0; n < 3; n++) {
+      expect((await failure(() => stub.restoreStep(platform(o.name)))).message).toMatch(
+        /^1 of a restore's chunks are not stored as their hash \(missing\)/);
+    }
+    expect(await sqlIn(stub, "SELECT step, at FROM owner_restore"))
+      .toEqual([{ step: "chunks", at: 0 }]);
+    expect((await failure(() => stub.admissionSet(platform(o.name), { admit: true }))).code)
+      .toBe("restoring");
+  });
+
   it("fails loudly, never admitting, when a row does not read back as the generation's",
      async () => {
     const { o, gen, ns } = await source();
@@ -439,13 +461,13 @@ describe("a restore cut short", () => {
     // Once loaded and checked, a row changed under the restore, as a trigger that rebuilt a
     // column wrongly would leave it, and the check asked again: it differs from the stream.
     const files = gateFor(env.FILES_GATE, ns);
-    await files.arm("getChunks", { hold: "before" });
+    await files.arm("checkChunks", { hold: "before" });
     const held = stub.restoreStep(platform(o.name));
-    await files.held("getChunks");
+    await files.held("checkChunks");
     await sqlIn(stub, "UPDATE owner_notices SET detail = 'other' WHERE type = 'x'");
     await sqlIn(stub, "UPDATE owner_restore SET step = 'check', at = 0, after = ?",
                 JSON.stringify({ p: 0, n: 0 }));
-    await files.release("getChunks");
+    await files.release("checkChunks");
     await held;
     const failed = (await stepped(stub, o.name)).at(-1)!;
     expect(failed).toMatchObject({ step: "failed" });

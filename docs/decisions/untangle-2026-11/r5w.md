@@ -47,3 +47,7 @@ R5w is lane R's `restore.wipe`, the step restore owes before anything live can b
     - The wipe's window is the same window, so the hold refuses with the same code.
     - Proved in `doors/test/operator.test.ts`: a sign-in during a restore, and one after a failed restore, each get `temporarily_unavailable`. With the code made terminal, the test throws.
     - A consequence: an `owner.*` op during a hold is a refusal for the moment, so the channel's queue retries it and then dead-letters it. The kit then stops, naming the ask. The restore's own flow asks `owner.admit` only once done.
+13. **Restore's chunk check reads `Files.check` (#5599), a known fix folded in at the coordinator's word.** The chunks step used to read each chunk back as a verified one-byte `fetch`, one call a chunk, a failure thrown. It now asks `Files.check` for the slice: `GET_READS` chunks a call, no byte returned, and each chunk answered `stored`, `missing` or `broken`.
+   - The semantics fit restore's retry. A chunk not stored as its hash still throws, naming how many and which answers, so the record doesn't move and the next step reads the slice again. A refusal or a lost answer throws as before.
+   - Proved: a chunk the generation names, deleted from the bucket, holds the restore at its chunks step, each step answering the throw, never done or admitted. With the throw removed, the test fails.
+   - A chunk that is truly lost holds the restore there for good, as it did before. Item 11's fix (`untangle/r-fallback-chunks`) is what keeps a kept generation's chunks.
