@@ -5,7 +5,7 @@
  * platform/.
  *
  * The owner Worker binds its default entrypoint as `SANDBOX`, and nothing else reaches it:
- * no route, no `workers.dev` or preview URL. It reaches nothing but E2B (`e2b.ts`, the one
+ * no route, no `workers.dev` or preview URL. It reaches nothing but E2B (`e2b/transport.ts`, the
  * module that fetches, held to E2B's two hosts by `guards/config.test.ts`) and the ring
  * queue; it reads one record (the control record's sandbox numbers) and binds the
  * namespaces of its own two classes: `SandboxControl`, one per owner, which serializes that

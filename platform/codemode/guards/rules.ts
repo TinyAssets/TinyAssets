@@ -7,7 +7,6 @@
  */
 import type { ConfigRules } from "../../ci/kit/config";
 import type { ImportRules } from "../../ci/kit/imports";
-import type { Config } from "../../ci/kit/sources";
 
 /**
  * Its config: the keys that name the Worker, its entry and its runtime; `limits` (exactly
@@ -16,8 +15,7 @@ import type { Config } from "../../ci/kit/sources";
  * `OwnerDO` never); and `migrations` making exactly that one, SQLite. Every other key
  * wrangler's schema offers is refused: each other binding kind (a service, a bucket, a KV
  * namespace, a var, a secret, a Worker Loader), `routes`, environments, and any key wrangler
- * adds later. The one flag is `disable_ctx_exports`. Its compatibility date is the owner
- * Worker's.
+ * adds later. The one flag is `disable_ctx_exports`.
  */
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "codemode",
@@ -31,9 +29,15 @@ export const CONFIG: ConfigRules = Object.freeze({
     durable_objects: { bindings: [{ name: "CODEMODE", class_name: "CodemodeSandbox" }] },
     limits: { cpu_ms: 300_000 },
   }),
-  across: (config: Config, platform: ReadonlyMap<string, Config>) =>
-    config["compatibility_date"] === platform.get("tinyassets-owner")?.["compatibility_date"]
-      ? [] : ["the compatibility date is the owner Worker's"],
+});
+
+/**
+ * Where its source names its own class's objects (the doors' binder guard,
+ * `doors/guards/binder.test.ts`): its entry, `this.env.CODEMODE`, a code mode execution's
+ * sandbox, which binds nothing of an owner.
+ */
+export const OWN_OBJECTS = Object.freeze({
+  "codemode/src/index.ts": Object.freeze(["this.env.CODEMODE"]),
 });
 
 /**

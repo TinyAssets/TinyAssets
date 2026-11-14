@@ -29,7 +29,8 @@ import { describe, expect, it } from "vitest";
 import { DARK, keyring as ringSecret } from "../../ci/fixtures";
 import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
-import { WRANGLER, workerFolders } from "../../ci/workers";
+import { deployProblems, locksOf, readLock } from "../../ci/kit/locks";
+import { WRANGLER, workerFolders } from "../../ci/wrangler";
 import { type Domain, openBlob, sealBlob } from "../../contract/src/envelope";
 import {
   AUTHORIZE_PATH, E2B_HOOK_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
@@ -37,10 +38,10 @@ import {
 import { APP_RESOURCE } from "../../contract/src/identity";
 import { CONTROL_KEY, outsideOpen, ownerOpen, parseControl } from "../../contract/src/control";
 import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
-import { E2b } from "../../sandbox/src/e2b";
+import { E2bAdmin } from "../../sandbox/e2b/admin";
 import { type CfAnswer, cfApi, Cloudflare, handback, handover, type Route } from "../cloudflare";
 import {
-  admitsNobody, authorizeCheck, authorizeLink, codeDigests, deployedConfig,
+  admitsNobody, authorizeCheck, authorizeLink, deployedConfig,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
   lifecycleHook, listed, lockRefusal, maskInLog, MIGRATED, type Mode, MODES, parse,
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, type RouteRecord,
@@ -128,8 +129,8 @@ interface WorldOptions {
   readonly paired?: boolean;
   /** This tree's image, as `image.ts` computes it: the pin by default. */
   readonly image?: string;
-  /** The migrations guard reports this lock for every Worker. */
-  readonly lock?: Record<string, string[]>;
+  /** The migration locks' command line refuses every Worker so. */
+  readonly lockRefused?: string;
   /** A wrangler command that fails. */
   readonly failing?: string;
   /** KV keys whose write Cloudflare refuses. */
@@ -413,11 +414,10 @@ function world(options: WorldOptions = {}) {
       pairPassed = true;
       return { status: 0, stdout: "", stderr: "" };
     }
-    if (String(argv[0]).endsWith("vitest.mjs")) {
-      const worker = basename(String((options_ as { cwd?: string }).cwd));
-      events.push(`guard ${worker}`);
-      writeFileSync(options_.env!["MIGRATION_DIGESTS"]!, JSON.stringify(options.lock ?? locks(worker)));
-      return { status: 0, stdout: "", stderr: "" };
+    if (String(argv[0]).endsWith(join("ci", "kit", "locks.ts")) && argv[1] === "digests") {
+      events.push(`locks ${argv[2]}`);
+      return options.lockRefused === undefined ? { status: 0, stdout: "{}", stderr: "" }
+        : { status: 1, stdout: "", stderr: `${options.lockRefused}\n` };
     }
     events.push(`unexpected spawn ${command} ${argv.join(" ")}`);
     return { status: 1, stdout: "", stderr: "" };
@@ -448,14 +448,6 @@ function world(options: WorldOptions = {}) {
 }
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
-
-/** Each Worker's checked-in migration locks, as its guard reports them. */
-function locks(worker: string): Record<string, string[]> {
-  const files = worker === "owner" ? ["owner/migrations.json"]
-    : readdirSync(join(PLATFORM, worker, "migrations")).map((file) => `${worker}/migrations/${file}`);
-  return Object.fromEntries(files.map((file) => [file, (JSON.parse(readFileSync(
-    join(PLATFORM, file), "utf8")) as { deployed: string[] }).deployed]));
-}
 
 /** `mode` run whole in `w`, with `flags` and `env`: its work, or its refusal. */
 async function runMode(w: ReturnType<typeof world>, mode: Mode, flags: string[] = [],
@@ -657,7 +649,7 @@ describe("a dark run", () => {
     // then the namespaces, the bucket and the queues, the secrets, the Workers, the control
     // record, the hook, and the canary.
     const at = order(w.events, [
-      "guard owner", "guard sandbox", "cf GET /zones?name=tinyassets.io", "issuer discovery",
+      "locks owner", "locks sandbox", "cf GET /zones?name=tinyassets.io", "issuer discovery",
       "the tree's image", "e2b GET /templates/t1/tags/exists", "bundle the runner and the probes",
       "e2b GET /templates/t1/tags/exists",
       "e2b GET /events/webhooks", "workos GET redirect_uris", "workos POST redirect_uris",
@@ -818,9 +810,11 @@ describe("a dark run", () => {
 
   it("stops before any change when a migration lock does not pin what the code ships",
      async () => {
-    const w = world({ lock: { "owner/migrations.json": ["a".repeat(64)] } });
-    await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(/PIN_MIGRATIONS/);
-    expect(w.events.filter((event) => !event.startsWith("guard"))).toEqual([]);
+    const w = world({ lockRefused: "the migration lock owner/migrations.json pins 1" });
+    await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
+      "owner's migration locks refuse the deploy (exit 1): the migration lock " +
+      "owner/migrations.json pins 1");
+    expect(w.events).toEqual(["locks owner"]);
   });
 
   it("makes the import window's queue, dead-letter queue and bucket, each only when its " +
@@ -1755,41 +1749,18 @@ describe("the parts of a run", () => {
   });
 
   it("refuses to deploy unless each migration lock pins every migration it ships, in order " +
-     "(review M5-2)", () => {
-    const code = ["a".repeat(64), "b".repeat(64)];
-    const first = { at: "2026-11-04T00:00:00.000Z", commit: "abc123" };
-    const owner = "owner/migrations.json";
-    expect(lockRefusal({ first_deploy: first, deployed: code }, code, owner)).toBeNull();
-    // Unmarked: the first deploy pins first.
-    expect(lockRefusal({ first_deploy: null, deployed: [] }, code, owner))
-      .toMatch(/no first deploy/);
-    // A migration the lock does not pin, one it pins that is gone, one changed, or reordered.
-    for (const deployed of [[code[0]], [...code, "c".repeat(64)], [code[0], "c".repeat(64)],
-                            [code[1], code[0]]]) {
-      expect(lockRefusal({ first_deploy: first, deployed }, code, owner))
-        .toMatch(/PIN_MIGRATIONS/);
-    }
-    expect(lockRefusal({ deployed: code }, code, owner)).toMatch(/out of shape/);
-    expect(lockRefusal(null, code, owner)).toMatch(/out of shape/);
-    // The sandbox Worker's objects are locked too (S25), each named, pinned in its folder.
-    expect(MIGRATED).toContain("sandbox");
-    expect(lockRefusal({ first_deploy: first, deployed: [code[0]] }, code,
-                       "sandbox/migrations/SandboxSlots.json"))
-      .toMatch(/^the migration lock sandbox\/migrations\/SandboxSlots\.json pins 1 .* in platform\/sandbox,/);
-    // The kit's digests, from a guard that reports no lock (or the old bare list): refused,
-    // never read as nothing to check.
-    const reporting = (reported: unknown) => (_worker: string, out: string) => {
-      writeFileSync(out, JSON.stringify(reported));
-      return { status: 0, stdout: "" };
-    };
+     "(review M5-2), by the locks' own command line", async () => {
+    // The real command line's answer, whatever the checked-in locks pin: the kit's own.
+    const run = parse(["--mode", "dark"], ENV, { ...world().io, spawn: spawnSync });
     for (const worker of MIGRATED) {
-      for (const reported of [{}, [], null, code]) {
-        expect(() => codeDigests(worker, reporting(reported)))
-          .toThrow(`${worker}'s migrations guard reported no migration lock`);
-      }
+      const locks = await locksOf(worker);
+      const refused = deployProblems(worker, locks, Object.fromEntries(Object.keys(locks)
+        .map((path) => [path, readLock(path)])));
+      expect(lockRefusal(worker, run), worker).toBe(refused.length === 0 ? null
+        : `${worker}'s migration locks refuse the deploy (exit 1): ${refused.join("\n")}`);
     }
-    const lock = { "sandbox/migrations/SandboxSlots.json": code };
-    expect(codeDigests("sandbox", reporting(lock))).toEqual(lock);
+    // A Worker that states no lock is refused, never read as nothing to check.
+    expect(lockRefusal("doors", run)).toMatch(/^doors's migration locks refuse the deploy \(exit 1\)/);
   });
 
   it("lists the account's Workers, and deletes one unforced, never reading a failure as " +
@@ -2071,8 +2042,9 @@ function e2bHooks(start: Json[], fail?: string) {
     const method = init?.method ?? "GET";
     const path = url.replace("https://api.e2b.app", "");
     calls.push(`${method} ${path}${init?.body ? ` ${String(init.body)}` : ""}`);
-    // The key, and JSON named for every call, a listing as well as a write.
-    expect(init?.headers).toEqual({ "X-API-Key": E2B_KEY, "Content-Type": "application/json" });
+    // The key on every call, and JSON named for a write's body.
+    const json = method === "GET" ? {} : { "Content-Type": "application/json" };
+    expect(init?.headers).toEqual({ "X-API-Key": E2B_KEY, ...json });
     if (fail === method) {
       return new Response("", { status: 500 });
     }
@@ -2088,7 +2060,7 @@ function e2bHooks(start: Json[], fail?: string) {
     Object.assign(hook, body);
     return Response.json(hook);
   };
-  return { hooks, calls, e2b: new E2b(E2B_KEY, fetcher) };
+  return { hooks, calls, e2b: new E2bAdmin(E2B_KEY, fetcher) };
 }
 
 describe("E2B's lifecycle webhook", () => {
@@ -2129,12 +2101,12 @@ describe("E2B's lifecycle webhook", () => {
     expect(planned.calls).toEqual(["GET /events/webhooks"]);
     // A failed listing or write stops the kit; two hooks for the URL are refused.
     await expect(lifecycleHook(e2bHooks([], "GET").e2b, "s", false, false, false))
-      .rejects.toThrow(/listed its webhooks with 500/);
+      .rejects.toThrow("E2B GET /events/webhooks answered 500");
     await expect(lifecycleHook(e2bHooks([], "POST").e2b, "s", true, false, false))
-      .rejects.toThrow(/refused the webhook with 500/);
+      .rejects.toThrow("E2B POST /events/webhooks answered 500");
     await expect(lifecycleHook(e2bHooks([{ id: "a", url: E2B_HOOK.url }], "PATCH").e2b, "s", true,
                                false, true))
-      .rejects.toThrow(/refused the webhook's change/);
+      .rejects.toThrow("E2B PATCH /events/webhooks/a answered 500");
     await expect(heldHook(e2bHooks([{ id: "a", url: E2B_HOOK.url },
                                     { id: "b", url: E2B_HOOK.url }]).e2b))
       .rejects.toThrow(/holds 2 webhooks/);
@@ -2199,7 +2171,7 @@ describe("the template and the pair", () => {
   it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",
      async () => {
     const headers: unknown[] = [];
-    const e2b = (alias: number, exists: unknown, tag = 200) => new E2b(E2B_KEY,
+    const e2b = (alias: number, exists: unknown, tag = 200) => new E2bAdmin(E2B_KEY,
       async (url, init) => {
         headers.push(init?.headers);
         return url.includes("/aliases/") ? Response.json({ templateID: "t1" }, { status: alias })
@@ -2208,13 +2180,15 @@ describe("the template and the pair", () => {
     expect(await e2b(200, true).ready("tinyassets-sandbox:v1")).toBe(true);
     expect(await e2b(200, false).ready("tinyassets-sandbox:v1")).toBe(false);
     expect(await e2b(404, true).ready("tinyassets-sandbox:v1")).toBe(false);
-    await expect(e2b(500, true).ready("tinyassets-sandbox:v1")).rejects.toThrow(/alias lookup/);
-    await expect(e2b(200, true, 503).ready("tinyassets-sandbox:v1")).rejects.toThrow(/tag lookup/);
+    await expect(e2b(500, true).ready("tinyassets-sandbox:v1"))
+      .rejects.toThrow("E2B GET /templates/aliases/tinyassets-sandbox answered 500");
+    await expect(e2b(200, true, 503).ready("tinyassets-sandbox:v1"))
+      .rejects.toThrow("E2B GET /templates/t1/tags/exists answered 503");
     await expect(e2b(200, true).ready("tinyassets-sandbox")).rejects.toThrow(/name:tag/);
-    // Both lookups send the key and ask for JSON.
+    // Both lookups send the key.
     expect(headers.length).toBeGreaterThan(0);
     for (const each of headers) {
-      expect(each).toEqual({ "X-API-Key": E2B_KEY, Accept: "application/json" });
+      expect(each).toEqual({ "X-API-Key": E2B_KEY });
     }
   });
 

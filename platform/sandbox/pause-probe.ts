@@ -16,7 +16,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { type E2b, type E2bNetwork, type Handle, runtimeE2b } from "./src/e2b";
+import type { NetworkDocument } from "../contract/src/sandbox";
+
+import type { Handle } from "./e2b/transport";
+import { type E2b, runtimeE2b } from "./src/e2b";
 import { pinned } from "./template/checks";
 
 /** The probe's sandboxes carry `ta_probe=long-pause`, and nothing else does. */
@@ -47,8 +50,8 @@ const RESUMED_S = 900;
 const COMMAND_MS = 1_200_000;
 
 /** No way out: the probe needs none. */
-const CLOSED: E2bNetwork = { allowOut: [], denyOut: ["0.0.0.0/0"], dnsServers: ["1.1.1.1"],
-                             rules: {} };
+const CLOSED: NetworkDocument = { allowOut: [], denyOut: ["0.0.0.0/0"],
+                                  dnsServers: ["1.1.1.1"], rules: {} };
 
 /** What `start` recorded in the sandbox, which `check` verifies. */
 interface Held {

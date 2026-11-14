@@ -69,9 +69,9 @@ More on two of them:
   (`platform/owner/migrations.json`, and the sandbox Worker's
   `platform/sandbox/migrations/<class>.json`) marks the first deploy and pins every migration
   the code ships, in order. **A deploy that adds a migration** pins it first:
-  1. **Pin.** On a branch made from the current `main`, run this in `platform/owner` (or
-     `platform/sandbox`):
-     `PIN_MIGRATIONS=$(git rev-parse HEAD) npx vitest run --project guards guards/migrations.test.ts`.
+  1. **Pin.** On a branch made from the current `main`, run this in `platform/`, naming the
+     Worker (`owner` or `sandbox`):
+     `node ci/kit/locks.ts pin owner $(git rev-parse HEAD)`.
      It appends a digest for each new migration to that Worker's locks.
   2. **Land it.** Commit only those files and merge them to `main` by pull request. The workflow
      runs only from `main`, and the kit reads the lock there.

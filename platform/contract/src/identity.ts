@@ -7,6 +7,6 @@
 import identity from "../identity.json" with { type: "json" };
 
 // Read as text (a template), so this module holds strings alone, never the shared file
-// object (`owner/guards/module-state.test.ts`).
+// object (`ci/kit/module-state.ts`).
 /** The first-party resource: the owner's own app, and its tokens' audience. */
 export const APP_RESOURCE = `https://${identity.host}${identity.first_party.resource}`;

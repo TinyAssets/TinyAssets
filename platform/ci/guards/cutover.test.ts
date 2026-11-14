@@ -22,7 +22,7 @@ import { type CutoverLayer, cutoverLayer, type Entry, isGone, LIVE, type Manifes
          PHASES } from "../kit/cutover";
 import { layerProblems, repoScripts } from "../kit/imports";
 import { REPO } from "../paths";
-import { workerFolders } from "../workers";
+import { workerFolders } from "../wrangler";
 
 /** A text that says what is deleted at the cutover, however its comment wraps the words. */
 const MARKER = /deleted(?:[\s*#/]|<!--)+at(?:[\s*#/])+the(?:[\s*#/])+cutover/i;

@@ -24,7 +24,7 @@ import ts from "typescript";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { readWrangler } from "../../ci/workers";
+import { readWrangler } from "../../ci/wrangler";
 import { STEP_NS } from "../../contract/src/sync-ignore";
 import { NAME, spec, stage, tag } from "../template/image";
 import { bundles, pairTag, tsTool } from "../template/pair";

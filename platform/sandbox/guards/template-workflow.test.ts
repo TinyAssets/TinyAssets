@@ -21,7 +21,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { readWrangler } from "../../ci/workers";
+import { readWrangler } from "../../ci/wrangler";
 import { workflow } from "../../ci/workflows";
 import { LOADER } from "../runner/protocol";
 import { NAME, tag } from "../template/image";
@@ -280,7 +280,7 @@ describe("the template's checks", () => {
   it("stop before anything is spent when E2B's answer cannot be read", () => {
     const ran = checks("build", { E2B_READY: "500" });
     expect(ran.status).toBe(1);
-    expect(ran.err).toMatch(/alias lookup answered 500/);
+    expect(ran.err).toContain(`E2B GET /templates/aliases/${NAME} answered 500`);
     expect(ran.calls).toEqual([`lookup alias ${NAME}`]);
   });
 });

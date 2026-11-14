@@ -3,30 +3,45 @@
  * entry for `SANDBOX` relies on it):
  *
  * - its config holds to its allow-list (`rules.ts`), by the platform's config checker;
- * - in its source, `fetch` is named in `e2b.ts` alone, and every URL there is built on
- *   E2B's two origins (`E2B_API`, `E2B_ENVD`), which are E2B's own hosts; no source names
- *   `connect` (a raw socket) or another way out.
+ * - in its source and the E2B client beside it (`e2b/`, whose transport the Worker ships),
+ *   `fetch` is named in `e2b/transport.ts` alone, and every URL there is built on E2B's two
+ *   origins (`E2B_API`, `E2B_ENVD`), which are E2B's own hosts; no source names `connect`
+ *   (a raw socket) or another way out.
  *
  * A tripwire for our own code, read from the syntax tree, not proof against evasion.
  */
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { configTests } from "../../ci/kit/config";
 import { parse, sourcesOf } from "../../ci/kit/sources";
-import { E2B_API, E2B_ENVD } from "../src/e2b";
+import { PLATFORM } from "../../ci/paths";
+import { E2B_API, E2B_ENVD } from "../e2b/transport";
 
 import { CONFIG } from "./rules";
 
-const E2B = "sandbox/src/e2b.ts";
+const E2B = "sandbox/e2b/transport.ts";
 
-/** Each way a sandbox source reaches out other than through `e2b.ts` to E2B. */
+/** The Worker's source and the E2B client's, by path from `platform/`. */
+function sources(): Map<string, string> {
+  const client = readdirSync(join(PLATFORM, "sandbox", "e2b"))
+    .map((name) => [`sandbox/e2b/${name}`, readFileSync(join(PLATFORM, "sandbox", "e2b", name),
+                                                         "utf8")] as const);
+  return new Map([...sourcesOf("sandbox"), ...client]);
+}
+
+/** Each way a sandbox source reaches out other than through the transport to E2B. */
 export function reachProblems(fileName: string, source: string): string[] {
   const file = parse(fileName, source);
   const problems: string[] = [];
   const visit = (node: ts.Node): void => {
+    // A method named `connect` (E2B's resume), or a call of one, is no socket.
     if (ts.isIdentifier(node) && (node.text === "fetch" || node.text === "connect")
-        && fileName !== E2B && !(ts.isPropertyAccessExpression(node.parent)
+        && fileName !== E2B && !((ts.isPropertyAccessExpression(node.parent)
+                                  || ts.isMethodDeclaration(node.parent))
                                  && node.parent.name === node && node.text === "connect")) {
       problems.push(`${fileName}: names ${node.text}`);
     }
@@ -76,14 +91,17 @@ describe("the sandbox Worker", () => {
   it("reaches E2B's own hosts alone", () => {
     expect([new URL(E2B_API).host, new URL(E2B_ENVD).host]).toEqual(["api.e2b.app",
                                                                      "sandbox.e2b.app"]);
-    const problems = [...sourcesOf("sandbox")]
+    expect([...sources().keys()]).toContain(E2B);
+    const problems = [...sources()]
       .flatMap(([path, source]) => reachProblems(path, source));
     expect(problems).toEqual([]);
   });
 
-  it("finds a fetch outside e2b.ts, and a URL off E2B's origins", () => {
+  it("finds a fetch outside the transport, and a URL off E2B's origins", () => {
     expect(reachProblems("sandbox/src/control.ts", "await fetch('https://x.test');"))
       .toHaveLength(2);
+    expect(reachProblems("sandbox/src/e2b.ts", "class A { connect() {} }\nconnect(1);"))
+      .toEqual(["sandbox/src/e2b.ts: names connect"]);
     expect(reachProblems(E2B, "class A { m() { this.#fetch(`${OTHER}/v2`); } }"))
       .toHaveLength(1);
     expect(reachProblems(E2B, "class A { m() { this.#fetch(`${E2B_API}/v2`); } }"))

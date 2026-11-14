@@ -6,11 +6,9 @@
  * names would meet in one object (Fact 9). So across every Worker's source:
  * - no text but the prefix's spells a key's parts (a literal that starts `o/` or holds
  *   `/c/`), and no text names the bucket (`"BLOBS"`);
- * - only the files Worker names the bucket or an R2 type, so the owner object holds no
- *   way to the bucket but the `FILES` service; the one other bucket is the cutover's import
- *   staging (`IMPORT_STAGING`), typed `R2Bucket` in the doors' env alone (`doors/src/env.ts`,
- *   its one binding there), whose keys are a run, an owner's key and a bundle's part names
- *   (hex and page numbers, `doors/src/import.ts`), never a path; deleted at the cutover;
+ * - only the files Worker names the bucket, so the owner object holds no way to it but the
+ *   `FILES` service (an R2 type at all only where a Worker's rules allow a bucket, the
+ *   platform's kit rule, `ci/kit/config.ts` `bucketTypeProblems`);
  * - in the files Worker, the bucket is reached in exactly one form,
  *   `this.env.BLOBS.<put|get|head|delete>(key, ...)`, `this.env` is never read for
  *   anything else but the data keys' ring (`this.env.FILES_KEYRING`, handed straight to
@@ -34,9 +32,6 @@ const PREFIX = "contract/src/files.ts";
 const FILES = "files/src/";
 const CALLS: ReadonlySet<string> = new Set(["put", "get", "head", "delete"]);
 const KEY_TEXT = /^o\/|\/c\//;
-const R2_TYPE = /^R2[A-Z]/;
-/** The import window's staging bucket's type, named in the doors' env alone. */
-const STAGING_TYPE = Object.freeze({ file: envFile("doors"), name: "R2Bucket" });
 /** The key builders `keys.ts` exports, the only calls a bucket key may be. */
 const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey", "segmentKey",
                                                 "manifestObjectKey", "listedManifest"]);
@@ -106,10 +101,7 @@ export function keyProblems(fileName: string, source: string): string[] {
     if (fileName !== KEYS && shadowsChunkKey(node)) {
       report(node, "declares a chunkKey other than the one from ./keys");
     }
-    const staging = fileName === STAGING_TYPE.file && node.getText(file) === STAGING_TYPE.name
-      && ts.isTypeReferenceNode(node.parent);
-    if (ts.isIdentifier(node) && !inFiles && !staging
-        && (node.text === "BLOBS" || R2_TYPE.test(node.text))) {
+    if (ts.isIdentifier(node) && !inFiles && node.text === "BLOBS") {
       report(node, `names ${node.text} outside the files Worker`);
     }
     if (inFiles && thisEnv(node)) {
@@ -168,9 +160,6 @@ describe("r2-keys guard", () => {
     ["owner/src/probe.ts", "const key = 'o/' + ns;"],
     ["files/src/keys.ts", "const key = `o/${ns}/c/`;"],
     ["files/src/index.ts", "const key = ns + '/c/' + sha;"],
-    ["owner/src/probe.ts", "type B = R2Bucket;"],
-    ["doors/src/import.ts", "type B = R2Bucket;"],
-    [envFile("doors"), "type B = R2ObjectBody;"],
     [envFile("doors"), "const BLOBS = 1;"],
     ["owner/src/probe.ts", "function f(env) { return env.BLOBS; }"],
     ["files/src/index.ts", "class S { async f(path) { await this.env.BLOBS.put(path, b); } }"],
@@ -202,7 +191,7 @@ describe("r2-keys guard", () => {
     ["files/src/index.ts", "function manifestKey(a) { return a; }\nclass S { f(p) { " +
      "return this.env.BLOBS.put(manifestKey(p), x); } }"],
   ])("sees %s: %s", (path, source) => {
-    expect(keyProblems(path, source.startsWith("import") ? source
+    expect(keyProblems(path, /^import\b/.test(source) ? source
       : header + source)).not.toEqual([]);
   });
 

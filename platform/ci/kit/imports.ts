@@ -33,7 +33,7 @@ import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
 import { PLATFORM, REPO } from "../paths.ts";
-import { workerFolders } from "../workers.ts";
+import { workerFolders } from "../wrangler.ts";
 import { type CutoverLayer, cutoverLayer, isGone } from "./cutover.ts";
 import { INLINE, type Layer, LAYERS, SCRIPT } from "./layers.ts";
 import type { Found } from "./owed.ts";

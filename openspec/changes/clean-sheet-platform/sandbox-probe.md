@@ -1,6 +1,6 @@
 # Slice S: the sandbox, probed live on E2B (2026-11-03)
 
-Raw HTTP to E2B's platform API and envd, as `platform/sandbox/src/e2b.ts` speaks them (no SDK
+Raw HTTP to E2B's platform API and envd, as `platform/sandbox/e2b/transport.ts` speaks them (no SDK
 on the path), from scripts kept outside the repo. Every sandbox was created with the metadata
 `ta_probe=slice-s`, killed, and the account listed at the end: **0 running or paused**. Usage
 was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or the 2 vCPU /
@@ -179,7 +179,7 @@ CLI as its user from the record, posted frames and synced the sessions out
 
 ## Scratch and the disk (2026-11-03, template `sfbd5920361a47279`; one throwaway sandbox, about 4 sandbox-minutes)
 
-Measured by `scripts/probes/sandboxprobe/probe.mjs` (the sandbox Worker's own E2B client), the sandbox killed after and listed gone by its tag.
+Measured by the scratch probe (the sandbox Worker's own E2B client; its `probe.mjs` under `scripts/probes/` is deleted and last lived at commit `9c0c7d038`), the sandbox killed after and listed gone by its tag.
 
 - **The disk.** `/` is ext4 on `/dev/vda` (`relatime,discard`), 14,427,623,424 B, with 10,745,143,296 B free when made (the image takes 3.3 GB).
   - 3,788,096 inodes, 4 KiB blocks: one inode for every 3.8 KB, so a tree of small files runs out of bytes before inodes.

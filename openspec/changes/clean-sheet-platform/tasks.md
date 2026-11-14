@@ -43,7 +43,7 @@ end.
 - [x] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue
   (`owner/src/schedule.ts`).
 - [x] Append-only migrations from the first deploy: the locks (`owner/migrations.json`,
-  `sandbox/migrations/`), their guards (`owner/guards/lock.ts`) and the kit's `lockRefusal`.
+  `sandbox/migrations/`), their kit and command line (`ci/kit/locks.ts`) and the deploy kit's `lockRefusal`.
 - The owner's action decision, which waited for the gateway's binding gate ADR-034 removed,
   is R5's (d3 §N), its slices in §10 step 4.
 

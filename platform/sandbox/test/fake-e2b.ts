@@ -1,6 +1,6 @@
 /**
  * A fake E2B, in tests only: the platform API (`api.e2b.app`) and envd (`sandbox.e2b.app`)
- * as `sandbox/src/e2b.ts` speaks them, in the field names of E2B's OpenAPI document, with
+ * as `sandbox/e2b/transport.ts` speaks them, in the field names of E2B's OpenAPI document, with
  * sandboxes held in memory. The tests script it and read back what it received at
  * `https://fake.test/*` (through the `E2B` service binding). It is also the ring queue's
  * consumer in tests, recording each ring.

@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import { PLATFORM } from "../paths.ts";
-import { readWrangler, WRANGLER, workerFolders } from "../workers.ts";
+import { readWrangler, WRANGLER, workerFolders } from "../wrangler.ts";
 import { envFile } from "./sources.ts";
 
 /** The widest line the platform's sources keep. */

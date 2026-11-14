@@ -27,8 +27,8 @@
  *
  * It holds no state of its own: an isolate's one pool and one tails budget are its
  * Worker's, held at module scope by that Worker (`owner/src/holds.ts`,
- * `gateway/src/held.ts`), each one of the platform's pinned exemptions from the
- * no-module-state rule (`module-state.test.ts`), and made through `isolatePool` and
+ * `gateway/src/held.ts`), each one of its Worker's own exemptions from the
+ * no-module-state rule (`ci/kit/module-state.ts`), and made through `isolatePool` and
  * `isolateTails` here. What they hold is a count of units in use, the calls waiting, and
  * which objects' tails share the budget, never an owner's data.
  */

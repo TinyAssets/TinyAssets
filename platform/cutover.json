@@ -67,7 +67,6 @@
         { "edit": "platform/doors/guards/config.test.ts", "names": ["IMPORT_WINDOW", "IMPORT_QUEUE"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import window's config cases" },
         { "edit": "platform/doors/guards/binder.test.ts", "names": ["IMPORT_WINDOW"], "what": "the import window's bindings' reach" },
         { "edit": "platform/doors/test/binder.test.ts", "names": ["a rehearsal's name"], "what": "the sign-in refusal of a rehearsal's name's case" },
-        { "edit": "platform/files/guards/r2-keys.test.ts", "names": ["IMPORT_STAGING"], "what": "the staging bucket's keys" },
 
         { "edit": "platform/deploy/facts.ts", "names": ["IMPORT_NAMES", "--import"], "imports": ["platform/contract/src/import-names.ts"], "what": "facts.ts --import, the job's live names" },
         { "edit": "platform/deploy/guards/deploy.test.ts", "names": ["IMPORT_NAMES"], "what": "the job's live names' case" },

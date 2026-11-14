@@ -9,7 +9,7 @@
  *
  * Each sandbox of the plan, in order: made from the image, to be killed (never paused) at its
  * lifetime; the shipped runner installed by the loader as the Worker installs it
- * (`src/install.ts`); its setup; the runner's own `prepare`, the production command; the
+ * (`e2b/install.ts`); its setup; the runner's own `prepare`, the production command; the
  * probes installed the same way; then each step, `ta-runner <probes> <step>`, its exit code
  * as envd gives it. Every sandbox is killed whatever happens.
  *
@@ -28,9 +28,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readWrangler } from "../../ci/workers";
-import { type E2b, type Handle, runtimeE2b } from "../src/e2b";
-import { install } from "../src/install";
+import { readWrangler } from "../../ci/wrangler";
+import { E2bAdmin } from "../e2b/admin";
+import { install } from "../e2b/install";
+import { type Handle, runtimeFetch } from "../e2b/transport";
 import { COMMAND, EXIT, LOADER } from "../runner/protocol";
 import type { Plan, PlanSandbox, PlanStep } from "../runner/probes";
 
@@ -79,14 +80,14 @@ function answer(stdout: string): Record<string, unknown> {
 }
 
 /** A bundle uploaded and installed by the loader, timed. */
-async function installed(e2b: E2b, box: Handle, bundle: Bundle, timeoutS: number):
+async function installed(e2b: E2bAdmin, box: Handle, bundle: Bundle, timeoutS: number):
     Promise<Installed> {
   return { bytes: bundle.bytes.length,
            ...await install(e2b, box, bundle.bytes, bundle.sha, timeoutS * 1000) };
 }
 
 /** One sandbox of the plan, run whole; it is killed whatever happens. */
-async function sandbox(e2b: E2b, template: string, plan: Plan, each: PlanSandbox,
+async function sandbox(e2b: E2bAdmin, template: string, plan: Plan, each: PlanSandbox,
                        runner: Bundle, probes: Bundle):
     Promise<{ outcomes: Outcome[]; install: Installed }> {
   const box = await e2b.createThrowaway({ template, timeoutS: each.timeout_s,
@@ -182,7 +183,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (key === undefined || key === "") {
     throw new Error("E2B_API_KEY is not set (the production environment's secrets)");
   }
-  const e2b = runtimeE2b(key);
+  const e2b = new E2bAdmin(key, runtimeFetch);
   const out = mkdtempSync(join(tmpdir(), "ta-checks-"));
   try {
     const { runner, probes } = bundles(execFileSync, out);
