@@ -1,0 +1,89 @@
+name: Android release bundle
+description: >-
+  Generate the Android project from mobile/, apply and verify the release identity, and
+  build and verify the unsigned release bundle (android-release.yml). It holds no secret:
+  the pull-request check calls it with no Firebase config, and the release job, inside the
+  main-only production environment, passes the config it reads there.
+inputs:
+  google-services-json-b64:
+    description: >-
+      Base64 of Firebase's google-services.json. Empty builds with phone notifications off
+      (mobile/scripts/materialize_google_services.py says so in its log).
+    required: false
+    default: ''
+outputs:
+  aab:
+    description: The unsigned release bundle's path
+    value: ${{ steps.findaab.outputs.aab }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      with:
+        node-version: "22"
+        cache: npm
+        cache-dependency-path: mobile/package-lock.json
+
+    - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+      with:
+        distribution: temurin
+        java-version: "21"
+
+    - name: Install JS deps (lockfile-pinned)
+      shell: bash
+      working-directory: mobile
+      run: npm ci --ignore-scripts --no-audit --no-fund
+
+    - name: Add + sync Android platform
+      shell: bash
+      working-directory: mobile
+      run: |
+        npx --no-install cap add android
+        npx --no-install cap sync android
+
+    - name: Register the tinyassets:// deep link (in-app OAuth return)
+      shell: bash
+      working-directory: mobile
+      run: |
+        python3 scripts/add_app_scheme.py
+        grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
+
+    - name: Materialise google-services.json (phone notifications)
+      shell: bash
+      working-directory: mobile
+      env:
+        # Build input, never committed (public repo).
+        ANDROID_GOOGLE_SERVICES_JSON_B64: ${{ inputs.google-services-json-b64 }}
+      run: python3 scripts/materialize_google_services.py
+
+    - name: Install the launcher icon + splash (pre-rendered, no image toolchain in CI)
+      shell: bash
+      working-directory: mobile
+      run: python3 scripts/add_app_icons.py
+
+    - name: Apply version + verify Android release identity, SDK, manifest and artwork
+      shell: bash
+      working-directory: mobile
+      run: |
+        python3 scripts/configure_android_release.py
+        python3 scripts/verify_android_release.py --artwork-only
+        python3 scripts/verify_android_release.py
+
+    - name: Lint and build unsigned release bundle
+      shell: bash
+      working-directory: mobile/android
+      run: ./gradlew lintRelease bundleRelease --no-daemon --stacktrace
+
+    - name: Verify the merged release manifest
+      shell: bash
+      working-directory: mobile
+      run: python3 scripts/verify_android_release.py --merged
+
+    - name: Locate the bundle
+      id: findaab
+      shell: bash
+      run: |
+        set -euo pipefail
+        aab="$(find mobile/android/app/build/outputs/bundle/release -type f -name '*.aab' -print -quit)"
+        [ -n "$aab" ] || { echo "::error::no .aab produced"; exit 1; }
+        echo "aab=$aab" >> "$GITHUB_OUTPUT"

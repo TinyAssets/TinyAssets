@@ -162,13 +162,12 @@ container.** The container recipe in `mobile/container/` builds without
 `ANDROID_GOOGLE_SERVICES_JSON_B64` unless the file is staged under
 `~/.tinyassets/android/`, and a bundle built that way logs `push DISABLED` and
 ships a shell whose notifications are dead — a regression against `1.0.4`. That
-secret exists in the repo (set 2026-10-01), so CI is the route that produces a
-faithful bundle. The workflow also refuses to sign any commit that is not already in
-`origin/main` history, so each update lands on `main` first and is built after.
+secret exists (set 2026-10-01), so CI is the route that produces a faithful bundle.
+The release job runs only in the main-only `production` environment, which holds the
+signing and Firebase secrets, so each update lands on `main` first and is built after.
 
 Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
-seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's
-`versionName` exactly. Both the GitHub workflow and local container now regenerate the
+seen before, even on a test track. Both the GitHub workflow and local container now regenerate the
 platform, apply the checked-in version, verify identity/SDK/permissions/artwork, run
 `lintRelease`, verify Gradle's merged release manifest, sign with the pinned upload
 certificate, and emit a SHA-256 file beside the AAB.
@@ -225,7 +224,7 @@ in Play App Signing, step §6.4).
 
 ---
 
-## 3. Repo secrets to add (Settings → Secrets and variables → Actions)
+## 3. `production` environment secrets to add (Settings → Environments → production)
 
 | Secret | Value |
 |---|---|
@@ -239,15 +238,15 @@ at the repo root; `gh` is already logged in):
 
 ```bash
 D="$HOME/.tinyassets/android"; set -a; . "$D/upload-keystore.env"; set +a
-gh secret set ANDROID_UPLOAD_KEYSTORE_B64 < "$D/tinyassets-upload.jks.b64"
-printf '%s' "$ANDROID_UPLOAD_KEYSTORE_PASSWORD" | gh secret set ANDROID_UPLOAD_KEYSTORE_PASSWORD
-printf '%s' upload | gh secret set ANDROID_UPLOAD_KEY_ALIAS
-printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD" | gh secret set ANDROID_UPLOAD_KEY_PASSWORD
-gh secret list | grep ANDROID_UPLOAD_
+gh secret set ANDROID_UPLOAD_KEYSTORE_B64 --env production < "$D/tinyassets-upload.jks.b64"
+printf '%s' "$ANDROID_UPLOAD_KEYSTORE_PASSWORD" | gh secret set ANDROID_UPLOAD_KEYSTORE_PASSWORD --env production
+printf '%s' upload | gh secret set ANDROID_UPLOAD_KEY_ALIAS --env production
+printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD" | gh secret set ANDROID_UPLOAD_KEY_PASSWORD --env production
+gh secret list --env production | grep ANDROID_UPLOAD_
 ```
 
 Once these exist, run the **Android release AAB** workflow (Actions tab →
-workflow_dispatch, or it runs on a `mobile-v*` tag) to produce the signed
+workflow_dispatch on `main`) to produce the signed
 `app-release.aab` artifact to upload:
 
 ```bash
@@ -669,9 +668,8 @@ platform, and `cap sync` *preserves* a stale `variables.gradle`, so a tree gener
 under Capacitor 6 keeps minSdk 22 / SDK 34 and would build a bundle Play rejects while
 looking perfectly healthy. The release config asserts those generated SDK values; it
 does not rewrite the dependency-owned template. The container moves an existing
-directory aside; it does not delete untracked native work. Create a `mobile-v*` tag
-only after its commit is in `main`; the signing workflow rejects refs outside main's
-history.
+directory aside; it does not delete untracked native work. The signing job runs only
+on `main`: its `production` environment refuses any other ref.
 
 The 1.0.7 candidate (code 8) adds system-browser sign-in with an opaque PKCE-bound return and Android Autofill hints. Upload the signed `app-release.aab` produced by `android-release.yml` after this commit lands on main; the PR unsigned AAB and debug APK are not Play uploads.
 

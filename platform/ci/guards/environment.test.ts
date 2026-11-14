@@ -15,6 +15,13 @@
  * below, and a job also counts as production when it opens a shell to a host
  * (ssh/scp/rsync/sftp), inherits the caller's secrets, or runs a repo-local action that
  * reads a secret. Each such job declares `environment: production`.
+ *
+ * The same rule is the pull-request guard (concern 2026-07-27, P0). A same-repo
+ * `pull_request` run executes the PR's own YAML and gets every repository secret, so a job
+ * a PR reaches may read only the harmless ones: a job that names a main-only environment
+ * is refused on the PR's `refs/pull/N/merge` ref, and GitHub hands a fork's run no secret
+ * at all. A `pull_request_target` run executes main's YAML with the secrets, so it may name
+ * an environment, but then it must not check out the PR's code (below).
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,56 +33,52 @@ import { REPO } from "../paths";
 import { type Data, workflow, workflowNames, WORKFLOWS } from "../workflows";
 
 /**
- * Secrets a job may read WITHOUT `environment: production`: a branch dispatch that reaches
- * one cannot touch the production host or the DigitalOcean account. Every entry says why;
- * an entry no workflow uses fails, so the list cannot accrete.
+ * The harmless secrets: the only ones a job may read WITHOUT a main-only environment, so the
+ * only ones any branch's code can reach, a pull request's included. Each changes nothing
+ * outside GitHub and grants no more than the push access a branch's author already holds.
+ * They stay at repository scope; every other secret lives in an environment
+ * (docs/host-actions.md). Every entry says why; an entry no workflow uses fails, so the
+ * list cannot accrete.
  */
-const NON_PRODUCTION_SECRETS: Record<string, string> = {
-  GITHUB_TOKEN: "per-run token GitHub mints, scoped by `permissions:`; not a stored secret",
-  MERGE_ATTRIBUTION_TOKEN: "GitHub PAT that enqueues/attributes merges on github.com only",
+const HARMLESS_SECRETS: Record<string, string> = {
+  GITHUB_TOKEN: "per-run token GitHub mints, scoped by `permissions:`; it can do in the " +
+    "repository no more than the pusher whose branch ran it, and a fork's run gets it read-only",
   TINYASSETS_WIKI_CANARY_TOKEN: "bearer for the read-only `canary` service principal; the " +
     "daemon 403s anything beyond get_status / read_graph status " +
     "(docs/reference/environment-variables.md)",
-  PUSHOVER_APP_TOKEN: "send-only notification credential",
-  PUSHOVER_USER_KEY: "send-only notification recipient",
-  CLOUDFLARE_API_TOKEN: "Cloudflare edge account (Worker + DNS): separate credential, no " +
-    "host shell; platform-deploy.yml's plan job reads it outside production by design (the " +
-    "plan holds no production secret), and deploy-worker.yml dry-runs on pull_request, so it " +
-    "cannot sit in a main-only environment. An edge environment is its own lane.",
-  CLOUDFLARE_ACCOUNT_ID: "Cloudflare account identifier, not a credential",
+  CLOUDFLARE_ACCOUNT_ID: "Cloudflare account identifier, not a credential (AGENTS.md)",
   CLOUDFLARE_ZONE_ID: "Cloudflare zone identifier, not a credential",
-  // Store release pipelines: these sign and upload artifacts, never reach the host, and run
-  // on tag/release refs that a main-only environment would refuse.
-  APPLE_DISTRIBUTION_CERT_P12_B64: "iOS distribution certificate (ios-release.yml, `app-store` env)",
-  APPLE_DISTRIBUTION_CERT_PASSWORD: "password for APPLE_DISTRIBUTION_CERT_P12_B64",
-  APPLE_PROVISIONING_PROFILE_B64: "iOS provisioning profile",
-  APP_STORE_CONNECT_API_KEY_ID: "App Store Connect API key id",
-  APP_STORE_CONNECT_API_KEY_B64: "App Store Connect API private key",
-  APP_STORE_CONNECT_API_ISSUER_ID: "App Store Connect issuer id",
-  APP_STORE_REVIEW_USERNAME: "App Review demo account sign-in (review video)",
-  APP_STORE_REVIEW_PASSWORD: "App Review demo account password",
-  AWS_DEVICEFARM_ACCESS_KEY_ID: "AWS Device Farm (review video on real devices)",
-  AWS_DEVICEFARM_SECRET_ACCESS_KEY: "AWS Device Farm secret",
-  AWS_DEVICEFARM_PROJECT_ARN: "AWS Device Farm project identifier",
-  ANDROID_DEBUG_KEYSTORE_B64: "debug keystore for the sideload APK",
-  ANDROID_UPLOAD_KEYSTORE_B64: "Play upload keystore",
-  ANDROID_UPLOAD_KEYSTORE_PASSWORD: "password for the Play upload keystore",
-  ANDROID_UPLOAD_KEY_ALIAS: "alias inside the Play upload keystore",
-  ANDROID_UPLOAD_KEY_PASSWORD: "key password inside the Play upload keystore",
-  ANDROID_GOOGLE_SERVICES_JSON_B64: "Firebase client config baked into the Android build",
-  TOKEN_HEX: "python `secrets.token_hex(...)` in a run script",
+  TOKEN_HEX: "python `secrets.token_hex(...)` in a run script, not a stored secret",
 };
 
 /**
- * Secrets held by a main-only environment of their own, never by `production` (whose
- * required reviewer would hold every use): a job that reads one declares that environment,
- * and no other job may read it.
+ * Secrets held by a main-only environment of their own, never by `production`: a job that
+ * reads one declares that environment, and no other job may read it.
  */
 const ENVIRONMENT_SECRETS: Record<string, string> = {
   // The review App's key: the only identity that may post the required `review` check
   // (review.yml). Its environment deploys from main alone, with no reviewer.
   REVIEW_APP_PRIVATE_KEY: "review",
+  // The Apple release pipeline's: each use waits for the environment's required review
+  // (docs/host-actions.md), which `production`'s scheduled jobs could not.
+  APPLE_DISTRIBUTION_CERT_P12_B64: "app-store",
+  APPLE_DISTRIBUTION_CERT_PASSWORD: "app-store",
+  APPLE_PROVISIONING_PROFILE_B64: "app-store",
+  APP_STORE_CONNECT_API_KEY_ID: "app-store",
+  APP_STORE_CONNECT_API_KEY_B64: "app-store",
+  APP_STORE_CONNECT_API_ISSUER_ID: "app-store",
+  APP_STORE_REVIEW_USERNAME: "app-store",
+  APP_STORE_REVIEW_PASSWORD: "app-store",
+  AWS_DEVICEFARM_ACCESS_KEY_ID: "app-store",
+  AWS_DEVICEFARM_SECRET_ACCESS_KEY: "app-store",
+  AWS_DEVICEFARM_PROJECT_ARN: "app-store",
 };
+
+// The step shapes that take a pull request's own code into a run (GitHub's "Securely using
+// pull_request_target"): a checkout of its head, merge ref or repository, or `gh pr checkout`.
+// Fetching the head to read a diff (auto-enroll-merge.yml, pr-scope-guard.yml) runs nothing.
+const PULL_REQUEST_CODE = /github\.event\.pull_request\.head\.|github\.head_ref|refs\/pull\//;
+const GH_PR_CHECKOUT = /\bgh\s+pr\s+checkout\b/;
 
 /** Workflows known to hold production jobs: guards the scan against matching nothing. */
 const KNOWN_PRODUCTION_WORKFLOWS = [
@@ -122,7 +125,7 @@ function secretNames(text: string): Set<string> {
 }
 
 function productionSecretNames(text: string): string[] {
-  return [...secretNames(text)].filter((name) => !(name.toUpperCase() in NON_PRODUCTION_SECRETS)
+  return [...secretNames(text)].filter((name) => !(name.toUpperCase() in HARMLESS_SECRETS)
                                                  && !(name.toUpperCase() in ENVIRONMENT_SECRETS))
     .sort();
 }
@@ -201,6 +204,29 @@ function workflowLevelText(data: Data): string {
   return strings({ env: data.env ?? {}, defaults: data.defaults ?? {} });
 }
 
+/** The events a workflow runs on: `on:` as a name, a list or a map. */
+function events(data: Data): string[] {
+  const on = data.on;
+  return typeof on === "string" ? [on] : Array.isArray(on) ? on.map(String)
+    : Object.keys(on ?? {});
+}
+
+/** The steps of `job` that take a pull request's own code into its run. */
+export function pullRequestCodeSteps(job: Data): string[] {
+  const found: string[] = [];
+  for (const [index, each] of (job.steps ?? []).entries()) {
+    const step = `step ${index + 1} (${each.name ?? each.uses ?? "run"})`;
+    if (String(each.uses ?? "").startsWith("actions/checkout@")
+        && PULL_REQUEST_CODE.test(strings({ ref: each.with?.ref, repo: each.with?.repository }))) {
+      found.push(`${step} checks out the pull request's code`);
+    }
+    if (GH_PR_CHECKOUT.test(String(each.run ?? ""))) {
+      found.push(`${step} runs \`gh pr checkout\``);
+    }
+  }
+  return found;
+}
+
 interface ProductionJob { workflow: string; name: string; job: Data; reasons: string[] }
 
 function productionJobs(): ProductionJob[] {
@@ -260,14 +286,34 @@ describe("production workflows", () => {
     const missing = jobs.filter((each) => !("uses" in each.job)
                                          && environmentName(each.job) !== "production")
       .map((each) => `${each.workflow} job \`${each.name}\`: ${each.reasons.join("; ")}`);
-    expect(missing, "an `if: github.ref == ...` guard is not a substitute: a branch dispatch " +
-                    "runs the branch's YAML; allowlist a secret that truly cannot reach the " +
-                    "host with a one-line justification").toEqual([]);
+    expect(missing, "an `if:` guard is not a substitute: a branch dispatch and a pull " +
+                    "request run the branch's YAML; only a harmless secret may stay outside " +
+                    "an environment, with a one-line justification").toEqual([]);
   });
 
   it("reusable-workflow callers forward no production secrets", () => {
     expect(jobs.filter((each) => "uses" in each.job).flatMap((each) =>
       reusableCallerProblems(each.workflow, each.name, each.job, each.reasons))).toEqual([]);
+  });
+
+  it("a pull_request_target job that holds a secret runs none of the pull request's code", () => {
+    const wrong: string[] = [];
+    for (const file of workflowNames()) {
+      const data = workflow(file);
+      if (!events(data).includes("pull_request_target")) {
+        continue;
+      }
+      for (const [name, job] of Object.entries<Data>(data.jobs ?? {})) {
+        const held = [...secretNames(`${workflowLevelText(data)}\n${strings(job)}`)]
+          .filter((secret) => !(secret.toUpperCase() in HARMLESS_SECRETS));
+        if (held.length || job.secrets === "inherit") {
+          wrong.push(...pullRequestCodeSteps(job)
+            .map((step) => `${file} job \`${name}\`: ${step}`));
+        }
+      }
+    }
+    expect(wrong, "pull_request_target runs main's YAML with the secrets: never run the PR's " +
+                  "code there; build it in a `pull_request` job, which holds none").toEqual([]);
   });
 
   it("the allowlist is in use and never names a production secret", () => {
@@ -280,9 +326,9 @@ describe("production workflows", () => {
         used.add(name.toUpperCase());
       }
     }
-    expect(Object.keys(NON_PRODUCTION_SECRETS).filter((name) => !used.has(name)),
+    expect(Object.keys(HARMLESS_SECRETS).filter((name) => !used.has(name)),
            "allowlisted secrets no workflow reads any more: delete them").toEqual([]);
-    expect(Object.values(NON_PRODUCTION_SECRETS).every((why) => why.trim())).toBe(true);
+    expect(Object.values(HARMLESS_SECRETS).every((why) => why.trim())).toBe(true);
   });
 
   it("an environment's own secret is read only inside that environment", () => {
@@ -321,7 +367,7 @@ describe("production workflows", () => {
     expect(wrong).toEqual([]);
     expect(Object.keys(ENVIRONMENT_SECRETS).filter((name) => !seen.has(name)),
            "environment secrets no workflow reads any more: delete them").toEqual([]);
-    expect(Object.keys(ENVIRONMENT_SECRETS).filter((name) => name in NON_PRODUCTION_SECRETS))
+    expect(Object.keys(ENVIRONMENT_SECRETS).filter((name) => name in HARMLESS_SECRETS))
       .toEqual([]);
     expect(Object.values(ENVIRONMENT_SECRETS)).not.toContain("production");
   });
@@ -349,11 +395,16 @@ describe("the classifier", () => {
     rsync: job({ steps: [{ run: "rsync -a . user@host:/opt/" }] }),
     sftp: job({ steps: [{ run: "sftp user@host <<EOF\nput x\nEOF" }] }),
     inherit: job({ secrets: "inherit" }),
+    // The ones a pull request's run reached before 2026-11-14 (concern 2026-07-27, P0).
+    "cloudflare-token": job({ env: { T: "${{ secrets.CLOUDFLARE_API_TOKEN }}" } }),
+    "merge-token": job({ env: { T: "${{ secrets.MERGE_ATTRIBUTION_TOKEN }}" } }),
+    "firebase-config": job({ steps: [{ uses: "./x", with: {
+      b64: "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_B64 }}" } }] }),
   };
   const mustNotFlag: Record<string, Data> = {
     "no-secrets": job(),
     "github-token": job({ env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" } }),
-    "allowlisted-bracket": job({ env: { T: "${{ secrets['MERGE_ATTRIBUTION_TOKEN'] }}" } }),
+    "allowlisted-bracket": job({ env: { T: "${{ secrets['TINYASSETS_WIKI_CANARY_TOKEN'] }}" } }),
     "python-secrets-module": job({ steps: [{ run: "python -c 'import secrets; secrets.token_hex(8)'" }] }),
     "ssh-keyscan-only": job({ steps: [{ run: "ssh-keyscan example.org >> ~/.ssh/known_hosts" }] }),
     "ssh-in-a-word": job({ steps: [{ run: 'echo "see runbook.md#do-ssh-key"' }] }),
@@ -365,6 +416,23 @@ describe("the classifier", () => {
   for (const [name, each] of Object.entries(mustNotFlag)) {
     it(`passes ${name}`, () => expect(productionReasons(each)).toEqual([]));
   }
+
+  it("sees a step that takes a pull request's code", () => {
+    const checkout = (ref: Data) => job({ steps: [{ uses: "actions/checkout@v4", with: ref }] });
+    for (const each of [checkout({ ref: "${{ github.event.pull_request.head.sha }}" }),
+                        checkout({ ref: "refs/pull/${{ github.event.number }}/merge" }),
+                        checkout({ ref: "${{ github.head_ref }}" }),
+                        checkout({
+                          repository: "${{ github.event.pull_request.head.repo.full_name }}" }),
+                        job({ steps: [{ run: 'gh pr checkout "$PR"' }] })]) {
+      expect(pullRequestCodeSteps(each)).not.toEqual([]);
+    }
+    for (const each of [checkout({ ref: "${{ github.event.pull_request.base.sha }}" }),
+                        checkout({ ref: "${{ github.event.repository.default_branch }}" }),
+                        job({ steps: [{ run: 'git fetch origin "+refs/pull/${PR}/head:pr"' }] })]) {
+      expect(pullRequestCodeSteps(each)).toEqual([]);
+    }
+  });
 
   it("counts a workflow-level env for every job", () => {
     const text = workflowLevelText({ env: { H: "${{ secrets.DO_DROPLET_HOST }}" } });

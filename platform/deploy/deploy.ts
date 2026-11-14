@@ -1878,7 +1878,7 @@ const CONTROL = Steps.none.then(zone).then(controlEdit).list;
 const OWNER = Steps.none.then(zone).then(ownerAsk).list;
 const RESTORE = Steps.none.then(zone).then(restoreAsk).list;
 
-/** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
+/** What the plan job holds: the Cloudflare token, its one `production` secret, and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
   "CLOUDFLARE_API_TOKEN", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
 /** What a deploy reads: every secret a config requires, and the optional ones when given. */

@@ -39,6 +39,7 @@ concurrency:
 
 jobs:
   enqueue:
+    environment: production
     name: Enqueue for merge
     runs-on: ubuntu-latest
     timeout-minutes: 5
