@@ -1914,6 +1914,16 @@ export class Ledger {
   }
 
   /** The seq a message id carries, or null for one the object never gave. A read. */
+  /**
+   * In a unit, once a restore has loaded the rows (`restore.ts`): the seq allocator past every
+   * seq they name, the archived ones' too, so none is given again.
+   */
+  restored(): void {
+    this.#sql.exec("UPDATE ledger_usage SET last_seq = max(last_seq, coalesce((SELECT max(seq) " +
+                     "FROM ledger_messages), 0), coalesce((SELECT max(last_key) FROM " +
+                     "archive_segments), 0))");
+  }
+
   seqOf(messageId: string): number | null {
     const held = this.#sql.exec<{ id_key: string }>("SELECT id_key FROM ledger_ids")
       .toArray()[0];

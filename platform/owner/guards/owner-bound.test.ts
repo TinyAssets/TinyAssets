@@ -621,6 +621,13 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     owner_backups_kept: { rows: 1 + EXPORTS_OPEN, bytes: ROW + 16 + 8 + 6 + 16 * 8,
                           tables: [],
                           by: "the newest finished generation and EXPORTS_OPEN pinned ones" },
+    // Lane R: a restore (`restore.ts`): its record, each base part's span of tables and where
+    // it is (a key at its widest), and the log it stages, the last line per key: a log of at
+    // most LOG_BYTES (a restore refuses a longer one), each line held with its key.
+    owner_restore: { rows: 1, bytes: ROW + 32 + 16 + 8 + MANIFEST_PARTS * 12
+                       + 4 * (MAX_PATH_BYTES + KIB), by: "one row" },
+    restore_rows: { rows: 1, bytes: 2 * LOG_BYTES + IMAGE_MAX,
+                    by: "a log of at most LOG_BYTES, each line with its key, and one past it" },
     // Slice P: the sandbox meter (`sandbox-time.ts`).
     sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
     owner_backup_state: { rows: 1, bytes: ROW + 2 * 8,

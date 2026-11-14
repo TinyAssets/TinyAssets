@@ -1,0 +1,52 @@
+# R5r as built (2026-11-14)
+
+R5r is lane R's fifth PR, restore's two halves (d3 §G; `operator_research.md` §3, adopted whole). `R5` already names the policy slices (d3 §N), hence `r5r`. The channel is R2's (`r2.md`), the modes R3's (`r3.md`), the off-account copy R4's (`r4.md`). Restore from the copy, with its monthly drill, is lane R's eighth PR.
+
+1. **The research's first deliverable, the load table, is `LOAD` in `owner/src/restore.ts`, held to the schema's triggers by a test.** Every exported table appears once, in load order. A trigger-kept exported column is one of two kinds, and the test reads each trigger in `sqlite_master` to hold the kind to the order:
+   - **A reference count** (`refs`: a content's and a chunk's `refs`, a message's and a reader's `unacked`, an agent's `unacked_to_owner`, a client's `agents` and `held`). It loads at 0 before the rows that count on it, and their triggers rebuild it.
+   - **A sum over rows that may since have been pruned** (`model_spend` over reservations, a run's `requests`, `tokens` and `cost` over its egress). It loads after the rows that add to it, at the stream's value, so their triggers find no row to add to, or a row its own load overwrites. The research's single rule, "every trigger-derived exported column at zero", would have lost every pruned reservation's spend; the fixture prunes one, and the test proves the spend survives.
+
+   The check then compares every column with the generation's. A mismatch fails the restore, and the owner is never admitted. The test is how the decided shape ("let the triggers rebuild, then compare") holds, and the mutations prove it: with the dependency order broken, or the counts not zeroed, the restore fails.
+2. **Only the log is staged; the base streams into its tables, table by table.** The base is fuzzy, so a base row the log names must never reach its table: its triggers would count it, and the log's line would then count again. Staging the whole stream would double the object's rows at a worst-case owner, which the owner-bound guard refuses (45% of 10 GB doubled). So:
+   - a restore indexes each base part's span of tables;
+   - it stages only the log's last line per key, a `gone` line as a null row;
+   - it then loads each table from the parts that hold it, skipping the keys the log names, and then the log's rows.
+
+   A generation whose log passed `LOG_BYTES` is refused, a recorded ceiling (`restore_rows` is bounded at a log of `LOG_BYTES`; Fact 15). Its remedy is another night's generation. A log passes it only when an owner writes 68 MB within a generation's base pass.
+3. **Archive segments' rows are not loaded into their tables.** The research says that `restore.load` reads "the archive segments' rows" as the export's reading rule does. That rule is for a reader rebuilding the owner. In the live object, moved rows are gone from their tables (`export.ts`: "a moved row never returns to its table"). Their bytes sit in the segments' contents in R2, which the restored object finds under the namespace it adopts. Loading them would make the restored object differ from the one backed up.
+4. **One migration (10): `owner_restore` and `restore_rows`.** The research hoped for "no new table and no migration", with the marker in `file_space` and `owner_backups`. A record per step is what lets every step resume from the object's own state, and the staged log needs a table. The migration's pin PR is owed after merge.
+5. **The steps are one door, `restoreStep`, which carries the restore on from its record** for at most `RESTORE_PASS_MS` (30 s), well inside the kit's 120 s wait. The research's separate `restore.load`, `restore.fence` and `restore.check` would make every caller know their order (a hidden link). The steps are index, log, apply, check, chunks, clear, done.
+   - Each unit moves the record only if the record is as it read it (`still`). So a crash anywhere repeats nothing that committed, and two calls at once never do one piece twice.
+   - The proofs: a part's read and a chunk's read are each held at the files gate while the instance is reset under them. Two restores run at once. Both end with every table and counter equal.
+6. **The fence and the allocators are their modules' own.** The policy-boundary and ledger-boundary guards hold each table to its module. The restore is the loader: it names tables only as data, in its load table. Its SQL names only its own two tables and `${load.table}` (a new guard check, beside the export's read-only one). Each other change is a small method on the module that owns it:
+   - `Grants.revokeAll` (with `Keys.revoked`), which also moves `grant_fences`;
+   - `Inbound.disableAll` (a new revision, so no route the directory still holds reaches a binding);
+   - `Connections.secretsLost`;
+   - `Files.adoptSpace` and `Files.restored`, `Collections.restored` and `Ledger.restored` (the version, revision, seq and feed floors past every value the rows name);
+   - `Backups.adopt` (the generation as the object's newest finished one).
+
+   Runs live at E need no fence: they have no lease in the restored object, so the runs lane settles them `unknown` once the owner is admitted (`Runs.lost`). A column the export leaves out that the schema requires (`inbound_bindings.route`, `egress_reservations.token`) is made afresh as 32 random bytes, held by no one. That is one rule read from the schema, not a case per table.
+7. **The owner's admission is held back (`held`) until the check passes, then set as it stood at E.** The schema forbids a pending row with reasons (`CHECK ((state = 'suspended') = (reasons != '[]'))`). An admit then would have lifted a suspension the generation holds. So the last unit sets the object's admission, and the kit's `owner.admit` writes only the directory's record (the object first, as R3's admit). A suspension holds across a restore (proved).
+8. **No lane runs while a restore is under way.** The schedule's halt is `wiped || erasing || restoring`, one line in `owner-do.ts`. A fresh instance syncs its schedule as it starts, so without the halt a crash mid-restore would start the manifest lane on a half-loaded owner (proved by mutation). The research's open question 8 ("whether a pending object runs any lane") is answered this way. A pending, never-restored object stays empty, so no lane has work.
+9. **The refusals, each with nothing written** (proved on the real owner object):
+   - an admitted object;
+   - a pending object holding any row but its migrations' seeds (`SEEDED`, held to a fresh object by a test) or a namespace;
+   - another owner's generation (part 0's header names the owner);
+   - a generation the namespace does not hold;
+   - any caller but the platform's reserved one;
+   - an erased owner, twice over. The object's tombstone refuses every restore door (`OWNER_ERASED`). Where a crash lost the tombstone, the object is pending and empty, but the directory's erased record refuses the op at the channel's gate before any door (`doors/test/operator.test.ts`). So the erasure record beats any generation, whatever generation is named.
+
+   Not built: "another schema" (no generation of another schema can be made before the cutover; the header check is one comparison).
+10. **No plaintext leaves the owner's data key.** The restore's only outside calls are the files Worker's manifest reads and verified chunk reads (`getManifestRoot`, `getManifestPart`, `getManifestSegment`, `getChunks`). The test holds every files call the restore made to a `get`. No answer carries a row: the done answer names counts, key ids and the admission, and the test holds every answer free of the fixture's plaintext marker. The staged log lives in the owner's own database, as its rows do, and is deleted before done.
+11. **R8 is a source swap.** The restore reads a generation only through `GenerationSource` (the files Worker's three manifest reads) at `{namespace, gen}`. R8's copy-back puts the copy's bytes at the same R2 keys (the seal binds the key, `r4.md` item 6), so the same reads open them. R8 adds `locate` (a lost object's namespace and newest generation) and the copy-back. It calls the same three ops.
+   - For R8, from R4 item 13: a restore applies erasures only through the object's tombstone and the directory's record. Both are gone with the account, so R8 must still check its own erasure list before any owner.
+12. **The kit: mode `restore`** (`--owner`, and `--generation <namespace>/<gen>` as `restore.source` answers them), a row of the kit's table and an option of `platform-deploy.yml`, as R3 decided for its modes.
+    - With no generation, it asks `restore.source`.
+    - With one, it plans what the owner loses, then begins, steps until done, and asks `owner.admit`.
+    - A refusal, or a failed check, stops the run, and the owner is not admitted.
+    - The doors' `restore.step` op, once done, deletes the restored owner's API keys from the directory and revokes every OAuth grant (`revokeAll`), as the erasure does.
+13. **Owed, not built here:**
+    - **`restore.wipe`**, which brings a live owner to pending and empty (research §3.3 step 2). Its design has a hole the research missed: a fresh generation's finish prunes every older unpinned one (`backup.ts` `#prune`), so the generation to restore must be pinned first, as an open export pins one. It is also the platform's third database wipe, which the alarm guard limits to the erasure and the discard, in `owner-do.ts`'s instance lifecycle (lane O's, with T1d in flight). It needs its own design and PR, before real data.
+    - Until the wipe or R8's `locate` lands, restore takes a pending, empty object whose namespace is known: one `restore.source` named while it was live (the operator log keeps every answer 365 days).
+    - The R2 objects a restore leaves unreferenced, chunks written after E, are left to the erasure's prefix delete or a later sweep.
+    - The directory's inbound routes made after E stay (the disabled bindings' new revision refuses them), as do the API keys made after E (no client row takes them).

@@ -19,7 +19,7 @@ import {
 } from "../../contract/src/operator-message";
 import { QUEUES } from "../../contract/src/queue-names";
 import { now } from "../src/config";
-import { putOwner, readOwner } from "../src/directory";
+import { putKey, putOwner, readKey, readOwner } from "../src/directory";
 import type { DoorsEnv } from "../src/env";
 import worker from "../src/index";
 import { doorsEnv, sqlIn } from "./support";
@@ -312,5 +312,62 @@ describe("the operator's owner ops, on a real owner object", () => {
       result: { state: "suspended", reasons: ["billing"] } });
     expect(await admission(owner)).toEqual({ state: "suspended", reasons: ["billing"],
                                              tier: "free" });
+  });
+});
+
+describe("the operator's restore ops, on a real owner object", () => {
+  const GEN = { namespace: "a".repeat(32), gen: "b".repeat(16) };
+  /** Nothing of a restore in the owner's object. */
+  const untouched = async (owner: string) =>
+    expect(await sqlIn(owner, "SELECT (SELECT count(*) FROM owner_restore) AS r, (SELECT ns " +
+                              "FROM file_space) AS ns")).toEqual([{ r: 0, ns: null }]);
+
+  it("answers a pending owner's source as its object holds it: no namespace, no generation",
+     async () => {
+    const owner = fresh();
+    expect(await asked(owner, "restore.source")).toMatchObject({
+      result: { namespace: null, generations: [], state: "pending", restore: null } });
+  });
+
+  it("refuses a restore into an admitted owner, and a step with none begun", async () => {
+    const owner = fresh();
+    await asked(owner, "owner.admit");
+    expect(refusedOf(await asked(owner, "restore.begin", GEN))).toEqual({
+      code: "refused", message: "the owner is admitted: a restore takes only a pending owner" });
+    expect(refusedOf(await asked(owner, "restore.step"))).toEqual({
+      code: "refused", message: "no restore of this owner was begun" });
+    await untouched(owner);
+  });
+
+  it("refuses an erased owner whatever generation is named: its erasure record, the " +
+     "directory's, beats it, though its object is pending and empty", async () => {
+    const owner = fresh();
+    await putOwner(doorsEnv, owner, { s: "erased", t: now() });
+    expect(refusedOf(await asked(owner, "restore.begin", GEN))).toEqual({
+      code: "refused", message: "the owner is erased" });
+    await untouched(owner);
+  });
+
+  it("takes a begin's namespace and generation exactly", async () => {
+    const owner = fresh();
+    expect(refusedOf(await asked(owner, "restore.begin", { namespace: GEN.namespace })))
+      .toEqual({ code: "invalid", message: "restore.begin takes exactly namespace, gen" });
+    expect(refusedOf(await asked(owner, "restore.begin", { ...GEN, gen: "x" })).code)
+      .toBe("invalid");
+    await untouched(owner);
+  });
+
+  it("once a restore is done, deletes the restored owner's API keys from the directory, its " +
+     "answer naming them and no row", async () => {
+    const owner = fresh();
+    const key = "0123456789abcdef";
+    await sqlIn(owner, "INSERT INTO owner_keys (key_id, client, name, created_at, revoked_at) " +
+                       "VALUES (?, ?, 'k', 1, 2)", key, "c".repeat(64));
+    await sqlIn(owner, "INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
+                       "'done', 0)", GEN.namespace, GEN.gen);
+    await putKey(doorsEnv, key, { o: owner, h: "h".repeat(64), c: 1 });
+    expect(await asked(owner, "restore.step")).toMatchObject({
+      result: { step: "done", done: true, keys: [key] } });
+    expect(await readKey(doorsEnv, key)).toBeNull();
   });
 });

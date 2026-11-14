@@ -461,6 +461,15 @@ export class Connections {
    * for the lane's provider revoke, any other deleted now (an issued one with an owner
    * notice to delete it at the provider). Revoking twice changes nothing.
    */
+  /**
+   * In a unit: every pending or active connection marked failed, for its owner to connect
+   * again: a restore's fence (`restore.ts`), whose sealed credentials were never in the backup.
+   */
+  secretsLost(): void {
+    this.#sql.exec("UPDATE connections SET status = 'error', pending_until = NULL WHERE " +
+                     "status IN ('pending', 'active')");
+  }
+
   revoke(request: unknown, now: number): { connection: string; revoked: boolean;
                                            provider_revoke: boolean } {
     const r = fields(request, ["connection"], [], INVALID_REQUEST);

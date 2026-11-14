@@ -247,6 +247,8 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   change_log: "row images not yet shipped to R2, which a generation carries",
   sandbox_signins: "a vendor sign-in in progress: its lease and the vendor's one-time prompt",
   platform_signins: "the platform's served sign-in records as last read, not the owner's",
+  owner_restore: "a restore under way, or the record of the one that made this object",
+  restore_rows: "a restore's staged rows, the generation's own, deleted once loaded",
 });
 
 /** The exported tables' names, in order. */

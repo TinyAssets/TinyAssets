@@ -594,6 +594,22 @@ export class Grants {
     return rows.map((row) => row.client);
   }
 
+  /**
+   * In a unit: every outside client revoked as `revoke` revokes one, and every MCP grant made
+   * before `now` fenced, client row or none (`grant_fences`): a restore's fence (`restore.ts`),
+   * since what each grant was checked against was never in the backup. The clients revoked.
+   */
+  revokeAll(now: number): string[] {
+    const clients = this.#sql.exec<{ client: string }>(
+      "SELECT client FROM outside_clients WHERE mode != 'revoked' ORDER BY client").toArray()
+      .map((row) => row.client);
+    for (const client of clients) {
+      this.revoke(client, now);
+    }
+    this.#sql.exec("UPDATE grant_fences SET mcp_through = max(mcp_through, ?)", now);
+    return clients;
+  }
+
   revoke(clientId: unknown, now: number):
       { client: string; revoked: boolean; generation: number; revision: number } {
     const client = outsideClient(clientId);

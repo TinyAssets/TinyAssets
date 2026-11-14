@@ -121,6 +121,33 @@ export interface TierRequest {
   readonly tier: TierName;
 }
 
+/** A restore's generation (`owner/src/restore.ts`): its namespace (32 hex) and id (16 hex). */
+export interface RestoreBeginRequest {
+  readonly namespace: string;
+  readonly gen: string;
+}
+
+/**
+ * How far a restore is (`owner/src/restore.ts`): its step; a failed check's words; and once
+ * done, the rows and chunks it holds, the API keys the doors delete from the directory, and
+ * the owner's admission as it stood at E.
+ */
+export type RestoreAnswer =
+  | { readonly step: "index" | "log" | "apply" | "check" | "chunks" | "clear";
+      readonly done: false }
+  | { readonly step: "failed"; readonly done: false; readonly failed: string }
+  | { readonly step: "done"; readonly done: true; readonly gen: string;
+      readonly rows: number; readonly chunks: number; readonly keys: readonly string[];
+      readonly state: string; readonly reasons: readonly string[] };
+
+/** What a restore could read for an owner (`restoreSource`): as its object holds it. */
+export interface RestoreSource {
+  readonly namespace: string | null;
+  readonly generations: readonly { readonly gen: string; readonly finished_at: number }[];
+  readonly state: string;
+  readonly restore: string | null;
+}
+
 /**
  * A connection to prepare: its source record's id, kind, display name and pi-ai provider,
  * whether its provider can be asked to revoke what it issues, and, for OAuth, the redirect
@@ -237,6 +264,11 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   // Sign-in and sign-up (`authorize.ts`), the owner's session (`app.ts`), erasure (`erase.ts`).
   admissionSet(binding: Binding, request: AdmissionRequest): Promise<{ readonly state: string }>;
   tierSet(binding: Binding, request: TierRequest): Promise<{ readonly tier: TierName }>;
+  // A restore, the operator channel's (`operator.ts`; `owner/src/restore.ts`).
+  restoreSource(binding: Binding): Promise<RestoreSource>;
+  restoreBegin(binding: Binding, request: Asked<"restoreBegin", RestoreBeginRequest>):
+    Promise<RestoreAnswer>;
+  restoreStep(binding: Binding): Promise<RestoreAnswer>;
   sessionOpen(binding: Binding): Promise<{ readonly session: string }>;
   sessionExtend(binding: Binding): Promise<object>;
   sessionClose(binding: Binding): Promise<{ readonly closed: number }>;

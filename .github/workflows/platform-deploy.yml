@@ -25,7 +25,7 @@ name: Platform deploy (manual, founder-approved)
 # makes the same in memory) and rotated with `keyring-add`, then stored here.
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
-# probe, routes, h2, handback, control and owner here; pair is its own job.
+# probe, routes, h2, handback, control, owner and restore here; pair is its own job.
 # `routes` keeps a record of what it changes (the zone's routes, the egress
 # custom domain, E2B's lifecycle webhook) before any change, and its job
 # summary names the record's id (the run's); `handback` takes that id as
@@ -33,18 +33,19 @@ name: Platform deploy (manual, founder-approved)
 # The operator path (deploy/operator.ts): `control` edits the control record
 # in KV itself (`set`, from `replace` in place of the live one), never through
 # the doors; `owner` asks the doors `act` for `owner` through the operator
-# channel. Each shares this file's concurrency group, so no operator run ever
-# interleaves with a deploy.
+# channel; `restore` restores `owner` from `generation` through it, or with no
+# `generation` asks the owner's namespace and finished generations. Each shares
+# this file's concurrency group, so no operator run ever interleaves with a deploy.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | probe | routes | h2 | handback | control | owner'
+        description: 'plan | dark | probe | routes | h2 | handback | control | owner | restore'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, probe, routes, h2, handback, control, owner]
+        options: [plan, dark, probe, routes, h2, handback, control, owner, restore]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -71,12 +72,17 @@ on:
         default: ''
         type: string
       owner:
-        description: 'owner: the owner principal'
+        description: 'owner and restore: the owner principal'
         required: false
         default: ''
         type: string
       act:
         description: 'owner: tier=<tier> | suspend=<reason> | lift=<reason> | admit'
+        required: false
+        default: ''
+        type: string
+      generation:
+        description: 'restore: <namespace>/<gen> to restore from; none asks the owner source'
         required: false
         default: ''
         type: string
@@ -105,6 +111,7 @@ jobs:
       REPLACE: ${{ inputs.replace }}
       OWNER: ${{ inputs.owner }}
       ACT: ${{ inputs.act }}
+      GENERATION: ${{ inputs.generation }}
     steps:
       - uses: actions/checkout@v4
 
@@ -121,6 +128,7 @@ jobs:
           node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --public
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
+          --generation "${GENERATION}"
 
   # The pair check, in a job of its own before apply: the pinned E2B template, the runner
   # this commit's sandbox Worker ships and the probes beside it, unless E2B already holds
@@ -183,6 +191,7 @@ jobs:
       REPLACE: ${{ inputs.replace }}
       OWNER: ${{ inputs.owner }}
       ACT: ${{ inputs.act }}
+      GENERATION: ${{ inputs.generation }}
     steps:
       - uses: actions/checkout@v4
 
@@ -199,3 +208,4 @@ jobs:
           node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --yes
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
+          --generation "${GENERATION}"

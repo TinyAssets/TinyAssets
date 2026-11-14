@@ -47,7 +47,7 @@ import {
   type Lines,
   readPage,
 } from "./export";
-import type { ChunkStore } from "../../contract/src/files";
+import type { ChunkStore, ManifestRoot } from "../../contract/src/files";
 import type { ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
@@ -379,6 +379,22 @@ export class Backups {
     return row.state === "done" && at === segments.length
       ? { kind: "end", line: endLine(row.ended_at! * 1000, row.e!) }
       : row.state === "done" ? null : { kind: "pending" };
+  }
+
+  /**
+   * In a unit: the generation a restore read this object from (`restore.ts`), recorded as its
+   * newest finished one, as its root lists it: kept, read by an export, and superseded by the
+   * next one as any is.
+   */
+  adopt(root: ManifestRoot): void {
+    const at = root.at / 1000;
+    this.#sql.exec(
+      "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, segments, " +
+        "segment_list, bytes, s, schema, e, ended_at, started_at, finished_at) VALUES (?, ?, " +
+        "'done', ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?)", root.gen, manifestDay(at), ENDED,
+      root.parts.length, root.segments.length,
+      [...root.parts, ...root.segments].reduce((sum, object) => sum + object.size, 0), root.s,
+      this.#parts.schema, root.e, at, at, at);
   }
 
   /** Whether generation `gen` is finished (its root holds its lists). A read. */

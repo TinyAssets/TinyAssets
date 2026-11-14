@@ -179,9 +179,10 @@ import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type {
   AdmissionRequest, BeatRequest, BilledEvent, BindingRequest, ConnectionCommitRequest,
   ConnectionPrepareRequest, ConnectionRequest, EgressOpened, EgressRefusal, EgressReserved,
-  FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors, SigninEventsRequest,
-  TierRequest,
+  FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors, RestoreAnswer,
+  RestoreBeginRequest, RestoreSource, SigninEventsRequest, TierRequest,
 } from "../../contract/src/owner";
+import { restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
 import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
 import { type Receipt as StarterReceipt, Starter, starterDoors } from "./starter";
@@ -724,7 +725,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       wakes: this.#sender, files: this.#files, connections: this.#connections,
       runs: this.#launcher, manifest: this.#backups, sandbox: this.#sandboxTime,
       archive: this.#archive, starter: this.#starter,
-    }, clock, write, () => wiped(storage.sql) || erasing(storage));
+    }, clock, write, () => wiped(storage.sql) || erasing(storage) || restoring(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
       storage, write, clock, lifecycle,
@@ -1450,6 +1451,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    */
   async gatewayReseal(binding: Binding): Promise<{ resealed: number; left: number }> {
     return this.#units("gatewayReseal", binding, undefined, connectionsDoors.gatewayReseal);
+  }
+
+  // -- RESTORE: the platform's, into a pending and empty owner (`restore.ts`) -----------
+
+  /** The owner's namespace and finished generations, its admission and any restore's step. */
+  restoreSource(binding: Binding): Promise<RestoreSource> {
+    return this.#units("restoreSource", binding, undefined, restoreDoors.restoreSource);
+  }
+
+  /** A restore begun from one generation of the owner's: a pending and empty object only. */
+  restoreBegin(binding: Binding, request: RestoreBeginRequest): Promise<RestoreAnswer> {
+    return this.#units("restoreBegin", binding, request, restoreDoors.restoreBegin);
+  }
+
+  /** The restore carried on from its record, a bounded pass; how far it is. */
+  restoreStep(binding: Binding): Promise<RestoreAnswer> {
+    return this.#units("restoreStep", binding, undefined, restoreDoors.restoreStep);
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------

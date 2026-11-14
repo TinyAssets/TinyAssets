@@ -2242,4 +2242,19 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'ledger_messages', 'row', json_object('seq', NEW.seq, 'message_id', NEW.message_id, 'command_center_id', NEW.command_center_id, 'room_id', NEW.room_id, 'sender_kind', NEW.sender_kind, 'sender_id', NEW.sender_id, 'client_message_id', NEW.client_message_id, 'body_sha256', NEW.body_sha256, 'parent_id', NEW.parent_id, 'chain_root', NEW.chain_root, 'chain_depth', NEW.chain_depth, 'created_at', NEW.created_at, 'body_bytes', NEW.body_bytes, 'unacked', NEW.unacked, 'authority', NEW.authority, 'attended', NEW.attended, 'line_bytes', NEW.line_bytes, 'reply_s', NEW.reply_s)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
   ]),
+  // 10, after 3b's 9 (lane R's restore, `restore.ts`; `untangle-2026-11/r5r.md`): a restore's
+  // record, one row (its generation's namespace and id, its step, where the step is, the
+  // owner's admission at E held until the check passes, each base part's span of tables, and
+  // a failure's words), and the log's rows it stages, the last line per key (null once gone),
+  // which the base rows of those keys give way to. Neither is exported, so no capture.
+  Object.freeze([
+    "CREATE TABLE owner_restore (only INTEGER PRIMARY KEY CHECK (only = 1), ns TEXT NOT NULL " +
+      "CHECK (length(ns) = 32 AND ns NOT GLOB '*[^0-9a-f]*'), gen TEXT NOT NULL CHECK " +
+      "(length(gen) = 16 AND gen NOT GLOB '*[^0-9a-f]*'), step TEXT NOT NULL CHECK (step IN " +
+      "('index', 'log', 'apply', 'check', 'chunks', 'clear', 'done', 'failed')), at INTEGER " +
+      "NOT NULL CHECK (at >= 0), after TEXT, held TEXT, spans TEXT, failed TEXT, CHECK ((step " +
+      "= 'failed') = (failed IS NOT NULL)))",
+    "CREATE TABLE restore_rows (tbl TEXT NOT NULL, k TEXT NOT NULL, row TEXT, " +
+      "PRIMARY KEY (tbl, k)) WITHOUT ROWID",
+  ]),
 ]);
