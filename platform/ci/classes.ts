@@ -25,15 +25,15 @@ import { fileURLToPath } from "node:url";
 
 import type { ClassTimeouts } from "./class-rule.ts";
 
-/** One measurement: the slowest test found, and where it was read. */
+/** One measurement: the slowest test found, and where and when it was measured. */
 export interface Slowest {
   readonly slowest_ms: number;
   readonly test: string;
+  readonly measured: string;
 }
 
-interface Budgets {
+export interface Budgets {
   readonly factor: number;
-  readonly measured: string;
   readonly medium: Readonly<Record<string, Slowest>>;
   readonly large: Slowest;
 }

@@ -250,14 +250,13 @@ jobs:
           tests/test_session_sync_gate.py
           tests/test_platform_setup.py
 
-  # The TypeScript platform workspace (ADR-032): typecheck, then its tests in the
-  # real workerd runtime. Required through `required-tests`' needs; nothing here deploys.
+  # The TypeScript platform workspace (ADR-032): its Vitest tests, in the real workerd
+  # runtime or in Node. Required through `required-tests`' needs; nothing here deploys.
   # One leg a workspace, in parallel. A matrix job's result is every leg's, so one red leg
   # fails `required-tests`. Every workspace in `platform/package.json` has its leg, the
   # sandbox's `test` split in two (workerd and guards; the runner as root) and the owner's
-  # (its suite, and the workerd memory leg: each chunk-wise path O(1) in its data's size, by
-  # differences at checkpoints, ADR-037). Each test's budget is its size class's, one a
-  # project (platform/ci/classes.ts); the legs leave the large class out
+  # (its suite here, its memory leg in `platform-checks`). Each test's budget is its size
+  # class's, one a project (platform/ci/classes.ts); the legs leave the large class out
   # (`--tags-filter=!large`), which `platform-sizes` runs. Pinned by platform/ci/guards.
   # Full history: the owner's migration lock is held against the event's base.
   #
@@ -271,12 +270,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - leg: typecheck
-            command: npm run typecheck
           - leg: owner
             command: npm run test:workerd -w owner
-          - leg: memory
-            command: npm run test:memory -w owner
           - leg: doors
             command: npm run test -w doors
           - leg: files
@@ -301,6 +296,49 @@ jobs:
             command: npm run test -w import
           - leg: deploy
             command: npm run test -w deploy
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      # Each leg's Vitest JSON report, the input of `node ci/budgets.mjs` for the medium
+      # budgets (ci/classes.ts), as `platform-sizes` uploads it for the large one. `--` hands
+      # the reporters to the leg's script, which runs Vitest.
+      - run: ${{ matrix.command }} -- --reporter=default --reporter=github-actions --reporter=json --outputFile.json=${{ runner.temp }}/report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tests-report-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/report.json
+          if-no-files-found: error
+          overwrite: true
+
+  # The platform's legs that are not Vitest runs, so measure no budget: the typecheck, and
+  # the owner's workerd memory leg (each chunk-wise path O(1) in its data's size, by
+  # differences at checkpoints, ADR-037). Required through `required-tests`' needs.
+  #
+  # timeout-minutes is a watchdog: about 3 x the slowest leg's measured time (memory, 2m23s
+  # with its install in push run 43637311483).
+  platform-checks:
+    name: platform-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: typecheck
+            command: npm run typecheck
+          - leg: memory
+            command: npm run test:memory -w owner
     defaults:
       run:
         working-directory: platform
@@ -777,10 +815,10 @@ jobs:
     # with the `gh api` protection update in
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
-    # The gate's lasting shape is the last four: the platform's legs and the process leg.
-    # The first four are the old stack's Python jobs, which leave at the cutover.
+    # The gate's lasting shape is the platform's jobs and the process leg. The first four
+    # are the old stack's Python jobs, which leave at the cutover.
     needs: [select, required-tests-shard, affected-tests, structural-guards, platform-tests,
-            platform-app, platform-sizes, process, openspec]
+            platform-checks, platform-app, platform-sizes, process, openspec]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -819,18 +857,19 @@ jobs:
             exit 1
           fi
 
-      # The TypeScript platform (ADR-032), its large tests, the owner app in a browser and
-      # the process leg gate every event: each must have run and succeeded; skipped or
+      # The TypeScript platform (ADR-032), its checks, its large tests, the owner app in a
+      # browser and the process leg gate every event: each must have run and succeeded; skipped or
       # cancelled fails. This step is the gate's lasting shape.
       - name: Require the platform's tests, the owner app's browser test and the process leg
         env:
           PLATFORM_RESULT: ${{ needs.platform-tests.result }}
+          CHECKS_RESULT: ${{ needs.platform-checks.result }}
           APP_RESULT: ${{ needs.platform-app.result }}
           SIZES_RESULT: ${{ needs.platform-sizes.result }}
           PROCESS_RESULT: ${{ needs.process.result }}
         run: |
-          if [ "$PLATFORM_RESULT" != success ] || [ "$APP_RESULT" != success ] || [ "$SIZES_RESULT" != success ] || [ "$PROCESS_RESULT" != success ]; then
-            echo "::error::Required legs did not pass (platform-tests=$PLATFORM_RESULT, platform-sizes=$SIZES_RESULT, platform-app=$APP_RESULT, process=$PROCESS_RESULT). Fix the named job and rerun Tests."
+          if [ "$PLATFORM_RESULT" != success ] || [ "$CHECKS_RESULT" != success ] || [ "$APP_RESULT" != success ] || [ "$SIZES_RESULT" != success ] || [ "$PROCESS_RESULT" != success ]; then
+            echo "::error::Required legs did not pass (platform-tests=$PLATFORM_RESULT, platform-checks=$CHECKS_RESULT, platform-sizes=$SIZES_RESULT, platform-app=$APP_RESULT, process=$PROCESS_RESULT). Fix the named job and rerun Tests."
             exit 1
           fi
 
