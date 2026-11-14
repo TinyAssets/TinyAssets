@@ -78,19 +78,18 @@ import {
 import { migrate } from "../../contract/src/migrate";
 import { SEALED_ROUTE } from "../../contract/src/routing-mac";
 import {
-  METER_BATCH, type MeterEvent, type NetworkApplied, type NetworkReapply, type SandboxSignin,
-  type SandboxStart, type Started,
+  METER_BATCH, type MeterEvent, type NetworkApplied, type NetworkDocument, type NetworkReapply,
+  type SandboxSignin, type SandboxStart, type Started,
 } from "../../contract/src/sandbox";
 
-import {
-  type E2b, type E2bNetwork, type Handle, noRoom, runtimeE2b, type SandboxInfo,
-} from "./e2b";
+import { install } from "../e2b/install";
+import type { Handle } from "../e2b/transport";
 import { type AnswerFields, ANSWERS, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc,
          type JobKind, JOBS, LEASE_FILE, type LeaseFile, LOADER, type QuietAnswer, SPEAKS,
          type SigninDoc, type StartDoc, type StateAnswer,
          type WorkerCommand } from "../runner/protocol";
 
-import { install } from "./install";
+import { type E2b, noRoom, runtimeE2b, type SandboxInfo } from "./e2b";
 import { runnerBytes, runnerDigest } from "./runner-bytes";
 import { CONTROL_MIGRATIONS } from "./schema";
 import type { SandboxEnv } from "./env";
@@ -207,9 +206,12 @@ function json(value: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(value));
 }
 
-/** E2B's network document from the lease's plan, as the owner's object made it. */
-function e2bNetwork(network: unknown): E2bNetwork {
-  const n = network as Record<string, unknown> | null;
+/**
+ * A sandbox's network as E2B's info shows it (E2B's answer, which no contract types): E2B's
+ * whole document, or it fails loudly.
+ */
+function liveNetwork(found: SandboxInfo): NetworkDocument {
+  const n = found.network as Record<string, unknown> | null;
   if (n === null || typeof n !== "object" || !Array.isArray(n["allowOut"])
       || !Array.isArray(n["denyOut"]) || !Array.isArray(n["dnsServers"])
       || typeof n["rules"] !== "object" || n["rules"] === null) {
@@ -217,14 +219,14 @@ function e2bNetwork(network: unknown): E2bNetwork {
   }
   return { allowOut: n["allowOut"] as string[], denyOut: n["denyOut"] as string[],
            dnsServers: n["dnsServers"] as string[],
-           rules: n["rules"] as Record<string, unknown[]> };
+           rules: n["rules"] as NetworkDocument["rules"] };
 }
 
 /**
  * The network widened to `hosts` (a signed-in engine's vendor hosts): unchanged when it
  * already lets every name out (`*`) or lists them all; the egress door stays listed last.
  */
-function widened(network: E2bNetwork, hosts: readonly string[]): E2bNetwork | null {
+function widened(network: NetworkDocument, hosts: readonly string[]): NetworkDocument | null {
   if (network.allowOut.includes("*") || hosts.every((host) => network.allowOut.includes(host))) {
     return null;
   }
@@ -246,11 +248,10 @@ function newer(network: unknown, plan: unknown): boolean {
 }
 
 /**
- * A re-apply's plan (`NetworkReapply`), held to its shape: E2B's whole document, its one
- * transform on the door setting the generation header and no egress token.
+ * A re-apply's plan (`NetworkReapply`), held to its shape: its one transform on the door
+ * setting the generation header, and no egress token.
  */
-function reapplyNetwork(network: unknown): E2bNetwork {
-  const plan = e2bNetwork(network);
+function reapplyNetwork(plan: NetworkDocument): NetworkDocument {
   const headers = doorHeaders(plan);
   if (Object.keys(plan.rules).length !== 1 || plan.rules[EGRESS_HOST]?.length !== 1
       || headers === null || generationOf(plan) === null || SANDBOX_HEADER in headers) {
@@ -501,13 +502,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * now: the live egress token in the door's transform, the launched jobs' vendor hosts let
    * out; or null when none is kept (or its sandbox carries no token to keep).
    */
-  #due(authority: string, found: SandboxInfo): E2bNetwork | null {
+  #due(authority: string, found: SandboxInfo): NetworkDocument | null {
     const row = this.#row(authority);
     const token = egressTokenOf(found.network);
     if (row?.network_due == null || token === null) {
       return null;
     }
-    const whole = withEgressToken(reapplyNetwork(JSON.parse(row.network_due)), token);
+    const whole = withEgressToken(reapplyNetwork(JSON.parse(row.network_due) as NetworkDocument),
+                                  token);
     return widened(whole, this.#launchedHosts(authority, row.lease_id)) ?? whole;
   }
 
@@ -621,7 +623,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /** A sandbox just running: its resolver pinned, `/proc` hidden, its lockdown re-checked. */
-  async #prepare(box: Box, network: E2bNetwork): Promise<void> {
+  async #prepare(box: Box, network: NetworkDocument): Promise<void> {
     await this.#run(box, [COMMAND.prepare, ...network.dnsServers]);
   }
 
@@ -633,7 +635,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * Worker's runner first when nothing lives, so the one `prepare` is the adopted runner's;
    * a rebooted one's runs restart under the runner that launched them.
    */
-  async #resume(row: Row, found: SandboxInfo, network: E2bNetwork | null,
+  async #resume(row: Row, found: SandboxInfo, network: NetworkDocument | null,
                 ceilings: SandboxCeilings, adopt = false): Promise<Box | null> {
     const e2b = this.#e2b();
     this.#ended(found);  // a pause E2B made on its own is logged before the resume
@@ -654,7 +656,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (adopt && found.pauseMode !== "filesystem" && row.renewing === 0) {
       handle = (await this.#adopt(row.authority, handle)).box;
     }
-    await this.#prepare(handle, applied ?? e2bNetwork(found.network));
+    await this.#prepare(handle, applied ?? liveNetwork(found));
     if (found.pauseMode === "filesystem") {
       await this.#run(handle, [COMMAND.recover]);  // rebooted: its runs restart from disk
     } else if (row.renewing === 1) {
@@ -679,7 +681,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * sandbox has no room or it is not the owner's turn; or `lost` when a joining run finds
    * none.
    */
-  async #ensure(owner: string, authority: string, network: E2bNetwork | null,
+  async #ensure(owner: string, authority: string, network: NetworkDocument | null,
                 ceilings: SandboxCeilings, route: string):
       Promise<{ handle: Box } | "waiting" | "lost"> {
     const e2b = this.#e2b();
@@ -695,7 +697,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (adopted) {
         // The adopted runner's own `prepare`, the row naming it: its lockdown, and the
         // other runners' bytes dropped.
-        await this.#prepare(box, network ?? e2bNetwork(found!.network));
+        await this.#prepare(box, network ?? liveNetwork(found!));
       }
       return { handle: box };
     }
@@ -832,7 +834,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const { request } = job;
     return this.#serial(async () => {
       const e2b = this.#e2b();
-      const network = request.network === null ? null : e2bNetwork(request.network.network);
+      const network = request.network === null ? null : request.network.network;
       const hosts = job.hosts();
       // The opener's network replaces the live one whole: it keeps the vendor hosts of every
       // job launched under this lease before it (a joining job's start that ran first).
@@ -857,7 +859,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         // A joining job on another engine's sign-in: its vendor's hosts added to the live
         // network (read back whole, its transform with it, and replaced whole).
         const live = await e2b.info(handle.sandboxID);
-        const more = live === null ? null : widened(e2bNetwork(live.network), hosts);
+        const more = live === null ? null : widened(liveNetwork(live), hosts);
         if (more !== null) {
           await e2b.network(handle.sandboxID, more);
         }
@@ -907,7 +909,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         || !LEASE.test(request.lease?.lease_id) || !Number.isSafeInteger(request.lease.epoch)) {
       throw new Error("a re-apply names its authority and its lease");
     }
-    const plan = reapplyNetwork(request.network?.network);
+    const plan = reapplyNetwork(request.network.network);
     return this.#serial(async () => {
       const e2b = this.#e2b();
       const row = this.#row(request.authority);

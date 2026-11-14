@@ -33,6 +33,7 @@ import { ALL_TRAFFIC, closedNetwork, DNS_SERVERS, EGRESS_ORIGIN, egressBaseUrl,
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
+import type { NetworkDocument } from "../../contract/src/sandbox";
 import { STEP_NS, stepNanos } from "../../contract/src/sync-ignore";
 import { bundledRecords, engineHosts } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
@@ -65,14 +66,6 @@ const PROBE = Object.freeze({
   matcher: "matcher-probe",
 } as const);
 
-/** E2B's network document, as a check sandbox is given it (`closedNetwork`'s shape). */
-interface PlanNetwork {
-  readonly allowOut: readonly string[];
-  readonly denyOut: readonly string[];
-  readonly dnsServers: readonly string[];
-  readonly rules: Readonly<Record<string, readonly unknown[]>>;
-}
-
 /** One command in a check sandbox: its argv, its bound, and the network it runs under. */
 export interface PlanStep {
   /** Which check it is: its result goes to the record's `logins`, `routes` or `matcher`. */
@@ -81,7 +74,7 @@ export interface PlanStep {
   readonly argv: readonly string[];
   readonly timeout_s: number;
   /** The sandbox's network replaced with this before the step, or kept (null). */
-  readonly network: PlanNetwork | null;
+  readonly network: NetworkDocument | null;
 }
 
 /** One throwaway sandbox of the template, and what runs in it, in order. */
@@ -90,11 +83,11 @@ export interface PlanSandbox {
   /** Its lifetime: E2B kills it then, whatever the checks are doing. */
   readonly timeout_s: number;
   /** Its network at creation, or E2B's default, open (null). */
-  readonly network: PlanNetwork | null;
+  readonly network: NetworkDocument | null;
   /** Commands as root after the runner's install and before its `prepare`, each to exit 0. */
   readonly setup: readonly { readonly argv: readonly string[]; readonly timeout_s: number }[];
   /** Its network replaced with this once the runner prepared it, or kept (null). */
-  readonly prepared: PlanNetwork | null;
+  readonly prepared: NetworkDocument | null;
   readonly steps: readonly PlanStep[];
 }
 

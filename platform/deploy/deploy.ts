@@ -88,11 +88,11 @@ import { fileURLToPath } from "node:url";
 
 import { PLATFORM, REPO } from "../ci/paths.ts";
 import { WRANGLER } from "../ci/workers.ts";
-// The envelope and the E2B client import nothing, so Node's type stripping runs them here by
-// their own names.
+// The envelope and the E2B client import only by their own names, so Node's type stripping
+// runs them here.
 import { CONTROL_KEY } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
-import { E2b } from "../sandbox/src/e2b.ts";
+import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, treeImage } from "../sandbox/template/pair.ts";
 import {
   type BackStep, cfApi, Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback,
@@ -177,7 +177,7 @@ export interface Work {
   zone?: string;
   account?: string;
   wrangler?: Wrangler;
-  e2b?: E2b;
+  e2b?: E2bAdmin;
   upstream?: UpstreamValues;
   /** E2B's listing of the lifecycle hook: null when it holds none. */
   hook?: Json | null;
@@ -225,6 +225,11 @@ function made<T>(value: T | undefined, what: string): T {
     throw new Error(`the kit's row is out of order: ${what} is not made yet`);
   }
   return value;
+}
+
+/** The run's one E2B client, from its key (`Run.env`): made by the first step that reaches E2B. */
+function e2bOf(run: Run, work: Work): E2bAdmin {
+  return work.e2b ??= new E2bAdmin(input(run, "E2B_API_KEY")!, run.io.fetch);
 }
 
 /** The sandbox's pinned E2B template, `name:tag` (its config's `E2B_TEMPLATE`). */
@@ -502,7 +507,7 @@ export function hookSetsSecret(setting: readonly { worker: string; name: string 
  * E2B's lifecycle webhook as its listing holds it, matched by its URL, or null when it holds
  * none. A failed listing, or two hooks for the URL, throws.
  */
-export async function heldHook(e2b: E2b): Promise<Json | null> {
+export async function heldHook(e2b: E2bAdmin): Promise<Json | null> {
   const hooks = await e2b.webhooks();
   const ours = hooks.filter((hook) => (hook as Json | null)?.["url"] === E2B_HOOK.url) as Json[];
   if (ours.length > 1) {
@@ -521,8 +526,8 @@ export async function heldHook(e2b: E2b): Promise<Json | null> {
  * here: only a handback disables it, back to the state its route record kept. Without
  * `apply` it only lists and checks. A failed listing or write throws.
  */
-export async function lifecycleHook(e2b: E2b, secret: string, apply: boolean, enable: boolean,
-                                    setSecret: boolean): Promise<string> {
+export async function lifecycleHook(e2b: E2bAdmin, secret: string, apply: boolean,
+                                    enable: boolean, setSecret: boolean): Promise<string> {
   const hook = await heldHook(e2b);
   if (hook === null) {
     const state = enable ? "enabled" : "disabled";
@@ -988,12 +993,9 @@ const templateBuilt = step("template", async (run, work) => {
     }
     work.plan.push(why);
   }
-  if (secretsReached(run)) {
-    work.e2b = new E2b(input(run, "E2B_API_KEY")!, run.io.fetch);
-  }
-  if (work.e2b === undefined) {
+  if (!secretsReached(run)) {
     work.plan.push(`E2B's ready build of ${pinned}: ${LATER}`);
-  } else if (!await work.e2b.ready(pinned)) {
+  } else if (!await e2bOf(run, work).ready(pinned)) {
     throw new Error(`E2B has no ready build of ${pinned}: build it (sandbox-template.yml)`);
   }
 });
@@ -1473,12 +1475,12 @@ const h2 = step("h2", (run) => {
  * standing checks and tags the pair, given only what it needs (never the deploy's other
  * secrets). A failure, or no tag after it, throws.
  */
-const pair = step("pair check", async (run) => {
+const pair = step("pair check", async (run, work) => {
   const key = input(run, "E2B_API_KEY");
   if (key === undefined) {
     throw new Error("E2B_API_KEY is not set (the production environment's secrets)");
   }
-  const e2b = new E2b(key, run.io.fetch);
+  const e2b = e2bOf(run, work);
   const tag = shippedPair(run.io.exec);
   if (await e2b.ready(tag)) {
     run.io.log(`the pair ${tag} passed its standing checks in this E2B team`);
@@ -1532,8 +1534,7 @@ const backPlan = step("handback plan", async (run, work) => {
   const record = made(work.record, "the record");
   const cloudflare = made(work.cloudflare, "Cloudflare");
   if (secretsReached(run)) {
-    work.e2b = new E2b(input(run, "E2B_API_KEY")!, run.io.fetch);
-    const hook = await heldHook(work.e2b);
+    const hook = await heldHook(e2bOf(run, work));
     work.disable = !record.hook.enabled && hook?.["enabled"] === true ? String(hook["id"]) : null;
   }
   const domains = await cloudflare.domains(made(work.account, "the account"),
