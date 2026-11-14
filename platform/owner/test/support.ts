@@ -19,7 +19,7 @@ import { contentIdOf } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
 import { INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { agentFilePath } from "../src/agent-file";
-import { carried } from "../src/starter-package";
+import { carried, NEWER } from "../src/starter-package";
 import { fileLimits, Policy } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
 import { storageFull, storageFullRefusal } from "../src/storage-full";
@@ -467,7 +467,10 @@ export function starterSeed() {
      * content id or its chunk's hash.
      */
     mine: <T>(items: Iterable<T>, nameOf: (item: T) => string = String): T[] =>
-      [...items].filter((item) => !seeded.has(nameOf(item).replace(/\.ta-new$/, ""))),
+      [...items].filter((item) => {
+        const named = nameOf(item);
+        return !seeded.has(named.endsWith(NEWER) ? named.slice(0, -NEWER.length) : named);
+      }),
   };
 }
 
