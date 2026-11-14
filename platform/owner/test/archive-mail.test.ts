@@ -52,7 +52,8 @@ type Seeded = Rig & { readonly ballast: string };
  * A fresh owner at production's ceilings, its ballast agent's
  * `maxUnacked - room` messages hot and unread (`ballast`): the test's own `room + 1`th hot
  * message takes the hot set past half, where the `archive` lane moves acked mail, and `room`
- * more may wait unread. Its storage is let go as the test ends (`letGo`).
+ * more may wait unread. Its storage is let go as the test ends (`letGo`). That is production
+ * sizes, so a test that calls it is `large` (`ci/classes.ts`), whatever its time.
  */
 async function seeded(room = 4): Promise<Seeded> {
   const r = await rig();
@@ -512,7 +513,7 @@ describe("a message's counted bytes", () => {
 
 describe("the archive lane", () => {
   it("moves acked mail out from half the hot ceiling, its bytes counted the same, and the " +
-     "chain read finds it", async () => {
+     "chain read finds it", { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
@@ -546,7 +547,7 @@ describe("the archive lane", () => {
   });
 
   it("lets a reply name an archived parent, and the chain reads it with the reply",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
@@ -630,7 +631,7 @@ describe("the archive lane", () => {
   });
 
   it("finds a chain's mail that the lane moves between its fences and its hot unit (N9)",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
@@ -831,7 +832,7 @@ describe("the archive lane", () => {
   });
 
   it("keeps a segment a purge's rewrite makes again byte for byte, its content still held",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
@@ -896,7 +897,7 @@ describe("the archive lane", () => {
 
 describe("an agent's deletion", () => {
   it("drops its archived mail at once, and the lane rewrites it out, keeping the rest",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
@@ -941,7 +942,8 @@ describe("an agent's deletion", () => {
   });
 
   it("waits on at most maxAgentRows purges: past them a deletion is refused busy in plain " +
-     "words, deleting nothing, and lands once the lane has caught up", async () => {
+     "words, deleting nothing, and lands once the lane has caught up",
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const [first] = await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
@@ -981,7 +983,7 @@ describe("an agent's deletion", () => {
 
 describe("the export, version 3", () => {
   it("ships each segment as it is, and its rows read back as the mail before the move",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const ids = await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
@@ -1013,7 +1015,7 @@ describe("the export, version 3", () => {
 });
 
 describe("segments never overlap in key range (review H1)", () => {
-  it("are refused by the schema when two would", async () => {
+  it("are refused by the schema when two would", { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
@@ -1083,7 +1085,8 @@ describe("segments never overlap in key range (review H1)", () => {
   });
 
   it("merges a lone straggler (acked after the mail around it moved) into the segment its " +
-     "key falls in: due by itself, with no seal's worth behind it", async () => {
+     "key falls in: due by itself, with no seal's worth behind it",
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
@@ -1408,7 +1411,7 @@ describe("the archive lane's failures (review N3)", () => {
   };
 
   it("are counted in storage as a pass begins: passes killed with their isolate still tell",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     // Three passes begun that never ended or said why (an isolate killed for memory runs no
@@ -1426,7 +1429,7 @@ describe("the archive lane's failures (review N3)", () => {
   });
 
   it("refuse a move whose second pass differs from its first, loudly, by the chunk's hash",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const { cap } = await unsealed(r, muse, "a");
@@ -1465,7 +1468,7 @@ describe("the archive lane's failures (review N3)", () => {
   });
 
   it("tell the owner once at three in a row, quoting the error, and clear on success",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const { seqs, cap } = await unsealed(r, muse, "");
@@ -1731,7 +1734,7 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
 
 describe("a full owner's archive (review M1)", () => {
   it("still drains: a move may place past the figure, since it frees what it places",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     // Four small bodies, acked in the ledger (no lane rung), then a body at the cap, placed
