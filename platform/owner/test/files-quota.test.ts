@@ -431,9 +431,8 @@ describe("file history", () => {
 
 describe("the retention marks' migration (untangle F1, owner migration 8)", () => {
   /** An object of the migrations through H1's 7, `act` run on it, then migrated whole. */
-  const migrated = async (act: (sql: SqlStorage) => void) => {
-    const r = await rig();
-    return runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
+  const migrated = async (act: (sql: SqlStorage) => void, r: Rig | null = null) => {
+    return runInDurableObject((r ?? await rig()).stub, (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
       for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
           "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
@@ -460,6 +459,21 @@ describe("the retention marks' migration (untangle F1, owner migration 8)", () =
                  "0, 'owner', 1, 86401)");
     })).toEqual([{ retained_keep: null, retained_recent: null, retained_days: null,
                    retain_cursor: "" }]);
+  });
+
+  it("lets no row the old defaults marked due go while the re-mark is under way", async () => {
+    const r = await rig();
+    // 501 paths, one more than a pass re-marks, each row due under the old 30 days.
+    await migrated((sql) => sql.exec(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 501) " +
+        "INSERT INTO file_history (version, path, op, kind, content_id, size, mode, writer, " +
+        "at, prune_after) SELECT i, '/workspace/p' || i, 'mkdir', 'dir', NULL, 0, 0, " +
+        "'owner', 1, 86401 FROM n"), r);
+    for (let pass = 0; pass < 2; pass++) {
+      await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+    }
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n, COUNT(prune_after) AS due " +
+                                 "FROM file_history")).toEqual([{ n: 501, due: 0 }]);
   });
 });
 

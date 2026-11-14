@@ -2495,7 +2495,11 @@ export class Files {
              now, HOUSEKEEPING_BATCH).toArray()) {
         this.#dropTemp(name, "system", now);
       }
-      this.#prune(now);
+      // Due rows go only once every path is marked by the retention in force, never by one
+      // a re-mark still under way is replacing (migration 8's among them).
+      if (!this.#reretaining(this.#space(), this.#limits())) {
+        this.#prune(now);
+      }
     }));
     if (until - Date.now() < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one

@@ -528,7 +528,7 @@ A content id SHALL name its kind (inline or chunks) and its size, and a change w
 - **THEN** the second change fails and the first content reads as it was
 
 ### Requirement: History is kept by owner policy, never dropped to make room
-History SHALL keep every version until the owner sets a retention: `keep_versions`, `retention_days` and `keep_recent` are each off by default (Fact 15). Set, history SHALL keep each live path's newest `keep_versions` and its versions younger than `retention_days` up to `keep_recent` in all, dropping a version past those in the change that pushed it out or once it is due, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes, raising the feed's floor past any pruned row that was its path's newest.
+History SHALL keep every version until the owner sets a retention: `keep_versions`, `retention_days` and `keep_recent` are each off by default (Fact 15). Set, history SHALL keep each live path's newest `keep_versions` and its versions younger than `retention_days` up to `keep_recent` in all, dropping a version past those in the change that pushed it out or once it is due, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes, pruning no row while a pass is still to run, and raising the feed's floor past any pruned row that was its path's newest.
 
 #### Scenario: A path written by default
 - **WHEN** a path is written twenty-five times and then deleted under the default policy
