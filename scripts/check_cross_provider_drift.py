@@ -45,9 +45,12 @@ WATCHED_FILES = (
     "CLAUDE.md",
 )
 
+CANONICAL_SKILLS = ".agents/skills/"
+MIRROR_SKILLS = ".claude/skills/"
+
 WATCHED_GLOBS = (
-    ".agents/skills/*/SKILL.md",
-    ".claude/skills/*/SKILL.md",
+    f"{CANONICAL_SKILLS}*/SKILL.md",
+    f"{MIRROR_SKILLS}*/SKILL.md",
 )
 
 HARNESS_TAGS = (
@@ -106,11 +109,7 @@ def is_watched_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
     if normalized in WATCHED_FILES:
         return True
-    watched_prefixes = (
-        ".agents/skills/",
-        ".claude/skills/",
-    )
-    return any(normalized.startswith(prefix) for prefix in watched_prefixes)
+    return normalized.startswith((CANONICAL_SKILLS, MIRROR_SKILLS))
 
 
 def provider_harness_paths(root: Path) -> list[Path]:
@@ -201,10 +200,6 @@ def check_required_artifacts(root: Path, paths: list[Path]) -> list[Issue]:
             )
 
     return issues
-
-
-CANONICAL_SKILLS = ".agents/skills/"
-MIRROR_SKILLS = ".claude/skills/"
 
 
 def check_skill_mirrors(root: Path, paths: list[Path] | None) -> list[Issue]:
