@@ -43,7 +43,7 @@ export class E2bError extends Error {
 }
 
 /** How a client reaches E2B: the runtime's own fetch, or a caller's recorded IO. */
-export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
+type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
  * The runtime's own fetch, called on its own, since workerd refuses a fetch called as another
@@ -64,7 +64,7 @@ export interface Exec {
 }
 
 /** One answer of the platform API: its status, its JSON (null when empty) and its headers. */
-export interface Answer {
+interface Answer {
   readonly status: number;
   readonly json: unknown;
   readonly headers: Headers;
