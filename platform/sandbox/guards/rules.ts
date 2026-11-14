@@ -54,16 +54,11 @@ export const OWN_OBJECTS = Object.freeze({ "sandbox/src/index.ts": OWN,
  * named removes it.
  */
 export const OWED: readonly Owed[] = Object.freeze([
-  // The template's checks on the Worker's runtime client: B11 puts the E2B calls the template
-  // makes, its install of a bundle among them, in `sandbox/e2b/`.
-  ...imports("B11", "platform/sandbox/template/checks.ts",
-             ["platform/sandbox/src/e2b.ts", "platform/sandbox/src/install.ts"]),
   // The template's pin, read from the Worker's config: B18 gives it one reader in `pair.ts`,
   // and the template its row's way to `ci/wrangler.ts`.
   ...imports("B18", "platform/sandbox/template/checks.ts", ["platform/ci/wrangler.ts"]),
   // The runner's answers as error classes of the Worker's own, each a contract refusal by
-  // its code (B2, S7); E2B's error, which moves with its client to `sandbox/e2b/` (B11).
+  // its code (B2, S7).
   ...refusals("B2", "platform/sandbox/src/control.ts",
               ["class RunnerFailed extends Error", "class RunnerRefused extends Error"]),
-  ...refusals("B11", "platform/sandbox/src/e2b.ts", ["class E2bError extends Error"]),
 ]);

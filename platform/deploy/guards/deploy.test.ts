@@ -38,7 +38,7 @@ import {
 import { APP_RESOURCE } from "../../contract/src/identity";
 import { CONTROL_KEY, outsideOpen, ownerOpen, parseControl } from "../../contract/src/control";
 import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
-import { E2b } from "../../sandbox/src/e2b";
+import { E2bAdmin } from "../../sandbox/e2b/admin";
 import { type CfAnswer, cfApi, Cloudflare, handback, handover, type Route } from "../cloudflare";
 import {
   admitsNobody, authorizeCheck, authorizeLink, deployedConfig,
@@ -2042,8 +2042,9 @@ function e2bHooks(start: Json[], fail?: string) {
     const method = init?.method ?? "GET";
     const path = url.replace("https://api.e2b.app", "");
     calls.push(`${method} ${path}${init?.body ? ` ${String(init.body)}` : ""}`);
-    // The key, and JSON named for every call, a listing as well as a write.
-    expect(init?.headers).toEqual({ "X-API-Key": E2B_KEY, "Content-Type": "application/json" });
+    // The key on every call, and JSON named for a write's body.
+    const json = method === "GET" ? {} : { "Content-Type": "application/json" };
+    expect(init?.headers).toEqual({ "X-API-Key": E2B_KEY, ...json });
     if (fail === method) {
       return new Response("", { status: 500 });
     }
@@ -2059,7 +2060,7 @@ function e2bHooks(start: Json[], fail?: string) {
     Object.assign(hook, body);
     return Response.json(hook);
   };
-  return { hooks, calls, e2b: new E2b(E2B_KEY, fetcher) };
+  return { hooks, calls, e2b: new E2bAdmin(E2B_KEY, fetcher) };
 }
 
 describe("E2B's lifecycle webhook", () => {
@@ -2100,12 +2101,12 @@ describe("E2B's lifecycle webhook", () => {
     expect(planned.calls).toEqual(["GET /events/webhooks"]);
     // A failed listing or write stops the kit; two hooks for the URL are refused.
     await expect(lifecycleHook(e2bHooks([], "GET").e2b, "s", false, false, false))
-      .rejects.toThrow(/listed its webhooks with 500/);
+      .rejects.toThrow("E2B GET /events/webhooks answered 500");
     await expect(lifecycleHook(e2bHooks([], "POST").e2b, "s", true, false, false))
-      .rejects.toThrow(/refused the webhook with 500/);
+      .rejects.toThrow("E2B POST /events/webhooks answered 500");
     await expect(lifecycleHook(e2bHooks([{ id: "a", url: E2B_HOOK.url }], "PATCH").e2b, "s", true,
                                false, true))
-      .rejects.toThrow(/refused the webhook's change/);
+      .rejects.toThrow("E2B PATCH /events/webhooks/a answered 500");
     await expect(heldHook(e2bHooks([{ id: "a", url: E2B_HOOK.url },
                                     { id: "b", url: E2B_HOOK.url }]).e2b))
       .rejects.toThrow(/holds 2 webhooks/);
@@ -2170,7 +2171,7 @@ describe("the template and the pair", () => {
   it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",
      async () => {
     const headers: unknown[] = [];
-    const e2b = (alias: number, exists: unknown, tag = 200) => new E2b(E2B_KEY,
+    const e2b = (alias: number, exists: unknown, tag = 200) => new E2bAdmin(E2B_KEY,
       async (url, init) => {
         headers.push(init?.headers);
         return url.includes("/aliases/") ? Response.json({ templateID: "t1" }, { status: alias })
@@ -2179,13 +2180,15 @@ describe("the template and the pair", () => {
     expect(await e2b(200, true).ready("tinyassets-sandbox:v1")).toBe(true);
     expect(await e2b(200, false).ready("tinyassets-sandbox:v1")).toBe(false);
     expect(await e2b(404, true).ready("tinyassets-sandbox:v1")).toBe(false);
-    await expect(e2b(500, true).ready("tinyassets-sandbox:v1")).rejects.toThrow(/alias lookup/);
-    await expect(e2b(200, true, 503).ready("tinyassets-sandbox:v1")).rejects.toThrow(/tag lookup/);
+    await expect(e2b(500, true).ready("tinyassets-sandbox:v1"))
+      .rejects.toThrow("E2B GET /templates/aliases/tinyassets-sandbox answered 500");
+    await expect(e2b(200, true, 503).ready("tinyassets-sandbox:v1"))
+      .rejects.toThrow("E2B GET /templates/t1/tags/exists answered 503");
     await expect(e2b(200, true).ready("tinyassets-sandbox")).rejects.toThrow(/name:tag/);
-    // Both lookups send the key and ask for JSON.
+    // Both lookups send the key.
     expect(headers.length).toBeGreaterThan(0);
     for (const each of headers) {
-      expect(each).toEqual({ "X-API-Key": E2B_KEY, Accept: "application/json" });
+      expect(each).toEqual({ "X-API-Key": E2B_KEY });
     }
   });
 
