@@ -10,11 +10,11 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
+import { INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import type { RestoreAnswer } from "../../contract/src/owner";
 import { exported, NOT_EXPORTED } from "../src/export";
 import type { OwnerDO } from "../src/owner-do";
-import { loadOrder, SEEDED } from "../src/restore";
+import { loadOrder, RESTORING, SEEDED } from "../src/restore";
 
 const LOAD = loadOrder();
 import { erasedWhole } from "./erasure-support";
@@ -22,7 +22,7 @@ import {
   BURST, digest, type Generated, generate, type Owner, owner, PAGE, standing,
 } from "./generation-support";
 import { MUSE, registerOn, storesOn } from "./ledger-support";
-import { failure, gateFor, laneJobs, sqlIn } from "./support";
+import { drainDue, failure, gateFor, laneJobs, sqlIn, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const W = "/workspace";
@@ -51,6 +51,8 @@ const SINGLE_COUNTERS: Readonly<Record<string, readonly string[]>> = Object.free
                "body_bytes", "garbage_bytes"],
   collection_space: ["charge", "rows_charge"],
   ledger_usage: ["agents", "enabled_agents", "messages", "unacked", "acked_bytes"],
+  // Its receipts' and clients' counts move with the fence's revokes; these do not.
+  policy_usage: ["pending_proposals", "applied_proposals", "pending_cards"],
 });
 
 /**
@@ -196,12 +198,21 @@ describe("a restore", () => {
     const earlier = (await files.calls()).length;
     const begun = await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
     expect(begun).toEqual({ step: "index", done: false });
+    // A restore under way takes no admit, and no import, until it is done.
+    expect((await failure(() => stub.admissionSet(platform(o.name), { admit: true }))).message)
+      .toBe(RESTORING);
+    expect((await failure(() => stub.importNotice(
+      { owner: o.name, caller: PLATFORM_CALLER, origin: null, import: { bundle: "b".repeat(64) },
+        tiers: TIERS } as Binding, { detail: "x" }))).message).toBe(RESTORING);
     // No lane runs while a restore is under way.
     expect(await laneJobs(stub)).toEqual({});
     const answers = await stepped(stub, o.name);
     const done = answers.at(-1)!;
     expect(done).toMatchObject({ step: "done", gen: gen.gen, state: "admitted", reasons: [],
                                  keys: ["0123456789abcdef"] });
+    // Once done, the operator's admit is answered: the owner as the restore left it.
+    expect(await stub.admissionSet(platform(o.name), { admit: true }))
+      .toEqual({ state: "admitted", reasons: [] });
     expect(await rowsOf(stub, FENCED)).toBe(rows);
     expect(await countersOf(stub)).toEqual(counters);
     expect(await stub.storageUsage(o.bind())).toEqual(usage);
@@ -279,6 +290,33 @@ describe("a restore", () => {
     await stub.restoreBegin(platform(o.name), { namespace: space!["ns"] as string, gen: gen.gen });
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done" });
     expect(await rowsOf(stub)).toBe(gen.atE);
+  });
+
+  it("keeps the generation before a newest whose log is past what a restore stages, and " +
+     "restores from it", async () => {
+    const o = await owner();
+    await shapedFiles(o);
+    const first = await generate(o.stub);
+    await o.stub.fileWrite(o.bind(), { path: `${W}/later.txt`, expected_etag: null,
+                                       content: "later" });
+    // The next generation's log as a busy pass's would be, recorded as its finish records it,
+    // before the same pass prunes: the one before it is then kept, as the fallback.
+    const second = await generate(o.stub, { afterUnit: async ({ gate }) => {
+      await gate.write(() => gate.storage.sql.exec(
+        "UPDATE owner_backups SET log_bytes = ? WHERE state = 'done' AND gen != ?",
+        LOG_BYTES + 1, first.gen));
+    } });
+    await drainDue(o.stub);
+    expect((await o.stub.restoreSource(platform(o.name))).generations
+      .map((each) => [each.gen, each.restorable]))
+      .toEqual([[first.gen, true], [second.gen, false]]);
+    // The kept one restores the owner as it stood at its E.
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const stub = await lose(o);
+    await stub.restoreBegin(platform(o.name), { namespace: space!["ns"] as string,
+                                                gen: first.gen });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: first.gen });
+    expect(await rowsOf(stub)).toBe(first.atE);
   });
 
   it("keeps the owner's admission as it stood at E: a suspension holds", async () => {
@@ -411,6 +449,10 @@ describe("a restore cut short", () => {
     await held;
     const failed = (await stepped(stub, o.name)).at(-1)!;
     expect(failed).toMatchObject({ step: "failed" });
+    // Nothing admits a failed restore: not the platform's admit, as a sign-in or the
+    // operator's owner.admit sends it.
+    const admit = await failure(() => stub.admissionSet(platform(o.name), { admit: true }));
+    expect([admit.code, admit.message]).toEqual(["refused", RESTORING]);
     expect(await sqlIn(stub, "SELECT state FROM owner_admission")).toEqual([{ state: "pending" }]);
   });
 });

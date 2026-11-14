@@ -2246,7 +2246,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // record, one row (its generation's namespace and id, its step, where the step is, the
   // owner's admission at E held until the check passes, each base part's span of tables, and
   // a failure's words), and the log's rows it stages, the last line per key (null once gone),
-  // which the base rows of those keys give way to. Neither is exported, so no capture.
+  // which the base rows of those keys give way to. And each finished generation's log size,
+  // so the one before a newest whose log a restore refuses is kept (`backup.ts` `fallback`);
+  // one finished before this migration counts 0. None is exported, so no capture.
   Object.freeze([
     "CREATE TABLE owner_restore (only INTEGER PRIMARY KEY CHECK (only = 1), ns TEXT NOT NULL " +
       "CHECK (length(ns) = 32 AND ns NOT GLOB '*[^0-9a-f]*'), gen TEXT NOT NULL CHECK " +
@@ -2256,5 +2258,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "= 'failed') = (failed IS NOT NULL)))",
     "CREATE TABLE restore_rows (tbl TEXT NOT NULL, k TEXT NOT NULL, row TEXT, " +
       "PRIMARY KEY (tbl, k)) WITHOUT ROWID",
+    "ALTER TABLE owner_backups ADD COLUMN log_bytes INTEGER NOT NULL DEFAULT 0 CHECK " +
+      "(log_bytes >= 0)",
   ]),
 ]);

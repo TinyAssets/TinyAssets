@@ -182,7 +182,7 @@ import type {
   FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors, RestoreAnswer,
   RestoreBeginRequest, RestoreSource, SigninEventsRequest, TierRequest,
 } from "../../contract/src/owner";
-import { restoreDoors, restoring } from "./restore";
+import { RESTORING, restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
 import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
 import { type Receipt as StarterReceipt, Starter, starterDoors } from "./starter";
@@ -2066,8 +2066,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       throw new Refusal("refused", "this object belongs to another owner");
     }
     if (door === "import") {
-      // Only an owner the platform has not admitted yet is imported into: never a live one.
+      // Only an owner the platform has not admitted yet is imported into: never a live one,
+      // nor one a restore is loading (its discard would delete the generation it reads).
       // The discard takes a rehearsal's name in any state too: no issuer's subject is one.
+      if (restoring(this.#storage)) {
+        throw new Refusal("refused", RESTORING);
+      }
       if (admission(this.#storage).state !== "pending"
           && !(discarding && rehearsalRun(owner) !== null)) {
         throw new Refusal("refused", IMPORT_PENDING_ONLY);

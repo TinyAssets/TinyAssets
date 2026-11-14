@@ -707,10 +707,6 @@ export class Collections {
   }
 
   /**
-   * The collection's high-water seq: never below a stored row's, never lowered by a
-   * clear.
-   */
-  /**
    * In a unit, once a restore has loaded the rows (`restore.ts`): the floors past every
    * revision and seq they name, so none is given again, and the change feed's floor at the
    * clock, so every reader's cursor is behind it and reads again whole.
@@ -725,6 +721,10 @@ export class Collections {
         "max(erasure_floor, (SELECT change FROM collection_clock))");
   }
 
+  /**
+   * The collection's high-water seq: never below a stored row's, never lowered by a
+   * clear.
+   */
   protected top(collection: string): number {
     return this.#sql.exec<{ top: number }>(
       "SELECT MAX(COALESCE((SELECT seq FROM collection_seqs WHERE collection = ?), " +

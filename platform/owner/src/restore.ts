@@ -45,11 +45,13 @@
  * 7. **done**, one unit: the fence (every outside client and API key revoked, every MCP grant
  *    fenced, every inbound binding disabled at a new revision, every connection marked for a
  *    reconnect: their secrets and routes were never in the backup), the allocators the export
- *    leaves out moved past everything the rows name (`ALLOCATORS`), the generation recorded as
- *    the object's newest finished one, and the owner's admission as it stood at E (`held`).
+ *    leaves out moved past everything the rows name (each its module's `restored`), the
+ *    generation recorded as the object's newest finished one, and the owner's admission as it
+ *    stood at E (`held`).
  *
- * While a restore is under way, no lane runs (`restoring`, the schedule's halt) and every door
- * but the platform's refuses: the owner is `pending`.
+ * While a restore is under way, or once it failed, no lane runs (`restoring`, the schedule's
+ * halt), every door but the platform's refuses (the owner is `pending`), and neither the
+ * platform's admission nor the cutover's import takes it (`RESTORING`).
  *
  * **What the owner loses** (the kit's plan says so): its sessions, every agent's grant, its API
  * keys, its model connections' secrets, its inbound URLs, and anything written after E.
@@ -177,8 +179,17 @@ function record(sql: Pick<SqlStorage, "exec">): Held | null {
 }
 
 /**
- * Whether a restore is under way: begun and not yet done. While it is, no lane runs (the
- * schedule's halt, `owner-do.ts`). A read.
+ * What the platform's admission and the cutover's import doors answer while a restore is
+ * under way or failed: the object holds a half-loaded owner, which only the restore's own
+ * doors take, so nothing admits or writes into it before its check passes.
+ */
+export const RESTORING = "a restore of this owner is under way, or failed its check: only " +
+  "the restore's doors take it";
+
+/**
+ * Whether a restore is under way: begun and not yet done, or failed. While it is, no lane runs
+ * (the schedule's halt, `owner-do.ts`), and neither the platform's admission nor the
+ * cutover's import takes the owner (`RESTORING`). A read.
  */
 export function restoring(storage: OwnerStorage): boolean {
   const held = record(storage.sql);
@@ -622,8 +633,8 @@ export const restoreDoors = Object.freeze({
     return o.door(() => {
       door.check();
       return { namespace: o.files.storedNamespace(),
-               generations: o.backups.manifests().map(({ gen, finished_at }) =>
-                 ({ gen, finished_at })),
+               generations: o.backups.manifests().map(({ gen, finished_at, log_bytes }) =>
+                 ({ gen, finished_at, restorable: log_bytes <= LOG_BYTES })),
                state: o.admission().state, restore: record(o.storage.sql)?.step ?? null };
     });
   },
@@ -660,7 +671,8 @@ export const restoreDoors = Object.freeze({
     const logged = root.segments.reduce((sum, segment) => sum + segment.size, 0);
     if (logged > LOG_BYTES) {
       throw refused(`the generation's log is ${logged} bytes, past the ${LOG_BYTES} a restore ` +
-                    "stages: restore a quieter night's");
+                    "stages: restore the one kept before it, which restore.source names " +
+                    "restorable");
     }
     let header: Line | undefined;
     try {

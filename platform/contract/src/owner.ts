@@ -143,7 +143,9 @@ export type RestoreAnswer =
 /** What a restore could read for an owner (`restoreSource`): as its object holds it. */
 export interface RestoreSource {
   readonly namespace: string | null;
-  readonly generations: readonly { readonly gen: string; readonly finished_at: number }[];
+  /** Each finished generation, and whether a restore stages its log (`LOG_BYTES`). */
+  readonly generations: readonly { readonly gen: string; readonly finished_at: number;
+                                   readonly restorable: boolean }[];
   readonly state: string;
   readonly restore: string | null;
 }

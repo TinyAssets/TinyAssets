@@ -1913,7 +1913,6 @@ export class Ledger {
     return made;
   }
 
-  /** The seq a message id carries, or null for one the object never gave. A read. */
   /**
    * In a unit, once a restore has loaded the rows (`restore.ts`): the seq allocator past every
    * seq they name, the archived ones' too, so none is given again.
@@ -1924,6 +1923,7 @@ export class Ledger {
                      "archive_segments), 0))");
   }
 
+  /** The seq a message id carries, or null for one the object never gave. A read. */
   seqOf(messageId: string): number | null {
     const held = this.#sql.exec<{ id_key: string }>("SELECT id_key FROM ledger_ids")
       .toArray()[0];
