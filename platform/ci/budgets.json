@@ -1,14 +1,22 @@
 {
   "factor": 4,
-  "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05; contract/guards from a local run of its first commit (untangle A1 part 1), 2026-11-06, until a CI measurement replaces it; import/guards from a local run of its first commit (cutover import slices 1-2), 2026-11-07, until a CI measurement replaces it; deploy/guards from a local run of untangle A3 part b, 2026-11-07, until a CI measurement replaces it; codemode/workerd from two local runs of untangle B25 under the host lock (load 4.4 to 5), 2026-11-12, until a CI measurement replaces it; ci/workerd from two local runs of untangle T0 under the host lock (load 4.8), 2026-11-12, until a CI measurement replaces it; large from the runner legs of #5484 (CI runs 42652506363, 42654769214, 42658221560 and 42670631102, 2026-11-09), read from their logs: prepare's walk over the host's tree, 71,367 ms at the worst for a walk with no other walk of the tree beside it (run 42658221560's own prepare test; that run's 144-147 s walks were two walks at once, which the tests no longer make); sandbox/runner from a local run of untangle w2-s1 (`node root-tests.mjs --tags-filter='!large' --reporter=json`, behind the host lock at load under 4), 2026-11-11, once the git-oracle tree test became large, until a CI measurement replaces it; contract/guards from a local run of untangle C4 under the host lock (load under 2), 2026-11-14, once the sync-ignore matcher's tests moved there (B19), until a CI measurement replaces it",
+  "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05; contract/guards from a local run of its first commit (untangle A1 part 1), 2026-11-06, until a CI measurement replaces it; import/guards from a local run of its first commit (cutover import slices 1-2), 2026-11-07, until a CI measurement replaces it; deploy/guards from a local run of untangle A3 part b, 2026-11-07, until a CI measurement replaces it; codemode/workerd from two local runs of untangle B25 under the host lock (load 4.4 to 5), 2026-11-12, until a CI measurement replaces it; ci/workerd from two local runs of untangle T0 under the host lock (load 4.8), 2026-11-12, until a CI measurement replaces it; large from the runner legs of #5484 (CI runs 42652506363, 42654769214, 42658221560 and 42670631102, 2026-11-09), read from their logs: prepare's walk over the host's tree, 71,367 ms at the worst for a walk with no other walk of the tree beside it (run 42658221560's own prepare test; that run's 144-147 s walks were two walks at once, which the tests no longer make); sandbox/runner from a local run of untangle w2-s1 (`node root-tests.mjs --tags-filter='!large' --reporter=json`, behind the host lock at load under 4), 2026-11-11, once the git-oracle tree test became large, until a CI measurement replaces it; contract/guards from a local run of untangle C4 under the host lock (load under 2), 2026-11-14, once the sync-ignore matcher's tests moved there (B19), until a CI measurement replaces it; sources/guards and starter/guards from a local run of their first commit (untangle C5, B8), 2026-11-14, until a CI measurement replaces it",
   "medium": {
+    "ci/guards": {
+      "slowest_ms": 1614,
+      "test": "ci/guards/timeouts.test.ts > test timeouts no platform test sets one"
+    },
     "ci/workerd": {
       "slowest_ms": 346,
       "test": "ci/test/gate.test.ts > the owner Worker as an auxiliary, behind the owner gate holds the owner's own files call at the files gate its FILES binding reaches"
     },
-    "ci/guards": {
-      "slowest_ms": 1614,
-      "test": "ci/guards/timeouts.test.ts > test timeouts no platform test sets one"
+    "codemode/guards": {
+      "slowest_ms": 51,
+      "test": "codemode/guards/isolation.test.ts > codemode isolation, by its rules > finds nothing over the whole import closure"
+    },
+    "codemode/workerd": {
+      "slowest_ms": 882,
+      "test": "codemode/test/codemode.test.ts > the codemode Worker stops a script whose VM computes past the budget its request carries, as a timeout"
     },
     "contract/guards": {
       "slowest_ms": 6777,
@@ -42,14 +50,6 @@
       "slowest_ms": 11017,
       "test": "gateway/test/held.test.ts > the verification's cases (rveg2) never counts a wait for a unit against the sender (V-M2)"
     },
-    "codemode/workerd": {
-      "slowest_ms": 882,
-      "test": "codemode/test/codemode.test.ts > the codemode Worker stops a script whose VM computes past the budget its request carries, as a timeout"
-    },
-    "codemode/guards": {
-      "slowest_ms": 51,
-      "test": "codemode/guards/isolation.test.ts > codemode isolation, by its rules > finds nothing over the whole import closure"
-    },
     "import/guards": {
       "slowest_ms": 4495,
       "test": "import/guards/census.test.ts > each owner's fit refuses an owner whose entries pass max_entries, folders counted"
@@ -73,6 +73,14 @@
     "sandbox/workerd": {
       "slowest_ms": 926,
       "test": "sandbox/test/sandbox.test.ts > cancel, status and release reaps an idle sandbox whose release's pause did not land (E2B busy)"
+    },
+    "sources/guards": {
+      "slowest_ms": 259,
+      "test": "sources/guards/isolation.test.ts > the source records are read where they live, by the Workers that read them"
+    },
+    "starter/guards": {
+      "slowest_ms": 8,
+      "test": "starter/guards/okf-watch.test.ts > the starter's OKF spec hides no text in anything the agent reads"
     }
   },
   "large": {

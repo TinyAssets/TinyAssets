@@ -1,26 +1,23 @@
 /**
- * The Workers as wrangler sees them, for every test, guard and config that needs one: a
- * Worker's config read (JSONC, as wrangler reads it), the wrangler the platform installs,
- * a Worker bundled as a deploy bundles it and handed to miniflare as an auxiliary Worker,
+ * The Workers as the tests run them, for every test and memory leg that needs one (a config
+ * as wrangler reads it, and wrangler itself, are `wrangler.ts`'s): a Worker bundled as a
+ * deploy bundles it and handed to miniflare as an auxiliary Worker,
  * a test pool's own Worker built from its config the same way, the check every test's
  * Workers pass before they run (`pool`: no host secret), and a test fake transpiled into one.
  *
- * Node runs this file as it is (type stripping): `deploy/facts.ts`, `doors/test/app.e2e.mjs` and
+ * Node runs this file as it is (type stripping): `doors/test/app.e2e.mjs` and
  * `owner/memory/baselines.mjs` import it, so its own imports name their `.ts` files.
  */
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { createRequire } from "node:module";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 
 import ts from "typescript";
 
 import { PLATFORM } from "./paths.ts";
-
-/** A Worker's config, as untyped data: each guard reads it field by field. */
-export type Config = Record<string, unknown>;
+import { readWrangler, WRANGLER, workerFolders } from "./wrangler.ts";
 
 /** A config rule's module type: wrangler's and miniflare's, the same names. */
 type RuleType = "ESModule" | "CommonJS" | "Text" | "Data" | "CompiledWasm" | "PythonModule"
@@ -50,46 +47,9 @@ export interface WorkerConfig {
   readonly assets?: Readonly<Record<string, unknown>>;
 }
 
-/** `text`, a wrangler config in JSON with comments, parsed; loud when it does not parse. */
-export function parseWrangler(text: string, fileName = "wrangler.jsonc"): Config {
-  const parsed = ts.parseConfigFileTextToJson(fileName, text);
-  if (parsed.error) {
-    throw new Error(`${fileName}: ${ts.flattenDiagnosticMessageText(parsed.error.messageText,
-                                                                     "\n")}`);
-  }
-  return parsed.config as Config;
-}
-
-/** The config at `where`: a config file, or a Worker's folder (its `wrangler.jsonc`). */
-export function readWrangler(where: string): Config {
-  const path = /\.(?:jsonc?|toml)$/.test(where) ? where : join(where, "wrangler.jsonc");
-  return parseWrangler(readFileSync(path, "utf8"), path);
-}
-
 /** A Worker's config, typed for the fields its auxiliary Worker is built from. */
 export function workerConfig(dir: string): WorkerConfig {
   return readWrangler(dir) as unknown as WorkerConfig;
-}
-
-/** The platform's Workers: each folder of `platform/` that holds a `wrangler.jsonc`, sorted. */
-export function workerFolders(): string[] {
-  return readdirSync(PLATFORM, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory()
-                       && existsSync(join(PLATFORM, entry.name, "wrangler.jsonc")))
-    .map((entry) => entry.name).sort();
-}
-
-/** The wrangler package the platform installs (hoisted to `platform/node_modules`). */
-const WRANGLER_PACKAGE = dirname(createRequire(join(PLATFORM, "package.json"))
-  .resolve("wrangler/package.json"));
-/** Its command line, run with Node. */
-export const WRANGLER = join(WRANGLER_PACKAGE, "bin", "wrangler.js");
-
-/** The keys wrangler's own schema offers at the top level, or in an environment. */
-export function wranglerKeys(scope: "RawConfig" | "RawEnvironment" = "RawConfig"): string[] {
-  const schema = JSON.parse(readFileSync(join(WRANGLER_PACKAGE, "config-schema.json"), "utf8")) as
-    { definitions: Record<string, { properties: Record<string, unknown> }> };
-  return Object.keys(schema.definitions[scope]!.properties);
 }
 
 /** One module of a bundle, as miniflare takes it. */

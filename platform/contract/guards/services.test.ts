@@ -23,7 +23,7 @@ import ts from "typescript";
 import { parse, workerSources } from "../../ci/kit/sources";
 import { services } from "../../ci/kit/types";
 import { PLATFORM } from "../../ci/paths";
-import { readWrangler } from "../../ci/workers";
+import { readWrangler } from "../../ci/wrangler";
 import { doorRow, takesRequest, UNBOUND_DOORS } from "../src/doors";
 
 /** The service contracts, by their module. */

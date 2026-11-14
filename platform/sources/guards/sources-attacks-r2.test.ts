@@ -11,10 +11,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { bundledSources } from "../../sources/src/catalog";
-import { sourceRecord } from "../../sources/src/check";
-import { runEnv } from "../../sources/src/run-env";
-import { SourceRecordError } from "../../sources/src/schema";
+import { bundledSources } from "../src/catalog";
+import { sourceRecord } from "../src/check";
+import { runEnv } from "../src/run-env";
+import { SourceRecordError } from "../src/schema";
 
 type Json = Record<string, unknown>;
 const load = (id: string): Json =>

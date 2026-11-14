@@ -16,7 +16,7 @@ import { closure, inlineImports, layerProblems, layersOf, repoLinks, repoScripts
 import type { Layer } from "../kit/layers";
 import { type Owed, owedLists, ratchet, unheld } from "../kit/owed";
 import { PLATFORM, REPO } from "../paths";
-import { workerFolders } from "../workers";
+import { workerFolders } from "../wrangler";
 import { actionFiles, workflowNames } from "../workflows";
 
 const WORKERS = workerFolders();

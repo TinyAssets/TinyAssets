@@ -1,9 +1,9 @@
 /**
- * Each migration lock only grows, held against the base branch (slice P review M3; ported
- * from the Python suite, which the cutover deletes): the owner's and the sandbox Worker's.
+ * The migration locks' kit (`ci/kit/locks.ts`), and each lock only growing, held against the
+ * base branch (slice P review M3): every lock a Worker states (`<worker>/guards/locks.ts`).
  *
  * A lock pins every migration a deploy shipped (`deployed`, each one's digest) and when the
- * first deploy was (`first_deploy`; `lock.ts`). Each Worker's `migrations.test.ts` holds the
+ * first deploy was (`first_deploy`). Each Worker's `migrations.test.ts` holds the
  * code to its locks in the same tree, so a change that edits a deployed migration *and* its
  * pin passes it. This holds each lock itself against the base: once the base marks a first
  * deploy, that marker never changes, and the base's pins stay the head's first pins, in
@@ -15,18 +15,24 @@
  * `origin/main`. A base this checkout does not have fails the guard: it never passes
  * without one.
  */
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { REPO } from "../../ci/paths";
-import type { Lock } from "./lock";
+import { type Migration, migrationDigest as digest } from "../../contract/src/migrate";
+import { deployProblems, digests, type Lock, lockOf, lockProblems, locksOf,
+         pin } from "../kit/locks";
+import { PLATFORM, REPO } from "../paths";
+import { workerFolders } from "../wrangler";
 
+/** The Workers that state migration locks. */
+const MIGRATED = workerFolders()
+  .filter((worker) => existsSync(join(PLATFORM, worker, "guards", "locks.ts")));
 /** Every migration lock, from the repository's root. */
-const LOCKS = ["platform/owner/migrations.json", "platform/sandbox/migrations/SandboxControl.json",
-               "platform/sandbox/migrations/SandboxSlots.json"];
+const LOCKS = (await Promise.all(MIGRATED.map(locksOf)))
+  .flatMap((locks) => Object.keys(locks).map((path) => `platform/${path}`));
 
 /** Each way `head` is not `base` with pins appended. */
 export function lockGrowthProblems(base: Lock, head: Lock): string[] {
@@ -86,6 +92,89 @@ export function baseLock(base: string, path: string,
   }
   return JSON.parse(run("show", `${base}:${path}`)) as Lock;
 }
+
+describe("the migration locks' kit", () => {
+  const first = { at: "2026-11-04T00:00:00.000Z", commit: "abc123" };
+  const shipped: Migration[] = [["CREATE TABLE a (x)"], ["CREATE TABLE b (y)"]];
+  const lock: Lock = { first_deploy: first, deployed: shipped.map(digest) };
+
+  it("finds the owner's and the sandbox Worker's locks", () => {
+    expect(MIGRATED).toEqual(["owner", "sandbox"]);
+    expect(LOCKS).toEqual(["platform/owner/migrations.json",
+                           "platform/sandbox/migrations/SandboxControl.json",
+                           "platform/sandbox/migrations/SandboxSlots.json"]);
+  });
+
+  it("fails a deployed migration edited in place, or taken away", () => {
+    expect(lockProblems(shipped, lock)).toEqual([]);
+    expect(lockProblems([["CREATE TABLE a (x, z)"], shipped[1]!], lock)).toEqual([
+      "migration 1 was deployed and its text changed: add a new migration instead"]);
+    expect(lockProblems([shipped[0]!], lock)).toEqual(["migration 2 was deployed and is gone"]);
+    // A new migration at the end is the way a deployed shape changes.
+    expect(lockProblems([...shipped, ["ALTER TABLE a ADD COLUMN z"]], lock)).toEqual([]);
+  });
+
+  it("lets migrations change in place until the first deploy marks the lock", () => {
+    const none: Lock = { first_deploy: null, deployed: [] };
+    expect(lockProblems([["CREATE TABLE a (changed)"]], none)).toEqual([]);
+    expect(lockProblems(shipped, { first_deploy: null, deployed: lock.deployed }))
+      .toEqual(["migrations are pinned with no first deploy marked"]);
+  });
+
+  it("pins at a deploy: marked once, each new migration added, a changed one refused", () => {
+    const at = pin(shipped, { first_deploy: null, deployed: [] }, "abc123", first.at);
+    expect(at).toEqual(lock);
+    const later = pin([...shipped, ["CREATE TABLE c (z)"]], at, "def456", "2026-12-01");
+    expect(later.first_deploy).toEqual(first);
+    expect(later.deployed).toHaveLength(3);
+    expect(() => pin([["CREATE TABLE a (edited)"], shipped[1]!], at, "x", "y"))
+      .toThrow("refusing to pin: migration 1 was deployed and its text changed");
+  });
+
+  it("digests a migration as the code evaluates it", () => {
+    expect(digest(["A", "B"])).not.toBe(digest(["AB"]));
+    expect(digests({ "w/a.json": shipped })).toEqual({ "w/a.json": lock.deployed });
+  });
+
+  it("reads a lock held to its shape", () => {
+    const text = JSON.stringify(lock);
+    expect(lockOf(text, "w/a.json")).toEqual(lock);
+    for (const bad of [null, [], { deployed: [] }, { ...lock, extra: 1 },
+                       { ...lock, first_deploy: { at: "x" } }, { ...lock, deployed: ["a"] },
+                       { ...lock, deployed: "a".repeat(64) }]) {
+      expect(() => lockOf(JSON.stringify(bad), "w/a.json"), JSON.stringify(bad))
+        .toThrow("w/a.json is out of shape");
+    }
+  });
+
+  it("lets a Worker deploy only when each lock is marked and pins exactly its code", () => {
+    const held = (each: Lock) => ({ "w/a.json": each });
+    const locks = { "w/a.json": shipped };
+    expect(deployProblems("w", locks, held(lock))).toEqual([]);
+    expect(deployProblems("w", locks, held({ first_deploy: null, deployed: [] })))
+      .toEqual([expect.stringMatching(/^the migration lock w\/a\.json marks no first deploy: .*node ci\/kit\/locks\.ts pin w <commit>/)]);
+    for (const deployed of [lock.deployed.slice(0, 1), [...lock.deployed, "c".repeat(64)],
+                            ["e".repeat(64), lock.deployed[1]!]]) {
+      expect(deployProblems("w", locks, held({ first_deploy: first, deployed })))
+        .toEqual([expect.stringMatching(/^the migration lock w\/a\.json pins \d migrations and the code ships 2, or one differs/)]);
+    }
+    expect(deployProblems("w", {}, held(lock)))
+      .toEqual(["w states no migration lock: each Worker the deploy holds to locks has one"]);
+  });
+
+  it("prints each Worker's digests from its command line, and refuses one with no locks", () => {
+    const run = (...args: string[]) => spawnSync(process.execPath,
+      [join(PLATFORM, "ci", "kit", "locks.ts"), ...args], { cwd: PLATFORM, encoding: "utf8" });
+    for (const worker of MIGRATED) {
+      const printed = run("digests", worker);
+      expect(printed.status, printed.stderr).toBe(0);
+      expect(Object.keys(JSON.parse(printed.stdout) as object).map((path) => `platform/${path}`))
+        .toEqual(LOCKS.filter((path) => path.startsWith(`platform/${worker}/`)));
+    }
+    expect(run("digests", "doors").status).toBe(1);
+    expect(run("pin", "owner").stderr).toMatch(/^usage: /);
+  });
+});
 
 describe("the migration lock against the base branch", () => {
   it.each(LOCKS)("only grows: %s", (path) => {

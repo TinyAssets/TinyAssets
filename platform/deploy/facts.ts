@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PLATFORM } from "../ci/paths.ts";
-import { type Config, readWrangler, workerFolders } from "../ci/workers.ts";
+import { type Config, readWrangler, workerFolders } from "../ci/wrangler.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import sharedApps from "../doors/shared-apps.json" with { type: "json" };
 import platform from "./platform.json" with { type: "json" };

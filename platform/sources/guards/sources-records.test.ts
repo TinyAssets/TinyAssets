@@ -9,8 +9,8 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { bundledRecords } from "../../sources/src/catalog";
-import { recordsText, SOURCES } from "../../sources/write-records";
+import { bundledRecords } from "../src/catalog";
+import { recordsText, SOURCES } from "../write-records";
 
 describe("the catalog's record files", () => {
   it("are every record file, in name order, as each holds it", () => {
@@ -27,11 +27,13 @@ describe("the catalog's record files", () => {
       writeFileSync(join(dir, "anthropic.json"), "{}");
       writeFileSync(join(dir, "9-new_source.v2.json"), "{}");
       writeFileSync(join(dir, "notes.md"), "");
+      writeFileSync(join(dir, "package.json"), "{}");
       const text = recordsText(dir);
       expect(text).toContain('import _9NewSourceV2 from "../9-new_source.v2.json";');
       expect(text).toContain('import anthropic from "../anthropic.json";');
       expect(text).toMatch(/\[\n {2}_9NewSourceV2,\n {2}anthropic,\n\]\);/);
       expect(text).not.toContain("notes");
+      expect(text).not.toContain("package");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

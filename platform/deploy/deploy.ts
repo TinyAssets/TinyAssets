@@ -57,7 +57,7 @@
  *   only by `routes` after the handover; the run that registers it sets the doors' copy too;
  * - nothing is deployed unless every migration lock (`owner/migrations.json`, and the sandbox
  *   Worker's `sandbox/migrations/<class>.json`) marks the first deploy and pins every
- *   migration the code ships, in order (`lockRefusal`);
+ *   migration the code ships, in order (`lockRefusal`, by `ci/kit/locks.ts`);
  * - a Worker's first deploy is `wrangler deploy`; later ones upload a version, then deploy it,
  *   which never touches a route; `--migrate` names a Worker with a pending Durable Object
  *   migration to deploy whole;
@@ -81,13 +81,12 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PLATFORM, REPO } from "../ci/paths.ts";
-import { WRANGLER } from "../ci/workers.ts";
+import { WRANGLER } from "../ci/wrangler.ts";
 // The envelope and the E2B client import nothing, so Node's type stripping runs them here by
 // their own names.
 import { CONTROL_KEY } from "../contract/src/control.ts";
@@ -108,8 +107,6 @@ import {
  * the founder's tier numbers. The founder's data, so a file of its own, which the tests read too.
  */
 import DARK_CONTROL from "./control.json" with { type: "json" };
-
-const require = createRequire(join(PLATFORM, "package.json"));
 
 type Json = Record<string, unknown>;
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -260,81 +257,20 @@ export function maskInLog(value: string, env: Readonly<Record<string, string | u
 
 // --- The migration locks ----------------------------------------------------------------
 
-/** The Workers whose Durable Objects keep tables, each with its migrations guard. */
+/** The Workers whose Durable Objects keep tables, each held to the locks it states. */
 export const MIGRATED = ["owner", "sandbox"] as const;
 
 /**
- * Why nothing may deploy under `lock` (the migration lock at `path`, from `platform/`) with
- * the code's migrations' `digests`, or null: the first deploy is marked, and the lock pins
- * exactly the code's migrations, element for element (tasks "Append-only migrations from
- * the first deploy").
+ * Why `worker` may not deploy under its migration locks, or null: the locks' command line
+ * (`ci/kit/locks.ts digests`) refuses unless each lock marks the first deploy and pins
+ * exactly the migrations the code ships, in order, and unless the Worker states a lock.
  */
-export function lockRefusal(lock: unknown, digests: readonly string[],
-                            path: string): string | null {
-  const pin = "pin them with PIN_MIGRATIONS=<commit> npx vitest run --project guards " +
-    `guards/migrations.test.ts in platform/${path.split("/")[0]}, and commit the lock with ` +
-    "the code";
-  const held = lock as { first_deploy?: unknown; deployed?: unknown } | null;
-  if (typeof held !== "object" || held === null || !Array.isArray(held.deployed)
-      || !("first_deploy" in held)) {
-    return `${path} is out of shape`;
-  }
-  if (held.first_deploy === null) {
-    return `the migration lock ${path} marks no first deploy: ${pin}`;
-  }
-  if (held.deployed.length !== digests.length
-      || held.deployed.some((digest, index) => digest !== digests[index])) {
-    return `the migration lock ${path} pins ${held.deployed.length} migrations and the code ` +
-      `ships ${digests.length}, or one differs: ${pin}`;
-  }
-  return null;
-}
-
-/** A run of `worker`'s migrations guard, its digests written to `out`: its exit and output. */
-export type GuardRun = (worker: string, out: string) => { status: number | null; stdout: string };
-
-/** The real run: `worker`'s guards project, as it evaluates its schema. */
-function guardRun(run: Run): GuardRun {
-  return (worker, out) => {
-    const vitest = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs");
-    return run.io.spawn(process.execPath, [vitest, "run", "--project", "guards",
-                                           "guards/migrations.test.ts"], {
-      cwd: join(PLATFORM, worker), encoding: "utf8",
-      env: { ...run.env, MIGRATION_DIGESTS: out, PIN_MIGRATIONS: "" },
-    });
-  };
-}
-
-/**
- * The code's migrations' digests, by lock path, as `worker`'s guards project evaluates its
- * schema (`run`).
- */
-export function codeDigests(worker: string, run: GuardRun): Record<string, string[]> {
-  const dir = mkdtempSync(join(tmpdir(), "ta-migrations-"));
-  const out = join(dir, "digests.json");
-  try {
-    const result = run(worker, out);
-    if (result.status !== 0) {
-      throw new Error(`${worker}'s migration lock guard failed (exit ${result.status}): ` +
-                      `${result.stdout.slice(-2000)}`);
-    }
-    return locksOf(worker, JSON.parse(readFileSync(out, "utf8")));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-/**
- * `worker`'s locks as its guard reported them (`codeDigests`): a Worker in `MIGRATED` whose
- * guard reports none is refused, so the kit's check never passes with nothing checked.
- */
-function locksOf(worker: string, reported: unknown): Record<string, string[]> {
-  if (typeof reported !== "object" || reported === null || Array.isArray(reported)
-      || Object.keys(reported).length === 0) {
-    throw new Error(`${worker}'s migrations guard reported no migration lock: each Worker in ` +
-                    "MIGRATED holds its objects to at least one");
-  }
-  return reported as Record<string, string[]>;
+export function lockRefusal(worker: string, run: Run): string | null {
+  const result = run.io.spawn(process.execPath,
+                              [join(PLATFORM, "ci", "kit", "locks.ts"), "digests", worker],
+                              { cwd: PLATFORM, encoding: "utf8", env: {} });
+  return result.status === 0 ? null : `${worker}'s migration locks refuse the deploy ` +
+    `(exit ${result.status}): ${String(result.stderr).trim()}`;
 }
 
 // --- WorkOS and the owner issuer --------------------------------------------------------
@@ -948,12 +884,9 @@ const keyrings = step("keyrings", (run) => {
 /** No Worker deploys a migration its lock does not pin, checked before anything is changed. */
 const locks = step("locks", (run, work) => {
   for (const worker of MIGRATED) {
-    for (const [path, digests] of Object.entries(codeDigests(worker, guardRun(run)))) {
-      const refused = lockRefusal(JSON.parse(readFileSync(join(PLATFORM, path), "utf8")),
-                                  digests, path);
-      if (refused !== null) {
-        throw new Error(refused);
-      }
+    const refused = lockRefusal(worker, run);
+    if (refused !== null) {
+      throw new Error(refused);
     }
   }
   work.plan.push(`the migration locks pin every migration the ${MIGRATED.join(" and ")} ` +

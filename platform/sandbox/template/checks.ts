@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readWrangler } from "../../ci/workers";
+import { readWrangler } from "../../ci/wrangler";
 import { type E2b, type Handle, runtimeE2b } from "../src/e2b";
 import { install } from "../src/install";
 import { COMMAND, EXIT, LOADER } from "../runner/protocol";

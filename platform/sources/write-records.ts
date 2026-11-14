@@ -1,5 +1,6 @@
 // The catalog's list of record files (`src/records.ts`), written from this folder: every
-// `*.json` beside this script is a record, imported in name order. A Worker's bundle has no
+// `*.json` beside this script but the workspace's own manifest (`package.json`) is a record,
+// imported in name order. A Worker's bundle has no
 // filesystem, so the list is code. One of `npm run generate`'s generators, which
 // `ci/guards/generated.test.ts` holds current, so a record added is never left out.
 import { readdirSync, writeFileSync } from "node:fs";
@@ -18,9 +19,15 @@ function binding(file: string): string {
   return /^[0-9]/.test(name) ? `_${name}` : name;
 }
 
+/** The record files in `dir`, in name order: its JSON files, the workspace's manifest not one. */
+export function recordFiles(dir: string = SOURCES): string[] {
+  return readdirSync(dir).filter((name) => name.endsWith(".json") && name !== "package.json")
+    .sort();
+}
+
 /** `src/records.ts` as the record files in `dir` make it. */
 export function recordsText(dir: string = SOURCES): string {
-  const files = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
+  const files = recordFiles(dir);
   return [
     "// Written by `npm run generate` (`write-records.ts`) from the record files beside",
     "// `src/`: never by hand.",

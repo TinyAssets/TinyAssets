@@ -56,19 +56,27 @@ export function refusals(fix: string, from: string, what: readonly string[]): Ow
 /** The file that holds a workspace's `OWED`. */
 export const rulesOf = (workspace: string): string => `platform/${workspace}/guards/rules.ts`;
 
-/** Every workspace's `OWED`, read from its `guards/rules.ts`, by workspace. */
-export async function owedLists(): Promise<Map<string, readonly Owed[]>> {
-  const lists = new Map<string, readonly Owed[]>();
+/**
+ * What every workspace states as `name` in its `guards/rules.ts`, by workspace: each one's
+ * own rules data, which a guard over every workspace reads (`OWED`, `MODULE_STATE`).
+ */
+export async function ruleLists<T>(name: string): Promise<Map<string, T>> {
+  const lists = new Map<string, T>();
   for (const workspace of readdirSync(PLATFORM).sort()) {
     const path = join(PLATFORM, workspace, "guards", "rules.ts");
     if (existsSync(path)) {
-      const { OWED } = await import(path) as { OWED?: readonly Owed[] };
-      if (OWED !== undefined) {
-        lists.set(workspace, OWED);
+      const stated = (await import(path) as Record<string, T | undefined>)[name];
+      if (stated !== undefined) {
+        lists.set(workspace, stated);
       }
     }
   }
   return lists;
+}
+
+/** Every workspace's `OWED`, by workspace. */
+export function owedLists(): Promise<Map<string, readonly Owed[]>> {
+  return ruleLists<readonly Owed[]>("OWED");
 }
 
 /**

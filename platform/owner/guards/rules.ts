@@ -45,7 +45,18 @@ import { CONFIG as FILES } from "../../files/guards/rules";
 import { CONFIG as GATEWAY } from "../../gateway/guards/rules";
 import { CONFIG as CODEMODE_VM } from "../../codemode/guards/rules";
 import { CONFIG as SANDBOX } from "../../sandbox/guards/rules";
+import type { Exemption } from "../../ci/kit/module-state";
 import { imports, type Owed, refusals } from "../../ci/kit/owed";
+
+/**
+ * The module state the owner Worker keeps by design (`ci/kit/module-state.ts`): its isolate's
+ * chunk slots (`holds.ts`, with the relay's tails; the pool itself is the contract's,
+ * `contract/src/slots.ts`, which holds no state). The pool is the isolate's, shared by every
+ * object and request in it; it holds a count of slots in use, the calls waiting and the
+ * leases holding units, each with the owner id it waits or holds for, never an owner's data.
+ */
+export const MODULE_STATE: readonly Exemption[] = Object.freeze([Object.freeze({
+  file: "owner/src/holds.ts", symbol: "ISOLATE", reason: "the isolate's one chunk pool" })]);
 
 /** The classes the Worker's migrations make, each SQLite-backed. */
 export const CLASSES = Object.freeze(["OwnerDO"]);
@@ -132,7 +143,6 @@ export const OWED: readonly Owed[] = Object.freeze([
   ...imports("B8", "platform/owner/guards/rules.ts", [
     "platform/files/guards/rules.ts", "platform/gateway/guards/rules.ts",
     "platform/codemode/guards/rules.ts", "platform/sandbox/guards/rules.ts"]),
-  ...imports("B8", "platform/owner/guards/starter.test.ts", ["platform/starter/okf-watch.ts"]),
   // The egress memory leg, the doors' and the gateway's, in the owner's tree: B23.
   ...imports("B23", "platform/owner/memory/egress-probe.ts", [
     "platform/doors/src/egress.ts", "platform/gateway/src/catalog.ts",

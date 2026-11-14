@@ -12,7 +12,7 @@
  * A migration is append-only from its Worker's first deploy: a new shape is a new entry at
  * the end, held by the Worker's migration lock and its migrations guard.
  */
-import { sha256Hex } from "./digest";
+import { sha256Hex } from "./digest.ts";
 
 export type Migration = readonly string[];
 
