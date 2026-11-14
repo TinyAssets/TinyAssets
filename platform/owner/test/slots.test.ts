@@ -81,7 +81,9 @@ describe("a pool of units", () => {
         slot.release();
       }
     });
-    await sleep(50);
+    // Each takes its unit at once, and takes one again as it lets one go: the append asks
+    // with all eight held, and waits amid their cycling.
+    expect(pool.state().held).toBe(8);
     const outcome = await pool.acquire(5).then((slot) => {
       slot.release();
       return "granted";

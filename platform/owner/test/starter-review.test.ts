@@ -12,6 +12,7 @@
  * own is at a version past it (`SEED + n`, `starter-support.ts`).
  */
 import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AGENT_UNDEFINED } from "../src/agent-file";
@@ -22,7 +23,7 @@ import {
 } from "../src/starter-package";
 import { unseededRig } from "./ledger-support";
 import { later } from "./runs-support";
-import { drainDue, failure, setFiles, storesOn, text } from "./support";
+import { drainDue, failure, gateFor, setFiles, spaceOf, storesOn, text } from "./support";
 import {
   AGENTS, agentJson, failedOwner, file, notices, pass, readText, receipts, type Rig, SEED,
   settled, settledOwner, SKILLS, starterOn, versionOf,
@@ -204,18 +205,23 @@ describe("review round 3 (F3)", () => {
     const r = await failedOwner(2);
     // Past its retry, doors that need an agent wait on the seed.
     const now = Date.now() / 1000 + STARTER_RETRY_S + 1;
-    const times = await starterOn(r, carried(), now)(async (starter) => {
-      // Two doors at once share one pass (single-flight), then a third waits for nothing.
-      await Promise.all([starter.seeded(now), starter.seeded(now)]);
-      const again = performance.now();
+    // Each pass's try is an upload the files plane is asked for: read from what crossed it.
+    const plane = gateFor(env.FILES_GATE, await spaceOf(r.stub));
+    const uploads = async () => (await plane.calls())
+      .filter((call) => call.method === "putChunks").length;
+    // Two doors at once share one pass (single-flight), then a third waits for nothing.
+    await starterOn(r, carried(), now)((starter) =>
+      Promise.all([starter.seeded(now), starter.seeded(now)]));
+    const tried = await uploads();
+    const version = await starterOn(r, carried(), now)(async (starter) => {
       await starter.seeded(now);
-      return { again: performance.now() - again, version: starter.version() };
+      return starter.version();
     });
-    expect(times.version).toBe(0);
+    expect(version).toBe(0);
+    expect(await uploads()).toBe(tried);
     expect(await notices(r, "starter_failed")).toHaveLength(1);
     const skill = carried().files[0]!;
     expect(await readText(r, skill.path)).toBe(skill.text);
-    expect(times.again).toBeLessThan(50);
   });
 });
 

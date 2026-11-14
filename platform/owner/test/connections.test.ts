@@ -25,12 +25,11 @@ import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
-import { failure } from "./support";
+import { failure, until } from "./support";
 import { egressTokenOf, generationOf } from "../../contract/src/egress";
 import { hashed, ownerRun, secretOf } from "./runs-support";
 import {
   ANTHROPIC, catalog, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT, scopeOf, sealedAs,
-  until,
 } from "./gateway-support";
 
 afterEach(() => {

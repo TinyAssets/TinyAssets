@@ -13,25 +13,13 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { ERASE_CONFIRM, PUT_GRACE_MS } from "../src/erasure";
 import type { OwnerDO } from "../src/owner-do";
 import { later } from "./runs-support";
-import { sqlIn } from "./support";
+import { sqlIn, until } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 
 /** How many messages `owner`'s object sent the erasure queue, as its consumer took them. */
 export async function erasuresSent(owner: string): Promise<number> {
   return (await env.ERASURES_SENT.of(owner)).length;
-}
-
-/** Wait until `check` holds. */
-export async function until(check: () => Promise<boolean> | boolean, what: string,
-                            tries = 500): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    if (await check()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`timed out waiting for ${what}`);
 }
 
 /** The owner's own tables: none of the runtime's (`_cf_`). */

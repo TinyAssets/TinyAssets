@@ -21,7 +21,9 @@ import {
 import { Doorbell } from "../src/wakes";
 import { sha256Hex } from "../../contract/src/digest";
 import { MUSE, rig } from "./ledger-support";
-import { alarmOf, failure, laneJobs, ownerObject, sqlIn, unseededObject } from "./support";
+import {
+  alarmOf, failure, laneJobs, ownerObject, sqlIn, unseededObject, until,
+} from "./support";
 
 /** A lane over a script: its next work, and what each run does. */
 class ScriptedLane implements Lane {
@@ -36,8 +38,8 @@ class ScriptedLane implements Lane {
   after: number | null = null;
   /** Ignore `now`, as a lane that breaks its contract would. */
   fixed = false;
-  /** How long each run takes, and the most runs seen at once. */
-  sleepMs = 0;
+  /** What each run waits on before its work, which the test lets go; the most runs at once. */
+  held: Promise<void> | null = null;
   #running = 0;
   mostAtOnce = 0;
   /** The wall-clock budget each run was given, in ms. */
@@ -60,9 +62,7 @@ class ScriptedLane implements Lane {
   }
 
   async #work(): Promise<void> {
-    if (this.sleepMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, this.sleepMs));
-    }
+    await this.held;
     if (this.failing > 0) {
       this.failing--;
       throw this.error;
@@ -280,9 +280,15 @@ describe("a lane's run", () => {
      () => withProbe(["a"], async (p) => {
     const a = p.lanes["a"]!;
     a.due = p.now - 10;
-    a.sleepMs = 200;
+    let release!: () => void;
+    a.held = new Promise((resolve) => { release = resolve; });
     await p.schedule.sync();
-    await Promise.all([p.alarm(), p.alarm()]);
+    // The second alarm comes while the first's run is in the lane, held until it is let go.
+    const first = p.alarm();
+    await until(() => a.runs === 1, "the first alarm's run");
+    await p.alarm();
+    release();
+    await first;
     expect([a.runs, a.mostAtOnce]).toEqual([1, 1]);
   }));
 
