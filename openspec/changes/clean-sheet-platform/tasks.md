@@ -335,8 +335,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] Owner migration 11's pin PR, after `restore.wipe` merges (`r5w.md` item 9).
   - [ ] A restore's kept generations' chunks kept from early collection: the files plane
     collects early only garbage the newest generation does not name, so the fallback a
-    restore loads can lose a chunk and its restore retries its chunks step without end
-    (`r5w.md` item 11).
+    restore loads can lose a chunk and its restore fails at its chunks step (`r5w.md`
+    item 11).
   - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
     `facet-probe.md` Q8 never sampled it).

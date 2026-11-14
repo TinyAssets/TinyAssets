@@ -65,7 +65,7 @@ import {
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
-import { RESTORE_LOSES } from "../operator";
+import { PIN_WAIT_MS, POLL_MS, RESTORE_LOSES } from "../operator";
 import platform from "../platform.json" with { type: "json" };
 
 type Json = Record<string, unknown>;
@@ -2988,6 +2988,20 @@ describe("mode restore", () => {
       .rejects.toThrow("the doors refused restore.pin for user_alice (refused): the pin is " +
                        "refused");
     expect(ops(refusing).map(([op]) => op)).toEqual(["restore.source", "restore.pin"]);
+    // A pin that never writes: the run stops loudly once its wait is past, never wiping.
+    const writing = world({ held: true, doors: (message: OperatorMessage) =>
+      message.op === "restore.pin"
+        ? { result: { step: "pinned", namespace: "a".repeat(32), gen: "b".repeat(16),
+                      fresh: FRESH, written: false, confirm: null } }
+        : restoring(LIVE)(message) });
+    await expect(runMode(writing, "restore", ["--yes", ...flags, "--confirm", CONFIRMED]))
+      .rejects.toThrow(`user_alice's present state was not written within ${PIN_WAIT_MS /
+        60_000} minutes, and the owner stays held: run again to carry it on, or give the pin ` +
+        "up with --confirm release-user_alice");
+    const pins = ops(writing).filter(([op]) => op === "restore.pin").length;
+    expect(pins).toBeGreaterThan(1);
+    expect(pins).toBeLessThanOrEqual(PIN_WAIT_MS / POLL_MS + 1);
+    expect(ops(writing).map(([op]) => op)).not.toContain("restore.wipe");
     const failing = world({ held: true, doors: restoring(LOST, true) });
     await expect(runMode(failing, "restore", ["--yes", ...flags])).rejects.toThrow(
       "the restore of user_alice failed its check, and the owner is not admitted: board's row " +

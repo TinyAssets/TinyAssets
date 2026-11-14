@@ -153,9 +153,12 @@ export interface RestoreSource {
    * wiped for it, or begun. Else a pin and a wipe come first (a live owner, a failed restore).
    */
   readonly begins: boolean;
-  /** The restore's record, from its pin: its step, its generation and the pin's own. */
+  /**
+   * The restore's record, from its pin: its step, its generation, the pin's own, and when the
+   * hold began (seconds).
+   */
   readonly restore: { readonly step: string; readonly gen: string;
-                      readonly fresh: string | null } | null;
+                      readonly fresh: string | null; readonly since: number } | null;
 }
 
 /** The generation a restore pins on a live owner (`restorePin`): one of its finished ones. */

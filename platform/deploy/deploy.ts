@@ -131,7 +131,7 @@ import {
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
   type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
-  ownerAct, RESTORE_LOSES, restoreFrom,
+  ownerAct, PIN_WAIT_MS, RESTORE_LOSES, restoreFrom,
 } from "./operator.ts";
 /**
  * The control record a first deploy writes when there is none: every outside door closed, and
@@ -1471,8 +1471,14 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
     return;
   }
   if (!source.begins) {
+    const until = run.io.now().getTime() + PIN_WAIT_MS;
     let hold = await ask("restore.pin", { gen: from.gen }) as RestoreHold;
     while (!hold.written) {
+      if (run.io.now().getTime() >= until) {
+        throw new Error(`${owner}'s present state was not written within ${PIN_WAIT_MS / 60_000} ` +
+                        "minutes, and the owner stays held: run again to carry it on, or give " +
+                        `the pin up with --confirm release-${owner}`);
+      }
       say(`${owner} is held; its present state is being written as a fresh generation`);
       hold = await ask("restore.pin", { gen: from.gen }) as RestoreHold;
     }

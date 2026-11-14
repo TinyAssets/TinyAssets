@@ -224,7 +224,17 @@ type GenerationRow = {
   readonly retry_at: number | null;
   /** A finished generation's log through E, in bytes: its segments' sizes. */
   readonly log_bytes: number;
+  /** Its place in the order generations were begun or adopted (`NEXT_SEQ`). */
+  readonly seq: number;
 };
+
+/**
+ * A generation's place, after every one kept: generations are ordered by when they were begun
+ * or adopted, never by a clock. A clock that reads behind the last generation's start (another
+ * machine's, one set back) would sort the new one as older, and its own finish would prune it
+ * as superseded, the pinned one kept as the newest.
+ */
+const NEXT_SEQ = "(SELECT coalesce(max(seq), 0) + 1 FROM owner_backups)";
 
 /** A generation's object an export reads at an index: a part, a segment, its end, or none yet. */
 type GenerationObject =
@@ -320,8 +330,8 @@ export class Backups {
   }
 
   #rows(): GenerationRow[] {
-    return this.#sql.exec<GenerationRow>("SELECT * FROM owner_backups ORDER BY started_at")
-      .toArray();
+    return this.#sql.exec<GenerationRow>(
+      "SELECT * FROM owner_backups ORDER BY seq, started_at").toArray();
   }
 
   /** Until when (s) an open export pins generation `gen` from deletion, or null. A read. */
@@ -421,8 +431,8 @@ export class Backups {
     const at = root.at / 1000;
     this.#sql.exec(
       "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, segments, " +
-        "segment_list, bytes, s, schema, e, ended_at, started_at, finished_at, log_bytes) " +
-        "VALUES (?, ?, 'done', ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?)", root.gen,
+        "segment_list, bytes, s, schema, e, ended_at, started_at, finished_at, log_bytes, seq) " +
+        `VALUES (?, ?, 'done', ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ${NEXT_SEQ})`, root.gen,
       manifestDay(at), ENDED, root.parts.length, root.segments.length,
       [...root.parts, ...root.segments].reduce((sum, object) => sum + object.size, 0), root.s,
       this.#parts.schema, root.e, at, at, at,
@@ -489,7 +499,7 @@ export class Backups {
       console.error("the generation's pass failed; it is tried again later");
       await this.#write(() => this.#sql.exec(
         "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing' OR gen = " +
-          "(SELECT gen FROM owner_backups ORDER BY started_at LIMIT 1)",
+          "(SELECT gen FROM owner_backups ORDER BY seq, started_at LIMIT 1)",
         Date.now() / 1000 + MANIFEST_RETRY_S));
     }
   }
@@ -529,7 +539,8 @@ export class Backups {
     const s = this.#parts.log.begin(gen);
     this.#sql.exec(
       "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, bytes, s, " +
-        "schema, started_at) VALUES (?, ?, 'writing', NULL, 0, '', 0, ?, ?, ?)", gen,
+        `schema, started_at, seq) VALUES (?, ?, 'writing', NULL, 0, '', 0, ?, ?, ?, ${NEXT_SEQ})`,
+      gen,
       manifestDay(now), s, this.#parts.schema, now);
     return gen;
   }

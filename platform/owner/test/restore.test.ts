@@ -7,7 +7,7 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
@@ -434,23 +434,22 @@ describe("a restore cut short", () => {
     expect(await stub.restoreStep(platform(o.name))).toMatchObject({ step: "done" });
   });
 
-  it("holds at its chunks step while a chunk is not stored as its hash, each step asking " +
-     "again, never done or admitted", async () => {
+  it("fails at its chunks step when a chunk is not stored as its hash, named, never done " +
+     "or admitted, and is wiped again by its words", async () => {
     const { o, gen, ns } = await source();
     const [space] = await sqlIn(o.stub, "SELECT data_key FROM file_space");
     const [chunk] = await sqlIn(o.stub, "SELECT sha256 FROM file_content_chunks LIMIT 1");
     const stub = await lose(o);
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
-    // A chunk the generation names gone from the bucket, as a read gone wrong leaves it.
+    // A chunk the generation names gone from the bucket: the bucket's answer, not a read lost.
     await env.FILES.deleteChunks(ns, space!["data_key"] as string, [chunk!["sha256"] as string]);
-    for (let n = 0; n < 3; n++) {
-      expect((await failure(() => stub.restoreStep(platform(o.name)))).message).toMatch(
-        /^1 of a restore's chunks are not stored as their hash \(missing\)/);
-    }
-    expect(await sqlIn(stub, "SELECT step, at FROM owner_restore"))
-      .toEqual([{ step: "chunks", at: 0 }]);
+    expect((await stepped(stub, o.name)).at(-1)).toEqual({
+      step: "failed", done: false,
+      failed: "1 of the generation's chunks are not stored as their hash (missing)" });
     expect((await failure(() => stub.admissionSet(platform(o.name), { admit: true }))).code)
       .toBe("restoring");
+    expect(await stub.restorePin(platform(o.name), { gen: gen.gen })).toMatchObject({
+      step: "failed", confirm: `wipe-${o.name}-${gen.gen}` });
   });
 
   it("fails loudly, never admitting, when a row does not read back as the generation's",
@@ -528,6 +527,10 @@ describe("the load table", () => {
   });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 /** The pin asked until the owner's present state is written; its last answer. */
 async function pinnedTo(stub: Stub, name: string, gen: string): Promise<RestoreHold> {
   for (let n = 0; n < 50; n++) {
@@ -563,6 +566,9 @@ describe("a restore into a live owner", () => {
     // From the pin, the owner is held: its doors and its admission.
     const door = await failure(() => o.stub.fileRead(o.bind(), { path: `${W}/after.txt` }));
     expect([door.code, door.message]).toEqual(["restoring", RESTORING]);
+    // The refusal names the hold and its age, so a hold no one released is seen where it bites.
+    expect((door as unknown as { facts: unknown }).facts)
+      .toEqual({ step: "pinned", held_s: expect.any(Number) });
     expect((await failure(() => o.stub.admissionSet(platform(o.name), { reason: "abuse",
                                                                         suspended: true }))).code)
       .toBe("restoring");
@@ -581,7 +587,7 @@ describe("a restore into a live owner", () => {
     // Pending and empty, as a new object's start makes it, the pin's record held across.
     expect(await stub.restoreSource(platform(o.name))).toEqual({
       namespace: null, generations: [], state: "pending", begins: true,
-      restore: { step: "wiped", gen: gen.gen, fresh: hold.fresh } });
+      restore: { step: "wiped", gen: gen.gen, fresh: hold.fresh, since: expect.any(Number) } });
     const fresh = await owner();
     expect(await schemaOf(stub)).toEqual(await schemaOf(await lose(fresh)));
     expect((await failure(() => stub.admissionSet(platform(o.name), { admit: true }))).code)
@@ -648,6 +654,51 @@ describe("a restore into a live owner", () => {
       .inline!)).toContain(PLAIN);
     expect((await stub.restoreSource(platform(o.name))).restore).toBeNull();
     expect(Object.keys(await laneJobs(stub)).length).toBeGreaterThan(0);
+  });
+
+  it("names a hold's age in its refusal, from the pin through the wipe", async () => {
+    const { o, gen } = await source();
+    const hold = await pinnedTo(o.stub, o.name, gen.gen);
+    const [{ since }] = await sqlIn(o.stub, "SELECT since FROM owner_restore") as
+      [{ since: number }];
+    // An hour on, a door the hold closes says how long it has stood.
+    vi.useFakeTimers({ toFake: ["Date"], now: since * 1000 + 3_600_000 });
+    const stub = await wipedWith(o.stub, o.name, hold.confirm!);
+    const refused = await failure(() => stub.admissionSet(platform(o.name), { admit: true }));
+    expect((refused as unknown as { facts: unknown }).facts)
+      .toEqual({ step: "wiped", held_s: 3_600 });
+  });
+
+  it("writes the pin's fresh generation as the newest though the clock reads before the " +
+     "pinned one began, as a clock behind the last generation's reads it", async () => {
+    const { o, gen } = await source();
+    const [pinned] = await sqlIn(o.stub, "SELECT started_at FROM owner_backups WHERE gen = ?",
+                                 gen.gen);
+    // The object's clock a minute before the pinned generation's start, the event the race
+    // turned on: its fresh generation then begins at an earlier reading than the pinned one.
+    vi.useFakeTimers({ toFake: ["Date"], now: (pinned!["started_at"] as number) * 1000 - 60_000 });
+    const hold = await o.stub.restorePin(platform(o.name), { gen: gen.gen });
+    expect(hold).toMatchObject({ step: "pinned", written: true,
+                                 confirm: `wipe-${o.name}-${hold.fresh}` });
+    expect((await o.stub.restoreSource(platform(o.name))).generations.map((each) => each.gen))
+      .toEqual([gen.gen, hold.fresh]);
+  });
+
+  it("takes a wipe that throws back whole: the owner still held, its tables and pin as they " +
+     "were", async () => {
+    const { o, gen } = await source();
+    const hold = await pinnedTo(o.stub, o.name, gen.gen);
+    // A table in the way of a migration, as a schema the export's lists missed would leave.
+    await sqlIn(o.stub, "CREATE TABLE owner_restore_next (x)");
+    const before = await schemaOf(o.stub);
+    expect((await failure(() => o.stub.restoreWipe(platform(o.name),
+                                                   { confirm: hold.confirm! }))).message)
+      .toMatch(/owner_restore_next already exists/);
+    expect(await schemaOf(o.stub)).toEqual(before);
+    expect(await sqlIn(o.stub, "SELECT step, gen, fresh FROM owner_restore")).toEqual([
+      { step: "pinned", gen: gen.gen, fresh: hold.fresh }]);
+    expect((await failure(() => o.stub.fileRead(o.bind(), { path: `${W}/small.txt` }))).code)
+      .toBe("restoring");
   });
 
   it("refuses a pin of a pending owner, of a generation it does not hold, and of an erased " +

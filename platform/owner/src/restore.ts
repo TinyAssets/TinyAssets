@@ -185,6 +185,8 @@ type Held = {
   readonly spans: string | null;
   readonly failed: string | null;
   readonly fresh: string | null;
+  /** When the hold began, in seconds: the pin, or a lost object's begin. */
+  readonly since: number;
 };
 
 type Step = "pinned" | "wiped" | "index" | "log" | "apply" | "check" | "chunks" | "clear"
@@ -199,8 +201,8 @@ const SLICE_CHUNKS = 64;
 
 /** The restore's record, or null when none was begun. A read. */
 function record(sql: Pick<SqlStorage, "exec">): Held | null {
-  return sql.exec<Held>("SELECT ns, gen, step, at, after, held, spans, failed, fresh FROM " +
-                          "owner_restore").toArray()[0] ?? null;
+  return sql.exec<Held>("SELECT ns, gen, step, at, after, held, spans, failed, fresh, since " +
+                          "FROM owner_restore").toArray()[0] ?? null;
 }
 
 /**
@@ -224,11 +226,15 @@ export function restoring(storage: OwnerStorage): boolean {
 
 /**
  * Refused, for the moment (`restoring`, a transient code: a sign-in's redirect answers it
- * `temporarily_unavailable`), while a restore holds the owner. A read.
+ * `temporarily_unavailable`), while a restore holds the owner, its facts naming the hold's
+ * step and how long it has stood (`held_s`), so a hold no one released is seen at every door
+ * it closes. A read.
  */
 export function refuseRestoring(storage: OwnerStorage): void {
-  if (restoring(storage)) {
-    throw new Refusal("restoring", RESTORING);
+  const held = record(storage.sql);
+  if (held !== null && held.step !== "done") {
+    throw new Refusal("restoring", RESTORING, {
+      facts: { step: held.step, held_s: Math.max(0, Math.round(clock() - held.since)) } });
   }
 }
 
@@ -639,18 +645,22 @@ async function piece(o: OwnerState, door: Door<undefined>, source: GenerationSou
     case "chunks": {
       const listed = await o.door(() => o.files.chunksPage(held.at, SLICE_CHUNKS));
       // Each read whole by the files Worker under the owner's key and held to its hash, no
-      // byte of it coming back. One not stored as its hash is thrown, so the next step reads
-      // the slice again (an R2 read gone wrong for the moment); the record does not move.
+      // byte of it coming back. A read gone wrong is thrown (the next step reads the slice
+      // again); `missing` or `broken` is the bucket's answer, so the restore failed, named,
+      // and its operator wipes it again for another generation or the pin's undo.
       const found = await o.files.check(listed.map((chunk) => chunk.sha256));
       const unread = found.filter((check) => check !== "stored");
-      if (unread.length > 0) {
-        throw new Error(`${unread.length} of a restore's chunks are not stored as their hash ` +
-                        `(${[...new Set(unread)].join(", ")}): the next step reads them again`);
-      }
       await o.door(() => {
-        if (still()) {
-          move(listed.length < SLICE_CHUNKS ? "clear" : "chunks", held.at + listed.length, null);
+        if (!still()) {
+          return;
         }
+        if (unread.length > 0) {
+          console.error("a restore's chunks are not stored; the owner is not admitted");
+          move("failed", held.at, null, `${unread.length} of the generation's chunks are not ` +
+               `stored as their hash (${[...new Set(unread)].join(", ")})`);
+          return;
+        }
+        move(listed.length < SLICE_CHUNKS ? "clear" : "chunks", held.at + listed.length, null);
       });
       return true;
     }
@@ -717,7 +727,7 @@ export const restoreDoors = Object.freeze({
                  ({ gen, finished_at, restorable: log_bytes <= LOG_BYTES })),
                state: o.admission().state, begins: begun || emptiness(o) === null,
                restore: held === null ? null
-                 : { step: held.step, gen: held.gen, fresh: held.fresh } };
+                 : { step: held.step, gen: held.gen, fresh: held.fresh, since: held.since } };
     });
   },
   /**
@@ -784,9 +794,9 @@ export const restoreDoors = Object.freeze({
       wipedFor(record(o.storage.sql), ns, gen);
       o.files.adoptSpace(ns, root.key);
       // A wiped object's record goes on, its pin's fresh generation kept: the undo.
-      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
-                           "'index', 0) ON CONFLICT (only) DO UPDATE SET gen = excluded.gen, " +
-                           "step = 'index', at = 0", ns, gen);
+      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) VALUES " +
+                           "(1, ?, ?, 'index', 0, ?) ON CONFLICT (only) DO UPDATE SET gen = " +
+                           "excluded.gen, step = 'index', at = 0", ns, gen, clock());
       return answer(o, record(o.storage.sql)!);
     });
   },
@@ -838,11 +848,11 @@ export const restoreDoors = Object.freeze({
       }
       // The hold, in the unit that pins: no door but the restore's from here on, and every
       // run and stream ended, as a suspension's prompt stop ends them (`admission.ts`).
-      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, " +
-                           "?, 'pinned', 0) ON CONFLICT (only) DO UPDATE SET ns = excluded.ns, " +
-                           "gen = excluded.gen, step = 'pinned', at = 0, after = NULL, held = " +
-                           "NULL, spans = NULL, failed = NULL, fresh = NULL",
-                         o.files.storedNamespace(), gen);
+      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) VALUES " +
+                           "(1, ?, ?, 'pinned', 0, ?) ON CONFLICT (only) DO UPDATE SET ns = " +
+                           "excluded.ns, gen = excluded.gen, step = 'pinned', at = 0, after = " +
+                           "NULL, held = NULL, spans = NULL, failed = NULL, fresh = NULL, since " +
+                           "= excluded.since", o.files.storedNamespace(), gen, clock());
       o.egress.end("admission");
       o.launcher.stop(o.runs.endAll(clock()));
       return { held: record(o.storage.sql)!, began: true };
@@ -897,9 +907,14 @@ export const restoreDoors = Object.freeze({
         throw new Refusal("invalid", "a wipe is confirmed by wipe-<owner>-<gen>, as " +
                                      "restore.pin's answer names it");
       }
-      remigrate(o.storage, MIGRATIONS, schemaTables());
-      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, fresh) VALUES " +
-                           "(1, ?, ?, 'wiped', 0, ?)", held.ns, held.gen, held.fresh);
+      // A transaction of its own: a unit that throws keeps what it wrote (`gate.ts`), so a
+      // wipe that throws part way would leave the object half made and its pin gone.
+      o.storage.transactionSync(() => {
+        remigrate(o.storage, MIGRATIONS, schemaTables());
+        o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, fresh, since) " +
+                             "VALUES (1, ?, ?, 'wiped', 0, ?, ?)", held.ns, held.gen, held.fresh,
+                           held.since);
+      });
       return true;
     });
     if (wiped) {
