@@ -415,7 +415,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
-- [ ] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2).
+- [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
+  `owner.state` owed under lane R.
 - [ ] The manifest's dry run green (d3 §A10).
 - [ ] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6). Its alerts
   include the ones that are only log lines today (list3 P18): `sandbox_waiting`,
