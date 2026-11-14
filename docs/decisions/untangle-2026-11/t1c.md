@@ -71,36 +71,20 @@ T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each gree
 
 ## T1c-b2: the real entry and the starter
 
-1. **Decided (the coordinator, 2026-11-14):** build T1c-b's item 6 design.
-   - A new owner's seed is tested on the object's own seed, the carried package, with no alias.
-   - Updates and reviews are hand-built passes at versions past it, run once that seed has settled.
-   - The test packages' versions are derived from the carried package's version (`SEED + 1`, `SEED + 2`, …), never written out, so a starter bump leaves the tests as they are.
-2. **As built:**
+1. **Decided (the coordinator, 2026-11-14), superseding the one-file alias and the `seeded` project:** the whole owner suite runs on the real carried package, as production does.
+   - The 42 tests the one-file starter broke need the same changes under the alias as without it.
+   - The alias is a test seam that `ci/guards/isolation.test.ts` rightly refuses.
+   - So the kit change for a second project (nested excludes, the deepest-folder match in `budgets.mjs`, an `owner/seeded` budget row, the guard's edit) is backed out as surplus. The starter tests stay in `owner/test/`.
+2. **Decided (the coordinator, 2026-11-14), kept from the earlier decision:**
+   - A new owner's seed is tested on the object's own seed.
+   - Updates and reviews are hand-built passes at versions derived from the carried one (`SEED + 1`, `SEED + 2`, …), run once that seed has settled.
+3. **One rig helper waits for the seed** (`support.ts` `seeded`, the `starterReceipts` door at `version === carried`). Every rig and `ownerObject` await it before the test's first call, which ends the alarm race. `unseededRig` is the starter's own tests' way to an owner before its seed.
+4. **Tests that count files, bytes or manifest pages** derive the seeded part from `carried()`, with no literal for the starter's size. A test that means "nothing but what I wrote" asserts its own paths plus the starter's, or filters to its own.
+5. **As built:**
    - `main` is the config's own, `src/index.ts`, with one namespace, `OWNER`, on the real `OwnerDO`.
-   - `Internals`, `Starter`'s null package, `test/worker.ts`, `test/namespaces.ts` and `SEEDED` are deleted. `StarterDeps.ready` is required, since the object always hands it.
-   - The `workerd` project aliases `starter/starter.json` to `owner/test/starter.json`, one personal file (`/workspace/starter.md`), so every other test's owner seeds it.
-   - A second workerd project, `seeded`, holds `test/seeded/`: the starter's tests and `brain.test.ts`, with no alias. Both projects share one build of the Workers.
-3. **The kit's rule is general, not this folder's** (decided by the coordinator, lane C's files, declared in the body):
-   - `ci/classes.ts`: `PROJECTS` gains `seeded: "test/seeded"`. `nestedIn(name)` lists every other project's folder lying in `name`'s, and `projectOf(path)` names the deepest project folder that holds a path.
-   - `ci/project.ts`: `project()` leaves out every folder `nestedIn` names, after Vitest's own excludes. A project whose folder lies in `workerd`'s runs in workerd as that one does.
-   - `ci/guards/timeouts.test.ts` checks the rule for every project, naming none.
-   - `ci/budgets.mjs` reads a test's project by `projectOf`, the longest folder match.
-   - `ci/budgets.json` has an `owner/seeded` row from one local run.
-4. **Only a failed first seed lets the owner's own file come first.**
-   - An owner's file doors wait for its seed. The cutover's import writes only the imported tree (`importFiles` refuses a path outside it).
-   - So the tests of a file of the owner's at a starter path before its seed have it written after a first seed failed part way, before its retry (`starter-support.ts` `failedOwner`). The files plane refuses the seed's upload at the `FILES` gate, after its first is held long enough to name the owner's namespace.
-   - "Whose seed fails part way" fails by that refusal now, not by a file in the way.
-5. **The tests that were not the starter's move out of its files** (`run-schedules.test.ts`, `file-readers.test.ts`), so they keep the one-file starter of the rest of the suite:
-   - a run's schedules;
-   - a scheduled run's result;
-   - the MCP door's readers and search;
-   - a run's run tools.
-6. **Two starter tests are rewritten on paths the carried package does not seed**, since its personal files are never updated:
-   - the profile's move, from `agents/main/PROFILE.md` to `/workspace/PROFILE.md`;
-   - the goals' arrival, as a later version's new skill and personal index (`plans`).
-
-   What each holds is unchanged: a personal file's move, and new files reaching an owner seeded before them.
-7. **The memory probe's `LegArchive`** passes no third argument, so its object carries the real package. Its leg runs, and its baseline holds (body).
+   - `Internals`, `Starter`'s null package, `test/worker.ts`, `test/namespaces.ts` and `SEEDED` are deleted. `StarterDeps.ready` is required.
+6. **Only a failed first seed lets the owner's own file come first.** An owner's file doors wait for its seed, and the import writes only the imported tree. So a test of the owner's file there before its seed writes it after a first seed failed part way, the files plane refusing the seed's upload at the `FILES` gate (`starter-support.ts` `failedOwner`).
+7. **The tests that were not the starter's** move to `run-schedules.test.ts` and `file-readers.test.ts`. The profile's move and the goals' arrival are rewritten on paths the carried package does not seed; what each holds is unchanged.
 
 ## Owed
 

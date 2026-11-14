@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import { classProblem } from "../class-rule";
 import { BUDGETS, budget, CLASS_CHECK, derived, LARGE, medium, type ProjectName, PROJECTS,
          SMALL_MS } from "../classes";
-import { excluded, project } from "../project";
+import { project } from "../project";
 import { largeTests, timeoutLiterals } from "../timeouts";
 import { PLATFORM, REPO } from "../paths";
 import { json } from "../workflows";
@@ -52,9 +52,6 @@ function projectProblems(ws: string, each: Project): string[] {
   } else if (JSON.stringify(each.test["include"])
              !== JSON.stringify([`${PROJECTS[name as ProjectName]}/**/*.test.ts`])) {
     say("its tests are not its folder's");
-  } else if (JSON.stringify(each.test["exclude"])
-             !== JSON.stringify(excluded(name as ProjectName))) {
-    say("it does not leave out the projects' folders in its own");
   }
   if (want === null) {
     say("no measured budget");
@@ -144,23 +141,6 @@ describe("size classes", () => {
     expect(own.test["environment"]).toBeUndefined();
     expect(own.test["setupFiles"]).toEqual([CLASS_CHECK, "./x.ts"]);
     expect(() => project("nowhere", "guards")).toThrow(/no measured budget/);
-  });
-
-  it("leave out of each project every other project's folder that lies in its own", () => {
-    for (const name of Object.keys(PROJECTS) as ProjectName[]) {
-      const nested = Object.values(PROJECTS).filter((folder) =>
-        folder.startsWith(`${PROJECTS[name]}/`));
-      const left = excluded(name) ?? [];
-      expect(nested.filter((folder) => !left.includes(`${folder}/**`)), name).toEqual([]);
-      expect(left.length === 0, name).toBe(nested.length === 0);
-    }
-    const nesting = (Object.keys(PROJECTS) as ProjectName[])
-      .find((name) => excluded(name) !== undefined);
-    if (nesting !== undefined) {
-      const made = project("owner", nesting) as Project;
-      expect(projectProblems("owner", { ...made, test: { ...made.test, exclude: [] } } as Project))
-        .toContain(`owner/${nesting}: it does not leave out the projects' folders in its own`);
-    }
   });
 
   it("see a project that is not its class's", () => {

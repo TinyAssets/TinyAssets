@@ -14,15 +14,15 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AGENT_UNDEFINED } from "../../src/agent-file";
-import { Notices } from "../../src/notices";
-import { Starter, STARTER_RETRY_S } from "../../src/starter";
+import { AGENT_UNDEFINED } from "../src/agent-file";
+import { Notices } from "../src/notices";
+import { Starter, STARTER_RETRY_S } from "../src/starter";
 import {
   carried, NEWER, type StarterPackage, starterPackage,
-} from "../../src/starter-package";
-import { rig } from "../ledger-support";
-import { later } from "../runs-support";
-import { drainDue, failure, filesOn, inGate, text } from "../support";
+} from "../src/starter-package";
+import { unseededRig } from "./ledger-support";
+import { later } from "./runs-support";
+import { drainDue, failure, filesOn, inGate, text } from "./support";
 import {
   AGENTS, agentJson, failedOwner, file, notices, pass, readText, receipts, type Rig, SEED,
   settled, settledOwner, SKILLS, starterOn, versionOf,
@@ -426,7 +426,7 @@ describe("seeding before the tier's numbers are known (after slice L)", () => {
 describe("seeding (review L3)", () => {
   it("lets a new owner's first converse find main, before the lane's alarm has run",
      async () => {
-    const r = await rig();
+    const r = await unseededRig();
     // No source is connected, so the run itself is refused; never for a missing agent.
     const refused = await failure(() => r.stub.agentSubmit(r.bind(null), {
       message: "hi", client_send_id: "first" }));

@@ -10,12 +10,12 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { agentFile } from "../../src/agent-file";
-import { contentIdOf } from "../../../contract/src/content";
-import { STARTER_RETRY_S } from "../../src/starter";
-import { carried, NEWER, starterPackage } from "../../src/starter-package";
-import { later } from "../runs-support";
-import { drainDue, laneAt, text } from "../support";
+import { agentFile } from "../src/agent-file";
+import { contentIdOf } from "../../contract/src/content";
+import { STARTER_RETRY_S } from "../src/starter";
+import { carried, NEWER, starterPackage } from "../src/starter-package";
+import { later } from "./runs-support";
+import { drainDue, laneAt, text } from "./support";
 import {
   AGENTS, agentJson, failedOwner, file, nextOf, notices, pass, readText, receipts, type Rig,
   SEED, SEED_REFUSED, settled, settledOwner, SKILLS, versionOf,

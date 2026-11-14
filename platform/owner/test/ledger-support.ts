@@ -16,7 +16,7 @@ import { Policy } from "../src/policy";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
 import {
-  admittedOwner, alarmOf, collectionParts, EVERY_SIGNIN, filesOn, laneAt, TIERS,
+  admitted, alarmOf, collectionParts, EVERY_SIGNIN, filesOn, laneAt, seeded, TIERS,
 } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
@@ -171,8 +171,15 @@ export function signedIn(): number {
  * once, so `session` carries a live protected-session cookie the object minted.
  */
 export async function rig() {
+  const r = await unseededRig();
+  await seeded(r.stub, r.owner);
+  return r;
+}
+
+/** As `rig`, before the owner's seed has landed: for the tests of the seed itself. */
+export async function unseededRig() {
   const owner = `owner-${crypto.randomUUID()}`;
-  const stub: DurableObjectStub<OwnerDO> = await admittedOwner(owner);
+  const stub: DurableObjectStub<OwnerDO> = await admitted(owner);
   /** A binder's binding; an outside origin comes through an MCP client unless named. */
   const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
     ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), tiers: TIERS,

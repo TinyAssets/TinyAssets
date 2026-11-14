@@ -7,19 +7,17 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { CHUNK_BYTES } from "../../../contract/src/limits";
-import { APPEND_TRIES, type Entry, UNREAD_CHANGE, UNREAD_WRITE } from "../../src/files";
-import type { Origin } from "../../../contract/src/binding";
-import type { OwnerDO } from "../../src/owner-do";
-import { AGENTS_OWNER_ONLY } from "../../src/paths";
-import { MUSE, rig, type Rig } from "../ledger-support";
-import { failure, text } from "../support";
+import { CHUNK_BYTES } from "../../contract/src/limits";
+import { APPEND_TRIES, type Entry, UNREAD_CHANGE, UNREAD_WRITE } from "../src/files";
+import type { Origin } from "../../contract/src/binding";
+import type { OwnerDO } from "../src/owner-do";
+import { AGENTS_OWNER_ONLY } from "../src/paths";
+import { MUSE, rig, type Rig, unseededRig } from "./ledger-support";
+import { failure, text } from "./support";
 
 const NOTES = "/workspace/notes.md";
 const OTHER: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
 const THIRD: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
-/** An owner whose object seeds the package this code carries, as every owner here does. */
-const seededRig = rig;
 
 function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
   if (!("entry" in answer)) {
@@ -153,7 +151,7 @@ describe("an edit (file_edit)", () => {
 describe("a whole write (file_write) from an outside agent (review H1)", () => {
   it("is refused with no etag, creates only where absent, and the owner's app keeps null",
      async () => {
-    const r = await seededRig();
+    const r = await rig();
     const before = await textOf(r, "/workspace/USER.md");
     expect((await failure(() => r.stub.fileWrite(r.bind(MUSE), {
       path: "/workspace/USER.md", expected_etag: null, content: "# replaced\n" }))).message)
@@ -201,7 +199,7 @@ describe("a remove, rename or restore from an outside agent (review R2-L3)", () 
 describe("the writers under a narrowed grant", () => {
   it("change none of the owner's agent definitions, and the rest of the workspace still",
      async () => {
-    const r = await seededRig();
+    const r = await rig();
     const AGENTS_MD = "/workspace/agents/main/AGENTS.md";
     await r.stub.fileText(r.bind(MUSE), { path: AGENTS_MD });  // admitted, and seeded
     await r.registered(MUSE);  // a narrowed grant acts where its one agent is registered
@@ -229,7 +227,7 @@ describe("the writers under a narrowed grant", () => {
 
 describe("a new owner's first reads", () => {
   it("find the starter's seeded files, however soon they come", async () => {
-    const r = await seededRig();
+    const r = await unseededRig();
     // The very first call of an outside agent, before anything else ran: the profile is there.
     const profile = await r.stub.fileFetch(r.bind(MUSE), { id: "/workspace/USER.md" });
     expect(profile.text).toContain("- Onboarded:");
@@ -241,7 +239,7 @@ describe("a new owner's first reads", () => {
 
   it("an append before the seed lands beside the seeded profile, never in place of it",
      async () => {
-    const r = await seededRig();
+    const r = await unseededRig();
     await r.stub.fileAppend(r.bind(MUSE), { path: "/workspace/USER.md",
       content: "- Prefers short answers <!-- observed: 2026-11-04 | status: active -->\n" });
     const now = await textOf(r, "/workspace/USER.md");

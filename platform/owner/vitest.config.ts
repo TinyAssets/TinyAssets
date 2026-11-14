@@ -28,12 +28,9 @@ const GATEWAY_GATE = "gateway-gate";
 const FAKE_ERASURES = join(PLATFORM, "owner", "test", "fake-erasures.ts");
 /** The gateway's fake outside world, which every fetch of the gateway and the tests reaches. */
 const FAKE_UPSTREAM = join(PLATFORM, "gateway", "test", "fake-upstream.ts");
-/** The starter package of one file every owner but the `seeded` project's carries. */
-const ONE_FILE_STARTER = join(PLATFORM, "owner", "test", "starter.json");
-
 /**
- * The owner Worker as the tests run it, built once for both workerd projects: its real
- * entry (`src/index.ts`, the config's `main`), its one namespace bound for the tests (the
+ * The owner Worker as the tests run it: its real entry (`src/index.ts`, the config's `main`),
+ * carrying the starter package production carries, its one namespace bound for the tests (the
  * config binds none to its own class), and the Workers beside it.
  *
  * FILES, GATEWAY and CODEMODE_VM are the config's own bindings, to the real files, gateway and
@@ -54,9 +51,10 @@ const ONE_FILE_STARTER = join(PLATFORM, "owner", "test", "starter.json");
  * tokens' routing key. The test Worker and each Worker beside it have every binding their
  * configs give them (`main`, `auxiliary`), and a test states only their secrets and what it
  * changes; nothing is read from the host (`pool`). A test admits each owner it names by the
- * platform's door, as sign-up does (slice L, `test/support.ts` `admittedOwner`).
+ * platform's door, as sign-up does, and waits for its seed (slice L, `test/support.ts`
+ * `admittedOwner`).
  */
-const OWNER = once(async () => main(join(PLATFORM, "owner"), {
+const OWNER = async () => main(join(PLATFORM, "owner"), {
   durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
   bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING, ROUTING_MAC_KEY: ROUTING_KEY },
   // The files Worker's bucket, test-only: a test changes a chunk's bytes under its key, as
@@ -89,23 +87,13 @@ const OWNER = once(async () => main(join(PLATFORM, "owner"), {
       [QUEUES.ERASURES]: { maxBatchSize: 1, maxBatchTimeout: 0 } } }),
     fake(FAKE_UPSTREAM),
   ],
-}));
+});
 
 export default defineConfig({
   test: {
     projects: [
-      // Runs in workerd: the owner's real entry, every owner carrying the one-file starter
-      // package (`test/starter.json`, by an alias over the package the code carries), so a
-      // test's workspace holds one file of the starter's beside its own.
+      // Runs in workerd: the owner's real entry (`OWNER`, above).
       project("owner", "workerd", {
-        plugins: [cloudflareTest(once(async () => pool(await OWNER())))],
-        resolve: { alias: [{ find: /^(?:\.\.\/)+starter\/starter\.json$/,
-                             replacement: ONE_FILE_STARTER }] },
-        test: { setupFiles: ["./test/gates.ts"] },
-      }),
-      // Runs in workerd: the starter's own tests (`test/seeded/`), every owner carrying the
-      // package the code carries, as production seeds it.
-      project("owner", "seeded", {
         plugins: [cloudflareTest(once(async () => pool(await OWNER())))],
         test: { setupFiles: ["./test/gates.ts"] },
       }),

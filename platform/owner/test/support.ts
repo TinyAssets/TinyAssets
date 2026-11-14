@@ -394,15 +394,37 @@ export interface Owner {
 }
 
 /**
- * `name`'s object, admitted first by the platform's door, as the doors' sign-in callback
- * admits a new owner at sign-up (`admission.ts`, slice L): a fresh object is `pending` and
- * refuses every door until then.
+ * `name`'s object, admitted by the platform's door, as the doors' sign-in callback admits a
+ * new owner at sign-up (`admission.ts`, slice L): a fresh object is `pending` and refuses
+ * every door until then. Its seed has not landed yet (`seeded`).
  */
-export async function admittedOwner(name: string): Promise<Stub> {
+export async function admitted(name: string): Promise<Stub> {
   const stub = env.OWNER.getByName(name);
   await stub.admissionSet({ owner: name, caller: PLATFORM_CALLER, origin: null },
                           { admit: true });
   return stub;
+}
+
+/**
+ * `name`'s object once its seed of the starter package this code carries has landed: a door
+ * hands it the tier's numbers, and its lanes run until its starter says the carried version
+ * is reconciled (the `starterReceipts` door), so no test races the seed's alarm.
+ */
+export async function seeded(stub: Stub, name: string): Promise<Stub> {
+  const binding: Binding = { owner: name, caller: name, origin: null, tiers: TIERS };
+  for (let tries = 0; tries < 200; tries++) {
+    const { version, carried } = await stub.starterReceipts(binding);
+    if (version === carried) {
+      return stub;
+    }
+    await drainDue(stub);
+  }
+  throw new Error(`${name}'s seed did not land`);
+}
+
+/** `name`'s object, admitted, its seed landed: the rigs' owner (`admitted`, `seeded`). */
+export async function admittedOwner(name: string): Promise<Stub> {
+  return seeded(await admitted(name), name);
 }
 
 /** A fresh owner's admitted object, and the binder's bindings on it. */

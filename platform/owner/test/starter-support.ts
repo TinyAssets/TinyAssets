@@ -1,6 +1,6 @@
 /**
- * The starter's tests' support. Every owner in the `seeded` project carries the package this
- * code carries (`carried()`, no alias), as production seeds it:
+ * The starter's tests' support. Every owner carries the package this code carries
+ * (`carried()`), as production seeds it:
  * - `settledOwner`: an owner whose own seed has landed, for the tests of updates, which pass
  *   a package of their own over its storage at a version past the seed (`SEED + n`, so a
  *   starter bump leaves them as they are);
@@ -9,11 +9,11 @@
  */
 import { env } from "cloudflare:workers";
 
-import { Notices } from "../../src/notices";
-import { Starter } from "../../src/starter";
-import { carried, type StarterFile, type StarterPackage } from "../../src/starter-package";
-import { rig } from "../ledger-support";
-import { drainDue, filesOn, inGate, sqlIn } from "../support";
+import { Notices } from "../src/notices";
+import { Starter } from "../src/starter";
+import { carried, type StarterFile, type StarterPackage } from "../src/starter-package";
+import { rig, unseededRig } from "./ledger-support";
+import { drainDue, filesOn, inGate, sqlIn } from "./support";
 
 /** The version every owner here is seeded at: a test's package is `SEED + n`. */
 export const SEED = carried().version;
@@ -80,7 +80,7 @@ export async function settledOwner(): Promise<Rig> {
 export async function failedOwner(times = 1): Promise<Rig> {
   const arm = () => env.FILES_GATE.arm({ method: "putChunks", hold: "before" });
   await arm();
-  const r = await rig();
+  const r = await unseededRig();
   // The arming names no owner (the seed itself mints the namespace the gate names calls by):
   // a call of another owner's that meets it is let go, the arming made again first.
   let first: number | null = null;

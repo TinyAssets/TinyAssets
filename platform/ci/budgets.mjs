@@ -5,19 +5,21 @@
  *
  *   node ci/budgets.mjs --measured "<where and when>" <report.json>...
  *
- * A test's project is read from its path: the deepest folder of a project's that holds it
- * (`classes.ts`'s `projectOf`, from `PROJECTS`, which every config's projects are made from). Only passed
+ * A test's project is read from its path: the folder each project's tests are in
+ * (`classes.ts`'s `PROJECTS`, which every config's projects are made from). Only passed
  * tests count; a failed or skipped one measures nothing.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { projectOf } from "./classes.ts";
+import { PROJECTS as FOLDERS } from "./classes.ts";
 import { PLATFORM } from "./paths.ts";
 
 const CI = dirname(fileURLToPath(import.meta.url));
 const BUDGETS = join(CI, "budgets.json");
+/** Each project's name, by the folder its tests are in. */
+const PROJECTS = Object.fromEntries(Object.entries(FOLDERS).map(([name, folder]) => [folder, name]));
 const BELOW = `/${basename(PLATFORM)}/`;
 
 /**
@@ -39,10 +41,10 @@ export function measured(reports) {
   for (const report of reports) {
     for (const file of report.testResults ?? []) {
       const rel = fromPlatform(file.name);
-      const [workspace, ...below] = rel.split("/");
-      const project = projectOf(below.join("/"));
+      const [workspace, dir] = rel.split("/");
+      const project = PROJECTS[dir];
       if (project === undefined) {
-        throw new Error(`${rel}: not in a project's folder`);
+        throw new Error(`${rel}: not in a test, guards or runner folder`);
       }
       for (const result of file.assertionResults ?? []) {
         if (result.status !== "passed" || typeof result.duration !== "number") {
