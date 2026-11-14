@@ -6,9 +6,11 @@
  * (the doors' public identity). The deploy kit, its workflow's guard, the environment guard
  * and the founder's setup read them here or from those files; none holds a list of its own.
  *
- * Node runs this file as it is (type stripping), as the kit does.
+ * Node runs this file as it is (type stripping), as the kit does. Run with `--import`, it prints
+ * the import job's names (`IMPORT_NAMES`) as JSON, for the job's bundle.
  */
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/workers.ts";
@@ -99,7 +101,7 @@ export const RETIRED = retiredWorkers(platform.retired.workers, NAMES);
 export const BUCKETS: readonly string[] = Object.freeze([...new Set([
   ...named((config) =>
     ((config["r2_buckets"] ?? []) as { bucket_name: string }[]).map((bucket) => bucket.bucket_name)),
-  ...platform.buckets.unbound])]);
+  ...Object.values(platform.buckets.unbound)])]);
 
 /**
  * The queues the kit makes: the ones the Workers send to (their producers'; a consumer only
@@ -177,3 +179,49 @@ export const FIRST_PARTY = Object.freeze({
 });
 /** The URL E2B's lifecycle webhook is sent to: the doors' hook. */
 export const E2B_HOOK_URL = `${ORIGIN}${identity.hook}`;
+
+/** The entry of `worker`'s config list `entries` that binds `binding`: loudly, when none does. */
+function boundAs<T extends { binding?: string }>(worker: string, entries: readonly T[] | undefined,
+                                                 binding: string): T {
+  const entry = (entries ?? []).find((each) => each.binding === binding);
+  if (entry === undefined) {
+    throw new Error(`platform/${worker} binds no ${binding}`);
+  }
+  return entry;
+}
+
+type Buckets = readonly { binding: string; bucket_name: string }[] | undefined;
+
+/**
+ * The live names the import job reaches, each read where it is written: the staging bucket and
+ * the import queue the doors bind, the dead-letter queue of the doors' consumer of that queue,
+ * the files Worker's bucket, the directory's namespace title and the final backup's bucket
+ * (`platform.json`). The job runs on its import host, away from this tree, so the window's
+ * bundle step writes them beside the job (`--import`).
+ */
+export const IMPORT_NAMES = (() => {
+  const doors = configOf("doors");
+  const queues = doors["queues"] as { producers?: { binding?: string; queue: string }[];
+                                      consumers?: { queue: string; dead_letter_queue?: string }[] }
+                                    | undefined;
+  const queue = boundAs("doors", queues?.producers, "IMPORTS").queue;
+  const deadLetters = queues?.consumers?.find((each) => each.queue === queue)?.dead_letter_queue;
+  if (deadLetters === undefined) {
+    throw new Error(`platform/doors consumes ${queue} with no dead-letter queue`);
+  }
+  return Object.freeze({
+    staging_bucket: boundAs("doors", doors["r2_buckets"] as Buckets, "IMPORT_STAGING").bucket_name,
+    queue,
+    dead_letter_queue: deadLetters,
+    files_bucket: boundAs("files", configOf("files")["r2_buckets"] as Buckets, "BLOBS").bucket_name,
+    directory: platform.namespaces.titles.DIRECTORY,
+    final_backup_bucket: platform.buckets.unbound.final_backup,
+  });
+})();
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  if (process.argv.slice(2).join(" ") !== "--import") {
+    throw new Error("facts.ts takes one flag, --import: the import job's names, as JSON");
+  }
+  process.stdout.write(`${JSON.stringify(IMPORT_NAMES)}\n`);
+}
