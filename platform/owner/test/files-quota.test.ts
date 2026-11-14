@@ -12,15 +12,18 @@ import { storageFull, storageFullRefusal } from "../src/storage-full";
 import { refusalOf } from "../../contract/src/refusal";
 import { CHUNK_BYTES, INLINE_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
 import { FILE_DEFAULTS, KEEP_CEILING } from "../../contract/src/file-defaults";
-import { FILE_INDEX_FULL, type FileLimits, INDEX_BYTES } from "../src/files";
-import { canonical, DEFAULT_POLICY_JSON, FILE_SETTINGS } from "../../contract/src/policy-document";
+import { FILE_INDEX_FULL, INDEX_BYTES } from "../src/files";
+import {
+  canonical, DEFAULT_POLICY_JSON, FILE_SETTINGS, type FileSettings,
+} from "../../contract/src/policy-document";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import { migrate } from "../../contract/src/migrate";
 import { rig, type Rig } from "./ledger-support";
 import { TIER_UNREAD } from "../src/tier";
 import {
-  crowd, failure, fileCounters, inFiles, laneAt, namedCode, sqlIn, starterSeed, text, TIERS,
+  crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, setFiles, sqlIn,
+  starterSeed, text, TIERS,
 } from "./support";
 
 const W = "/workspace";
@@ -41,18 +44,33 @@ async function snapshot(r: Rig) {
     sqlIn(r.stub, `SELECT * FROM ${table}`)));
 }
 
-async function refusedWithNothingLeft(r: Rig, limits: Partial<FileLimits>,
-                                      act: Parameters<typeof inFiles>[2], reason: string) {
+/** `act` refused under the owner's files settings `files`, with nothing left behind. */
+async function refusedWithNothingLeft(r: Rig, files: Partial<FileSettings>,
+                                      act: Parameters<typeof inFiles>[1], reason: string) {
+  await setFiles(r, files);
   const before = await snapshot(r);
-  const error = await failure(() => inFiles(r.stub, limits, act));
+  const error = await failure(() => inFiles(r.stub, act));
   expect([error.code, error.message]).toEqual([namedCode(reason), reason]);
   expect(await snapshot(r)).toEqual(before);
 }
 
-async function setPolicy(r: Rig, files: unknown) {
-  const { generation, policy } = await r.stub.policyRead(r.bind(null));
-  return r.stub.policyWrite(r.session(null), { expected_generation: generation,
-                                               policy: { ...policy, files } as never });
+/**
+ * The owner's files settings set to `files`, and every kept row re-marked under them by the
+ * object's own lane, pass after pass, before the test goes on.
+ */
+async function remarked(r: Rig, files: Partial<FileSettings>): Promise<void> {
+  await setFiles(r, files);
+  const { limits } = await r.stub.fileUsage(r.bind(null));
+  const marks = [limits.keep_versions, limits.keep_recent, limits.retention_days, null];
+  for (let tries = 0; tries < 100; tries++) {
+    await drainDue(r.stub);
+    const [space] = await sqlIn(r.stub, "SELECT retained_keep, retained_recent, retained_days, " +
+                                          "retain_cursor FROM file_space");
+    if (JSON.stringify(Object.values(space!)) === JSON.stringify(marks)) {
+      return;
+    }
+  }
+  throw new Error("the object's lane did not re-mark the rows");
 }
 
 const write = (r: Rig, path: string, body: string) => r.stub.fileWrite(
@@ -85,13 +103,14 @@ describe("a file bound", () => {
      async () => {
     const r = await rig();
     const full = SEED.bytes + INLINE_BYTES + 1;
-    await inFiles(r.stub, { max_bytes: full }, (files) =>
+    await setFiles(r, { max_bytes: full });
+    await inFiles(r.stub, (files) =>
       files.write(`${W}/a`, new Uint8Array(INLINE_BYTES + 1).fill(1),
                   { expected: null, writer: "owner" }));
     await refusedWithNothingLeft(r, { max_bytes: full }, (files) =>
       files.write(`${W}/b`, new Uint8Array(INLINE_BYTES + 1).fill(2),
                   { expected: null, writer: "owner" }),
-    storageFullRefusal(storageFull(full, INLINE_BYTES + 1, 0, full, null, null)).message);
+    storageFullRefusal(storageFull(full, INLINE_BYTES + 1, 0, full, "free", TIERS)).message);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks"))
       .toEqual([{ n: SEED.chunks.size + 1 }]);
   });
@@ -110,14 +129,14 @@ describe("a file bound", () => {
     reason);
     await refusedWithNothingLeft(r, { max_file_bytes: 3 }, (files) =>
       files.write(`${W}/a`, text("four"), { expected: null, writer: "o" }), reason);
-    await refusedWithNothingLeft(r, { max_file_bytes: INLINE_BYTES + 1 }, (files) =>
-      files.begin(INLINE_BYTES + 2, ["a".repeat(64)], "owner"), reason);
+    await refusedWithNothingLeft(r, { max_file_bytes: INLINE_BYTES + 1 }, (files, unit) =>
+      unit(() => files.begin(INLINE_BYTES + 2, ["a".repeat(64)], "owner")), reason);
   });
 
   it("lets every change that only frees through a full index, and lets nothing go to admit " +
      "one that adds", async () => {
     const r = await rig();
-    await inFiles(r.stub, {}, async (files) => {
+    await inFiles(r.stub, async (files) => {
       for (const name of ["a", "b", "c", "d"]) {
         await files.write(`${W}/${name}`, text(name), { expected: null, writer: "o" });
       }
@@ -125,11 +144,13 @@ describe("a file bound", () => {
     const back = await crowd(r.stub, INDEX_BYTES, 0);
     // A delete adds a history row, but only frees: a full index never refuses it. A rename
     // adds history, so it is refused, and no kept version is let go to make it room.
-    await inFiles(r.stub, {}, (files) => files.remove(`${W}/a`, { expected: null, writer: "o" }));
-    await refusedWithNothingLeft(r, {}, (files) =>
-      files.rename(`${W}/b`, `${W}/c`, { expected: null, replace: true, writer: "o" }),
+    const remove = (path: string) => inFiles(r.stub, (files, unit) =>
+      unit(() => files.remove(path, { expected: null, writer: "o" })));
+    await remove(`${W}/a`);
+    await refusedWithNothingLeft(r, {}, (files, unit) =>
+      unit(() => files.rename(`${W}/b`, `${W}/c`, { expected: null, replace: true, writer: "o" })),
     INDEX_FULL);
-    await inFiles(r.stub, {}, (files) => files.remove(`${W}/c`, { expected: null, writer: "o" }));
+    await remove(`${W}/c`);
     expect(await r.stub.fileUsage(r.bind(null)))
       .toMatchObject({ entries: SEED.entries + 2, history: SEED.entries + 6 });
     await back();
@@ -159,7 +180,7 @@ describe("file history", () => {
     expect((await failure(() => write(r, `${W}/b`, "b"))).message).toBe(INDEX_FULL);
     expect(await rows()).toEqual(kept);
     // Housekeeping lets none go either: nothing is due.
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000 + 400 * 86_400));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000 + 400 * 86_400));
     expect(await rows()).toEqual(kept);
     await back();
     await counted(r);
@@ -169,33 +190,30 @@ describe("file history", () => {
      async () => {
     const r = await rig();
     const o = { expected: null, writer: "o" };
-    await inFiles(r.stub, { keep_recent: 3 }, async (files) => {
-      for (let i = 0; i < 5; i++) {
-        await files.write(`${W}/a`, text(`${i}`), o);
-      }
-    });
-    await inFiles(r.stub, { retention_days: 0 }, async (files) => {
-      for (let i = 0; i < 3; i++) {
-        await files.write(`${W}/b`, text(`${i}`), o);
-      }
-    });
+    // Each setting alone, its path written and read while it is the one in force: a change
+    // of retention re-marks every kept row under the new one, once the object's lane has run.
+    const under = async (files: Partial<FileSettings>, path: string, bodies: string[]) => {
+      await remarked(r, files);
+      await inFiles(r.stub, async (stored) => {
+        for (const body of bodies) {
+          await stored.write(path, text(body), o);
+        }
+      });
+      return sqlIn(r.stub, "SELECT size, prune_after IS NOT NULL AS due FROM file_history " +
+                             "WHERE path = ? ORDER BY version", path);
+    };
+    expect(await under({ keep_recent: 3 }, `${W}/a`, ["0", "1", "2", "3", "4"]))
+      .toEqual([1, 1, 1].map((size) => ({ size, due: 0 })));
+    expect(await under({ retention_days: 0 }, `${W}/b`, ["0", "1", "2"]))
+      .toEqual([1, 1, 0].map((due) => ({ size: 1, due })));
     // `keep_versions` alone is a count: the third version goes, the newest two stay.
-    await inFiles(r.stub, { keep_versions: 2 }, async (files) => {
-      for (const body of ["x", "xx", "xxx"]) {
-        await files.write(`${W}/c`, text(body), o);
-      }
-    });
-    expect(await sqlIn(r.stub, "SELECT path, size, prune_after IS NOT NULL AS due FROM " +
-                                 "file_history WHERE version > ? ORDER BY version",
-                       SEED.entries)).toEqual([
-      ...[1, 1, 1].map((size) => ({ path: `${W}/a`, size, due: 0 })),
-      ...[1, 1, 0].map((due) => ({ path: `${W}/b`, size: 1, due })),
-      { path: `${W}/c`, size: 2, due: 0 }, { path: `${W}/c`, size: 3, due: 0 }]);
+    expect(await under({ keep_versions: 2 }, `${W}/c`, ["x", "xx", "xxx"]))
+      .toEqual([{ size: 2, due: 0 }, { size: 3, due: 0 }]);
   });
 
   it("is never filled by live files' churn inside the window", async () => {
     const r = await rig();
-    await setPolicy(r, { keep_versions: 1, keep_recent: 1 });
+    await setFiles(r, { keep_versions: 1, keep_recent: 1 });
     for (let round = 0; round < 10; round++) {
       for (let i = 0; i < 10; i++) {
         await write(r, `${W}/f${i}`, `${round}`);
@@ -203,7 +221,7 @@ describe("file history", () => {
     }
     expect((await r.stub.fileUsage(r.bind(null))).history).toBe(SEED.entries + 10);
     // Kept inside the window, up to keep_recent each, and never past it.
-    await setPolicy(r, { keep_versions: 1, keep_recent: 3 });
+    await setFiles(r, { keep_versions: 1, keep_recent: 3 });
     await runDurableObjectAlarm(r.stub);
     for (let round = 0; round < 5; round++) {
       await write(r, `${W}/f0`, `again ${round}`);
@@ -216,7 +234,7 @@ describe("file history", () => {
   it("marks every kept row of a path that goes due, those kept for their age too",
      async () => {
     const r = await rig();
-    await setPolicy(r, { keep_versions: 1, keep_recent: 3, retention_days: 30 });
+    await setFiles(r, { keep_versions: 1, keep_recent: 3, retention_days: 30 });
     await write(r, `${W}/old`, "1");
     await write(r, `${W}/old`, "2");  // version 1 is now kept for its age, due to go
     const due = () => sqlIn(r.stub, "SELECT released, prune_after IS NOT NULL AS due " +
@@ -236,7 +254,7 @@ describe("file history", () => {
   it("never lowers the feed's floor when it prunes a path older than one purged", async () => {
     const r = await rig();
     const limits = { keep_recent: 2, retention_days: 0 };
-    await setPolicy(r, limits);
+    await setFiles(r, limits);
     const pair = async (name: string) => {
       await write(r, `${W}/${name}`, name);
       await r.stub.fileRemove(r.bind(null), { path: `${W}/${name}`, expected_etag: null,
@@ -247,7 +265,7 @@ describe("file history", () => {
     }
     expect(await r.stub.fileHistoryPurge(r.bind(null), { path: `${W}/n4` }))
       .toEqual({ purged: 2 });  // the floor rises to n4's delete, the seed's versions and 10
-    await inFiles(r.stub, limits, (files) => files.run(Date.now() / 1000 + 1));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000 + 1));
     expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
       .toEqual([{ feed_floor: SEED.entries + 10 }]);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history WHERE path = ?",
@@ -269,7 +287,7 @@ describe("file history", () => {
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = CASE version WHEN ? THEN 1 " +
                           "WHEN ? THEN 2 ELSE 9000000000 END WHERE version > ?", v(4), v(2),
                 SEED.entries);
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
       .toEqual([{ feed_floor: v(4) }]);
     expect(await sqlIn(r.stub, "SELECT version FROM file_history WHERE version > ? " +
@@ -279,14 +297,14 @@ describe("file history", () => {
 
   it("is re-marked by a retention change, on the one schedule", async () => {
     const r = await rig();
-    await setPolicy(r, { keep_versions: 1, keep_recent: 1 });
+    await setFiles(r, { keep_versions: 1, keep_recent: 1 });
     await write(r, `${W}/b`, "1");
     await write(r, `${W}/c`, "1");
     await r.stub.fileRemove(r.bind(null), { path: `${W}/c`, expected_etag: null,
                                             recursive: false });
     expect((await r.stub.fileUsage(r.bind(null))).history).toBe(SEED.entries + 2);
     // A retention change re-marks the rows already kept, on the one schedule.
-    await setPolicy(r, { keep_versions: 1, keep_recent: 1, retention_days: 0 });
+    await setFiles(r, { keep_versions: 1, keep_recent: 1, retention_days: 0 });
     // Due at once: the alarm may already have run by itself; run it if it has not.
     await runDurableObjectAlarm(r.stub);
     const one = SEED.entries + 1;
@@ -319,15 +337,18 @@ describe("file history", () => {
 
   it("re-marks rows for a longer retention too, a batch of paths a pass", async () => {
     const r = await rig();
-    await inFiles(r.stub, { keep_versions: 1, retention_days: 30 }, async (files) => {
+    await setFiles(r, { keep_versions: 1, retention_days: 30 });
+    await inFiles(r.stub, async (files) => {
       for (let i = 0; i < 600; i++) {
         await files.write(`${W}/p${i}`, text("1"), { expected: null, writer: "o" });
         await files.write(`${W}/p${i}`, text("2"), { expected: null, writer: "o" });
       }
     });
-    // The rows were marked under keep 1; the policy in force keeps 3.
+    // The policy in force keeps 3, and its rows were marked under keep 1, as a re-mark the
+    // object's own lane has not run yet leaves them.
+    await remarked(r, { keep_versions: 3, retention_days: 30 });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
-    await inFiles(r.stub, { keep_versions: 3, retention_days: 30 }, async (files) => {
+    await inFiles(r.stub, async (files) => {
       expect(files.next(1000)).toBe(1000);
       await files.run(Date.now() / 1000);
       expect(files.next(1000)).toBe(1000);  // 500 paths a pass: one more to go
@@ -342,13 +363,15 @@ describe("file history", () => {
   it("re-marks rows for a change of days alone, each due its days after it was written",
      async () => {
     const r = await rig();
-    await inFiles(r.stub, { keep_versions: 1, retention_days: 30 }, async (files) => {
+    await setFiles(r, { keep_versions: 1, retention_days: 30 });
+    await inFiles(r.stub, async (files) => {
       for (const body of ["1", "2", "3"]) {
         await files.write(`${W}/a`, text(body), { expected: null, writer: "o" });
       }
     });
+    await remarked(r, { keep_versions: 1, retention_days: 2 });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
-    await inFiles(r.stub, { keep_versions: 1, retention_days: 2 }, async (files) => {
+    await inFiles(r.stub, async (files) => {
       expect(files.next(1000)).toBe(1000);
       await files.run(1000);
     });
@@ -363,7 +386,7 @@ describe("file history", () => {
     // Only the nightly manifest's job: nothing of the files' is due.
     expect(await runInDurableObject(r.stub, (_instance: OwnerDO, state) =>
       state.storage.getAlarm())).toBe((await laneAt(r.stub, "manifest"))! * 1000);
-    await setPolicy(r, { keep_recent: 5 });
+    await setFiles(r, { keep_recent: 5 });
     // Due at once, the alarm runs by itself and re-marks the rows under the new policy.
     const retained = async () => (await sqlIn(r.stub, "SELECT retained_recent FROM file_space"))[0];
     for (let i = 0; i < 50 && (await retained())!["retained_recent"] !== 5; i++) {
@@ -374,13 +397,15 @@ describe("file history", () => {
 
   it("drops rows past a lowered keep_recent, in housekeeping", async () => {
     const r = await rig();
-    await inFiles(r.stub, { keep_versions: 1, keep_recent: 5 }, async (files) => {
+    await setFiles(r, { keep_versions: 1, keep_recent: 5 });
+    await inFiles(r.stub, async (files) => {
       for (const body of ["1", "2", "3", "4", "5"]) {
         await files.write(`${W}/a`, text(body), { expected: null, writer: "o" });
       }
     });
+    await remarked(r, { keep_versions: 1, keep_recent: 2 });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_recent = 5");
-    await inFiles(r.stub, { keep_versions: 1, keep_recent: 2 }, async (files) => {
+    await inFiles(r.stub, async (files) => {
       expect(files.next(1000)).toBe(1000);
       await files.run(1000);
     });
@@ -392,7 +417,8 @@ describe("file history", () => {
 
   it("starts a pass over when the policy changes during it", async () => {
     const r = await rig();
-    await inFiles(r.stub, { keep_versions: 1, retention_days: 30 }, async (files) => {
+    await setFiles(r, { keep_versions: 1, retention_days: 30 });
+    await inFiles(r.stub, async (files) => {
       for (let i = 0; i < 600; i++) {
         await files.write(`${W}/p${String(i).padStart(3, "0")}`, text("1"),
                           { expected: null, writer: "o" });
@@ -400,15 +426,17 @@ describe("file history", () => {
                           { expected: null, writer: "o" });
       }
     });
-    await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
     // A first pass under keep 2 stops after 500 paths, the seed's first in path order; keep
     // 1 then comes back in force.
-    await inFiles(r.stub, { keep_versions: 2, retention_days: 30 }, (files) => files.run(1000));
+    await remarked(r, { keep_versions: 2, retention_days: 30 });
+    await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
+    await inFiles(r.stub, (files) => files.run(1000));
     const paths = [...SEED.paths, ...Array.from({ length: 600 }, (_, i) =>
       `${W}/p${String(i).padStart(3, "0")}`)].sort();
     expect(await sqlIn(r.stub, "SELECT retain_cursor FROM file_space"))
       .toEqual([{ retain_cursor: paths[499] }]);
-    await inFiles(r.stub, { keep_versions: 1, retention_days: 30 }, async (files) => {
+    await remarked(r, { keep_versions: 1, retention_days: 30 });
+    await inFiles(r.stub, async (files) => {
       await files.run(1000);
       await files.run(1000);
       expect(files.next(1000)).not.toBe(1000);
@@ -422,17 +450,19 @@ describe("file history", () => {
   it("never wedges housekeeping: a pass at every bound still expires, prunes and collects",
      async () => {
     const r = await rig();
-    await inFiles(r.stub, {}, async (files) => {
+    await inFiles(r.stub, async (files, unit) => {
       for (let i = 0; i < 20; i++) {
-        const dir = files.tempDir("t-", "agent");
+        const dir = await unit(() => files.tempDir("t-", "agent"));
         for (let j = 0; j < 30; j++) {
           await files.write(`${dir}/f${j}`, text(`${i}-${j}`), { expected: null,
                                                                   writer: "agent" });
         }
       }
       await files.write(`${W}/a`, text("1"), { expected: null, writer: "o" });
-      files.remove(`${W}/a`, { expected: null, writer: "o" });
-      files.begin(INLINE_BYTES + 1, ["a".repeat(64)], "owner");
+      await unit(() => {
+        files.remove(`${W}/a`, { expected: null, writer: "o" });
+        files.begin(INLINE_BYTES + 1, ["a".repeat(64)], "owner");
+      });
     });
     // The temporary area keeps no history at all.
     expect(await sqlIn(r.stub,
@@ -445,7 +475,8 @@ describe("file history", () => {
     expect(before.entries).toBeGreaterThan(SEED.entries + 600);
     expect(before.history).toBe(SEED.entries + 2);
     const back = await crowd(r.stub, INDEX_BYTES, 0);
-    await inFiles(r.stub, { max_bytes: 0 }, (files) => files.run(Date.now() / 1000));
+    await setFiles(r, { max_bytes: 0 });
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     const after = await r.stub.fileUsage(r.bind(null));
     // All of it goes but the seed, whose files are the owner's own and live.
     expect([after.entries, after.history, after.intents])
@@ -496,7 +527,7 @@ describe("the retention marks' migration (untangle F1, owner migration 8)", () =
         "at, prune_after) SELECT i, '/workspace/p' || i, 'mkdir', 'dir', NULL, 0, 0, " +
         "'owner', 1, 86401 FROM n"), r);
     for (let pass = 0; pass < 2; pass++) {
-      await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+      await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     }
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n, COUNT(prune_after) AS due " +
                                  "FROM file_history")).toEqual([{ n: 501, due: 0 }]);
@@ -510,7 +541,7 @@ describe("the files policy", () => {
     expect((await r.stub.fileUsage(r.bind(null))).limits)
       .toEqual({ ...FILE_DEFAULTS, max_bytes: tier });
     expect(JSON.parse(DEFAULT_POLICY_JSON)).not.toHaveProperty("files");
-    await setPolicy(r, { max_file_bytes: 1 });
+    await setFiles(r, { max_file_bytes: 1 });
     expect((await r.stub.fileUsage(r.bind(null))).limits)
       .toEqual({ ...FILE_DEFAULTS, max_bytes: tier, max_file_bytes: 1 });
     await write(r, `${W}/a`, "a");
@@ -537,9 +568,9 @@ describe("the files policy", () => {
       .toMatchObject({ limit_bytes: room, tier: "free",
                        upgrade: { tier: "paid", limit_bytes: 250_000_000_000 } });
     // The owner's own figure binds only below the tier's.
-    await setPolicy(r, { max_bytes: 10 * INLINE_BYTES });
+    await setFiles(r, { max_bytes: 10 * INLINE_BYTES });
     expect((await r.stub.fileUsage(r.bind(null))).limits.max_bytes).toBe(10 * INLINE_BYTES);
-    await setPolicy(r, { max_bytes: FILE_SETTINGS.max_bytes[1] });
+    await setFiles(r, { max_bytes: FILE_SETTINGS.max_bytes[1] });
     expect((await r.stub.fileUsage(r.bind(null))).limits.max_bytes)
       .toBe(TIERS.free.storage_bytes);
     await put(`${W}/b`, 2);
@@ -564,11 +595,11 @@ describe("the files policy", () => {
             FILE_DEFAULTS.keep_recent]).toEqual([null, null, null]);
     for (const retired of ["max_entries", "max_history", "max_manifest_bytes",
                            "max_inline_bytes"]) {
-      expect((await failure(() => setPolicy(r, { [retired]: 1 }))).message)
+      expect((await failure(() => setFiles(r, { [retired]: 1 } as never))).message)
         .toBe("invalid files policy");
     }
     // Retention the owner sets has no rule against any other setting.
-    await setPolicy(r, { keep_versions: KEEP_CEILING, keep_recent: KEEP_CEILING,
+    await setFiles(r, { keep_versions: KEEP_CEILING, keep_recent: KEEP_CEILING,
                          retention_days: 3650 });
     expect(FILE_SETTINGS.keep_versions[1]).toBe(KEEP_CEILING);
     expect(FILE_SETTINGS.max_file_bytes[1]).toBe(MAX_INTENT_CHUNKS * CHUNK_BYTES);
@@ -585,6 +616,7 @@ describe("the files policy", () => {
     ["not a table", [1]],
   ])("refuses %s", async (_what, files) => {
     const r = await rig();
-    expect((await failure(() => setPolicy(r, files))).message).toBe("invalid files policy");
+    expect((await failure(() => setFiles(r, files as never))).message)
+      .toBe("invalid files policy");
   });
 });

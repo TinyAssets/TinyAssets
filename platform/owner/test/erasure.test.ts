@@ -33,9 +33,9 @@ import {
   eraseBegun, erasedWhole, erasuresSent, finished, outsideConfirmed, pastGrace, tables,
   until, wipedWhole,
 } from "./erasure-support";
-import { MCP, MUSE, rig as ledgerRig, signedIn, storesOn } from "./ledger-support";
+import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { later, recorder } from "./runs-support";
-import { admittedOwner, alarmOf, failure, gateFor, sqlIn, TIERS } from "./support";
+import { admittedOwner, alarmOf, failure, gateFor, sqlIn, storesOn, TIERS } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();

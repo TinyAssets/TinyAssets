@@ -11,13 +11,11 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 
-import { Bodies } from "../src/bodies";
 import { refusalOf } from "../../contract/src/refusal";
 import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { LIMITS } from "../src/collections";
 import { PLACE_TTL_S } from "../src/files";
 import { GC_GRACE_S, INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
-import { WriteGate } from "../src/gate";
 import { GRANT_LIMITS, scopes } from "../src/grants";
 import { MAX_BODY_BYTES } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
@@ -27,7 +25,7 @@ import { eraseBegun, erasedWhole, finished } from "./erasure-support";
 import { MUSE, rig, signedIn } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import {
-  admittedOwner, failure, filesOn, ownerObject, sqlIn, starterSeed, text, TIERS,
+  admittedOwner, failure, ownerObject, setFiles, sqlIn, starterSeed, storesOn, text, TIERS,
 } from "./support";
 
 afterEach(() => {
@@ -164,9 +162,7 @@ describe("the placement rule", () => {
      async () => {
     const { stub } = await ownerObject();
     await runInDurableObject(stub, async (_instance: OwnerDO, state) => {
-      const gate = new WriteGate(state.storage);
-      const files = filesOn(gate.storage, gate.write);
-      const bodies = new Bodies(files, gate.storage, gate.write);
+      const { gate, files, bodies } = storesOn(state);
       // The bytes reach R2 first; the object crashes before the row's unit. The upload
       // holds them minutes, not the day a file's upload may take.
       expect(PLACE_TTL_S).toBe(600);
@@ -299,9 +295,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
   it("A2: an outside client's placed bodies are its own, held to its share and the reserve",
      async () => {
     const r = await rig();
-    const { generation, policy } = await r.stub.policyRead(r.bind(null));
-    await r.stub.policyWrite(r.session(null), { expected_generation: generation, policy: {
-      ...policy, files: { max_bytes: 100_000, client_share: 10, owner_reserve: 50 } } as never });
+    await setFiles(r, { max_bytes: 100_000, client_share: 10, owner_reserve: 50 });
     const outcomes: string[] = [];
     for (let n = 0; n < 10; n++) {
       try {
@@ -468,8 +462,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     await env.FILES.putChunks(ns, KEYS.get(ns)!, [{ sha256: straySha, bytes: stray }]);
     await eraseBegun(stub, session);
     await runInDurableObject(stub, async (_instance: OwnerDO, state) => {
-      const gate = new WriteGate(state.storage);
-      const files = filesOn(gate.storage, gate.write);
+      const { gate, files } = storesOn(state);
       await expect(gate.write(() => files.begin(INLINE_BYTES + 1, ["b".repeat(64)], "owner")))
         .rejects.toThrow("this owner is being erased");
     });

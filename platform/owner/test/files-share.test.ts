@@ -17,7 +17,6 @@ import {
   FILE_INDEX_FULL, FILE_QUOTA, FILE_SHARE, type Files, INDEX_BYTES, MAX_OPEN_INTENTS,
 } from "../src/files";
 import { sha256Hex } from "../../contract/src/digest";
-import { WriteGate } from "../src/gate";
 import {
   CHUNK_LIST_ROW_BYTES, HISTORY_BYTES, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PAGE_ROOM,
   PAGE_USABLE, RECORD_FIXED, record, recordBytes, SHARE_BYTES, TABLE_KEPT, WORST_FILL,
@@ -27,19 +26,14 @@ import { FILE_SETTINGS } from "../../contract/src/policy-document";
 import { MIGRATIONS } from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
 import {
-  crowd, failure, fileCounters, filesOn, inFiles, namedCode, sqlIn, starterSeed, text,
+  crowd, failure, fileCounters, inFiles, namedCode, setFiles, sqlIn, starterSeed, storesOn,
+  text,
 } from "./support";
 
 const W = "/workspace";
 /** What every owner's seed holds before a test writes (`starterSeed`). */
 const SEED = starterSeed();
 const CLIENT = `client:${MUSE.client}`;
-
-async function setPolicy(r: Rig, files: unknown) {
-  const { generation, policy } = await r.stub.policyRead(r.bind(null));
-  return r.stub.policyWrite(r.session(null), { expected_generation: generation,
-                                               policy: { ...policy, files } as never });
-}
 
 /**
  * A whole write: the owner's with no etag; an outside client's at the etag it read, as every
@@ -116,9 +110,9 @@ describe("the manifest charge", () => {
   it.each([24, 255, 1002, 1003, 2048, MAX_PATH_BYTES])(
     "covers what the object's database grows by, for paths of %i bytes", async (bytes) => {
       const r = await rig();
+      await setFiles(r, { keep_versions: 20, keep_recent: 20 });
       await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
-        const files = filesOn(state.storage, new WriteGate(state.storage).write, undefined,
-                              { keep_versions: 20, keep_recent: 20 });
+        const { files } = storesOn(state);
         const sql = state.storage.sql;
         const charged = () => sql.exec<{ m: number }>(
           "SELECT manifest_bytes AS m FROM file_space").one().m;
@@ -167,7 +161,7 @@ describe("an outside client's share", () => {
   it("refuses a client writing long paths at its share, and the owner still writes",
      async () => {
     const r = await rig();
-    await setPolicy(r, { client_share: 1 });
+    await setFiles(r, { client_share: 1 });
     const dir = deep(MAX_PATH_BYTES - 100);
     await r.stub.fileMkdir(r.bind(null), { path: dir, expected_etag: null });
     await write(r, MUSE, longPath(dir, MAX_PATH_BYTES, 0));
@@ -207,7 +201,7 @@ describe("an outside client's share", () => {
   it("refuses a client writing many versions of a long path at its share, and the owner " +
      "still writes", async () => {
     const r = await rig();
-    await setPolicy(r, { client_share: 1 });
+    await setFiles(r, { client_share: 1 });
     const dir = deep(MAX_PATH_BYTES - 100);
     await r.stub.fileMkdir(r.bind(null), { path: dir, expected_etag: null });
     const path = longPath(dir, MAX_PATH_BYTES, 1);
@@ -239,7 +233,7 @@ describe("an outside client's share", () => {
   it("holds all clients together to what the owner's reserve leaves, and every write to the " +
      "owner's whole", async () => {
     const r = await rig();
-    await setPolicy(r, { client_share: 40, owner_reserve: 50 });
+    await setFiles(r, { client_share: 40, owner_reserve: 50 });
     await write(r, MUSE, `${W}/muse-0`);
     const backMuse = await crowd(r.stub, shareOf(40), 0, CLIENT);
     await refused(r, () => write(r, MUSE, `${W}/muse-1`), CLIENT_FULL);
@@ -264,7 +258,7 @@ describe("an outside client's share", () => {
      async () => {
     const r = await rig();
     await r.register(MUSE);
-    await setPolicy(r, { client_share: 1 });
+    await setFiles(r, { client_share: 1 });
     await write(r, MUSE, `${W}/${"f".repeat(200)}`, "x".repeat(4000));
     const back = await crowd(r.stub, shareOf(1), 50_000, CLIENT);
     let full = false;
@@ -280,7 +274,7 @@ describe("an outside client's share", () => {
       expected_revision: row!.revision, name: "" });
     expect(narrowed.mode).toBe("scoped");
     expect((await r.stub.grantRevoke(r.bind(null), { client: MUSE.client })).revoked).toBe(true);
-    await setPolicy(r, { client_share: 50 });
+    await setFiles(r, { client_share: 50 });
     expect((await r.stub.fileUsage(r.bind(null))).limits.client_share).toBe(50);
     await write(r, null, `${W}/owner.md`, "the owner's own");
     expect((await failure(() => write(r, MUSE, `${W}/after.md`))).message)
@@ -292,7 +286,7 @@ describe("an outside client's share", () => {
   it("holds a client's open uploads to its share, and all clients' to the owner's reserve",
      async () => {
     const r = await rig();
-    await setPolicy(r, { client_share: 25, owner_reserve: 60 });
+    await setFiles(r, { client_share: 25, owner_reserve: 60 });
     const begin = (origin: typeof MUSE | null, n: number) => r.stub.fileUploadBegin(
       r.bind(origin), { size: INLINE_BYTES + 1, chunks: [n.toString(16).padStart(64, "0")] });
     const mine = Math.floor(MAX_OPEN_INTENTS * 25 / 100);
@@ -322,17 +316,18 @@ describe("an outside client's share", () => {
      async () => {
     const r = await rig();
     const sha = "e".repeat(64);
-    await inFiles(r.stub, {}, (files: Files) => {
+    await inFiles(r.stub, (files: Files, unit) => unit(() => {
       const begun = files.begin(INLINE_BYTES + 1, [sha], CLIENT);
       files.abort(begun.intent_id);
-    });
+    }));
     // Garbage holds no chunk bytes, but its row is still the client's.
     expect(await share(r, CLIENT)).toMatchObject({ chunk_bytes: 0, entries: 0 });
     await counted(r);
     // A garbage chunk's holder never changes.
     expect((await failure(() => sqlIn(r.stub, "UPDATE file_chunks SET holder = 'owner'")))
       .message).toMatch(/a garbage chunk's holder never changes/);
-    await inFiles(r.stub, {}, (files: Files) => files.begin(INLINE_BYTES + 1, [sha], "owner"));
+    await inFiles(r.stub, (files: Files, unit) =>
+      unit(() => files.begin(INLINE_BYTES + 1, [sha], "owner")));
     expect(await share(r, CLIENT)).toBeUndefined();
     expect(await sqlIn(r.stub, "SELECT who, manifest_bytes FROM file_shares WHERE who != 'owner'"))
       .toEqual([{ who: "*", manifest_bytes: SHARE_BYTES }]);
@@ -342,29 +337,35 @@ describe("an outside client's share", () => {
   it("keeps every share and the manifest's bytes equal to a recount of the rows",
      async () => {
     const r = await rig();
-    const lease = await inFiles(r.stub, {}, (files) =>
-      files.leaseAcquire("owner", "sync", { egress: "a".repeat(64), sync: "b".repeat(64), runner: "c".repeat(64) }, 1));
-    await inFiles(r.stub, { client_share: 100, owner_reserve: 0 }, async (files: Files) => {
+    const lease = await inFiles(r.stub, (files, unit) => unit(() =>
+      files.leaseAcquire("owner", "sync", { egress: "a".repeat(64), sync: "b".repeat(64),
+                                            runner: "c".repeat(64) }, 1)));
+    await setFiles(r, { client_share: 100, owner_reserve: 0 });
+    await inFiles(r.stub, async (files: Files, unit) => {
       await files.write(`${W}/d/a.txt`, text("a"), { expected: null, writer: CLIENT });
       await files.write(`${W}/d/b.bin`, new Uint8Array(INLINE_BYTES + 10),
                         { expected: null, writer: CLIENT });
       await files.write(`${W}/d/a.txt`, text("owner's"), { expected: null, writer: "owner" });
-      files.rename(`${W}/d`, `${W}/e`, { expected: null, replace: false, writer: CLIENT });
-      const temp = files.tempDir("t-", CLIENT);
+      const temp = await unit(() => {
+        files.rename(`${W}/d`, `${W}/e`, { expected: null, replace: false, writer: CLIENT });
+        return files.tempDir("t-", CLIENT);
+      });
       await files.write(`${temp}/x`, text("tmp"), { expected: null, writer: CLIENT });
-      files.mkdir(`${W}/f`, { expected: null, writer: `client:${DOT.client}` });
-      files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
-        { op: "write", path: `${W}/e/a.txt`, base: null, inline: text("sandbox") },
-      ] });
-      files.remove(`${W}/e/b.bin`, { expected: null, writer: CLIENT });
-      files.purge(`${W}/e/b.bin`);
-      files.dropTemps([temp], CLIENT);
+      await unit(() => {
+        files.mkdir(`${W}/f`, { expected: null, writer: `client:${DOT.client}` });
+        files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
+          { op: "write", path: `${W}/e/a.txt`, base: null, inline: text("sandbox") },
+        ] });
+        files.remove(`${W}/e/b.bin`, { expected: null, writer: CLIENT });
+        files.purge(`${W}/e/b.bin`);
+        files.dropTemps([temp], CLIENT);
+      });
     });
     const kept = await counted(r);
     expect(JSON.parse(kept["shares"] as string)).toHaveProperty(CLIENT);
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1");
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
-    await inFiles(r.stub, {}, (files: Files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files: Files) => files.run(Date.now() / 1000));
     await counted(r);
   });
 });
@@ -379,9 +380,9 @@ describe("the manifest charge at worst fill", () => {
   it("bounds what a database filled, thinned and filled again grows by, at WORST_FILL",
      { tags: ["large"] }, async () => {
     const r = await rig();
+    await setFiles(r, { keep_versions: 1, keep_recent: 1, client_share: 100, owner_reserve: 0 });
     const ratios = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
-      const files = filesOn(state.storage, new WriteGate(state.storage).write, undefined, {
-        keep_versions: 1, keep_recent: 1, client_share: 100, owner_reserve: 0 });
+      const { gate, files } = storesOn(state);
       const sql = state.storage.sql;
       const charged = () => sql.exec<{ m: number }>(
         "SELECT manifest_bytes AS m FROM file_space").one().m;
@@ -403,12 +404,12 @@ describe("the manifest charge at worst fill", () => {
         }
         seen.push((sql.databaseSize - size) / (charged() - charge));
         if (k < rounds) {
-          made.forEach((at, i) => {
+          await gate.write(() => made.forEach((at, i) => {
             if (i % 2 === 1) {
               files.remove(at, { expected: null, writer: CLIENT });
               files.purge(at);
             }
-          });
+          }));
         }
       }
       return seen;
@@ -475,7 +476,7 @@ describe("deduplication in each scope", () => {
     const r = await rig();
     const big = new Uint8Array(3 * INLINE_BYTES + 7).fill(7);
     const small = text("s".repeat(4000));
-    await inFiles(r.stub, {}, async (files: Files) => {
+    await inFiles(r.stub, async (files: Files) => {
       await files.write(`${W}/owner-big`, big, { expected: null, writer: "owner" });
       await files.write(`${W}/owner-small`, small, { expected: null, writer: "owner" });
       await files.write(`${W}/client-big`, big, { expected: null, writer: CLIENT });
@@ -483,12 +484,12 @@ describe("deduplication in each scope", () => {
     });
     expect(await share(r, "owner")).toMatchObject({
       chunk_bytes: SEED.placedBytes + big.length, inline_bytes: SEED.inlineBytes + small.length });
-    await inFiles(r.stub, {}, (files: Files) => {
+    await inFiles(r.stub, (files: Files, unit) => unit(() => {
       for (const path of [`${W}/owner-big`, `${W}/owner-small`]) {
         files.remove(path, { expected: null, writer: "owner" });
         files.purge(path);
       }
-    });
+    }));
     expect(await share(r, CLIENT)).toMatchObject({ chunk_bytes: big.length,
                                                    inline_bytes: small.length });
     expect(await share(r, "owner")).toMatchObject({ chunk_bytes: SEED.placedBytes,
@@ -504,7 +505,7 @@ describe("deduplication in each scope", () => {
     const r = await rig();
     const whole = new Uint8Array(CHUNK_BYTES + 5).fill(3);
     const head = sha256Hex(whole.subarray(0, CHUNK_BYTES));
-    const entry = await inFiles(r.stub, {}, async (files: Files) => {
+    const entry = await inFiles(r.stub, async (files: Files) => {
       await files.write(`${W}/log`, whole, { expected: null, writer: "owner" });
       // A client's append, as the environment makes it: the read head kept, a tail sent.
       return files.write(`${W}/log`, text("more"), {
@@ -520,13 +521,15 @@ describe("deduplication in each scope", () => {
     const big = new Uint8Array(INLINE_BYTES + 11).fill(5);
     // The owner's index bytes as its seed left them: its own row's and its seed's.
     const seeded = (await share(r, "owner"))!["manifest_bytes"];
-    await inFiles(r.stub, {}, async (files: Files) => {
+    await inFiles(r.stub, async (files: Files, unit) => {
       await files.write(`${W}/owner.bin`, big, { expected: null, writer: "owner" });
       await files.write(`${W}/client.bin`, big, { expected: null, writer: CLIENT });
-      for (const [path, writer] of [[`${W}/owner.bin`, "owner"], [`${W}/client.bin`, CLIENT]]) {
-        files.remove(path!, { expected: null, writer: writer! });
-        files.purge(path!);
-      }
+      await unit(() => {
+        for (const [path, writer] of [[`${W}/owner.bin`, "owner"], [`${W}/client.bin`, CLIENT]]) {
+          files.remove(path!, { expected: null, writer: writer! });
+          files.purge(path!);
+        }
+      });
     });
     expect(await sqlIn(r.stub, "SELECT state, holder FROM file_chunks WHERE sha256 = ?",
                        sha256Hex(big))).toEqual([{ state: "garbage", holder: CLIENT }]);
@@ -574,7 +577,7 @@ describe("deduplication in each scope", () => {
   it("holds a client's write to the owner's whole index, beside the clients' share",
      async () => {
     const r = await rig();
-    await setPolicy(r, { client_share: 30, owner_reserve: 0 });
+    await setFiles(r, { client_share: 30, owner_reserve: 0 });
     await write(r, null, `${W}/owner-0`);
     await write(r, MUSE, `${W}/muse-0`);
     const back = await crowd(r.stub, INDEX_BYTES, 0);
@@ -639,9 +642,9 @@ describe("a random sequence of changes", () => {
                     new Uint8Array(INLINE_BYTES + 3).fill(2)];
     const broken: string[] = [];
     let done = 0;
-    await inFiles(r.stub, { client_share: 60, owner_reserve: 10, keep_versions: 2,
-                            keep_recent: 3 },
-                  async (files: Files) => {
+    await setFiles(r, { client_share: 60, owner_reserve: 10, keep_versions: 2,
+                        keep_recent: 3 });
+    await inFiles(r.stub, async (files: Files, unit) => {
       const temps: string[] = [];
       for (let step = 0; step < 120; step++) {
         const writer = pick(writers);
@@ -651,27 +654,29 @@ describe("a random sequence of changes", () => {
           if (op === "write") {
             await files.write(pick(paths), pick(bodies), { expected: null, writer });
           } else if (op === "mkdir") {
-            files.mkdir(`${pick(paths)}x`, { expected: null, writer });
+            await unit(() => files.mkdir(`${pick(paths)}x`, { expected: null, writer }));
           } else if (op === "remove") {
-            files.remove(pick(paths), { expected: null, recursive: true, writer });
+            await unit(() => files.remove(pick(paths), { expected: null, recursive: true,
+                                                          writer }));
           } else if (op === "rename") {
-            files.rename(pick(paths), pick(paths), { expected: null, replace: rand() < 0.5,
-                                                     writer });
+            await unit(() => files.rename(pick(paths), pick(paths), {
+              expected: null, replace: rand() < 0.5, writer }));
           } else if (op === "restore" || op === "redact") {
             const path = pick(paths);
             const versions = files.history(path, null, 50).changes;
             if (op === "restore" && versions.length > 0) {
-              files.restore(path, pick(versions).version, { expected: null, writer });
+              await unit(() => files.restore(path, pick(versions).version,
+                                             { expected: null, writer }));
             } else if (op === "redact" && versions.length > 1) {
-              files.redact(path, versions.at(-1)!.version);
+              await unit(() => files.redact(path, versions.at(-1)!.version));
             }
           } else if (op === "purge") {
-            files.purge(pick(paths));
+            await unit(() => files.purge(pick(paths)));
           } else if (op === "temp") {
-            temps.push(files.tempDir("t-", writer));
+            temps.push(await unit(() => files.tempDir("t-", writer)));
             await files.write(`${temps.at(-1)}/f`, pick(bodies), { expected: null, writer });
           } else if (op === "drop" && temps.length > 0) {
-            files.dropTemps([temps.pop()!], writer);
+            await unit(() => files.dropTemps([temps.pop()!], writer));
           } else if (op === "collect") {
             await files.run(Date.now() / 1000 + 40 * 86_400);
           }
@@ -697,9 +702,10 @@ describe("the files policy's shares", () => {
     expect(Object.keys(FILE_SETTINGS)).not.toContain("max_manifest_bytes");
     for (const files of [{ max_manifest_bytes: 1 }, { client_share: 101 },
                          { owner_reserve: -1 }, { client_share: 2.5 }]) {
-      expect((await failure(() => setPolicy(r, files))).message).toBe("invalid files policy");
+      expect((await failure(() => setFiles(r, files as never))).message)
+        .toBe("invalid files policy");
     }
-    await setPolicy(r, { client_share: 0 });
+    await setFiles(r, { client_share: 0 });
     await refused(r, () => write(r, MUSE, `${W}/a`), CLIENT_FULL);
     await write(r, null, `${W}/a`);
   });

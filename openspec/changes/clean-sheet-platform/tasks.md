@@ -372,6 +372,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     backups wiring with them, researched first (`t1c.md`, T1c-b item 6).
   - [ ] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
     copy of the object's wiring, deleted.
+  - [ ] T1e: `support.ts` `filesOn`, `TIERLESS_FULL` and `collectionParts`, copies of the
+    object's wiring, deleted: the files and collections tests reach `ownerStores`, which wires
+    a file change itself (no `changed` parameter, no `NO_FILE_CHANGE`), each test's limits
+    set by the owner's files policy (`t1c.md`, T1e).
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real

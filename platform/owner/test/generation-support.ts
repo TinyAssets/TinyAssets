@@ -14,12 +14,11 @@ import { env } from "cloudflare:workers";
 import { GENERATION_SIZES } from "../src/backup";
 import { exported } from "../src/export";
 import type { Files } from "../src/files";
-import { WriteGate } from "../src/gate";
+import type { WriteGate } from "../src/gate";
 import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { NO_FILE_CHANGE } from "./stores";
-import { admittedOwner, drainDue, filesOn, sqlIn, through, TIERS } from "./support";
+import { admittedOwner, drainDue, sqlIn, storesOn, through, TIERS } from "./support";
 
 export type Line = Record<string, unknown> & { t: string };
 
@@ -101,9 +100,9 @@ export interface Generated {
 }
 
 /**
- * Where a harness's hook acts: a writer's files of the test's own over the owner's storage
- * (alone: no other module told of its changes), the gate it writes through, and the pass's
- * stores, the lane's own.
+ * Where a harness's hook acts: the owner's files for a writer of the test's own, wired as the
+ * object wires them (`storesOn`), the gate it writes through, and the pass's stores, the
+ * lane's own.
  */
 export interface At {
   readonly files: Files;
@@ -133,8 +132,7 @@ const MANIFEST_NOTICES = "type LIKE 'manifest%'";
 export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}):
     Promise<Generated> {
   return runInDurableObject(stub, async (_instance: OwnerDO, state) => {
-    const gate = new WriteGate(state.storage);
-    const files = filesOn(gate.storage, gate.write);
+    const { gate, files } = storesOn(state);
     const told = () => state.storage.sql.exec<{ seq: number }>(
       `SELECT coalesce(max(seq), 0) AS seq FROM owner_notices WHERE ${MANIFEST_NOTICES}`)
       .one().seq;
@@ -191,7 +189,7 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     // calls through `store`, as a restarted object builds it.
     const lane = () => {
       stores = ownerStores({ storage: gate.storage, write: gate.write, quiet },
-                           { ...env, FILES: store }, state.id, NO_FILE_CHANGE);
+                           { ...env, FILES: store }, state.id);
       return stores.backups;
     };
     // The one under way, or a new one, begun now (its owner changed since the last).

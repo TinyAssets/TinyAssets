@@ -16,7 +16,7 @@ import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import {
-  failure, fileCounters, inFiles, laneAt, ownerObject, sqlIn, starterSeed, text,
+  failure, fileCounters, inFiles, laneAt, ownerObject, setFiles, sqlIn, starterSeed, text,
 } from "./support";
 
 const W = "/workspace";
@@ -165,7 +165,7 @@ describe("a file write", () => {
     const [b] = await sqlIn(other.stub, "SELECT ns FROM file_space");
     expect(a!["ns"]).toMatch(/^[0-9a-f]{32}$/);
     expect(a!["ns"]).not.toBe(b!["ns"]);
-    expect(await inFiles(one.stub, {}, (files) => files.ns())).toBe(a!["ns"]);
+    expect(await inFiles(one.stub, (files) => files.ns())).toBe(a!["ns"]);
   });
 
   it("answers a read with only the entry while its etag is current", async () => {
@@ -195,7 +195,7 @@ describe("a file write", () => {
   it("reads at most two chunks a door call, of a file with more", async () => {
     const r = await rig();
     const bytes = new Uint8Array(2 * CHUNK_BYTES + 1).fill(4);
-    const { version } = await inFiles(r.stub, {}, (files) => files.write(
+    const { version } = await inFiles(r.stub, (files) => files.write(
       `${W}/three.bin`, bytes, { expected: null, writer: "owner" }));
     const read = (first: number, count: number) => r.stub.fileReadChunks(
       r.bind(null), { path: `${W}/three.bin`, version, first, count });
@@ -565,7 +565,8 @@ describe("the manifest's queries", () => {
                                             recursive: false });
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
-    await inFiles(r.stub, { keep_versions: 1, retention_days: 0 }, async (files) => {
+    await setFiles(r, { keep_versions: 1, retention_days: 0 });
+    await inFiles(r.stub, async (files) => {
       await files.write(`${W}/z/c.bin`, new Uint8Array(INLINE_BYTES * 2).fill(5),
                         { expected: null, writer: "t" });
       await files.run(Date.now() / 1000 + 10);

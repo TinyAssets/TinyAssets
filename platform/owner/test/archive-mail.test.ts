@@ -35,10 +35,10 @@ import { exported } from "../src/export";
 import type { ChunkStore } from "../../contract/src/files";
 import { digest, generate, replay } from "./generation-support";
 import {
-  ballast, DOT, MUSE, origin, registerOn, rig, storesOn,
+  ballast, DOT, MUSE, origin, registerOn, rig,
 } from "./ledger-support";
 import { referenceSegment, storedContent, streamed } from "./segment-support";
-import { drainDue, failure, gateFor, spaceOf, sqlIn } from "./support";
+import { drainDue, failure, gateFor, setFiles, spaceOf, sqlIn, storesOn } from "./support";
 
 const EVE: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
 const { maxAgentRows, maxMessages, maxUnacked } = LEDGER_LIMITS;
@@ -1734,10 +1734,7 @@ describe("a full owner's archive (review M1)", () => {
     // The owner's own figure: exactly what is stored, so no segment fits beside the mail.
     const { stored } = await r.stub.storageUsage(r.bind(null)).then((usage) =>
       ({ stored: usage.used_bytes }));
-    const { generation, policy } = await r.stub.policyRead(r.bind(null));
-    await r.stub.policyWrite(r.session(null), {
-      expected_generation: generation,
-      policy: { ...policy, files: { max_bytes: stored } } as never });
+    await setFiles(r, { max_bytes: stored });
     await r.stub.mailboxAck(r.bind(MUSE), { through: last });  // rings the schedule
     await settle(r);
     expect(await sqlIn(r.stub, "SELECT records FROM archive_segments")).toEqual([{ records: 5 }]);

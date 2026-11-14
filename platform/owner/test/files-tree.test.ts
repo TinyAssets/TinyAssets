@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { type Entry, type Files } from "../src/files";
 import { INLINE_BYTES } from "../../contract/src/limits";
 import { rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, sqlIn, starterSeed, text } from "./support";
+import { failure, fileCounters, inFiles, setFiles, sqlIn, starterSeed, text } from "./support";
 
 const W = "/workspace";
 /** What every owner's seed holds before a test writes (`starterSeed`). */
@@ -102,13 +102,13 @@ describe("a rename across the roots", () => {
   async function crossing(from: (one: string, two: string) => string,
                           to: (one: string, two: string) => string) {
     const r = await rig();
-    const at = await inFiles(r.stub, {}, async (files) => {
-      const one = files.tempDir("t-", "agent");
-      const two = files.tempDir("t-", "agent");
+    const at = await inFiles(r.stub, async (files, unit) => {
+      const [one, two] = await unit(() => [files.tempDir("t-", "agent"),
+                                           files.tempDir("t-", "agent")]);
       for (const [name, body] of [["s", small], ["b", big]] as const) {
         await files.write(`${from(one, two)}/${name}`, body, { expected: null, writer: "agent" });
-        files.rename(`${from(one, two)}/${name}`, `${to(one, two)}/${name}`,
-                     { expected: null, replace: false, writer: "agent" });
+        await unit(() => files.rename(`${from(one, two)}/${name}`, `${to(one, two)}/${name}`,
+                                      { expected: null, replace: false, writer: "agent" }));
       }
       expect(await bytesAt(files, `${to(one, two)}/s`)).toEqual(small);
       expect(await bytesAt(files, `${to(one, two)}/b`)).toEqual(big);
@@ -117,7 +117,7 @@ describe("a rename across the roots", () => {
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
-    await inFiles(r.stub, {}, async (files) => {
+    await inFiles(r.stub, async (files) => {
       await files.run(Date.now() / 1000);
       expect(await bytesAt(files, `${at}/s`)).toEqual(small);
       expect(await bytesAt(files, `${at}/b`)).toEqual(big);
@@ -298,8 +298,9 @@ describe("the change feed", () => {
                                                                 limit: SEED.entries + 10 });
     await write(r, `${W}/kept`);
     // With no retention, the delete's record is due as soon as it is written.
-    await inFiles(r.stub, { retention_days: 0 }, async (files) => {
-      files.remove(`${W}/gone`, { expected: null, writer: "owner" });
+    await setFiles(r, { retention_days: 0 });
+    await inFiles(r.stub, async (files, unit) => {
+      await unit(() => files.remove(`${W}/gone`, { expected: null, writer: "owner" }));
       await files.run(Date.now() / 1000 + 1);
     });
     const page = await r.stub.fileChanges(r.bind(null), { after: cursor, limit: 10 });
@@ -311,7 +312,7 @@ describe("the change feed", () => {
 
   it("leaves the temporary area out of the feed", async () => {
     const r = await rig();
-    await inFiles(r.stub, {}, (files) => files.tempDir("t-", "agent"));
+    await inFiles(r.stub, (files, unit) => unit(() => files.tempDir("t-", "agent")));
     expect(SEED.mine((await r.stub.fileChanges(r.bind(null), {
       after: 0, limit: SEED.entries + 10 })).changes, (c) => c.path)).toEqual([]);
   });

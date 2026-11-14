@@ -116,7 +116,7 @@ import {
   agentId, AUTHORITY_CHANGED, MAIN_AGENT, may, NOT_GRANTED, type Stamped,
 } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
-import { RUN_ENDED, Runs, type RunSchedule, runsDoors } from "./runs";
+import { agentsAt, RUN_ENDED, Runs, type RunSchedule, runsDoors } from "./runs";
 import { PostGate } from "../../contract/src/run-events";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
@@ -133,7 +133,7 @@ import {
 import type { RingAnswer } from "../../contract/src/gateway";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import {
- type Change as FileChange, type Changed as FileChanged, type ChunkRef, type Entry, fileChanged,
+ type Change as FileChange, type ChunkRef, type Entry, fileChanged,
  Files, filesDoors, OWNER_AUTHORITY, type SandboxLease, SYNC_FENCED, type SyncOutcome,
  type Usage,
 } from "./files";
@@ -379,12 +379,10 @@ export type Units = Pick<WriteGate, "storage" | "write" | "quiet">;
  * The object's stores, as it wires them over its gate's units, from its env and its id: the
  * owner's policy, notices, change log, files, placed bodies, collections, grants, ledger and
  * nightly manifest (`backup.ts`). The object builds its own with this, once; a test builds
- * the same over an object's own storage to reach the ledger or the manifest's lane directly.
- * `changed` is what a file change tells the owner's other modules (`fileChanged`), which only
- * the object's whole state can tell.
+ * the same over an object's own storage to reach a store directly. A file change tells the
+ * owner's other modules through these stores (`fileChanged`), so every builder's tells them.
  */
-export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId,
-                            changed: FileChanged) {
+export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
   const { storage, write } = units;
   const policy = new Policy(storage);
   const notices = new Notices(storage);
@@ -397,7 +395,10 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId,
     // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
     (stored, needed, held, limit) => storageFullRefusal(storageFull(
       stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
-    changed,
+    (path, present, now, change) => fileChanged({
+      ledger, policy, notices, grants, files,
+      agentsAt: (epoch, most) => agentsAt(storage, epoch, most),
+    }, path, present, now, change),
     // Garbage the newest finished generation names is never collected early, while it is
     // a recovery point (finished within MANIFEST_PROTECT_S).
     () => {
@@ -466,8 +467,6 @@ export interface OwnerState {
   readonly erasure: Erasure;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly posts: PostGate;
-  /** The held-back count a sync commit in progress carries for the sync-ignore list. */
-  heldBack: { kept: number; changed: number } | null;
   /** A synchronous body as one unit of the write gate. */
   door<T>(act: () => T): Promise<T>;
   /** A unit that marks nothing changed (`gate.ts`). */
@@ -606,9 +605,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#state = this.#stateOf(env, storage);
     this.#tombstone = tombstoned(storage.sql);
     const admitted = () => isAdmitted(storage);
-    // What a file change says to the owner's other modules, in its own unit.
-    const stores = ownerStores(this.#gate, env, ctx.id, (path, present, now, change) =>
-      fileChanged(this.#state, path, present, now, change));
+    const stores = ownerStores(this.#gate, env, ctx.id);
     this.#policy = stores.policy;
     this.#notices = stores.notices;
     this.#log = stores.log;
@@ -831,7 +828,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       get archive() { return object.#archive; },
       get erasure() { return object.#erasure; },
       get posts() { return object.#posts; },
-      heldBack: null,
       door: <T>(act: () => T) => object.#door(act),
       quiet: <T>(act: () => T) => object.#quiet(act),
       synced: <T>(act: () => T) => object.#synced(act),

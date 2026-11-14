@@ -110,7 +110,7 @@ describe("the owner's holds", () => {
       .toBe("0123456789");
     const [row] = await sqlIn(o.stub, "SELECT c.sha256 FROM file_entries e JOIN " +
       "file_content_chunks c ON c.content_id = e.content_id WHERE e.name = ?", "tampered.md");
-    const space = await inFiles(o.stub, {}, (files) => files.space());
+    const space = await inFiles(o.stub, (files) => files.space());
     // Sealed as the files Worker seals, so it opens: the bytes, not the key, changed.
     const dataKey = await unwrap(env.FILES_TEST_RING, space.ns, space.key);
     const name = await chunkName(dataKey, row!["sha256"] as string);

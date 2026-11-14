@@ -240,12 +240,17 @@ export interface ChunkSpace {
   readonly key: string;
 }
 
+/** What a sync agent counted of the files the sync-ignore list it wrote holds back (`sync.ts`). */
+export type HeldBack = { readonly kept: number; readonly changed: number };
+
 /**
  * A workspace path a change made or took away, in that change's own unit: whether it is
- * there now, and the change itself (its writer, and a file's content and size).
+ * there now, and the change itself (its writer, a file's content and size, and what the sync
+ * commit that made it says its sync agent counted held back, else null).
  */
 export type Changed = (path: string, present: boolean, now: number,
-                       change: { writer: string; content_id: string | null; size: number })
+                       change: { writer: string; content_id: string | null; size: number;
+                                 held_back: HeldBack | null })
   => void;
 
 /**
@@ -602,6 +607,8 @@ export class Files {
    * (`begin`'s `pastFigure`), which frees at least the bytes it places in its second unit.
    */
   #pastFigure = false;
+  /** What the sync commit in hand says its sync agent counted held back (`heldBackOf`). */
+  #heldBack: HeldBack | null = null;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write, full: Full, changed: Changed, manifested: () => number | null) {
@@ -1071,7 +1078,8 @@ export class Files {
       version, path, op, kind, contentId, size, mode, writer, now,
     );
     this.#retain(path, kind !== null);
-    this.#changed(path, kind === "file", now, { writer, content_id: contentId, size });
+    this.#changed(path, kind === "file", now, { writer, content_id: contentId, size,
+                                                 held_back: this.#heldBack });
     return version;
   }
 
@@ -2273,44 +2281,54 @@ export class Files {
       throw new Refusal("invalid", `a sync commit holds 1 to ${MAX_SYNC_OPS} ops`);
     }
     return this.#change(null, (now) => {
-      const { epoch, authority } = this.#fenced(request.lease_id, request.epoch, now);
-      // A client's sandbox writes as that client, into the owner's agent trees only while
-      // its grant is full, the default; a narrowed one's never (the founder's rule).
-      const client = authority !== OWNER_AUTHORITY;
-      const trees = !client || fullGrant(authority);
-      const writer = client ? `client:${authority}` : `lease:${epoch}`;
-      const seen = new Set<string>();
-      const outcomes = (ops as unknown[]).map((raw) => {
-        const op = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
-        const named = typeof op["path"] === "string" ? op["path"] : "";
-        try {
-          return this.#storage.transactionSync(() => {
-            const before = this.#before(writer);
-            const path = storedPath(op["path"]);
-            if (!within(path, WORKSPACE) || isRoot(path) || seen.has(path)) {
-              throw new Refusal("invalid", "a sync op names one workspace path, once");
-            }
-            seen.add(path);
-            if (!trees && ownersOnly(path)) {
-              throw new Refusal("refused", AGENTS_OWNER_ONLY);
-            }
-            const outcome = this.#syncOp(op, path, epoch, writer, now);
-            if (op["op"] !== "remove") {
-              this.#bounds(before, writer);
-            }
-            return outcome;
-          });
-        } catch (error) {
-          if (error instanceof Refusal || error instanceof FileFault
-              || error instanceof FileConflict) {
-            return { path: named, outcome: "refused" as const, reason: error.message,
-                     code: error instanceof FileConflict ? "conflict" : error.code };
-          }
-          throw error;
-        }
-      });
-      return { outcomes };
+      this.#heldBack = heldBackOf(ops);
+      try {
+        return this.#syncOps(ops, request, fullGrant, now);
+      } finally {
+        this.#heldBack = null;
+      }
     }, true);
+  }
+
+  #syncOps(ops: unknown[], request: { lease_id: unknown; epoch: unknown },
+           fullGrant: (client: string) => boolean, now: number): { outcomes: SyncOutcome[] } {
+    const { epoch, authority } = this.#fenced(request.lease_id, request.epoch, now);
+    // A client's sandbox writes as that client, into the owner's agent trees only while
+    // its grant is full, the default; a narrowed one's never (the founder's rule).
+    const client = authority !== OWNER_AUTHORITY;
+    const trees = !client || fullGrant(authority);
+    const writer = client ? `client:${authority}` : `lease:${epoch}`;
+    const seen = new Set<string>();
+    const outcomes = ops.map((raw) => {
+      const op = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+      const named = typeof op["path"] === "string" ? op["path"] : "";
+      try {
+        return this.#storage.transactionSync(() => {
+          const before = this.#before(writer);
+          const path = storedPath(op["path"]);
+          if (!within(path, WORKSPACE) || isRoot(path) || seen.has(path)) {
+            throw new Refusal("invalid", "a sync op names one workspace path, once");
+          }
+          seen.add(path);
+          if (!trees && ownersOnly(path)) {
+            throw new Refusal("refused", AGENTS_OWNER_ONLY);
+          }
+          const outcome = this.#syncOp(op, path, epoch, writer, now);
+          if (op["op"] !== "remove") {
+            this.#bounds(before, writer);
+          }
+          return outcome;
+        });
+      } catch (error) {
+        if (error instanceof Refusal || error instanceof FileFault
+            || error instanceof FileConflict) {
+          return { path: named, outcome: "refused" as const, reason: error.message,
+                   code: error instanceof FileConflict ? "conflict" : error.code };
+        }
+        throw error;
+      }
+    });
+    return { outcomes };
   }
 
   /** Whether the API made a file of one of `path`'s ancestors. */
@@ -2797,7 +2815,7 @@ const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
  * What a sync commit's write of the sync-ignore list says of the files it holds back, as its
  * sync agent counted them (`sync.ts`): the kept files its lines name, and those with changes.
  */
-function heldBackOf(ops: unknown): { kept: number; changed: number } | null {
+function heldBackOf(ops: unknown): HeldBack | null {
   const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
     ? value as number : null;
   for (const op of Array.isArray(ops) ? ops as unknown[] : []) {
@@ -3121,18 +3139,21 @@ async function textWindow(o: OwnerState, content: Content, offset: number, max: 
 }
 
 /**
- * A change to the sync's ignore list, in its own unit: a receipt and one notice naming
- * who changed it (the owner, an agent's run, or an outside client), and, when a line it
- * adds stops files the owner already keeps from syncing their changes, how many and which.
+ * What a file change tells, as the object's stores wire it (`ownerStores`): its ledger, policy
+ * receipts, notices, grants' names and files, and the agents of the runs under a sandbox
+ * lease (`runs.ts` `agentsAt`).
  */
+export type Told = Pick<OwnerState, "ledger" | "policy" | "notices" | "grants" | "files"> & {
+  readonly agentsAt: (epoch: number, most: number) => string[];
+};
+
 /**
  * A file change, in its own unit, as the owner's other modules follow it: each agent's ledger
  * identity follows its `agent.json`; and every agent may edit the sync's ignore list (the
  * founder's every-agent-full-power rule), but never unseen: each change is a receipt and one
  * notice for the owner.
  */
-export function fileChanged(o: OwnerState, path: string, present: boolean, now: number,
-                            change: { writer: string; content_id: string | null; size: number }):
+export function fileChanged(o: Told, ...[path, present, now, change]: Parameters<Changed>):
     void {
   const agent = AGENT_FILE.exec(path)?.[1];
   if (agent !== undefined) {
@@ -3147,8 +3168,13 @@ export function fileChanged(o: OwnerState, path: string, present: boolean, now: 
   }
 }
 
-function syncIgnoreChanged(o: OwnerState, present: boolean, now: number,
-                   change: { writer: string; content_id: string | null; size: number }): void {
+/**
+ * A change to the sync's ignore list, in its own unit: a receipt and one notice naming
+ * who changed it (the owner, an agent's run, or an outside client), and, when a line it
+ * adds stops files the owner already keeps from syncing their changes, how many and which.
+ */
+function syncIgnoreChanged(o: Told, present: boolean, now: number,
+                           change: Parameters<Changed>[3]): void {
   const outcome = present ? "changed" : "removed";
   const who = writerNamed(o, change.writer);
   o.policy.receipt("write", { rule: "sync_ignore", outcome, decision: who }, now);
@@ -3185,7 +3211,7 @@ function syncIgnoreChanged(o: OwnerState, present: boolean, now: number,
     // The owner's own sandbox, whose mirror is the owner's whole tree, adds what its sync
     // agent counted (`sync.ts`); an outside client's sees only its part, so its count is
     // never given, and no count ever takes the sentence away.
-    const synced = o.heldBack;
+    const synced = change.held_back;
     if (synced !== null && /^lease:[0-9]+$/.test(change.writer) && synced.kept > 0) {
       held += ` In the sync that wrote it, its lines hold back ${synced.kept} file${
         synced.kept === 1 ? "" : "s"} you keep (${synced.changed} with changes in the ` +
@@ -3200,11 +3226,11 @@ function syncIgnoreChanged(o: OwnerState, present: boolean, now: number,
  * Who a file change's writer is, in words the owner reads: the owner; the agents whose
  * runs hold the owner's sandbox lease it was synced under; or an outside client by name.
  */
-function writerNamed(o: OwnerState, writer: string): string {
+function writerNamed(o: Told, writer: string): string {
   const epoch = /^lease:([0-9]+)$/.exec(writer)?.[1];
   if (epoch !== undefined) {
     // The agents named at most three, so the receipt stays its size.
-    const agents = o.runs.agentsAt(Number(epoch), 4);
+    const agents = o.agentsAt(Number(epoch), 4);
     return agents.length === 0 ? "a run in your sandbox"
       : `a run of your agent${agents.length === 1 ? "" : "s"} ${agents.slice(0, 3).join(", ")}${
         agents.length > 3 ? " and others" : ""}`;
@@ -3689,14 +3715,8 @@ export const filesDoors = Object.freeze({
              changes: changes.changes.filter((change) => test(change.path)) };
   },
   fileSyncCommit(o: OwnerState, { r }: Call<SyncCommitRequest>): { outcomes: SyncOutcome[] } {
-    o.heldBack = heldBackOf(r["ops"]);
-    try {
-      return o.files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
-                                      ops: r["ops"] },
-                                    (authority) => o.grants.full(authority));
-    } finally {
-      o.heldBack = null;
-    }
+    return o.files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"], ops: r["ops"] },
+                              (authority) => o.grants.full(authority));
   },
   fileSyncUploadBegin(o: OwnerState, { r }: Call<SyncUploadBeginRequest>):
       { intent_id: string; missing: string[]; expires_at: number } {

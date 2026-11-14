@@ -12,7 +12,7 @@ import { SEARCH_ANSWER_BYTES, SEARCH_SCAN, searchPage, type Scanned } from "../s
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import { TIERS } from "./runs-support";
 import { nameOf } from "../../contract/src/paths";
-import { failure, filesOn, inGate, starterSeed, text } from "./support";
+import { failure, inFiles, starterSeed, text } from "./support";
 
 const decode = (bytes: Uint8Array | undefined) => new TextDecoder().decode(bytes);
 
@@ -152,8 +152,7 @@ describe("the MCP door's file readers", () => {
                                                             "/workspace/z/r/b.md")
                                                             .toString("base64url") });
     expect(after.results.map((hit) => hit.id)).toEqual(["/workspace/z/r/s/c.md"]);
-    const pages = await inGate(r.stub, (_instance, _state, gate) => {
-      const files = filesOn(gate.storage, gate.write);
+    const pages = await inFiles(r.stub, (files) => {
       const first = files.scan(seedEnd, 2);
       return [first, files.scan(first.next, 2)].map((page) => ({
         paths: page.entries.map((entry) => entry.path), next: page.next }));

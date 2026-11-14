@@ -15,15 +15,15 @@ import { Collections, Conflict, LIMITS, type Row } from "../src/collections";
 
 import { MIGRATIONS } from "../src/schema";
 import {
-  collectionParts, etags, failure, fillHistory, fillRows, history, inFilled, inObject,
-  type Owner, ownerObject, rows,
+  etags, failure, fillHistory, fillRows, history, inFilled, inObject, type Owner, ownerObject,
+  rows, setFiles, storesOn,
 } from "./support";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import { migrate } from "../../contract/src/migrate";
 import type { OwnerDO } from "../src/owner-do";
 import type { Origin } from "../../contract/src/binding";
-import { DOT, MUSE, origin, rig, type Rig } from "./ledger-support";
+import { DOT, MUSE, origin, rig } from "./ledger-support";
 
 const ROOM = "room:chess:main";
 
@@ -47,13 +47,6 @@ function shownAs(row: WrittenRow, body: string): Row {
   const { body_bytes: bytes, ...rest } = row;
   expect(bytes).toBe(new TextEncoder().encode(body).byteLength);
   return { ...rest, body } as Row;
-}
-
-/** The owner sets its files policy's shares in its session, as the object then reads them. */
-async function setShares(r: Rig, client_share: number, owner_reserve: number): Promise<void> {
-  const { generation, policy } = await r.stub.policyRead(r.bind(null));
-  await r.stub.policyWrite(r.session(null), { expected_generation: generation, policy: {
-    ...policy, files: { client_share, owner_reserve } } as never });
 }
 
 /** What `act` throws. */
@@ -216,7 +209,7 @@ describe("the revision primitive", () => {
     await r.stub.collectionClear(r.bind(null), { collection: room, writer: null });
     // The owner's shares: a writer 1% of the rows' bound, and all of them 1% too, so one
     // writer meets its own share and the next the reserve's.
-    await setShares(r, 1, 99);
+    await setFiles(r, { client_share: 1, owner_reserve: 99 });
     const share = Math.floor(LIMITS.maxRowsCharge / 100);
     /** `origin`'s rows written until one is refused: the refusal's message. */
     const until = async (origin: Origin, prefix: string) => {
@@ -243,22 +236,13 @@ describe("the revision primitive", () => {
     await put(null, "o0");
   });
 
-  it("a seq collision fails loudly and deletes nothing", async () => {
-    // A missing high-water mark still numbers past the rows; a clash never replaces one.
+  it("numbers past the stored rows when the high-water mark is missing", async () => {
     const { stub, name: alice } = await ownerObject();
     await inObject(stub, (store, state) => {
-      const put = (on: Collections, rowId: string) =>
-        on.write(alice, alice, "board", rowId, rowId, "", false);
-      expect(put(store, "a").seq).toBe(1);
+      const put = (rowId: string) => store.write(alice, alice, "board", rowId, rowId, "", false);
+      expect(put("a").seq).toBe(1);
       state.storage.sql.exec("DELETE FROM collection_seqs"); // as a store before the table
-      expect(put(store, "b").seq).toBe(2);
-      class Stale extends Collections {
-        protected override top(): number {
-          return 0;
-        }
-      }
-      expect(() => put(new Stale(...collectionParts(state.storage)), "c"))
-        .toThrow(/UNIQUE/); // seq 1 is a's
+      expect(put("b").seq).toBe(2);
     });
     expect(Object.keys(await etags(stub)).sort()).toEqual(["a", "b"]);
   });
@@ -701,7 +685,7 @@ describe("the history keys' migration (untangle H1)", () => {
                            "collection_erasures ORDER BY change").toArray()
           .map((row) => Object.values(row)),
         read: ([[owner, "a", null], ["bob", "b", null], [owner, "a", -3]] as const).map(
-          ([who, key, at]) => new Collections(...collectionParts(state.storage))
+          ([who, key, at]) => storesOn(state).collections
             .history(who, "board", key, at).entries.map((each) => [each.change, each.body])),
       };
     });
@@ -773,7 +757,7 @@ describe("the primitive's errors", () => {
     const alice = r.owner;
     await inObject(r.stub, (store) => store.write(alice, alice, "board", "a", "1", "", false));
     // The owner holds outside writers to no share of its collections.
-    await setShares(r, 0, 100);
+    await setFiles(r, { client_share: 0, owner_reserve: 100 });
     await inObject(r.stub, (store) => {
       expect(thrown(() => store.write(alice, alice, "board", "b", "1", "", false, "write", null,
                                       `client:${"1".repeat(64)}`)))

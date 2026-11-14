@@ -21,8 +21,8 @@ import { erasedWhole } from "./erasure-support";
 import {
   BURST, digest, type Generated, generate, type Owner, owner, PAGE, standing,
 } from "./generation-support";
-import { MUSE, registerOn, storesOn } from "./ledger-support";
-import { drainDue, failure, gateFor, laneJobs, sqlIn, TIERS } from "./support";
+import { MUSE, registerOn } from "./ledger-support";
+import { drainDue, failure, gateFor, laneJobs, sqlIn, storesOn, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const W = "/workspace";

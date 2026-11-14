@@ -17,13 +17,14 @@ import {
 import { chunkedId, inlineId } from "../../contract/src/content";
 import type { ChunkStore } from "../../contract/src/files";
 import { sha256Hex } from "../../contract/src/digest";
+import { FILE_SETTINGS } from "../../contract/src/policy-document";
 import { WriteGate } from "../src/gate";
-import type { OwnerDO } from "../src/owner-do";
+import { type OwnerDO, ownerStores } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
 import {
-  alarmOf, drainDue, failure, faulty, fileCounters, filesOn, inFiles, laneAt, lostContent, sqlIn,
-  starterSeed, STORAGE_FAULT, text, through,
+  alarmOf, drainDue, failure, faulty, fileCounters, inFiles, laneAt, lostContent, setFiles, sqlIn,
+  starterSeed, STORAGE_FAULT, storesOn, text, through,
 } from "./support";
 
 const W = "/workspace";
@@ -155,7 +156,7 @@ describe("an upload", () => {
     const refusing: ChunkStore = through({
       putChunks: async () => { throw new Error("FILES refused the put"); },
     });
-    expect((await failure(() => inFiles(r.stub, {}, (files) =>
+    expect((await failure(() => inFiles(r.stub, (files) =>
       files.write(`${W}/a`, piece, { expected: null, writer: "owner" }), refusing))).message)
       .toBe("FILES refused the put");
     expect(await chunk(r, sha256Hex(piece))).toMatchObject({ stored: 0, holds: 0 });
@@ -207,7 +208,7 @@ describe("an upload", () => {
   it("is the only way past 16 MiB: a whole write refuses more before holding anything",
      async () => {
     const r = await rig();
-    const error = await failure(() => inFiles(r.stub, {}, (files) => files.write(
+    const error = await failure(() => inFiles(r.stub, (files) => files.write(
       `${W}/huge`, new Uint8Array(WHOLE_BYTES + 1), { expected: null, writer: "o" })));
     expect([WHOLE_BYTES, error.message]).toEqual([16 * 1024 * 1024,
       `a whole write moves at most ${WHOLE_BYTES} bytes; upload larger files`]);
@@ -245,13 +246,22 @@ describe("an upload", () => {
   it("refuses a begin past the file size quota, or past the chunks one intent holds",
      async () => {
     const r = await rig();
-    await expect(inFiles(r.stub, { max_file_bytes: CHUNK_BYTES }, (files) =>
-      files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)], "owner"))).rejects
+    await setFiles(r, { max_file_bytes: CHUNK_BYTES });
+    await expect(inFiles(r.stub, (files, unit) => unit(() =>
+      files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)], "owner")))).rejects
       .toThrow("the file is larger than the owner's file size quota");
+    // A file past the chunks one intent holds is past the highest size quota the owner may
+    // set (`FILE_SETTINGS`), so refused there; a placed body, which no file quota bounds, is
+    // refused at the chunks.
     const too = (MAX_INTENT_CHUNKS + 1) * CHUNK_BYTES;
-    await expect(inFiles(r.stub, { max_file_bytes: too }, (files) =>
-      files.begin(too, Array.from({ length: MAX_INTENT_CHUNKS + 1 },
-                                  (_, i) => i.toString(16).padStart(64, "0")), "owner"))).rejects
+    const chunks = Array.from({ length: MAX_INTENT_CHUNKS + 1 },
+                              (_, i) => i.toString(16).padStart(64, "0"));
+    await setFiles(r, { max_file_bytes: FILE_SETTINGS.max_file_bytes[1] });
+    await expect(inFiles(r.stub, (files, unit) => unit(() =>
+      files.begin(too, chunks, "owner")))).rejects
+      .toThrow("the file is larger than the owner's file size quota");
+    await expect(inFiles(r.stub, (files, unit) => unit(() =>
+      files.begin(too, chunks, "owner", [], true)))).rejects
       .toThrow(`an upload holds at most ${MAX_INTENT_CHUNKS} chunks`);
   });
 
@@ -259,29 +269,29 @@ describe("an upload", () => {
      async () => {
     const r = await rig();
     const reason = "too many uploads are open; commit or abort one first";
-    await inFiles(r.stub, {}, (files) => {
+    await inFiles(r.stub, (files, unit) => unit(() => {
       for (let i = 0; i < MAX_OPEN_INTENTS; i++) {
         files.begin(INLINE_BYTES + 1, [i.toString(16).padStart(64, "0")], "owner");
       }
       expect(() => files.begin(INLINE_BYTES + 1, ["f".repeat(64)], "owner")).toThrow(reason);
-    });
+    }));
     expect((await r.stub.fileUsage(r.bind(null))).intents).toBe(MAX_OPEN_INTENTS);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
     // The held-chunk bound reads its counter: one short of it takes one chunk, not two.
-    await inFiles(r.stub, {}, (files) => {
+    await inFiles(r.stub, (files, unit) => unit(() => {
       const two = files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)], "owner");
       expect((files.usage()).intent_chunks).toBe(2);
       files.abort(two.intent_id);
-    });
+    }));
     await sqlIn(r.stub, "UPDATE file_space SET intent_chunks = ?", MAX_HELD_CHUNKS - 1);
-    await inFiles(r.stub, {}, (files) => {
+    await inFiles(r.stub, (files, unit) => unit(() => {
       expect(() => files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)], "owner"))
         .toThrow(reason);
       files.begin(INLINE_BYTES + 1, ["c".repeat(64)], "owner");
-    });
+    }));
   });
 });
 
@@ -356,34 +366,39 @@ describe("garbage collection", () => {
     const r = await rig();
     const body = (seed: number) => filled(INLINE_BYTES + 10, seed);
     const limits = { keep_versions: 1, keep_recent: 2, retention_days: 30 };
-    const other = await inFiles(r.stub, limits, async (files) => {
+    await setFiles(r, limits);
+    const other = await inFiles(r.stub, async (files, unit) => {
       const o = { expected: null, writer: "o" };
-      const temp = files.tempDir("t-", "agent");
-      const kept = files.tempDir("t-", "agent");
+      const [temp, kept] = await unit(() => [files.tempDir("t-", "agent"),
+                                             files.tempDir("t-", "agent")]);
       for (const seed of [1, 2, 3]) {
         await files.write(`${W}/a`, body(seed), o);
       }
       await files.write(`${temp}/t`, body(4), o);
       await files.write(`${temp}/u`, body(5), o);
       await files.write(`${temp}/same-as-a`, body(3), o);
-      files.rename(`${temp}/t`, `${W}/from-temp`, { ...o, replace: false });
-      files.rename(`${temp}/u`, `${kept}/u`, { ...o, replace: false });
-      files.rename(`${W}/a`, `${kept}/a`, { ...o, replace: false });
+      await unit(() => {
+        files.rename(`${temp}/t`, `${W}/from-temp`, { ...o, replace: false });
+        files.rename(`${temp}/u`, `${kept}/u`, { ...o, replace: false });
+        files.rename(`${W}/a`, `${kept}/a`, { ...o, replace: false });
+      });
       await files.write(`${W}/b`, body(6), o);
-      files.remove(`${W}/b`, o);
-      files.dropTemps([temp], "agent");
+      await unit(() => {
+        files.remove(`${W}/b`, o);
+        files.dropTemps([temp], "agent");
+      });
       return kept;
     });
     // The rows marked as these limits keep them, every marked row due, then every garbage
     // chunk: three passes collect all there is to collect.
-    await inFiles(r.stub, limits, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, limits, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
-    await inFiles(r.stub, limits, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     expect(await lostContent(r.stub)).toEqual([]);
     expect(await read(r, `${W}/from-temp`)).toEqual(body(4));
-    await inFiles(r.stub, limits, async (files) => {
+    await inFiles(r.stub, async (files) => {
       for (const [name, seed] of [["u", 5], ["a", 3]] as const) {
         const [chunk] = files.open(`${other}/${name}`).chunks!;
         expect((await files.fetch([{ sha256: chunk!.sha256 }]))[0])
@@ -418,13 +433,13 @@ describe("a chunk", () => {
     expect(await chunk(r, sha)).toMatchObject({ state: "live", refs: 1, gc_after: null });
     await r.stub.fileRemove(r.bind(null), { path: `${W}/b`, expected_etag: null, recursive: false });
     // Retention is off: the delete's history keeps it, however late housekeeping runs.
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000 + 400 * 86_400));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000 + 400 * 86_400));
     expect(await chunk(r, sha)).toMatchObject({ state: "live" });
     await r.stub.fileHistoryPurge(r.bind(null), { path: `${W}/b` });
     expect(await chunk(r, sha)).toMatchObject({ state: "garbage" });
     expect(await inBucket(r, sha)).toBe(true);  // inside its grace
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect(await inBucket(r, sha)).toBe(false);
     const [kept, counted] = await fileCounters(r.stub);
@@ -439,7 +454,7 @@ describe("a chunk", () => {
     const begun = await begin(r, [piece]);
     expect(await chunk(r, sha)).toMatchObject({ state: "uploading", stored: 0, holds: 1 });
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     expect(await sqlIn(r.stub, "SELECT * FROM file_intents")).toEqual([]);
     expect(await chunk(r, sha)).toMatchObject({ state: "garbage", stored: 0, holds: 0 });
     const again = await begin(r, [piece]);
@@ -457,7 +472,7 @@ describe("a chunk", () => {
     const refusing: ChunkStore = through({
       putChunks: async () => { throw new Error("FILES is down"); },
     });
-    expect((await failure(() => inFiles(r.stub, {}, (files) =>
+    expect((await failure(() => inFiles(r.stub, (files) =>
       files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]), refusing))).message)
       .toBe("FILES is down");
     expect(await chunk(r, sha)).toMatchObject({ stored: 0 });
@@ -486,13 +501,13 @@ describe("a chunk", () => {
     const sha = sha256Hex(piece);
     await begin(r, [piece]);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
     const failing: ChunkStore = through({
       deleteChunks: async () => { throw new Error("FILES is down"); },
     });
     // The failure stays in the chunk's row: the pass itself completes.
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000), failing);
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000), failing);
     const deleting = await chunk(r, sha);
     expect(deleting).toMatchObject({ state: "deleting" });
     expect(deleting!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
@@ -501,7 +516,7 @@ describe("a chunk", () => {
     // A delete that outlasts its pass's budget is tried again, as a failed one is.
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
     const hung: ChunkStore = { ...failing, deleteChunks: () => new Promise(() => undefined) };
-    await inFiles(r.stub, {}, (files) => files.run(
+    await inFiles(r.stub, (files) => files.run(
       Date.now() / 1000, Date.now() + DELETE_FLOOR_MS + 20), hung);
     expect((await chunk(r, sha))!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
     // A pass with less than DELETE_FLOOR_MS left, or none, begins no delete: FILES is not
@@ -515,14 +530,14 @@ describe("a chunk", () => {
     expect(DELETE_FLOOR_MS).toBeGreaterThan(500);
     for (const left of [500, -1]) {
       await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
-      await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000,
+      await inFiles(r.stub, (files) => files.run(Date.now() / 1000,
                                                          Date.now() + left), recording);
       expect(await chunk(r, sha)).toMatchObject({ state: "deleting", gc_after: 1 });
     }
     expect(asked).toEqual([]);
     await sqlIn(r.stub, "UPDATE file_chunks SET state = 'garbage', gc_after = 1 " +
                         "WHERE sha256 = ?", sha);
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect((await begin(r, [piece])).missing).toEqual([sha]);
   });
@@ -551,7 +566,7 @@ describe("a chunk", () => {
     const r = await rig();
     const piece = filled(INLINE_BYTES + 1, 9);
     await upload(r, `${W}/a`, [piece]);
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000 + 400 * 86_400));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000 + 400 * 86_400));
     expect(await chunk(r, sha256Hex(piece))).toMatchObject({ state: "live", refs: 1 });
     expect(await inBucket(r, sha256Hex(piece))).toBe(true);
   });
@@ -587,8 +602,7 @@ describe("a chunk between a pass's units", () => {
     const sha = sha256Hex(piece);
     await dueGarbage(r, piece);
     const missing = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
-      const gate = new WriteGate(state.storage);
-      const files = filesOn(gate.storage, gate.write);
+      const { gate, files } = storesOn(state);
       // An async storage transaction holds the queue; the pass queues behind it, an upload's begin after it.
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
@@ -625,7 +639,8 @@ describe("a chunk between a pass's units", () => {
       });
       const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, storage) => {
         const gate = new WriteGate(storage.storage);
-        const files = filesOn(gate.storage, faulty(gate.write, (n) => n === unit), recording);
+        const { files } = ownerStores({ ...gate, write: faulty(gate.write, (n) => n === unit) },
+                                      { ...env, FILES: recording }, storage.id);
         return failure(() => files.run(Date.now() / 1000 + 10));
       });
       expect([unit, failed.message, deletes.length]).toEqual([unit, STORAGE_FAULT, asked]);
@@ -640,8 +655,9 @@ describe("a chunk between a pass's units", () => {
     const begun = await begin(r, [piece]);
     const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const gate = new WriteGate(state.storage);
-      await filesOn(gate.storage, gate.write).space();  // made: the put goes out
-      const files = filesOn(gate.storage, faulty(gate.write, () => true));
+      await storesOn(state).files.space();  // made: the put goes out
+      const { files } = ownerStores({ ...gate, write: faulty(gate.write, () => true) },
+                                    env, state.id);
       return failure(() => files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]));
     });
     expect(failed.message).toBe(STORAGE_FAULT);
@@ -656,10 +672,11 @@ describe("a chunk between a pass's units", () => {
     });
     const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const gate = new WriteGate(state.storage);
-      await filesOn(gate.storage, gate.write).space();
+      await storesOn(state).files.space();
       // The write's units: its intent, its put's check of the erasure's mark, then (the put
       // refused) its abort, which fails.
-      const files = filesOn(gate.storage, faulty(gate.write, (n) => n === 3), down);
+      const { files } = ownerStores({ ...gate, write: faulty(gate.write, (n) => n === 3) },
+                                    { ...env, FILES: down }, state.id);
       return failure(() => files.write(`${W}/a.bin`, filled(INLINE_BYTES + 1, 16),
                                        { expected: null, writer: "owner" }));
     });
@@ -671,7 +688,7 @@ describe("a chunk between a pass's units", () => {
     const r = await rig();
     await r.stub.fileWrite(r.bind(null), { path: `${W}/a.bin`, expected_etag: null,
                                            content: text("a") });
-    const refused = await failure(() => inFiles(r.stub, {}, (files) =>
+    const refused = await failure(() => inFiles(r.stub, (files) =>
       files.write(`${W}/a.bin`, filled(INLINE_BYTES + 1, 15),
                   { expected: "", writer: "owner" })));
     expect(refused.name).toBe("FileConflict");
@@ -701,7 +718,8 @@ describe("history retention", () => {
   it("keeps each live path's newest versions and every version younger than its days, as " +
      "the owner set them", async () => {
     const r = await rig();
-    await inFiles(r.stub, RETENTION, async (files) => {
+    await setFiles(r, RETENTION);
+    await inFiles(r.stub, async (files) => {
       for (let i = 0; i < 12; i++) {
         await files.write(`${W}/a`, text(`v${i}`), { expected: null, writer: "owner" });
       }
@@ -714,9 +732,9 @@ describe("history retention", () => {
     }
     // Due rows go at the alarm, once the rows are marked as the owner's retention keeps
     // them; the newest ten stay whatever their age.
-    await inFiles(r.stub, RETENTION, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, RETENTION, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
     expect((await r.stub.fileHistory(r.bind(null), { path: `${W}/a`, limit: 100 })).changes
       .map((c) => c.version)).toEqual(rows.slice(2).map((row) => row["version"]).reverse());
     const [kept, counted] = await fileCounters(r.stub);
@@ -727,22 +745,24 @@ describe("history retention", () => {
      async () => {
     const r = await rig();
     const o = { expected: null, writer: "owner" };
-    await inFiles(r.stub, RETENTION, async (files) => {
+    await setFiles(r, RETENTION);
+    await inFiles(r.stub, async (files, unit) => {
       await files.write(`${W}/a`, text("1"), o);
-      files.remove(`${W}/a`, o);
+      await unit(() => files.remove(`${W}/a`, o));
     });
     const due = await sqlIn(r.stub, "SELECT at, prune_after FROM file_history WHERE path = ?",
                             `${W}/a`);
     expect(due.every((row) => row["prune_after"] === (row["at"] as number) + 30 * 86_400))
       .toBe(true);
-    await inFiles(r.stub, RETENTION, (files) => files.write(`${W}/a`, text("2"), o));
+    await inFiles(r.stub, (files) => files.write(`${W}/a`, text("2"), o));
     expect(await sqlIn(r.stub, "SELECT prune_after FROM file_history WHERE path = ?", `${W}/a`))
       .toEqual([{ prune_after: null }, { prune_after: null }, { prune_after: null }]);
   });
 
   it("follows the owner's policy for how many versions and days it keeps", async () => {
     const r = await rig();
-    await inFiles(r.stub, { keep_versions: 2, retention_days: 1 }, async (files) => {
+    await setFiles(r, { keep_versions: 2, retention_days: 1 });
+    await inFiles(r.stub, async (files) => {
       for (let i = 0; i < 4; i++) {
         await files.write(`${W}/a`, text(`v${i}`), { expected: null, writer: "owner" });
       }

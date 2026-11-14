@@ -21,9 +21,9 @@ import {
 } from "../src/wakes";
 import type { OwnerDO, Stores } from "../src/owner-do";
 import {
-  DOT, FakeSender, MUSE, origin, registerOn, rig, type Rig, storesOn, subscription,
+  DOT, FakeSender, MUSE, origin, registerOn, rig, type Rig, subscription,
 } from "./ledger-support";
-import { drainDue, failure, faulty, laneJobs } from "./support";
+import { drainDue, failure, faulty, laneJobs, storesOn } from "./support";
 
 const RINGS = { command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
                 recipe_id: null };

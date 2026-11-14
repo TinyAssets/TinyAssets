@@ -18,9 +18,9 @@ import type { OwnerDO } from "../src/owner-do";
 import { POLICY_LIMITS, policyDigest } from "../../contract/src/policy-document";
 import { Policy } from "../src/policy";
 import {
-  DOT, MCP, MUSE, rig, type Rig, signedIn, storesOn, subscription,
+  DOT, MCP, MUSE, rig, type Rig, signedIn, subscription,
 } from "./ledger-support";
-import { failure } from "./support";
+import { failure, storesOn } from "./support";
 
 const CHATGPT: Origin = Object.freeze({ client: "1".repeat(64), family: "2".repeat(64) });
 const CLAUDE: Origin = Object.freeze({ client: "3".repeat(64), family: "4".repeat(64) });

@@ -5,25 +5,23 @@ import { HELD_WAIT_MS, TIERS } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
-import { Collections, LIMITS } from "../src/collections";
-import { type FileLimits, Files, type Full } from "../src/files";
-import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
+import { type Collections, LIMITS } from "../src/collections";
+import type { Files } from "../src/files";
+import { type Write, WriteGate } from "../src/gate";
 import {
   CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES,
   HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "../src/manifest";
-import type { OwnerDO } from "../src/owner-do";
+import { type OwnerDO, ownerStores } from "../src/owner-do";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { contentIdOf } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
 import { INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { agentFilePath } from "../src/agent-file";
 import { carried, NEWER } from "../src/starter-package";
-import { fileLimits, Policy } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
-import { storageFull, storageFullRefusal } from "../src/storage-full";
 import type { ChunkStore } from "../../contract/src/files";
+import type { FileSettings } from "../../contract/src/policy-document";
 import type { GateControl } from "../../ci/gate";
 import type { Arm, Crossed, Held } from "../../ci/gate-worker";
 
@@ -64,11 +62,6 @@ export function faulty(write: Write, fails: (n: number) => boolean): Write {
 }
 
 /**
- * Files over `storage`, writing their own units through `write`. The object builds them
- * over its gate's view; a test that calls their synchronous changes directly passes the
- * storage itself.
- */
-/**
  * The files Worker as the `FILES` binding reaches it, with `overrides` in place of some of
  * its methods: a store that fails or records one call and passes the rest through.
  */
@@ -98,14 +91,29 @@ export function through(overrides: Partial<ChunkStore>): ChunkStore {
   };
 }
 
-export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore = env.FILES,
-                        limits: Partial<FileLimits> = {}): Files {
-  return new Files(storage, store, () => ({ ...FILE_DEFAULTS,
-                                            max_bytes: TIERS.free.storage_bytes, ...limits }),
-                   write, TIERLESS_FULL,
-                   // Alone, as these tests make them: no other module told of a change, and
-                   // no manifest generation to protect.
-                   () => {}, () => null);
+/**
+ * The object's stores on `state`'s own storage, wired as the object wires them
+ * (`ownerStores`), over a write gate of the test's own: it shares the object's queue, as
+ * every adapter over one storage does (`gate.ts`), so each store writes only in its units.
+ * Their outside calls go to the files Worker, or to `files` (`through`). A file change tells
+ * the owner's other modules, as the object's own does.
+ */
+export function storesOn(state: Pick<DurableObjectState, "id" | "storage">,
+                         files: ChunkStore = env.FILES) {
+  const gate = new WriteGate(state.storage);
+  return { gate, ...ownerStores(gate, { ...env, FILES: files }, state.id) };
+}
+export type TestStores = ReturnType<typeof storesOn>;
+
+/**
+ * The owner's files settings, as the owner sets them in its session (`policyWrite`): `files`,
+ * and the rest at their defaults. The object, and every store of it (`storesOn`), reads them.
+ */
+export async function setFiles(r: { readonly stub: Stub; session(origin: null): Binding },
+                               files: Partial<FileSettings>): Promise<void> {
+  const { generation, policy } = await r.stub.policyRead(r.session(null));
+  await r.stub.policyWrite(r.session(null), { expected_generation: generation,
+                                              policy: { ...policy, files } as never });
 }
 
 /**
@@ -128,19 +136,19 @@ export async function crowd(stub: DurableObjectStub<OwnerDO>, bound: number, roo
   };
 }
 
-/** The refusal at the storage figure with no tier named, as these files' tests make it. */
-export const TIERLESS_FULL: Full = (stored, needed, held, limit) =>
-  storageFullRefusal(storageFull(stored, needed, held, limit, null, null));
-
 /**
- * The owner's files on `stub`'s own storage, with some settings changed, over the real
- * files Worker or the store given; their own units go through a gate on that storage.
+ * The owner's files on `stub`'s own storage (`storesOn`), over the real files Worker or the
+ * store given; their own units go through a gate on that storage, and `act` runs each of
+ * their synchronous changes in a unit of it (`unit`), as a door runs one. Their settings are
+ * the owner's own (`setFiles`).
  */
-export function inFiles<R>(stub: DurableObjectStub<OwnerDO>, limits: Partial<FileLimits>,
-                           act: (files: Files, state: DurableObjectState) => R | Promise<R>,
+export function inFiles<R>(stub: DurableObjectStub<OwnerDO>,
+                           act: (files: Files, unit: Write) => R | Promise<R>,
                            store: ChunkStore = env.FILES): Promise<R> {
-  return runInDurableObject(stub, (_instance: OwnerDO, state) =>
-    act(filesOn(state.storage, new WriteGate(state.storage).write, store, limits), state));
+  return runInDurableObject(stub, (_instance: OwnerDO, state) => {
+    const { gate, files } = storesOn(state, store);
+    return act(files, gate.write);
+  });
 }
 
 type Row = Record<string, SqlStorageValue>;
@@ -525,23 +533,15 @@ export async function failure(call: () => Promise<unknown>): Promise<Failed> {
 }
 
 /**
- * What the object builds its collections from, over `storage`: the owner's shares are its
- * files policy's (`policyWrite` sets them), and a test's store is handed no placed body,
- * since placing one is the door's (`bodies.test.ts`), so an adoption fails loudly.
+ * The primitive on `stub`'s own storage, as the object builds it (`storesOn`), `act` run in
+ * one unit of the test's gate, as a door runs the collections.
  */
-export function collectionParts(storage: DurableObjectStorage):
-    ConstructorParameters<typeof Collections> {
-  const policy = new Policy(storage);
-  return [storage, () => {
-    throw new Error("a test's own store takes inline bodies only");
-  }, () => fileLimits(policy.read().document, null)];
-}
-
-/** The primitive on `stub`'s own storage, as the object builds it. */
 export function inObject<R>(stub: Stub,
                             act: (store: Collections, state: DurableObjectState) => R): Promise<R> {
-  return runInDurableObject(stub, (_instance: OwnerDO, state) =>
-    act(new Collections(...collectionParts(state.storage)), state));
+  return runInDurableObject(stub, (_instance: OwnerDO, state) => {
+    const { gate, collections } = storesOn(state);
+    return gate.write(() => act(collections, state));
+  });
 }
 
 /**

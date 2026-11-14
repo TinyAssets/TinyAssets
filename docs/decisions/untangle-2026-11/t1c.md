@@ -156,6 +156,38 @@ T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each gree
    - The leg took 3 min 6 s, against main's 3 min 5 s.
 7. **Mutation, on the object's wiring, which the leg never reached before:** `ownerStores`' `halted` without the erasure mark fails the ship case ("the ship case began a burst"). Before the throw was added, the same mutant passed every check, its ship's peak moving from 9.2 to 11.35 MiB.
 
+## T1e: the files and collections on the object's own wiring
+
+1. **Research (Fact 14), the open question from T1d: what a file change tells.** `Files` calls `changed` in each workspace change's own unit (`#record`). The object's `changed` was `fileChanged` over its whole state:
+   - an `agent.json` made or removed: the ledger's `appear` or `retire` of that agent;
+   - the sync-ignore list changed: a policy receipt and one notice naming the writer. A sync's writer is named by the agents of the runs under its lease (`Runs.agentsAt`), an outside client by its grant's name, and the notice carries the held-back count its sync agent sent (`OwnerState.heldBack`, set by the sync door around `files.syncCommit` and cleared after).
+
+   Nothing else: no change log, no wake, no schedule (the door's `filing` syncs the schedule, apart from `changed`). So every input was in the stores but two: the runs' read, a single `SELECT` on `runs`, and the held-back count, a call-order convention between the door and the files module.
+2. **Decided: `ownerStores` wires the file change itself, and takes no `changed`.** `ownerStores(units, env, id)` hands `Files` a `changed` over its own ledger, policy, notices, grants and files, and `runs.ts` `agentsAt(storage, …)`, now a function over the storage (its one caller was `fileChanged`). The held-back count travels with the change: `Files.syncCommit` reads it from its own ops (`heldBackOf`) for the length of its unit, and `#record` hands it in the change (`held_back`). So `OwnerState.heldBack` and the door's try/finally go, and `fileChanged` takes the stores (`Told`), not the object's state.
+   - Every builder of the stores tells the owner's other modules of a file change, as the object does: no test-only `changed`. `test/stores.ts` `NO_FILE_CHANGE` is deleted, and the memory probe and the generation harness call `ownerStores` with three arguments.
+   - Writing through the doors alone was weighed and not chosen: the files module's tests write as writers no door makes (`agent`, `o`, a bare `client:…`, the fuzz test's four), step housekeeping at chosen times (`files.run(t)`), and hold a lease's calls in hand. They reach the module's own API, on the object's own wiring.
+   - The product change is no door: three modules' wiring, about 40 lines.
+3. **The per-test `limits` and `store`.** Every limit has a product door, the owner's files policy (`policyWrite`, `contract/src/policy-document.ts` `FILE_SETTINGS`): `max_bytes` (the owner's own figure, held at or under the tier's storage), `max_file_bytes`, `retention_days`, `keep_versions`, `keep_recent`, `client_share` and `owner_reserve`. The tier's own figure is the binding's tiers. No limit is a hidden literal.
+   - `support.ts` `setFiles(r, files)` sets them as the owner does, in its session, and every store of the object reads them. Before, a test's `limits` held only its own `Files`, while the object's doors kept the defaults: `files-share.test.ts` set the policy and then reached `inFiles` at the defaults.
+   - One test set a figure past the policy's range, `max_file_bytes` at 40 GiB and one chunk, to reach the chunk count's refusal. At the highest figure the owner may set, a file that size is refused at the size quota. So the chunk count's refusal is asserted where it is reachable, a placed body's begin (`files-upload.test.ts`).
+   - `store` goes in the env handed to the stores (`storesOn(state, files)`), as `generate` steers it. A test whose units fail calls `ownerStores` with `faulty(gate.write, …)` as its units' `write`.
+4. **As built** (`owner/test/support.ts`):
+   - `filesOn`, `TIERLESS_FULL` and `collectionParts` are deleted.
+   - `storesOn` moves here from `ledger-support.ts`.
+   - `inFiles(stub, act, store?)` hands `act` the object's files and its gate's `unit`, and `inObject` the object's collections, both from `storesOn`.
+   - The generation harness's writer and the starter's hand-built passes take the stores' files and notices. Bodies, the change log and the scan tests take the stores' own, not one built beside them.
+5. **A test's synchronous file change runs in a unit** (`unit`), as a door runs it: the stores sit over the gate's view, which refuses a write outside one. This is T1c-c's rule for the ledger, now the files' too. Before, `filesOn` sat on the raw storage.
+6. **A change of retention re-marks every kept row on the object's own lane**, now that the policy is real. A test that steps housekeeping itself first lets that lane finish (`files-quota.test.ts` `remarked`), then marks the rows stale as a re-mark under way leaves them. "Binds each retention setting alone" reads each path's rows while its own setting is in force: a later setting re-marks the earlier paths, as it does in production.
+7. **`Collections.top` is private** (`#top`). Its `protected` was there for one test's subclass (`Stale`), which returned a high-water mark below the stored rows to reach the `UNIQUE (collection, seq)` backstop. No stored state reaches it (`top` reads the rows' own highest seq), and the subclass needed the collections' parts by hand. So that half of the test is removed (its `Test-Removal:` line). The other half stays, a missing high-water mark numbering past the rows.
+8. **The refusal at the storage figure names the tier in every test** (`TIERLESS_FULL`'s two cases assert `storageFull(…, "free", TIERS)`).
+9. **Measured** through `heavy.sh`:
+   - the owner workerd suite took 297 s wall against main's 317 s (`7cd4a9c97`), with 1,466 tests passed on each;
+   - the large tests the diff touched (`collections`, `digests`, `files-share`) took 131 s against 121 s, since a fill now writes in one unit, as `inLedger`'s does;
+   - the memory leg passed all 85 of its checks, in 193 s.
+10. **Mutations**, each failing a test that passed before it:
+    - `#record` handing the change `held_back: null` fails "gives the sync agent's count of the kept files a sync's list holds back" (`storage-full.test.ts`). The count now travels with the change, not the object's state.
+    - `ownerStores`' file change made a no-op fails six tests: the seed's receipts with `agent.json` last (`starter.test.ts`), and five of the sync-ignore list's notices (`storage-full.test.ts`). The object's own path and every test's stores run that one wiring.
+
 ## Owed
 
 - **`BackupParts`' `sizes?` and `pool?`**, with T1c-c, as T1c-b's item 6 says. Built in T1c-c (above).
@@ -164,7 +196,7 @@ T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each gree
   - Test seeding is not routed through the doors, and no bulk SQL seeds (it would copy the post path's row shapes, which T1b5 rejected).
   - `ballast` keeps seeding through the ledger's own API, on the ledger that function builds.
 - **The gate has no withdrawal of one arming.** `disarm` clears every arming, held call and record, so `watchMoves` disarms at its end.
-- **`support.ts` `filesOn` and `collectionParts`** build the files and collections as their own modules' tests need them, with tier figures and refusals of their own (`TIERLESS_FULL`). They are the same kind of copy `ledgerParts` was, and `ownerStores` can now replace them. The generation harness's writer is one of them. Not T1c-c's scope.
+- **`support.ts` `filesOn` and `collectionParts`** build the files and collections as their own modules' tests need them, with tier figures and refusals of their own (`TIERLESS_FULL`). Built in T1e (above). They are the same kind of copy `ledgerParts` was, and `ownerStores` can now replace them. The generation harness's writer is one of them. Not T1c-c's scope.
   - **Not T1d's either: its own PR, researched first.** It is past T1d's 600-line bound. It covers about 90 `inFiles` calls, 18 `filesOn` and 28 `collectionParts`, `inObject` and `inFilled` reaches, in 15 test files.
   - The plan: `inFiles` and `inObject` reach `ownerStores` (through `storesOn`). Each test's `limits` (`keep_versions` 12 times, `retention_days` 11, `keep_recent` 3, `max_file_bytes` 3, `max_bytes` 2, `client_share` and `owner_reserve` 1 each) is set by the owner's real doors:
     - the files policy (`policyWrite`) for the policy figures;

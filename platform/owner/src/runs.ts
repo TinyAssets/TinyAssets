@@ -585,6 +585,16 @@ function scheduleOf(row: ScheduleRow): RunSchedule {
            next_at: row.next_at, last_run: row.last_run, last_error: row.last_error };
 }
 
+/**
+ * The agents of `storage`'s runs under the lease taken at `epoch`, at most `most`, by name: a
+ * read, which names a sync's writer to the owner (`files.ts` `fileChanged`).
+ */
+export function agentsAt(storage: OwnerStorage, epoch: number, most: number): string[] {
+  return storage.sql.exec<{ agent: string }>(
+    "SELECT DISTINCT agent FROM runs WHERE epoch = ? ORDER BY agent LIMIT ?", epoch, most)
+    .toArray().map((row) => row.agent);
+}
+
 export class Runs {
   readonly #storage: OwnerStorage;
   readonly #host: RunHost;
@@ -621,13 +631,6 @@ export class Runs {
 
   get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
-  }
-
-  /** The agents of the runs under the lease taken at `epoch`, at most `most`, by name. A read. */
-  agentsAt(epoch: number, most: number): string[] {
-    return this.#sql.exec<{ agent: string }>(
-      "SELECT DISTINCT agent FROM runs WHERE epoch = ? ORDER BY agent LIMIT ?", epoch, most)
-      .toArray().map((row) => row.agent);
   }
 
   #run(runId: string): RunRow | undefined {

@@ -21,11 +21,11 @@ import {
 } from "../../contract/src/run-events";
 import { TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated } from "./gateway-support";
-import { MCP, MUSE, signedIn, storesOn } from "./ledger-support";
+import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, sandboxOf, scripted, secretOf, startOf, syncOf, TIERS }
   from "./runs-support";
-import { drainDue, failure, laneAt } from "./support";
+import { drainDue, failure, laneAt, storesOn } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();

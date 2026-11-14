@@ -17,7 +17,7 @@ import { MIGRATIONS } from "../src/schema";
 import {
   BURST, digest, generate, type Line, owner, PAGE, replay, standing,
 } from "./generation-support";
-import { filesOn, sqlIn } from "./support";
+import { sqlIn, storesOn } from "./support";
 
 const W = "/workspace";
 const text = (body: string) => new TextEncoder().encode(body);
@@ -224,9 +224,7 @@ describe("the change log", () => {
      async () => {
     const o = await owner();
     const out = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
-      const gate = new WriteGate(state.storage);
-      const log = new ChangeLog(gate.storage);
-      const files = filesOn(gate.storage, gate.write);
+      const { gate, log, files } = storesOn(state);
       await gate.write(() => log.begin("0123456789abcdef"));
       await files.write(`${W}/a.bin`, Uint8Array.from([0, 1, 2, 250, 251]),
                         { expected: null, writer: "owner" });
