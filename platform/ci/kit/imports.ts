@@ -290,7 +290,7 @@ function within(patterns: readonly string[], path: string, ws: string | null,
 }
 
 /** The workspace a path from the repository root is in: its folder of `platform/`. */
-function workspaceOf(path: string): string | null {
+export function workspaceOf(path: string): string | null {
   return /^platform\/([^/]+)\//.exec(path)?.[1] ?? null;
 }
 

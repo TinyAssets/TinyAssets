@@ -13,8 +13,9 @@
  *
  * Every comparison is constant-time; a profile is checked whole before it is used.
  */
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
+import { sha256 } from "./digest";
 import { Refusal } from "./refusal";
 import { HEX64 } from "./ids";
 
@@ -118,8 +119,7 @@ export function proves(checked: Profile, headers: Headers, body: Uint8Array,
     if (typeof value !== "string" || value.length > 4096) {
       return false;
     }
-    return equal(createHash("sha256").update(value, "utf8").digest(),
-                 Buffer.from(checked.digest, "hex"));
+    return equal(sha256(value), Buffer.from(checked.digest, "hex"));
   }
   const signature = headers[checked.signature_header];
   if (typeof signature !== "string" || !signature.startsWith(checked.prefix) || secret === null
