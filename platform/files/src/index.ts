@@ -421,7 +421,8 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       const put = await this.env.BLOBS.put(manifestKey(ns, gen), JSON.stringify({ ...root, key }),
                                            { onlyIf: { etagMatches: object.etag } });
       if (put === null) {
-        throw new Error("a manifest root changed while its key was wrapped again; run it again");
+        throw new Refusal("root_changed",
+                          "a manifest root changed while its key was wrapped again; run it again");
       }
     }
     return { key };

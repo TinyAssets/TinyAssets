@@ -15,7 +15,7 @@ import {
   egressTarget, meteredCall, meteredModel, SUPPORTED_APIS,
 } from "../../contract/src/egress-scope";
 import {
-  clamped, describes, learnMeter, meteredRecord, meteredUsage, sentHeaders, snapshotOf,
+  clamped, describes, learnMeter, meteredRecord, meteredUsage, Meters, sentHeaders, snapshotOf,
 } from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 
@@ -111,7 +111,7 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
       if (calls.length === 0) {
         continue;
       }
-      const meter = await learnMeter(builtinCatalog(), record.upstream!, "k");
+      const meter = await new Meters(builtinCatalog(), record.upstream!, "k").any();
       for (const call of calls) {
         expect(meteredCall({ ...scopeOf(record.id), meter }, call.method, call.path),
                `${record.id} ${call.path}`).toBe(false);
@@ -129,7 +129,7 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
     expect(freeCall(rules, "google", "POST", path)).toBe(false);
     // Sealed, but neither free nor the model call the gateway meters: egress_unmetered.
     const { upstream } = records.find((record) => record.id === "google_ai_studio")!;
-    const meter = await learnMeter(builtinCatalog(), upstream!, "k");
+    const meter = await new Meters(builtinCatalog(), upstream!, "k").any();
     expect(meteredCall({ ...scopeOf("google_ai_studio"), meter }, "POST", path)).toBe(false);
   });
 
@@ -168,7 +168,7 @@ describe("the meter pi-ai's adapter teaches", () => {
     "meters the %s source's model call, on one of its sealed endpoints",
     async (id, { upstream, endpoints }) => {
       expect(apiRules(upstream!.api), id).not.toBeNull();
-      const meter = await learnMeter(builtinCatalog(), upstream!, "sk-x");
+      const meter = await new Meters(builtinCatalog(), upstream!, "sk-x").any();
       expect(meter, id).not.toBeNull();
       const path = meter!.path.replace("{model}", "model-a");
       const scope = { api: upstream!.api, base_url: upstream!.base_url, endpoints: endpoints!,
@@ -189,13 +189,31 @@ describe("the meter pi-ai's adapter teaches", () => {
     ["Google Generative AI", GOOGLE.upstream,
      { method: "POST", model_field: null, output_field: ["generationConfig", "maxOutputTokens"] }],
   ])("for %s", async (_what, upstream, expected) => {
-    const meter = await learnMeter(builtinCatalog(), upstream, "sk-x");
+    const meter = await new Meters(builtinCatalog(), upstream, "sk-x").any();
     expect(meter).toMatchObject(expected);
     expect(meter!.output_field.length).toBeGreaterThan(0);
   });
 
+  it("learns each model's call once in a call: the path choice's meter is its model's own",
+     async () => {
+    const catalog = builtinCatalog();
+    const meters = new Meters(catalog, ANTHROPIC.upstream, "sk-x");
+    const any = await meters.any();
+    let chosen: Parameters<Meters["of"]>[0] | undefined;
+    for (const record of catalog.provider("anthropic")!.getModels()
+      .filter((model) => model.api === "anthropic-messages")) {
+      if (await learnMeter(catalog, ANTHROPIC.upstream, "sk-x", record) !== null) {
+        chosen = record;
+        break;
+      }
+    }
+    expect(any).not.toBeNull();
+    expect(await meters.of(chosen!)).toBe(any);
+    expect(meters.of(chosen!)).toBe(meters.of(chosen!));
+  });
+
   it("names Google's model in the path, and reads it back", async () => {
-    const meter = (await learnMeter(builtinCatalog(), GOOGLE.upstream, "AIza-x"))!;
+    const meter = (await new Meters(builtinCatalog(), GOOGLE.upstream, "AIza-x").any())!;
     expect(meter.path).toMatch(/^\/v1beta\/models\/\{model\}:streamGenerateContent$/);
     const path = "/v1beta/models/model-a:streamGenerateContent";
     expect(meteredModel(meter, "POST", path, {})).toBe("model-a");
@@ -213,7 +231,7 @@ describe("the meter pi-ai's adapter teaches", () => {
   });
 
   it("reads the model from the body, and clamps the output cap there", async () => {
-    const meter = (await learnMeter(builtinCatalog(), ANTHROPIC.upstream, "sk-x"))!;
+    const meter = (await new Meters(builtinCatalog(), ANTHROPIC.upstream, "sk-x").any())!;
     expect(meteredModel(meter, "POST", "/v1/messages", { model: "model-x" })).toBe("model-x");
     expect(meteredModel(meter, "POST", "/v1/messages", {})).toBeNull();
     expect(meteredModel(meter, "POST", "/v1/models", { model: "model-x" })).toBeNull();
@@ -227,7 +245,7 @@ describe("the meter pi-ai's adapter teaches", () => {
                                                                ...tier });
     expect(clamped(meter, { model: "m", max_tokens: "lots" }, 1000, api))
       .toEqual({ model: "m", max_tokens: 1000, ...tier });
-    const google = (await learnMeter(builtinCatalog(), GOOGLE.upstream, "AIza-x"))!;
+    const google = (await new Meters(builtinCatalog(), GOOGLE.upstream, "AIza-x").any())!;
     expect(clamped(google, { contents: [] }, 7, "google-generative-ai"))
       .toEqual({ contents: [], generationConfig: { maxOutputTokens: 7 } });
   });
@@ -295,7 +313,7 @@ describe("the reviewer's escapes, closed (review round 2)", () => {
     expect(reported!.cost).toBeGreaterThan(0);
     // The gateway asks for it, as pi-ai's own streaming call does; a call that does not
     // stream is left as it is.
-    const meter = (await learnMeter(catalog, GROQ, "gsk-x"))!;
+    const meter = (await new Meters(catalog, GROQ, "gsk-x").any())!;
     expect(clamped(meter, { model: "m", stream: true }, 10, "openai-completions"))
       .toMatchObject({ stream: true, stream_options: { include_usage: true } });
     expect(clamped(meter, { model: "m", stream: true, stream_options: { include_usage: false } },
@@ -395,7 +413,7 @@ describe("the reviewer's escapes, closed (review round 2)", () => {
 
   it("clamps every output-cap alias the API reads, and refuses several choices", async () => {
     const catalog = builtinCatalog();
-    const meter = (await learnMeter(catalog, GROQ, "gsk-x"))!;
+    const meter = (await new Meters(catalog, GROQ, "gsk-x").any())!;
     const field = meter.output_field.join(".");
     const other = field === "max_tokens" ? "max_completion_tokens" : "max_tokens";
     const sent = clamped(meter, { model: "m", [other]: 100_000 }, 1_000, "openai-completions");
@@ -542,13 +560,13 @@ describe("the price beyond tokens (review round 3)", () => {
 describe("a tier left to the account (review round 3, Anthropic)", () => {
   it("is set to the one pi-ai prices when absent, by the rules' data, and kept when named",
      async () => {
-    const meter = (await learnMeter(builtinCatalog(), ANTHROPIC.upstream, "sk-x"))!;
+    const meter = (await new Meters(builtinCatalog(), ANTHROPIC.upstream, "sk-x").any())!;
     expect(clamped(meter, { model: "m" }, 10, "anthropic-messages"))
       .toMatchObject({ service_tier: "standard_only" });
     expect(clamped(meter, { model: "m", service_tier: "standard_only" }, 10,
                    "anthropic-messages")).toMatchObject({ service_tier: "standard_only" });
     // An API whose rules default nothing is left as it is.
-    const google = (await learnMeter(builtinCatalog(), GOOGLE.upstream, "AIza-x"))!;
+    const google = (await new Meters(builtinCatalog(), GOOGLE.upstream, "AIza-x").any())!;
     expect(clamped(google, { contents: [] }, 7, "google-generative-ai")["service_tier"])
       .toBeUndefined();
   });
