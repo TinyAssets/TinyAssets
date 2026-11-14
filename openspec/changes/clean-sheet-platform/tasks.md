@@ -349,15 +349,19 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     object's `admitted` held by a test (no test fails today if the object passes the ledger
     `() => true`: a suspension between a wakes pass's claims, the `GATEWAY` gate holding its
     send) (`docs/decisions/untangle-2026-11/t1c.md`).
-  - [ ] T1c-b: the real entry: `main: src/index.ts`, `Internals` and the test classes left
-    deleted, the unbound-`ERASURES` throw gone (`owner-do.ts`; the generated `OwnerEnv` already
-    types it required, C2b) with its queue's fake consumer, the erasure and control record
-    under a fake `Date`, the one-file starter by a Vite alias, the rig admitting by the door,
-    the doors' entry with no third constructor argument, and `BackupParts`' test-only `sizes?`
-    and `pool?` gone.
+  - [ ] T1c-b: `Internals`' erasure, grace, retry and control-freshness fields, `FauxOwnerDO`,
+    `SwitchedOwnerDO` and `CachedOwnerDO` deleted; the unbound-`ERASURES` throw gone
+    (`owner-do.ts`; the generated `OwnerEnv` already types it required, C2b) with its queue's
+    fake consumer; the erasure and control record under a fake `Date`; the rig admitting by
+    the door; the doors' entry with no third constructor argument (`t1c.md`, T1c-b).
+  - [ ] T1c-b2, decided first (`t1c.md`, T1c-b item 6): the real entry, `main: src/index.ts`,
+    with `Internals` and the test classes left deleted, and the one-file starter by a Vite
+    alias, the starter tests' hand-built passes rebuilt beside an object that seeds its own.
   - [ ] T1c-c: `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted: the
     object exports its one ledger wiring function and the tests call it; `ballast` seeds
-    through the ledger's own API, with no door seeding and no bulk SQL (`t1c.md`, owed).
+    through the ledger's own API, with no door seeding and no bulk SQL (`t1c.md`, owed); and
+    `BackupParts`' test-only `sizes?` and `pool?` gone, the generation harness's copy of the
+    backups wiring with them, researched first (`t1c.md`, T1c-b item 6).
   - [ ] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
     copy of the object's wiring, deleted.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required

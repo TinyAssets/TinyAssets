@@ -100,7 +100,7 @@ describe("the inbox digest", () => {
 describe("a digest past a pruned deletion (review rvlim N1)", () => {
   it("R1: tells a reader behind a pruned tombstone to read again, never hides the delete",
      { tags: ["large"] }, async () => {
-    const { stub, name } = ownerObject();
+    const { stub, name } = await ownerObject();
     await inFilled(stub, (store, state) => {
       const made = store.write(name, name, "board", "gone", "x", "", false);
       const cursor = store.changed(name, { collection: "board" }, 0, 100).cursor;

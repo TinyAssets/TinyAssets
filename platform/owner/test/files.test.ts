@@ -520,7 +520,7 @@ describe("every file door", () => {
 
 describe("the manifest's queries", () => {
   it("read by key, never by scanning a table", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.fileMkdir(as(name), { path: `${W}/d/e`, expected_etag: null });
     const plans = await runInDurableObject(stub, (_i: OwnerDO, state) => {
       const plan = (query: string, ...params: SqlStorageValue[]) => state.storage.sql

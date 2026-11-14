@@ -25,7 +25,7 @@ import {
 } from "agents/lifecycle";
 
 import {
-  ERASE_RETRY_MS, erasureStartedAt, erasureStep, markErasing, runsEnded,
+  ERASE_RETRY_MS, erasureStartedAt, erasureStep, markErasing, PUT_GRACE_MS, runsEnded,
 } from "./erasure";
 import type { OwnerStorage, Write } from "./gate";
 
@@ -55,11 +55,6 @@ interface ErasureParts {
   /** The same deletion again after the wipe, for a put another instance began (`ns`). */
   readonly blobsAgain: (ns: string | null) => Promise<void>;
   /**
-   * How long after the mark the R2 step waits, so a put an earlier instance of the object
-   * began before the mark has landed by then (`PUT_GRACE_MS`).
-   */
-  readonly putGraceMs: number;
-  /**
    * The outside record (`erasure.ts` step 2): whether the doors confirmed it, and, until
    * they do, the erasure queue's message sent again. A missing queue fails loudly.
    */
@@ -71,15 +66,16 @@ interface ErasureParts {
    * tombstone (`WriteGate.wipe` with none).
    */
   readonly bare: () => Promise<void>;
-  /** How long a refused door waits after the last attempt before it resumes the erasure. */
-  readonly retryMs: number;
 }
 
 export class Erasure extends LifecycleCapability {
   readonly #parts: ErasureParts;
   #running: Promise<void> | undefined;
   #erased = false;
-  /** When the last attempt began (ms), so a refused door resumes at most once a `retryMs`. */
+  /**
+   * When the last attempt began (ms), so a refused door resumes at most once an
+   * `ERASE_RETRY_MS`.
+   */
   #lastStart = 0;
 
   constructor(parts: ErasureParts) {
@@ -126,12 +122,12 @@ export class Erasure extends LifecycleCapability {
   /**
    * An erasure the mark records, resumed off the caller's line (the object's start; a door
    * the mark refused, inside its unit, `fromDoor`): never twice at once, and from a door at
-   * most once a `retryMs` after the last attempt began, so a polling caller drives no
+   * most once an `ERASE_RETRY_MS` after the last attempt began, so a polling caller drives no
    * retries back to back; a failure waits for the next.
    */
   resume(fromDoor = false): void {
     if (this.#erased || this.#running !== undefined
-        || (fromDoor && Date.now() - this.#lastStart < this.#parts.retryMs)) {
+        || (fromDoor && Date.now() - this.#lastStart < ERASE_RETRY_MS)) {
       return;
     }
     queueMicrotask(() => {
@@ -165,10 +161,10 @@ export class Erasure extends LifecycleCapability {
       });
     }
     // 3. Every R2 copy deleted by the namespace's prefix, once a put any instance began
-    // before the mark has had its time to land (a failure rejects, and the retry deletes
+    // before the mark has had its time to land (`PUT_GRACE_MS`) (a failure rejects, and the retry deletes
     // again); then the owner wiped whole, Lifecycle's alarm disabled first so nothing is
     // written after; then the prefix deleted once more.
-    const due = erasureStartedAt(storage) * 1000 + this.#parts.putGraceMs;
+    const due = erasureStartedAt(storage) * 1000 + PUT_GRACE_MS;
     if (due > Date.now()) {
       // Not yet: the erasure's job wakes it when the grace is up (a day), held in storage,
       // so no in-memory wait carries it and a restart loses nothing.
@@ -183,7 +179,7 @@ export class Erasure extends LifecycleCapability {
     if (!await outside()) {
       const jobs = this.lifecycle.jobs;
       const [rearmed] = await write((): [Promise<unknown>] =>
-        [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + this.#parts.retryMs })]);
+        [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + ERASE_RETRY_MS })]);
       await rearmed;
       return;
     }

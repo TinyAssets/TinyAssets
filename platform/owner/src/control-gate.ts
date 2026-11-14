@@ -26,20 +26,18 @@ export const CONTROL_FRESH_MS = 1_000;
 /** Which of the doors' gates a caller passed: an outside client's, or the owner's own. */
 export type Gate = "outside" | "owner";
 
-/** One script's view of the control record, read at most once a `freshMs`. */
+/** One script's view of the control record, read at most once a `CONTROL_FRESH_MS`. */
 export class ControlGate {
   readonly #store: ControlStore;
-  readonly #freshMs: number;
   #last: { readonly at: number; readonly read: ControlRead } | null = null;
 
-  constructor(store: ControlStore, freshMs: number = CONTROL_FRESH_MS) {
+  constructor(store: ControlStore) {
     this.#store = store;
-    this.#freshMs = freshMs;
   }
 
   async #read(): Promise<ControlRead> {
     const now = Date.now();
-    if (this.#last === null || now - this.#last.at >= this.#freshMs) {
+    if (this.#last === null || now - this.#last.at >= CONTROL_FRESH_MS) {
       this.#last = { at: now, read: await readControl(this.#store) };
     }
     return this.#last.read;
