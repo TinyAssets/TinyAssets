@@ -333,6 +333,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     generation to restore pinned first, since a fresh generation's finish prunes every older
     unpinned one (`r5r.md` item 14). Restore (#5587) and owner migration 10's pin (#5589) landed.
   - [ ] Owner migration 11's pin PR, after `restore.wipe` merges (`r5w.md` item 9).
+  - [ ] The sweep's rotation counts a restore record's `gen` and `fresh` (a wiped or failed
+    restore's object knows neither), or does not finish while any owner is held
+    (`r5w.md` item 14, `untangle/r7-sweep`).
   - [ ] A restore's kept generations' chunks kept from early collection: the files plane
     collects early only garbage the newest generation does not name, so the fallback a
     restore loads can lose a chunk and its restore fails at its chunks step (`r5w.md`
