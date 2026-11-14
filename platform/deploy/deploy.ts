@@ -94,6 +94,7 @@ import { CONTROL_KEY } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
+import { type JobRun, maskLine, runOf, set, summarize } from "./actions.ts";
 import {
   Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback, handover, type Kept,
   type Moved, narrower, type Route, type RouteChange, unlike,
@@ -206,11 +207,25 @@ export interface Values {
   readonly detach: readonly { id: string; service: string }[];
 }
 
-/** What a step is given beside the values: its run, the plan, and a folder to write in. */
-export interface Context {
-  readonly run: Run;
+/**
+ * The run's one reporter: its plan, the job's summary and the masks in its log, each through
+ * `actions.ts`, which holds what is GitHub's.
+ */
+export interface Reporter {
   /** Adds lines to the run's plan. */
   readonly say: (...lines: string[]) => void;
+  /**
+   * Masks `value` in the job's log from here on: not a credential, but once a secret, and a
+   * wrangler error the kit quotes names `/accounts/<id>/...` in a public log.
+   */
+  readonly mask: (value: string) => void;
+  /** Adds `text` to the job's summary at once, so a run that stops later still shows it. */
+  readonly summarize: (text: string) => void;
+}
+
+/** What a step is given beside the values: its run, the reporter, and a folder to write in. */
+export interface Context extends Reporter {
+  readonly run: Run;
   /** A folder outside the checkout, made when first asked for; the run removes it at its end. */
   readonly scratch: () => string;
 }
@@ -251,31 +266,29 @@ export class Steps<Have extends keyof Values> {
 }
 
 function input(run: Run, name: string): string | undefined {
-  const value = run.env[name];
-  return value === undefined || value === "" ? undefined : value;
+  return set(run.env, name);
 }
 
-/** The plan, printed and written to the job summary. */
-export function report(plan: readonly string[], applied: boolean, run: Run): void {
-  const summary = `${applied ? "Changed" : "Would change"}:\n${plan.map((line) => `- ${line}`)
+/** The reporter of `run`, its plan's lines gathered in `plan`. */
+function reporterOf(run: Run, plan: string[]): Reporter {
+  return Object.freeze({
+    say: (...lines: string[]) => { plan.push(...lines); },
+    mask: (value: string) => {
+      const line = maskLine(run.env, value);
+      if (line !== null) {
+        run.io.log(line);
+      }
+    },
+    summarize: (text: string) => summarize(run.env, text),
+  });
+}
+
+/** The plan as the run reports it: printed, and added to the job's summary. */
+function report({ summarize: add }: Reporter, plan: readonly string[], run: Run): void {
+  const text = `${run.apply ? "Changed" : "Would change"}:\n${plan.map((line) => `- ${line}`)
     .join("\n")}`;
-  run.io.log(summary);
-  const file = run.env["GITHUB_STEP_SUMMARY"];
-  if (file !== undefined) {
-    writeFileSync(file, `${summary}\n`, { flag: "a" });
-  }
-}
-
-/**
- * Masks `value` in a GitHub Actions job's log (`::add-mask::`), as the probe workflows mask
- * the account id: not a credential, but once a secret, and a wrangler error the kit quotes
- * names `/accounts/<id>/...` in a public log. Outside Actions it prints nothing.
- */
-export function maskInLog(value: string, env: Readonly<Record<string, string | undefined>>,
-                          log: (line: string) => void): void {
-  if (env["GITHUB_ACTIONS"] !== undefined) {
-    log(`::add-mask::${value}`);
-  }
+  run.io.log(text);
+  add(`${text}\n`);
 }
 
 // --- The migration locks ----------------------------------------------------------------
@@ -777,7 +790,7 @@ export const PROBE_SIGNS = [
  * `probe`): the kit writes it itself, before its first change, over the client and token it
  * already holds, so a refused write stops the run before anything is changed, and `handback`
  * reads it with that same token, with no host and no GitHub API in between. Its key is the
- * run's (`GITHUB_RUN_ID`), which a re-run attempt keeps, and the job summary names it.
+ * run's id (`actions.ts` `runOf`), which a re-run attempt keeps, and the job summary names it.
  */
 export interface RouteRecord {
   readonly kind: typeof RECORD_KIND;
@@ -804,22 +817,16 @@ const RECORD_KIND = "tinyassets-routes";
 const RECORD_PREFIX = "deploy:routes:";
 const RECORD_ID = /^[A-Za-z0-9-]{1,64}$/;
 
-/** The run's record id: the workflow run's, or, run by hand, the time's. */
-function recordId(run: Run): string {
-  return input(run, "GITHUB_RUN_ID")
-    ?? `local-${run.io.now().toISOString().replace(/[-:]|\.\d+/g, "")}`;
-}
-
 /**
- * The record `routes` keeps of `table` and its handover `steps` on the zone `zoneId`, the
- * egress domain's Worker `domain` and E2B's `hook` as listed.
+ * The record the run `job` keeps at `at` of `table` and its handover `steps` on the zone
+ * `zoneId`, the egress domain's Worker `domain` and E2B's `hook` as listed.
  */
-function routeRecord(run: Run, zoneId: string, table: readonly Route[],
+function routeRecord(job: JobRun, at: Date, zoneId: string, table: readonly Route[],
                      steps: readonly RouteChange[], domain: string | null,
                      hook: Json | null): RouteRecord {
   return {
-    kind: RECORD_KIND, zone: ZONE, zone_id: zoneId, run: recordId(run),
-    attempt: input(run, "GITHUB_RUN_ATTEMPT") ?? null, at: run.io.now().toISOString(),
+    kind: RECORD_KIND, zone: ZONE, zone_id: zoneId, run: job.id, attempt: job.attempt,
+    at: at.toISOString(),
     routes: table.map((route) => ({ pattern: route.pattern, script: route.script ?? null })),
     moved: steps.map((each) => ({ method: each.method, pattern: each.pattern })),
     domain: { hostname: EGRESS_DOMAIN, service: domain, created: null },
@@ -922,10 +929,10 @@ const locks = step(({ run, say }) => {
 });
 
 /** The zone and its account, which Cloudflare's client and wrangler are given. */
-const zone = step<never, "cloudflare" | "zone" | "account" | "wrangler">(async ({ run }) => {
+const zone = step<never, "cloudflare" | "zone" | "account" | "wrangler">(async ({ run, mask }) => {
   const cloudflare = new Cloudflare(input(run, "CLOUDFLARE_API_TOKEN")!, run.io.fetch);
   const { id, account } = await cloudflare.zone(ZONE);
-  maskInLog(account, run.env, run.io.log);
+  mask(account);
   return { cloudflare, zone: id, account, wrangler: wranglerFor(run, account) };
 });
 
@@ -1045,10 +1052,11 @@ type Recording = "cloudflare" | "zone" | "account" | "table" | "changes";
  * run, nothing changed. `hook` is E2B's listing of the lifecycle hook, or undefined in the plan
  * job, which cannot list it and never writes.
  */
-async function keepRecord({ run, say }: Context, got: Pick<Values, Recording>,
+async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Values, Recording>,
                           hook: Json | null | undefined): Promise<Pick<Values, "kept">> {
   const domain = await egressBefore(got);
-  const id = recordId(run);
+  const job = runOf(run.env, run.io.now());
+  const { id } = job;
   const key = `${RECORD_PREFIX}${id}`;
   const title = NAMESPACES["CONTROL"]!;
   const namespace = await controlNamespace(got.cloudflare, got.account);
@@ -1084,17 +1092,13 @@ async function keepRecord({ run, say }: Context, got: Pick<Values, Recording>,
   if (!run.apply || hook === undefined) {
     return { kept: null };
   }
-  const record = routeRecord(run, got.zone, got.table, got.changes, domain, hook);
+  const record = routeRecord(job, run.io.now(), got.zone, got.table, got.changes, domain, hook);
   const status = await got.cloudflare.put(got.account, namespace, key, record);
   if (status !== 200) {
     throw new Error(`writing the route record ${key} failed (${status}): nothing is changed`);
   }
   // A copy beside the plan, in the job summary, for the founder to read.
-  const file = run.env["GITHUB_STEP_SUMMARY"];
-  if (file !== undefined) {
-    writeFileSync(file, `Route record ${key}:\n\n\`\`\`json\n${
-      JSON.stringify(record, null, 2)}\n\`\`\`\n\n`, { flag: "a" });
-  }
+  add(`Route record ${key}:\n\n\`\`\`json\n${JSON.stringify(record, null, 2)}\n\`\`\`\n\n`);
   return { kept: { record, namespace, key } };
 }
 
@@ -1815,7 +1819,7 @@ export async function perform(run: Run): Promise<{ readonly plan: readonly strin
   const plan: string[] = [];
   let scratch: string | undefined;
   const ctx: Context = {
-    run, say: (...lines) => { plan.push(...lines); },
+    ...reporterOf(run, plan), run,
     scratch: () => scratch ??= mkdtempSync(join(tmpdir(), "tinyassets-deploy-")),
   };
   try {
@@ -1825,7 +1829,7 @@ export async function perform(run: Run): Promise<{ readonly plan: readonly strin
       Object.assign(values, await each.run(ctx, values as Pick<Values, never>));
     }
     if (row.report !== null) {
-      report(plan, run.apply, run);
+      report(ctx, plan, run);
       if (!run.apply) {
         run.io.log(row.report.unchanged);
       }

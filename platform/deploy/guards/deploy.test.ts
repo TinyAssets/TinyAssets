@@ -39,13 +39,14 @@ import { APP_RESOURCE } from "../../contract/src/identity";
 import { CONTROL_KEY, outsideOpen, ownerOpen, parseControl } from "../../contract/src/control";
 import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
 import { E2bAdmin } from "../../sandbox/e2b/admin";
+import { maskLine, runOf, summarize } from "../actions";
 import {
   Cloudflare, describeStep, handback, handover, type Route,
 } from "../cloudflare";
 import {
   admitsNobody, authorizeCheck, authorizeLink, deployedConfig,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
-  lifecycleHook, lockRefusal, maskInLog, MIGRATED, type Mode, MODES, parse,
+  lifecycleHook, lockRefusal, MIGRATED, type Mode, MODES, parse,
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, routedConfig,
   type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
@@ -2305,13 +2306,36 @@ describe("E2B's lifecycle webhook", () => {
     expect(again.secretsPut).toEqual({});
     expect(again.events.some((event) => /^e2b (POST|PATCH)/.test(event))).toBe(false);
   });
+});
 
-  it("masks the account id in an Actions log, and prints nothing outside one", () => {
-    const lines: string[] = [];
-    maskInLog("a".repeat(32), { GITHUB_ACTIONS: "true" }, (line) => lines.push(line));
-    expect(lines).toEqual([`::add-mask::${"a".repeat(32)}`]);
-    maskInLog("b".repeat(32), {}, (line) => lines.push(line));
-    expect(lines).toHaveLength(1);
+describe("the Actions job", () => {
+  it("masks a value in an Actions log, and prints nothing outside one", () => {
+    expect(maskLine({ GITHUB_ACTIONS: "true" }, "a".repeat(32)))
+      .toBe(`::add-mask::${"a".repeat(32)}`);
+    for (const env of [{}, { GITHUB_ACTIONS: "" }]) {
+      expect(maskLine(env, "b".repeat(32))).toBeNull();
+    }
+  });
+
+  it("adds to the job's summary as it is, and writes nowhere outside Actions", () => {
+    const out = mkdtempSync(join(tmpdir(), "ta-summary-"));
+    try {
+      const file = join(out, "summary.md");
+      summarize({ GITHUB_STEP_SUMMARY: file }, "one\n");
+      summarize({ GITHUB_STEP_SUMMARY: file }, "two");
+      expect(readFileSync(file, "utf8")).toBe("one\ntwo");
+      summarize({}, "three");
+      summarize({ GITHUB_STEP_SUMMARY: "" }, "three");
+      expect([readdirSync(out), readFileSync(file, "utf8")]).toEqual([["summary.md"], "one\ntwo"]);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("names a run by the workflow run's id and attempt, and one by hand by its time", () => {
+    expect(runOf({ GITHUB_RUN_ID: "7001", GITHUB_RUN_ATTEMPT: "2" }, NOW))
+      .toEqual({ id: "7001", attempt: "2" });
+    expect(runOf({ GITHUB_RUN_ID: "" }, NOW)).toEqual({ id: "local-20261107T120000Z", attempt: null });
   });
 });
 
