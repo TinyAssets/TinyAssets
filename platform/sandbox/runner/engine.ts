@@ -19,7 +19,7 @@
  *   (a `.json` file's values JSON-escaped), several templates of one JSON file merged.
  */
 import type { CliSpec, SourceRecord } from "../../sources/src/schema";
-import { envStem, MCP_DOOR } from "../../contract/src/egress";
+import { egressDoor, envStem } from "../../contract/src/egress";
 import { AGENTS_DIR } from "../../contract/src/paths";
 import { forbids } from "../../contract/src/text";
 
@@ -58,7 +58,8 @@ export function fill(text: string, values: Readonly<Record<string, string>>,
 
 /** The run's own secret, as its MCP URL's path carries it (`/r/<run>/<secret>/mcp`). */
 function runSecret(mcpUrl: string): string {
-  const secret = MCP_DOOR.exec(new URL(mcpUrl).pathname)?.[2];
+  const door = egressDoor(new URL(mcpUrl).pathname);
+  const secret = door?.door === "mcp" ? door.secret : undefined;
   if (secret === undefined) {
     throw new Error("a run's MCP URL carries its secret");
   }

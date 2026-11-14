@@ -22,6 +22,28 @@ export const SIGNIN_ID = /^si_[0-9a-f]{32}$/;
 export const CONNECTION_ID = /^c[0-9a-f]{24}$/;
 /** A doorbell subscription: `sub_` and 32 hex of a SHA-256, derived by the server, never sent. */
 export const SUBSCRIPTION_ID = /^sub_[0-9a-f]{32}$/;
+/**
+ * Whose authority a sandbox runs under: the owner's own work (`owner`), or an outside
+ * client's, by its 64-hex id. One sandbox an authority (`contract/src/sandbox.ts`).
+ */
+export const AUTHORITY = /^(?:owner|[0-9a-f]{64})$/;
+
+/** Where a namespaced issuer's owners start (the doors' `ownerOf`). */
+export const FOREIGN_OWNER = "iss-";
+/** Where the cutover import's rehearsals' owners start (`rehearsalName`). */
+export const REHEARSAL_OWNER = "rehearsal-";
+/**
+ * The owner names no owner issuer's subject may take, since the platform makes them
+ * itself: a foreign issuer's, and a rehearsal's (whose discard is no erasure). Kept
+ * reserved after the cutover, at no cost.
+ */
+export const RESERVED_OWNER_PREFIXES: readonly string[] = Object.freeze([FOREIGN_OWNER,
+                                                                         REHEARSAL_OWNER]);
+
+/** Whether `name` starts as only a name the platform makes does. */
+export function reservedOwner(name: string): boolean {
+  return RESERVED_OWNER_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
 
 /** `bytes` random bytes as lowercase hex (twice as many characters). */
 export function randomHex(bytes: number): string {

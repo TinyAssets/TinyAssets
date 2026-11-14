@@ -298,6 +298,8 @@ jobs:
             command: npm run test:sizes -w owner -- --shard=1/2
           - leg: owner 2/2
             command: npm run test:sizes -w owner -- --shard=2/2
+          - leg: contract
+            command: npm run test:sizes -w contract -- --shard=1/1
           - leg: runner
             command: npm run test:sizes -w sandbox -- --shard=1/1
           - leg: deploy

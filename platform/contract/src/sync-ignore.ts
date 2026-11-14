@@ -2,8 +2,8 @@
  * The sandbox sync's ignore list, read by both sides: the runner's sync agent
  * (`sandbox/runner/sync.ts`), which keeps what it names in the sandbox, and the owner's
  * object, which tells the owner what each change to it holds back (`owner-do.ts`): both
- * compile its lines (`ruleLines`, `unappliedLines`), so it is the contract's. Pure: no
- * import, so the runner's bundle takes it whole.
+ * compile its lines (`ruleLines`, `unappliedLines`), so it is the contract's. Pure, so the
+ * runner's bundle takes it whole.
  *
  * The sync-ignore file: what the sync never offers. Regenerable trees (dependencies, build
  * outputs, caches, derived indexes) are rebuilt in the sandbox, not kept as the owner's
@@ -31,6 +31,8 @@
  * `LIST_BYTES`. A line past either ceiling is not applied (its files go on syncing), and is
  * said, in file order.
  */
+import { utf8Bytes } from "./text";
+
 export const SYNC_IGNORE = "/workspace/.ta/sync-ignore";
 /** The rule file from `/workspace`, which no line ever keeps out. */
 const SYNC_IGNORE_REL = ".ta/sync-ignore";
@@ -120,25 +122,6 @@ function utf8(text: string): Uint8Array {
     }
   }
   return out.subarray(0, n);
-}
-
-/** The UTF-8 length of `text`, without encoding it. */
-function utf8Length(text: string): number {
-  let n = 0;
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    if (c < 0x80) {
-      n += 1;
-    } else if (c < 0x800) {
-      n += 2;
-    } else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < text.length) {
-      n += 4;
-      i++;
-    } else {
-      n += 3;
-    }
-  }
-  return n;
 }
 
 function decode(bytes: readonly number[]): string {
@@ -893,7 +876,7 @@ function compile(lines: readonly string[]): Compiled {
     into.set(key, best);
   };
   for (const raw of lines) {
-    bytes += utf8Length(raw) + 1;
+    bytes += utf8Bytes(raw) + 1;
     const parsed = parse(raw);
     if (parsed === null) {
       continue;

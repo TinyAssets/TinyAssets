@@ -22,7 +22,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   AGENT_PEAK, AUTOMATON_STATES, automatonStates, defaultSyncIgnore, HEAP_PER_LIST_BYTE,
   ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, unappliedLines,
-} from "../../contract/src/sync-ignore";
+} from "../src/sync-ignore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES = join(HERE, "test-data", "gitignore");
@@ -247,6 +247,15 @@ describe("its ceilings, each line past one said in file order", () => {
       return bytes - 1 > LIST_BYTES;
     });
     expect(past[0]!.line).toBe(lines[firstPast]);
+  });
+
+  it("counts a lone high surrogate as the 3 bytes it is matched as, the unit after it its own",
+     () => {
+    // 7 bytes and its newline, past `LIST_BYTES` by 2; read as 4 bytes for the surrogate and
+    // the unit after it, the line would fit.
+    const last = "a\ud800一";
+    const filler = `#${"x".repeat(LIST_BYTES - 8)}`;
+    expect(unappliedLines([filler, last])).toEqual([{ line: last, reason: "bytes" }]);
   });
 });
 

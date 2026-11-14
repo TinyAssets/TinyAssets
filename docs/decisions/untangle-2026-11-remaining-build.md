@@ -385,3 +385,8 @@ It builds as its own PR, **C2b**, right after C2.
 - The guards that hold a binding to its one module now take the generated env as that binding's declaration (`ci/kit/sources.ts` `envFile`).
 - Every test env but the doors' `OWNER` is a `Pick` of its Worker's generated env. The doors' tests still call owner doors outside `OwnerDoors`, so that binding stays typed from `OwnerDO`, owed to T2 (B23).
 - `SANDBOX` is required, as T1a made it. `ERASURES` is required in the type because the config binds it; the code's check for an unbound one goes with T1c.
+
+## §S. C4 as built (2026-11-14)
+
+1. **B6's egress door grammars are one reader, `egressDoor(path)` (`contract/src/egress.ts`), not regexes built from the ids.** The module-state guard refuses a regex a call builds at load, so the reader holds each segment to its own grammar in `ids.ts` (`RUN_ID`, `HEX64`, `CONNECTION_ID`, `SIGNIN_ID`) and returns the door it names. No regex copy is left, and `contract/guards/wire.test.ts` reads back every URL the contract makes. The sync agent's door names are `SYNC_DOORS`, and the runner's sync client takes a `SyncDoor`.
+2. **Corrects `d2` B19:** `REMEMBERED_NAME_BYTES` and `automatonStates` stay in `contract/src/sync-ignore.ts`. `ignoredBy` reads the first, and the second measures the matcher's private automaton for its own tests. Only `SANDBOX_HEAP`, `AGENT_PEAK` and `HEAP_PER_LIST_BYTE` move to `sandbox/runner/sizing.ts` (S4).

@@ -6,8 +6,12 @@
  * is not kept: it declares globals (`Cloudflare.Env`, `NodeJS.ProcessEnv`) that collide across
  * the platform's one compilation. A binding the table does not type fails the run.
  *
- * Run as a script, this writes every Worker's (one of `npm run generate`'s generators, which
- * `ci/guards/generated.test.ts` holds current). Node runs this file as it is (type stripping).
+ * Each queue's name too, by its producer's binding, into the contract (`QUEUES_FILE`): the
+ * configs are its one home, and a consumer dispatches by it (d3 §A3).
+ *
+ * Run as a script, this writes every Worker's and the queues' names (one of
+ * `npm run generate`'s generators, which `ci/guards/generated.test.ts` holds current). Node
+ * runs this file as it is (type stripping).
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -188,6 +192,39 @@ function unsentQueues(table: Services): string[] {
   return Object.keys(table.queues).filter((queue) => !sent.has(queue));
 }
 
+/** The contract module the queues' names are written to, from `platform/`. */
+const QUEUES_FILE = "contract/src/queue-names.ts";
+
+/**
+ * The source of `QUEUES_FILE`: each queue a Worker's config produces to, by its binding,
+ * sorted. One binding naming two queues fails the run.
+ */
+function queueNamesSource(): string {
+  const names = new Map<string, string>();
+  for (const folder of workerFolders()) {
+    const producers = (readWrangler(join(PLATFORM, folder))["queues"] as
+      { producers?: Bound[] } | undefined)?.producers ?? [];
+    for (const { binding, queue } of producers) {
+      if (names.has(binding!) && names.get(binding!) !== queue) {
+        throw new Error(`the queue binding ${binding} names ${names.get(binding!)} and ${queue}`);
+      }
+      names.set(binding!, queue!);
+    }
+  }
+  return [
+    "/**",
+    " * Each queue's name, by its producer's binding: written by `npm run generate`",
+    " * (`ci/kit/types.ts`) from the Workers' `wrangler.jsonc`, the names' one home. Edit the",
+    " * configs, never this file.",
+    " */",
+    "export const QUEUES = Object.freeze({",
+    ...[...names].sort(([a], [b]) => a.localeCompare(b))
+      .map(([binding, queue]) => `  ${binding}: ${JSON.stringify(queue)},`),
+    "});",
+    "",
+  ].join("\n");
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const table = services();
   const unsent = unsentQueues(table);
@@ -198,4 +235,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     writeFileSync(join(PLATFORM, envFile(worker)), envSource(worker, table));
     console.log(`platform/${envFile(worker)}`);
   }
+  writeFileSync(join(PLATFORM, QUEUES_FILE), queueNamesSource());
+  console.log(`platform/${QUEUES_FILE}`);
 }

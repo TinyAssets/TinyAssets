@@ -9,9 +9,9 @@
  * route patterns the doors take at the cutover, each from the origin; the MCP door
  * (`mcp`); where a sign-in starts and where the upstream returns it (`signin`); the doors'
  * own app's client document, redirect and resource (`first_party`); E2B's lifecycle
- * webhook (`hook`). The contract's `ZONE` and `EGRESS_HOST` (`contract/src/egress.ts`) are
- * held to `host` and `egress` by `guards/identity.test.ts`: the runner the sandbox template
- * ships is built from that file, so it changes only with a new template pair.
+ * webhook (`hook`). The contract's `ZONE` and `EGRESS_HOST` (`contract/src/egress.ts`) read
+ * `host` and `egress`, and the runner the sandbox template ships is built from that module, so
+ * a change to either takes a new template pair.
  */
 import identity from "../../contract/identity.json" with { type: "json" };
 
