@@ -11,15 +11,21 @@
  *   (or `--dry-run`, which writes nothing): the bundles, the digests and billing ids in 0600
  *   files of the private folder, and counts alone on stdout;
  *   (`--rehearsal <run>`: each bundle under its rehearsal's name, `rehearsalName`);
- * - `stage <out> --run <id>` (or `--dry-run`, which sends nothing and needs no credential;
- *   `--rehearsal`, for a rehearsal's bundles): every bundle checked whole, uploaded to the
- *   staging bucket and its message put on the import queue (`stage.ts`), the window's
- *   credentials read once from the job's stdin, one a line in `STAGE_INPUTS`' order, never
- *   from a file, an argument or the environment; counts and ordinals on stdout;
+ * - `stage <out> --run <id> --facts <facts.json>` (or `--dry-run`, which sends nothing and
+ *   needs no credential; `--rehearsal`, for a rehearsal's bundles): every bundle checked
+ *   whole, uploaded to the staging bucket and its message put on the import queue
+ *   (`stage.ts`), the window's credentials read once from the job's stdin, one a line in
+ *   `STAGE_INPUTS`' order, never from a file, an argument or the environment; counts and
+ *   ordinals on stdout;
  * - `verify <out> --run <id> --record <file>`, `admit <out> --run <id> --record <file>`,
- *   `wipe <out> --run <id> --record <file>` and `dlq <out> --run <id> [--delete]`: the
- *   window's steps after staging (`window.ts`), with the same credentials; exit 0 when the
- *   step holds (every owner clean, every listing empty, no dead letter), 3 when not.
+ *   `wipe <out> --run <id> --record <file>` and `dlq <out> --run <id> [--delete]`, each with
+ *   `--facts <facts.json>`: the window's steps after staging (`window.ts`), with the same
+ *   credentials; exit 0 when the step holds (every owner clean, every listing empty, no dead
+ *   letter), 3 when not.
+ *
+ * `--tiers` is the control record's tiers (`deploy/control.json`'s, by the window's `jq`),
+ * read by the contract's `parseTiers`; `--facts` is the live names the steps that reach the
+ * account take (`deploy/facts.ts --import`, the contract's `ImportNames`).
  *
  * The images are read only through mounts the kernel says are read-only XFS
  * (`/proc/self/mountinfo`), so a live or writable volume is never read. stdout holds counts
@@ -28,11 +34,14 @@
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { parseTiers, type Tiers } from "../contract/src/control";
+import type { ImportNames } from "../contract/src/import-names";
+
 import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
-import { census, type Tiers } from "./census";
+import { census } from "./census";
 import { copyMain } from "./copy";
-import { type Fetcher, type Inputs, NETWORK, stage } from "./stage";
+import { type Fetcher, type Inputs, namesOf, NETWORK, stage } from "./stage";
 import type { Copy } from "./survey";
 import { admit, CLOCK, type Clock, deadLetters, verify, wipe } from "./window";
 
@@ -64,17 +73,17 @@ export function stageInputs(given: Readonly<Record<string, string | undefined>>)
     .map(([input, name]) => [input, given[name]!])) as unknown as Inputs;
 }
 
-/** `stage <out> --run <id> [--dry-run]`: its exit code once every bundle is sent. */
+/** `stage <out> --run <id> --facts <file> [--dry-run]`: its exit code once every bundle is sent. */
 export async function stageMain(argv: readonly string[],
                                 env: Readonly<Record<string, string | undefined>>,
                                 print: (line: string) => void, fetcher: Fetcher = NETWORK):
     Promise<number> {
   const [, given] = argv;
   if (given === undefined) {
-    throw new Error("usage: stage <out> --run <id> [--dry-run]");
+    throw new Error("usage: stage <out> --run <id> --facts <file> [--dry-run]");
   }
   const dry = argv.includes("--dry-run");
-  const summary = await stage(resolve(given), required(argv, "--run"),
+  const summary = await stage(resolve(given), required(argv, "--run"), namesIn(argv),
                               dry ? null : stageInputs(env), fetcher, print, undefined,
                               argv.includes("--rehearsal"));
   print(JSON.stringify(summary, null, 2));
@@ -91,11 +100,11 @@ export async function windowMain(argv: readonly string[],
                                  clock: Clock = CLOCK): Promise<number> {
   const [step, given] = argv;
   if (given === undefined) {
-    throw new Error(`usage: ${step} <out> --run <id> --record <file>`);
+    throw new Error(`usage: ${step} <out> --run <id> --facts <file> --record <file>`);
   }
   const out = resolve(given);
   const run = required(argv, "--run");
-  const window = { inputs: stageInputs(env), fetcher, clock };
+  const window = { names: namesIn(argv), inputs: stageInputs(env), fetcher, clock };
   if (step === "dlq") {
     const read = await deadLetters(window, out, run, argv.includes("--delete"), print);
     return read.messages === 0 ? 0 : 3;
@@ -137,16 +146,15 @@ function exclusionFrom(given: string): string | number {
   return given === "-" ? 0 : given;
 }
 
-/** The control record's tiers (`c:control`), each with its storage in bytes. */
-export function tiersOf(text: string): Tiers {
-  const record = JSON.parse(text) as { tiers?: unknown };
-  const tiers = record.tiers;
-  if (typeof tiers !== "object" || tiers === null || Object.keys(tiers).length === 0
-      || Object.values(tiers).some((tier: { storage_bytes?: unknown }) =>
-        typeof tier?.storage_bytes !== "number" || !Number.isSafeInteger(tier.storage_bytes))) {
-    throw new Error("the control record holds no tiers with their storage in bytes");
-  }
-  return tiers as Tiers;
+/** `--tiers`' file: the control record's tiers, as the contract parses them. */
+function tiersIn(argv: readonly string[]): Tiers {
+  return parseTiers((JSON.parse(readFileSync(required(argv, "--tiers"), "utf8")) as
+                     { tiers?: unknown }).tiers);
+}
+
+/** `--facts`' file: the live names the job reaches. */
+function namesIn(argv: readonly string[]): ImportNames {
+  return namesOf(readFileSync(required(argv, "--facts"), "utf8"));
 }
 
 /** What reads a loop device's backing file: the kernel's, or a test's. */
@@ -188,7 +196,7 @@ export function main(argv: readonly string[], mountinfo: () => string,
                     (line) => process.stdout.write(`${line}\n`));
   }
   const work = resolve(given);
-  const tiers = tiersOf(readFileSync(required(argv, "--tiers"), "utf8"));
+  const tiers = tiersIn(argv);
   const copy = copyAt(work, mountinfo(), backing);
   if (command === "census") {
     const table = required(argv, "--table");

@@ -281,8 +281,8 @@ export interface LevelVisit {
   store(name: string, path: Buffer, rule: StoreRule, tables: readonly TableCount[]): void;
   /** An entry carried as the owner's files. */
   user?(name: string, path: Buffer): void;
-  /** An entry no rule of the level names; true when the caller claims it (a center). */
-  other?(name: string, path: Buffer): boolean;
+  /** An entry no rule of the level names, which the caller answers for (the root's centers). */
+  other?(name: string, path: Buffer): void;
 }
 
 /**
@@ -317,8 +317,10 @@ export function visitLevel(dir: Buffer, rules: Level, where: string, visit: Leve
     const path = at(dir, name);
     const rule: EntryRule | null = ruleOf(rules, value);
     if (rule === null) {
-      if (visit.other?.(value, path) !== true) {
+      if (visit.other === undefined) {
         problems.push({ code: "unknown_entry", at: `${where}/${hidden(name)}` });
+      } else {
+        visit.other(value, path);
       }
     } else if (rule.kind === "store") {
       const tables = checkStore(path, rule, `${where}/${value}`, sidecars.get(value) ?? new Map(),
@@ -772,10 +774,22 @@ function surveyVolume(owner: Owner, copy: Copy, pin: { snapshot_id: string; sha2
     return owner;
   }
   const root = Buffer.from(mounted.root);
-  const centersDb = join(mounted.root, ".centers.db");
-  const centers = lstatExists(centersDb) && lstatSync(centersDb).isFile() && isStore(centersDb)
-    ? rows(centersDb, "centers").map((row) => ({ name: String(row["center"]),
-                                                  retired: Number(row["retired"]) !== 0 }))
+  // The root's entries first, so the centers list is read only from a store held to its rule.
+  const checked = new Set<string>();
+  const others: string[] = [];
+  visitLevel(root, ROOT, "root", {
+    store: (name, path, rule, tables) => {
+      checked.add(name);
+      archive(tree, `${IMPORTED}/${RECORDS}/${name}`, path, rule, tables);
+    },
+    user: (name, path) => walkUser(path, `${IMPORTED}/${name}`, Buffer.from(name), tree, matcher),
+    other: (name) => {
+      others.push(name);
+    },
+  }, tree.problems, tree.stores);
+  const centers = checked.has(".centers.db")
+    ? rows(join(mounted.root, ".centers.db"), "centers")
+      .map((row) => ({ name: String(row["center"]), retired: Number(row["retired"]) !== 0 }))
     : [];
   for (const center of centers) {
     if (!CENTER_NAME.test(center.name)) {
@@ -790,18 +804,13 @@ function surveyVolume(owner: Owner, copy: Copy, pin: { snapshot_id: string; sha2
     }
   }
   const centerDirs: string[] = [];
-  visitLevel(root, ROOT, "root", {
-    store: (name, path, rule, tables) =>
-      archive(tree, `${IMPORTED}/${RECORDS}/${name}`, path, rule, tables),
-    user: (name, path) => walkUser(path, `${IMPORTED}/${name}`, Buffer.from(name), tree, matcher),
-    other: (name) => {
-      if (names.has(name) && lstatSync(join(mounted.root, name)).isDirectory()) {
-        centerDirs.push(name);
-        return true;
-      }
-      return false;
-    },
-  }, tree.problems, tree.stores);
+  for (const name of others) {
+    if (names.has(name) && lstatSync(join(mounted.root, name)).isDirectory()) {
+      centerDirs.push(name);
+    } else {
+      tree.problems.push({ code: "unknown_entry", at: `root/${hidden(name)}` });
+    }
+  }
   for (const center of centerDirs) {
     const base = `${IMPORTED}/${center}`;
     visitLevel(Buffer.from(join(mounted.root, center)), CENTER, `center`, {

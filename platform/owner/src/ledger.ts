@@ -284,11 +284,20 @@ export interface LedgerLimits {
   readonly maxRead: number;
 }
 
+/** The hot ceiling, `LEDGER_LIMITS.maxMessages`: the unread one is made from it. */
+const HOT_MESSAGES = 50_000;
+
+/**
+ * The ceilings the ledger and its decisions run at, the only ones: no ledger is built at
+ * others (the decisions' small-number cases call them alone). The unread ceiling is made at
+ * load from the hot one less one segment's records, so the hot ceiling always leaves a
+ * segment to move; `limits-audit.test.ts` holds that, and the agents' two ceilings.
+ */
 export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
   maxAgents: 1_000,
   maxAgentRows: 1_000,
-  maxMessages: 50_000,
-  maxUnacked: 50_000 - SEGMENT_MIN_RECORDS,
+  maxMessages: HOT_MESSAGES,
+  maxUnacked: HOT_MESSAGES - SEGMENT_MIN_RECORDS,
   archiveBytes: SEGMENT_MIN_BYTES,
   archiveRecords: SEGMENT_MIN_RECORDS,
   maxReceipts: 50_000,
@@ -296,25 +305,6 @@ export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
   maxSettledWakes: 1_000,
   maxRead: 100,
 });
-
-/**
- * Refuse limits whose unread ceiling leaves the hot ceiling no segment to move: then a post
- * at the hot ceiling could wait on a lane with nothing it may take.
- */
-export function checkLimits(limits: LedgerLimits): LedgerLimits {
-  const problems: string[] = [];
-  if (limits.maxUnacked < 1 || limits.archiveRecords < 1
-      || limits.maxUnacked + limits.archiveRecords > limits.maxMessages) {
-    problems.push("the unread ceiling leaves the hot ceiling no segment to move");
-  }
-  if (limits.maxAgents > limits.maxAgentRows) {
-    problems.push("maxAgents exceeds maxAgentRows");
-  }
-  if (problems.length) {
-    throw new Error(`invalid ledger limits: ${problems.join("; ")}`);
-  }
-  return limits;
-}
 
 /**
  * The ledger's decisions, each a pure function of the owner-wide counters (`ledger_usage`)
@@ -1060,7 +1050,6 @@ function checked(row: { body_sha256: string },
 export class Ledger {
   readonly #storage: OwnerStorage;
   readonly #grants: GrantReader;
-  readonly #limits: LedgerLimits;
   /** Whether the owner is admitted (`admission.ts`'s `require_work`), read in each claim. */
   readonly #admitted: () => boolean;
 
@@ -1072,16 +1061,10 @@ export class Ledger {
   /** The one wall's refusal for a post that needs `needed` bytes (`Files.fullRefusal`). */
   readonly #wall: (needed: number) => Refusal;
 
-  /**
-   * `limits` is the archive's object tests' small ceilings until they run production's
-   * (T1b5, which deletes it).
-   */
   constructor(storage: OwnerStorage, grants: GrantReader, admitted: () => boolean,
-              changes: () => number, adopt: Adopt, wall: (needed: number) => Refusal,
-              limits: LedgerLimits = LEDGER_LIMITS) {
+              changes: () => number, adopt: Adopt, wall: (needed: number) => Refusal) {
     this.#storage = storage;
     this.#grants = grants;
-    this.#limits = checkLimits(limits);
     this.#admitted = admitted;
     this.#changes = changes;
     this.#adopt = adopt;
@@ -1159,23 +1142,22 @@ export class Ledger {
       return;
     }
     const sql = this.#sql;
-    const limits = this.#limits;
     this.#storage.transactionSync(() => {
       const row = this.#nativeNamed(agent);
       if (row !== undefined && row.retired_at === null) {
         return;
       }
       const usage = this.#usage();
-      if (usage.enabled_agents >= limits.maxAgents) {
+      if (usage.enabled_agents >= LEDGER_LIMITS.maxAgents) {
         throw new Refusal("ledger_agents_full",
                           `ledger_agents_full: the owner's agents are at the ledger's ${
-          limits.maxAgents} enabled agents, each a reserved mailbox`);
+          LEDGER_LIMITS.maxAgents} enabled agents, each a reserved mailbox`);
       }
       if (row !== undefined) {
         sql.exec("UPDATE native_agents SET retired_at = NULL WHERE agent_id = ?", row.agent_id);
         return;
       }
-      if (usage.agents >= limits.maxAgentRows) {
+      if (usage.agents >= LEDGER_LIMITS.maxAgentRows) {
         // At most `maxAgentRows` rows to look through, and only when the registry is full.
         // Agents retired at one instant (the runtime's clock stands still in a unit) go in
         // their names' order, never their digests'.
@@ -1257,7 +1239,6 @@ export class Ledger {
                         `an API-key agent cannot subscribe; ${method} is for MCP clients`);
     }
     const sql = this.#sql;
-    const limits = this.#limits;
     return this.#storage.transactionSync(() => {
       const row = sql.exec<Agent>(
         "SELECT * FROM outside_agents WHERE command_center_id = ? " +
@@ -1272,14 +1253,14 @@ export class Ledger {
       }
       const usage = this.#usage();
       if ((row === undefined || row.disabled_reason !== null)
-          && usage.enabled_agents >= limits.maxAgents) {
+          && usage.enabled_agents >= LEDGER_LIMITS.maxAgents) {
         throw new Refusal("refused", "the owner's enabled agents are at their limit");
       }
       // A registration never sets wake limits: they are owner policy (`policyWakeLimits`).
       const fields = [verified.kind, verified.ref, name, method, recipe];
       let agentId: string;
       if (row === undefined) {
-        if (usage.agents >= limits.maxAgentRows) {
+        if (usage.agents >= LEDGER_LIMITS.maxAgentRows) {
           throw new Refusal("refused",
                             "the owner's agent registry is full; delete a disabled agent " +
                             "to make room");
@@ -1383,7 +1364,7 @@ export class Ledger {
         // At most `maxAgentRows` purges wait (the guard's term): past them the lane is still
         // rewriting, and a deletion waits for it, refused in plain words, never lost.
         if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM archive_purges").one().n
-            >= this.#limits.maxAgentRows) {
+            >= LEDGER_LIMITS.maxAgentRows) {
           throw new Refusal("storage_busy",
                             `${STORAGE_BUSY}: earlier deleted agents' mail is still being ` +
                             `removed from the archive; try again in ${STORAGE_BUSY_RETRY_S} ` +
@@ -1448,7 +1429,7 @@ export class Ledger {
                "VALUES (?, ?, ?, ?, ?)", agentId, kind, ref, at, canonical(detail));
     // Newest first: the receipt table holds at most maxReceipts rows.
     sql.exec("DELETE FROM ledger_receipts WHERE seq <= " +
-               "(SELECT MAX(seq) FROM ledger_receipts) - ?", this.#limits.maxReceipts);
+               "(SELECT MAX(seq) FROM ledger_receipts) - ?", LEDGER_LIMITS.maxReceipts);
   }
 
   /**
@@ -1809,7 +1790,7 @@ export class Ledger {
                     readonly frontier: number | null } | null = null): {
       root: string; messages: ChainMail[]; more: boolean; placed: string[]; first: string | null;
     } {
-    const maxRead = this.#limits.maxRead;
+    const maxRead = LEDGER_LIMITS.maxRead;
     if (typeof messageId !== "string" || !count(after, 0, Number.MAX_SAFE_INTEGER)
         || !count(limit, 1, maxRead)) {
       throw new Refusal("invalid",
@@ -1958,7 +1939,7 @@ export class Ledger {
 
   /** Whether the `archive` lane has a move to make (`archiveDue`). A read. */
   archiveDue(): boolean {
-    return archiveDue(this.#usage(), this.#limits, () => this.#straggler() !== null);
+    return archiveDue(this.#usage(), LEDGER_LIMITS, () => this.#straggler() !== null);
   }
 
   /**
@@ -1969,7 +1950,6 @@ export class Ledger {
    * archive's last key, up to a seal (its lines' bytes or its records). A read.
    */
   archivePick(): { seqs: number[]; contents: string[]; into: Fence | null } | null {
-    const limits = this.#limits;
     const sql = this.#sql;
     const straggler = this.#straggler();
     let into: Fence | null = null;
@@ -1981,17 +1961,17 @@ export class Ledger {
       rows = sql.exec<{ seq: number; line_bytes: number; content_id: string | null }>(
         "SELECT m.seq, m.line_bytes, b.content_id FROM ledger_messages m JOIN message_bodies b " +
           "ON b.message_id = m.message_id WHERE m.unacked = 0 AND m.seq >= ? AND m.seq <= ? " +
-          "ORDER BY m.seq LIMIT ?", straggler, into.last_key, limits.archiveRecords).toArray();
+          "ORDER BY m.seq LIMIT ?", straggler, into.last_key, LEDGER_LIMITS.archiveRecords).toArray();
     } else {
-      if (!sealable(this.#usage(), limits)) {
+      if (!sealable(this.#usage(), LEDGER_LIMITS)) {
         return null;
       }
       rows = sql.exec<{ seq: number; line_bytes: number; content_id: string | null }>(
         "SELECT m.seq, m.line_bytes, b.content_id FROM ledger_messages m JOIN message_bodies b " +
           "ON b.message_id = m.message_id WHERE m.unacked = 0 ORDER BY m.seq LIMIT ?",
-        limits.archiveRecords).toArray();
+        LEDGER_LIMITS.archiveRecords).toArray();
     }
-    const taken = rows.slice(0, moveTake(rows.map((row) => row.line_bytes), into, limits));
+    const taken = rows.slice(0, moveTake(rows.map((row) => row.line_bytes), into, LEDGER_LIMITS));
     return taken.length === 0 ? null : {
       seqs: taken.map((row) => row.seq),
       contents: taken.flatMap((row) => row.content_id === null ? [] : [row.content_id]),
@@ -2213,7 +2193,7 @@ export class Ledger {
 
   /** Whether the hot set stands at its ceiling: the next post is refused `storage_busy`. */
   atHotCeiling(): boolean {
-    return hotFull(this.#usage(), this.#limits);
+    return hotFull(this.#usage(), LEDGER_LIMITS);
   }
 
   /** When the archive last placed a segment (`made_at`), or 0 for none. A read. */
@@ -2448,9 +2428,9 @@ export class Ledger {
    * marked `ceiling`), the same answer for every poster: a door, a run's reply, its placement.
    */
   #roomForOne(needed: number): void {
-    const room = postRoom(this.#usage(), this.#limits);
+    const room = postRoom(this.#usage(), LEDGER_LIMITS);
     if (room === "unread") {
-      const most = this.#limits.maxUnacked;
+      const most = LEDGER_LIMITS.maxUnacked;
       throw new Refusal("ledger_full", `${LEDGER_FULL}: too much mail is unread (${most} ` +
                         `messages wait for their readers; the most for ${this.#holders()}); ` +
                         "reading and acking mail makes room");
@@ -2502,7 +2482,7 @@ export class Ledger {
   read(origin: Actor, limit: unknown, maxBytes: unknown = null, padBytes: unknown = 0,
        now: number = clock(), placed: ReadonlyMap<string, Window> = new Map(),
        bodyOffset = 0, pageBytes: number = PAGE_BYTES, bodyMessage: unknown = null): MailPage {
-    const maxRead = this.#limits.maxRead;
+    const maxRead = LEDGER_LIMITS.maxRead;
     if (!count(limit, 1, maxRead)) {
       throw new Refusal("invalid", `limit is 1 to ${maxRead}`);
     }
@@ -2596,7 +2576,7 @@ export class Ledger {
    */
   placedNext(origin: Actor, limit: unknown, pageBytes: number = PAGE_BYTES):
       { contents: string[]; first: string | null } {
-    const maxRead = this.#limits.maxRead;
+    const maxRead = LEDGER_LIMITS.maxRead;
     if (!count(limit, 1, maxRead)) {
       throw new Refusal("invalid", `limit is 1 to ${maxRead}`);
     }
@@ -2907,8 +2887,8 @@ export class Ledger {
   #prune(now: number): void {
     const sql = this.#sql;
     sql.exec("DELETE FROM ledger_wakes WHERE settled_at IS NOT NULL AND settled_at < ?",
-             now - this.#limits.settledWakeRetentionS);
-    const over = this.#usage().settled_wakes - this.#limits.maxSettledWakes;
+             now - LEDGER_LIMITS.settledWakeRetentionS);
+    const over = this.#usage().settled_wakes - LEDGER_LIMITS.maxSettledWakes;
     if (over > 0) {
       sql.exec(
         "DELETE FROM ledger_wakes WHERE wake_id IN (SELECT wake_id FROM ledger_wakes " +

@@ -27,10 +27,11 @@
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 
+import type { Tiers } from "../contract/src/control";
 import { sha256Hex } from "../contract/src/digest";
 import { rehearsalName } from "../contract/src/import-message";
 
-import { type Tiers } from "./build";
+import { tierName } from "./build";
 import { admissionProblems, erased, measure, verifyCopy, withheld } from "./census";
 import { names } from "./erasure";
 import { type Copy, type Fleet, type Owner, type Problem, survey } from "./survey";
@@ -175,7 +176,7 @@ function writeBundle(owner: Owner, copy: Copy, dir: string | null, tiers: Tiers,
     format: FORMAT, owner: owner.principal, key: owner.key, uid: owner.uid,
     // An owner the old stack never admitted is "absent", never admitted by slice 5.
     admission: owner.admission ?? { state: "absent", reasons: [] },
-    tier: owner.plan?.tier ?? "free", notice: NOTICE, centers: owner.centers,
+    tier: tierName(owner), notice: NOTICE, centers: owner.centers,
   });
   pages(entries).forEach((page, n) => part(`manifest/${n}.json`, { entries: page }));
   pages(rows).forEach((page, n) => part(`rows/${n}.json`, { rows: page }));
@@ -262,7 +263,7 @@ export function buildBundles(copy: Copy, options: Options): Summary {
       digests[owner.key] = built.digest;
     }
     record.push({ key: named.key, owner: owner.principal, uid: owner.uid, excluded,
-                  tier: owner.plan?.tier ?? "free", ends_at: owner.plan?.ends_at ?? null,
+                  tier: tierName(owner), ends_at: owner.plan?.ends_at ?? null,
                   customer_id: owner.plan?.customer_id ?? null,
                   subscription_id: owner.plan?.subscription_id ?? null });
   }

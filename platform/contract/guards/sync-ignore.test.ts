@@ -3,10 +3,10 @@
  * check-ignore` the oracle: GitHub's 310 templates (github/gitignore at `df4087095eb4`, CC0,
  * in `test-data/gitignore/`) and random lists, every path's answer git's; the hostile lists
  * of the review's rounds 1 to 6, answered as git does with the lines that fit, at a cost a
- * path within the automaton's own (in this host's own units, `overBound`); its memory a list
- * byte within what the sandbox's heap leaves (`LIST_BYTES`); what it remembers of a tree the
- * same at any size, its answers the same in any order, and a walk's path its own segment's
- * cost.
+ * path within the automaton's own (in this host's own units, `overBound`); what it remembers
+ * of a tree the same at any size, its answers the same in any order, and a walk's path its
+ * own segment's cost. Its memory a list byte, against the sandbox's heap, is the runner's
+ * (`sandbox/runner/sync.test.ts`).
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync,
@@ -20,8 +20,8 @@ import { runInNewContext } from "node:vm";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
-  AGENT_PEAK, AUTOMATON_STATES, automatonStates, defaultSyncIgnore, HEAP_PER_LIST_BYTE,
-  ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, unappliedLines,
+  AUTOMATON_STATES, automatonStates, defaultSyncIgnore, ignoredBy, LIST_BYTES,
+  REMEMBERED_NAME_BYTES, unappliedLines,
 } from "../src/sync-ignore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -552,65 +552,6 @@ function makeReferences(): NonNullable<typeof references> {
   expect(Number.isInteger(sink)).toBe(true);
   return { steps, lookups };
 }
-
-describe("its memory", () => {
-  // `gc` for this test alone, so a list's heap is read after the garbage of its making.
-  setFlagsFromString("--expose-gc");
-  const gc = runInNewContext("gc") as () => void;
-  // Heads the lines share, and heads that diverge (a trie's and Aho–Corasick's worst, R7-3).
-  const head = (i: number) => (Math.imul(i + 1, 2654435761) >>> 0).toString(36);
-  const shapes: Record<string, (i: number) => string> = {
-    literalName: (i) => `name-${i.toString(36)}-xxxxxxxx`,
-    literalPath: (i) => `dir/${i.toString(36)}/name-xxxx`,
-    suffix: (i) => `*.ext-${i.toString(36)}-xxxx`,
-    prefix: (i) => `pre-${i.toString(36)}-xxxx*`,
-    pathPrefix: (i) => `dir/${i.toString(36)}/x*`,
-    anywhere: (i) => `**/dir/${i.toString(36)}/x`,
-    automaton: (i) => `*${i.toString(36)}?x*y`,
-    negated: (i) => `!name-${i.toString(36)}-xxxx`,
-    literalNameDiverging: (i) => `${head(i)}${i.toString(36)}`,
-    literalPathDiverging: (i) => `${head(i)}/${i.toString(36)}`,
-    suffixDiverging: (i) => `*${head(i)}${i.toString(36)}`,
-    prefixDiverging: (i) => `${head(i)}${i.toString(36)}*`,
-    pathPrefixDiverging: (i) => `${head(i)}/${i.toString(36)}*`,
-    anywhereDiverging: (i) => `**/${head(i)}/${i.toString(36)}`,
-  };
-
-  it("holds, at `LIST_BYTES` of any class (each measured at a quarter of it, a list byte's " +
-     "heap), what the sandbox's heap leaves beside the agent",
-     { tags: ["large"] }, () => {
-    expect(LIST_BYTES * HEAP_PER_LIST_BYTE).toBeLessThanOrEqual(SANDBOX_HEAP - AGENT_PEAK);
-    const used = () => process.memoryUsage().heapUsed + process.memoryUsage().arrayBuffers;
-    // Two full collections settle what a collection leaves for the next (weak maps, the
-    // code a first call compiles), so a sample is the matcher's own heap.
-    const settled = () => {
-      gc();
-      gc();
-      return used();
-    };
-    for (const [label, shape] of Object.entries(shapes)) {
-      // The least of three samples: a sample is the matcher's heap plus whatever else the
-      // process held for a moment (its own lazily made structures, measured once in a
-      // whole-suite run at 53 against 45 alone); the least is the matcher's own, the bound
-      // unchanged.
-      let perByte = Number.POSITIVE_INFINITY;
-      for (let sample = 0; sample < 3; sample++) {
-        const base = settled();
-        const lines: string[] = [];
-        let bytes = 0;
-        for (let i = 0; bytes < LIST_BYTES / 4; i++) {
-          lines.push(shape(i));
-          bytes += shape(i).length + 1;
-        }
-        const matcher = ignoredBy(lines);
-        matcher("a/b.c");
-        perByte = Math.min(perByte, (settled() - base) / bytes);
-        expect(lines.length + (typeof matcher === "function" ? 0 : 1)).toBeGreaterThan(0);
-      }
-      expect(perByte, label).toBeLessThanOrEqual(HEAP_PER_LIST_BYTE);
-    }
-  });
-});
 
 describe("what it remembers of a tree, and what that buys", () => {
   setFlagsFromString("--expose-gc");

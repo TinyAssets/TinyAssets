@@ -15,8 +15,8 @@ name: Import window (manual)
 #   droplet: the copy is read from the primary backup store with a read-only key.
 # - mode: census (makes the run's host and copy when it has none, then counts), bundle,
 #   stage, verify, wipe, admit, dlq, offsite (the real window alone: its final backup copied
-#   to R2's tinyassets-final-backup and read back), or clean (unmount and delete the run's
-#   copy, then destroy its host).
+#   to the final backup's R2 bucket, deploy/platform.json's, and read back), or clean
+#   (unmount and delete the run's copy, then destroy its host).
 # - run: the run's id, which keys its host, its work folder and its staging prefix, so
 #   census -> bundle -> stage -> verify -> wipe run against one copy over several dispatches.
 # - rehearsal: true by default, and then every owner is imported under its
@@ -183,9 +183,10 @@ jobs:
           set -euo pipefail
           npm ci
           npm run build -w import
-          node --experimental-strip-types --input-type=module -e \
-            "import { DARK_CONTROL } from './deploy/deploy.ts'; process.stdout.write(JSON.stringify({ tiers: DARK_CONTROL.tiers }));" \
-            > "${RUNNER_TEMP}/control.json"
+          # Beside the job, each read where it is written: the founder's tiers (the dark
+          # control record's) and the live names the job reaches (the deploy kit's facts).
+          jq -e '{ tiers }' deploy/control.json > "${RUNNER_TEMP}/control.json"
+          node --experimental-strip-types deploy/facts.ts --import > "${RUNNER_TEMP}/facts.json"
 
       - name: Install SSH key
         env:
@@ -276,7 +277,7 @@ jobs:
           trap cleanup EXIT
           scp "${opts[@]}" \
               platform/import/dist/import.mjs platform/import/window.sh "${RUNNER_TEMP}/control.json" \
-              "root@${ADDRESS}:${remote_stage}/"
+              "${RUNNER_TEMP}/facts.json" "root@${ADDRESS}:${remote_stage}/"
           # Each secret on the session's stdin, in window.sh's order (printf is a builtin: no
           # argument holds one).
           handed() {

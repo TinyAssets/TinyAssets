@@ -7,9 +7,10 @@
  * pi-ai shapes a call by it (OpenAI's Responses API omits the output cap for a Sign in with
  * ChatGPT token); it never leaves: each fetch here is ours, and reaches no network.
  *
- * - **Learning the call** (`learnMeter`): the adapter is asked once, with a placeholder
- *   model id and a placeholder output cap, and its fetch records the request it built and
- *   answers `400` (no retry). So pi-ai itself says, for this API at this base URL, which
+ * - **Learning the call** (`learnMeter`, through a call's `Meters`): the adapter is asked
+ *   once a model, with a placeholder model id and a placeholder output cap, and its fetch
+ *   records the request it built and answers `400` (no retry). So pi-ai itself says, for
+ *   this API at this base URL, which
  *   method and path a model call is, where the model id goes (a path segment, or a body
  *   field) and which body field caps the output tokens. A request on any other path is not
  *   a model call this module can meter (`unmetered`).
@@ -92,53 +93,13 @@ async function run(catalog: Catalog, upstream: Upstream, apiKey: string, model: 
 }
 
 /**
- * What pi-ai's adapter sends as a model call for the sealed source: learned by one run
- * that reaches no network. Null when the API's call cannot be read so (no output cap in its
- * body, or no model id where one can be found), which is then never metered.
+ * What pi-ai's adapter sends as a model call for `model` of the sealed source: learned by
+ * one run that reaches no network. Null when the call cannot be read so (no output cap in
+ * its body, or no model id where one can be found), which is then never metered. A call
+ * learns through its `Meters`, once per model.
  */
 export async function learnMeter(catalog: Catalog, upstream: Upstream, apiKey: string,
-                                 model?: Model<Api>): Promise<Meter | null> {
-  if (model !== undefined) {
-    return learned(catalog, upstream, apiKey, model);
-  }
-  // A model whose compatibility record lets pi-ai cap its output: each run is local, so
-  // every model of the API may be asked.
-  for (const candidate of apiModels(catalog, upstream)) {
-    const meter = await learned(catalog, upstream, apiKey, candidate);
-    if (meter !== null) {
-      return meter;
-    }
-  }
-  return null;
-}
-
-/**
- * The headers pi-ai's adapter sends with the source's model call, learned by one run that
- * reaches no network, as `learnMeter` learns the call: the sources guard holds a record's
- * sealed auth header and scheme to them. Null when no model of the source can be asked.
- */
-export async function sentHeaders(catalog: Catalog, upstream: Upstream,
-                                  apiKey: string): Promise<Headers | null> {
-  const [model] = apiModels(catalog, upstream);
-  if (model === undefined) {
-    return null;
-  }
-  let sent: Headers | null = null;
-  const capture: FetchFunction = async (input, init) => {
-    sent ??= new Request(input, init).headers;
-    return new Response("{}", { status: 400, headers: { "content-type": "application/json" } });
-  };
-  try {
-    await run(catalog, upstream, apiKey, { ...model, baseUrl: upstream.base_url }, capture,
-              TOKENS_MARK);
-  } catch {
-    // The adapter reports the refusal as its stream's error; a throw is the same.
-  }
-  return sent;
-}
-
-async function learned(catalog: Catalog, upstream: Upstream, apiKey: string,
-                       model: Model<Api>): Promise<Meter | null> {
+                                 model: Model<Api>): Promise<Meter | null> {
   const probe = { ...model, id: MODEL_MARK, baseUrl: upstream.base_url, maxTokens: TOKENS_MARK };
   const seen: { first: { method: string; url: string; body: string } | null } = { first: null };
   const capture: FetchFunction = async (input, init) => {
@@ -179,6 +140,74 @@ async function learned(catalog: Catalog, upstream: Upstream, apiKey: string,
     model_field: segments.length === 2 ? null : Object.freeze(named[0]!),
     output_field: Object.freeze(output[0]!),
   });
+}
+
+/**
+ * One call's meters for its sealed source: pi-ai's call learned (`learnMeter`) at most once
+ * for each model of the source's API in the call, whatever asks for it: the path choice
+ * (`any`), the named model's own meter (`of`) and the setup check. Made for each call and
+ * never kept: a meter is learned with the call's own credential.
+ */
+export class Meters {
+  readonly #catalog: Catalog;
+  readonly #upstream: Upstream;
+  readonly #apiKey: string;
+  readonly #learned = new Map<string, Promise<Meter | null>>();
+
+  constructor(catalog: Catalog, upstream: Upstream, apiKey: string) {
+    this.#catalog = catalog;
+    this.#upstream = upstream;
+    this.#apiKey = apiKey;
+  }
+
+  /** The meter of `model`'s call, learned on its first ask. */
+  of(model: Model<Api>): Promise<Meter | null> {
+    let meter = this.#learned.get(model.id);
+    if (meter === undefined) {
+      meter = learnMeter(this.#catalog, this.#upstream, this.#apiKey, model);
+      this.#learned.set(model.id, meter);
+    }
+    return meter;
+  }
+
+  /**
+   * The meter of the first model of the API whose compatibility record lets pi-ai cap its
+   * output, or null for none: each run is local, so every model of the API may be asked.
+   */
+  async any(): Promise<Meter | null> {
+    for (const candidate of apiModels(this.#catalog, this.#upstream)) {
+      const meter = await this.of(candidate);
+      if (meter !== null) {
+        return meter;
+      }
+    }
+    return null;
+  }
+}
+
+/**
+ * The headers pi-ai's adapter sends with the source's model call, learned by one run that
+ * reaches no network, as `learnMeter` learns the call: the sources guard holds a record's
+ * sealed auth header and scheme to them. Null when no model of the source can be asked.
+ */
+export async function sentHeaders(catalog: Catalog, upstream: Upstream,
+                                  apiKey: string): Promise<Headers | null> {
+  const [model] = apiModels(catalog, upstream);
+  if (model === undefined) {
+    return null;
+  }
+  let sent: Headers | null = null;
+  const capture: FetchFunction = async (input, init) => {
+    sent ??= new Request(input, init).headers;
+    return new Response("{}", { status: 400, headers: { "content-type": "application/json" } });
+  };
+  try {
+    await run(catalog, upstream, apiKey, { ...model, baseUrl: upstream.base_url }, capture,
+              TOKENS_MARK);
+  } catch {
+    // The adapter reports the refusal as its stream's error; a throw is the same.
+  }
+  return sent;
 }
 
 /**

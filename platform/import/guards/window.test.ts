@@ -7,14 +7,17 @@
  * and the dead-letter queue is empty, then each in turn; `wipe` discards, deletes and proves
  * every listing empty; `dlq` reports by ordinal and deletes only with its flag; and each,
  * killed at any of its steps, converges when run again. The doors' side of each is the doors'
- * own test (`doors/test/import.test.ts`), through the real object.
+ * own test (`doors/test/import.test.ts`), through the real object. The live names are the
+ * deploy kit's, read from the configs (`deploy/facts.ts`), as the window's `facts.json` hands
+ * them to the job.
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { TIERS } from "../../ci/fixtures";
 import { chunkPlan } from "../../contract/src/content";
 import {
   answerName, bodyId, type CheckEntry, doneName, importMessage, type ImportMessage, macHolds,
@@ -24,15 +27,13 @@ import { DEFAULT_POLICY_DIGEST, policyDigest } from "../../contract/src/policy-d
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { cut } from "../../contract/src/content";
 import { objectPrefix } from "../../contract/src/files";
+import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
 import type { Entry, Row } from "../build";
 import { windowMain } from "../cli";
 import { bundlesIn, type Fetcher, type Inputs, type Staged } from "../stage";
-import {
-  admit, type Clock, deadLetters, DIRECTORY, FILES_BUCKET, readRecord, verify,
-  type Window, wipe,
-} from "../window";
-import { FOUNDER, fixture, TIERS } from "./fixture";
+import { admit, type Clock, deadLetters, readRecord, verify, type Window, wipe } from "../window";
+import { FOUNDER, fixture } from "./fixture";
 
 const temps: string[] = [];
 afterEach(() => {
@@ -45,11 +46,15 @@ const INPUTS: Inputs = Object.freeze({
   account: "a".repeat(32), accessKeyId: "AKIDEXAMPLE0000", secretAccessKey: "s3-secret-not-real",
   apiToken: "api-token-not-real", importKey: Buffer.alloc(32, 7).toString("base64url") });
 const RUN = "r1";
+const NAMES = IMPORT_NAMES;
 const CLOCK: Clock = { now: () => new Date(Date.UTC(2026, 10, 8)), sleep: async () => undefined,
                        waitMs: 0, everyMs: 0 };
 
-/** The builder's bundles of the fixture, a rehearsal's, in a fresh out folder; and a record. */
-function bundled(): { out: string; record: string; bundles: Staged[] } {
+/**
+ * The builder's bundles of the fixture, a rehearsal's, in a fresh out folder; a record; and the
+ * window's `facts.json`, as its bundle step writes it (`facts.ts --import`).
+ */
+function bundled(): { out: string; record: string; facts: string; bundles: Staged[] } {
   const f = fixture();
   const out = mkdtempSync(join(tmpdir(), "ta-window-out-"));
   const priv = mkdtempSync(join(tmpdir(), "ta-window-private-"));
@@ -57,7 +62,9 @@ function bundled(): { out: string; record: string; bundles: Staged[] } {
   temps.push(f.work, out, priv, work);
   buildBundles(f.copy, { out, private: priv, exclude: new Set([FOUNDER]), tiers: TIERS,
                          rehearsal: RUN });
-  return { out, record: join(work, "record.json"), bundles: bundlesIn(out) };
+  writeFileSync(join(work, "facts.json"), JSON.stringify(IMPORT_NAMES));
+  return { out, record: join(work, "record.json"), facts: join(work, "facts.json"),
+           bundles: bundlesIn(out) };
 }
 
 const read = <T>(staged: Staged, kind: "manifest" | "rows", key: string): T[] =>
@@ -98,9 +105,9 @@ function heldOf(staged: Staged) {
 
 /** The fake world: two buckets, the queues and their fake doors, and the directory. */
 function world(bundles: readonly Staged[]) {
-  const buckets = new Map<string, Map<string, string>>([["tinyassets-import-staging", new Map()],
-                                                        [FILES_BUCKET, new Map()]]);
-  const staging = buckets.get("tinyassets-import-staging")!;
+  const buckets = new Map<string, Map<string, string>>([[NAMES.staging_bucket, new Map()],
+                                                        [NAMES.files_bucket, new Map()]]);
+  const staging = buckets.get(NAMES.staging_bucket)!;
   const kv = new Map<string, string>();
   const sent: ImportMessage[] = [];
   const dead: { id: string; body: string; leased: boolean }[] = [];
@@ -114,7 +121,8 @@ function world(bundles: readonly Staged[]) {
     staging.set(doneName(`${RUN}/${staged.key}`), JSON.stringify({ op: "import",
                                                                    bundle: staged.bundle,
                                                                    done: true }));
-    buckets.get(FILES_BUCKET)!.set(`${objectPrefix(namespaces.get(staged.owner)!)}c/x`, "x");
+    buckets.get(NAMES.files_bucket)!
+      .set(`${objectPrefix(namespaces.get(staged.owner)!)}c/x`, "x");
   }
   const doors = (message: ImportMessage) => {
     expect(macHolds(INPUTS.importKey, message)).toBe(true);
@@ -138,9 +146,9 @@ function world(bundles: readonly Staged[]) {
                   reasons: [] });
     } else if (message.op === "discard") {
       const ns = namespaces.get(message.owner)!;
-      for (const key of [...buckets.get(FILES_BUCKET)!.keys()]) {
+      for (const key of [...buckets.get(NAMES.files_bucket)!.keys()]) {
         if (key.startsWith(objectPrefix(ns))) {
-          buckets.get(FILES_BUCKET)!.delete(key);
+          buckets.get(NAMES.files_bucket)!.delete(key);
         }
       }
       put(at(), { op: "discard", bundle: message.bundle, discarded: true, namespace: ns });
@@ -171,8 +179,8 @@ function world(bundles: readonly Staged[]) {
     }
     const path = url.pathname.replace(`/client/v4/accounts/${INPUTS.account}`, "");
     if (path === "/queues") {
-      return ok([{ queue_id: "q-import", queue_name: "tinyassets-import" },
-                 { queue_id: "q-dead", queue_name: "tinyassets-import-dlq" }]);
+      return ok([{ queue_id: "q-import", queue_name: NAMES.queue },
+                 { queue_id: "q-dead", queue_name: NAMES.dead_letter_queue }]);
     }
     if (path === "/queues/q-import/messages") {
       const message = importMessage(JSON.parse(body).body);
@@ -204,7 +212,7 @@ function world(bundles: readonly Staged[]) {
       return ok(null);
     }
     if (path === "/storage/kv/namespaces") {
-      return ok([{ id: "kv-directory", title: DIRECTORY }]);
+      return ok([{ id: "kv-directory", title: NAMES.directory }]);
     }
     if (path === "/storage/kv/namespaces/kv-directory/keys") {
       const prefix = url.searchParams.get("prefix") ?? "";
@@ -220,7 +228,7 @@ function world(bundles: readonly Staged[]) {
     }
     return new Response(`no route ${request.method} ${path}`, { status: 404 });
   };
-  const window: Window = { inputs: INPUTS, fetcher, clock: CLOCK };
+  const window: Window = { names: NAMES, inputs: INPUTS, fetcher, clock: CLOCK };
   return { window, buckets, staging, kv, sent, dead, consumers, held, admitted, faults,
            namespaces };
 }
@@ -267,7 +275,7 @@ describe("the window's verify", () => {
   });
 
   it("finds an owner whose import is not done, or whose check differs, and keeps it", async () => {
-    const { out, record, bundles } = bundled();
+    const { out, record, facts, bundles } = bundled();
     const w = world(bundles);
     w.staging.delete(doneName(`${RUN}/${bundles[0]!.key}`));
     const second = w.held.get(bundles[1]!.owner)!;
@@ -280,7 +288,7 @@ describe("the window's verify", () => {
     expect(kept[bundles[1]!.key]!.differences.missing.length).toBe(1);
     expect(kept[bundles[1]!.key]!.clean).toBe(false);
     // Its exit says so.
-    expect(await windowMain(["verify", out, "--run", RUN, "--record", record],
+    expect(await windowMain(["verify", out, "--run", RUN, "--facts", facts, "--record", record],
                             envOf(), quiet, w.window.fetcher, CLOCK)).toBe(3);
   });
 
@@ -397,7 +405,7 @@ describe("the window's wipe", () => {
     const proof = await wipe(out, RUN, w.window, record, quiet);
     expect(proof).toEqual({ records: 0, staged: 0, namespaces: bundles.length, objects: 0 });
     expect([...w.staging.keys()]).toEqual([]);
-    expect([...w.buckets.get(FILES_BUCKET)!.keys()]).toEqual([]);
+    expect([...w.buckets.get(NAMES.files_bucket)!.keys()]).toEqual([]);
     // Another run's rehearsal records and every real owner's are left as they were.
     expect([...w.kv.keys()].sort()).toEqual([`o:${rehearsalName("r1-x", "user_y")}`,
                                              `o:${rehearsalName("r2", "user_x")}`, "o:user_real"]);
@@ -406,18 +414,18 @@ describe("the window's wipe", () => {
 
   it("converges when killed between its discards, and proves a namespace an earlier run " +
      "discarded", async () => {
-    const { out, record, bundles } = bundled();
+    const { out, record, facts, bundles } = bundled();
     const w = world(bundles);
     w.faults.kill = { op: "discard", after: 1 };
     await expect(wipe(out, RUN, w.window, record, quiet)).rejects.toThrow(/killed/);
     expect(Object.keys(readRecord(record, RUN).discarded).length).toBe(1);
     // A put that landed late under a discarded namespace: the proof finds it.
     const first = w.namespaces.get(bundles[0]!.owner)!;
-    w.buckets.get(FILES_BUCKET)!.set(`${objectPrefix(first)}c/late`, "late");
+    w.buckets.get(NAMES.files_bucket)!.set(`${objectPrefix(first)}c/late`, "late");
     const proof = await wipe(out, RUN, w.window, record, quiet);
     expect(proof).toMatchObject({ records: 0, staged: 0, namespaces: bundles.length, objects: 1 });
-    expect(await windowMain(["wipe", out, "--run", RUN, "--record", record], envOf(), quiet,
-                            w.window.fetcher, CLOCK)).toBe(3);
+    expect(await windowMain(["wipe", out, "--run", RUN, "--facts", facts, "--record", record],
+                            envOf(), quiet, w.window.fetcher, CLOCK)).toBe(3);
     // Each owner discarded once: the record kept the first run's.
     expect(w.sent.filter((message) => message.op === "discard").length).toBe(bundles.length + 1);
   });

@@ -12,6 +12,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { builtinCatalog, modelInfos, recordOf } from "../src/catalog";
 import { checkedRecord } from "../../contract/src/model-record";
 import { Refusal } from "../../contract/src/refusal";
+import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import type { Source } from "../../contract/src/egress-scope";
 import { forwardRead, IDLE_CUT_MS, redact, verify } from "../src/forward";
 import { seal, type Binding } from "../src/keyring";
@@ -179,6 +180,31 @@ describe("forward", () => {
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  });
+
+  it("ends a call its provider never answers at the forward deadline, and not before",
+     async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, OPENAI);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let answered = false;
+      const pending = call(blob, new Request("https://egress/v1/models", {
+        headers: { "x-fake-mode": "hang" } }), env);
+      void pending.then(() => {
+        answered = true;
+      });
+      // The deadline's timer is the call's only one: set once its request is on its way.
+      await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+      await vi.advanceTimersByTimeAsync(EGRESS_DEADLINE_S * 1000 - 1_000);
+      expect(answered).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const response = await pending;
+      expect([response.status, await response.json()])
+        .toEqual([504, { error: { code: "deadline", message: "deadline" } }]);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

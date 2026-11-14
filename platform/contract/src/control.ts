@@ -37,6 +37,8 @@ export const MAINTENANCE = "TinyAssets is in maintenance";
 
 export const TIER_NAMES = Object.freeze(["free", "paid"] as const);
 export type TierName = (typeof TIER_NAMES)[number];
+/** The tier of an owner whose plan names none (the owner's schema's default). */
+export const DEFAULT_TIER: TierName = "free";
 
 /**
  * The most live runs any tier record may give: what the owner-bound guard costs the owner's
