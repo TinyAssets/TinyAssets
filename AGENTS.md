@@ -29,8 +29,9 @@ cutover.
 
 1. `SqliteSaver`, never `AsyncSqliteSaver`.
 2. Reuse the LanceDB connection; never recreate it.
-4. Gates (`docs/reference/executable-gates.md`) default autonomously; ask only
-   for new spending, irreversible acts, or outward-facing acts outside the
+4. Gates (`docs/reference/executable-gates.md`) default autonomously; names,
+   repo settings, splits and small spend are the agent's call; ask only for
+   other spending, irreversible acts, or outward-facing acts outside the
    agreed work (host-only: a host-actions row that blocks nothing).
 5. Accumulating state needs `Annotated[list, operator.add]`.
 6. `FactWithContext` carries truth-value typing.
@@ -55,11 +56,13 @@ cutover.
     owner's limits.
 16. Every builder and every reviewer runs the untangle skill
     (`.agents/skills/untangle/SKILL.md`), as its "How this project uses it" says.
+17. A known fix lands on discovery, in the PR at hand or its own PR now, never
+    left as a note. A process change counts once merged (a skill, gate or doc),
+    with its retro-check: the built, planned or open work it would have
+    changed, fixed there or in PRs it names.
 
 Python-stack sandbox, filesystem or process-limit work needs
 `scripts/linux_oracle.py`; in `platform/`, `npm run test:root -w sandbox` and
 `npm run test:memory -w owner`. A skip is not a pass. Secrets: `set -a; source
 scripts/load_secrets.sh; set +a`; platform secrets are the GitHub `production`
-environment's (the Cloudflare token is a repository secret; the account id is not a secret:
-`import-window.yml` reads the repository variable `CLOUDFLARE_ACCOUNT_ID`, and the deploy kit
-resolves it from the token's zone).
+environment's, but for Cloudflare's (`platform/deploy/checklist.md`).

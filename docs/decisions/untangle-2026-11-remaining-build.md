@@ -28,9 +28,11 @@ The wave-2 log, [`untangle-2026-11-wave-2.md`](untangle-2026-11-wave-2.md) (`d2`
 2. **P3, the PR body carries no ritual line.** `Net core lines:` has no reader, `Registry row(s):` feeds an advisory issue, and `Lane:` restates the diff. They go, with the 8-file hard cap (kept as a note for the reviewer). One PR, after P1.
 3. **P5, the tamper check reads the platform's tests.** Today it reads only `tests/**/*.py`.
 4. **`platform/deploy/` joins the release-critical paths.** It is the kit that deploys production.
-5. **P6–P9** (process code in one place, one builder page, skill mirrors, the planning system after the cutover) follow the lanes. P7's builder page replaces `brief_common.md` and the working briefs, so the rules a builder needs are in the repo.
+5. **P8 (skill mirrors), and P9's "can go now" list, go at once** (the founder, 2026-11-12); P6, the rest of P7 and P9 (process code in one place, one builder page, the planning system after the cutover) follow the lanes. P7's builder page replaces `brief_common.md` and the working briefs, so the rules a builder needs are in the repo.
 6. **P2, one review gate,** needs the founder's ruleset pin (§E). Until then the receipt stays, and reviews stay independent: no builder approves its own PR.
 7. **The cutover's deletion can't pass today's gates** (`x3:X1`, `X2`, `T9`): the 8-file cap, a forbidden path, the 3,000-file limit, and `slow-tests` as a required check. P3 removes the cap and the forbidden path before the window. The deletion is two or three PRs in one window (code, tests, workflows and scripts; then `openspec/`; then docs), each proved by the manifest's dry run. The ruleset step is the founder's (§E).
+8. **Open: `drift_code_audit.md`'s §6.2, §6.3 and §6.5 checks** (a new Python guard of a `platform/` path refused; no owed text in an accepted ADR; a calibrated control for every measurement). None is built or dropped; P6 decides each.
+9. **Open: `rerun-cancelled-checks.yml`, `queue-freshness.yml` and `queue-handoff.yml` are kept or deleted on measured runs** (list3 Q3). None is measured yet; P6 measures them.
 
 ## C. What the cutover needs that wave 2 doesn't hold (decided, some after research)
 
@@ -387,58 +389,4 @@ It builds as its own PR, **C2b**, right after C2.
 - Every test env but the doors' `OWNER` is a `Pick` of its Worker's generated env. The doors' tests still call owner doors outside `OwnerDoors`, so that binding stays typed from `OwnerDO`, owed to T2 (B23).
 - `SANDBOX` is required, as T1a made it. `ERASURES` is required in the type because the config binds it; the code's check for an unbound one goes with T1c.
 
-## §S. C4 as built (2026-11-14)
-
-1. **B6's egress door grammars are one reader, `egressDoor(path)` (`contract/src/egress.ts`), not regexes built from the ids.** The module-state guard refuses a regex a call builds at load, so the reader holds each segment to its own grammar in `ids.ts` (`RUN_ID`, `HEX64`, `CONNECTION_ID`, `SIGNIN_ID`) and returns the door it names. No regex copy is left, and `contract/guards/wire.test.ts` reads back every URL the contract makes. The sync agent's door names are `SYNC_DOORS`, and the runner's sync client takes a `SyncDoor`.
-2. **Corrects `d2` B19:** `REMEMBERED_NAME_BYTES` and `automatonStates` stay in `contract/src/sync-ignore.ts`. `ignoredBy` reads the first, and the second measures the matcher's private automaton for its own tests. Only `SANDBOX_HEAP`, `AGENT_PEAK` and `HEAP_PER_LIST_BYTE` move to `sandbox/runner/sizing.ts` (S4).
-
-## §T. D1 as built (2026-11-14)
-
-1. **B7's kit text guard goes to lane C after C5.** It is one `ci/kit` guard (no SHA-256 outside `contract/src/digest.ts` in a Worker's `src` or the runner; no `Date.now()` in `owner/src` outside `clock.ts`) with an `owed` ratchet, and `ci/kit/owed.ts` is lane C's, with C5 in flight. The PR that adds it lists each lane's entries; after D1 the doors owe it none.
-2. **The cookie reader stays in `session.ts`, not the doors' kit** (a departure from B7's list, accepted as better): the binder guard holds that only `session.ts` reads the `Cookie` header, so one private `cookies(request, name)` serves the session and connect cookies.
-
-## §U. C5 as built (2026-11-14)
-
-1. **The source records live in `sources/records/`,** so the records reader reads only records and `sources/package.json` needs no skip. The runner's bundle moves with the paths; its pair check is the one owed at the dark redeploy.
-2. **The tools' and apps' constants are not derived from `profiles.json`** (corrects `d2` B8): `NEVER_RUN`, `MAILBOX_TOOLS` and the like are the guard's statement of what each profile must hold, and deriving them from the file would test the file against itself.
-3. **Owed for C5b,** each a split of B8 left out of C5:
-   - `owner/guards/rules.ts`'s four rules imports (files, gateway, codemode, sandbox) for `SERVICES`: "`rules.ts` drops the values the configs already state" needs `owner/guards/config.test.ts`'s `boundProblems` reworked, deciding which bound-Worker facts are the owner's own security statement and which the bound config's;
-   - `s2:S93` (`sandbox/guards/rules.ts` `exact`);
-   - `d2:N81` (`doors/guards/rules.ts` `exact`, and `config.test.ts`'s restated names).
-
-## D2 as built (2026-11-14)
-
-1. **Corrects `d2` B2's "JSON `{error,message}`":** the JSON doors' one refusal shape is `{error: <message>}`, the code's status and its `Retry-After`, as every refusal on `/api`, `/app/api`, `/mcp` and the owner's socket answered before D2. The closed gate's `{error: "unavailable", message}` was the one other shape, and it goes.
-2. **`egress_rate` names its wait** (lane C's file, in D2): `429`, `Retry-After: 1`, transient, as every other retryable code.
-3. **Owed, accepted:**
-   - **Lane C, then D:** the inbound door's own answers with no contract code (`too_large`, `too_many_headers`, `event_identity_required`, `invalid_signature`, `inbound_app_unconfigured`), and its `Retry-After: 5` on the object's `retry` answer, each needs a code first; `doors.ts`'s overloaded `429` is the runtime's, not a refusal.
-   - **Lane D:** the connect door's `N5` rule (it answers a gateway failure only for a `502`, `deadline` or `invalid_request`, and throws every other as a fault) stays its own classification; it now rethrows the gateway's refusal rather than rebuilding one.
-   - **Lane O, then D:** the events door's `subscription_limit → ResourceExhausted` stays in `asEvent` until the owner's refusal carries the limit as facts.
-
-## S6 as built (2026-11-14)
-
-1. **B18's departures, accepted:**
-   - `modules.d.ts` stays, narrowed to `*/dist/runner.mjs`. §R stopped committing wrangler's types, so no generated declaration is left to replace it; generating one is lane C's (`ci/kit/types.ts`).
-   - The names guard (`template.test.ts`, "the bundles' names") allows four files: `pair.ts`, `src/runner-bytes.ts`, `src/modules.d.ts`, and `guards/rules.ts` (the config guard's letter of `wrangler.jsonc`).
-   - The runner's bundle is byte-identical. The probes' bundle changes by N40 alone, so the pair tag's `-p` moves, and the pair check is owed at the dark redeploy.
-2. **Owed:**
-   - **N39, `bundles()`'s `exec`, goes to lane X.** Passing the kit's `io` another way rewrites `shippedPair` and `deploy.test.ts`'s fake world.
-   - **The loader's installed name, `<sha>/runner.mjs`, has no home yet.**
-     - The founder's home for it is `pair.ts`, beside `BUNDLES`. `template/ta-runner` keeps its own spelling and is allowed by the names guard, because it is the image's input, pinned by the template digest.
-     - It is not built in S6. One reader, `runner/probes.ts:501`, may not import `pair.ts`: the layer table lets the probes import only `runner/**`, the contract and the records, and `pair.ts` would carry Node's processes and the test kit into the probes' bundle.
-     - The other readers are `runner/test/harness.ts:791`, `runner/loader.test.ts` and `runner/runner.test.ts`.
-     - The home has to be one the probes can read (one option is `runner/protocol.ts`, beside `RUNNERS`). That is decided before it is built.
-   - **B10's literal guard:** S6 is not its last adopter, because O4 hasn't merged. The sandbox's `tinyassets-*` literals it must list:
-     - `guards/rules.ts:16,38`: the config guard's letter of the config.
-     - `template/image.ts:47` `NAME`: E2B's template name, an image input.
-     - `guards/config.test.ts:74,78-79`: fixtures the guard must refuse.
-     - `src/index.ts:2`: a comment.
-
-## X2 as built (2026-11-14)
-
-1. **A listing is read to its last page by what each answer's `result_info` says,** with wrangler's own two rules (`fetchListResult`'s `hasCursor` and `hasMorePages`): a non-empty `cursor` reads the next page by it (R2 buckets, a namespace's keys), and otherwise the next page number while `page * per_page` is short of `total_count` (KV namespaces, queues). No listing guesses from its row count, and a listing with no paging (the Workers scripts, a zone's routes) ends at its one page. Every listing of the client goes through the one loop.
-2. **The KV namespaces are made by REST too** (`x2:2.1 KV made by wrangler then REST`): one POST, its answer's id the binding's, so the re-listing after `wrangler kv namespace create` goes. Wrangler is left deploying Workers and setting secrets.
-3. **The client takes the token and the fetcher itself** (`new Cloudflare(token, fetcher)`), so `cfApi`, `CfApi` and `CfAnswer` go (`x2:2.2 CfAnswer.body`). The fetcher has no default: the importer's guard keeps `fetch` named in `import/stage.ts` alone, and the kit passes `run.io.fetch`.
-4. **One Workers listing a run decides existence.** The `secrets` step reads it, reads the secrets only of the Workers it lists (a missing one holds none), and the `workers` and `retired` steps take it from there. `secrets()` throws on any failure, the 404 of a missing Worker too. Mode `probe`'s `doors deployed` reads the listing.
-5. **The handover and the handback are one route change, `RouteChange`, and one loop, `reroute(zone, steps, say)`**, which `say`s a failed step as the plan said it. The failure's tail is the same for both: "the steps before it are done, the rest are not: run it again for the rest", since both plan from the zone as it stands.
-6. **The importer's three Cloudflare reads are adopted here, not in I1b** (a few lines each, in lane I's files): `stage.ts`'s `queueId`, and `window.ts`'s directory id and directory keys, through `cloudflareOf(inputs, fetcher)`. Left for I1b: the importer's writes (the queue's messages, the dead-letter queue's consumer, pull and ack, the directory's bulk delete) through `window.ts`'s `api()`, and `stage.ts`'s `API`, with `QUEUES.IMPORTS` and the account id's second source (`I-H22`).
+The as-built records of C4 (once §S), D1 (§T), C5 (§U), D2, S6 and X2 are their own files: [`untangle-2026-11/`](untangle-2026-11/) `c4.md`, `d1.md`, `c5.md`, `d2.md`, `s6.md`, `x2.md`.

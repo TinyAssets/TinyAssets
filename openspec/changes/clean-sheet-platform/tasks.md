@@ -286,7 +286,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H). The `apply` job runs
     the plan it was approved on: the plan passes as an artifact, and `apply` stops on any
-    difference (list3 P26).
+    difference (list3 P26; built in X6, #5586).
   - B13: the routes of d3 §J1; `/apple-touch-icon.png` moved off the `app` prefix, with a
     test that fails on any site file under a doors pattern; one shared matcher of path plus
     query for the identity guard.
@@ -338,41 +338,41 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     a test that a halted schedule runs no lane already due (`schedule.ts`'s `onJob`); the
     memory leg's floor never read high by earlier work's garbage (the pool's observer made
     outside `run`, the floor read again at the run's start).
-  - [ ] T1b4: the ledger's decisions as pure functions tested with small numbers (`sealable`,
+  - [x] T1b4: the ledger's decisions as pure functions tested with small numbers (`sealable`,
     `archiveDue`, `hotFull`, `postRoom`, `moveTake`); `admitted`, `changes`, `adopt` and `wall`
     required; `ledger-bounds` and `agent-mail`'s identity bounds at production's ceilings; the
     memory probe's measured move production's largest segment (d3 §K1).
-  - [ ] T1b5: the archive's object tests at production ceilings (`archive-mail.test.ts`), then
+  - [x] T1b5: the archive's object tests at production ceilings (`archive-mail.test.ts`), then
     the ledger's `limits` parameter, `Internals.ledgerLimits`, `BigArchivingOwnerDO` and the
     other three classes' ceilings deleted, `LEDGER_LIMITS` checked once at module load, and a
     test of the purge queue's ceiling (`ledger.ts` `remove`, `maxAgentRows` purges waiting),
     which none holds today (`b23_research.md` question 3), and one that a lone straggler makes
     the lane due (no test fails today if `Ledger.archiveDue` asks `archiveDue` no straggler).
-  - [ ] T1c-a: the `FILES` and `GATEWAY` gates, with `GatedOwnerDO`, `RungOwnerDO`,
+  - [x] T1c-a: the `FILES` and `GATEWAY` gates, with `GatedOwnerDO`, `RungOwnerDO`,
     `ArchivingOwnerDO`, `DivergingOwnerDO`, `PurgingOwnerDO`, `Internals.chainStep` and
     `Internals.archiveBetweenPasses` deleted; the owner suite's lease clock under the fake
     `Date`, not moved by SQL (`lease_expires = 1`, in every test) (list 6, item 6j); the
     object's `admitted` held by a test (no test fails today if the object passes the ledger
     `() => true`: a suspension between a wakes pass's claims, the `GATEWAY` gate holding its
     send) (`docs/decisions/untangle-2026-11/t1c.md`).
-  - [ ] T1c-b: `Internals`' erasure, grace, retry and control-freshness fields, `FauxOwnerDO`,
+  - [x] T1c-b: `Internals`' erasure, grace, retry and control-freshness fields, `FauxOwnerDO`,
     `SwitchedOwnerDO` and `CachedOwnerDO` deleted; the unbound-`ERASURES` throw gone
     (`owner-do.ts`; the generated `OwnerEnv` already types it required, C2b) with its queue's
     fake consumer; the erasure and control record under a fake `Date`; the rig admitting by
     the door; the doors' entry with no third constructor argument (`t1c.md`, T1c-b).
-  - [ ] T1c-b2, decided first (`t1c.md`, T1c-b item 6): the real entry, `main: src/index.ts`,
+  - [x] T1c-b2, decided first (`t1c.md`, T1c-b item 6): the real entry, `main: src/index.ts`,
     with `Internals` and the test classes left deleted, and the whole owner suite on the real
     carried package (no alias): every rig waits for the seed, the seeded part of every count
     comes from `support.ts` `starterSeed()`, and the starter tests' hand-built passes run at
     versions past the carried one (`t1c.md`, T1c-b2).
-  - [ ] T1c-c: `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted: the
+  - [x] T1c-c: `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted: the
     object exports its one ledger wiring function and the tests call it; `ballast` seeds
     through the ledger's own API, with no door seeding and no bulk SQL (`t1c.md`, owed); and
     `BackupParts`' test-only `sizes?` and `pool?` gone, the generation harness's copy of the
     backups wiring with them, researched first (`t1c.md`, T1c-b item 6).
-  - [ ] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
+  - [x] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
     copy of the object's wiring, deleted.
-  - [ ] T1e: `support.ts` `filesOn`, `TIERLESS_FULL` and `collectionParts`, copies of the
+  - [x] T1e: `support.ts` `filesOn`, `TIERLESS_FULL` and `collectionParts`, copies of the
     object's wiring, deleted: the files and collections tests reach `ownerStores`, which wires
     a file change itself (no `changed` parameter, no `NO_FILE_CHANGE`), each test's limits
     set by the owner's files policy (`t1c.md`, T1e).
@@ -384,7 +384,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`).
   - [ ] `restore.wipe`, a live owner brought to pending and empty for a restore, the
     generation to restore pinned first, since a fresh generation's finish prunes every older
-    unpinned one (`r5r.md` item 14); and owner migration 10's pin PR (`r5r.md` item 4).
+    unpinned one (`r5r.md` item 14). Restore (#5587) and owner migration 10's pin (#5589) landed.
   - [ ] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
     (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, after lane O's T1c
     (`r3.md` item 9).
@@ -396,10 +396,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     a one-day lock and the lifecycle rule together deleting a hidden version once the lock ends.
 - [ ] R5, where an action is decided (d3 §N): its six slices (`r5_research.md` §6), after B25
   and alongside lane O.
-  - [ ] P-shape: the policy's `actions` table and `contract/acts.json`, the doors' rows naming
+  - [x] P-shape: the policy's `actions` table and `contract/acts.json`, the doors' rows naming
     their act, a rule nothing could see refused at write; the old rule tables, `spend` and
     egress `ask` deleted; the default document and its digest anew, with owner migration 6
-    (its pin PR owed after it merges).
+    (#5531; its pin, #5537).
   - [ ] P-decide: the decide function and its receipts bucket; `action_request` cards and the
     once-approvals (bounded, generation-bound, swept); the owner's approve and refuse doors;
     the decide step in the runner, from the rows' `act`; a rule's `agent`, with the agent id's

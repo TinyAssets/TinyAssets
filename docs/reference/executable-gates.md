@@ -9,6 +9,11 @@ reproduce, never per push.
 A receipt binds to the exact head (or its tree-diff). A trivial commit after
 review gets a one-round delta review, the reviewer told only that delta.
 Over 8 release-critical files (scope guard's count): look for a carried lineage.
+To land, comment the receipt on the PR and open the body with
+`Drain-Review-Verdict: APPROVE`, `Drain-Review-Head: <sha>`, `Drain-Review-Artifact: <its URL>`;
+auto-enroll arms the merge. Until then `Diff scope declared` fails, as expected. Two
+counted queue failures on one head disarm auto-merge (`queue-handoff`): fix the head, or
+drop the label to retry.
 
 | Gate | Entry point |
 |---|---|
