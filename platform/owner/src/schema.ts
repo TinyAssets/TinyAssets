@@ -2187,6 +2187,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // (`receipt_json`). The receipts' facts are copied first: each recipient's earliest read,
   // its last failure's reason, and each reply's time (its parent's time if the receipt went).
   // The capture triggers that write those rows are made again with the new columns.
+  // A message's lines are counted again each time its recipient row changes (`ledger.ts`
+  // `#restate`), so a segment holds exactly what it counted: a body's row keeps all but its
+  // `meta_bytes`, whose change moves the files' counters by the difference, and a changed
+  // acked message's `line_bytes` moves the acked bytes the archive's seal reads.
   // A migration ends the generation under way (`backup.ts`).
   Object.freeze([
     "DROP TRIGGER ledger_receipts_logged_insert",
@@ -2210,6 +2214,19 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "c.kind = 'failed' AND c.ref = ledger_recipients.message_id AND " +
       "c.agent_id = ledger_recipients.agent_id ORDER BY c.seq DESC LIMIT 1) END",
     "DROP TABLE ledger_receipts",
+    "DROP TRIGGER message_bodies_kept",
+    "CREATE TRIGGER message_bodies_kept BEFORE UPDATE OF message_id, room_id, body, " +
+      "created_at, body_bytes, content_id, filer ON message_bodies " +
+      "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
+    "CREATE TRIGGER message_bodies_meta_moved AFTER UPDATE OF meta_bytes ON message_bodies " +
+      "WHEN NEW.meta_bytes != OLD.meta_bytes BEGIN " +
+      "UPDATE file_space SET body_bytes = body_bytes + (NEW.meta_bytes - OLD.meta_bytes); " +
+      "UPDATE file_shares SET body_bytes = body_bytes + (NEW.meta_bytes - OLD.meta_bytes) " +
+      "WHERE who IN (CASE WHEN NEW.filer GLOB 'client:*' THEN '*' ELSE 'owner' END, " +
+      "NEW.filer); END",
+    "CREATE TRIGGER ledger_messages_lines_moved AFTER UPDATE OF line_bytes ON ledger_messages " +
+      "WHEN NEW.unacked = 0 AND NEW.line_bytes != OLD.line_bytes BEGIN " +
+      "UPDATE ledger_usage SET acked_bytes = acked_bytes + (NEW.line_bytes - OLD.line_bytes); END",
     "CREATE TRIGGER ledger_recipients_logged_insert AFTER INSERT ON ledger_recipients WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'ledger_recipients', 'row', json_object('message_id', NEW.message_id, 'agent_id', NEW.agent_id, 'seq', NEW.seq, 'state', NEW.state, 'changed_at', NEW.changed_at, 'unacked', NEW.unacked, 'read_at', NEW.read_at, 'failed_reason', NEW.failed_reason)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",

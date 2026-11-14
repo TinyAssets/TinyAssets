@@ -107,7 +107,7 @@ import { ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
 import {
-  Refusal, type RefusalCode, REFUSALS, STORAGE_BUSY_RETRY_S,
+  Refusal, type RefusalCode, STORAGE_BUSY_RETRY_S,
 } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import {
@@ -146,11 +146,6 @@ const DUE = "state IN ('queued', 'held_cap') AND agent_id IN (SELECT agent_id FR
   "native_agents)";
 /** Why a mail failed, on its recipient row: the refusal its run met, or its sender gone. */
 type FailedReason = RefusalCode | "sender_gone";
-/** The longest reason a recipient row holds: its message's lines count it (`mailLineBytes`). */
-export function widestReason(): FailedReason {
-  return [...Object.keys(REFUSALS) as RefusalCode[], "sender_gone" as const]
-    .reduce((wide, each) => (each.length > wide.length ? each : wide));
-}
 /** A run's mail is its input: it reads and acks no mailbox. */
 export const RUN_NO_MAILBOX = "run_no_mailbox: a run's mail is its input; it reads and acks " +
   "no mailbox";
@@ -870,34 +865,25 @@ export function mailRecord(message: Readonly<Record<string, unknown>>,
 }
 
 /**
- * The bytes a new message takes as its segment will hold it (D2): its lines, its body raw
- * (`body_bytes`) and its newline, and its trailer share, its recipient's row at the widest
- * it ends: replied with its read time, or failed for the widest reason.
+ * The bytes a message takes as its segment will hold it (D2), from its rows as they stand:
+ * its lines, its body raw (`body_bytes`) and its newline, and its trailer share. Counted
+ * again each time its recipient row changes (`Ledger.#restate`), so the count is exact. Its
+ * own `line_bytes` and its body's `meta_bytes` are in its lines, so settled to a fixed point;
+ * the body is never copied.
  */
 function mailLineBytes(message: Readonly<Record<string, unknown>>,
                        body: Readonly<Record<string, unknown>>,
-                       recipient: Readonly<Record<string, unknown>>): number {
-  return Math.max(...[{ state: "replied", read_at: recipient["changed_at"] },
-                      { state: "failed", failed_reason: widestReason() }]
-    .map((end) => settledLineBytes(message, body, { ...recipient, ...end })));
-}
-
-/**
- * A message's lines' bytes with its recipient's row as given. Its own `line_bytes` and its
- * body's `meta_bytes` are in its lines, so settled to a fixed point; the body is never copied.
- */
-function settledLineBytes(message: Readonly<Record<string, unknown>>,
-                          body: Readonly<Record<string, unknown>>,
-                          recipient: Readonly<Record<string, unknown>>): number {
+                       recipients: readonly Readonly<Record<string, unknown>>[]): number {
   const size = body["body_bytes"] as number;
-  const of = (rows: readonly SegmentRow[]): number => rows.reduce((sum, [table, row, raw]) =>
-    sum + (raw === undefined ? utf8Bytes(rowLine(table, row))
-      : utf8Bytes(rowLine(table, row, size)) + size + 1), 0);
+  const [[, own], [, stored], ...held] = mailRecord(message, body, recipients, []).rows as
+    [SegmentRow, SegmentRow, ...SegmentRow[]];
+  const fixed = held.reduce((sum, [table, row]) => sum + utf8Bytes(rowLine(table, row)), 0)
+    + size + 1 + RECORD_TRAILER_BYTES;
   let bytes = 0;
   for (let i = 0; i < 6; i++) {
-    const next = of(mailRecord({ ...message, line_bytes: bytes },
-                               { ...body, meta_bytes: Math.max(0, bytes - size) },
-                               [recipient], []).rows) + RECORD_TRAILER_BYTES;
+    const next = fixed + utf8Bytes(rowLine("ledger_messages", { ...own, line_bytes: bytes }))
+      + utf8Bytes(rowLine("message_bodies", { ...stored, meta_bytes: Math.max(0, bytes - size) },
+                          size));
     if (next === bytes) {
       return bytes;
     }
@@ -1210,9 +1196,9 @@ export class Ledger {
       if (row === undefined) {
         return;
       }
-      sql.exec("UPDATE ledger_recipients SET state = 'failed', changed_at = ?, " +
-                 "failed_reason = 'agent_retired' WHERE agent_id = ? AND " +
-                 "state IN ('queued', 'held_cap')", now, row.agent_id);
+      this.#restate("UPDATE ledger_recipients SET state = 'failed', changed_at = ?, " +
+                      "failed_reason = 'agent_retired' WHERE agent_id = ? AND " +
+                      "state IN ('queued', 'held_cap')", now, row.agent_id);
       sql.exec("UPDATE ledger_recipients SET unacked = 0 WHERE agent_id = ? AND unacked = 1",
                row.agent_id);
       this.#failSent(row.agent_id, now);
@@ -1225,9 +1211,35 @@ export class Ledger {
    */
   #failSent(sender: string, now: number): void {
     const gone: FailedReason = "sender_gone";
-    this.#sql.exec("UPDATE ledger_recipients SET state = 'failed', unacked = 0, changed_at = ?, " +
-                     `failed_reason = ? WHERE ${DUE} AND message_id IN (SELECT message_id ` +
-                     "FROM ledger_messages WHERE sender_id = ?)", now, gone, sender);
+    this.#restate("UPDATE ledger_recipients SET state = 'failed', unacked = 0, changed_at = ?, " +
+                    `failed_reason = ? WHERE ${DUE} AND message_id IN (SELECT message_id ` +
+                    "FROM ledger_messages WHERE sender_id = ?)", now, gone, sender);
+  }
+
+  /**
+   * Every change to a recipient row's state, `update` (an `UPDATE ledger_recipients`), with
+   * its messages' lines counted again from their rows as they now stand (`mailLineBytes`): a
+   * message's `line_bytes` and its body's `meta_bytes` are what its segment will hold, exactly,
+   * so a seal holds the bytes it counted and a move frees what it places (review M1). The
+   * schema's triggers move the acked bytes and the files' counters with them.
+   */
+  #restate(update: string, ...bindings: SqlStorageValue[]): void {
+    const sql = this.#sql;
+    for (const { message_id: id } of sql.exec<{ message_id: string }>(
+      `${update} RETURNING message_id`, ...bindings).toArray()) {
+      const message = sql.exec("SELECT * FROM ledger_messages WHERE message_id = ?", id).one();
+      const body = sql.exec("SELECT * FROM message_bodies WHERE message_id = ?", id).toArray()[0];
+      if (body === undefined) {
+        continue;  // gone under the object, which its read flags `missing`: nothing to count
+      }
+      const bytes = mailLineBytes(message, body, sql.exec(
+        "SELECT * FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id", id).toArray());
+      if (bytes !== message["line_bytes"]) {
+        sql.exec("UPDATE ledger_messages SET line_bytes = ? WHERE message_id = ?", bytes, id);
+        sql.exec("UPDATE message_bodies SET meta_bytes = ? WHERE message_id = ?",
+                 bytes - (body["body_bytes"] as number), id);
+      }
+    }
   }
 
   register(origin: Origin | null, source: unknown, request: Registration,
@@ -1642,9 +1654,9 @@ export class Ledger {
         reply_s: parent === undefined ? null : round3(now - parent.created_at) };
       const lineBytes = mailLineBytes(message, {
         message_id: messageId, room_id: room, body, created_at: now, body_bytes: size,
-        content_id: null, filer, meta_bytes: 0 },
-                                      { message_id: messageId, agent_id: recipient, seq,
-                                        state: "queued", changed_at: now, unacked: 0 });
+        content_id: contentId, filer, meta_bytes: 0 },
+                                      [{ message_id: messageId, agent_id: recipient, seq,
+                                         state: "queued", changed_at: now, unacked: 1 }]);
       sql.exec(
         "INSERT INTO ledger_messages (seq, message_id, command_center_id, room_id, " +
           "sender_kind, sender_id, client_message_id, body_sha256, parent_id, chain_root, " +
@@ -1666,8 +1678,8 @@ export class Ledger {
         this.#open([to.agent.agent_id], CHANGE_BIT.mail, this.#changes(), now);
       }
       if (parent !== undefined && !parentArchived) {
-        sql.exec("UPDATE ledger_recipients SET state = 'replied', changed_at = ? " +
-                   "WHERE message_id = ? AND agent_id = ?", now, parentKey, sender);
+        this.#restate("UPDATE ledger_recipients SET state = 'replied', changed_at = ? " +
+                        "WHERE message_id = ? AND agent_id = ?", now, parentKey, sender);
       }
       return { message_id: messageId, recipients: [recipient], held: false, paused_reason: "" };
       });
@@ -2367,9 +2379,9 @@ export class Ledger {
    * still holds it, so it is never evicted before the run answers it (`settled`).
    */
   taken(messageId: string, agentId: string, now: number = clock()): void {
-    this.#sql.exec("UPDATE ledger_recipients SET state = 'read', changed_at = ?, read_at = ? " +
-                     `WHERE message_id = ? AND agent_id = ? AND ${DUE}`, now, now, messageId,
-                   agentId);
+    this.#restate("UPDATE ledger_recipients SET state = 'read', changed_at = ?, read_at = ? " +
+                    `WHERE message_id = ? AND agent_id = ? AND ${DUE}`, now, now, messageId,
+                  agentId);
   }
 
   /**
@@ -2384,21 +2396,21 @@ export class Ledger {
   /** In a unit: mail no run may take (its refusal's code), failed and no longer held. */
   undeliverable(messageId: string, agentId: string, code: RefusalCode,
                 now: number = clock()): void {
-    this.#sql.exec("UPDATE ledger_recipients SET state = 'failed', unacked = 0, changed_at = ?, " +
-                     `failed_reason = ? WHERE message_id = ? AND agent_id = ? AND ${DUE}`, now,
-                   code, messageId, agentId);
+    this.#restate("UPDATE ledger_recipients SET state = 'failed', unacked = 0, changed_at = ?, " +
+                    `failed_reason = ? WHERE message_id = ? AND agent_id = ? AND ${DUE}`, now,
+                  code, messageId, agentId);
   }
 
   /** In a unit: mail whose run has to wait for the inputs' queue, held until it has room. */
   hold(messageId: string, agentId: string, now: number = clock()): void {
-    this.#sql.exec("UPDATE ledger_recipients SET state = 'held_cap', changed_at = ? WHERE " +
-                     `message_id = ? AND agent_id = ? AND ${DUE}`, now, messageId, agentId);
+    this.#restate("UPDATE ledger_recipients SET state = 'held_cap', changed_at = ? WHERE " +
+                    `message_id = ? AND agent_id = ? AND ${DUE}`, now, messageId, agentId);
   }
 
   /** In a unit, once the inputs' queue has room: every held mail queued again. */
   release(now: number = clock()): void {
-    this.#sql.exec("UPDATE ledger_recipients SET state = 'queued', changed_at = ? " +
-                     `WHERE ${DUE} AND state = 'held_cap'`, now);
+    this.#restate("UPDATE ledger_recipients SET state = 'queued', changed_at = ? " +
+                    `WHERE ${DUE} AND state = 'held_cap'`, now);
   }
 
   /** The readers holding the most unread mail, at most three, as the owner knows them. */
@@ -2545,8 +2557,9 @@ export class Ledger {
         used += comma + fit.bytes;
         messages.push(fit.item);
         if (["queued", "held_cap", "woken"].includes(row.state)) {
-          sql.exec("UPDATE ledger_recipients SET state = 'read', changed_at = ?, read_at = ? " +
-                     "WHERE message_id = ? AND agent_id = ?", now, now, row.message_id, reader);
+          this.#restate("UPDATE ledger_recipients SET state = 'read', changed_at = ?, " +
+                          "read_at = ? WHERE message_id = ? AND agent_id = ?", now, now,
+                        row.message_id, reader);
         }
       }
       return { reader, cursor, messages, more: cut || messages.length < rows.length };
@@ -2938,8 +2951,8 @@ export class Ledger {
         const tat = agent.wake_tat ?? now;
         if (tat > now) {
           sql.exec("UPDATE ledger_wakes SET due = MAX(due, ?) WHERE wake_id = ?", tat, wakeId);
-          sql.exec("UPDATE ledger_recipients SET state = 'held_cap', changed_at = ? " +
-                     "WHERE agent_id = ? AND state = 'queued'", now, agent.agent_id);
+          this.#restate("UPDATE ledger_recipients SET state = 'held_cap', changed_at = ? " +
+                          "WHERE agent_id = ? AND state = 'queued'", now, agent.agent_id);
           return { outcome: "capped", due: tat };
         }
         sql.exec("UPDATE outside_agents SET wake_tat = ? WHERE agent_id = ?", now + HOUR_S / cap,
@@ -3046,7 +3059,7 @@ export class Ledger {
           "WHERE wake_id = ?", state, due, canonical(detail), settled ? now : null, wakeId,
       );
       if (woke) {
-        sql.exec(
+        this.#restate(
           "UPDATE ledger_recipients SET state = 'woken', changed_at = ? WHERE agent_id = ? " +
             "AND seq <= ? AND state IN ('queued', 'held_cap')",
           now, wake.agent_id, wake.through_seq ?? 0,

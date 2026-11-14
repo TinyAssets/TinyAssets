@@ -49,7 +49,8 @@ import { describe, expect, it } from "vitest";
 
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { exported } from "../src/export";
-import { LEDGER_LIMITS, widestReason } from "../src/ledger";
+import { LEDGER_LIMITS } from "../src/ledger";
+import { REFUSALS } from "../../contract/src/refusal";
 import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
 import {
   ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, CONNECTION_BLOB_MAX,
@@ -233,6 +234,11 @@ const MESSAGE_ID = 36;
 const PROPOSAL_ID_CHARS = inline("policy", /codePoints\(value\) <= ([0-9]+)/);
 /** An integer's or a real's most bytes in a record. */
 const NUMBER = 9;
+/**
+ * Why a mail failed, on its recipient row: a refusal's code, or `sender_gone`, which is
+ * shorter than the longest code.
+ */
+const FAILED_REASON = Math.max(...Object.keys(REFUSALS).map((code) => code.length));
 /** A content id: 64 hex (ADR-035's placed body, the files plane's content). */
 const CONTENT_ID = 64;
 /** A row's files scope: `owner`, or `client:` and 64 hex. */
@@ -442,7 +448,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                       indexes: { sqlite_autoindex_message_bodies_1: key(MESSAGE_ID) } },
     // Its key holds a message to one recipient, with when it read it or why it failed.
     ledger_recipients: { rows: L.maxMessages,
-                         bytes: ROW + MESSAGE_ID + AGENT_ID + NUMBER + widestReason().length,
+                         bytes: ROW + MESSAGE_ID + AGENT_ID + NUMBER + FAILED_REASON,
                          by: "one a message (the key: message_id), its read time or the " +
                            "widest reason it failed",
                          indexes: { sqlite_autoindex_ledger_recipients_1: key(MESSAGE_ID),

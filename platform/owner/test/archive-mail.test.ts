@@ -19,7 +19,8 @@ import { BODY_BYTES_MAX } from "../src/bodies";
 import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
 import { refusalOf, STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";
-import { LEDGER_LIMITS, type Ledger, mailRecord, widestReason } from "../src/ledger";
+import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
+import { nativeId } from "../../contract/src/binding";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import type { ArchivingOwnerDO } from "./worker";
@@ -401,28 +402,45 @@ describe("segments", () => {
 });
 
 describe("a message's counted bytes", () => {
-  it("hold its record as its recipient row ends: read, or failed for the widest reason",
+  it("are its record's, exactly, as its recipient row changes: read, replied, acked, failed",
      async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    await r.post(null, `dm:${muse}`, { body: "hello" });
-    await r.read(MUSE);
-    const record = async () => {
-      const [message] = await sqlIn(r.stub, "SELECT * FROM ledger_messages");
-      const [body] = await sqlIn(r.stub, "SELECT * FROM message_bodies");
-      const recipients = await sqlIn(r.stub, "SELECT * FROM ledger_recipients");
-      return [recordBytes(mailRecord(message!, body!, recipients,
-                                     [new TextEncoder().encode(body!["body"] as string)]))
-                + RECORD_TRAILER_BYTES, message!["line_bytes"] as number];
+    const exact = async (id: string) => {
+      const [message] = await sqlIn(r.stub, "SELECT * FROM ledger_messages WHERE message_id = ?",
+                                    id);
+      const [body] = await sqlIn(r.stub, "SELECT * FROM message_bodies WHERE message_id = ?", id);
+      const recipients = await sqlIn(r.stub, "SELECT * FROM ledger_recipients WHERE " +
+                                             "message_id = ?", id);
+      const held = recordBytes(mailRecord(message!, body!, recipients,
+                                          [new TextEncoder().encode(body!["body"] as string)]))
+        + RECORD_TRAILER_BYTES;
+      expect([message!["line_bytes"], body!["meta_bytes"]])
+        .toEqual([held, held - (body!["body_bytes"] as number)]);
+      // The one number and the acked bytes move with it.
+      const [counted] = await sqlIn(r.stub, "SELECT (SELECT SUM(line_bytes) FROM " +
+        "ledger_messages) AS lines, (SELECT coalesce(SUM(line_bytes), 0) FROM ledger_messages " +
+        "WHERE unacked = 0) AS acked, (SELECT acked_bytes FROM ledger_usage) AS usage");
+      expect(counted!["usage"]).toBe(counted!["acked"]);
+      expect((await r.stub.storageUsage(r.bind(null))).breakdown.messages)
+        .toBe(counted!["lines"]);
+      return held;
     };
-    const [read, counted] = await record();
-    expect((await sqlIn(r.stub, "SELECT read_at FROM ledger_recipients"))[0]!["read_at"])
-      .not.toBeNull();
-    expect(read).toBeLessThanOrEqual(counted!);
-    await sqlIn(r.stub, "UPDATE ledger_recipients SET state = 'failed', read_at = NULL, " +
-                        `failed_reason = '${widestReason()}'`);
-    const [failed] = await record();
-    expect(failed).toBeLessThanOrEqual(counted!);
+    const asked = (await r.post(null, `dm:${muse}`, { body: "hello" })).message_id;
+    const posted = await exact(asked);
+    const [mail] = (await r.read(MUSE)).messages;
+    const read = await exact(asked);
+    expect(read).toBeGreaterThan(posted);  // its read time, in its recipient row
+    await r.ack(MUSE, mail!.seq);
+    await r.post(MUSE, `dm:${muse}`, { body: "hi", cmid: "r", parent: asked });
+    await exact(asked);  // replied, while acked
+    const failed = await r.inLedger((ledger: Ledger) => {
+      ledger.appear("main");
+      const id = ledger.post(null, `dm:${nativeId("main")}`, "m", "x", null).message_id;
+      ledger.undeliverable(id, nativeId("main"), "credential_refresh_failed");
+      return id;
+    });
+    await exact(failed);
   });
 });
 

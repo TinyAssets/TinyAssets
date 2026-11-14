@@ -58,7 +58,7 @@ import { PAGE_BYTES } from "../src/pages";
 import { fileLimits, Policy } from "../src/policy";
 import { MIGRATIONS } from "../src/schema";
 import {
-  MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, RECORD_TRAILER_BYTES,
+  MIN_RECORD_BYTES, MOVE_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, RECORD_TRAILER_BYTES,
   SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES,
 } from "../src/segments";
 import { UNIT_BYTES } from "../../contract/src/slots";
@@ -551,13 +551,13 @@ export class LegArchive extends OwnerDO {
 
   /**
    * The mail for the most records one merge takes with real messages (the memory research's
-   * merge, round 5): the muse's acked mail interleaved with Dot's and Pat's (two of Pat's to
-   * each), unread; then more of the muse's, acked, so the hot set stays past half. Sealed,
-   * the muse's first 8 MiB span Dot's and Pat's keys; Dot's, acked, merge into it (a piece of
-   * about 16 MiB); Pat's, acked, merge into that up to `MOVE_BYTES`: the measured move. The
-   * last of Dot's and of Pat's messages' seqs.
+   * merge, round 5), in the counts `mergeMail` derives: the muse's acked mail interleaved
+   * with Dot's and Pat's (two of Pat's to each), unread; then more of the muse's, acked, so
+   * the hot set stays past half. Sealed, the muse's first 8 MiB span Dot's and Pat's keys;
+   * Dot's, acked, merge into it (a piece of about 16 MiB); Pat's, acked, merge into that up to
+   * `MOVE_BYTES`: the measured move. The last of Dot's and of Pat's messages' seqs.
    */
-  legInterleaved(rooms: string[]): { dot: number; pat: number } {
+  legInterleaved(rooms: string[], mail: MergeMail): { dot: number; pat: number } {
     const ledger = this.#ledger();
     const post = (room: string, cmid: string) =>
       ledger.seqOf(ledger.post(null, room, cmid, "x", null).message_id)!;
@@ -569,22 +569,22 @@ export class LegArchive extends OwnerDO {
       ledger.read(MUSE, 1);
       ledger.ack(MUSE, museLast);
     };
-    for (let i = 0; i < 8_600; i++) {
+    for (let i = 0; i < mail.interleaved; i++) {
       museLast = post(rooms[0]!, `a${i}`);
-      if (i < 7_700) {
+      if (i < mail.dot) {
         dotLast = post(rooms[1]!, `b${i}`);
       }
-      for (let k = 0; k < 2 && c < 16_900; k++, c++) {
+      for (let k = 0; k < 2 && c < mail.pat; k++, c++) {
         patLast = post(rooms[2]!, `c${c}`);
       }
-      if (i % 50 === 49) {
+      if (i % MUSE_ACKS === MUSE_ACKS - 1) {
         ackMuse();
       }
     }
     ackMuse();
-    for (let i = 0; i < 8_050; i++) {
+    for (let i = 0; i < mail.more; i++) {
       museLast = post(rooms[0]!, `d${i}`);
-      if (i % 50 === 49) {
+      if (i % MUSE_ACKS === MUSE_ACKS - 1) {
         ackMuse();
       }
     }
@@ -618,14 +618,15 @@ export class LegArchive extends OwnerDO {
   }
 
   /** The archive as it stands: its segments and records, purges waiting, the lane's failures. */
-  legArchived(): { segments: number; records: number; purges: number; fails: number;
-                    error: string | null } {
+  legArchived(): { segments: number; records: number; bytes: number; purges: number;
+                    fails: number; error: string | null } {
     const sql = this.#state.storage.sql;
     const one = (query: string) => sql.exec<{ n: number }>(query).one().n;
     const usage = sql.exec<{ fails: number; error: string | null }>(
       "SELECT archive_fails AS fails, archive_error AS error FROM ledger_usage").one();
     return { segments: one("SELECT COUNT(*) AS n FROM archive_segments"),
              records: one("SELECT coalesce(SUM(records), 0) AS n FROM archive_segments"),
+             bytes: one("SELECT coalesce(SUM(bytes), 0) AS n FROM archive_segments"),
              purges: one("SELECT COUNT(*) AS n FROM archive_purges"), ...usage };
   }
 }
@@ -762,18 +763,33 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
     } else if (path === "merge") {
       // At the production limits: the muse's sealed mail, Dot's merged into it, and Pat's
       // left for the run to ack: its merge is the measured move.
+      // The counts come from one record of the mail's shape, measured on an object of its own.
+      const sizing = await archiveObject(env, `${name}-sizing`);
+      const [to] = await sizing.legAgents();
+      const own = await sizing.legOverhead((await sizing.roomPost(owner(`${name}-sizing`), {
+        room_id: `dm:${to}`, client_message_id: "a0000", body: "x", parent_id: null }))
+        .message_id) + 1 - RECORD_TRAILER_BYTES;
+      const mail = mergeMail(own);
       const stub = await archiveObject(env, name);
       const agents = await stub.legAgents();
-      const lasts = await stub.legInterleaved(agents.map((agent) => `dm:${agent}`));
+      const lasts = await stub.legInterleaved(agents.map((agent) => `dm:${agent}`), mail);
       await ring(stub, who, agents[0]!, "r0");
       await settled(stub, (seen) => seen.segments >= 1);
-      const sealed = (await stub.legArchived()).records;
+      const sealed = await stub.legArchived();
+      if (sealed.segments !== 1) {
+        throw new Error(`the muse's acked mail is not one seal: ${JSON.stringify(sealed)}`);
+      }
       await stub.legAckSeq(1, lasts.dot);
       await ring(stub, who, agents[0]!, "r1");
-      await settled(stub, (seen) => seen.records >= sealed + 7_700);
+      await settled(stub, (seen) => seen.records >= sealed.records + mail.dot);
       // Its passes all over before the run: none left to run inside the measured move.
       await idle(stub);
-      LEG.ready.push({ name, who, agents, want: (await stub.legArchived()).records + 10_000,
+      const merged = await stub.legArchived();
+      if (merged.segments !== 1) {
+        throw new Error(`Dot's mail did not merge into the muse's seal: ${
+          JSON.stringify(merged)}`);
+      }
+      LEG.ready.push({ name, who, agents, want: merged.records + mail.take(merged.bytes),
                        offset: lasts.pat });
     } else if (path === "bodies" || path === "rewrite") {
       // At the production limits: two acked bodies, the owner's to the muse and to Dot, and
@@ -849,6 +865,52 @@ async function ring(stub: DurableObjectStub<LegArchive>, who: Binding, agent: st
  * whole seconds up to three decimals, so 4 characters a row (`".123"`).
  */
 const TIMES_SLACK = 3 * ".123".length;
+
+/** The merge case's muse acks its mail each this many of its messages, so as many wait unread. */
+const MUSE_ACKS = 50;
+
+/** The merge case's mail (`mergeMail`). */
+interface MergeMail {
+  /** The muse's messages interleaved with Dot's and Pat's, then the muse's after them. */
+  readonly interleaved: number;
+  readonly more: number;
+  readonly dot: number;
+  readonly pat: number;
+  /** The fewest of Pat's records the run's merge takes into the one segment, of `bytes`. */
+  readonly take: (bytes: number) => number;
+}
+
+/**
+ * The merge case's counts, from one record of its mail's shape (`own`, the bytes a seal
+ * counts it at) and the ledger's ceilings, so a change to a record's size or a ceiling moves
+ * them with it. A seal holds `fewest` to `most` such records (each post's times, and a client
+ * message id up to three characters shorter or longer than the measured one's). The rings are the
+ * muse's three unread messages, the run's among them.
+ */
+function mergeMail(own: number): MergeMail {
+  const widest = own + TIMES_SLACK + 3;
+  const fewest = Math.floor(SEGMENT_MIN_BYTES / widest);
+  const most = Math.ceil(SEGMENT_MIN_BYTES / (own - TIMES_SLACK - 3));
+  const rings = 3;
+  // The muse's acked mail is one seal, never two: under two of the fewest, less a fiftieth.
+  const muse = 2 * fewest - Math.ceil(fewest / 50);
+  // What stays hot of it once sealed, and Pat's beside it, keep the hot mail past half into
+  // the run; the unread (Dot's, Pat's, the muse's not yet acked and the rings) stay within
+  // `maxUnacked`.
+  const pat = LEDGER_LIMITS.maxMessages / 2 - (muse - most) + 1;
+  const dot = LEDGER_LIMITS.maxUnacked - pat - MUSE_ACKS - rings;
+  // Every one of Dot's and Pat's interleaved, and the seal taken from the interleaved mail.
+  const interleaved = Math.max(most, Math.ceil(pat / 2), dot);
+  if (muse - interleaved < 0 || muse - most + dot < most) {
+    throw new Error(`the merge case's counts do not hold at ${own} bytes a record: ${
+      JSON.stringify({ fewest, most, muse, pat, dot, interleaved })}`);
+  }
+  // The run's merge takes Pat's records within the segment's keys (the first `fewest` of the
+  // muse's, two of Pat's to each) while they fit `MOVE_BYTES` beside the segment's bytes.
+  return { interleaved, more: muse - interleaved, dot, pat,
+           take: (bytes) => Math.min(pat, 2 * fewest,
+                                     Math.floor((MOVE_BYTES - bytes) / widest)) };
+}
 
 /** How often a case looks at its archive object's lane, and how many looks it waits at most. */
 const LANE_POLL_MS = 10;
