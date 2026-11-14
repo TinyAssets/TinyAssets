@@ -25,6 +25,7 @@ import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
 import { principal } from "../../contract/src/text";
 
 import type { DoorsEnv } from "./env";
+import { exactKeys } from "./kit";
 
 const KEY_ID = HEX16;
 
@@ -67,7 +68,7 @@ export async function readOwner(env: DoorsEnv, owner: string): Promise<OwnerEntr
   if (value === null) {
     return null;
   }
-  if (!exactly(value, "s,t") || (value["s"] !== "admitted" && value["s"] !== "erased")
+  if (!exactKeys(value, ["s", "t"]) || (value["s"] !== "admitted" && value["s"] !== "erased")
       || typeof value["t"] !== "number" || !Number.isSafeInteger(value["t"])) {
     throw new Error("the directory's record of an owner is malformed");
   }
@@ -91,7 +92,8 @@ export async function readRoute(env: DoorsEnv, route: string): Promise<RouteEntr
   if (value === null) {
     return null;
   }
-  if (!exactly(value, "b,o,r") || typeof value["b"] !== "string" || !HEX32.test(value["b"])
+  if (!exactKeys(value, ["b", "o", "r"]) || typeof value["b"] !== "string"
+      || !HEX32.test(value["b"])
       || typeof value["r"] !== "number" || !Number.isSafeInteger(value["r"]) || value["r"] < 1) {
     throw new Error("the directory's entry for an inbound route is malformed");
   }
@@ -114,18 +116,14 @@ function keyName(keyId: string): string {
   return `k:${keyId}`;
 }
 
-function exactly(value: unknown, keys: string): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    && Object.keys(value).sort().join() === keys;
-}
-
 /** A key's entry, or null when the directory has none. A malformed entry is a bug: it throws. */
 export async function readKey(env: DoorsEnv, keyId: string): Promise<KeyEntry | null> {
   const value: unknown = await env.DIRECTORY.get(keyName(keyId), { type: "json" });
   if (value === null) {
     return null;
   }
-  if (!exactly(value, "c,h,o") || typeof value["h"] !== "string" || !HEX64.test(value["h"])
+  if (!exactKeys(value, ["c", "h", "o"]) || typeof value["h"] !== "string"
+      || !HEX64.test(value["h"])
       || typeof value["c"] !== "number" || !Number.isSafeInteger(value["c"]) || value["c"] < 0) {
     throw new Error(`the directory's entry for key ${keyId} is malformed`);
   }

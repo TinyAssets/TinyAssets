@@ -48,6 +48,7 @@ import type { DoorsEnv } from "./env";
 import { EGRESS_ORIGIN } from "../../contract/src/egress";
 import { outsideRead } from "./control";
 import { serveInbound } from "./inbound";
+import { plain } from "./kit";
 import { serveMcp } from "./mcp";
 import { authorizationServer, mcpResource } from "./oauth";
 import { appPath, servePage } from "./pages";
@@ -56,7 +57,7 @@ import type { Sources } from "../../sources/src/schema";
 import type { Upstream } from "./upstream";
 
 function notFound(): Response {
-  return new Response("not found", { status: 404 });
+  return plain(404, "not found");
 }
 
 /** The first-party app's metadata document, at its own `client_id` URL. */
@@ -73,7 +74,7 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   // No browser origin may send to `/mcp`: a present `Origin` is refused (MCP 2026-07-28
   // Streamable HTTP), an absent one is allowed.
   if (request.headers.get("Origin") !== null) {
-    return new Response("origin not allowed", { status: 403 });
+    return plain(403, "origin not allowed");
   }
   return mcpResource(async (req, environment, token) => {
     const bound = await bindMcp(environment, token);
@@ -100,8 +101,7 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
     return await route(request, env, ctx, upstream, sources);
   } catch (error) {
     if (overloaded(error)) {
-      return new Response("this account is busy; try again shortly", {
-        status: 429, headers: { "Retry-After": "1", "Cache-Control": "no-store" } });
+      return plain(429, "this account is busy; try again shortly", { "Retry-After": "1" });
     }
     throw error;
   }

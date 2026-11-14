@@ -14,7 +14,8 @@ import { createExecutionContext, env, runInDurableObject } from "cloudflare:test
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OwnerDO } from "../../owner/src/owner-do";
-import { APP_BODY_MAX, CONNECT_CALLBACK, CONNECTED_PAGE, now } from "../src/config";
+import { CONNECT_CALLBACK, CONNECTED_PAGE, now } from "../src/config";
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import type { DoorsEnv } from "../src/env";
 import { serve } from "../src/doors";
 import { connectCookie } from "../src/session";
@@ -298,7 +299,7 @@ describe("a pasted key", () => {
   it("is refused 413 past the owner surface's body bound, before any object call", async () => {
     const app = await signedIn();
     const { environment, calls } = spied();
-    const body = JSON.stringify({ source: "groq", key: `gsk-good-${"x".repeat(APP_BODY_MAX)}` });
+    const body = JSON.stringify({ source: "groq", key: `gsk-good-${"x".repeat(EGRESS_BODY_MAX)}` });
     const answer = await post(app, "connections/key", body, environment);
     expect(answer.status).toBe(413);
     expect(calls).toEqual([]);
@@ -765,7 +766,7 @@ describe("a flow's finish", () => {
     expect((await post(app, "connections/oauth/finish", body, environment, [started.binding],
                        app.session, { "Content-Type": "text/plain" })).status).toBe(415);
     expect((await post(app, "connections/oauth/finish",
-                       JSON.stringify({ ...body, code: "x".repeat(APP_BODY_MAX) }), environment,
+                       JSON.stringify({ ...body, code: "x".repeat(EGRESS_BODY_MAX) }), environment,
                        [started.binding])).status).toBe(413);
     expect(methods(calls)).toEqual(["flowFinish"]);
     expect(await flowRows(app.owner)).toEqual([{ status: "open" }]);
@@ -803,7 +804,7 @@ describe("a flow's finish", () => {
       { source: "test_oauth", kind: "oauth2", display_name: "Test", provider: "openai",
         revocable: true, redirect_uri: elsewhere });
     const state = prepared.flow!.state;
-    const binding = (await connectCookie(state, 600)).split(";")[0]!;
+    const binding = connectCookie(state, 600).split(";")[0]!;
     const answer = await post(app, "connections/oauth/finish",
                               { state, code: "good-code", redirect_uri: elsewhere }, doorsEnv,
                               [binding]);

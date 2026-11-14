@@ -23,7 +23,7 @@ import { describe, expect, it } from "vitest";
 
 import * as holds from "../src/holds";
 import { IMPORT_BATCH_BYTES } from "../../contract/src/import-message";
-import { CHUNK_BYTES } from "../../contract/src/limits";
+import { CHUNK_BYTES, EGRESS_BODY_MAX, MCP_BODY_MAX } from "../../contract/src/limits";
 import { MOVE_RECORDS } from "../src/segments";
 import { UNIT_BYTES } from "../../contract/src/slots";
 import { ISOLATE_BYTES, memoryTerms } from "./relay-memory";
@@ -44,7 +44,7 @@ export const UNCOUNTED = Object.freeze({
                                  arrays_two_isolates: 141.7, r2_put: 235.5 }),
   }),
   holds: Object.freeze({
-    "a call's RPC arguments (up to MCP_BODY_MAX on /mcp, API_BODY_MAX on /api)": "PR 3b",
+    "a call's RPC arguments (up to MCP_BODY_MAX on /mcp, EGRESS_BODY_MAX on /api)": "PR 3b",
     "the waiting calls' own arguments (OWNER_WAITERS and OWNER_SMALL_WAITERS of them)": "PR 3b",
     "file_write's whole bytes (WHOLE_BYTES)": "PR 3b",
     "file_upload_chunks' two chunks, as arguments": "PR 3b",
@@ -52,7 +52,7 @@ export const UNCOUNTED = Object.freeze({
     "a placed body's bytes as room_post or collection_write sends them (BODY_BYTES_MAX)": "PR 3b",
     "an export's chunks, as its answer": "PR 4",
     "sync's raw chunk bytes": "PR 4",
-    "an inbound event's body (INBOUND_BODY_MAX)": "PR 4",
+    "an inbound event's body (EGRESS_BODY_MAX)": "PR 4",
   }),
 });
 
@@ -125,8 +125,7 @@ describe("an owner isolate's counts", () => {
 
   it("caps the larger waiters by the largest arguments a waiter holds on any door", () => {
     // A waiting call holds its own request: at most the largest body a door takes.
-    const largest = Math.max(doorBytes("config.ts", "API_BODY_MAX"),
-                             doorBytes("mcp.ts", "MCP_BODY_MAX"));
+    const largest = Math.max(EGRESS_BODY_MAX, MCP_BODY_MAX);
     const pool = holds.OWNER_POOL_UNITS * UNIT_BYTES;
     expect(holds.OWNER_WAITERS * largest).toBeLessThanOrEqual(pool);
     expect((holds.OWNER_WAITERS + 1) * largest).toBeGreaterThan(pool);
@@ -138,8 +137,7 @@ describe("an owner isolate's counts", () => {
      "the doors' one chunk in flight", () => {
     // A waiting import call holds its own request, at most `IMPORT_BATCH_BYTES` of rows or
     // inline bytes (`import.ts`): within the largest a waiter is capped by.
-    const largest = Math.max(doorBytes("config.ts", "API_BODY_MAX"),
-                             doorBytes("mcp.ts", "MCP_BODY_MAX"));
+    const largest = Math.max(EGRESS_BODY_MAX, MCP_BODY_MAX);
     expect(IMPORT_BATCH_BYTES).toBeLessThanOrEqual(largest);
     // A chunked file's bytes never reach the object; the doors' consumer holds one chunk at a
     // time, the file door's own one-chunk hold (`file-bytes.ts`).

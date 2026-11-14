@@ -33,6 +33,7 @@ import {
 
 import { resultText } from "./answers";
 import type { Bound } from "./binder";
+import { MCP_BODY_MAX } from "../../contract/src/limits";
 import { refusalOf } from "../../contract/src/refusal";
 
 import type { DoorsEnv } from "./env";
@@ -100,7 +101,7 @@ export async function profileOf(bound: Bound):
     if (refused === null) {
       throw error;
     }
-    return refusalResponse(refused, { "Cache-Control": "no-store" });
+    return refusalResponse(refused);
   }
 }
 
@@ -115,11 +116,3 @@ export async function serveMcp(request: Request, bound: Bound, env: DoorsEnv):
     legacy: "stateless", responseMode: "auto", maxRequestBodySize: MCP_BODY_MAX,
   }).fetch(request);
 }
-
-/**
- * A request's body on the MCP door, a technical ceiling: the MCP SDK's own default
- * (`maxRequestBodySize`, 4 MiB), kept because the SDK materializes a JSON-RPC message whole,
- * so its ceiling is what the doors' isolate holds a few at a time; bodies up to
- * `BODY_BYTES_MAX` (8 MiB) go by `/api` (memshape_research.md §4).
- */
-export const MCP_BODY_MAX = 4 * 1024 * 1024;
