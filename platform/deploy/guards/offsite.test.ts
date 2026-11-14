@@ -351,7 +351,8 @@ describe("offsite-copy.yml", () => {
     writeFileSync(summary, "");
     const ran = spawnSync("bash", ["-c", read.run], {
       cwd: REPO, encoding: "utf8",
-      env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, GITHUB_OUTPUT: output,
+      env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, GITHUB_ACTIONS: "true",
+             GITHUB_OUTPUT: output,
              GITHUB_STEP_SUMMARY: summary,
              ...Object.fromEntries(Object.keys(flow.env).flatMap((name) =>
                stored[name] === undefined ? [] : [[name, stored[name]]])) } });

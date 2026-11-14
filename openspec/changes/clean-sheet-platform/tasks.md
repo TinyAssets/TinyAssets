@@ -445,9 +445,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   `sandbox_renewal_refused`, `sandbox_runner_mismatch`, `exceededMemory`, and E2B's team metrics
   (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
   read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
-  and spend have no API. It also reads how long ago the off-account copy's `copy` job last
-  passed (`offsite-copy.yml`), once configured, and alarms past two nights: an erased owner's
-  hiding there must come within `HIDE_NIGHTS`, a week (`deploy/offsite.ts`; `r4.md` item 4).
+  and spend have no API. (The off-account copy's alarm past two nights is built: `x7.md`.)
 - [ ] The deletion-jobs step, a runner mode before `admit` (§9 step 11; d3 §C4).
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and

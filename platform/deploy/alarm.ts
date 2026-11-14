@@ -12,11 +12,11 @@
  *
  * - **Red** (a check failed): the first red run is only reported. A second red in a row (the
  *   previous completed run of the workflow on main failed within the clock's 30 minutes), or a
- *   failure enough alone (the clock stopped), opens the `platform-down` issue; while one is
- *   open, every red comments on it. It pages the founder at Pushover's emergency priority: at
- *   once when the issue opens, then 1 h, 4 h and 24 h after the last page (and every 24 h
- *   after), unless someone commented on the issue since that page. Each page leaves a
- *   `[PAGED` comment, the ladder's one state.
+ *   failure enough alone (the clock stopped, or no night of the off-account copy passed in
+ *   two), opens the `platform-down` issue; while one is open, every red comments on it. It
+ *   pages the founder at Pushover's emergency priority: at once when the issue opens, then
+ *   1 h, 4 h and 24 h after the last page (and every 24 h after), unless someone commented on
+ *   the issue since that page. Each page leaves a `[PAGED` comment, the ladder's one state.
  * - **Green** (every check passed): the open issue is closed, with a comment.
  *
  * Any failed GitHub or Pushover call stops it loudly.
@@ -25,14 +25,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { DISPATCH, PAGER, pageForm } from "../contract/src/canary.ts";
+import { github, GitHubRefused, pages, type Reach, runLink, runOf } from "./actions.ts";
 import { CLOCK_MS, type Result } from "./canary.ts";
 
 type Json = Record<string, unknown>;
 
 /** The alarm's world: replaced whole by its tests. */
-export interface World {
-  readonly fetch: (url: string, init?: RequestInit) => Promise<Response>;
-  readonly env: Readonly<Record<string, string | undefined>>;
+export interface World extends Reach {
   readonly now: () => Date;
 }
 
@@ -44,42 +43,13 @@ const PAGED = "[PAGED";
 /** The workflow's own token's login, whose comments are never the founder's answer. */
 const BOT = "github-actions[bot]";
 
-const API = `https://api.github.com/repos/${DISPATCH.repository}`;
-
-/** A GitHub call's refusal, with its status. */
-class GitHubRefused extends Error {
-  readonly status: number;
-  constructor(method: string, path: string, status: number) {
-    super(`GitHub answered ${method} ${path} with ${status}`);
-    this.status = status;
-  }
-}
-
-/** One GitHub call with the run's token: its JSON, or a loud stop. */
-async function github(world: World, method: string, path: string, body?: Json):
-    Promise<unknown> {
-  const answer = await world.fetch(`${API}${path}`, {
-    method, headers: { Authorization: `Bearer ${world.env["GITHUB_TOKEN"] ?? ""}`,
-                       Accept: "application/vnd.github+json",
-                       ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  if (answer.status < 200 || answer.status > 299) {
-    throw new GitHubRefused(method, path, answer.status);
-  }
-  return answer.status === 204 ? null : answer.json();
-}
-
-/** Every page of a GitHub listing at `path`. */
+/** Every row of the GitHub listing at `path`. */
 async function all(world: World, path: string): Promise<Json[]> {
   const rows: Json[] = [];
-  for (let page = 1; ; page += 1) {
-    const batch = await github(world, "GET", `${path}${path.includes("?") ? "&" : "?"
-      }per_page=100&page=${page}`) as Json[];
-    rows.push(...batch);
-    if (batch.length < 100) {
-      return rows;
-    }
+  for await (const page of pages(world, path)) {
+    rows.push(...page);
   }
+  return rows;
 }
 
 /** Whether the workflow's previous completed run on main failed within the clock's window. */
@@ -87,7 +57,8 @@ async function previousRed(world: World): Promise<boolean> {
   const { workflow_runs: runs } = await github(world, "GET", `/actions/workflows/${
     DISPATCH.workflow}/runs?branch=${DISPATCH.ref}&status=completed&per_page=5`) as
     { workflow_runs: Json[] };
-  const previous = runs.find((run) => String(run["id"]) !== world.env["GITHUB_RUN_ID"]);
+  const self = runOf(world.env, world.now()).id;
+  const previous = runs.find((run) => String(run["id"]) !== self);
   return previous !== undefined && previous["conclusion"] === "failure"
     && world.now().getTime() - Date.parse(String(previous["updated_at"])) <= CLOCK_MS;
 }
@@ -96,8 +67,8 @@ async function previousRed(world: World): Promise<boolean> {
 export function pageDue(comments: readonly Json[], now: Date): string | null {
   const at = (comment: Json) => Date.parse(String(comment["created_at"]));
   const marker = (comment: Json) => String(comment["body"] ?? "").trimStart().startsWith(PAGED);
-  const pages = comments.filter(marker).map(at).sort((a, b) => a - b);
-  const last = pages.at(-1);
+  const paged = comments.filter(marker).map(at).sort((a, b) => a - b);
+  const last = paged.at(-1);
   if (last === undefined) {
     return "the first page";
   }
@@ -105,7 +76,7 @@ export function pageDue(comments: readonly Json[], now: Date): string | null {
                      && (comment["user"] as Json | undefined)?.["login"] !== BOT)) {
     return null;
   }
-  const rung = LADDER_S[Math.min(pages.length - 1, LADDER_S.length - 1)]!;
+  const rung = LADDER_S[Math.min(paged.length - 1, LADDER_S.length - 1)]!;
   return now.getTime() - last >= rung * 1000 ? `no answer ${rung / 3600} h after the last page`
     : null;
 }
@@ -119,8 +90,8 @@ export async function alarm(world: World, result: Result): Promise<string[]> {
   if (result.side === "old") {
     return ["dark: the old stack serves /mcp, so nothing alarms"];
   }
-  const run = `${world.env["GITHUB_SERVER_URL"] ?? "https://github.com"}/${
-    DISPATCH.repository}/actions/runs/${world.env["GITHUB_RUN_ID"] ?? ""}`;
+  const link = runLink(world.env);
+  const run = link ?? "a run by hand";
   const failed = result.outcomes.filter((each) => each.state === "failed");
   const open = (await all(world, `/issues?state=open&labels=${LABEL}`))
     .filter((issue) => issue["pull_request"] === undefined)[0];
@@ -152,7 +123,8 @@ export async function alarm(world: World, result: Result): Promise<string[]> {
       });
     const made = await github(world, "POST", "/issues", {
       title: `Platform down: ${failed.map((each) => each.check).join(", ")}`, labels: [LABEL],
-      body: [`The platform canary failed twice in a row, or its clock stopped. Run: ${run}`, "",
+      body: [`The platform canary failed twice in a row, or a check that spans its own window ` +
+             `failed (its clock, the off-account copy). Run: ${run}`, "",
              ...lines, "", "Each red run comments here, and a green one closes it."].join("\n") });
     number = (made as Json)["number"];
     due = "the first page";
@@ -172,7 +144,7 @@ export async function alarm(world: World, result: Result): Promise<string[]> {
                     "is not set");
   }
   const paged = await world.fetch(PAGER.url, pageForm({ user, token }, {
-    title: "TinyAssets platform down", url: run, urgent: true,
+    title: "TinyAssets platform down", ...(link === null ? {} : { url: link }), urgent: true,
     message: failed.map((each) => `${each.check}: ${each.line}`).join("\n") }));
   if (paged.status !== 200) {
     throw new Error(`red: #${number}, and Pushover refused the page (${paged.status})`);
