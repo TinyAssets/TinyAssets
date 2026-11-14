@@ -390,3 +390,8 @@ It builds as its own PR, **C2b**, right after C2.
 
 1. **B6's egress door grammars are one reader, `egressDoor(path)` (`contract/src/egress.ts`), not regexes built from the ids.** The module-state guard refuses a regex a call builds at load, so the reader holds each segment to its own grammar in `ids.ts` (`RUN_ID`, `HEX64`, `CONNECTION_ID`, `SIGNIN_ID`) and returns the door it names. No regex copy is left, and `contract/guards/wire.test.ts` reads back every URL the contract makes. The sync agent's door names are `SYNC_DOORS`, and the runner's sync client takes a `SyncDoor`.
 2. **Corrects `d2` B19:** `REMEMBERED_NAME_BYTES` and `automatonStates` stay in `contract/src/sync-ignore.ts`. `ignoredBy` reads the first, and the second measures the matcher's private automaton for its own tests. Only `SANDBOX_HEAP`, `AGENT_PEAK` and `HEAP_PER_LIST_BYTE` move to `sandbox/runner/sizing.ts` (S4).
+
+## §T. D1 as built (2026-11-14)
+
+1. **B7's kit text guard goes to lane C after C5.** It is one `ci/kit` guard (no SHA-256 outside `contract/src/digest.ts` in a Worker's `src` or the runner; no `Date.now()` in `owner/src` outside `clock.ts`) with an `owed` ratchet, and `ci/kit/owed.ts` is lane C's, with C5 in flight. The PR that adds it lists each lane's entries; after D1 the doors owe it none.
+2. **The cookie reader stays in `session.ts`, not the doors' kit** (a departure from B7's list, accepted as better): the binder guard holds that only `session.ts` reads the `Cookie` header, so one private `cookies(request, name)` serves the session and connect cookies.
