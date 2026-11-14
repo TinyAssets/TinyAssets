@@ -46,6 +46,15 @@ const BOT = "github-actions[bot]";
 
 const API = `https://api.github.com/repos/${DISPATCH.repository}`;
 
+/** A GitHub call's refusal, with its status. */
+class GitHubRefused extends Error {
+  readonly status: number;
+  constructor(method: string, path: string, status: number) {
+    super(`GitHub answered ${method} ${path} with ${status}`);
+    this.status = status;
+  }
+}
+
 /** One GitHub call with the run's token: its JSON, or a loud stop. */
 async function github(world: World, method: string, path: string, body?: Json):
     Promise<unknown> {
@@ -55,7 +64,7 @@ async function github(world: World, method: string, path: string, body?: Json):
                        ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (answer.status < 200 || answer.status > 299) {
-    throw new Error(`GitHub answered ${method} ${path} with ${answer.status}`);
+    throw new GitHubRefused(method, path, answer.status);
   }
   return answer.status === 204 ? null : answer.json();
 }
@@ -135,8 +144,9 @@ export async function alarm(world: World, result: Result): Promise<string[]> {
   if (open === undefined) {
     await github(world, "POST", "/labels", { name: LABEL, color: "d73a4a",
                                              description: "The platform canary's alarm" })
-      .catch((error: Error) => {
-        if (!/ with 422$/.test(error.message)) {
+      .catch((error: unknown) => {
+        // 422: the label exists already.
+        if (!(error instanceof GitHubRefused && error.status === 422)) {
           throw error;
         }
       });
