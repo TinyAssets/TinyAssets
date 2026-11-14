@@ -71,9 +71,6 @@ export function deletionJob(owner: string, completed: readonly string[]): [strin
     retry_at: 0, failed_step: completed.length === 0 ? "withdrawal" : null,
     billing_cleanup: {}, results: {} })];
 }
-/** The founder's tier numbers (ADR-034 decision 8), as the control record holds them. */
-export const TIERS = Object.freeze({ free: { storage_bytes: 25_000_000_000 },
-                                     paid: { storage_bytes: 250_000_000_000 } });
 
 export const sha = (text: string | Uint8Array) => createHash("sha256").update(text).digest("hex");
 export const keyOf = (principal: string) => sha(principal).slice(0, 16);
