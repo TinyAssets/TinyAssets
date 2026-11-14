@@ -234,7 +234,7 @@ describe("forward", () => {
     const plaintext = {
       kind: "oauth2" as const, upstream: OPENAI.upstream, endpoints: OPENAI.endpoints, sealed_at: 1,
       oauth: { client_id: "c", client_auth: { method: "client_secret_post" as const, secret: "cs-xyz-1" },
-               token_endpoint: "https://auth.test/token", refresh_with: "rfc6749" as const,
+               token_endpoint: "https://auth.test/token",
                access: "at-xyz-1", refresh: "rt-xyz-1", expires_at: null },
     };
     const blob = (await seal(env, ALICE, plaintext)).blob;

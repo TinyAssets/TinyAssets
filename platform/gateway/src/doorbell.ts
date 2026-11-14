@@ -31,12 +31,11 @@
 import { base64, base64url, fromBase64, hex } from "../../contract/src/envelope";
 import { utf8Decoder } from "../../contract/src/text";
 import { SUBSCRIPTION_ID } from "../../contract/src/ids";
-import {
-  AUTH_HEADER, callbackSecret, callbackUrl, kindNamed, type Push,
-} from "../../contract/src/wake-records";
+import { callbackSecret, callbackUrl, kindNamed, type Push } from "../../contract/src/wake-records";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
-import type {
-  DoorbellVerified, Resealed, RingAnswer, RingRequest, Sealed,
+import {
+  doorbellInput, type DoorbellVerified, type Resealed, type RingAnswer, type RingRequest,
+  ringRequest, type Sealed,
 } from "../../contract/src/gateway";
 import { binding, type KeyringEnv, openValue, sealValue } from "./keyring";
 
@@ -102,14 +101,10 @@ function bound(owner: string, subscription: string, version: number) {
 
 /** The plaintext an input seals to, checked against its record; `invalid_request` if not. */
 function plaintext(input: unknown): DoorbellSecret {
-  if (typeof input !== "object" || input === null
-      || Object.keys(input).sort().join() !== "record,secret,url") {
-    throw new Refusal("invalid_request");
-  }
-  const { record, url, secret } = input as Record<string, unknown>;
+  const { record, url, secret } = doorbellInput(input);
   const push = pushOf(record);
   try {
-    return { kind: "doorbell", record: record as string, url: callbackUrl(push, url),
+    return { kind: "doorbell", record, url: callbackUrl(push, url),
              auth: push.auth, secret: callbackSecret(push, secret), sealed_at: Date.now() };
   } catch {
     throw new Refusal("invalid_request");
@@ -240,21 +235,6 @@ async function auth(secret: DoorbellSecret, previous: DoorbellSecret | null,
   const keys = previous === null ? [secret.secret] : [secret.secret, previous.secret];
   return { "webhook-id": request.event_id, "webhook-timestamp": String(stamp),
            "webhook-signature": await signature(keys, request.event_id, stamp, request.body) };
-}
-
-function ringRequest(value: unknown): RingRequest {
-  const r = value as Record<string, unknown> | null;
-  const headers = r?.["headers"];
-  if (typeof value !== "object" || r === null
-      || Object.keys(r).sort().join() !== "body,event_id,headers"
-      || typeof r["body"] !== "string" || typeof r["event_id"] !== "string"
-      || !/^[A-Za-z0-9_-]{1,128}$/.test(r["event_id"])
-      || typeof headers !== "object" || headers === null || Array.isArray(headers)
-      || !Object.entries(headers).every(([name, v]) => typeof v === "string"
-                                        && !AUTH_HEADER.test(name))) {
-    throw new Refusal("invalid_request");
-  }
-  return r as unknown as RingRequest;
 }
 
 /**

@@ -76,8 +76,8 @@ const BODY_OFFSET_INSIDE =
  */
 function windowReads(chunks: readonly string[], size: number, offset: number,
                             end: number, base = 0):
-    { sha256: string; offset: number; length: number; verify: true }[] {
-  const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
+    { sha256: string; offset: number; length: number }[] {
+  const reads: { sha256: string; offset: number; length: number }[] = [];
   for (const [index, sha256] of chunks.entries()) {
     // The chunk's bytes as the body's: content byte `x` is body byte `x - base` (0 for a
     // placed body; an archived one's place in its segment).
@@ -85,7 +85,7 @@ function windowReads(chunks: readonly string[], size: number, offset: number,
     const from = Math.max(offset, at);
     const to = Math.min(end, at + CHUNK_BYTES, size);
     if (from < to) {
-      reads.push({ sha256, offset: from - at, length: to - from, verify: true });
+      reads.push({ sha256, offset: from - at, length: to - from });
     }
   }
   return reads;

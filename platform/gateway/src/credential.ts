@@ -10,10 +10,10 @@
  * Every value is checked when it is sealed and again when it is opened, so a blob written
  * by older code that no longer fits fails loudly rather than being half-read.
  */
-import { count, list, shape, text } from "../../contract/src/checks";
+import { count, list, shape } from "../../contract/src/checks";
 import {
   CLIENT_KEYS, CLIENT_OPTIONAL, endpoint, type Endpoint, ENDPOINTS_MAX, oauthClient,
-  type OAuthClient, secret, SECRET_MAX, TOKEN, upstream, type Upstream,
+  type OAuthClient, scope, secret, upstream, type Upstream,
 } from "../../contract/src/egress-scope";
 import { Refusal } from "../../contract/src/refusal";
 
@@ -37,18 +37,18 @@ export type Credential =
   | (Common & { readonly kind: "api_key"; readonly secret: string })
   | (Common & { readonly kind: "oauth2"; readonly oauth: OAuthGrant });
 
-function grant(value: unknown, sealed: Upstream): OAuthGrant {
+function grant(value: unknown): OAuthGrant {
   const fields = shape(value, [...CLIENT_KEYS, "access", "expires_at"],
                        [...CLIENT_OPTIONAL, "refresh", "scope"]);
   const expires = fields["expires_at"];
   const refresh = fields["refresh"];
-  const scope = fields["scope"];
+  const granted = fields["scope"];
   return Object.freeze({
-    ...oauthClient(fields, sealed),
-    access: text(fields["access"], TOKEN, SECRET_MAX),
+    ...oauthClient(fields),
+    access: secret(fields["access"]),
     expires_at: expires === null ? null : count(expires, 0),
-    ...(refresh === undefined ? {} : { refresh: text(refresh, TOKEN, SECRET_MAX) }),
-    ...(scope === undefined ? {} : { scope: text(scope, /^[\x20-\x7e]*$/, 4096) }),
+    ...(refresh === undefined ? {} : { refresh: secret(refresh) }),
+    ...(granted === undefined ? {} : { scope: scope(granted) }),
   });
 }
 
@@ -67,7 +67,7 @@ export function credential(value: unknown): Credential {
       return Object.freeze({ ...common, kind: "api_key", secret: secret(fields["secret"]) });
     }
     if (fields["kind"] === "oauth2" && fields["secret"] === undefined) {
-      return Object.freeze({ ...common, kind: "oauth2", oauth: grant(fields["oauth"], common.upstream) });
+      return Object.freeze({ ...common, kind: "oauth2", oauth: grant(fields["oauth"]) });
     }
   } catch {
     // Falls through to the one refusal below.

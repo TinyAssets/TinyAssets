@@ -4,8 +4,8 @@
  *
  * - **Where it runs:** pi-codemode's `RemoteCodemodeSandbox`, whose `remote()` reaches the
  *   `CODEMODE_VM` binding's `codemodeExecute` (one sandbox object per execution, named by the
- *   owner and a random id), so the VM never computes on the owner's object, and the owner
- *   config still binds only services. The tools, the deadline and the abort stay with the
+ *   owner's digest and a random id), so the VM never computes on the owner's object, and the
+ *   owner config still binds only services. The tools, the deadline and the abort stay with the
  *   caller; every tool call comes back over RPC through `exchange`.
  * - **What a script reaches:** the tools its caller hands it, each held by the caller to its
  *   own grant. The MCP door's `code` tool (slice M, the object's `codeRun`) hands it the
@@ -24,6 +24,7 @@ import {
   doorRow, profileNames, takesRequest, type Tool, toolsNamed,
 } from "../../contract/src/doors";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
+import { sha256Hex } from "../../contract/src/digest";
 import { PAGE_BYTES } from "./pages";
 
 import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
@@ -57,14 +58,14 @@ interface CodemodeParts {
 
 /**
  * A sandbox whose scripts run in the codemode Worker, each execution named
- * `<owner>/<random id>`.
+ * `<owner's SHA-256>/<random id>`: a fixed length, so no principal's length reaches the cap.
  */
 export function codemodeSandbox(parts: CodemodeParts): RemoteCodemodeSandbox {
   return new RemoteCodemodeSandbox({
     timeoutMs: CODEMODE_TIMEOUT_MS,
     tools: [...parts.tools],
     remote: (): CodemodeRemote => {
-      const name = `${parts.owner()}/${randomUUID()}`;
+      const name = `${sha256Hex(parts.owner())}/${randomUUID()}`;
       return { execute: (request, exchange) => parts.service.codemodeExecute(name, request,
                                                                               exchange) };
     },

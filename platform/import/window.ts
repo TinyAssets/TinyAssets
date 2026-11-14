@@ -37,6 +37,7 @@ import {
   answerName, doneName, importMac, type ImportMessage, type ImportOp, importMessage, NO_ROWS,
   rehearsalRun, rowsSum, RUN,
 } from "../contract/src/import-message";
+import { objectPrefix } from "../contract/src/files";
 
 import { DEFAULT_TIER, type Entry, type Row } from "./build";
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
@@ -44,9 +45,6 @@ import {
   ACCOUNT, API, bundlesIn, type Fetcher, type Inputs, type Names, pushMessage, queueId,
   s3Request, type Staged,
 } from "./stage";
-
-/** The prefix of every object of an owner's namespace in the files Worker's bucket. */
-export const namespacePrefix = (ns: string) => `o/${ns}/`;
 
 /** How a step waits and reads the clock: the process's, or a test's. */
 export interface Clock {
@@ -419,7 +417,7 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
     .flatMap((each) => each.namespace === null ? [] : [each.namespace]))];
   let objects = 0;
   for (const ns of namespaces) {
-    objects += (await listKeys(window, window.names.files_bucket, namespacePrefix(ns), 1)).length;
+    objects += (await listKeys(window, window.names.files_bucket, objectPrefix(ns), 1)).length;
   }
   const proof = { records: (await runs()).length,
                   staged: (await listKeys(window, staging, `${run}/`, 1)).length,

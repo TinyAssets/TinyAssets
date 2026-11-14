@@ -1,16 +1,14 @@
 /**
  * OAuth connections against fake token endpoints: the code exchange (RFC 6749 §4.1.3 with
- * PKCE), the refresh (generic, and pi-ai's own for Sign in with ChatGPT), and RFC 7009
- * revocation; each refusal a fixed code.
+ * PKCE), the refresh-token grant, and RFC 7009 revocation; each refusal a fixed code.
  */
 import { describe, expect, it } from "vitest";
 
-import { builtinCatalog } from "../src/catalog";
 import type { Credential, OAuthGrant } from "../src/credential";
 import type { Source } from "../../contract/src/egress-scope";
 import { Refusal } from "../../contract/src/refusal";
 import { open, seal } from "../src/keyring";
-import { exchange, refresh, revokeAtProvider, tokenGuard } from "../src/oauth";
+import { exchange, refresh, revokeAtProvider } from "../src/oauth";
 import { ALICE, OPENAI, ring, sealed } from "./support";
 
 const VERIFIER = "v".repeat(43);
@@ -23,7 +21,7 @@ function oauthSource(oauth: Partial<Source["oauth"] & object> = {}): Source {
     oauth: { client_id: "client-1", client_auth: { method: "none" },
              token_endpoint: "https://auth.test/token",
              revocation_endpoint: "https://auth.test/revoke",
-             resource: "https://api.openai.com/v1", refresh_with: "rfc6749", ...oauth },
+             resource: "https://api.openai.com/v1", ...oauth },
   };
 }
 
@@ -163,39 +161,11 @@ describe("the token endpoint's answer", () => {
   });
 });
 
-describe("the scope pi-ai's own refresh runs in", () => {
-  it("sends only a POST to the sealed token endpoint, never following a redirect", async () => {
-    const guard = tokenGuard("https://auth.test/token");
-    await expect(guard("https://auth.test/other", { method: "POST" })).rejects.toThrow("endpoint_refused");
-    await expect(guard("https://evil.test/token", { method: "POST" })).rejects.toThrow("endpoint_refused");
-    await expect(guard("https://auth.test/token", { method: "GET" })).rejects.toThrow("endpoint_refused");
-    const answer = await guard("https://auth.test/token", {
-      method: "POST", body: new URLSearchParams({ grant_type: "authorization_code",
-                                                  code: "redirect-code", code_verifier: VERIFIER }) });
-    expect(answer.status).toBe(307);
-    expect(JSON.stringify(await evil())).not.toContain("/token");
-  });
-});
-
-describe("pi-ai's own refresh, for Sign in with ChatGPT alone", () => {
-  it.each([
-    ["Anthropic's subscription", "anthropic", "https://console.anthropic.com/v1/oauth/token"],
-    ["GitHub Copilot", "github-copilot", "https://github.com/login/oauth/access_token"],
-    ["the legacy Codex source", "openai-codex", "https://auth.openai.com/oauth/token"],
-    ["OpenAI with another token endpoint", "openai", "https://auth.test/token"],
-  ])("refuses %s", async (_what, provider, endpoint) => {
-    const record = oauthSource({ token_endpoint: endpoint, refresh_with: "provider" });
-    const upstream = { ...record, upstream: { ...record.upstream, provider } };
-    expect(await code(() => exchange(ring("k1"), ALICE, GRANT, upstream))).toBe("invalid_source");
-    await expect(sealedGrant(ring("k1"), {}, upstream)).rejects.toThrow("credential_refused");
-  });
-});
-
 describe("refresh", () => {
   it("refreshes by the refresh-token grant and reseals at the next version", async () => {
     const env = ring("k1");
     const blob = await sealedGrant(env, { refresh: "rt-1", scope: "models.read" });
-    const refreshed = await refresh(env, ALICE, blob, builtinCatalog());
+    const refreshed = await refresh(env, ALICE, blob);
     expect(refreshed.version).toBe(2);
     expect(refreshed.expires_at).toBeGreaterThan(Date.now() + 1_700_000);
     const grant = oauthOf((await open(env, { ...ALICE, version: 2 }, refreshed.blob)).credential);
@@ -209,7 +179,7 @@ describe("refresh", () => {
   it("keeps the refresh token when the server issues no new one", async () => {
     const env = ring("k1");
     const blob = await sealedGrant(env, { refresh: "rt-keep" });
-    const refreshed = await refresh(env, ALICE, blob, builtinCatalog());
+    const refreshed = await refresh(env, ALICE, blob);
     const grant = oauthOf((await open(env, { ...ALICE, version: 2 }, refreshed.blob)).credential);
     expect(grant.refresh).toBe("rt-keep");
   });
@@ -220,58 +190,30 @@ describe("refresh", () => {
   ])("answers %s with a fixed code", async (_what, token, expected) => {
     const env = ring("k1");
     const blob = await sealedGrant(env, { refresh: token });
-    const got = await code(() => refresh(env, ALICE, blob, builtinCatalog()));
+    const got = await code(() => refresh(env, ALICE, blob));
     expect(got).toBe(expected);
     expect(got).not.toContain(token);
   });
 
-  it("refreshes Sign in with ChatGPT through pi-ai's own refresh for the provider", async () => {
+  it("holds the refresh to the sealed endpoint: a redirect is refused, unfollowed", async () => {
     const env = ring("k1");
-    const record = oauthSource({ token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
-                                 refresh_with: "provider" });
-    const blob = await sealedGrant(env, { refresh: "rt-5" }, record);
-    const before = Date.now();
-    const refreshed = await refresh(env, ALICE, blob, builtinCatalog());
-    const grant = oauthOf((await open(env, { ...ALICE, version: 2 }, refreshed.blob)).credential);
-    // pi-ai sends the issued client id in the body (a public client) and keeps its own
-    // three-minute expiry margin.
-    expect(grant.access).toBe("at-6|none:client-1");
-    expect(grant.refresh).toBe("rt-6");
-    expect(refreshed.expires_at).toBeLessThan(before + 1_800_000 - 170_000);
-    expect(refreshed.expires_at).toBeGreaterThan(before + 1_800_000 - 190_000);
-    expect(grant.scope).toContain("chatgpt.tokens.use.direct");
-  });
-
-  it("holds pi-ai's own refresh to the sealed token endpoint: a redirect is refused, unfollowed", async () => {
-    const env = ring("k1");
-    const record = oauthSource({ token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
-                                 refresh_with: "provider" });
-    const blob = await sealedGrant(env, { refresh: "rt-hop" }, record);
-    expect(await code(() => refresh(env, ALICE, blob, builtinCatalog()))).toBe("oauth_rejected");
+    const blob = await sealedGrant(env, { refresh: "rt-hop" });
+    expect(await code(() => refresh(env, ALICE, blob))).toBe("oauth_rejected");
     // Followed, the POST (the refresh token in its body) would have reached evil.test.
     expect(JSON.stringify(await evil())).not.toContain("evil.test/refresh");
-  });
-
-  it("answers pi-ai's own refresh failing with a fixed code", async () => {
-    const env = ring("k1");
-    const record = oauthSource({ token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
-                                 refresh_with: "provider" });
-    const blob = await sealedGrant(env, { refresh: "rt-dead" }, record);
-    const got = await code(() => refresh(env, ALICE, blob, builtinCatalog()));
-    expect(got).toBe("oauth_rejected");
   });
 
   it("refuses to refresh an API key, or a grant with no refresh token", async () => {
     const env = ring("k1");
     const key = await sealed(env, ALICE, "sk-1", OPENAI);
-    expect(await code(() => refresh(env, ALICE, key, builtinCatalog()))).toBe("not_refreshable");
+    expect(await code(() => refresh(env, ALICE, key))).toBe("not_refreshable");
     const record = oauthSource();
     const plaintext: Credential = {
       kind: "oauth2", upstream: record.upstream, endpoints: record.endpoints, sealed_at: 1,
       oauth: { ...record.oauth!, access: "at-0", expires_at: null },
     };
     const blob = (await seal(env, ALICE, plaintext)).blob;
-    expect(await code(() => refresh(env, ALICE, blob, builtinCatalog()))).toBe("not_refreshable");
+    expect(await code(() => refresh(env, ALICE, blob))).toBe("not_refreshable");
   });
 });
 

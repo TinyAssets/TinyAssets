@@ -56,8 +56,6 @@ export interface OAuthClient {
   readonly revocation_endpoint?: string;
   /** RFC 8707 resource indicator, sent on the exchange and on refresh. */
   readonly resource?: string;
-  /** `provider`: pi-ai's own refresh for `upstream.provider`; `rfc6749`: the generic grant. */
-  readonly refresh_with: "provider" | "rfc6749";
 }
 
 /**
@@ -103,6 +101,8 @@ const HEADER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SCHEME = /^(?:[A-Za-z][A-Za-z0-9-]{0,31})?$/;
 /** Visible ASCII: a secret is sent in a header, so it never holds a space, CR or LF. */
 export const TOKEN = /^[\x21-\x7e]+$/;
+const SCOPE = /^[\x20-\x7e]*$/;
+const SCOPE_MAX = 4096;
 /** An exact path, or a prefix ending `/*` (`/*` alone is every path at the origin). */
 const PATH = /^\/(?:[A-Za-z0-9._~!$&'()+,;=:@-][A-Za-z0-9._~!$&'()+,;=:@/-]*)?(?:\/?\*)?$/;
 const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
@@ -226,36 +226,16 @@ function clientAuth(value: unknown): ClientAuth {
   throw new Refusal("invalid_source");
 }
 
-/**
- * The sources whose OAuth refresh runs through pi-ai's own provider flow, by pi-ai
- * provider id, each with the token endpoint that flow posts to: only Sign in with
- * ChatGPT (research §2.6), whose refresh pi-ai keeps by OpenAI's rotation rules.
- * Consumer subscriptions (Claude Pro and Max, Copilot and the rest) never enter the
- * gateway, so no other provider's OAuth flow is ever run here.
- */
-export const PROVIDER_REFRESH: Readonly<Record<string, string>> = Object.freeze({
-  openai: "https://auth.openai.com/api/accounts/oauth/token",
-});
-
-export const CLIENT_KEYS = Object.freeze(["client_id", "client_auth", "token_endpoint", "refresh_with"]);
+export const CLIENT_KEYS = Object.freeze(["client_id", "client_auth", "token_endpoint"]);
 export const CLIENT_OPTIONAL = Object.freeze(["revocation_endpoint", "resource"]);
 
-export function oauthClient(fields: Record<string, unknown>, sealed: Upstream): OAuthClient {
-  const refreshWith = fields["refresh_with"];
-  if (refreshWith !== "provider" && refreshWith !== "rfc6749") {
-    throw new Refusal("invalid_source");
-  }
-  if (refreshWith === "provider" && (!Object.hasOwn(PROVIDER_REFRESH, sealed.provider)
-      || fields["token_endpoint"] !== PROVIDER_REFRESH[sealed.provider])) {
-    throw new Refusal("invalid_source");
-  }
+export function oauthClient(fields: Record<string, unknown>): OAuthClient {
   const revocation = fields["revocation_endpoint"];
   const resource = fields["resource"];
   return {
     client_id: text(fields["client_id"], TOKEN, 512),
     client_auth: clientAuth(fields["client_auth"]),
     token_endpoint: httpsUrl(fields["token_endpoint"]).href,
-    refresh_with: refreshWith,
     ...(revocation === undefined ? {} : { revocation_endpoint: httpsUrl(revocation).href }),
     ...(resource === undefined ? {} : { resource: httpsUrl(resource, true).href }),
   };
@@ -271,8 +251,7 @@ export function source(value: unknown, oauth: boolean): Source {
   }
   return Object.freeze({
     ...checked,
-    oauth: Object.freeze(oauthClient(shape(fields["oauth"], CLIENT_KEYS, CLIENT_OPTIONAL),
-                                     checked.upstream)),
+    oauth: Object.freeze(oauthClient(shape(fields["oauth"], CLIENT_KEYS, CLIENT_OPTIONAL))),
   });
 }
 
@@ -291,6 +270,11 @@ export function keyExchangeSource(value: unknown): Source & { readonly key_excha
 /** A secret as it is sealed: visible ASCII, so it can only ever be one header value. */
 export function secret(value: unknown): string {
   return text(value, TOKEN, SECRET_MAX);
+}
+
+/** A granted scope as it is sealed (RFC 6749 §3.3): printable ASCII, spaces between. */
+export function scope(value: unknown): string {
+  return text(value, SCOPE, SCOPE_MAX);
 }
 
 /** Whether `path` is one of `paths`: equal to an exact entry, or under a `/*` prefix. */

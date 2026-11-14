@@ -26,14 +26,13 @@ import {
 import { DEFAULT_POLICY_DIGEST, policyDigest } from "../../contract/src/policy-document";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { cut } from "../../contract/src/content";
+import { objectPrefix } from "../../contract/src/files";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
 import type { Entry, Row } from "../build";
 import { windowMain } from "../cli";
 import { bundlesIn, type Fetcher, type Inputs, type Staged } from "../stage";
-import {
-  admit, type Clock, deadLetters, namespacePrefix, readRecord, verify, type Window, wipe,
-} from "../window";
+import { admit, type Clock, deadLetters, readRecord, verify, type Window, wipe } from "../window";
 import { FOUNDER, fixture } from "./fixture";
 
 const temps: string[] = [];
@@ -123,7 +122,7 @@ function world(bundles: readonly Staged[]) {
                                                                    bundle: staged.bundle,
                                                                    done: true }));
     buckets.get(NAMES.files_bucket)!
-      .set(`${namespacePrefix(namespaces.get(staged.owner)!)}c/x`, "x");
+      .set(`${objectPrefix(namespaces.get(staged.owner)!)}c/x`, "x");
   }
   const doors = (message: ImportMessage) => {
     expect(macHolds(INPUTS.importKey, message)).toBe(true);
@@ -148,7 +147,7 @@ function world(bundles: readonly Staged[]) {
     } else if (message.op === "discard") {
       const ns = namespaces.get(message.owner)!;
       for (const key of [...buckets.get(NAMES.files_bucket)!.keys()]) {
-        if (key.startsWith(namespacePrefix(ns))) {
+        if (key.startsWith(objectPrefix(ns))) {
           buckets.get(NAMES.files_bucket)!.delete(key);
         }
       }
@@ -422,7 +421,7 @@ describe("the window's wipe", () => {
     expect(Object.keys(readRecord(record, RUN).discarded).length).toBe(1);
     // A put that landed late under a discarded namespace: the proof finds it.
     const first = w.namespaces.get(bundles[0]!.owner)!;
-    w.buckets.get(NAMES.files_bucket)!.set(`${namespacePrefix(first)}c/late`, "late");
+    w.buckets.get(NAMES.files_bucket)!.set(`${objectPrefix(first)}c/late`, "late");
     const proof = await wipe(out, RUN, w.window, record, quiet);
     expect(proof).toMatchObject({ records: 0, staged: 0, namespaces: bundles.length, objects: 1 });
     expect(await windowMain(["wipe", out, "--run", RUN, "--facts", facts, "--record", record],
