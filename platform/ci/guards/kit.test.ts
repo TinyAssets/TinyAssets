@@ -19,7 +19,8 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../paths";
 import { gate, methodsOf } from "../gate";
-import { bucketTypeProblems, type ConfigRules, dateProblems } from "../kit/config";
+import { bucketTypeProblems, type ConfigRules, dateProblems, everyWorkerProblems }
+  from "../kit/config";
 import { ruleLists } from "../kit/owed";
 import { configFiles, platformConfigs, scriptsIn, workerSources } from "../kit/sources";
 import { configBindings, declaredSecrets, fake, hostSecrets, main, objectBindings, once,
@@ -40,6 +41,18 @@ describe("the guard kit", () => {
     }
     expect(bucketTypeProblems(new Map([["files/src/a.ts", "type B = R2Bucket;"]]), rules))
       .toEqual([]);
+  });
+
+  it("holds every Worker's config to Workers Logs on", () => {
+    const configs = platformConfigs();
+    expect(configs.size).toBe(workerFolders().length);
+    for (const [worker, config] of configs) {
+      expect([worker, everyWorkerProblems(config)]).toEqual([worker, []]);
+      const { observability: _on, ...off } = config;
+      expect(everyWorkerProblems(off)).toEqual(["observability are not set"]);
+      expect(everyWorkerProblems({ ...config, observability: { enabled: false } }))
+        .toEqual(['observability are not {"enabled":true}']);
+    }
   });
 
   it("holds every Worker at one compatibility date", () => {

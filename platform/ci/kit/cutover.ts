@@ -12,7 +12,7 @@ export type Phase = (typeof PHASES)[number];
 
 /** What a live entry is: an object the account or a vendor holds, not a path. */
 export const LIVE = Object.freeze(["worker", "route", "bucket", "queue", "secret", "token",
-                                   "dns", "address", "droplet"] as const);
+                                   "dns", "address", "droplet", "workflow"] as const);
 
 /**
  * An entry, each with `what` it is:

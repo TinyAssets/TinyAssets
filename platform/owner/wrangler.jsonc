@@ -25,6 +25,7 @@
   "name": "tinyassets-owner",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-23",
+  "observability": { "enabled": true },
   "compatibility_flags": ["nodejs_compat", "disable_ctx_exports"],
   "workers_dev": false,
   "preview_urls": false,

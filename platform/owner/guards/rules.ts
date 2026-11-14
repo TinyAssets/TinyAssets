@@ -43,6 +43,7 @@
  * reads the gates again at code mode's calls and reaches no directory entry or other
  * owner's state. Only `control-gate.ts` reads it, by `readControl`, and nothing writes it.
  */
+import { EVERY_WORKER } from "../../ci/kit/config";
 import type { Exemption } from "../../ci/kit/module-state";
 import { imports, kernels, type Owed, refusals } from "../../ci/kit/owed";
 
@@ -67,7 +68,8 @@ export const ENV_KEYS: ReadonlySet<string> = new Set([
 export const LIMITS = Object.freeze({ subrequests: 10_000_000 });
 /** The keys the top level may set: an environment's, the schema, the environments, its secret. */
 export const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env", "secrets",
-                                                      "kv_namespaces", "queues"]);
+                                                      "kv_namespaces", "queues",
+                                                      ...Object.keys(EVERY_WORKER)]);
 /**
  * The owner Worker's one queue (slice L): the producer of the erasure queue, whose one
  * consumer, the doors Worker, makes an erasure's outside record and confirms it to that
@@ -83,11 +85,12 @@ export const SECRETS = Object.freeze(["ROUTING_MAC_KEY"]);
 /**
  * The keys a bound Worker may set that bind nothing: its name, entry and runtime, its build
  * step and its modules' types (`build`, `rules`: the sandbox Worker's runner, built and
- * imported as data), and its secrets (declared by name), vars and limits.
+ * imported as data), its secrets (declared by name), vars and limits, and what every Worker
+ * sets alike (`EVERY_WORKER`, its logs).
  */
 export const BOUND_KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls", "build", "rules", "secrets", "vars", "limits",
+  "preview_urls", "build", "rules", "secrets", "vars", "limits", ...Object.keys(EVERY_WORKER),
 ]);
 /**
  * The only queues a bound Worker may produce onto: the sandbox line's ring, whose one

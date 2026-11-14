@@ -1206,7 +1206,7 @@ type Secrets = "cloudflare" | "account" | "wrangler" | "stage";
  * Each Worker's missing secrets (and the rotated), set first: `secrets.required` refuses a
  * deploy. Whether a Worker exists is the account's Workers listing's word: a missing one holds
  * none. `values` is the run's secrets, or null in the plan job, which holds none: an optional
- * secret (a shared app's) the run is not given is left unset.
+ * secret (a shared app's, the canary clock's) the run is not given is left unset.
  */
 async function setSecrets({ run, say }: Context, got: Pick<Values, Secrets>,
                           values: ((name: string) => string | undefined) | null,
@@ -1440,22 +1440,21 @@ const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stag
   });
 
 /**
- * Fact 11: after a deploy or a route change, the handles canary across the cutover
- * (`scripts/cutover_handles_canary.py`, each side's handle set its data), reading its own
- * keys. `auto` holds whichever side serves `/mcp` (the old stack's before `routes`, the
- * doors' after). `routes` asks for `new --unkeyed`: the doors must answer `/mcp` and its
- * resource document, and the old stack must not, while their handle set is owed after
- * verify, since no probe owner's key can be minted before the doors serve `/app/api`, and
- * the dark control record admits no one.
+ * Fact 11: after a deploy or a route change, the platform's canary (`canary.ts`), reading
+ * its own keys. With no side it holds whichever serves `/mcp`: before `routes` the old stack,
+ * where it checks that the old stack still answers and the doors' checks wait. `routes` asks
+ * for `--side doors --unkeyed`: the doors must answer `/mcp` and its resource document, and
+ * the old stack must not, while the keyed checks wait, since no canary owner's key can be
+ * minted before the doors serve `/app/api`, and the dark control record admits no one.
  */
-function canary(...side: ["auto"] | ["new", "--unkeyed"]): Step<never, never> {
+function canary(...args: [] | ["--side", "doors", "--unkeyed"]): Step<never, never> {
   return step(({ run }) => {
-    const ran = run.io.spawn("python3", [join(REPO, "scripts", "cutover_handles_canary.py"),
-                                         "--side", ...side],
+    const ran = run.io.spawn(process.execPath, ["--experimental-strip-types",
+                                                join(PLATFORM, "deploy", "canary.ts"), ...args],
                              { stdio: "inherit", cwd: REPO });
     if (ran.status !== 0) {
-      throw new Error(`the handles canary (side ${side.join(" ")}) failed (exit ${
-        ran.status})`);
+      throw new Error(`the platform canary${args.length === 0 ? "" : ` (${args.join(" ")})`} ` +
+                      `failed (exit ${ran.status})`);
     }
   });
 }
@@ -1723,7 +1722,7 @@ const handedBack = step<Handing | "e2b">(async ({ run, say }, got) => {
 const canaryAfter = step(({ run }) => {
   run.io.log("The handles canary (Fact 11) waits for the old stack: restart it on its " +
              "untouched volumes, then dispatch the Handles canary workflow " +
-             "(handles-canary.yml) with side old, which holds the old stack's handle set.");
+             "(handles-canary.yml), the old stack's own check of its handle set.");
 });
 
 // --- The modes --------------------------------------------------------------------------
@@ -1804,7 +1803,7 @@ const OWNER = Steps.none.then(zone).then(ownerAsk).list;
 /** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
   "CLOUDFLARE_API_TOKEN", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
-/** What a deploy reads: every secret a config requires, and the shared apps' when given. */
+/** What a deploy reads: every secret a config requires, and the optional ones when given. */
 const DEPLOY_INPUTS: Inputs = Object.freeze({
   public: PUBLIC_INPUTS, secret: SECRET_INPUTS, optional: OPTIONAL });
 const NOTHING = "\nNothing was changed.";
@@ -1818,19 +1817,19 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   dark: {
     inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
     steps: { public: DARK_LATER.list, secrets: DARK.list },
-    report: { unchanged: NOTHING, after: [canary("auto")] },
+    report: { unchanged: NOTHING, after: [canary()] },
   },
   probe: {
     inputs: { public: PUBLIC_INPUTS, secret: ["WORKOS_API_KEY"], optional: [] },
     deploys: false, applies: true, own: [],
     steps: { public: PROBE_LATER.list, secrets: PROBE.list },
     report: { unchanged: "\nNothing was changed. The apply job prints the sign-in link.",
-              after: [canary("auto"), signInLink] },
+              after: [canary(), signInLink] },
   },
   routes: {
     inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
     steps: { public: ROUTES_LATER.list, secrets: ROUTED.list },
-    report: { unchanged: NOTHING, after: [canary("new", "--unkeyed")] },
+    report: { unchanged: NOTHING, after: [canary("--side", "doors", "--unkeyed")] },
   },
   // H2's probes read their own keys (`h2-probes.ts`), the revoke probe's two only if given.
   h2: {

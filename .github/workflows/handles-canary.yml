@@ -1,32 +1,22 @@
 name: Handles canary (manual, read-only)
 
-# Fact 11's handles canary, run by hand across the cutover
-# (scripts/cutover_handles_canary.py): which side serves tinyassets.io/mcp,
-# and that side's handle set (scripts/canary_handles.json).
-#   old  - the old stack: mcp_public_canary.py --assert-handles, as the
-#          canary principal (TINYASSETS_WIKI_CANARY_TOKEN).
-#   new  - the doors: the anonymous challenge, their resource document, and
-#          their handle set by one read-only GET a name on /api/tools/<name>
-#          with the probe owner's API key (TA_PROBE_KEY).
-#   auto - the side the public resource document names.
-# It changes nothing: every request is an MCP read, an anonymous initialize,
-# a document GET or an /api GET, which never reaches an owner door. The
-# window runs it after `routes` (side new), and after `handback` and the old
-# stack's restart (side old) (platform/deploy/checklist.md). Its two secrets
-# are the production environment's, so the job runs there, from main.
+# Fact 11's handles canary for the old stack, run by hand until the cutover's
+# hold ends (d3 §A7, platform/cutover.json): the old stack's own check,
+# mcp_public_canary.py --assert-handles, as the canary principal
+# (TINYASSETS_WIKI_CANARY_TOKEN): the anonymous challenge, exactly the old
+# handle set (scripts/canary_handles.json's old record), converse refused at
+# both boundaries, and get_status's uptime fields. The window runs it after a
+# `handback` and the old stack's restart (platform/deploy/checklist.md). It
+# changes nothing. Its token is a production secret, so the job runs there,
+# from main. Each request has 30 s: from GitHub's runners the old stack's
+# anonymous answers take close to 10 s (run 42583772556).
 #
-# Dispatch only: uptime-canary.yml stays the five-minute pager, whose other
-# layers (the tool, core-capability and disk probes) are the old stack's.
+# The doors' side is the platform canary's (platform-canary.yml,
+# platform/deploy/canary.ts), and uptime-canary.yml stays the old stack's
+# pager until `routes` disables it.
 
 on:
   workflow_dispatch:
-    inputs:
-      side:
-        description: 'auto | old | new'
-        required: true
-        default: auto
-        type: choice
-        options: [auto, old, new]
 
 permissions:
   contents: read
@@ -48,9 +38,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: The handles canary (changes nothing)
+      - name: The old stack's handles canary (changes nothing)
         env:
-          SIDE: ${{ inputs.side }}
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
-          TA_PROBE_KEY: ${{ secrets.TA_PROBE_KEY }}
-        run: python scripts/cutover_handles_canary.py --side "${SIDE}" --verbose
+        run: python scripts/mcp_public_canary.py --timeout 30 --assert-handles --verbose
