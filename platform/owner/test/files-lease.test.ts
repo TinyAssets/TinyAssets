@@ -13,7 +13,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
 import { later } from "./runs-support";
-import { failure, fileCounters, inFiles, sqlIn, starterSeed, text } from "./support";
+import { failure, fileCounters, inFiles, setFiles, sqlIn, starterSeed, text } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -34,11 +34,13 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
 const TOKENS = (n = 0) => ({ egress: "a".repeat(63) + n, sync: "b".repeat(63) + n,
                             runner: "c".repeat(63) + n });
 const acquire = (r: Rig, holder = "sandbox-1", authority = "owner", n = 0) =>
-  inFiles(r.stub, {}, (files) => files.leaseAcquire(authority, holder, TOKENS(n), 1));
+  inFiles(r.stub, (files, unit) => unit(() => files.leaseAcquire(authority, holder, TOKENS(n),
+                                                                 1)));
 const renew = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>
-  inFiles(r.stub, {}, (files) => files.leaseRenew(lease.lease_id, lease.epoch));
+  inFiles(r.stub, (files, unit) => unit(() => files.leaseRenew(lease.lease_id, lease.epoch)));
 const release = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>
-  inFiles(r.stub, {}, (files) => files.leaseRelease(lease.lease_id, lease.epoch));
+  inFiles(r.stub, (files, unit) => unit(() => files.leaseRelease(lease.lease_id,
+                                                                 lease.epoch)));
 const sync = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">, ops: SyncOp[]) =>
   r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch, ops });
 const write = (r: Rig, path: string, body: string) => r.stub.fileWrite(
@@ -218,16 +220,15 @@ describe("a sync commit", () => {
   it("refuses an op past a quota alone, and still lands the rest", async () => {
     const r = await rig();
     const lease = await acquire(r);
-    await inFiles(r.stub, { max_file_bytes: 1 }, (files) => {
-      const { outcomes } = files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
-        { op: "write", path: `${W}/one`, base: null, inline: text("1") },
-        { op: "write", path: `${W}/two`, base: null, inline: text("22") },
-        { op: "remove", path: `${W}/gone`, base: null },
-      ] });
-      expect(outcomes.map((o) => o.outcome)).toEqual(["committed", "refused", "committed"]);
-      expect(outcomes[1]).toMatchObject({
-        reason: "file_quota: the file is larger than the owner's file size quota" });
-    });
+    await setFiles(r, { max_file_bytes: 1 });
+    const { outcomes } = await sync(r, lease, [
+      { op: "write", path: `${W}/one`, base: null, inline: text("1") },
+      { op: "write", path: `${W}/two`, base: null, inline: text("22") },
+      { op: "remove", path: `${W}/gone`, base: null },
+    ]);
+    expect(outcomes.map((o) => o.outcome)).toEqual(["committed", "refused", "committed"]);
+    expect(outcomes[1]).toMatchObject({
+      reason: "file_quota: the file is larger than the owner's file size quota" });
   });
 
   it("is refused whole only for a lost lease or no ops at all", async () => {

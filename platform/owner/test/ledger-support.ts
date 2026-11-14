@@ -1,18 +1,17 @@
 import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
 
-import { WriteGate } from "../src/gate";
 import {
   type Agent, type Ledger, LEDGER_LIMITS, type Outcome, type WakeTarget,
 } from "../src/ledger";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "../src/clock";
 import type { Binding, Origin, Source } from "../../contract/src/binding";
-import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
+import type { OwnerDO, Stores } from "../src/owner-do";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
-import { NO_FILE_CHANGE } from "./stores";
-import { admitted, alarmOf, EVERY_SIGNIN, laneAt, seeded, TIERS } from "./support";
+import {
+  admitted, alarmOf, EVERY_SIGNIN, laneAt, seeded, storesOn, type TestStores, TIERS,
+} from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -85,17 +84,6 @@ export interface Post {
   cmid?: string;
   parent?: string | null;
 }
-
-/**
- * The object's stores on `state`'s own storage, wired as the object wires them
- * (`ownerStores`), over a write gate of the test's own: it shares the object's queue, as
- * every adapter over one storage does (`gate.ts`), so the ledger writes only in its units.
- */
-export function storesOn(state: Pick<DurableObjectState, "id" | "storage">) {
-  const gate = new WriteGate(state.storage);
-  return { gate, ...ownerStores(gate, env, state.id, NO_FILE_CHANGE) };
-}
-export type TestStores = ReturnType<typeof storesOn>;
 
 /**
  * `origin`'s agent registered on the ledger as its door registers it: the outside client

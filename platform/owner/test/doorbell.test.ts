@@ -27,10 +27,10 @@ import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, Doorbell, retryAfterOf, runWakes } from "../src/wakes";
 import raw from "../../contract/wake-kinds.json" with { type: "json" };
 import {
-  DOT, EVENT, ledgerSubscription, MUSE, registerOn, rig, type Rig, storesOn, WHSEC,
+  DOT, EVENT, ledgerSubscription, MUSE, registerOn, rig, type Rig, WHSEC,
 } from "./ledger-support";
 import { writeControl } from "../../ci/fixtures";
-import { failure, gateFor } from "./support";
+import { failure, gateFor, storesOn } from "./support";
 import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
 
 const TOKEN = "sk-ant-oat01-" + "t".repeat(40);

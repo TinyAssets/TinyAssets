@@ -7,13 +7,14 @@
  * - `failedOwner`: an owner whose own first seed failed part way, so its own files may come
  *   before the seed's retry lands.
  */
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import { Notices } from "../src/notices";
+import type { OwnerDO } from "../src/owner-do";
 import { Starter } from "../src/starter";
 import { carried, type StarterFile, type StarterPackage } from "../src/starter-package";
 import { rig, unseededRig } from "./ledger-support";
-import { drainDue, filesOn, inGate, sqlIn } from "./support";
+import { drainDue, sqlIn, storesOn } from "./support";
 
 /** The version every owner here is seeded at: a test's package is `SEED + n`. */
 export const SEED = carried().version;
@@ -113,15 +114,18 @@ export async function failedOwner(times = 1): Promise<Rig> {
 /** What the files plane answers a failed seed's upload in `failedOwner`. */
 export const SEED_REFUSED = "internal: the files plane failed (the test's)";
 
-/** A starter of `pkg` over `r`'s object, as its lane builds one, for `act` to drive. */
+/**
+ * A starter of `pkg` over `r`'s object, as its lane builds one over the object's stores
+ * (`storesOn`), for `act` to drive.
+ */
 export function starterOn(r: Rig, pkg: StarterPackage, now: number) {
   return <T>(act: (starter: Starter) => Promise<T>) =>
-    inGate(r.stub, async (_instance, _state, gate) => {
-      const notes = new Notices(gate.storage);
+    runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+      const { gate, files, notices } = storesOn(state);
       return act(new Starter({
-        storage: gate.storage, files: filesOn(gate.storage, gate.write), write: gate.write,
+        storage: gate.storage, files, write: gate.write,
         admitted: () => true, ready: () => true, clock: () => now,
-        notice: (type, detail) => notes.add(type, detail, now),
+        notice: (type, detail) => notices.add(type, detail, now),
       }, pkg));
     });
 }

@@ -50,7 +50,6 @@ import { chunkedId, cut } from "../../contract/src/content";
 import type { OwnerEnv } from "../src/env";
 import { OwnerDO, ownerStores, type Stores } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
-import { NO_FILE_CHANGE } from "../test/stores";
 import {
   MIN_RECORD_BYTES, MOVE_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, RECORD_TRAILER_BYTES,
   SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES,
@@ -313,7 +312,7 @@ export class LegOwner extends OwnerDO {
 
   /** The object's stores over the leg's gate, their outside calls through `files`. */
   #storesOver(files: ChunkStore): Stores {
-    return ownerStores(this.#gate, { ...this.#env, FILES: files }, this.#id, NO_FILE_CHANGE);
+    return ownerStores(this.#gate, { ...this.#env, FILES: files }, this.#id);
   }
 
   /**

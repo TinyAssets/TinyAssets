@@ -353,7 +353,7 @@ export class Collections {
       const before = this.#charges(filer);
       return adopted(body as string, placed, filer, this.#adopt, (contentId) => {
         const kept = contentId === null ? body : "";
-        const seq = this.top(collection) + 1;
+        const seq = this.#top(collection) + 1;
         sql.exec(
           "INSERT INTO collection_seqs VALUES (?, ?) ON CONFLICT (collection) " +
             "DO UPDATE SET seq = excluded.seq", collection, seq,
@@ -478,7 +478,7 @@ export class Collections {
         || limit > LIMITS.maxPull) {
       throw new Refusal("invalid", `limit is 1 to ${LIMITS.maxPull}`);
     }
-    const top = this.top(collection);
+    const top = this.#top(collection);
     const found = this.#sql.exec<StoredRow>(
       "SELECT * FROM collection_rows WHERE collection = ? AND seq > ? AND seq <= ? " +
         "AND (private = 0 OR writer = ?) ORDER BY seq LIMIT ?",
@@ -630,7 +630,7 @@ export class Collections {
     // The high-water seq stays where the rows had it, so no cursor goes back.
     sql.exec(
       "INSERT INTO collection_seqs VALUES (?, ?) ON CONFLICT (collection) " +
-        "DO UPDATE SET seq = excluded.seq", collection, this.top(collection),
+        "DO UPDATE SET seq = excluded.seq", collection, this.#top(collection),
     );
     const at = now();
     for (const { row_id: rowId, revision, private: hidden, writer, change } of rows) {
@@ -650,7 +650,7 @@ export class Collections {
     if (sql.exec("SELECT 1 FROM collection_rows WHERE collection = ? LIMIT 1", collection)
           .toArray().length === 0) {
       sql.exec("UPDATE collection_space SET seq_floor = MAX(seq_floor, ?)",
-               this.top(collection));
+               this.#top(collection));
       sql.exec("DELETE FROM collection_seqs WHERE collection = ?", collection);
     }
     this.#prune();
@@ -710,7 +710,7 @@ export class Collections {
    * The collection's high-water seq: never below a stored row's, never lowered by a
    * clear.
    */
-  protected top(collection: string): number {
+  #top(collection: string): number {
     return this.#sql.exec<{ top: number }>(
       "SELECT MAX(COALESCE((SELECT seq FROM collection_seqs WHERE collection = ?), " +
         "(SELECT seq_floor FROM collection_space)), " +

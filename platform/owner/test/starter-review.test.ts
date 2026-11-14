@@ -11,18 +11,18 @@
  * The seed is the object's own, of the package this code carries; every package of a test's
  * own is at a version past it (`SEED + n`, `starter-support.ts`).
  */
-import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AGENT_UNDEFINED } from "../src/agent-file";
-import { Notices } from "../src/notices";
+import type { OwnerDO } from "../src/owner-do";
 import { Starter, STARTER_RETRY_S } from "../src/starter";
 import {
   carried, NEWER, type StarterPackage, starterPackage,
 } from "../src/starter-package";
 import { unseededRig } from "./ledger-support";
 import { later } from "./runs-support";
-import { drainDue, failure, filesOn, inGate, text } from "./support";
+import { drainDue, failure, setFiles, storesOn, text } from "./support";
 import {
   AGENTS, agentJson, failedOwner, file, notices, pass, readText, receipts, type Rig, SEED,
   settled, settledOwner, SKILLS, starterOn, versionOf,
@@ -338,16 +338,18 @@ describe("a pass and the one storage wall (after slice STORE)", () => {
     const pkg = starterPackage({ version: SEED + 1, files: [
       file(`${SKILLS}/big/SKILL.md`, "x".repeat(6_000)), file(`${AGENTS}/agent.json`,
                                                               agentJson(["read_files"]))] });
-    const update = (now: number, maxBytes: number) =>
-      inGate(r.stub, async (_instance, _state, gate) => {
-        const notes = new Notices(gate.storage);
+    // The owner's own storage figure (`max_bytes`), set in its session, then one pass.
+    const update = async (now: number, maxBytes: number) => {
+      await setFiles(r, { max_bytes: maxBytes });
+      await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+        const { gate, files, notices } = storesOn(state);
         await new Starter({
           storage: gate.storage, write: gate.write, admitted: () => true, ready: () => true,
-          clock: () => now,
-          files: filesOn(gate.storage, gate.write, env.FILES, { max_bytes: maxBytes }),
-          notice: (type, detail) => notes.add(type, detail, now),
+          clock: () => now, files,
+          notice: (type, detail) => notices.add(type, detail, now),
         }, pkg).run(now);
       });
+    };
     // What the owner stores leaves no room for the update's big file under a figure 1 KB on.
     const before = (await r.stub.storageUsage(r.bind(null))).used_bytes;
     const now = Date.now() / 1000;
@@ -379,13 +381,13 @@ describe("a pass that cannot reach its files plane", () => {
     const tries = [now, now + STARTER_RETRY_S];
     const next: (number | null)[] = [];
     for (const at of tries) {
-      next.push(await inGate(r.stub, async (_instance, _state, gate) => {
-        const notes = new Notices(gate.storage);
+      next.push(await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
         // A files binding with nothing behind it: each call a TypeError.
+        const { gate, files, notices } = storesOn(state, {} as never);
         const starter = new Starter({
           storage: gate.storage, write: gate.write, admitted: () => true, ready: () => true,
-          clock: () => at, files: filesOn(gate.storage, gate.write, {} as never),
-          notice: (type, detail) => notes.add(type, detail, at),
+          clock: () => at, files,
+          notice: (type, detail) => notices.add(type, detail, at),
         }, pkg);
         await starter.run(at);
         return starter.next(at);
@@ -407,9 +409,10 @@ describe("seeding before the tier's numbers are known (after slice L)", () => {
     const now = Date.now() / 1000;
     const pkg = starterPackage({ version: SEED + 1,
                                  files: [file(`${AGENTS}/agent.json`, agentJson([]))] });
-    const seen = await inGate(r.stub, async (_instance, _state, gate) => {
+    const seen = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+      const { gate, files } = storesOn(state);
       const starter = new Starter({
-        storage: gate.storage, files: filesOn(gate.storage, gate.write), write: gate.write,
+        storage: gate.storage, files, write: gate.write,
         admitted: () => true, ready: () => false, clock: () => now, notice: () => {
           throw new Error("no notice while it waits");
         },
