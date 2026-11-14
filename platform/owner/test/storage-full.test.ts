@@ -4,8 +4,9 @@
  * what is free, how to free space and the upgrade path; reads and deletes always work when
  * full. Bytes held by open uploads are reported apart, and when they alone leave no room the
  * refusal is `uploads_open`, never a full storage nor an upgrade; an upload given up, or one a
- * lease left open when it ended, releases them at once. Tier numbers scaled down: free 10 KB,
- * paid 100 KB. Each change to the sync's ignore list is a receipt and an owner notice.
+ * lease left open when it ended, releases them at once. Tier numbers scaled down: free 10 KB
+ * past what the owner's seed stores, paid 100 KB past it. Each change to the sync's ignore list
+ * is a receipt and an owner notice.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -21,14 +22,18 @@ import { CHUNK_BYTES } from "../../contract/src/limits";
 import { sha256Hex } from "../../contract/src/digest";
 import { rig, type Rig } from "./ledger-support";
 import { later } from "./runs-support";
-import { failure, inFiles, sqlIn, text } from "./support";
+import { failure, inFiles, sqlIn, starterSeed, text } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
-const SMALL = Object.freeze({ free: { runs: 5, storage_bytes: 10_000 },
-                              paid: { runs: 10, storage_bytes: 100_000 } });
+/** What every owner's seed stores, counted in the figure like any file (`starterSeed`). */
+const SEEDED = starterSeed().bytes;
+const FREE = SEEDED + 10_000;
+const PAID = SEEDED + 100_000;
+const SMALL = Object.freeze({ free: { runs: 5, storage_bytes: FREE },
+                              paid: { runs: 10, storage_bytes: PAID } });
 const W = "/workspace";
 /** Past the 4 KiB kept inline, so each file's bytes are chunk bytes the figure counts. */
 const FILE = 6_000;
@@ -61,12 +66,13 @@ describe("storage_full, the one wall", () => {
     const r = await rig();
     await write(r, `${W}/a.bin`, FILE, 1);
     const { message, facts } = await full(() => write(r, `${W}/b.bin`, FILE, 2));
-    expect(facts).toMatchObject({ used_bytes: FILE, needed_bytes: FILE, held_bytes: 0,
-                                  limit_bytes: 10_000, free_bytes: 4_000, tier: "free",
-                                  tier_bytes: 10_000, own_limit: false,
-                                  upgrade: { tier: "paid", limit_bytes: 100_000 } });
-    expect(message).toContain("6.0 KB of 10.0 KB used, and this needs 6.0 KB more (4.0 KB free)");
-    expect(message).toContain("upgrade to paid for 100 KB");
+    expect(facts).toMatchObject({ used_bytes: SEEDED + FILE, needed_bytes: FILE, held_bytes: 0,
+                                  limit_bytes: FREE, free_bytes: 4_000, tier: "free",
+                                  tier_bytes: FREE, own_limit: false,
+                                  upgrade: { tier: "paid", limit_bytes: PAID } });
+    expect(message).toContain(`${shownBytes(SEEDED + FILE)} of ${shownBytes(FREE)} used, and ` +
+                              "this needs 6.0 KB more (4.0 KB free)");
+    expect(message).toContain(`upgrade to paid for ${shownBytes(PAID)}`);
   });
 
   it("is what an upload's begin meets at full, the sync's large-file path", async () => {
@@ -74,7 +80,8 @@ describe("storage_full, the one wall", () => {
     await write(r, `${W}/a.bin`, FILE, 1);
     const { facts } = await full(() => r.stub.fileUploadBegin(r.bind(null, { tiers: SMALL }),
       { size: FILE, chunks: ["ab".repeat(32)] }));
-    expect(facts).toMatchObject({ used_bytes: FILE, needed_bytes: FILE, held_bytes: 0 });
+    expect(facts).toMatchObject({ used_bytes: SEEDED + FILE, needed_bytes: FILE,
+                                  held_bytes: 0 });
   });
 
   it("keeps reads and deletes working when full", async () => {
@@ -100,7 +107,7 @@ describe("storage_full, the one wall", () => {
       await write(r, `${W}/f${i}.bin`, FILE, 10 + i);
     }
     const { message, facts } = await full(() => write(r, `${W}/g.bin`, FILE, 99));
-    expect(facts).toMatchObject({ tier: "paid", limit_bytes: 100_000, upgrade: null,
+    expect(facts).toMatchObject({ tier: "paid", limit_bytes: PAID, upgrade: null,
                                   own_limit: false });
     expect(message.slice(0, message.indexOf("{"))).not.toMatch(/upgrade|largest|plan/);
   });
@@ -109,10 +116,10 @@ describe("storage_full, the one wall", () => {
     const r = await rig();
     const { generation, policy } = await r.stub.policyRead(r.bind(null));
     await r.stub.policyWrite(r.session(null), {
-      expected_generation: generation, policy: { ...policy, files: { max_bytes: 7_000 } } as never });
+      expected_generation: generation, policy: { ...policy, files: { max_bytes: SEEDED + 7_000 } } as never });
     await write(r, `${W}/a.bin`, FILE, 1);
     const { facts } = await full(() => write(r, `${W}/b.bin`, FILE, 2));
-    expect(facts).toMatchObject({ limit_bytes: 7_000, tier_bytes: 10_000, own_limit: true,
+    expect(facts).toMatchObject({ limit_bytes: SEEDED + 7_000, tier_bytes: FREE, own_limit: true,
                                   upgrade: null });
   });
 
@@ -122,7 +129,7 @@ describe("storage_full, the one wall", () => {
     const { facts } = await full(() => r.stub.collectionWrite(r.bind(null, { tiers: SMALL }), {
       collection: "board", row_id: "big", body: JSON.stringify({ text: "y".repeat(6_000) }),
       expected_etag: "", private: false }));
-    expect(facts.limit_bytes).toBe(10_000);
+    expect(facts.limit_bytes).toBe(FREE);
   });
 });
 
@@ -133,7 +140,7 @@ describe("open uploads, apart from what is stored", () => {
     const begun = await r.stub.fileUploadBegin(at, { size: 8_000, chunks: ["cd".repeat(32)] });
     const { message, facts } = await refusedAs(UPLOADS_OPEN, () => write(r, `${W}/a.bin`,
                                                                           FILE, 1));
-    expect(facts).toMatchObject({ used_bytes: 0, needed_bytes: FILE, held_bytes: 8_000 });
+    expect(facts).toMatchObject({ used_bytes: SEEDED, needed_bytes: FILE, held_bytes: 8_000 });
     expect(message.slice(0, message.indexOf("{"))).not.toMatch(/upgrade|storage is full/);
     // Cancelled, it holds nothing: the write fits.
     expect(await r.stub.fileUploadAbort(at, { intent_id: begun.intent_id }))
@@ -162,9 +169,9 @@ describe("open uploads, apart from what is stored", () => {
       size: 5_400, chunks: ["ef".repeat(32)] }));
     expect(facts.held_bytes).toBe(4_200);
     expect(facts.used_bytes).toBe(stored - 4_200);
-    expect(facts.used_bytes + facts.needed_bytes).toBeGreaterThan(10_000);
+    expect(facts.used_bytes + facts.needed_bytes).toBeGreaterThan(FREE);
     expect(facts.used_bytes + facts.held_bytes - 5_000 + facts.needed_bytes)
-      .toBeLessThanOrEqual(10_000);
+      .toBeLessThanOrEqual(FREE);
     // Refused whole: the history kept, the upload still the only one open.
     expect(await open(r)).toBe(1);
     expect((await r.stub.storageUsage(r.bind(null, { tiers: SMALL }))).used_bytes).toBe(stored);
