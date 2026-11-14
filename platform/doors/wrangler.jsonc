@@ -55,7 +55,7 @@
 //   origin as `/app/api`, so its session cookie and CSP hold (tasks 2, the owner app).
 // `enable_request_signal` fires a request's `signal` when its client disconnects, so the
 // egress door settles a call whose client left before the answer at once.
-// - The cutover's import window (src/import.ts), deleted at the cutover with platform/import/:
+// - The cutover's import window (src/import/), deleted at the cutover with platform/import/:
 //   IMPORT_STAGING, the staging bucket the importer's job writes each owner's bundle to; the
 //   import queue's producer (IMPORTS), by which its consumer sends its own continuation; and
 //   that consumer, one message a batch, four owners at once, its dead-letter queue the one

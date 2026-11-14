@@ -1,7 +1,7 @@
 /**
  * The cutover import's queue messages (`import_research.md` §3 and §4, slices 3 to 5): what
  * the importer's job puts on the import queue for each owner (`platform/import/stage.ts`,
- * `platform/import/window.ts`), and what the doors' consumer takes (`doors/src/import.ts`);
+ * `platform/import/window.ts`), and what the doors' consumer takes (`doors/src/import/`);
  * and the bundle each message names (THE BUNDLE, below), which the job writes and both read.
  * One module, so the two cannot disagree; deleted at the cutover with both
  * (`platform/cutover.json`).
@@ -43,8 +43,6 @@ export const IMPORT_BATCH_BYTES = 1024 * 1024;
 export const IMPORT_FILES = 256;
 export const IMPORT_INTENTS = 8;
 
-/** The import queue, the doors' producer's and consumer's. */
-export const IMPORT_QUEUE = "tinyassets-import";
 /** The window's secret, by name: the doors' Worker secret, and the job's input. */
 export const IMPORT_KEY = "IMPORT_KEY";
 /** The shortest key, in bytes once decoded. */

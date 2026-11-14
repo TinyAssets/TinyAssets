@@ -104,7 +104,7 @@ type Handed<Door extends keyof DoorRequests, Values extends object = object> =
 
 /**
  * Why the platform suspends an owner (`admission.ts`): the reasons the import's admit carries
- * from the old stack too (`doors/src/import.ts`, `import/survey.ts`).
+ * from the old stack too (`doors/src/import/`, `import/survey.ts`).
  */
 export const SUSPENSIONS: readonly string[] = Object.freeze(["abuse", "billing"]);
 

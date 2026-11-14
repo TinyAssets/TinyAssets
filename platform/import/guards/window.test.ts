@@ -1,7 +1,7 @@
 /**
  * The window's steps after staging (`window.ts`, slice 5) on the slice-2 builder's own bundles,
  * against a fake world: R2's S3 API (the staging and files buckets), the Queues HTTP API (the
- * import queue, whose fake doors answer each message as `doors/src/import.ts` does, and the
+ * import queue, whose fake doors answer each message as `doors/src/import/` does, and the
  * dead-letter queue's pull consumer) and the KV API (the directory). `verify` holds each check
  * to its bundle and keeps the result; `admit` admits nothing until every owner verified clean
  * and the dead-letter queue is empty, then each in turn; `wipe` discards, deletes and proves

@@ -70,7 +70,7 @@ export type DoorClass = (typeof DOOR_CLASSES)[number];
  *   (`action`: its act, `admission` or `tier`);
  * - `erasure`: the platform's reserved caller, at an erasure under way;
  * - `import`: the platform's reserved caller with an import binding (the doors' import
- *   consumer, `doors/src/import.ts`), while the owner is `pending`: the `import` class's doors
+ *   consumer, `doors/src/import/`), while the owner is `pending`: the `import` class's doors
  *   alone, deleted at the cutover;
  * - `discard`: the same binding, while the owner is `pending` or its name is a rehearsal's
  *   (`rehearsalRun`, `import-message.ts`), in any state: the import's discard alone;

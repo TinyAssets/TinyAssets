@@ -141,7 +141,7 @@ describe("an owner isolate's counts", () => {
     expect(IMPORT_BATCH_BYTES).toBeLessThanOrEqual(largest);
     // A chunked file's bytes never reach the object; the doors' consumer holds one chunk at a
     // time, the file door's own one-chunk hold (`file-bytes.ts`).
-    expect(doorBytes("import.ts", "IMPORT_HOLD_BYTES")).toBe(CHUNK_BYTES);
+    expect(doorBytes("import/index.ts", "IMPORT_HOLD_BYTES")).toBe(CHUNK_BYTES);
   });
 
   it("sees a pool that would pass the isolate", () => {

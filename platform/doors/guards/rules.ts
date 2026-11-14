@@ -24,7 +24,7 @@
  *   headers; no HTML handling or not-found page of the assets' own.
  * - The consumer of the sandbox line's ring queue (slice S, `src/ring.ts`), which turns
  *   `{owner}` into that owner's `sandboxRung` and nothing else, and of the erasure queue.
- * - The cutover's import window (`src/import.ts`), deleted at the cutover with
+ * - The cutover's import window (`src/import/`), deleted at the cutover with
  *   `platform/import/` and named here as its bindings alone (`IMPORT_WINDOW`): the import
  *   queue's consumer (one message a batch, four owners at once, its dead-letter queue), its
  *   producer (`IMPORTS`, the consumer's own continuation, the doors' one producer), and the
@@ -43,7 +43,7 @@ import type { ConfigRules } from "../../ci/kit/config";
 import { imports, type Owed } from "../../ci/kit/owed";
 
 /**
- * The import window's bindings (`src/import.ts`), each named once here: deleted at the
+ * The import window's bindings (`src/import/`), each named once here: deleted at the
  * cutover with `platform/import/`, as the cutover's manifest names them (`platform/cutover.json`).
  */
 export const IMPORT_WINDOW = Object.freeze({
