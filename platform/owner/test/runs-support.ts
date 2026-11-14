@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { env } from "cloudflare:workers";
 
 import { verifyToken } from "../../contract/src/routing-mac";
-import { egressTokenOf } from "../../contract/src/egress";
+import { egressDoor, egressTokenOf } from "../../contract/src/egress";
 
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
@@ -104,11 +104,11 @@ export async function whileOut<R>(method: "start" | "network", call: () => Promi
 
 /** A run's own secret, as its start's MCP URL carries it (`/r/<run>/<secret>/mcp`). */
 export function secretOf(start: SandboxStart): string {
-  const found = /\/r\/run_[0-9a-f]{32}\/([0-9a-f]{64})\/mcp$/.exec(start.urls.mcp);
-  if (found === null) {
+  const door = egressDoor(new URL(start.urls.mcp).pathname);
+  if (door?.door !== "mcp" || door.secret === undefined) {
     throw new Error(`the start of ${start.run} carries no run secret`);
   }
-  return found[1]!;
+  return door.secret;
 }
 
 /** The SHA-256 the binder hands the object of a secret its call presented. */
