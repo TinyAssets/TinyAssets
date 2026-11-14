@@ -23,9 +23,11 @@
  *
  * A route the directory does not hold is `404` (a capability URL) or a no-op (a shared
  * app's install no owner made); the directory's lag can only route a dead entry to the
- * object's own refusal (`binding_withdrawn`). A refusal, a closed gate's (`unavailable`)
- * among them, is answered by its code's status and `Retry-After` (`refused.ts`); a shared
- * app's, past its gates, is a `200`, so its failure budget with its vendor is kept.
+ * object's own refusal (`binding_withdrawn`). Every refusal, the door's own and a closed
+ * gate's (`unavailable`) among them, is a contract code, answered by its status and
+ * `Retry-After` (`refused.ts`), and so is the object's refused answer; a shared app's, past
+ * its gates, is a `200`, so its failure budget with its vendor is kept, unless it is for the
+ * moment only (`mailbox_full`, a full pool's `busy`), when the app is told to send it again.
  */
 import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
@@ -46,7 +48,7 @@ import {
 } from "../../contract/src/control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { answer, boundedBytes, exactKeys, mediaType, randomToken } from "./kit";
-import { answered, asInbound, asShared } from "./refused";
+import { answered, asInbound, asShared, retryAfter } from "./refused";
 import type { Sources } from "../../sources/src/schema";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -54,8 +56,6 @@ const STAMP = /^[0-9]{1,12}$/;
 /** The headers an event carries to the object (its owner-held proof may name any). */
 const HEADERS_MAX = 64;
 const HEADER_VALUE_MAX = 8 * 1024;
-/** How long a sender waits before it delivers again. */
-const RETRY = Object.freeze({ "Retry-After": "5" });
 
 /** A shared app, as `shared-apps.json` declares it. */
 interface SharedApp {
@@ -142,10 +142,10 @@ function sharedEvent(app: SharedApp, request: Request, body: Uint8Array,
   const secret = namedSecret(env, app.secret);
   if (secret === null) {
     console.error(`the shared app ${app.id} has no signing secret (${app.secret})`);
-    return { kind: "answer", response: answer(503, { error: "inbound_app_unconfigured" }, RETRY) };
+    throw new Refusal("inbound_app_unconfigured");
   }
   if (!proves(app.profile, headers, body, secret, now())) {
-    return { kind: "answer", response: answer(401, { error: "invalid_signature" }) };
+    throw new Refusal("invalid_signature");
   }
   const shape = app.envelope;
   const envelope = envelopeOf(request, body);
@@ -183,8 +183,7 @@ function sharedEvent(app: SharedApp, request: Request, body: Uint8Array,
       || !STAMP.test(String(eventAt))) {
     // An authenticated event the platform cannot key is a no-op, never a 400 that spends
     // the app's failure budget on an event its vendor retries.
-    return { kind: "answer", response: answer(200, { state: "refused",
-                                                     error: "event_identity_required" }) };
+    return { kind: "answer", response: asShared(new Refusal("event_identity_required")) };
   }
   return { kind: "event", shared: true, eventId, eventAt,
            route: `i:${app.id}:${enterprise ? "enterprise" : "workspace"}:${sha256Hex(identity)}` };
@@ -195,13 +194,16 @@ function capabilityEvent(token: string, request: Request): Routed {
   const eventId = request.headers.get("Idempotency-Key") ?? "";
   const stamp = request.headers.get("X-Event-Timestamp") ?? "";
   if (!eventId.trim() || eventId.length > 256 || !STAMP.test(stamp)) {
-    return { kind: "answer", response: answer(400, { error: "event_identity_required" }) };
+    throw new Refusal("event_identity_required");
   }
   return { kind: "event", shared: false, eventId, eventAt: Number(stamp),
            route: `h:${sha256Hex(token)}` };
 }
 
-/** The object's answer as the sender gets it: a shared app's never spends its budget. */
+/**
+ * The object's answer as the sender gets it, a refused one by its code's status and wait: a
+ * shared app's never spends its budget, unless it is to be sent again.
+ */
 function delivered(shared: boolean, accepted: InboundAnswer): Response {
   if (accepted.state === "admitted") {
     return answer(202, accepted);
@@ -209,11 +211,9 @@ function delivered(shared: boolean, accepted: InboundAnswer): Response {
   if (accepted.state === "no_op") {
     return answer(200, accepted);
   }
-  if (accepted.retry === true) {
-    return answer(429, accepted, RETRY);
-  }
-  return shared ? answer(200, accepted)
-    : answer(accepted.error === "too_large" ? 413 : 409, accepted);
+  const refusal = new Refusal(accepted.error);
+  return shared && !refusal.transient ? answer(200, accepted)
+    : answer(refusal.status, accepted, retryAfter(refusal));
 }
 
 /** `POST /hooks/inbound/<token>`. */
@@ -228,23 +228,20 @@ async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promi
   if (gate === "unavailable") {
     throw new Refusal("unavailable");
   }
-  if (gate === "off") {
-    return answer(404, { error: "not_found" });
-  }
   const token = new URL(request.url).pathname.slice(INBOUND_PATH.length);
-  if (!TOKEN.test(token)) {
-    return answer(404, { error: "not_found" });
+  if (gate === "off" || !TOKEN.test(token)) {
+    throw new Refusal("not_found");
   }
   if (request.method !== "POST") {
-    return answer(405, { error: "method_not_allowed" });
+    throw new Refusal("method_not_allowed");
   }
   const body = await boundedBytes(request, EGRESS_BODY_MAX);
   if (body === null) {
-    return answer(413, { error: "too_large" });
+    throw new Refusal("too_large");
   }
   const headers = headersOf(request);
   if (headers === null) {
-    return answer(400, { error: "too_many_headers" });
+    throw new Refusal("too_many_headers");
   }
   const app = sharedApps().find((shared) => shared.endpoint === token);
   const routed = app !== undefined ? sharedEvent(app, request, body, headers, env)
@@ -254,7 +251,10 @@ async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promi
   }
   const entry = await readRoute(env, routed.route);
   if (entry === null) {
-    return routed.shared ? answer(200, { state: "no_op" }) : answer(404, { error: "not_found" });
+    if (!routed.shared) {
+      throw new Refusal("not_found");
+    }
+    return answer(200, { state: "no_op" });
   }
   if (!ordinaryAdmits(gate, entry.o)) {
     throw new Refusal("unavailable", MAINTENANCE);

@@ -107,9 +107,12 @@ describe("the inbound hooks' answer", () => {
       .toEqual([503, "60", { error: "unavailable" }]);
   });
 
-  it("is a 200 to a shared app, so its vendor's failure budget is never spent", async () => {
+  it("is a 200 to a shared app, so its vendor's failure budget is never spent, unless it is " +
+     "for the moment only, when the vendor is told to send the event again", async () => {
+    expect(await said(asShared(new Refusal("binding_withdrawn"))))
+      .toEqual([200, null, { state: "refused", error: "binding_withdrawn" }]);
     expect(await said(asShared(new Refusal("storage_busy", "storage_busy: catching up"))))
-      .toEqual([200, null, { state: "refused", error: "storage_busy" }]);
+      .toEqual([503, "30", { state: "refused", error: "storage_busy" }]);
   });
 });
 

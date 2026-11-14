@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
-import { ERASING } from "../../contract/src/refusal";
+import { ERASING, Refusal } from "../../contract/src/refusal";
 import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
 import { ERASE_CONFIRM, NO_ERASURE, PUT_GRACE_MS } from "../../owner/src/erasure";
 import { LEDGER_LIMITS } from "../../owner/src/ledger";
@@ -615,6 +615,25 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     // Never the breaker's: more refusals than trip it, and the events still told to retry.
     const { notices } = await env.OWNER.getByName(who).noticeList(ownerBinding(who));
     expect(notices.map((notice) => notice.type)).not.toContain("inbound");
+  });
+
+  it("is told to send an event again when the object refuses it for the moment, and no-ops " +
+     "the event's own refusal", async () => {
+    const who = owner();
+    await signInApp({ owner: who });
+    await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
+    const team = `T${crypto.randomUUID().slice(0, 8)}`;
+    await slackInstall(who, team);
+    refuseOnce("inboundAccept", who, slotBusy());
+    const busy = await call(slackRequest(slackEvent(team, "EvP")));
+    expect([busy.status, busy.headers.get("Retry-After"), await busy.json()])
+      .toEqual([503, "1", { state: "refused", error: "busy" }]);
+    refuseOnce("inboundAccept", who, new Refusal("binding_withdrawn"));
+    const withdrawn = await call(slackRequest(slackEvent(team, "EvP")));
+    expect([withdrawn.status, withdrawn.headers.get("Retry-After"), await withdrawn.json()])
+      .toEqual([200, null, { state: "refused", error: "binding_withdrawn" }]);
+    expect((await call(slackRequest(slackEvent(team, "EvP")))).status).toBe(202);
+    expect(await mail(who)).toHaveLength(1);
   });
 
   it("trips its breaker after the agent's mailbox refuses it, then no-ops until re-armed",

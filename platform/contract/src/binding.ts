@@ -7,7 +7,7 @@
 import type { Vendor } from "./apps";
 import { sha256Hex } from "./digest";
 import { HEX16, HEX32, HEX64, RUN_ID } from "./ids";
-import { Refusal } from "./refusal";
+import { Refusal, type RefusalCode } from "./refusal";
 import { principal } from "./text";
 
 /**
@@ -361,10 +361,13 @@ export const BINDING_PARSERS = Object.freeze({
 });
 export type BindingKind = keyof typeof BINDING_PARSERS;
 
-/** What the inbound door answers the binder for one event (`inboundAccept`). */
+/**
+ * What the inbound door answers the binder for one event (`inboundAccept`): a refused one by
+ * its code, which gives the sender's status and `Retry-After` (`doors/src/inbound.ts`).
+ */
 export type InboundAnswer =
   | { readonly state: "admitted"; readonly receipt: string; readonly deduped: boolean }
-  | { readonly state: "refused"; readonly error: string; readonly retry?: true }
+  | { readonly state: "refused"; readonly error: RefusalCode; readonly retry?: true }
   | { readonly state: "no_op"; readonly error: string };
 
 /**
