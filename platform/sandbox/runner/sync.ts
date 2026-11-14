@@ -41,7 +41,7 @@ import { existsSync, lstatSync, type Stats } from "node:fs";
 import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { SourceRecord } from "../../sources/src/schema";
+import type { Served } from "../../sources/src/served";
 
 import { isKept, keptPaths } from "./engine";
 import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeWrite,
@@ -111,7 +111,7 @@ export async function stageSessions(
   const seen = readSeen();
   const next: Record<string, SeenSession> = {};
   const against = sha256Hex(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
-  const sessions: { rec: SourceRecord; rel: string; path: string; digest: string }[] = [];
+  const sessions: { rec: Served; rel: string; path: string; digest: string }[] = [];
   for (const each of RECORDS.values()) {
     const store = `${STORE}/${each.id}`;
     for (const rel of walkFiles(store)) {
@@ -323,7 +323,7 @@ export interface Place {
   /** Whose sandbox: `owner`, or a client's id (`CLIENT_READ_ONLY` read-only, never written). */
   readonly authority: string;
   /** The records, for each engine's own `session_paths`. */
-  readonly records: ReadonlyMap<string, SourceRecord>;
+  readonly records: ReadonlyMap<string, Served>;
 }
 
 function localOf(place: Pick<Place, "local">, path: string): string {
@@ -348,7 +348,7 @@ export function sessionOf(place: Place, path: string):
   const [engine, ...rest] = path.slice(prefix.length).split("/");
   const record = engine === undefined ? undefined : place.records.get(engine);
   const rel = rest.join("/");
-  if (record?.cli === undefined || rel === "" || rel.split("/").includes("..")) {
+  if (record === undefined || rel === "" || rel.split("/").includes("..")) {
     return null;
   }
   return isKept(keptPaths(record).sessions, rel) ? { engine: engine!, rel } : null;

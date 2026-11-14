@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 
 import { Bodies } from "../src/bodies";
@@ -23,10 +23,23 @@ import { MAX_BODY_BYTES } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { TIER_UNREAD } from "../src/tier";
-import { MUSE, rig } from "./ledger-support";
+import { eraseBegun, erasedWhole, finished } from "./erasure-support";
+import { MUSE, rig, signedIn } from "./ledger-support";
 import { at, readOn } from "./pages-support";
-import { failure, filesOn, ownerObject, sqlIn, text, TIERS } from "./support";
-import type { FauxOwnerDO } from "./worker";
+import { admittedOwner, failure, filesOn, ownerObject, sqlIn, text, TIERS } from "./support";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/** A fresh owner's admitted object, its binder's binding, and the binding in its session. */
+async function signedInOwner() {
+  const owner = `owner-${crypto.randomUUID()}`;
+  const stub = await admittedOwner(owner);
+  const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
+  const { session } = await stub.sessionOpen({ ...bind, authenticated_at: signedIn() });
+  return { owner, stub, bind, session: { ...bind, session } };
+}
 
 const sha = (body: string) => createHash("sha256").update(body, "utf8").digest("hex");
 /** A body just past the threshold in bytes, and well under it in characters. */
@@ -55,7 +68,7 @@ async function inR2(ns: string, body: string, sha256 = sha(body)): Promise<strin
 describe("the placement rule", () => {
   it("keeps a body of PLACE_BYTES in its row, and places a larger one in R2, read back whole",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     const put = (rowId: string, body: string, etag = "") => stub.collectionWrite(as(name), {
       collection: "board", row_id: rowId, body, expected_etag: etag, private: false });
     const small = await put("small", SMALL);
@@ -143,7 +156,7 @@ describe("the placement rule", () => {
 
   it("leaves no reference to a body whose commit never came, and the sweep removes it",
      async () => {
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     await runInDurableObject(stub, async (_instance: OwnerDO, state) => {
       const gate = new WriteGate(state.storage);
       const files = filesOn(gate.storage, gate.write);
@@ -176,7 +189,7 @@ describe("the placement rule", () => {
 
   it("counts placed and inline bytes in the tier's storage, and adds none while it is not known",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     const put = (rowId: string, body: string, binding: Binding) =>
       stub.collectionWrite(binding, { collection: "board", row_id: rowId, body,
                                       expected_etag: "", private: false });
@@ -198,25 +211,21 @@ describe("the placement rule", () => {
   });
 
   it("is erased with the owner: every R2 copy, a file's and a placed body's", async () => {
-    const owner = `owner-${crypto.randomUUID()}`;
-    const stub = env.AGENT.getByName(owner) as DurableObjectStub<FauxOwnerDO>;
-    const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
+    const { owner, stub, bind, session } = await signedInOwner();
     await stub.collectionWrite(bind, { collection: "board", row_id: "t", body: LARGE,
                                        expected_etag: "", private: false });
     const file = "f".repeat(INLINE_BYTES + 1);
     await stub.fileWrite(bind, { path: "/workspace/big", expected_etag: null,
                                  content: text(file) });
-    const ns = await namespace(stub as unknown as DurableObjectStub<OwnerDO>);
+    const ns = await namespace(stub);
     expect([await inR2(ns, LARGE), await inR2(ns, file)]).toEqual([LARGE, file]);
-    await runInDurableObject(stub, async (instance: FauxOwnerDO) => {
-      await instance.erasure.erase();
-    });
+    await erasedWhole(stub, owner, session);
     expect(await inR2(ns, LARGE)).toMatch(/^missing: /);
     expect(await inR2(ns, file)).toMatch(/^missing: /);
   });
 
   it("holds the raised bodies at their bounds and refuses one past", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     const put = (rowId: string, body: string) => stub.collectionWrite(as(name), {
       collection: "board", row_id: rowId, body, expected_etag: "", private: false });
     // A row of `maxRowBytes`, placed across two chunks: half a request's 16 MiB ceiling.
@@ -266,7 +275,7 @@ const tiers = (bytes: number) => ({ free: { runs: 5, storage_bytes: bytes },
 describe("the placement rule, held to the owner's own limits (review rvlim)", () => {
   it("A1: a conflict on a placed row answers the stored body, as get and pull read it",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     const put = (body: string, etag: string) => stub.collectionWrite(as(name), {
       collection: "board", row_id: "r", body, expected_etag: etag, private: false });
     await put(LARGE, "");
@@ -308,7 +317,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
   });
 
   it("A2: a visiting owner writes in a share of its own, never the owner's", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.collectionWrite(as("visitor-1"), { collection: "room:go:main", row_id: "v",
       body: LARGE, expected_etag: "", private: false });
     const [row] = await sqlIn(stub, "SELECT filer FROM collection_rows");
@@ -320,7 +329,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
 
   it("A3: placed history is never let go at the tier's storage: the write is refused " +
      "storage_full and every entry is kept (ADR-036, untangle F1)", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     const bind = { ...as(name), tiers: tiers(6 * 2 * PLACE_BYTES) };
     let etag = "";
     let refused: Error | null = null;
@@ -345,7 +354,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
 
   it("A4: a read door with no tier numbers in the record drops the kept ones: fail closed",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.collectionGet(as(name), { collection: "board", row_id: "r" });
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM platform_tiers")).toEqual([{ n: 1 }]);
     await stub.collectionGet({ ...as(name), tiers: null }, { collection: "board", row_id: "r" });
@@ -382,7 +391,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
 
   it("A6: a history read past one page says so, and its cursor reads the older entries",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     const big = "𝄞".repeat(5000);  // 20,000 bytes: two entries fit one answer
     let etag = "";
     for (const n of ["a", "b", "c", "d"]) {
@@ -401,7 +410,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
 
   it("L5: a placed write past a chunk the sweep is deleting begins again once it is gone",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     const put = (rowId: string, etag = "") => stub.collectionWrite(as(name), {
       collection: "board", row_id: rowId, body: LARGE, expected_etag: etag, private: false });
     const made = await put("a") as { row: { etag: string } };
@@ -437,26 +446,22 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
 
   it("adds no byte to R2 once the erasure's mark stands, and deletes what landed late",
      async () => {
-    const owner = `owner-${crypto.randomUUID()}`;
-    const stub = env.AGENT.getByName(owner) as DurableObjectStub<FauxOwnerDO>;
-    const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
+    const { owner, stub, bind, session } = await signedInOwner();
     await stub.collectionWrite(bind, { collection: "board", row_id: "t", body: LARGE,
                                        expected_etag: "", private: false });
-    const ns = await namespace(stub as unknown as DurableObjectStub<OwnerDO>);
+    const ns = await namespace(stub);
     // A put whose row is gone (an instance lost mid-put): only the prefix finds it.
     const stray = new TextEncoder().encode("a stray chunk");
     const straySha = createHash("sha256").update(stray).digest("hex");
     await env.FILES.putChunks(ns, KEYS.get(ns)!, [{ sha256: straySha, bytes: stray }]);
-    await runInDurableObject(stub, async (_instance: FauxOwnerDO, state) => {
-      state.storage.sql.exec("INSERT INTO owner_erasure (only, started_at) VALUES (1, 1)");
+    await eraseBegun(stub, session);
+    await runInDurableObject(stub, async (_instance: OwnerDO, state) => {
       const gate = new WriteGate(state.storage);
       const files = filesOn(gate.storage, gate.write);
       await expect(gate.write(() => files.begin(INLINE_BYTES + 1, ["b".repeat(64)], "owner")))
         .rejects.toThrow("this owner is being erased");
     });
-    await runInDurableObject(stub, async (instance: FauxOwnerDO) => {
-      await instance.erasure.erase();
-    });
+    await finished(stub, owner);
     expect(await inR2(ns, LARGE)).toMatch(/^missing: /);
     expect(await inR2(ns, "", straySha)).toMatch(/^missing: /);
   });

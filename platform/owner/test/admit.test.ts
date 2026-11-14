@@ -18,7 +18,7 @@ import { failure, inGate } from "./support";
 
 function pending(): { stub: DurableObjectStub; owner: string } {
   const owner = `owner-${crypto.randomUUID()}`;
-  // `get(idFromName())`, which `admitted.ts` leaves alone: the object as production makes it.
+  // `get(idFromName())`, never admitted by the rig: the object as production makes it.
   return { stub: env.OWNER.get(env.OWNER.idFromName(owner)), owner };
 }
 

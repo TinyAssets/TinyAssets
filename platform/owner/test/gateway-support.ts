@@ -16,7 +16,7 @@ import { seal } from "../../gateway/src/keyring";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Binding } from "../../contract/src/binding";
 import { signedIn } from "./ledger-support";
-import { EVERY_SIGNIN, gateFor, TIERS } from "./support";
+import { admittedOwner, EVERY_SIGNIN, gateFor, TIERS } from "./support";
 import type { OwnerDO } from "../src/owner-do";
 
 export { ANTHROPIC, OPENAI };
@@ -79,7 +79,7 @@ export async function sealedAs(kid: "k1" | "k2", owner: string, connection: stri
  */
 export async function gated() {
   const name = `owner-${crypto.randomUUID()}`;
-  const stub: DurableObjectStub<OwnerDO> = env.OWNER.getByName(name);
+  const stub: DurableObjectStub<OwnerDO> = await admittedOwner(name);
   const bind = (extra: Partial<Binding> = {}): Binding =>
     ({ owner: name, caller: name, origin: null,
        ...("sandbox" in extra ? {} : { tiers: TIERS, signins: EVERY_SIGNIN }), ...extra });

@@ -11,8 +11,8 @@ import type { ImportRules } from "../../ci/kit/imports";
 /**
  * Its config: the keys that name the Worker, its entry and its runtime; `limits` (exactly
  * `cpu_ms`, room above code mode's interrupt budget); `durable_objects`, exactly the
- * namespace of its own `CodemodeSandbox` (no `script_name`, so no other Worker's class,
- * `OwnerDO` never); and `migrations` making exactly that one, SQLite. Every other key
+ * namespace `CODEMODE` of its own `CodemodeSandbox` (no `script_name`, so no other Worker's
+ * class, `OwnerDO` never); and `migrations` making exactly that one, SQLite. Every other key
  * wrangler's schema offers is refused: each other binding kind (a service, a bucket, a KV
  * namespace, a var, a secret, a Worker Loader), `routes`, environments, and any key wrangler
  * adds later. The one flag is `disable_ctx_exports`.
@@ -25,10 +25,8 @@ export const CONFIG: ConfigRules = Object.freeze({
                        "workers_dev", "preview_urls", "limits", "durable_objects", "migrations"]),
   flags: Object.freeze({ exactly: Object.freeze(["disable_ctx_exports"]) }),
   classes: Object.freeze(["CodemodeSandbox"]),
-  exact: Object.freeze({
-    durable_objects: { bindings: [{ name: "CODEMODE", class_name: "CodemodeSandbox" }] },
-    limits: { cpu_ms: 300_000 },
-  }),
+  objects: Object.freeze(["CODEMODE"]),
+  exact: Object.freeze({ limits: { cpu_ms: 300_000 } }),
 });
 
 /**

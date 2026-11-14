@@ -12,9 +12,8 @@ import { chownSync, existsSync, lchownSync, lstatSync, mkdirSync, readdirSync, r
          writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { bundledSources } from "../../sources/src/catalog";
 import { RUN_BASICS } from "../../sources/src/run-env";
-import type { SourceRecord } from "../../sources/src/schema";
+import { type Served, served } from "../../sources/src/served";
 
 import { HOMES, isKept, keptPaths, SYSTEM } from "./engine";
 import { HEARTBEAT_MS } from "./frames";
@@ -29,11 +28,9 @@ export const STORE = `${STATE}/store`;
 /** The conversations of the engines that resume by their working directory. */
 export const CONVERSATIONS = "/var/lib/ta-conv";
 
-export const sources = bundledSources();
-export const RECORDS = new Map(sources.ids().map((id) => [id, sources.get(id)!] as const)
-  .filter(([, rec]) => rec.cli !== undefined));
+export const RECORDS = served();
 
-export function record(engine: string): SourceRecord {
+export function record(engine: string): Served {
   const found = RECORDS.get(engine);
   if (found === undefined) {
     throw new Error(`engine ${engine} has no CLI record`);
@@ -50,8 +47,8 @@ export function shared(): number {
 }
 
 /** The engine's record variables, filled for a home (its status check's environment). */
-export function engineEnv(rec: SourceRecord, home: string): Record<string, string> {
-  const cli = rec.cli!;
+export function engineEnv(rec: Served, home: string): Record<string, string> {
+  const cli = rec.cli;
   const env: Record<string, string> = {};
   for (const name of RUN_BASICS) {
     const value = process.env[name];
@@ -88,7 +85,7 @@ const LOCK_WAIT_MS = COMMAND_MS;
  * bounded (`LOCK_WAIT_MS`): past it the call fails loudly. Every hold is short and
  * synchronous, and none is nested.
  */
-export async function withStore<T>(rec: SourceRecord, act: () => T): Promise<T> {
+export async function withStore<T>(rec: Served, act: () => T): Promise<T> {
   const locks = `${STATE}/locks`;
   safeDirs("/", locks, 0o700);
   // `.lock`: a name no earlier runner's lock (a directory at `<id>`) ever had, so neither
@@ -103,12 +100,12 @@ export async function withStore<T>(rec: SourceRecord, act: () => T): Promise<T> 
  * run's home made under an older one never writes a secret back (review M3: a run live
  * across a sign-out never undoes it, nor clobbers a new sign-in).
  */
-export function generation(rec: SourceRecord): number {
+export function generation(rec: Served): number {
   const path = `${STATE}/generations/${rec.id}`;
   return existsSync(path) ? Number(readFileSync(path, "utf8")) : 0;
 }
 
-export function nextGeneration(rec: SourceRecord): void {
+export function nextGeneration(rec: Served): void {
   safeDirs("/", `${STATE}/generations`, 0o700);
   writeFileSync(`${STATE}/generations/${rec.id}`, String(generation(rec) + 1), { mode: 0o600 });
 }
@@ -152,7 +149,7 @@ export function dropHome(home: string): void {
  * `auth.json`, Claude's `.credentials.json`) stay out of a key run's reach, so no key run's
  * CLI can send them anywhere (codexurl_research.md; the route probe proves it live).
  */
-async function makeHome(name: string, rec: SourceRecord, signedIn: boolean): Promise<string> {
+async function makeHome(name: string, rec: Served, signedIn: boolean): Promise<string> {
   safeDirs("/", HOMES, 0o711);
   const home = homeOf(name);
   remove(home);
@@ -181,7 +178,7 @@ async function makeHome(name: string, rec: SourceRecord, signedIn: boolean): Pro
             new TextEncoder().encode(JSON.stringify(snapshot)), 0o600);
   // Each directory the record's home variables name, made: a CLI may refuse a configured
   // home that is not there yet (a first sign-in has nothing in its store).
-  for (const value of Object.values(rec.cli!.home_env)) {
+  for (const value of Object.values(rec.cli.home_env)) {
     safeDirs(home, value.replaceAll("{home}", home), 0o700);
   }
   mkdirSync(join(home, "tmp"), { mode: 0o700 });
@@ -208,7 +205,7 @@ export function giveTree(path: string, as: Identity): void {
  * it. A completed sign-in's (`signin`) new secrets are the owner's new login: written
  * whatever the store holds, and they move the generation on, then and only then (N2).
  */
-export async function keepHome(home: string, rec: SourceRecord, signin = false): Promise<void> {
+export async function keepHome(home: string, rec: Served, signin = false): Promise<void> {
   const store = `${STORE}/${rec.id}`;
   safeDirs("/", store, 0o700);
   const { secrets, sessions } = keptPaths(rec);
@@ -261,9 +258,9 @@ export async function keepHome(home: string, rec: SourceRecord, signin = false):
  * trust; a directory in the home that holds nothing but them is root's too. In `{system}`,
  * root's, readable by the run's own group alone.
  */
-function configOwned(rec: SourceRecord, home: string, system: string,
+function configOwned(rec: Served, home: string, system: string,
                      files: Iterable<string>, as: Identity): void {
-  const cli = rec.cli!;
+  const cli = rec.cli;
   const kept = [...Object.values(cli.home_env), ...cli.session_paths, ...cli.secret_paths]
     .map((path) => path.replaceAll("{home}", home).replace(/\/+$/, ""));
   for (const file of files) {
@@ -306,7 +303,7 @@ export interface RunSession {
  * kept back into the store as a run's (`keeps`: by compare-and-swap, `keepHome`), the home
  * and the directory dropped, and the user given back.
  */
-export async function withRunUser<T>(rec: SourceRecord, name: string,
+export async function withRunUser<T>(rec: Served, name: string,
                                      opts: { readonly signedIn: boolean;
                                              readonly keeps: boolean;
                                              readonly files?: ReadonlyMap<string, string> },
@@ -347,8 +344,8 @@ export async function withRunUser<T>(rec: SourceRecord, name: string,
 }
 
 /** A sign-in's own files (its record's `vendor_login_in_sandbox` files), its user's. */
-export function loginFiles(rec: SourceRecord, { as, home }: RunSession): void {
-  const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
+export function loginFiles(rec: Served, { as, home }: RunSession): void {
+  const files = rec.cli.per_credential?.vendor_login_in_sandbox?.files ?? {};
   for (const [path, text] of Object.entries(files)) {
     safeWrite(home, path.replaceAll("{home}", home), new TextEncoder().encode(text), 0o600, as);
   }

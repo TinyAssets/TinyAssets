@@ -23,6 +23,14 @@ const OPERATOR_KEYRING = keyring();
 /** The fake providers the gateway's fetches reach, and the owner suite's fake sandbox. */
 const FAKE_PROVIDERS = join(PLATFORM, "doors", "test", "fake-providers.ts");
 const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
+/** The owner suite's erasure-queue consumer, which records what each object sent. */
+const FAKE_ERASURES = join(PLATFORM, "owner", "test", "fake-erasures.ts");
+/**
+ * The queue the owner object hosted here sends its erasure to, consumed by that fake: not the
+ * config's `tinyassets-erasure`, whose consumer is the doors Worker itself, since these tests
+ * run the doors' consumer by hand on what was sent (`doors-live.test.ts` `consume`).
+ */
+const ERASURES_RECORDED = "owner-erasures-recorded";
 
 export default defineConfig({
   test: {
@@ -39,10 +47,11 @@ export default defineConfig({
       // gateway, codemode and files Workers are each bundled from their own config, as a
       // deploy bundles them. The doors' and each auxiliary Worker have every binding their
       // configs give them (`main`, `auxiliary`), and the tests state each secret: none is
-      // read from the host. The owner object hosted in this script has only the three bindings
+      // read from the host. The owner object hosted in this script has only the four bindings
       // stated below, until it runs as an auxiliary of its own (T2). SANDBOX is the owner
       // suite's fake sandbox Worker (`owner/test/fake-sandbox.ts`), whose record a test
-      // reads through SANDBOX_LOG.
+      // reads through SANDBOX_LOG; ERASURES is a queue the owner suite's fake consumer
+      // records (`owner/test/fake-erasures.ts`), read through ERASURES_SENT.
       // The import consumer's tests take a bundle the slice-2 builder made in Node
       // (`test/import-setup.ts`), deleted at the cutover with the importer.
       project("doors", "workerd", {
@@ -63,7 +72,10 @@ export default defineConfig({
                                  OWNER_FILES: workerConfig(join(PLATFORM, "files")).name,
                                  SANDBOX: fakeConfig(FAKE_SANDBOX).name,
                                  SANDBOX_LOG: { name: fakeConfig(FAKE_SANDBOX).name,
-                                                entrypoint: "Log" } },
+                                                entrypoint: "Log" },
+                                 ERASURES_SENT: { name: fakeConfig(FAKE_ERASURES).name,
+                                                  entrypoint: "Sent" } },
+              queueProducers: { ERASURES: { queueName: ERASURES_RECORDED } },
               workers: [
                 await auxiliary(join(PLATFORM, "gateway"),
                                 { bindings: { GATEWAY_KEYRING: KEYRING },
@@ -71,6 +83,8 @@ export default defineConfig({
                 await auxiliary(join(PLATFORM, "codemode"), {}),
                 fake(FAKE_PROVIDERS),
                 fake(FAKE_SANDBOX),
+                fake(FAKE_ERASURES, { queueConsumers: {
+                  [ERASURES_RECORDED]: { maxBatchSize: 1, maxBatchTimeout: 0 } } }),
                 await auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: KEYRING } }),
               ],
             }, "./test/entry.ts")))),

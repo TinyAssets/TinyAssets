@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 
 import { RUNS_CEILING } from "../../contract/src/control";
 import { sha256Hex } from "../../contract/src/digest";
-import { bundledSources } from "../../sources/src/catalog";
+import { npmInstalled, served } from "../../sources/src/served";
 import { WORKSPACE } from "../../contract/src/paths";
 import { binPath, ENGINE_ROOT } from "../runner/engine";
 import { INBOX, INCOMING, LOADER, RUNNERS, STATE_DIR } from "../runner/protocol";
@@ -115,14 +115,9 @@ export function spec(): ImageSpec {
  * it (`binPath`), its lock the record's (`lock_sha256`) or this throws.
  */
 function engines(): ImageEngine[] {
-  const sources = bundledSources();
   const out: ImageEngine[] = [];
-  for (const id of [...sources.ids()].sort()) {
-    const record = sources.get(id)!;
-    const install = record.cli?.install;
-    if (install === undefined || install.manager !== "npm") {
-      continue;
-    }
+  for (const record of [...served().values()].filter(npmInstalled)) {
+    const { id, cli: { install } } = record;
     const digest = sha256Hex(readFileSync(lock(id)));
     if (digest !== install.lock_sha256) {
       throw new Error(`${id}: its lock is not the record's (${digest})`);

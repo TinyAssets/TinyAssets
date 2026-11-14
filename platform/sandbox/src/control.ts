@@ -20,8 +20,9 @@
  *    start that opened the lease (`tokens`) applies its network whole and hands the runner
  *    its two secrets, the sync token and its own (`/var/lib/ta/lease.json`, in the root-only
  *    state directory), never the egress token, which the network's transform carries;
- * 3. a run on the vendor's own sign-in widens the network to its record's login and
- *    provider hosts, and runs the record's `status_argv` there first
+ * 3. the network is widened to the vendor hosts the start hands (`hosts`: its record's login
+ *    and provider hosts, on the vendor's own sign-in), and a run on that sign-in runs the
+ *    record's `status_argv` there first
  *    (`ta-runner signin-check`): no login, and the answer is `signin_required`;
  * 4. the run's start document goes into the state directory and `ta-runner launch` starts
  *    the run's runner, detached; the answer comes at once.
@@ -70,7 +71,6 @@ import { AUTHORITY, HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
 import { readControl, type SandboxCeilings } from "../../contract/src/control";
-import { bundledSources, engineHosts } from "../../sources/src/catalog";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import {
   allowList, doorHeaders, EGRESS_HOST, egressTokenOf, generationOf, SANDBOX_HEADER,
@@ -245,18 +245,9 @@ function reapplyNetwork(plan: NetworkDocument): NetworkDocument {
   return plan;
 }
 
-/** The vendor's own hosts of an engine run on its sign-in; none on a key. */
-function vendorHosts(start: SandboxStart): string[] {
-  return start.credential !== "vendor_login_in_sandbox" ? [] : hostsOf(start.engine, null);
-}
-
-/** An engine's vendor hosts, and its region's (`engineHosts`), by the engine's id. */
-function hostsOf(engine: string, region: string | null): string[] {
-  const record = bundledSources().get(engine);
-  if (record?.cli === undefined) {
-    throw new Error(`engine ${engine} has no CLI record`);
-  }
-  return engineHosts(record, region);
+/** A job's vendor hosts as the owner hands them (`SandboxStart.hosts`): a list of names. */
+function hostList(hosts: unknown): boolean {
+  return Array.isArray(hosts) && hosts.every((host) => typeof host === "string");
 }
 
 /** A sign-in's id: `si_` and 32 hex. */
@@ -320,8 +311,6 @@ interface Launch {
   readonly kind: JobKind;
   readonly id: string;
   readonly request: SandboxStart | SandboxSignin;
-  /** The vendor hosts its network is widened by. */
-  readonly hosts: () => readonly string[];
   /** Its document for the runner. */
   readonly document: StartDoc | SigninDoc;
   /** What it does in its sandbox before its document goes in: a refusal, or null to go on. */
@@ -771,17 +760,16 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (!RUN_ID.test(start.run) || !AUTHORITY.test(start.authority)
         || !LEASE.test(start.lease.lease_id) || (start.tokens === null) !== (start.network === null)
         || typeof start.route !== "string" || !SEALED_ROUTE.test(start.route)
-        || !httpsDoors(start.urls)) {
-      throw new Error("a sandbox start names its run, its authority, its lease and its " +
-                      "https doors on the egress host");
+        || !httpsDoors(start.urls) || !hostList(start.hosts)) {
+      throw new Error("a sandbox start names its run, its authority, its lease, its vendor " +
+                      "hosts and its https doors on the egress host");
     }
     const { ceilings, retention, fresh } = await this.#control();
     if (ceilings === null) {
       return { started: false, code: "sandbox_unconfigured" };
     }
     return this.#launch(owner, ceilings, {
-      kind: "run", id: start.run, request: start, hosts: () => vendorHosts(start),
-      document: startDocument(start, retention),
+      kind: "run", id: start.run, request: start, document: startDocument(start, retention),
       ready: async (handle) => {
         if (start.credential === "vendor_login_in_sandbox") {
           const signedIn = await this.#run(handle, [COMMAND.signinCheck, start.engine]);
@@ -801,25 +789,25 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /**
    * The vendor's own sign-in started in the authority's sandbox (slice SIGNIN), or its
    * sign-out: the sandbox found, resumed or made as a run's start finds it (its turn in the
-   * line, `sandbox_waiting` past the ceiling), its network let out to the engine's vendor
-   * hosts (and the chosen region's), and the runner's `login-launch` started with the
-   * sign-in's document (no secret); the sign-in holds the lease as a launched run does.
+   * line, `sandbox_waiting` past the ceiling), its network let out to the vendor hosts it
+   * hands (the engine's and the chosen region's), and the runner's `login-launch` started
+   * with the sign-in's document (no secret); the sign-in holds the lease as a launched run
+   * does.
    */
   async signin(owner: string, signin: SandboxSignin): Promise<Started> {
     if (!SIGNIN_ID.test(signin.id) || !AUTHORITY.test(signin.authority)
         || !LEASE.test(signin.lease.lease_id) || (signin.tokens === null) !== (signin.network === null)
         || typeof signin.route !== "string" || !SEALED_ROUTE.test(signin.route)
-        || !httpsDoors(signin.urls) || (signin.mode !== "in" && signin.mode !== "out")) {
-      throw new Error("a sign-in names its id, its authority, its lease, its route and its " +
-                      "https doors on the egress host");
+        || !httpsDoors(signin.urls) || (signin.mode !== "in" && signin.mode !== "out")
+        || !hostList(signin.hosts)) {
+      throw new Error("a sign-in names its id, its authority, its lease, its route, its " +
+                      "vendor hosts and its https doors on the egress host");
     }
-    const hosts = hostsOf(signin.engine, signin.region);
     const { ceilings } = await this.#control();
     if (ceilings === null) {
       return { started: false, code: "sandbox_unconfigured" };
     }
     return this.#launch(owner, ceilings, { kind: "signin", id: signin.id, request: signin,
-                                           hosts: () => hosts,
                                            document: signinDocument(signin) });
   }
 
@@ -835,7 +823,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     return this.#serial(async () => {
       const e2b = this.#e2b();
       const network = request.network === null ? null : request.network.network;
-      const hosts = job.hosts();
+      const { hosts } = request;
       // The opener's network replaces the live one whole: it keeps the vendor hosts of every
       // job launched under this lease before it (a joining job's start that ran first).
       const kept = network === null ? []

@@ -43,13 +43,17 @@ export function configFiles(root: string): string[] {
 /** The platform's configs, read and parsed once: they do not change while the guards run. */
 let PLATFORM_CONFIGS: ReadonlyMap<string, Readonly<Config>> | null = null;
 
-/** Every Worker config in the platform, by its Worker's name; a map of the caller's own. */
+/**
+ * Every Worker config in the platform, by its Worker's folder under `platform/` (its name is
+ * the config's own `name`; each Worker's config guard holds it to one config); a map of the
+ * caller's own.
+ */
 export function platformConfigs(): Map<string, Config> {
   if (PLATFORM_CONFIGS === null) {
     const found = new Map<string, Config>();
     for (const path of configFiles(PLATFORM)) {
-      const parsed = parseWrangler(readFileSync(join(PLATFORM, path), "utf8"), path);
-      found.set(String(parsed["name"]), deepFreeze(parsed));
+      found.set(path.split("/")[0]!, deepFreeze(parseWrangler(
+        readFileSync(join(PLATFORM, path), "utf8"), path)));
     }
     PLATFORM_CONFIGS = found;
   }

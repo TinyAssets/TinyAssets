@@ -18,7 +18,8 @@
  * - Files: the record's own templates, the credential's, and the MCP template, each filled
  *   (a `.json` file's values JSON-escaped), several templates of one JSON file merged.
  */
-import type { CliSpec, SourceRecord } from "../../sources/src/schema";
+import type { CliSpec } from "../../sources/src/schema";
+import type { Served } from "../../sources/src/served";
 import { egressDoor, envStem } from "../../contract/src/egress";
 import { AGENTS_DIR } from "../../contract/src/paths";
 import { forbids } from "../../contract/src/text";
@@ -37,8 +38,8 @@ export const HOMES = "/var/lib/ta-homes";
 export const SYSTEM = "/etc/ta/runs";
 
 /** The engine's binary as the template installs it. */
-export function binPath(record: SourceRecord): string {
-  const install = record.cli!.install;
+export function binPath(record: Served): string {
+  const install = record.cli.install;
   return install.manager === "npm"
     ? `${ENGINE_ROOT}/${record.id}/node_modules/.bin/${install.bin}`
     : `${ENGINE_ROOT}/${record.id}/bin/${install.bin}`;
@@ -140,7 +141,7 @@ export interface Invocation {
  * basics the run keeps; `continued` whether a `continue_in_cwd` conversation already ran
  * in its cwd; `prompt` the input (a recovery's continuation, or the start's own).
  */
-export function invocation(record: SourceRecord, start: StartDoc,
+export function invocation(record: Served, start: StartDoc,
                            inherited: Readonly<Record<string, string | undefined>>,
                            options: { readonly continued: boolean; readonly prompt?: string;
                                       /** The run's own home and system directory. */
@@ -148,7 +149,7 @@ export function invocation(record: SourceRecord, start: StartDoc,
                                       /** A `continue_in_cwd` conversation's own cwd. */
                                       readonly conversationDir?: string }): Invocation {
   const cli = record.cli;
-  if (cli === undefined || !cli.credential.includes(start.credential)) {
+  if (!cli.credential.includes(start.credential)) {
     throw new Error(`engine ${record.id} does not run on ${start.credential}`);
   }
   const home = options.home;
@@ -253,10 +254,10 @@ export function invocation(record: SourceRecord, start: StartDoc,
 }
 
 /** A record's `secret_paths` and `session_paths`, each from its home (`a/b`, `a/` a tree). */
-export function keptPaths(record: SourceRecord): { secrets: string[]; sessions: string[] } {
+export function keptPaths(record: Served): { secrets: string[]; sessions: string[] } {
   const rel = (path: string) => path.slice("{home}/".length);
-  return { secrets: (record.cli?.secret_paths ?? []).map(rel),
-           sessions: (record.cli?.session_paths ?? []).map(rel) };
+  return { secrets: record.cli.secret_paths.map(rel),
+           sessions: record.cli.session_paths.map(rel) };
 }
 
 /**

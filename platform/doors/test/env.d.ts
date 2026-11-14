@@ -15,5 +15,7 @@ declare namespace Cloudflare {
      * reaches that Worker as its SANDBOX (`owner/test/fake-sandbox.ts`).
      */
     SANDBOX_LOG: Service<import("../../owner/test/fake-sandbox").Log>;
+    /** What the owner object hosted here sent its erasure queue (`owner/test/fake-erasures.ts`). */
+    ERASURES_SENT: Service<import("../../owner/test/fake-erasures").Sent>;
   }
 }

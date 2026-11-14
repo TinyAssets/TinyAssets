@@ -32,10 +32,10 @@ describe("the source records", () => {
     const reached = [...closure("sources", sources).keys()];
     expect(reached.every((path) => /^(?:sources|contract)\/src\//.test(path))).toBe(true);
     expect(reached).toContain("sources/src/records.ts");
-    for (const worker of ["owner", "doors", "sandbox"]) {
+    for (const worker of ["owner", "doors"]) {
       expect(closure(worker, sources).has("sources/src/catalog.ts"), worker).toBe(true);
     }
-    for (const worker of ["gateway", "files", "codemode"]) {
+    for (const worker of ["gateway", "files", "codemode", "sandbox"]) {
       expect([...closure(worker, sources).keys()]
         .some((path) => path.startsWith("sources/")), worker).toBe(false);
     }

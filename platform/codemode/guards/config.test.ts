@@ -6,7 +6,8 @@ import { configTests } from "../../ci/kit/config";
 
 import { CONFIG } from "./rules";
 
-const OBJECTS = CONFIG.exact!["durable_objects"] as { bindings: object[] };
+/** Its one namespace, as its rules allow it, for the probes. */
+const CODEMODE = Object.freeze({ name: "CODEMODE", class_name: "CodemodeSandbox" });
 
 configTests(CONFIG, {
   refused: ["routes", "route", "kv_namespaces", "r2_buckets", "d1_databases", "services",
@@ -18,18 +19,17 @@ configTests(CONFIG, {
     ["ctx.exports on", { compatibility_flags: [] }],
     ["an extra flag", { compatibility_flags: ["disable_ctx_exports", "nodejs_compat"] }],
     ["a Worker Loader", { worker_loaders: [{ binding: "LOADER" }] }],
-    ["the owner's class", { durable_objects: { bindings: [
-      ...OBJECTS.bindings, { name: "OWNER", class_name: "OwnerDO",
-                             script_name: "tinyassets-owner" }] } }],
     ["another Worker's class", { durable_objects: { bindings: [
-      { name: "CODEMODE", class_name: "CodemodeSandbox", script_name: "tinyassets-owner" }] } }],
+      CODEMODE, { name: "OWNER", class_name: "OwnerDO", script_name: "other" }] } }],
+    ["its own class by another Worker's name", { durable_objects: { bindings: [
+      { ...CODEMODE, script_name: "other" }] } }],
     ["a second class made", { migrations: [{ tag: "v1",
                                             new_sqlite_classes: ["CodemodeSandbox", "Other"] }] }],
     ["a class made without SQLite", { migrations: [{ tag: "v1",
                                                     new_classes: ["CodemodeSandbox"] }] }],
     ["no CPU headroom", { limits: undefined }],
     ["other limits", { limits: { cpu_ms: 30_000, subrequests: 10 } }],
-    ["another name", { name: "tinyassets-owner" }],
+    ["another name", { name: "other" }],
     ["a key wrangler adds later", { agent_memory: [] }],
   ],
 });

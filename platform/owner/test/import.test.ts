@@ -26,6 +26,7 @@ import type { OwnerDO } from "../src/owner-do";
 import {
   DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, policyDigest, type PolicyDocument,
 } from "../../contract/src/policy-document";
+import { erasuresSent } from "./erasure-support";
 import { recorder } from "./runs-support";
 import { failure, TIERS } from "./support";
 
@@ -34,7 +35,7 @@ const BUNDLE = "b".repeat(64);
 const I = "/workspace/imported";
 const bytesOf = (text: string) => new TextEncoder().encode(text);
 
-/** A fresh object as production makes one: pending (`admitted.ts` leaves `get` alone). */
+/** A fresh object as production makes one: pending, never admitted by the rig. */
 function pending(owner = `owner-${crypto.randomUUID()}`, namespace: DurableObjectNamespace =
                    env.OWNER as unknown as DurableObjectNamespace): { stub: Stub; owner: string } {
   return { stub: namespace.get(namespace.idFromName(owner)) as unknown as Stub, owner };
@@ -478,9 +479,7 @@ describe("the import's discard", () => {
 
   it("deletes a pending owner's R2 objects and database, with no tombstone, and is repeatable",
      async () => {
-    // The test Worker's object whose erasure queue is a recording fake.
-    const { stub, owner, ns } = await imported(undefined,
-                                               env.AGENT as unknown as DurableObjectNamespace);
+    const { stub, owner, ns } = await imported();
     expect((await left(stub, ns)).objects).toBeGreaterThan(0);
     expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
     // Nothing of the owner: no table (so no erased admission row), no object under its
@@ -488,8 +487,7 @@ describe("the import's discard", () => {
     expect(await left(stub, ns)).toEqual({ tables: [], objects: 0 });
     // No erasure: nothing told the doors (whose outside record writes the erased record and
     // deletes the identity at the issuer), and no sandbox erased.
-    expect(await runInDurableObject(stub, (instance: unknown) =>
-      (instance as { erasures: { sent: unknown[] } }).erasures.sent)).toEqual([]);
+    expect(await erasuresSent(owner)).toBe(0);
     expect((await recorder(stub as never)).erasures).toEqual([]);
     expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
     // Discarded, it still takes the import's binding alone.
