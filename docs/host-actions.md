@@ -25,7 +25,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | Item | Smallest founder-only action |
 |---|---|
-| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Left: delete any repository-level copy of a production secret (Settings → Secrets and variables → Actions → Repository secrets), since a branch dispatch can read those. `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN` go with `python scripts/platform_setup.py workos`. |
+| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Left: delete any repository-level copy of a production secret (Settings → Secrets and variables → Actions → Repository secrets), since a branch dispatch or a pull request can read those. Every workflow now reads each secret but the harmless ones (`HARMLESS_SECRETS` in `platform/ci/guards/environment.test.ts`) inside a main-only environment, so each other repository secret goes once its environment holds the same value; `MERGE_ATTRIBUTION_TOKEN`, the four `ANDROID_UPLOAD_*`, `ANDROID_DEBUG_KEYSTORE_B64` and `ANDROID_GOOGLE_SERVICES_JSON_B64` are copied into `production` first. `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN` go with `python scripts/platform_setup.py workos`. |
 
 ---
 
@@ -1063,7 +1063,7 @@ public):
 
 | File | Secret name | Read by | Where it lives |
 |---|---|---|---|
-| `google-services.json` | `ANDROID_GOOGLE_SERVICES_JSON_B64` (base64 of the file, one line) | the **Android build** — `mobile/scripts/materialize_google_services.py` in `android-release.yml` | GitHub repo secret. For the container build instead: save the file as `~/.tinyassets/android/google-services.json` (it is mounted at `/keys`, or name it with `ANDROID_GOOGLE_SERVICES_JSON_FILE`). |
+| `google-services.json` | `ANDROID_GOOGLE_SERVICES_JSON_B64` (base64 of the file, one line) | the **Android build** — `mobile/scripts/materialize_google_services.py` in `android-release.yml` | `production` environment secret. For the container build instead: save the file as `~/.tinyassets/android/google-services.json` (it is mounted at `/keys`, or name it with `ANDROID_GOOGLE_SERVICES_JSON_FILE`). |
 | service-account JSON | `TINYASSETS_FCM_SERVICE_ACCOUNT_JSON` (the whole document, compacted to ONE line, e.g. `python -c "import json,sys;print(json.dumps(json.load(open(sys.argv[1]))))" key.json`) | the **server** — `tinyassets/notify/fcm.py`, via FCM HTTP v1 | the vault, then a line in `/etc/tinyassets/env` on the droplet (the daemon container's `env_file`); redeploy/recreate to pick it up. Vault only — never a committed file, never a workflow literal. |
 
 `google-services.json` is not a server credential (its API key is restricted to

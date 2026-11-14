@@ -815,7 +815,7 @@ describe("the file door's bytes", () => {
     const files = (env as unknown as {
       FILES: Record<string, (...args: unknown[]) => Promise<unknown>> }).FILES;
     for (const method of ["getChunks", "getManifestRoot", "getManifestPart", "getManifestSegment",
-                          "rewrapKey", "mintKey", "deleteNamespace"]) {
+                          "rewrapKey", "mintKey", "deleteNamespace", "checkChunks"]) {
       const refused = await Promise.resolve().then(() => files[method]!("0".repeat(32), "k"))
         .then(() => null, (error: unknown) => String(error));
       expect([method, refused]).toEqual([method, expect.stringMatching(/does not implement/)]);

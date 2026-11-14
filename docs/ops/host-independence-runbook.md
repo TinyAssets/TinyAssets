@@ -186,7 +186,7 @@ the emergency-DNS workflow to edit zone records.
 
 **Rotate:**
 1. Cloudflare → My Profile → API Tokens → "workflow-zone-rw" → Roll.
-2. `gh secret set CLOUDFLARE_API_TOKEN --body "<new token>"`.
+2. `gh secret set CLOUDFLARE_API_TOKEN --env production` (it asks for the new token).
 3. Update local vault (1Password "CLOUDFLARE_API_TOKEN" item) per
    `2026-04-22-secrets-vault-integration.md (archived in git)`.
 4. Verify: trigger `.github/workflows/emergency-dns.yml` dry-run OR wait
@@ -278,7 +278,7 @@ the rotation go to a different device.
 
 **Rotate:** Only if the host changes phones or revokes the Pushover
 account. Get the new user key from pushover.net → Your User Key.
-`gh secret set PUSHOVER_USER_KEY --body "<new key>"`.
+`gh secret set PUSHOVER_USER_KEY --env production` (it asks for the new key).
 
 #### pushover-app-token
 
@@ -288,7 +288,7 @@ source app.
 **Rotate:**
 1. pushover.net → Your Applications → TinyAssets → Edit → Generate new
    token (or create replacement app if revoking the app entirely).
-2. `gh secret set PUSHOVER_APP_TOKEN --body "<new token>"`.
+2. `gh secret set PUSHOVER_APP_TOKEN --env production` (it asks for the new token).
 3. Fire `.github/workflows/pushover-test.yml` to confirm delivery with
    the new token before revoking the old.
 

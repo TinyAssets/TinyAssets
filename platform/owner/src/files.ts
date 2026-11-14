@@ -110,7 +110,9 @@ import type {
 } from "./owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { Edited, EditRefusal } from "./edit";
-import { type ChunkGet, type ChunkStore, GET_READS } from "../../contract/src/files";
+import {
+  type ChunkCheck, type ChunkGet, type ChunkStore, GET_READS,
+} from "../../contract/src/files";
 import { fitList, PAGE_BYTES, RESULT_TOO_LARGE } from "./pages";
 import {
   frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
@@ -1001,14 +1003,25 @@ export class Files {
   }
 
   /** Chunk bytes in order, fetched from `FILES` `GET_READS` reads a call at most. */
-  async fetch(reads: readonly ChunkGet[]): Promise<Uint8Array[]> {
-    if (reads.length === 0) {
+  fetch(reads: readonly ChunkGet[]): Promise<Uint8Array[]> {
+    return this.#reads(reads, (ns, key, batch) => this.#store.getChunks(ns, key, batch));
+  }
+
+  /** What `FILES` finds of each chunk, in order (`ChunkCheck`), `GET_READS` a call at most. */
+  check(sha256s: readonly string[]): Promise<ChunkCheck[]> {
+    return this.#reads(sha256s, (ns, key, batch) => this.#store.checkChunks(ns, key, batch));
+  }
+
+  /** `read`'s answers to `items` in order, `GET_READS` items a call under the owner's key. */
+  async #reads<I, O>(items: readonly I[],
+                     read: (ns: string, key: string, batch: I[]) => Promise<O[]>): Promise<O[]> {
+    if (items.length === 0) {
       return [];
     }
     const { ns, key } = await this.space();
-    const out: Uint8Array[] = [];
-    for (let at = 0; at < reads.length; at += GET_READS) {
-      out.push(...await this.#store.getChunks(ns, key, reads.slice(at, at + GET_READS)));
+    const out: O[] = [];
+    for (let at = 0; at < items.length; at += GET_READS) {
+      out.push(...await read(ns, key, items.slice(at, at + GET_READS)));
     }
     return out;
   }

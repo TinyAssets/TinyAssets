@@ -185,7 +185,7 @@ export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handb
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
   readonly mode: Mode;
-  /** `--public`: the plan job's, which holds no production secret. */
+  /** `--public`: the plan job's, which holds the Cloudflare token alone. */
   readonly reach: "public" | "secrets";
   /** `--yes`: the apply job's, which changes what its plan says. */
   readonly apply: boolean;
@@ -620,7 +620,7 @@ export function secretPlan(held: Readonly<Record<string, readonly string[]>>,
                       `holds ${name}: pass --rotate ${name} to set both again`);
     }
   }
-  // `values` null: the plan job, which holds no secret; the apply job checks the ring.
+  // `values` null: the plan job, which holds no keyring; the apply job checks the ring.
   for (const name of KEYRINGS) {
     if (rotate.has(name) && values !== null) {
       const ring = keyring(values(name), name);
@@ -1872,7 +1872,7 @@ export interface Row {
   readonly applies: boolean;
   /** The options of its own it reads (`OWN`): it refuses another mode's. */
   readonly own: readonly Own[];
-  /** Its steps, chosen once by `--public`: the plan job's, which reaches no secret, or the rest. */
+  /** Its steps, chosen once by `--public`: the plan job's (its token alone), or the rest. */
   readonly steps: Readonly<Record<Run["reach"], readonly Held[]>>;
   /**
    * Its plan, reported after its steps: what a run that changes nothing ends saying, and what
@@ -1926,7 +1926,7 @@ const CONTROL = Steps.none.then(zone).then(controlEdit).list;
 const OWNER = Steps.none.then(zone).then(ownerAsk).list;
 const RESTORE = Steps.none.then(zone).then(restoreAsk).list;
 
-/** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
+/** What the plan job holds: the Cloudflare token, its one `production` secret, and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
   "CLOUDFLARE_API_TOKEN", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
 /** What a deploy reads: every secret a config requires, and the optional ones when given. */

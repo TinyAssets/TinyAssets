@@ -118,8 +118,7 @@ For every Play upload:
 
 1. Increase `versionCode` monotonically. Play never accepts a code it has seen
    before, even if the old artifact was only on a test track.
-2. Change `versionName` when the user-facing release label should change. A
-   `mobile-v<versionName>` tag must match it exactly; the workflow fails otherwise.
+2. Change `versionName` when the user-facing release label should change.
 3. Build only after a fresh `cap add android`. A platform generated under an older
    Capacitor major can retain stale SDK values through `cap sync`; configuration fails
    closed rather than silently rewriting a dependency-owned template.
@@ -132,9 +131,9 @@ For every Play upload:
    the emitted SHA-256 file beside the AAB. Never log or put passwords on argv.
 
 Both `.github/workflows/android-release.yml` and `mobile/container/build.sh` enforce
-that sequence. Pull requests stop after the unsigned release build and verification;
-tag/manual runs require the upload secrets and publish a signed AAB plus its checksum
-as the workflow artifact.
+that sequence. Pull requests stop after the unsigned release build and verification,
+with no secret; a dispatch on `main` runs in the `production` environment, requires the
+upload secrets and publishes a signed AAB plus its checksum as the workflow artifact.
 
 ## Play policy gates before production access
 

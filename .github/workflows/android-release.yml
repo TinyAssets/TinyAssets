@@ -1,9 +1,17 @@
 name: Android release AAB
 
 # Builds a signed Android App Bundle (.aab) for Google Play from the upload
-# keystore (provided as repo secrets — see docs/ops/google-play-launch.md §3).
-# The web app itself ships instantly; a new AAB is only needed when the native
-# shell / config changes. Runs on demand (workflow_dispatch) or on a mobile-v* tag.
+# keystore (see docs/ops/google-play-launch.md §3). The web app itself ships
+# instantly; a new AAB is only needed when the native shell / config changes.
+#
+# Two jobs, one build (.github/actions/android-release-bundle):
+#   check    - pull requests: the unsigned release build and its verification,
+#              with no secret and no Firebase config (a PR's code never sees one).
+#   release  - workflow_dispatch on main, in the main-only `production`
+#              environment, which holds the upload keystore and the Firebase
+#              config. GitHub refuses the job on any other ref before a step
+#              runs, so a branch's copy of this file cannot reach them
+#              (platform/ci/guards/environment.test.ts).
 #
 # Signing: gradle builds the UNSIGNED bundle (no committed signing config to leak),
 # then we sign the .aab with the upload key via jarsigner. Google re-signs with the
@@ -13,11 +21,10 @@ name: Android release AAB
 
 on:
   workflow_dispatch:
-  push:
-    tags: ["mobile-v*"]
   pull_request:
     paths:
       - ".github/workflows/android-release.yml"
+      - ".github/actions/android-release-bundle/**"
       - "mobile/**"
 
 permissions:
@@ -25,125 +32,45 @@ permissions:
 
 concurrency:
   # One group per PR, so a new push to a `mobile/**` PR cancels the superseded
-  # AAB build. Every non-PR run gets its OWN group via `run_id`, and
-  # `cancel-in-progress` is conditional on top of that. Two layers here matter
-  # more than anywhere else in this repo: a `push: tags: mobile-v*` run BUILDS
-  # AND SIGNS the release bundle Play receives. Cancelling one mid-jarsigner
-  # would leave a tag with no artifact and no error anyone reads, so neither a
-  # PR nor a second tag may ever interrupt it.
+  # AAB build. Every release run gets its OWN group via `run_id`, and
+  # `cancel-in-progress` is conditional on top of that: a release run BUILDS
+  # AND SIGNS the bundle Play receives, and cancelling one mid-jarsigner would
+  # leave a dispatch with no artifact and no error anyone reads.
   group: android-release-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build-release-aab:
+  check:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      - uses: ./.github/actions/android-release-bundle
+
+  release:
+    if: github.event_name != 'pull_request'
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: mobile/package-lock.json
+          persist-credentials: false
 
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+      - id: bundle
+        uses: ./.github/actions/android-release-bundle
         with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Refuse to sign commits outside main history
-        if: github.event_name != 'pull_request'
-        env:
-          RELEASE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # TinyAssets is public by invariant, so this deliberately remains an
-          # anonymous read after checkout removed credentials. A private fork
-          # must supply read auth here or releases fail closed.
-          if git rev-parse --is-shallow-repository | grep -qx true; then
-            git fetch --unshallow --no-tags origin \
-              +refs/heads/main:refs/remotes/origin/main
-          else
-            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          fi
-          if ! git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
-            echo "::error::refuses to sign $RELEASE_SHA because it is not in origin/main history"
-            exit 1
-          fi
-
-      - name: Install JS deps (lockfile-pinned)
-        working-directory: mobile
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Add + sync Android platform
-        working-directory: mobile
-        run: |
-          npx --no-install cap add android
-          npx --no-install cap sync android
-
-      - name: Register the tinyassets:// deep link (in-app OAuth return)
-        working-directory: mobile
-        run: |
-          python3 scripts/add_app_scheme.py
-          grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
-
-      - name: Materialise google-services.json (phone notifications)
-        working-directory: mobile
-        env:
-          # Build input, never committed (public repo). Unset = the build still
-          # succeeds with push disabled and says so in this step's log.
-          ANDROID_GOOGLE_SERVICES_JSON_B64: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_B64 }}
-        run: python3 scripts/materialize_google_services.py
-
-      - name: Install the launcher icon + splash (pre-rendered, no image toolchain in CI)
-        working-directory: mobile
-        run: python3 scripts/add_app_icons.py
-
-      - name: Apply version + verify Android release identity, SDK, manifest and artwork
-        working-directory: mobile
-        env:
-          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/mobile-v') && github.ref_name || '' }}
-        run: |
-          expected=""
-          if [ -n "$RELEASE_TAG" ]; then expected="${RELEASE_TAG#mobile-v}"; fi
-          if [ -n "$RELEASE_TAG" ] && [ -z "$expected" ]; then
-            echo "::error::release tag must include a version after mobile-v"
-            exit 1
-          fi
-          args=()
-          if [ -n "$expected" ]; then args+=(--expected-version "$expected"); fi
-          python3 scripts/configure_android_release.py "${args[@]}"
-          python3 scripts/verify_android_release.py --artwork-only
-          python3 scripts/verify_android_release.py
-
-      - name: Lint and build unsigned release bundle
-        working-directory: mobile/android
-        run: ./gradlew lintRelease bundleRelease --no-daemon --stacktrace
-
-      - name: Verify the merged release manifest
-        working-directory: mobile
-        run: python3 scripts/verify_android_release.py --merged
-
-      - name: Locate the bundle
-        id: findaab
-        run: |
-          set -euo pipefail
-          aab="$(find mobile/android/app/build/outputs/bundle/release -type f -name '*.aab' -print -quit)"
-          [ -n "$aab" ] || { echo "::error::no .aab produced"; exit 1; }
-          echo "aab=$aab" >> "$GITHUB_OUTPUT"
+          google-services-json-b64: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_B64 }}
 
       - name: Sign the bundle with the upload key
-        if: github.event_name != 'pull_request'
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
-          AAB: ${{ steps.findaab.outputs.aab }}
+          AAB: ${{ steps.bundle.outputs.aab }}
           # The upload certificate generated 2026-09-01 (keytool, RSA 2048, alias
           # `upload`). A restored keystore that does not carry exactly this
           # certificate must never sign a Play upload — fail closed, like the
@@ -184,11 +111,10 @@ jobs:
           echo "signed $AAB with upload key"
 
       - name: Upload signed AAB artifact
-        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tinyassets-release-aab
           path: |
-            ${{ steps.findaab.outputs.aab }}
-            ${{ steps.findaab.outputs.aab }}.sha256
+            ${{ steps.bundle.outputs.aab }}
+            ${{ steps.bundle.outputs.aab }}.sha256
           if-no-files-found: error

@@ -139,13 +139,8 @@ def _one_value(text: str, pattern: str, label: str) -> str:
     return values[0]
 
 
-def configure(mobile: Path, expected_version: str | None = None) -> AndroidRelease:
+def configure(mobile: Path) -> AndroidRelease:
     release = load_release(mobile)
-    if expected_version is not None and expected_version != release.version_name:
-        raise ValueError(
-            f"tag version {expected_version!r} does not match android-release.json "
-            f"versionName {release.version_name!r}"
-        )
 
     capacitor_path = mobile / "capacitor.config.json"
     capacitor = json.loads(capacitor_path.read_text(encoding="utf-8"))
@@ -213,13 +208,9 @@ def configure(mobile: Path, expected_version: str | None = None) -> AndroidRelea
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mobile-root", type=Path, default=DEFAULT_MOBILE)
-    parser.add_argument(
-        "--expected-version",
-        help="fail if this tag-derived version does not match android-release.json",
-    )
     args = parser.parse_args(argv)
     try:
-        configure(args.mobile_root.resolve(), args.expected_version)
+        configure(args.mobile_root.resolve())
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
