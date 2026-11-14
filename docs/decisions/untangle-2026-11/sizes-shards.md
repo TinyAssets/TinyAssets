@@ -1,0 +1,16 @@
+# sizes-shards as built (2026-11-14)
+
+`archive-mail-sizes.md` §4 owed this split to `untangle/sizes-shards`. The figures below come from #5604's measured merge-group run, 43646845463 (`sizes-report-0`, `sizes-report-1` and `tests-report-0`).
+
+1. **`archive-mail.test.ts`'s large tests are split by subject, each test moved whole.** The file was one Vitest file of about 470 s of large tests, so it was owner 2/2's critical path, and no shard split could spread it. Each test, and each `describe` around it, moves verbatim:
+   - `archive-move.test.ts`, the lane's moves: the move from half the hot ceiling, the units held on the pool, the aborted move, the body of control characters, the lane's failures and the full owner's archive. 163.8 s.
+   - `archive-read.test.ts`, archived mail read back: the archived parent, the chain reads (N9, N10, paged bodies), export v3 and the export across a move. 89.5 s.
+   - `archive-merge.test.ts`, stragglers merged: the schema's overlap refusal, the lone straggler, the merge's byte budget and the worst merge. 49.3 s.
+   - `archive-erasure.test.ts`, a deleted agent's archived mail: the drop at once, the `maxAgentRows` wait, the rewrite kept byte for byte, the two deletions, the bounded rewrite and mail moving during a long purge. 130.1 s.
+   - `archive-mail.test.ts` keeps the record format: the segments' encoding and ids, a message's counted bytes, the tail's seal at production's limits (5.7 s) and `TIER_STORAGE_MAX`.
+   - "the ledger at its production limits" tests the ledger's two ceilings, not the archive, so it moves to `ledger-bounds.test.ts` (32.1 s), whose header named that file for it. `ledger.ts`'s two comments that cite it name its new file.
+2. **One support module, `archive-support.ts`.** It holds `seeded()` and every helper more than one file uses. A helper only one file uses stays in that file (`watchMoves` in erasure, `MUSE_ID` in read). The old file kept its own `Rig` type, which is now `ledger-support.ts`'s, and a `RESULT_CHARS = 50_000` copy of `contract/src/encoded.ts`'s, which is now imported.
+3. **Vitest's shards can't be steered, and the split doesn't need them to be.** `--shard` sorts every file of the run (81 here, the tag filter applies later) by the sha1 of its path and cuts the list into contiguous slices. Only a file's name moves it, and a name chosen for its hash would be a hidden link. Vitest's own sequencer puts `archive-read` in owner 1/2 and the other three, with `archive-mail`, in 2/2. Inside a shard, though, three workerd files run at once: in the measured run, owner 2/2 ran `archive-mail`, `collections` and `export` side by side. So a shard takes the longer of its longest file and a third of its total.
+   - **owner 2/2:** 535.6 s of large tests, the longest file 163.8 s. Scheduled three at a time in Vitest's order (the larger file first, with no cache in CI), about 206 s, against about 485 s before.
+   - **owner 1/2:** 203.8 s of large tests, the longest file 89.5 s, about 90 s.
+4. **No watchdog or budget changes here.** `platform-sizes`' watchdog and the large budget are re-derived from CI's own shard times and reports after this merges. That's the `live:` re-derivation already owed by #5602 and #5604, which now reads the split shards.
