@@ -43,9 +43,10 @@ from typing import Protocol
 #: — a status code alone cannot tell those apart.
 APP_BUILD_HEADER = "X-TinyAssets-Build"
 
-#: An apex asset the website really serves whose path starts with "app". It is
-#: the live witness for the route-shape hazard, so it is probed, not assumed.
-APEX_APP_PREFIXED_ASSET = "/apple-touch-icon.png"
+#: An apex asset the website really serves. Its old path started with "app" and
+#: so witnessed the route-shape hazard; it left that prefix for the platform's
+#: `app*` route (B13), and is still probed as the website's.
+APEX_APP_PREFIXED_ASSET = "/icons/apple-touch-icon.png"
 
 #: One app API route, picked because it is pure-read and identity-gated: an
 #: anonymous 401 proves the boundary moved with the app.

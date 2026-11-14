@@ -90,7 +90,7 @@ import { PLATFORM, REPO } from "../ci/paths.ts";
 import { WRANGLER } from "../ci/wrangler.ts";
 // The envelope and the E2B client import only by their own names, so Node's type stripping
 // runs them here.
-import { CONTROL_KEY } from "../contract/src/control.ts";
+import { closedToAll, CONTROL_KEY, parseControl } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
@@ -708,18 +708,6 @@ export function probeSteps(routes: readonly Route[]): RouteChange[] {
 }
 
 /**
- * Whether a control record, as KV holds it, admits nobody: no owner's sign-in and no outside
- * client (`doors/src/control.ts`), as the dark record does. Missing or any other shape is
- * not.
- */
-export function admitsNobody(record: unknown): boolean {
-  const held = record as { ordinary?: unknown; canary?: unknown } | null | undefined;
-  return typeof held === "object" && held !== null
-    && (held.ordinary === "none"
-        || (held.ordinary === "canary" && Array.isArray(held.canary) && held.canary.length === 0));
-}
-
-/**
  * The one first-party sign-in link the probe prints: the doors' own app's authorization
  * (`doors/app/api.js`), with a fresh S256 challenge whose verifier is dropped, so no code it
  * could end in is ever redeemable.
@@ -1332,8 +1320,9 @@ const doorsDeployed = step<"cloudflare" | "account">(async ({ say }, got) => {
 /** The control record admits nobody, as a dark run writes it. */
 const gatesClosed = step<"cloudflare" | "account">(async ({ say }, got) => {
   const namespace = await controlNamespace(got.cloudflare, got.account);
-  if (namespace === undefined
-      || !admitsNobody(await got.cloudflare.value(got.account, namespace, CONTROL_KEY))) {
+  const control = namespace === undefined ? null
+    : parseControl(await got.cloudflare.value(got.account, namespace, CONTROL_KEY));
+  if (control === null || !closedToAll(control)) {
     throw new Error("the control record is missing or admits someone: the probe runs only " +
                     "with every gate closed, as a dark run writes it");
   }

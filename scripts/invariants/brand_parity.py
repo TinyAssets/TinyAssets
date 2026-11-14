@@ -19,7 +19,7 @@ TEXT_SUFFIXES = {".html", ".py", ".svg", ".tsx", ".webmanifest"}
 REQUIRED_SURFACES = {
     "WebSite/site-react/public/favicon.ico",
     "WebSite/site-react/public/icon.svg",
-    "WebSite/site-react/public/apple-touch-icon.png",
+    "WebSite/site-react/public/icons/apple-touch-icon.png",
     "WebSite/site-react/public/site.webmanifest",
     "tinyassets/desktop/app.ico",
     "assets/brand/tinyassets-app.ico",

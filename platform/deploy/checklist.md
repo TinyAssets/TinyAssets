@@ -181,15 +181,19 @@ It never counts as "absent".
   the doors' routes over (`routes` in `platform/contract/identity.json`) one route at a
   time, through Cloudflare's routes API, so no path is ever served by nothing:
   - A pattern another Worker holds is moved to the doors in place (`PUT`, one change). Today
-    that is the old proxy's (`tinyassets-mcp-proxy`) `mcp*`.
+    those are the old proxy's (`tinyassets-mcp-proxy`) `mcp*`, `api*` and `app*`, so the old
+    proxy is left with no route.
   - A pattern nobody holds is added (`POST`).
   - Cloudflare sends each URL to the most specific pattern that matches (its routes page).
     So the old proxy's narrower `.well-known/oauth-protected-resource*` and
     `.well-known/oauth-authorization-server*` would keep their paths from the doors'
     `.well-known/oauth-*`. Each is deleted only after the doors' wider pattern exists, so
     its paths pass straight to the doors.
-  - The old proxy's wider `app*` and `api*` stay. The doors' narrower `app/api/*` and
-    `api/*` already take their own paths, and `/app` itself stays with the proxy.
+  - A narrower doors pattern under another Worker's wider one would not take its paths:
+    Cloudflare's known issue "Route specificity" sends `x/*` URLs to another Worker's `x*`.
+    So the doors take `app*` and `api*` whole, which a route matches against the query too
+    (`/app?upgrade=1`), and the website serves no path under a doors pattern
+    (`WebSite/site-react/scripts/doors-routes.test.mjs`).
   - A refused change stops the run and says which steps are done.
 
   It then adds the egress custom domain (`egress` in `identity.json`; `wrangler triggers
