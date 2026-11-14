@@ -88,6 +88,7 @@
  * Sign-out tells the object first, whether or not a session cookie came, so the sockets
  * opened under the device's grant close before the grant is revoked (`socketsEnd`).
  */
+import { keyed } from "../../contract/src/checks";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { utf8Decoder } from "../../contract/src/text";
 import { answerJson } from "./answers";
@@ -108,7 +109,7 @@ import { streamUpload } from "./file-bytes";
 import { HOOK_ROUTES } from "./inbound";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
-import { answer, bearer, exactKeys, failure, jsonObject, mediaType, NO_STORE } from "./kit";
+import { answer, bearer, failure, jsonObject, mediaType, NO_STORE } from "./kit";
 import { clearedCookie, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "../../sources/src/schema";
 import { signinsRead } from "../../sources/src/signin";
@@ -226,7 +227,7 @@ const grantSet: Route = async ({ owner: { binding, stub }, body: request }) => {
 
 /** `files/read` `{path}`: one file as UTF-8 text, or why it is not shown as text. */
 const fileRead: Route = async ({ owner: { binding, stub }, body: request }) => {
-  if (!exactKeys(request, ["path"])) {
+  if (!keyed(request, ["path"])) {
     return failure(400, "a read names the file's path");
   }
   const { entry, inline } = await stub.fileRead(binding, { path: request["path"] as string });
@@ -244,7 +245,7 @@ const fileRead: Route = async ({ owner: { binding, stub }, body: request }) => {
 const fileWrite: Route = async ({ owner: { binding, stub }, body: request }) => {
   const text = request["text"];
   const fields = ["path", "expected_etag", "text"];
-  if (!exactKeys(request, fields) || typeof text !== "string") {
+  if (!keyed(request, fields) || typeof text !== "string") {
     return failure(400, "a write names the path, the expected etag and the text");
   }
   // The etag goes to the object as it came: the object's compare-and-swap decides.
@@ -305,7 +306,7 @@ const EXPORT_PAGES = 64;
  */
 async function exportStream({ owner: { binding, stub }, body: request }: Served):
     Promise<Response> {
-  if (!exactKeys(request, [], ["cursor", "export_id"])) {
+  if (!keyed(request, [], ["cursor", "export_id"])) {
     return failure(400, "an export request is at most its cursor and its export_id");
   }
   let page = await stub.ownerExport(binding, request);
@@ -342,7 +343,7 @@ async function exportStream({ owner: { binding, stub }, body: request }: Served)
 async function doorbell({ env, owner: { binding, stub }, body: request }: Served):
     Promise<Response> {
   const kind = typeof request["kind"] === "string" ? kindNamed(request["kind"]) : null;
-  if (!exactKeys(request, ["agent_id", "kind", "url", "secret"], ["board", "rooms"])
+  if (!keyed(request, ["agent_id", "kind", "url", "secret"], ["board", "rooms"])
       || typeof request["agent_id"] !== "string" || kind === null || kind.push === null
       || kind.push.callback !== "owner") {
     return failure(400, "a doorbell names an agent, its kind, the URL and the token");
@@ -565,7 +566,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   const unread = bindOwner(env, token, session);
   const gate = await ownerRead(env, unread.binding.owner);
   const owner = withAccount(unread, gate, sources);
-  if (route.body === "empty" && !exactKeys(parsed, [])) {
+  if (route.body === "empty" && !keyed(parsed, [])) {
     return failure(400, NO_FIELDS);
   }
   if ("door" in route) {

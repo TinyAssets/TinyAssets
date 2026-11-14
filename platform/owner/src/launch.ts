@@ -44,15 +44,17 @@ import { networkDocument } from "./network";
 import type { OwnerState } from "./owner-do";
 import {
   type Ask, type LiveLease, type LiveRun, type MailAnswer, mailConversation, NO_SCHEDULE,
-  type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority, SIGNIN_REQUIRED,
+  type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority,
   type SpendCaps, type UsableSource,
 } from "./runs";
-import { SANDBOX_WAITING, started, vendorHosts } from "./sandbox";
+import { started, vendorHosts } from "./sandbox";
 import { inTime, LANE_CALL_MS } from "./schedule";
 import { switchedOn } from "./signins";
 import { tierNumbers } from "./tier";
 import type { TierName } from "../../contract/src/control";
-import type { CredentialKind, NetworkPlan, RunConfig } from "../../contract/src/sandbox";
+import {
+  type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, SIGNIN_REQUIRED,
+} from "../../contract/src/sandbox";
 
 /**
  * How long a live lease's re-apply waits before the lane sends it again, after it was sent

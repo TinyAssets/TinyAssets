@@ -21,11 +21,11 @@
  * Nothing here, or anywhere, maps a session cookie or its hash to an owner (the binder
  * guard).
  */
+import { keyed } from "../../contract/src/checks";
 import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
 import { principal } from "../../contract/src/text";
 
 import type { DoorsEnv } from "./env";
-import { exactKeys } from "./kit";
 
 const KEY_ID = HEX16;
 
@@ -68,7 +68,7 @@ export async function readOwner(env: DoorsEnv, owner: string): Promise<OwnerEntr
   if (value === null) {
     return null;
   }
-  if (!exactKeys(value, ["s", "t"]) || (value["s"] !== "admitted" && value["s"] !== "erased")
+  if (!keyed(value, ["s", "t"]) || (value["s"] !== "admitted" && value["s"] !== "erased")
       || typeof value["t"] !== "number" || !Number.isSafeInteger(value["t"])) {
     throw new Error("the directory's record of an owner is malformed");
   }
@@ -92,7 +92,7 @@ export async function readRoute(env: DoorsEnv, route: string): Promise<RouteEntr
   if (value === null) {
     return null;
   }
-  if (!exactKeys(value, ["b", "o", "r"]) || typeof value["b"] !== "string"
+  if (!keyed(value, ["b", "o", "r"]) || typeof value["b"] !== "string"
       || !HEX32.test(value["b"])
       || typeof value["r"] !== "number" || !Number.isSafeInteger(value["r"]) || value["r"] < 1) {
     throw new Error("the directory's entry for an inbound route is malformed");
@@ -122,7 +122,7 @@ export async function readKey(env: DoorsEnv, keyId: string): Promise<KeyEntry | 
   if (value === null) {
     return null;
   }
-  if (!exactKeys(value, ["c", "h", "o"]) || typeof value["h"] !== "string"
+  if (!keyed(value, ["c", "h", "o"]) || typeof value["h"] !== "string"
       || !HEX64.test(value["h"])
       || typeof value["c"] !== "number" || !Number.isSafeInteger(value["c"]) || value["c"] < 0) {
     throw new Error(`the directory's entry for key ${keyId} is malformed`);

@@ -14,7 +14,6 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { type CallToolResult, ProtocolError } from "@modelcontextprotocol/server";
 
-import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { type FaultCode, type Refusal, refusalOf } from "../../contract/src/refusal";
 
 import { answer, failure, redirect } from "./kit";
@@ -95,8 +94,7 @@ export const EVENT_ERRORS = Object.freeze({
 /** MCP Events': the design sketch's error, thrown, which the SDK answers. */
 export const asEvent: Surface<never> = (refusal) => {
   if (refusal.code === "subscription_limit") {
-    throw new ProtocolError(EVENT_ERRORS.exhausted, "ResourceExhausted",
-                            { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT });
+    throw new ProtocolError(EVENT_ERRORS.exhausted, "ResourceExhausted", refusal.facts);
   }
   if (refusal.invalid) {
     throw new ProtocolError(EVENT_ERRORS.invalidParams, refusal.message);

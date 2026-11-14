@@ -14,7 +14,8 @@ import { type Binding, nativeId, PLATFORM_CALLER } from "../../contract/src/bind
 import { AGENT_DISABLED } from "../src/agent-file";
 import { AGENT_CHANGED } from "../src/launch";
 import { Files } from "../src/files";
-import { NO_CONVERSATION, RUN_ENDED, RUNS_KEPT, SIGNIN_REQUIRED } from "../src/runs";
+import { SIGNIN_REQUIRED } from "../../contract/src/sandbox";
+import { NO_CONVERSATION, RUN_ENDED, RUNS_KEPT } from "../src/runs";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import {
   EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate,

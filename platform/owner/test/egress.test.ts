@@ -38,8 +38,9 @@ import {
   defineAgent, hashed, later, ownerRun, recorder, runnerBinding, runnerSandbox, scripted,
   secretOf, whileOut,
 } from "./runs-support";
-import type { NetworkPlan, SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
-import { SANDBOX_WAITING } from "../src/sandbox";
+import {
+  type NetworkPlan, SANDBOX_WAITING, type SandboxSignin, type SandboxStart,
+} from "../../contract/src/sandbox";
 import { bundledSources } from "../../sources/src/catalog";
 import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
 import { erasedWhole } from "./erasure-support";

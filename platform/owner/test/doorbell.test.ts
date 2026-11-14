@@ -23,6 +23,7 @@ import { clock } from "../src/clock";
 import type { OwnerDO } from "../src/owner-do";
 import { checkKinds, wakeKinds } from "../../contract/src/wake-records";
 import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
+import type { Refusal } from "../../contract/src/refusal";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, Doorbell, retryAfterOf, runWakes } from "../src/wakes";
 import raw from "../../contract/wake-kinds.json" with { type: "json" };
@@ -547,7 +548,7 @@ describe("a revoke is never outlived", () => {
           act();
           return "stored";
         } catch (error) {
-          return (error as Error).message;
+          return { message: (error as Refusal).message, facts: (error as Refusal).facts };
         }
       };
       for (let n = 0; n < SUBSCRIPTIONS_PER_AGENT; n++) {
@@ -568,8 +569,10 @@ describe("a revoke is never outlived", () => {
         MUSE, { ...ledgerSubscription(), subscription_id: "sub_" + "d".repeat(32) }, t + 61));
       return { full, refreshed, owners, lapsed };
     });
-    expect(out).toEqual({ full: expect.stringContaining(
-      `subscription_limit: ${SUBSCRIPTIONS_PER_AGENT}`), refreshed: "stored", owners: "stored",
+    expect(out).toEqual({ full: {
+      message: expect.stringContaining(`subscription_limit: ${SUBSCRIPTIONS_PER_AGENT}`),
+      facts: { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT } },
+      refreshed: "stored", owners: "stored",
       lapsed: "stored" });
     expect(SUBSCRIPTIONS_PER_AGENT).toBe(16);
   });

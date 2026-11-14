@@ -34,6 +34,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { HEX32 } from "../contract/src/ids.ts";
 import { RECOVERY_WINDOW_S } from "../contract/src/limits.ts";
 import { annotate, github, output, pages, type Reach, summarize } from "./actions.ts";
 import type { Io } from "./deploy.ts";
@@ -71,7 +72,6 @@ export type Settings = Readonly<Record<keyof typeof KEYS, Key>> & {
 
 /** A B2 bucket's name, as Backblaze takes one. */
 const BUCKET = /^[A-Za-z0-9-]{6,63}$/;
-const ACCOUNT = /^[0-9a-f]{32}$/;
 
 /** The copy's settings from `env`: null when none is set, loudly when only some are. */
 export function settings(env: Readonly<Record<string, string | undefined>>): Settings | null {
@@ -91,7 +91,7 @@ export function settings(env: Readonly<Record<string, string | undefined>>): Set
   if (!BUCKET.test(value("OFFSITE_BUCKET"))) {
     throw new Error("OFFSITE_BUCKET is no B2 bucket name (6 to 63 letters, digits and dashes)");
   }
-  if (!ACCOUNT.test(value("CLOUDFLARE_ACCOUNT_ID"))) {
+  if (!HEX32.test(value("CLOUDFLARE_ACCOUNT_ID"))) {
     throw new Error("the repository variable CLOUDFLARE_ACCOUNT_ID is no 32-hex account id");
   }
   const keys = Object.fromEntries(Object.entries(KEYS).map(([use, [id, secret]]) =>

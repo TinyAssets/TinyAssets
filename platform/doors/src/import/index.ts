@@ -57,6 +57,7 @@
  * object is read only when the bucket says it is at most `IMPORT_HOLD_BYTES` (one chunk, as
  * the upload door holds one), so at most one is in hand at once.
  */
+import { object } from "../../../contract/src/checks";
 import { chunkedId, inlineId } from "../../../contract/src/content";
 import { readControl, tiersOf } from "../../../contract/src/control";
 import { sha256Hex } from "../../../contract/src/digest";
@@ -110,7 +111,7 @@ function stepsOf(index: Index): Step[] {
  * The staging bucket's object at `name`, its bytes, or a loud failure (a retry); one larger than
  * `IMPORT_HOLD_BYTES` is dropped before its bytes are read, so a delivery holds one at most.
  */
-async function object(env: DoorsEnv, message: ImportMessage, name: string): Promise<Uint8Array> {
+async function staged(env: DoorsEnv, message: ImportMessage, name: string): Promise<Uint8Array> {
   const found = await env.IMPORT_STAGING.get(stagedName(message.prefix, name));
   if (found === null) {
     throw new Error(`the staging bucket holds no ${name} of the bundle`);
@@ -128,18 +129,15 @@ async function answer(env: DoorsEnv, name: string, value: unknown): Promise<void
   await env.IMPORT_STAGING.put(name, `${JSON.stringify(value)}\n`);
 }
 
-const plain = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 /** The bundle's index, held to the digest the MAC names, the message's owner and format. */
 async function indexOf(env: DoorsEnv, message: ImportMessage): Promise<Index> {
-  const bytes = await object(env, message, BUNDLE_INDEX);
+  const bytes = await staged(env, message, BUNDLE_INDEX);
   if (sha256Hex(bytes) !== message.bundle) {
     throw new Refusal("invalid", "the bundle's index is not the bundle its message names");
   }
   const index: unknown = JSON.parse(new TextDecoder().decode(bytes));
-  if (!plain(index) || index["format"] !== BUNDLE_FORMAT || index["owner"] !== message.owner
-      || !plain(index["parts"])
+  if (!object(index) || index["format"] !== BUNDLE_FORMAT || index["owner"] !== message.owner
+      || !object(index["parts"])
       || !Object.values(index["parts"]).every((sha) => typeof sha === "string" && HEX64.test(sha))
       || !(BUNDLE_OWNER in index["parts"])) {
     throw new Refusal("invalid", "the bundle's index is out of shape, or another owner's");
@@ -154,12 +152,12 @@ async function part(env: DoorsEnv, message: ImportMessage, index: Index, name: s
   if (want === undefined) {
     throw new Refusal("invalid", `the bundle's index names no ${name}`);
   }
-  const bytes = await object(env, message, name);
+  const bytes = await staged(env, message, name);
   if (sha256Hex(bytes) !== want) {
     throw new Refusal("invalid", `the bundle's ${name} is not the part its index names`);
   }
   const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
-  if (!plain(value)) {
+  if (!object(value)) {
     throw new Refusal("invalid", `the bundle's ${name} is out of shape`);
   }
   return value;
@@ -187,7 +185,7 @@ function listOf(page: Record<string, unknown>, key: string): unknown[] {
 }
 
 function entryOf(value: unknown): Entry {
-  if (!plain(value) || typeof value["path"] !== "string"
+  if (!object(value) || typeof value["path"] !== "string"
       || (value["kind"] !== "dir" && value["kind"] !== "file")) {
     throw new Refusal("invalid", "a bundle's manifest entry is out of shape");
   }
@@ -346,7 +344,7 @@ class Slice {
 
   /** An inline file and its bytes, held to its content id. */
   async #inline(entry: Entry): Promise<unknown> {
-    const bytes = await object(this.#env, this.#message, inlineName(entry.content_id!));
+    const bytes = await staged(this.#env, this.#message, inlineName(entry.content_id!));
     if (bytes.byteLength !== entry.size || inlineId(bytes) !== entry.content_id) {
       throw new Refusal("invalid", "an inline file's bytes are not its content id");
     }
@@ -385,7 +383,7 @@ class Slice {
       if (chunk === undefined) {
         throw new Error("an import upload's plan names no such chunk");
       }
-      const bytes = held(chunk, await object(this.#env, this.#message, chunkName(sha)));
+      const bytes = held(chunk, await staged(this.#env, this.#message, chunkName(sha)));
       if (bytes.problem !== null) {
         throw new Refusal("invalid", "a chunk's bytes are not its hash");
       }

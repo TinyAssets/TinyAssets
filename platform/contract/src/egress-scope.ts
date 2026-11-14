@@ -11,7 +11,7 @@
  * by older code that no longer fits fails loudly rather than being half-read; anything else
  * is `invalid_source`, the gateway's fixed code.
  */
-import { count, list, shape, text } from "./checks.ts";
+import { count, list, shape, text, valueAtPath } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 import { checkedRecord, type ModelRecord } from "./model-record.ts";
 
@@ -398,9 +398,7 @@ export function meteredModel(meter: Meter, method: string, path: string,
     if (path !== meter.path || meter.model_field === null) {
       return null;
     }
-    const named = meter.model_field.reduce<unknown>((at, key) =>
-      (typeof at === "object" && at !== null && !Array.isArray(at)
-        ? (at as Record<string, unknown>)[key] : undefined), body);
+    const named = valueAtPath(body, meter.model_field);
     return typeof named === "string" && named.length > 0 ? named : null;
   }
   if (!path.startsWith(head!) || !path.endsWith(tail) || path.length <= head!.length + tail.length) {

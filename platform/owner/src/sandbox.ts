@@ -39,6 +39,7 @@
  *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
  *   passed. It limits nothing: the founder's cost view.
  */
+import { keyed } from "../../contract/src/checks";
 import { type CredentialKind, START_CODES, type Started } from "../../contract/src/sandbox";
 import { engineHosts } from "../../sources/src/served";
 
@@ -52,26 +53,15 @@ export function vendorHosts(engine: string, credential: CredentialKind,
   return credential === "vendor_login_in_sandbox" ? engineHosts(engine, region) : [];
 }
 
-/**
- * The start's answer when the E2B team runs as many sandboxes as its plan allows (the
- * control record's `sandbox_concurrency_ceiling`, or E2B's own refusal), or another owner
- * waits ahead in the platform's line: the run is never refused for it. It waits
- * (`waiting`, the app's "waiting to start", `sandbox_wait`) until the line rings the owner,
- * and the `runs` lane then starts it again, admitted whole (slice S).
- */
-export const SANDBOX_WAITING = "sandbox_waiting";
-
 /** A start's answer, checked: a refusal's code is one of the contract's start codes. */
 export function started(value: unknown): Started {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    const answer = value as Record<string, unknown>;
-    if (answer["started"] === true && Object.keys(answer).length === 1) {
-      return { started: true };
-    }
-    const code = START_CODES.find((each) => each === answer["code"]);
-    if (answer["started"] === false && code !== undefined && Object.keys(answer).length === 2) {
-      return { started: false, code };
-    }
+  if (keyed(value, ["started"]) && value["started"] === true) {
+    return { started: true };
+  }
+  const code = keyed(value, ["code", "started"]) && value["started"] === false
+    ? START_CODES.find((each) => each === value["code"]) : undefined;
+  if (code !== undefined) {
+    return { started: false, code };
   }
   throw new Error("the sandbox's start answered out of shape");
 }
