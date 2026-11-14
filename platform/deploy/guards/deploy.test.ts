@@ -557,16 +557,48 @@ function world(options: WorldOptions = {}) {
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
 
-/** `mode` run whole in `w`, with `flags` and `env`: its work, or its refusal. */
+/**
+ * `mode` run whole in `w`, with `flags` and `env`: its work, or its refusal. An applied run is
+ * the workflow's two jobs: the plan job's run (`--public`) writes its plan to a file, then the
+ * apply job's run is held to it, which first makes the plan job's steps again. Each job has a
+ * log of its own, so `w` keeps only the apply job's, after the plan made again.
+ */
 async function runMode(w: ReturnType<typeof world>, mode: Mode, flags: string[] = [],
                        env: Record<string, string> = ENV) {
-  return perform(parse(["--mode", mode, ...flags], env, w.io));
+  if (!flags.includes("--yes")) {
+    return perform(parse(["--mode", mode, ...flags], env, w.io));
+  }
+  const folder = mkdtempSync(join(tmpdir(), "ta-plan-"));
+  try {
+    const plan = join(folder, "plan.json");
+    const [events, logs] = [w.events.length, w.logs.length];
+    await perform(parse(["--mode", mode, "--public", "--plan", plan,
+                         ...flags.filter((flag) => flag !== "--yes")], env, w.io));
+    const job = w.events.splice(events);
+    w.logs.splice(logs);
+    const reported = job.findIndex((event) => event.startsWith("log Run "));
+    const planned = job.slice(0, reported < 0 ? undefined : reported);
+    const work = await perform(parse(["--mode", mode, ...flags, "--plan", plan], env, w.io));
+    expect(w.events.slice(events, events + planned.length)).toEqual(planned);
+    w.events.splice(events, planned.length);
+    w.logs.splice(logs, planned.filter((event) => event.startsWith("log ")).length);
+    return work;
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
 }
 
-/** The plan as the kit reports it: "Changed" or "Would change", a line a step. */
+/** The plan as the kit reports it, under the run's id: "changed" or "would change", a line a step. */
 function summary(heading: string, plan: readonly string[]): string {
-  return `${heading}:\n${plan.map((line) => `- ${line}`).join("\n")}`;
+  return `Run ${runOf(ENV, NOW).id} ${heading}:\n${plan.map((line) => `- ${line}`).join("\n")}`;
 }
+
+/** The doors' upstream as a plan says it: the issuer, and the client and JWKS it deploys. */
+const ISSUED = "set the doors' OWNER_ISSUER to https://auth.test, held to its discovery, and " +
+  "their UPSTREAM to the WorkOS client client_test and the JWKS https://auth.test/jwks";
+
+/** The apply job's first line: the plan job's plan holds on the live state. */
+const HELD = "the plan job's plan, made again from the live state, is the one approved";
 
 /** The indexes of `needles` in `events`, each the first after the one before it. */
 function order(events: readonly string[], needles: readonly string[]): number[] {
@@ -721,8 +753,8 @@ describe("the command line", () => {
 
   it("holds only the planning modes to their options: h2 and pair read none", () => {
     for (const mode of ["h2", "pair"]) {
-      const run = parse(["--mode", mode, "--public", "--yes", "--rotate", "FILES_KEYRING",
-                         "--migrate", "doors"], ENV, w.io);
+      const run = parse(["--mode", mode, "--public", "--yes", "--plan", "plan.json",
+                         "--rotate", "FILES_KEYRING", "--migrate", "doors"], ENV, w.io);
       expect([run.mode, run.reach, run.apply]).toEqual([mode, "public", true]);
     }
   });
@@ -746,11 +778,118 @@ describe("the command line", () => {
       expect(() => parse(["--mode", "probe", option, "owner"], ENV, w.io))
         .toThrow("mode probe deploys nothing: it takes no --rotate or --migrate");
     }
-    const run = parse(["--mode", "routes", "--yes", "--rotate", "ROUTING_MAC_KEY,FILES_KEYRING",
-                       "--migrate", "owner"], ENV, w.io);
+    const run = parse(["--mode", "routes", "--yes", "--plan", "plan.json", "--rotate",
+                       "ROUTING_MAC_KEY,FILES_KEYRING", "--migrate", "owner"], ENV, w.io);
     expect([run.reach, run.apply, [...run.rotate], [...run.migrate]])
       .toEqual(["secrets", true, ["ROUTING_MAC_KEY", "FILES_KEYRING"], ["owner"]]);
     expect(parse(["--mode", "plan", "--public"], ENV, w.io).reach).toBe("public");
+  });
+});
+
+describe("the plan the apply job runs", () => {
+  const RUN = { ...ENV, GITHUB_RUN_ID: "7001", GITHUB_RUN_ATTEMPT: "1" };
+
+  /** The plan job's run of `mode` in `w`: the file it writes, in a folder of its own. */
+  async function planned(w: ReturnType<typeof world>, mode: Mode, flags: string[] = [],
+                         env: Record<string, string> = RUN): Promise<string> {
+    const plan = join(mkdtempSync(join(tmpdir(), "ta-plan-")), "plan.json");
+    await perform(parse(["--mode", mode, "--public", "--plan", plan, ...flags], env, w.io));
+    return plan;
+  }
+  /** The apply job's run of `mode` in `w`, held to `plan`: its refusal, and what it changed. */
+  async function refused(w: ReturnType<typeof world>, mode: Mode, plan: string,
+                         flags: string[] = [], env: Record<string, string> = RUN) {
+    const at = w.events.length;
+    const why = await perform(parse(["--mode", mode, "--yes", "--plan", plan, ...flags], env,
+                                    w.io)).then(() => "applied", (error: Error) => error.message);
+    rmSync(join(plan, ".."), { recursive: true, force: true });
+    return { why, changed: w.events.slice(at).filter((event) => CHANGE.test(event)) };
+  }
+
+  it("applies only with the plan its run's plan job wrote", () => {
+    const w = world();
+    expect(() => parse(["--mode", "dark", "--yes"], ENV, w.io)).toThrow(
+      "--yes applies the plan it was approved on: --plan names the file its run's plan job " +
+      "wrote");
+    expect(() => parse(["--mode", "dark", "--plan", "plan.json"], ENV, w.io)).toThrow(
+      "--plan is the plan job's file (--public writes it) and the apply job's (--yes is held " +
+      "to it)");
+  });
+
+  it("writes what was asked and each line, and no run's id or time, which the heading names",
+     async () => {
+    const w = world({ held: true });
+    const plans = [];
+    for (const id of ["7001", "7002"]) {
+      const plan = await planned(w, "routes", ["--rotate", "ROUTING_MAC_KEY"],
+                                 { ...RUN, GITHUB_RUN_ID: id });
+      plans.push(JSON.parse(readFileSync(plan, "utf8")) as Json);
+      rmSync(join(plan, ".."), { recursive: true, force: true });
+    }
+    expect(plans.map((each) => each["run"])).toEqual(["7001", "7002"]);
+    expect(plans[0]!["plan"]).toEqual(plans[1]!["plan"]);
+    expect(plans[0]!["plan"]).toMatchObject({
+      asked: { mode: "routes", rotate: ["ROUTING_MAC_KEY"], migrate: [], record: null } });
+    expect(JSON.stringify(plans[0]!["plan"])).not.toMatch(/7001|2026-11-07/);
+    expect(w.logs.filter((line) => line.startsWith("Run ")).map((line) => line.split(":")[0]))
+      .toEqual(["Run 7001 would change", "Run 7002 would change"]);
+  });
+
+  it("stops before any change when the live state plans something else", async () => {
+    const w = world({ held: true });
+    const plan = await planned(w, "routes");
+    // Between the jobs, the site's route goes.
+    w.routes.delete("r6");
+    const { why, changed } = await refused(w, "routes", plan);
+    expect(why).toMatch(/^the live state no longer plans what was approved, so nothing is changed: /);
+    expect(why).toContain("approved, and not planned now: record the zone's 8 routes");
+    expect(why).toContain("planned now, and never approved: record the zone's 7 routes");
+    expect(changed).toEqual([]);
+  });
+
+  it("stops before any change on a plan someone else wrote, or no plan", async () => {
+    const forged = world({ held: true });
+    const plan = await planned(forged, "dark");
+    const file = JSON.parse(readFileSync(plan, "utf8")) as { plan: { lines: string[] } };
+    file.plan.lines = file.plan.lines.filter((line) => !line.startsWith("upload and deploy a " +
+                                                                        "version of tinyassets-doors"));
+    writeFileSync(plan, JSON.stringify(file));
+    expect(await refused(forged, "dark", plan)).toEqual({ changed: [], why: expect.stringContaining(
+      "planned now, and never approved: upload and deploy a version of tinyassets-doors") });
+    const shapeless = world({ held: true });
+    const empty = await planned(shapeless, "dark");
+    writeFileSync(empty, "{}");
+    expect(await refused(shapeless, "dark", empty)).toEqual({ changed: [],
+      why: `${empty} is not a plan the plan job wrote; nothing is changed` });
+    const none = world({ held: true });
+    expect(await refused(none, "dark", join(tmpdir(), "ta-no-plan", "plan.json"))).toEqual({
+      changed: [], why: `there is no plan at ${join(tmpdir(), "ta-no-plan", "plan.json")}: the ` +
+        "apply job applies only the plan its run's plan job wrote (--public --plan); nothing is " +
+        "changed" });
+  });
+
+  it("stops before any change on another run's plan", async () => {
+    const w = world({ held: true });
+    const plan = await planned(w, "dark");
+    expect(await refused(w, "dark", plan, [], { ...RUN, GITHUB_RUN_ID: "7002" })).toEqual({
+      changed: [], why: `the plan at ${plan} is run 7001's, not this run's (7002): the apply ` +
+        "job applies only its own run's plan; nothing is changed" });
+  });
+
+  it("stops before any change on a dispatch or a variable the plan did not have", async () => {
+    const asked = world({ held: true });
+    const plan = await planned(asked, "dark", ["--rotate", "ROUTING_MAC_KEY"]);
+    const { why, changed } = await refused(asked, "dark", plan);
+    expect(why).toContain('the dispatch\'s rotate was ["ROUTING_MAC_KEY"], and is []');
+    expect(changed).toEqual([]);
+    // The repository's variable, edited between the jobs: the doors would deploy another client.
+    const varied = world({ held: true });
+    const client = await planned(varied, "dark");
+    const other = await refused(varied, "dark", client, [], { ...RUN, WORKOS_CLIENT_ID: "client_b" });
+    expect(other.why).toContain("planned now, and never approved: set the doors' OWNER_ISSUER " +
+      "to https://auth.test, held to its discovery, and their UPSTREAM to the WorkOS client " +
+      "client_b");
+    expect(other.changed).toEqual([]);
   });
 });
 
@@ -772,7 +911,7 @@ describe("a dark run", () => {
       `cf POST /accounts/${ACCOUNT}/r2/buckets`, `cf POST /accounts/${ACCOUNT}/queues`,
       `cf POST /accounts/${ACCOUNT}/queues`, "wrangler secret put ROUTING_MAC_KEY",
       "wrangler deploy --config files/", "wrangler deploy --config doors/", "cf PUT /accounts",
-      "e2b POST /events/webhooks", "log Changed:", "node canary.ts"]);
+      "e2b POST /events/webhooks", "log Run ", "node canary.ts"]);
     const first = w.events.findIndex((event) =>
       /^(cf POST|wrangler secret|cf PUT)/.test(event));
     expect(at[11]).toBeLessThan(first);
@@ -780,8 +919,8 @@ describe("a dark run", () => {
     expect(w.events[at[21]!]).toContain('"enabled":false');
     expect(w.events[at[21]!]).toContain('"signatureSecret":"hook-secret"');
     // The plan is reported whole, every step's line in it, before the canary.
-    expect(work.plan).toEqual(DARK_FRESH);
-    expect(w.logs).toEqual([summary("Changed", DARK_FRESH)]);
+    expect(work.plan).toEqual([HELD, ...DARK_FRESH]);
+    expect(w.logs).toEqual([summary("changed", [HELD, ...DARK_FRESH])]);
     // Every wrangler command is handed the zone's account, never wrangler's own pick.
     expect(w.accounts.length).toBeGreaterThan(0);
     expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
@@ -1087,15 +1226,15 @@ describe("a routes run", () => {
                      "cf GET /accounts", "wrangler versions deploy",
                      "cf PUT /zones/z/workers/routes/r1", "cf POST /zones/z/workers/routes",
                      "cf DELETE /zones/z/workers/routes/r4", "wrangler triggers deploy",
-                     "e2b PATCH /events/webhooks/w1 {\"enabled\":true}", "log Changed:",
+                     "e2b PATCH /events/webhooks/w1 {\"enabled\":true}", "log Run ",
                      "node canary.ts --side doors --unkeyed"]);
     // The routes are read once, before any change; the doors' last version is deployed before
     // a route moves; the hook is enabled only after the last route and the custom domain.
     expect(w.events.filter((event) => event === "cf GET /zones/z/workers/routes")).toHaveLength(1);
     expect(w.events.findLastIndex((event) => event.startsWith("wrangler versions deploy")))
       .toBeLessThan(w.events.indexOf("cf PUT /zones/z/workers/routes/r1"));
-    expect(work.plan).toEqual(ROUTES_HELD);
-    expect(w.logs).toContain(summary("Changed", ROUTES_HELD));
+    expect(work.plan).toEqual([HELD, ...ROUTES_HELD]);
+    expect(w.logs).toContain(summary("changed", [HELD, ...ROUTES_HELD]));
     // Every wrangler command, the routes' triggers deploy too, is handed the zone's account.
     expect(w.accounts.length).toBeGreaterThan(0);
     expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
@@ -1190,15 +1329,16 @@ describe("the route record", () => {
       }
       // The plan says how to hand it back, and the summary holds the record too.
       expect(work.plan).toContain(`record the zone's ${table.length} routes and the handover's 8 ` +
-        "changes, the egress domain (none) and E2B's lifecycle webhook (disabled) as " +
-        `${KEY} in tinyassets-control, before any change: hand back with --mode handback ` +
-        "--record 7001");
+        "changes, the egress domain (none) and E2B's lifecycle webhook (disabled) as this " +
+        "run's route record in tinyassets-control, before any change: hand back with --mode " +
+        "handback --record <this run's id>");
       const summaryText = readFileSync(file, "utf8");
       expect(summaryText).toContain(`Route record ${KEY}:`);
       // The copy is the record as first written, before the attach's DNS record joined it.
       expect(summaryText).toContain(JSON.stringify({ ...stored(w), domain: {
         ...stored(w).domain, created: null } }, null, 2));
-      expect(summaryText).toContain("--mode handback --record 7001");
+      // The run's id, which the handback takes, heads the plan.
+      expect(summaryText).toContain("Run 7001 changed:");
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
@@ -1230,8 +1370,9 @@ describe("the route record", () => {
       "first; nothing is changed");
     expect(fresh.events.filter((event) => CHANGE.test(event))).toEqual([]);
     const planned = await runMode(world(), "routes", [], RUN);
-    expect(planned.plan).toContain(`record the zone's routes as ${KEY}: tinyassets-control is ` +
-                                   "not made yet, so the apply job stops until a dark run makes it");
+    expect(planned.plan).toContain("record the zone's routes as this run's route record: " +
+                                   "tinyassets-control is not made yet, so the apply job stops " +
+                                   "until a dark run makes it");
     // Cloudflare refuses the write.
     const refused = world({ held: true, refusing: KEY });
     await expect(runMode(refused, "routes", ["--yes"], RUN)).rejects.toThrow(
@@ -1256,13 +1397,15 @@ describe("the route record", () => {
     // As the first attempt wrote it, with only the attach's DNS record added once it is done.
     expect(first.domain.created).toBeNull();
     expect(stored(w)).toEqual({ ...first, domain: { ...first.domain, created: [{ id: "dns-egress", type: "AAAA", content: "100::" }] } });
-    expect(again.plan).toContain(`keep the route record ${KEY} as attempt 1 wrote it at ${
-      NOW.toISOString()}, before its first change: hand back with --mode handback --record 7001`);
+    expect(again.plan).toContain(`keep this run's route record as attempt 1 wrote it at ${
+      NOW.toISOString()}, before its first change: hand back with --mode handback --record ` +
+      "<this run's id>");
     const later = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
     // The doors hold the old proxy's three in place, in the zone's order, and the five added.
     expect(later.plan.find((line) => line.startsWith("record "))).toBe(`record the zone's 9 routes and the handover's 0 changes, the ` +
-      `egress domain (${DOORS}) and E2B's lifecycle webhook (enabled) as deploy:routes:7002 in ` +
-      "tinyassets-control, before any change: hand back with --mode handback --record 7002; " +
+      `egress domain (${DOORS}) and E2B's lifecycle webhook (enabled) as this run's route ` +
+      "record in tinyassets-control, before any change: hand back with --mode handback " +
+      "--record <this run's id>; " +
       `${DOORS} holds ${["mcp*", "app*", "api*", "hooks/inbound/*", "hooks/e2b/*",
                          ".well-known/oauth-*"].map((path) => `${ZONE}/${path}`).join(", ")} ` +
       "already: the record of the routes run that moved them is the one to hand back, and it " +
@@ -1280,9 +1423,9 @@ describe("the route record", () => {
     w.kill.after = undefined;
     const fresh = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7002" });
     expect(fresh.plan).toContain("record the zone's 8 routes and the handover's 7 changes, the " +
-      "egress domain (none) and E2B's lifecycle webhook (disabled) as deploy:routes:7002 in " +
-      "tinyassets-control, before any change: hand back with --mode " +
-      `handback --record 7002; ${DOORS} holds tinyassets.io/mcp* already: the record of the ` +
+      "egress domain (none) and E2B's lifecycle webhook (disabled) as this run's route record " +
+      "in tinyassets-control, before any change: hand back with --mode handback --record " +
+      `<this run's id>; ${DOORS} holds tinyassets.io/mcp* already: the record of the ` +
       "routes run that moved them is the one to hand back, and it covers this run's changes too");
     // The first run's record does: its handback, after the second run, puts the zone back.
     const before = kept(stored(w).routes);
@@ -1314,7 +1457,7 @@ describe("a handback run", () => {
     expect(reads).toHaveLength(2);
     expect([reads[0]! < disabled!, reads[1]! > changes.at(-1)!]).toEqual([true, true]);
     // The canary waits for the old stack's restart, and the run says where it runs.
-    order(ran, ["log Changed:", "log The handles canary (Fact 11) waits for the old stack"]);
+    order(ran, ["log Run ", "log The handles canary (Fact 11) waits for the old stack"]);
     expect(w.logs.at(-1)).toContain(
       "dispatch the Handles canary workflow (handles-canary.yml), the old stack's own check");
     expect(ran.some((event) => event.startsWith("node canary"))).toBe(false);
@@ -1326,6 +1469,7 @@ describe("a handback run", () => {
       }
     }
     expect(work.plan).toEqual([
+      HELD,
       `the route record ${KEY}: the zone's ${before.length} routes as run 7001 read them at ${
         NOW.toISOString()}, and the handover's 8 changes`,
       `disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was before routes`,
@@ -1350,7 +1494,7 @@ describe("a handback run", () => {
     const at = w.events.length;
     const again = await runMode(w, "handback", ["--yes", "--record", "7001"]);
     expect(w.events.slice(at).filter((event) => ROUTE_CHANGE.test(event))).toEqual([]);
-    expect(again.plan.slice(1)).toEqual([
+    expect(again.plan.slice(2)).toEqual([
       `E2B lifecycle webhook ${E2B_HOOK.url}: not enabled already`,
       `the custom domain ${EGRESS_DOMAIN}: detached already`,
       "the zone's routes are the record's already: nothing to hand back",
@@ -1453,7 +1597,7 @@ describe("a handback run", () => {
       { url: E2B_HOOK.url, present: true, enabled: true }]);
     const at = w.events.length;
     const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(work.plan.slice(1, 3)).toEqual([
+    expect(work.plan.slice(2, 4)).toEqual([
       `E2B lifecycle webhook ${E2B_HOOK.url}: enabled before routes, left`,
       `the custom domain ${EGRESS_DOMAIN}: ${DOORS}'s before routes, left`]);
     expect(w.events.slice(at).filter((event) => /^(e2b PATCH|cf DELETE \/accounts)/.test(event)))
@@ -1468,7 +1612,7 @@ describe("a handback run", () => {
     expect(stored(w).hook).toEqual({ url: E2B_HOOK.url, present: false, enabled: false });
     expect(w.hooks[0]!["enabled"]).toBe(true);
     const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(work.plan[1]).toBe(`disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was absent ` +
+    expect(work.plan[2]).toBe(`disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was absent ` +
                               "before routes (a disabled hook sends nothing)");
     expect(w.hooks).toEqual([expect.objectContaining({ id: "w1", enabled: false })]);
     expect(w.events.some((event) => event.startsWith("e2b DELETE"))).toBe(false);
@@ -2519,8 +2663,8 @@ describe("the operator path's modes", () => {
         'set the control record\'s ordinary: "canary" → "all"',
         'set the control record\'s canary: [] → ["user_bob"]',
         "set the control record's tiers.free.runs: 5 → 6",
-        `keep the previous record's bytes as ${KEPT} in ${NAMESPACES["CONTROL"]}, to put back with ` +
-        "--replace"]);
+        `keep the previous record's bytes in ${NAMESPACES["CONTROL"]} under this run's id, to ` +
+        "put back with --replace"]);
       expect(writes(w)).toEqual([]);
       expect(live(w)).toEqual(DARK);
     }
@@ -2542,7 +2686,7 @@ describe("the operator path's modes", () => {
     expect(at).toHaveLength(3);
     // Again in the same run (a re-run attempt): no difference, nothing written, the kept as it was.
     const again = await runMode(w, "control", ["--yes", "--set", EDITS]);
-    expect(again.plan).toEqual(["the control record stands as asked: no difference"]);
+    expect(again.plan).toEqual([HELD, "the control record stands as asked: no difference"]);
     await runMode(w, "control", ["--yes", "--set",
                                   "outside=off canary-=user_bob canary-=user_eve signins.claude=false"]);
     expect(live(w, KEPT)).toEqual(DARK);
@@ -2580,8 +2724,8 @@ describe("the operator path's modes", () => {
       expect(live(w)).toEqual({ ...DARK, inbound: true });
       expect(w.kv.get(`${CONTROL_NS}/${KEPT}`)).toBe(held);
       expect(work.plan).toContain(held === undefined ? "keep no previous record: there is none"
-        : `keep the previous record's bytes as ${KEPT} in ${NAMESPACES["CONTROL"]}, to put ` +
-          "back with --replace");
+        : `keep the previous record's bytes in ${NAMESPACES["CONTROL"]} under this run's id, ` +
+          "to put back with --replace");
       expect(work.plan.at(-1)).toBe("read the control record back: it is the one written");
     }
   });
@@ -2635,7 +2779,7 @@ describe("the operator path's modes", () => {
       }
       return answer;
     } };
-    await expect(perform(parse(["--mode", "control", "--yes", "--set", "outside=on"], ENV, io)))
+    await expect(runMode({ ...w, io }, "control", ["--yes", "--set", "outside=on"]))
       .rejects.toThrow("the control record read back is not the one written: {\n");
   });
 
@@ -2721,7 +2865,8 @@ describe("the operator path's modes", () => {
 describe("platform-deploy.yml", () => {
   type Job = { if?: string; needs?: string | string[]; environment?: string;
                "timeout-minutes"?: number; env?: Record<string, string>;
-               steps: { name?: string; run?: string; env?: Record<string, string> }[] };
+               steps: { name?: string; run?: string; env?: Record<string, string>; uses?: string;
+                        with?: Record<string, string | number | boolean> }[] };
   const file = workflow("platform-deploy.yml") as {
     on: Json; jobs: Record<string, Job> };
   const { plan, pair, apply } = file.jobs as Record<string, Job>;
@@ -2841,7 +2986,7 @@ describe("platform-deploy.yml", () => {
       for (const each of job.steps.filter((one) => one.run !== undefined)) {
         const ran = spawnSync("bash", ["-c", each.run!], {
           cwd: REPO, encoding: "utf8",
-          env: { PATH: `${bin}:/usr/bin:/bin`, ...inputs,
+          env: { PATH: `${bin}:/usr/bin:/bin`, RUNNER_TEMP, ...inputs,
                  ...Object.fromEntries(Object.keys(each.env ?? {}).map((name) => [name, "x"])) } });
         expect([each.name, ran.status, ran.stderr]).toEqual([each.name, 0, ""]);
       }
@@ -2854,6 +2999,9 @@ describe("platform-deploy.yml", () => {
     }
   }
   const KIT = ["node", "--experimental-strip-types", "platform/deploy/deploy.ts"];
+  /** The runner's temporary folder, which Actions sets, and the plan file the jobs hand on. */
+  const RUNNER_TEMP = "/runner/temp";
+  const PLAN = ["--plan", `${RUNNER_TEMP}/deploy-plan.json`];
   /** The dispatch's inputs, each handed to the kit as its option of the same name. */
   const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "SET", "REPLACE", "OWNER", "ACT"];
   const dispatched = (inputs: Record<string, string>) =>
@@ -2880,7 +3028,7 @@ describe("platform-deploy.yml", () => {
     for (const inputs of [...offered.map(dispatchOf), ...OPTIONS]) {
       const ran = invoked(plan!, inputs);
       expect(ran.map((each) => each.argv)).toEqual([["npm", "ci"], [
-        ...KIT, "--mode", inputs["MODE"]!, "--public", ...dispatched(inputs).slice(2)]]);
+        ...KIT, "--mode", inputs["MODE"]!, "--public", ...PLAN, ...dispatched(inputs).slice(2)]]);
       // Each is a run the kit takes, and one that changes nothing.
       const run = parse(ran[1]!.argv.slice(KIT.length), PUBLIC, io);
       expect([run.mode, run.reach, run.apply, ...ownOf(run)])
@@ -2920,7 +3068,7 @@ describe("platform-deploy.yml", () => {
                           ...OPTIONS]) {
       const ran = invoked(apply!, inputs);
       expect(ran.map((each) => each.argv)).toEqual([["npm", "ci"], [
-        ...KIT, "--mode", inputs["MODE"]!, "--yes", ...dispatched(inputs).slice(2)]]);
+        ...KIT, "--mode", inputs["MODE"]!, "--yes", ...PLAN, ...dispatched(inputs).slice(2)]]);
       const run = parse(ran[1]!.argv.slice(KIT.length), ENV, io);
       expect([run.mode, run.reach, run.apply, ...ownOf(run), [...run.rotate], [...run.migrate]])
         .toEqual([inputs["MODE"], "secrets", true, ...wanted(inputs),
@@ -2930,6 +3078,24 @@ describe("platform-deploy.yml", () => {
     // The account is read from the zone, never held as an input.
     expect(PUBLIC_INPUTS).not.toContain("CLOUDFLARE_ACCOUNT_ID");
     expect(JSON.stringify(file)).not.toContain("CLOUDFLARE_ACCOUNT_ID");
+  });
+
+  it("hands the apply job this run's plan, the file the plan job wrote, before it applies",
+     () => {
+    const step = (job: Job, action: string) =>
+      job.steps.findIndex((each) => each.uses?.startsWith(`actions/${action}@`));
+    const kit = (job: Job) => job.steps.findIndex((each) => each.run?.includes(KIT.at(-1)!));
+    const [kept, read] = [plan!.steps[step(plan!, "upload-artifact")]!,
+                          apply!.steps[step(apply!, "download-artifact")]!];
+    // The plan job keeps the file it wrote, and fails with none; the apply job reads it back
+    // where its kit reads it, before the kit runs, from this run alone (no run-id).
+    expect([kit(plan!) < step(plan!, "upload-artifact"),
+            step(apply!, "download-artifact") < kit(apply!)]).toEqual([true, true]);
+    expect(kept.with).toMatchObject({ name: read.with!["name"], "if-no-files-found": "error" });
+    expect([String(kept.with!["path"]).replace("${{ runner.temp }}", RUNNER_TEMP),
+            `${String(read.with!["path"]).replace("${{ runner.temp }}", RUNNER_TEMP)}/` +
+            "deploy-plan.json"]).toEqual([PLAN[1], PLAN[1]]);
+    expect(Object.keys(read.with!).sort()).toEqual(["name", "path"]);
   });
 
   it("hands the plan and apply jobs exactly what their rows read", () => {
@@ -3029,7 +3195,7 @@ const CONTROL_WRITE = `cf PUT /accounts/${ACCOUNT}/storage/kv/`;
 /** A fresh dark run's plan, in order: what the founder's first `dark` changes. */
 const DARK_FRESH = [
   "the migration locks pin every migration the owner and sandbox Workers ship",
-  "set the doors' OWNER_ISSUER to https://auth.test, held to its discovery",
+  ISSUED,
   `the pair ${PAIR} passed its standing checks in this E2B team`,
   `WorkOS redirect URI ${CALLBACK}: registered`,
   `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser to ` +
@@ -3058,12 +3224,12 @@ const DARK_FRESH = [
 /** A routes run's plan over a held account: the cutover's. */
 const ROUTES_HELD = [
   "the migration locks pin every migration the owner and sandbox Workers ship",
-  "set the doors' OWNER_ISSUER to https://auth.test, held to its discovery",
+  ISSUED,
   `the pair ${PAIR} passed its standing checks in this E2B team`,
   `record the zone's ${LIVE.length + 2} routes and the handover's 8 changes, the egress ` +
-  "domain (none) and E2B's lifecycle webhook (disabled) as " +
-  "deploy:routes:local-20261107T120000Z in tinyassets-control, before any change: hand back " +
-  "with --mode handback --record local-20261107T120000Z",
+  "domain (none) and E2B's lifecycle webhook (disabled) as this run's route record in " +
+  "tinyassets-control, before any change: hand back with --mode handback --record " +
+  "<this run's id>",
   `WorkOS redirect URI ${CALLBACK}: present`,
   `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser to ` +
   "auth.test's sign-in",
