@@ -7,7 +7,7 @@
  * lease left open when it ended, releases them at once. Tier numbers scaled down: free 10 KB,
  * paid 100 KB. Each change to the sync's ignore list is a receipt and an owner notice.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
@@ -20,7 +20,12 @@ import { LIST_BYTES } from "../../contract/src/sync-ignore";
 import { CHUNK_BYTES } from "../../contract/src/limits";
 import { sha256Hex } from "../../contract/src/digest";
 import { rig, type Rig } from "./ledger-support";
+import { later } from "./runs-support";
 import { failure, inFiles, sqlIn, text } from "./support";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const SMALL = Object.freeze({ free: { runs: 5, storage_bytes: 10_000 },
                               paid: { runs: 10, storage_bytes: 100_000 } });
@@ -185,7 +190,7 @@ describe("open uploads, apart from what is stored", () => {
         files.leaseAcquire("owner", `sandbox-${n}`, n === 1 ? TOKENS : OTHER, 1));
       await inFiles(r.stub, {}, (files) => files.syncBegin(lease.lease_id, lease.epoch, 8_000,
                                                            [`a${n}`.repeat(32)]));
-      await sqlIn(r.stub, "UPDATE sandbox_leases SET lease_expires = 1");  // the sandbox died
+      later();  // the sandbox died
       if (take === "lapsed") {
         await inFiles(r.stub, {}, (files) => files.leasesLapsed(Date.now() / 1000));
       } else {

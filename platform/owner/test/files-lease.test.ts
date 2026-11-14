@@ -4,7 +4,7 @@
  * a sync op against a version that moved on keeps the API's version and saves the
  * sandbox's as a reported conflict copy.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type Entry, type Lease } from "../src/files";
 import type { SyncOp } from "../../contract/src/owner";
@@ -12,7 +12,12 @@ import { INLINE_BYTES } from "../../contract/src/limits";
 import { sha256Hex } from "../../contract/src/digest";
 import { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
+import { later } from "./runs-support";
 import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const W = "/workspace";
 
@@ -51,7 +56,7 @@ describe("the sync lease", () => {
     expect((await failure(() => acquire(r, "sandbox-2"))).message).toBe("the sync lease is held");
     const renewed = await renew(r, first);
     expect(renewed.expires_at).toBeGreaterThanOrEqual(first.expires_at);
-    await sqlIn(r.stub, "UPDATE sandbox_leases SET lease_expires = 1");
+    later();
     expect((await failure(() => renew(r, first))).message)
       .toBe(FENCED);
     const second = await acquire(r, "sandbox-2");
@@ -79,7 +84,7 @@ describe("the sync lease", () => {
     expect(await release(r, lease)).toEqual({ released: false });
     expect((await failure(() => sync(r, lease, [op]))).message).toBe(FENCED);
     const next = await acquire(r);
-    await sqlIn(r.stub, "UPDATE sandbox_leases SET lease_expires = 1");
+    later();
     expect((await failure(() => sync(r, next, [op]))).message).toBe(FENCED);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_entries")).toEqual([{ n: 0 }]);
   });

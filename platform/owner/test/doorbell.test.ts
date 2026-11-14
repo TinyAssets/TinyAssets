@@ -5,10 +5,10 @@
  * rings only the agents following it whose grant reads it, and never an agent's own; and a
  * wake that leads its agent's digest to just the change.
  *
- * The object is production's but for a recorder on its GATEWAY's rings (`RungOwnerDO`):
- * each ring is recorded as the object asks it, then made by the real gateway, whose sends
- * reach the fake receiver (`gateway/test/fake-upstream.ts`, read back from
- * `https://status.test/doorbell`). Each test opens the kill switch for its own owner only
+ * The object is production's. Its GATEWAY is the gate in front of the real gateway
+ * (`gateFor`): each ring the object asks is recorded there, by owner, then made by the real
+ * gateway, whose sends reach the fake receiver (`gateway/test/fake-upstream.ts`, read back
+ * from `https://status.test/doorbell`); a test holds one there to land a change mid-pass. Each test opens the kill switch for its own owner only
  * (the maintenance gate's canary list), and uses its own callback paths.
  */
 import { createHmac } from "node:crypto";
@@ -30,23 +30,40 @@ import raw from "../../contract/wake-kinds.json" with { type: "json" };
 import { DOT, EVENT, ledgerOn, ledgerSubscription, MCP, MUSE, rig, type Rig, WHSEC }
   from "./ledger-support";
 import { writeControl } from "../../ci/fixtures";
-import { failure } from "./support";
-import type { Rang, RungOwnerDO } from "./worker";
-import type { RingAnswer } from "../../contract/src/gateway";
+import { failure, gateFor } from "./support";
+import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
 
 const TOKEN = "sk-ant-oat01-" + "t".repeat(40);
 const KEY = Buffer.from(WHSEC.slice("whsec_".length), "base64");
 
+/** One ring the object asked of the gateway (slice W): the subscription and the request. */
+interface Rang {
+  readonly subscription: string;
+  readonly version: number;
+  readonly blob: string;
+  readonly previous: { readonly version: number; readonly blob: string } | null;
+  readonly request: RingRequest;
+}
+
 type Rung = Rig & {
+  /** Every ring the owner's object asked, oldest first, as it crossed the GATEWAY gate. */
   rang: () => Promise<Rang[]>;
+  /** The owner's calls at the GATEWAY gate. */
+  gateway: ReturnType<typeof gateFor>;
   /** A path of this test's own on the fake receiver. */
   path: string;
 };
 
 async function rung(): Promise<Rung> {
-  const r = await rig(env.RUNG as unknown as DurableObjectNamespace<OwnerDO>);
-  return { ...r, path: `t${crypto.randomUUID().slice(0, 8)}`,
-           rang: () => runInDurableObject(r.stub, (i: OwnerDO) => [...(i as RungOwnerDO).rang]) };
+  const r = await rig();
+  const gateway = gateFor(env.GATEWAY_GATE, r.owner);
+  const rang = async () => (await gateway.calls())
+    .filter((call) => call.method === "ringDoorbell").map((call) => {
+      const [, subscription, version, blob, previous, request] = call.args as
+        [string, string, number, string, Rang["previous"], RingRequest];
+      return { subscription, version, blob, previous, request };
+    });
+  return { ...r, gateway, rang, path: `t${crypto.randomUUID().slice(0, 8)}` };
 }
 
 /** What the fake receiver took on this test's paths, oldest first. */
@@ -292,6 +309,32 @@ describe("the kill switch and admission", () => {
       .toEqual([["pending", null]]);
     expect(await r.rang()).toEqual([]);
   });
+
+  it("claims nothing more once the owner is suspended between a pass's claims", async () => {
+    const r = await rung();
+    await control([r.owner]);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    const dot = await r.register(DOT, "Dot", "mcp_event");
+    await subscribed(r, MUSE, { board: true });
+    await subscribed(r, DOT, { board: true }, "dot");
+    // Both due in one pass; its first ring held at the gate, and the owner suspended there.
+    await r.gateway.arm("ringDoorbell", { hold: "before" });
+    await write(r, "board", "t1");
+    const pass = runDurableObjectAlarm(r.stub).catch(() => false);
+    await r.gateway.held("ringDoorbell");
+    await r.stub.admissionSet({ owner: r.owner, caller: PLATFORM_CALLER, origin: null },
+                              { reason: "billing", suspended: true });
+    await r.gateway.release("ringDoorbell");
+    await pass;
+    const [sent] = (await r.rang()).map((ring) =>
+      (JSON.parse(ring.request.body) as Delivered).data.agent_id);
+    const other = sent === muse ? dot : muse;
+    // The claim after the suspension is held: that wake waits, unclaimed, and is never rung.
+    expect(Object.fromEntries((await r.table("ledger_wakes"))
+      .map((w) => [w["agent_id"], [w["state"], w["claim_id"] === null]])))
+      .toEqual({ [sent!]: ["sent", false], [other]: ["pending", true] });
+    expect(await r.rang()).toHaveLength(1);
+  });
 });
 
 describe("a write rings only who follows it and may read it, and never on an agent's own", () => {
@@ -373,18 +416,17 @@ describe("a revoke is never outlived", () => {
     const dot = await r.register(DOT, "Dot", "mcp_event");
     await subscribed(r, MUSE, { board: true });
     await subscribed(r, DOT, { board: true }, "dot");
-    const session = r.session(null);
     const woken = (ring: Rang) => (JSON.parse(ring.request.body) as Delivered).data.agent_id;
-    await runInDurableObject(r.stub, (i: OwnerDO) => {
-      const instance = i as RungOwnerDO;
-      instance.during = async () => {
-        instance.during = null;
-        const first = woken(instance.rang.at(-1)!);
-        await instance.disableAgent(session, { agent_id: first === muse ? dot : muse,
-                                               reason: "revoked" });
-      };
-    });
+    // The pass's first ring held at the gate; the other agent revoked there.
+    await r.gateway.arm("ringDoorbell", { hold: "before" });
     await write(r, "board", "t1");  // both ring, in one pass
+    const pass = runDurableObjectAlarm(r.stub).catch(() => false);
+    await r.gateway.held("ringDoorbell");
+    const first = woken((await r.rang()).at(-1)!);
+    await r.stub.disableAgent(r.session(null), { agent_id: first === muse ? dot : muse,
+                                                 reason: "revoked" });
+    await r.gateway.release("ringDoorbell");
+    await pass;
     await rings(r, 1);
     const sent = (await r.rang()).map(woken);
     expect(sent).toHaveLength(1);

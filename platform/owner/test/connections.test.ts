@@ -35,6 +35,7 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 /** The connection's blob rows, as stored. */
@@ -364,9 +365,8 @@ describe("a revoke", () => {
     // (its job is due at once, so the runtime may already have run it).
     expect(await usable(r)).toEqual([]);
     await lanes(r);
-    const sent = await r.in((instance) =>
-      instance.calls.filter((call) => call.method === "revokeAtProvider"));
-    expect(sent.map((call) => JSON.parse(call.text)))
+    const sent = (await r.gateway.calls()).filter((call) => call.method === "revokeAtProvider");
+    expect(sent.map((call) => call.args))
       .toEqual([[r.name, connection, 1, held!["blob"]]]);
     expect(await secrets(r, connection)).toEqual([]);
     expect((await r.stub.connectionList(r.session())).connections[0])
@@ -458,9 +458,8 @@ describe("an issued credential whose setup check failed", () => {
     expect(view).toMatchObject({ status: "error", provider_revoke_pending: true });
     expect(await usable(r)).toEqual([]);
     await lanes(r);
-    const sent = await r.in((instance) =>
-      instance.calls.filter((call) => call.method === "revokeAtProvider"));
-    expect(sent.map((call) => JSON.parse(call.text)))
+    const sent = (await r.gateway.calls()).filter((call) => call.method === "revokeAtProvider");
+    expect(sent.map((call) => call.args))
       .toEqual([[r.name, prepared.connection, 1, blob]]);
     expect(await secrets(r, prepared.connection)).toEqual([]);
     expect((await r.stub.connectionList(r.session())).connections[0])
@@ -513,15 +512,10 @@ describe("a provider revoke and a refresh in flight", () => {
   /** An OAuth connection whose token is near expiry, its refresh held until released. */
   async function heldRefresh(r: Gated) {
     const connection = await r.connectOAuth(OAUTH, Date.now() + 60_000);
-    let release!: () => void;
-    await r.in((instance) => {
-      instance.faults.refreshGate = new Promise<void>((resolve) => { release = resolve; });
-    });
+    await r.gateway.arm("refresh", { hold: "before" });
     const call = calls(r, 1).then(([answer]) => answer!);
-    await until(async () => (await r.in((instance) => instance.calls))
-      .some((made) => made.method === "refresh"), "the refresh to be sent");
-    // Resolved in the object, where the gate was made: a promise is its I/O.
-    return { connection, call, release: () => r.in(() => release()) };
+    await r.gateway.held("refresh");
+    return { connection, call, release: () => r.gateway.release("refresh") };
   }
 
   it("revokes the rotated tokens of a refresh that lands after the lane revoked the old",
@@ -543,8 +537,8 @@ describe("a provider revoke and a refresh in flight", () => {
       await lanes(r);
       return (await secrets(r, connection)).length === 0;
     }, "the rotated tokens' revoke", 50);
-    const sent = (await r.in((instance) => instance.calls))
-      .filter((made) => made.method === "revokeAtProvider").map((made) => JSON.parse(made.text));
+    const sent = (await r.gateway.calls())
+      .filter((made) => made.method === "revokeAtProvider").map((made) => made.args as unknown[]);
     expect(sent.map((args) => args.slice(0, 3))).toEqual([[r.name, connection, 1],
                                                          [r.name, connection, 2]]);
     expect(sent[0]![3]).toBe(old!["blob"]);
@@ -563,8 +557,8 @@ describe("a provider revoke and a refresh in flight", () => {
       await lanes(r);
       return (await secrets(r, connection)).length === 0;
     }, "every owed revoke to be sent", 50);
-    const sent = (await r.in((instance) => instance.calls))
-      .filter((made) => made.method === "revokeAtProvider").map((made) => JSON.parse(made.text));
+    const sent = (await r.gateway.calls())
+      .filter((made) => made.method === "revokeAtProvider").map((made) => made.args as unknown[]);
     expect(sent.at(-1)?.slice(0, 3)).toEqual([r.name, connection, 2]);
     expect((await r.sql("SELECT revoke_due FROM connections"))[0]!["revoke_due"]).toBeNull();
   });
@@ -574,25 +568,19 @@ describe("a provider revoke and a refresh in flight", () => {
     const r = await gated();
     const { connection, call, release } = await heldRefresh(r);
     const [old] = await secrets(r, connection);
-    let letRevoke!: () => void;
-    await r.in((instance) => {
-      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
-    });
+    await r.gateway.arm("revokeAtProvider", { hold: "before" });
     await r.stub.connectionRevoke(r.session(), { connection });
     // The lane sends the revoke of version 1, held, and the refresh lands meanwhile.
     await r.sql("UPDATE cf_agents_jobs SET time = 0");
     void runDurableObjectAlarm(r.stub).catch(() => false);
-    const revokes = async () => (await r.in((instance) => instance.calls))
-      .filter((made) => made.method === "revokeAtProvider").map((made) => JSON.parse(made.text));
+    const revokes = async () => (await r.gateway.calls())
+      .filter((made) => made.method === "revokeAtProvider").map((made) => made.args as unknown[]);
     await until(async () => (await revokes()).length === 1, "the first revoke to be sent");
     await release();
     await call;
     await until(async () => (await secrets(r, connection))
       .some((row) => row["version"] === 2), "the refresh to land");
-    await r.in((instance) => {
-      instance.faults.revokeGate = null;
-      letRevoke();
-    });
+    await r.gateway.release("revokeAtProvider");
     // The revoke of version 1 settles, and the lane is owed one for version 2.
     await until(async () => {
       await lanes(r);
@@ -635,7 +623,7 @@ describe("the refresh lease", () => {
     const answers = await calls(r, 4);
     // Every call was admitted with the refreshed token: the one refresh's rotation.
     expect(answers.map((answer) => answer.ok && answer.version)).toEqual([2, 2, 2, 2]);
-    const made = await r.in((instance) => instance.calls.map((call) => call.method));
+    const made = (await r.gateway.calls()).map((call) => call.method);
     expect(made.filter((method) => method === "refresh")).toEqual(["refresh"]);
     const [row] = await r.sql("SELECT version, expires_at, lease_id, lease_until " +
                               "FROM connections");
@@ -647,7 +635,7 @@ describe("the refresh lease", () => {
     expect(opened.credential.kind === "oauth2" && opened.credential.oauth.refresh).toBe("rt-2");
     // Fresh now: the next calls refresh nothing.
     await calls(r, 2);
-    expect((await r.in((instance) => instance.calls.map((call) => call.method)))
+    expect((await r.gateway.calls()).map((call) => call.method)
       .filter((method) => method === "refresh")).toEqual(["refresh"]);
   });
 
@@ -678,7 +666,7 @@ describe("the refresh lease", () => {
     const answers = await calls(r, 3);
     expect(answers.map((answer) => !answer.ok && answer.code)).toEqual(Array(3).fill(
       "egress_connection_refused"));
-    expect((await r.in((instance) => instance.calls.map((call) => call.method)))
+    expect((await r.gateway.calls()).map((call) => call.method)
       .filter((method) => method === "refresh")).toEqual(["refresh"]);
     expect(await r.sql("SELECT status, lease_id FROM connections"))
       .toEqual([{ status: "error", lease_id: null }]);
@@ -697,15 +685,12 @@ describe("a refresh that lands on a changed connection", () => {
                                                                              after) => {
     const r = await gated();
     const connection = await r.connectOAuth(OAUTH, Date.now() + 60_000);
-    let release!: () => void;
-    await r.in((instance) => {
-      instance.faults.refreshGate = new Promise<void>((resolve) => { release = resolve; });
-    });
+    await r.gateway.arm("refresh", { hold: "before" });
     const call = calls(r, 1);
-    await until(async () => (await r.sql("SELECT lease_id FROM connections"))[0]!["lease_id"]
-      !== null, "the lease to be taken");
+    await r.gateway.held("refresh");
+    expect((await r.sql("SELECT lease_id FROM connections"))[0]!["lease_id"]).not.toBeNull();
     await r.sql(change);
-    await r.in(() => release());
+    await r.gateway.release("refresh");
     await call;
     expect(await r.sql("SELECT status, version, lease_id FROM connections")).toEqual([after]);
     // The refreshed tokens were never stored.
@@ -716,11 +701,24 @@ describe("a refresh that lands on a changed connection", () => {
 describe("a credential", () => {
   it("is refused as expired when its refresh came back already past its expiry", async () => {
     const r = await gated();
-    await r.connectOAuth(OAUTH, Date.now() + 60_000);
-    await r.in((instance) => {
-      instance.faults.refreshed = (answer) => ({ ...answer, expires_at: Date.now() - 1 });
-    });
-    const [answer] = await calls(r, 1);
+    // Near its expiry, on a refresh token the provider answers with a token that lives one
+    // second (the fake's `rt-lapsed`); the refresh's answer held at the gate while the
+    // object's clock passes that second, so it lands already past its expiry.
+    const connection = (await r.stub.connectionPrepare(r.session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT })).connection;
+    const soon = Date.now() + 60_000;
+    await r.stub.connectionCommit(r.session(), {
+      connection, version: 1, kid: "k2", models: await catalog(OPENAI), expires_at: soon,
+      egress: await scopeOf(OAUTH), blob: await sealedAs("k2", r.name, connection, 1, {
+        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
+        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-lapsed", expires_at: soon } }) });
+    await r.gateway.arm("refresh", { hold: "after" });
+    const calling = calls(r, 1);
+    await r.gateway.held("refresh");
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 5_000 });
+    await r.gateway.release("refresh");
+    const [answer] = await calling;
     expect(answer).toMatchObject({ ok: false, code: "egress_connection_refused" });
     expect(await r.sql("SELECT state, code FROM egress_reservations"))
       .toEqual([{ state: "refused", code: "egress_connection_refused" }]);
@@ -998,23 +996,17 @@ describe("the platform's reseal sweep", () => {
       egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
         kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
         oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: far } }) });
-    let letRevoke!: () => void;
-    await r.in((instance) => {
-      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
-    });
+    await r.gateway.arm("revokeAtProvider", { hold: "before" });
     await r.stub.connectionRevoke(r.session(), { connection });
     // The lane sends the revoke of version 1, held, and the sweep reseals meanwhile.
     await r.sql("UPDATE cf_agents_jobs SET time = 0");
     void runDurableObjectAlarm(r.stub).catch(() => false);
-    const revokes = async () => (await r.in((instance) => instance.calls))
-      .filter((made) => made.method === "revokeAtProvider").map((made) => JSON.parse(made.text));
+    const revokes = async () => (await r.gateway.calls())
+      .filter((made) => made.method === "revokeAtProvider").map((made) => made.args as unknown[]);
     await until(async () => (await revokes()).length === 1, "the first revoke to be sent");
     expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0 });
     expect(await kids(r)).toEqual([[connection, 2, "k2"]]);
-    await r.in((instance) => {
-      instance.faults.revokeGate = null;
-      letRevoke();
-    });
+    await r.gateway.release("revokeAtProvider");
     await until(async () => {
       await lanes(r);
       return (await secrets(r, connection)).length === 0;
@@ -1035,13 +1027,9 @@ describe("the platform's reseal sweep", () => {
       egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
         kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
         oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: soon } }) });
-    let letRefresh!: () => void;
-    let letRevoke!: () => void;
-    await r.in((instance) => {
-      instance.faults.refreshGate = new Promise<void>((resolve) => { letRefresh = resolve; });
-      // The lane's provider revoke is held, so the kept blob stays for the sweep.
-      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
-    });
+    await r.gateway.arm("refresh", { hold: "before" });
+    // The lane's provider revoke is held, so the kept blob stays for the sweep.
+    await r.gateway.arm("revokeAtProvider", { hold: "before" });
     const calling = calls(r, 1).then(() => undefined, () => undefined);
     await until(async () => (await r.sql("SELECT lease_id FROM connections"))[0]!["lease_id"]
       !== null, "the lease to be taken");
@@ -1051,17 +1039,14 @@ describe("the platform's reseal sweep", () => {
       .toEqual([{ status: "revoked", lease_id: null }]);
     expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 1 });
     expect(await kids(r)).toEqual([[connection, 1, "k1"]]);
-    await r.in(() => letRefresh());
+    await r.gateway.release("refresh");
     await calling;
     await until(async () => (await kids(r))[0]?.[1] === 2, "the refreshed tokens to be kept");
     const [row] = await secrets(r, connection);
     const opened = await open(keyring("k2"), { owner: r.name, connection, version: 2 },
                               row!["blob"]);
     expect(opened.credential.kind === "oauth2" && opened.credential.oauth.refresh).toBe("rt-2");
-    await r.in((instance) => {
-      instance.faults.revokeGate = null;
-      letRevoke();
-    });
+    await r.gateway.release("revokeAtProvider");
   });
 
   it("never brings back a blob its provider revoke deleted while the gateway resealed it",
@@ -1076,29 +1061,22 @@ describe("the platform's reseal sweep", () => {
       egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
         kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
         oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: far } }) });
-    let letReseal!: () => void;
-    let letRevoke!: () => void;
-    await r.in((instance) => {
-      instance.faults.resealGate = new Promise<void>((resolve) => { letReseal = resolve; });
-      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
-    });
+    await r.gateway.arm("reseal", { hold: "after" });
+    await r.gateway.arm("revokeAtProvider", { hold: "before" });
     await r.stub.connectionRevoke(r.session(), { connection });
     // The sweep reads the kept blob and waits on its reseal; the lane's revoke deletes it.
     const sweep = r.stub.gatewayReseal(platform(r));
-    await until(async () => (await r.in((instance) => instance.calls))
-      .some((made) => made.method === "reseal"), "the reseal to be asked");
-    await r.in((instance) => {
-      instance.faults.revokeGate = null;
-      letRevoke();
-    });
+    await r.gateway.held("reseal");
+    // The lane's revoke, sent (by the runtime's alarm, or this one) and held, let go.
+    await r.sql("UPDATE cf_agents_jobs SET time = 0");
+    void runDurableObjectAlarm(r.stub).catch(() => false);
+    await r.gateway.held("revokeAtProvider");
+    await r.gateway.release("revokeAtProvider");
     await until(async () => {
       await lanes(r);
       return (await secrets(r, connection)).length === 0;
     }, "the provider revoke", 50);
-    await r.in((instance) => {
-      instance.faults.resealGate = null;
-      letReseal();
-    });
+    await r.gateway.release("reseal");
     expect(await sweep).toEqual({ resealed: 0, left: 1 });
     expect(await secrets(r, connection)).toEqual([]);
   });
@@ -1118,8 +1096,8 @@ describe("the plaintext key", () => {
     const connection = await r.connect(key);
     expect((await calls(r, 2)).map((answer) => answer.ok)).toEqual([true, true]);
     await r.stub.connectionRevoke(r.session(), { connection });
-    const made = await r.in((instance) => instance.calls);
-    expect(made.filter((call) => call.text.includes(key))).toEqual([]);
+    const made = await r.gateway.calls();
+    expect(made.filter((call) => JSON.stringify(call.args).includes(key))).toEqual([]);
     const tables = await r.sql("SELECT name FROM sqlite_master WHERE type = 'table' " +
                                "AND name NOT LIKE '_cf_%'");
     expect(tables.length).toBeGreaterThan(20);

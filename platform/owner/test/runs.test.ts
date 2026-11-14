@@ -6,9 +6,8 @@
  * no sandbox at all, simultaneous runs each on their own connection, a run's calls held to
  * its grant, and the `runs` lane. The doors' side is `doors/test/runs.test.ts`.
  */
-import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import { verifyToken } from "../../contract/src/routing-mac";
@@ -28,11 +27,14 @@ import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, type RunHost, Runs, SIG
 import { keepTiers, PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding,
-  runnerSandbox, scripted, secretOf, startOf, TIERS } from "./runs-support";
-import { drainDue, failure } from "./support";
-import type { GatedOwnerDO } from "./worker";
+import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
+  runnerBinding, runnerSandbox, scripted, secretOf, startOf, TIERS } from "./runs-support";
+import { drainDue, failure, gateFor, spaceOf } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /** The owner's run of Claude Code on its own sign-in: no key, no connection. */
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
@@ -324,7 +326,7 @@ describe("a run's settle", () => {
       .toMatchObject({ state: "failed", code: "engine_error", error: "rate" });
     // Unknown: its runner lost (no heartbeat within the lease's life).
     const lost = await ownerRun(r.stub, r.bind());
-    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
+    later();
     await ownerRun(r.stub, r.bind());
     expect(await r.stub.agentStatus(r.bind(), { run_id: lost.run.run_id }))
       .toMatchObject({ state: "unknown", code: "lost" });
@@ -842,9 +844,9 @@ describe("the runs lane", () => {
       await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "report",
                                                         ...trigger });
       // The read refused `busy`, as a full slot pool refuses it: the pass fails, unclaimed.
-      await runInDurableObject(r.stub, (instance: GatedOwnerDO) => {
-        instance.faults.chunkRead = slotBusy();
-      });
+      const busy = slotBusy();
+      await gateFor(env.FILES_GATE, await spaceOf(r.stub))
+        .arm("getChunks", { refuse: { code: busy.code, message: busy.message } });
       await fireSchedules(r).catch(() => undefined);
       // The lane's next pass, as its backoff brings it.
       await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");

@@ -6,7 +6,9 @@
  * - held before it is sent, or after its answer, until the test lets it go;
  * - its bytes changed in flight (the first byte of each byte array it carries);
  * - refused, with the refusal the test gave, crossing as a real refusal crosses.
- * It records what crossed, by method and, for an object, by the object's name.
+ * It records what crossed, by method and by name: an object's name, or for a service the call's
+ * first argument when it is a string (every service the gates front takes its owner, or the
+ * owner's namespace, first), so a test arms and reads one owner's calls alone.
  *
  * Its methods are the ones its config names (`GATE`), defined on the prototype at module
  * load, so a name outside them is refused by the runtime as the real binding refuses it. For
@@ -41,7 +43,7 @@ type Act =
   | { readonly corrupt: true }
   | { readonly refuse: InjectedRefusal };
 
-/** One arming: a method, the object it is for (an object gate; any when absent), how often. */
+/** One arming: a method, the name it is for (any when absent), how often. */
 export type Arm = Act & {
   readonly method: string;
   readonly name?: string;
@@ -57,7 +59,7 @@ export interface Held {
   readonly at: "before" | "after";
 }
 
-/** One call that crossed: its method, its object's name, its arguments (bytes as a count). */
+/** One call that crossed: its method, its name, its arguments (bytes as a count). */
 export interface Crossed {
   readonly method: string;
   readonly name: string | null;
@@ -186,7 +188,7 @@ export default class Gate extends WorkerEntrypoint<{ REAL: Real }> {
   static {
     if (!SETUP.object) {
       define(this.prototype, (self: Gate, method, args) =>
-        cross(method, null, args, () => self.env.REAL));
+        cross(method, typeof args[0] === "string" ? args[0] : null, args, () => self.env.REAL));
     }
   }
 
@@ -234,10 +236,6 @@ export class Control extends WorkerEntrypoint {
       throw new Error("an arming holds a call before or after it, changes its bytes, or " +
                       `refuses it: one of those, not ${JSON.stringify(arm)}`);
     }
-    if (!SETUP.object && arm.name !== undefined) {
-      throw new Error("a call to a service has no object's name, so an arming for one by " +
-                      "name would never act");
-    }
     const times = arm.times ?? 1;
     if (!Number.isSafeInteger(times) || times < 1) {
       throw new Error(`an arming acts on at least one call, not ${times}`);
@@ -273,7 +271,7 @@ export class Control extends WorkerEntrypoint {
     crossed.length = 0;
   }
 
-  /** What crossed (for the object `name`, or all), oldest first, taken from the record. */
+  /** What crossed (named `name`, or all), oldest first, taken from the record. */
   async seen(name?: string): Promise<Crossed[]> {
     const mine = crossed.filter((call) => name === undefined || call.name === name);
     const rest = crossed.filter((call) => !mine.includes(call));

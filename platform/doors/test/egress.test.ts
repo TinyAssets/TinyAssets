@@ -22,7 +22,7 @@ import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, RUNNER_HEADER,
   SANDBOX_HEADER,
 } from "../../contract/src/egress";
-import { defineAgent, secretOf } from "../../owner/test/runs-support";
+import { defineAgent, later, secretOf } from "../../owner/test/runs-support";
 import type { DoorsEnv } from "../src/env";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
@@ -259,6 +259,7 @@ beforeEach(async () => {
 afterEach(() => {
   restore();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("the egress door", () => {
@@ -657,7 +658,7 @@ describe("a refused call", () => {
     expect(theirs.status).toBe(403);
     expect(await reached(stranger)).toBe(false);
     expect(await reservations(stranger)).toEqual([]);
-    await sqlIn(box.owner, "UPDATE sandbox_leases SET lease_expires = 1");
+    later();
     const lapsed = await send(egressRequest(box));
     expect([lapsed.status, await codeOf(lapsed)]).toEqual([401, "egress_lease_closed"]);
     const other = await sandbox();
