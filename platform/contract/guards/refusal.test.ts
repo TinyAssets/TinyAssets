@@ -112,7 +112,7 @@ describe("the code list", () => {
     ["file_quota", 403, undefined], ["owner_suspended", 403, undefined],
     ["storage_full", 507, undefined], ["file_index_full", 507, undefined],
     ["uploads_open", 409, undefined],
-    ["inbound_proof_invalid", 401, undefined], ["binding_withdrawn", 404, undefined],
+    ["binding_withdrawn", 404, undefined],
     ["binding_not_configured", 404, undefined],
     ["file_busy", 409, undefined], ["storage_busy", 503, 30], ["busy", 503, 1],
     ["events_busy", 503, 1], ["events_raced", 503, 1],
@@ -128,7 +128,7 @@ describe("the code list", () => {
     ["egress_rate", 429, 1],
     // The inbound door's own, and the object's answers to an event, as the door answered them.
     ["too_large", 413, undefined], ["too_many_headers", 400, undefined],
-    ["event_identity_required", 400, undefined], ["invalid_signature", 401, undefined],
+    ["event_identity_required", 400, undefined], ["inbound_proof_invalid", 401, undefined],
     ["inbound_app_unconfigured", 503, 5], ["mailbox_full", 429, 5],
     ["event_conflict", 409, undefined], ["agent_unavailable", 409, undefined],
     // The sandbox Worker's, its runner refused (the founder's alert).

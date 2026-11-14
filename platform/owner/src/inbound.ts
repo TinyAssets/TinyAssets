@@ -365,7 +365,7 @@ function inboundRefused(o: OwnerState, row: Row, error: unknown, now: number): I
   // space (the ledger's wall, marked `ceiling`): the event is sent again, never lost.
   if (refused === "storage_busy"
       || (error instanceof Refusal && error.facts?.["ceiling"] === true)) {
-    return { state: "refused", error: "mailbox_full", retry: true };
+    return { state: "refused", error: "mailbox_full" };
   }
   if (error instanceof Refusal && error.transient) {
     throw error;  // for the moment only (a full pool): never the event's own refusal
@@ -375,7 +375,7 @@ function inboundRefused(o: OwnerState, row: Row, error: unknown, now: number): I
       o.notices.add("inbound", `An inbound app's events to ${row.agent} were paused: ` +
                         "its mailbox was full. Change the binding to resume.", now);
     }
-    return { state: "refused", error: "mailbox_full", retry: true };
+    return { state: "refused", error: "mailbox_full" };
   }
   if (refused === "post_conflict") {
     return { state: "refused", error: "event_conflict" };
