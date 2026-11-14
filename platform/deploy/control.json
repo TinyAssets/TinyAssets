@@ -1,0 +1,10 @@
+{
+  "outside": "off",
+  "ordinary": "canary",
+  "canary": [],
+  "inbound": false,
+  "tiers": {
+    "free": { "runs": 5, "storage_bytes": 25000000000 },
+    "paid": { "runs": 10, "storage_bytes": 250000000000 }
+  }
+}

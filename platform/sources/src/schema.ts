@@ -56,7 +56,6 @@ export interface Rfc6749 {
   readonly token_endpoint: string;
   readonly revocation_endpoint?: string;
   readonly resource?: string;
-  readonly refresh_with: "provider" | "rfc6749";
   /** The authorization server's issuer (RFC 8414), which an `iss` response must name. */
   readonly issuer?: string;
   /** Its metadata's RFC 9207 flag: every authorization response then carries `iss`. */

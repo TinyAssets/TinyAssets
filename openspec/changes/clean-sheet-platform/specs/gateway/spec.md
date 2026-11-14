@@ -91,11 +91,7 @@ On the `EgressGateway` entrypoint, `forward` SHALL meter the call: pi-ai's adapt
 - **THEN** the sandbox receives `[redacted]` in its place
 
 ### Requirement: OAuth connections are exchanged, refreshed and revoked inside the gateway
-`exchange` SHALL run the authorization-code grant with PKCE against the source record's token endpoint and seal the tokens at once; `refresh` SHALL use pi-ai's own refresh for a source whose record names it (Sign in with ChatGPT) and the generic refresh-token grant otherwise, and reseal at the next version; `revokeAtProvider` SHALL revoke by RFC 7009 at the sealed revocation endpoint. A rotated refresh token SHALL replace the old one, and one the server does not rotate SHALL be kept.
-
-#### Scenario: A provider refresh for a consumer subscription
-- **WHEN** a source asks for pi-ai's own refresh for any provider but Sign in with ChatGPT, or with any token endpoint but OpenAI's
-- **THEN** it is refused when it is sealed, so no consumer subscription's OAuth runs in the gateway
+`exchange` SHALL run the authorization-code grant with PKCE against the source record's token endpoint and seal the tokens at once; `refresh` SHALL use the refresh-token grant (RFC 6749 §6) at the sealed token endpoint, never following a redirect, and reseal at the next version; `revokeAtProvider` SHALL revoke by RFC 7009 at the sealed revocation endpoint. A rotated refresh token SHALL replace the old one, and one the server does not rotate SHALL be kept.
 
 #### Scenario: A refused grant
 - **WHEN** the token endpoint answers `invalid_grant` with a description quoting the code or token

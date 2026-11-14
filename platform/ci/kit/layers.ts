@@ -132,7 +132,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
   {
     name: "the ci kit",
     files: ["platform/ci/**", "!platform/ci/guards/**"],
-    may: ["platform/ci/**", "!platform/ci/guards/**", ...CONTRACT],
+    may: ["platform/ci/**", "!platform/ci/guards/**", ...CONTRACT, "platform/deploy/control.json"],
     computed: true,
   },
   {

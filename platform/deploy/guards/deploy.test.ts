@@ -40,7 +40,7 @@ import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
 import { E2b } from "../../sandbox/src/e2b";
 import { type CfAnswer, cfApi, Cloudflare, handback, handover, type Route } from "../cloudflare";
 import {
-  admitsNobody, authorizeCheck, authorizeLink, codeDigests, DARK_CONTROL, deployedConfig,
+  admitsNobody, authorizeCheck, authorizeLink, codeDigests, deployedConfig,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
   lifecycleHook, listed, lockRefusal, maskInLog, MIGRATED, type Mode, MODES, parse,
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, type RouteRecord,
@@ -48,8 +48,8 @@ import {
 } from "../deploy";
 import { bundles, pairTag, treeImage } from "../../sandbox/template/pair";
 import {
-  boundBy, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES,
-  NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers, ROUTES, SECRET_INPUTS,
+  boundBy, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS, MADE,
+  NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers, ROUTES, SECRET_INPUTS,
   SECRETS, WORKERS, ZONE,
 } from "../facts";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
@@ -188,7 +188,7 @@ function world(options: WorldOptions = {}) {
                                   events: [...E2B_HOOK.events] }] : [];
   /** KV, by namespace id and key: the control record when held. */
   const kv = new Map<string, string>(held
-    ? [[`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(DARK_CONTROL)]] : []);
+    ? [[`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(DARK)]] : []);
   /** The zone's routes after each route change, in order. */
   const tables: Route[][] = [];
   /** The egress host's custom domains, by id. */
@@ -569,13 +569,33 @@ describe("the deploy kit's facts", () => {
     }
   });
 
-  it("writes a control record its gates read, every outside door closed", () => {
-    const control = parseControl(DARK_CONTROL);
+  it("writes the dark record (`control.json`) when none is held, every outside door closed",
+     async () => {
+    const w = world();
+    await runMode(w, "dark", ["--yes"]);
+    const written = [...w.kv].filter(([key]) => key.endsWith(`/${CONTROL_KEY}`))
+      .map(([, text]) => JSON.parse(text) as unknown);
+    expect(written).toEqual([DARK]);
+    const control = parseControl(written[0]);
     expect(control).toMatchObject({ outside: "off", ordinary: "canary", canary: [],
                                     inbound: false });
     expect(control?.tiers).not.toBeNull();
-    // The tests' dark record is this one, the founder's tier numbers with it.
-    expect(DARK_CONTROL).toEqual(DARK);
+  });
+
+  it("prints the import job's names for its bundle, each storage this kit makes", () => {
+    const run = (...flags: string[]) => spawnSync(process.execPath, [
+      "--experimental-strip-types", "--no-warnings", join(PLATFORM, "deploy", "facts.ts"),
+      ...flags], { cwd: PLATFORM, encoding: "utf8" });
+    const printed = run("--import");
+    expect([printed.status, printed.stderr]).toEqual([0, ""]);
+    const names = JSON.parse(printed.stdout) as Record<string, string>;
+    expect(names).toEqual(IMPORT_NAMES);
+    const { queue, dead_letter_queue: deadLetters, directory, ...buckets } = names;
+    expect([queue, deadLetters].filter((name) => !QUEUES.includes(name!))).toEqual([]);
+    expect(Object.values(NAMESPACES)).toContain(directory);
+    expect(Object.values(buckets).filter((name) => !BUCKETS.includes(name))).toEqual([]);
+    expect(new Set(Object.values(names)).size).toBe(Object.keys(names).length);
+    expect(run().status).not.toBe(0);
   });
 });
 
@@ -1910,8 +1930,8 @@ describe("the parts of a run", () => {
   it("probes only behind a control record that admits nobody, as the doors read it", () => {
     const owners = ["user_a", "user_b"];
     const records: [unknown, boolean][] = [
-      [DARK_CONTROL, true], [{ ...DARK_CONTROL, ordinary: "none" }, true],
-      [{ ...DARK_CONTROL, canary: ["user_a"] }, false], [{ ...DARK_CONTROL, ordinary: "all" }, false],
+      [DARK, true], [{ ...DARK, ordinary: "none" }, true],
+      [{ ...DARK, canary: ["user_a"] }, false], [{ ...DARK, ordinary: "all" }, false],
       [undefined, false], [{}, false], [null, false],
     ];
     for (const [record, closed] of records) {

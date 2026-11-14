@@ -122,7 +122,7 @@ It never counts as "absent".
    Worker in `migrate` to deploy it whole; `migrate` never takes the doors.
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
-   off. It also holds your tier numbers (`DARK_CONTROL` in `deploy.ts`). If the
+   off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the
    record is there, the kit leaves it alone. If the read fails, the whole run stops.
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:** the doors'
    callback (`signin.callback` in `platform/contract/identity.json`), with the checks in

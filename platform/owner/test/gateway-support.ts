@@ -26,7 +26,7 @@ export const OAUTH: Source = Object.freeze({
   upstream: OPENAI.upstream, endpoints: OPENAI.endpoints,
   oauth: { client_id: "client-1", client_auth: { method: "none" as const },
            token_endpoint: "https://auth.test/token",
-           revocation_endpoint: "https://auth.test/revoke", refresh_with: "rfc6749" as const },
+           revocation_endpoint: "https://auth.test/revoke" },
 });
 
 export const REDIRECT = "https://tinyassets.io/oauth/connect/callback";

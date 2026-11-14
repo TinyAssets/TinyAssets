@@ -140,7 +140,7 @@ Counts are lines on `origin/main` (`wc -l`). Every verdict assumes the new desig
 | `keyring.ts` | 250 | Keep | |
 | `messages.ts` | 388 | **Delete** | The loop's model calls in pi-messages. |
 | `model-record.ts` | 197 | Keep | Model records price the egress reservation. |
-| `oauth.ts` | 368 | Keep | Covers RFC 6749 sources (OpenRouter). The Sign in with ChatGPT `refresh_with: provider` path is parked with `chatgpt.json` (§1.5). |
+| `oauth.ts` | 368 | Keep | Covers RFC 6749 sources (OpenRouter). The Sign in with ChatGPT refresh went with `chatgpt.json` (§1.5). |
 
 ### 1.4 The code mode Worker's source (now `platform/codemode/src`) and `platform/files/src`
 

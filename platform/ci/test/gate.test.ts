@@ -114,7 +114,8 @@ describe("the files gate", () => {
       expect(await e.FILES_GATE.held()).toEqual([]);
     }
     // Armed once, it acts once.
-    expect(await e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }])).toEqual([s.bytes]);
+    expect(await e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }]))
+      .toEqual([s.bytes]);
     expect(await outcome(() => e.FILES_GATE.release(1_000_000)))
       .toMatchObject({ message: "no call 1000000 is held at the gate" });
   });
