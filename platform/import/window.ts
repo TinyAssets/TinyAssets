@@ -90,7 +90,7 @@ export function writeRecord(file: string, record: WindowRecord): void {
   renameSync(`${file}.next`, file);
 }
 
-/** The window's network: its inputs, a fetcher, and the clock. */
+/** The window's network: the live names it reaches, its inputs, a fetcher, and the clock. */
 export interface Window {
   readonly names: Names;
   readonly inputs: Inputs;

@@ -46,6 +46,7 @@ export function namesOf(text: string): Names {
   }
   return given as Names;
 }
+
 /** Cloudflare's API, and R2's S3 endpoint for an account. */
 export const API = "https://api.cloudflare.com/client/v4";
 const r2Host = (account: string) => `${account}.r2.cloudflarestorage.com`;

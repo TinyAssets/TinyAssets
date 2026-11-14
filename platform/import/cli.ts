@@ -12,11 +12,11 @@
  *   files of the private folder, and counts alone on stdout;
  *   (`--rehearsal <run>`: each bundle under its rehearsal's name, `rehearsalName`);
  * - `stage <out> --run <id> --facts <facts.json>` (or `--dry-run`, which sends nothing and
- *   needs no credential;
- *   `--rehearsal`, for a rehearsal's bundles): every bundle checked whole, uploaded to the
- *   staging bucket and its message put on the import queue (`stage.ts`), the window's
- *   credentials read once from the job's stdin, one a line in `STAGE_INPUTS`' order, never
- *   from a file, an argument or the environment; counts and ordinals on stdout;
+ *   needs no credential; `--rehearsal`, for a rehearsal's bundles): every bundle checked
+ *   whole, uploaded to the staging bucket and its message put on the import queue
+ *   (`stage.ts`), the window's credentials read once from the job's stdin, one a line in
+ *   `STAGE_INPUTS`' order, never from a file, an argument or the environment; counts and
+ *   ordinals on stdout;
  * - `verify <out> --run <id> --record <file>`, `admit <out> --run <id> --record <file>`,
  *   `wipe <out> --run <id> --record <file>` and `dlq <out> --run <id> [--delete]`, each with
  *   `--facts <facts.json>`: the window's steps after staging (`window.ts`), with the same
@@ -34,10 +34,10 @@
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
-import { buildBundles, exclusionList } from "./bundle";
 import { parseTiers, type Tiers } from "../contract/src/control";
 
+import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
+import { buildBundles, exclusionList } from "./bundle";
 import { census } from "./census";
 import { copyMain } from "./copy";
 import { type Fetcher, type Inputs, type Names, namesOf, NETWORK, stage } from "./stage";
