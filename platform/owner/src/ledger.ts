@@ -96,6 +96,8 @@ import { clock } from "./clock";
 import type { Binding, Origin, Source } from "../../contract/src/binding";
 import { codePoints, isPrintable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
+import { canonical } from "../../contract/src/canonical";
+import { keyed } from "../../contract/src/checks";
 import { HEX16, HEX64, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
 
@@ -688,12 +690,6 @@ function token(bytes: number): string {
   return Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Python's `json.dumps(detail, sort_keys=True)` for a flat detail. */
-function canonical(detail: Record<string, unknown>): string {
-  return JSON.stringify(Object.fromEntries(
-    Object.entries(detail).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
-}
-
 function round3(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
@@ -738,11 +734,10 @@ export function outsideOrigin(value: unknown): Origin | null {
   if (value === null) {
     return null;
   }
-  if (typeof value !== "object" || Array.isArray(value)
-      || Object.keys(value).sort().join() !== "client,family") {
+  if (!keyed(value, ["client", "family"])) {
     throw new Refusal("invalid", "invalid outside origin");
   }
-  const { client, family } = value as Record<string, unknown>;
+  const { client, family } = value;
   if (typeof client !== "string" || typeof family !== "string" || !HEX64.test(client)
       || !HEX64.test(family)) {
     throw new Refusal("invalid", "invalid outside origin");
@@ -757,11 +752,10 @@ export function outsideOrigin(value: unknown): Origin | null {
  * re-derives the origin from the key id so the two can never disagree.
  */
 export function registrant(source: unknown, origin: Origin | null): Source {
-  if (typeof source !== "object" || source === null || Array.isArray(source)
-      || Object.keys(source).sort().join() !== "kind,ref") {
+  if (!keyed(source, ["kind", "ref"])) {
     throw new Refusal("invalid", "source is api_key or mcp");
   }
-  const { kind, ref } = source as Record<string, unknown>;
+  const { kind, ref } = source;
   if (kind !== "api_key" && kind !== "mcp") {
     throw new Refusal("invalid", "source is api_key or mcp");
   }
@@ -2723,7 +2717,8 @@ export class Ledger {
           "WHERE agent_id = ?", agent.agent_id).one().n >= SUBSCRIPTIONS_PER_AGENT) {
         throw new Refusal("subscription_limit",
                           `subscription_limit: ${SUBSCRIPTIONS_PER_AGENT} doorbell ` +
-                          "subscriptions an agent; end one first");
+                          "subscriptions an agent; end one first",
+                          { facts: { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT } });
       }
       const grace = push.events?.rotation_grace_s ?? 0;
       const previous = held === undefined || grace === 0 ? [null, null, null]

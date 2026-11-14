@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_POLICY_JSON, type PolicyDocument } from "../../contract/src/policy-document";
 import { clock } from "../src/clock";
+import { SESSION_TTL_S } from "../../contract/src/limits";
 import { SESSION_LIMITS } from "../src/sessions";
 import { MUSE, rig, type Rig, signedIn } from "./ledger-support";
 import { failure } from "./support";
@@ -98,8 +99,8 @@ describe("a session's life", () => {
     expect(await r.table("owner_sessions")).toHaveLength(1);
     const opened = await r.stub.sessionOpen(r.bind(null, {
       authenticated_at: signedIn() - SESSION_LIMITS.signInMaxAgeS + 2 }));
-    expect(opened.expires_at - clock()).toBeGreaterThan(SESSION_LIMITS.ttlS - 5);
-    expect(opened.expires_at).toBeLessThanOrEqual(clock() + SESSION_LIMITS.ttlS);
+    expect(opened.expires_at - clock()).toBeGreaterThan(SESSION_TTL_S - 5);
+    expect(opened.expires_at).toBeLessThanOrEqual(clock() + SESSION_TTL_S);
     expect((await write(r, opened.session)).generation).toBe(2);
   });
 
@@ -109,8 +110,8 @@ describe("a session's life", () => {
     const soon = clock() + 10;
     await r.sql("UPDATE owner_sessions SET expires_at = ?", soon);
     const { expires_at: renewed } = await r.stub.sessionExtend(r.bind(null, { session: r.cookie }));
-    expect(renewed - clock()).toBeGreaterThan(SESSION_LIMITS.ttlS - 5);
-    expect(renewed).toBeLessThanOrEqual(clock() + SESSION_LIMITS.ttlS);
+    expect(renewed - clock()).toBeGreaterThan(SESSION_TTL_S - 5);
+    expect(renewed).toBeLessThanOrEqual(clock() + SESSION_TTL_S);
     // Only the renewing session slides; the owner's other one keeps its own expiry.
     expect(Object.fromEntries((await r.table("owner_sessions")).map((row) =>
       [row["session_hash"], row["expires_at"]])))

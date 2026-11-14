@@ -275,20 +275,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2).
   - Owed to lane O by merged PRs, one line each:
-    - S7: `owner/src/sandbox.ts:62` and `runs.ts:124` read `START_CODES` (`s7.md`).
     - S8: the owner adopts `served()` (`s8.md`).
     - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
     - V2 (#5543): `owner/src/egress.ts:266` `HINT`, and the three range builders.
     - D1: `ledger.ts:1252`'s `512` is `COMMAND_CENTER_MAX`.
-    - D3: `sessions.ts:59` `ttlS` is `SESSION_TTL_S` (`d3.md`).
+    - contract-copies: `ledger.ts` `count` is `checks.ts`'s `whole`, once `pages.ts`'s own
+      `whole` (a page's fit) is renamed (`contract-copies.md`; O4).
     - C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
     - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
     - C6: the owner's kernel debt, 8 SHA-256 uses and 43 `Date.now()` (`c6.md`; O4).
     - X1: the owner tests' literals, then B10's literal guard, which waits on O4 alone.
-    - R2 (#5571): `ledger.ts:692` `canonical`.
     - B2: the owner `Error` classes `Conflict`, `FileConflict` and `ParentMoved` (O4).
-    - D2: the events door's `subscription_limit → ResourceExhausted`, once the owner's
-      refusal carries the limit (`d2.md`; then lane D).
     - D1: `holds.ts:36` names `API_BODY_MAX`, now `EGRESS_BODY_MAX`.
     - D4: `import.ts:4` cites `doors/src/import.ts`, now `doors/src/import/` (comments pass).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the

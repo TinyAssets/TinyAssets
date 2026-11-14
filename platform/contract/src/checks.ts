@@ -1,7 +1,8 @@
 /**
  * The platform's one home of shape checks, for the kits as for every Worker (the contract
  * runs under Node's type stripping, `guards/node.test.ts`, so nothing copies them):
- * - the tests (`object`, `keyed`, `whole`), for a reader to refuse in its own words;
+ * - the tests (`object`, `keyed`, `whole`), for a reader to refuse in its own words, and the
+ *   value at a path through JSON objects (`valueAtPath`);
  * - the checks a source's sealed values are held to (`egress-scope.ts`, `model-record.ts`, the
  *   gateway's `credential.ts`): each refuses anything else as `invalid_source`, the gateway's
  *   fixed code, so nothing about the value crosses the boundary.
@@ -36,6 +37,11 @@ export function whole(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER
     value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= min
     && value <= max;
+}
+
+/** The value at `path` in `body`, or undefined. */
+export function valueAtPath(body: unknown, path: readonly string[]): unknown {
+  return path.reduce<unknown>((at, key) => (object(at) ? at[key] : undefined), body);
 }
 
 /** `value` as `keyed` holds it, or `invalid_source`. */

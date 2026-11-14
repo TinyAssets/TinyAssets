@@ -10,7 +10,6 @@ import { ProtocolError } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 
 import { MAINTENANCE } from "../../contract/src/control";
-import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import {
   answered, asEgress, asEgressFault, asEvent, asInbound, asJson, asRedirect, asShared, asTool,
@@ -134,9 +133,11 @@ describe("MCP Events' answer", () => {
   }
 
   it("is the design sketch's error: exhausted, invalid params, or forbidden", () => {
-    const full = thrown(new Refusal("subscription_limit", "subscription_limit: 16"));
-    expect([full.code, full.data])
-      .toEqual([EVENT_ERRORS.exhausted, { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT }]);
+    // The owner's limit, as its refusal carries it: never the doors' own figure.
+    const limit = { limit: "subscriptions", max: 3 };
+    const full = thrown(new Refusal("subscription_limit", "subscription_limit: 3",
+                                    { facts: limit }));
+    expect([full.code, full.data]).toEqual([EVENT_ERRORS.exhausted, limit]);
     const bad = thrown(new Refusal("invalid", "a room is room:<app>:<room>"));
     expect([bad.code, bad.message]).toEqual([EVENT_ERRORS.invalidParams,
                                              "a room is room:<app>:<room>"]);

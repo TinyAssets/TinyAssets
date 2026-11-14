@@ -10,8 +10,9 @@
  * the team's webhooks) are `../e2b/admin.ts`'s, which the Worker never imports.
  */
 import type { NetworkDocument } from "../../contract/src/sandbox";
+import { object } from "../../contract/src/checks";
 import {
-  created, E2bError, E2bTransport, type Handle, object, runtimeFetch, sandboxId,
+  created, E2bError, E2bTransport, type Handle, runtimeFetch, sandboxId,
 } from "../e2b/transport";
 
 /**

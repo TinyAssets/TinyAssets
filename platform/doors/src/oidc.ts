@@ -28,6 +28,7 @@
  * error code with it) and never a token or a secret; a wrong issuer names the issuer the
  * token carries, which is no secret. A sign-in is never taken on less than every check.
  */
+import { whole } from "../../contract/src/checks";
 import { utf8Decoder } from "../../contract/src/text";
 import { CLOCK_MARGIN_S, now } from "./config";
 import type { SignIn, Upstream } from "./upstream";
@@ -204,10 +205,6 @@ async function refusalCode(response: Response): Promise<string> {
   return code === undefined ? "" : ` (${String(code)})`;
 }
 
-function whole(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
 /**
  * The verified sign-in a token answer is (`answer`: the token endpoint's JSON), under
  * `issuer` (`OWNER_ISSUER`, the binder's) and `config`, its access token's RS256 signature
@@ -264,10 +261,10 @@ export async function verifiedAccessToken(answer: unknown, issuer: string,
   if (claims["client_id"] !== config.client_id) {
     throw new Error("the access token is not for our client (client_id)");
   }
-  if (!whole(claims["exp"]) || claims["exp"] <= at - CLOCK_MARGIN_S) {
+  if (!whole(claims["exp"], 0) || claims["exp"] <= at - CLOCK_MARGIN_S) {
     throw new Error("the access token is expired");
   }
-  if (!whole(claims["iat"]) || claims["iat"] > at + CLOCK_MARGIN_S) {
+  if (!whole(claims["iat"], 0) || claims["iat"] > at + CLOCK_MARGIN_S) {
     throw new Error("the access token was issued in the future");
   }
   const subject = claims["sub"];
@@ -286,7 +283,7 @@ export async function verifiedAccessToken(answer: unknown, issuer: string,
       || claims["sub_type"] !== undefined) {
     throw new Error("the access token is not a user's (sub_profile, sub_type)");
   }
-  if (!whole(claims["auth_time"])) {
+  if (!whole(claims["auth_time"], 0)) {
     // No clock fallback: the fence and the session's bound rest on the real sign-in time.
     throw new Error("the access token carries no auth_time");
   }

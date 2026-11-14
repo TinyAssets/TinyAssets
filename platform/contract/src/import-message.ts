@@ -27,6 +27,7 @@
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
+import { keyed, object, whole } from "./checks.ts";
 import { chunkedId, cut } from "./content.ts";
 import { HEX16, HEX64 } from "./ids.ts";
 import { principal } from "./text.ts";
@@ -98,22 +99,19 @@ export function macHolds(key: string, message: ImportMessage): boolean {
   return got.byteLength === want.byteLength && timingSafeEqual(got, want);
 }
 
-const whole = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-
 /** A message in its exact shape, or a throw: no field more, none missing, each its grammar. */
 export function importMessage(value: unknown): ImportMessage {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!object(value)) {
     throw new Error("an import message is an object");
   }
-  const body = value as Record<string, unknown>;
+  const body = value;
   const op = body["op"];
   if (!IMPORT_OPS.includes(op as ImportOp)) {
     throw new Error(`an import message's op is one of ${IMPORT_OPS.join(", ")}`);
   }
   const asks = op !== "import";
-  const keys = Object.keys(body).filter((key) => key !== "cursor").sort().join();
-  if (keys !== (asks ? "ask,bundle,mac,op,owner,prefix" : "bundle,mac,op,owner,prefix")) {
+  if (!keyed(body, ["bundle", "mac", "op", "owner", "prefix", ...(asks ? ["ask"] : [])],
+             ["cursor"])) {
     throw new Error("an import message is its op, owner, bundle, prefix and mac, an ask " +
                     "for any op but an import, and a cursor");
   }
@@ -132,12 +130,11 @@ export function importMessage(value: unknown): ImportMessage {
   if (op === "discard" || op === "admit") {
     throw new Error("only an import's or a check's continuation carries a cursor");
   }
-  const at = cursor as Record<string, unknown> | null;
-  if (typeof at !== "object" || at === null || Object.keys(at).sort().join() !== "entry,step"
-      || !whole(at["step"]) || !whole(at["entry"])) {
+  if (!keyed(cursor, ["entry", "step"]) || !whole(cursor["step"], 0)
+      || !whole(cursor["entry"], 0)) {
     throw new Error("an import message's cursor is a step and an entry");
   }
-  return { ...message, cursor: { step: at["step"], entry: at["entry"] } };
+  return { ...message, cursor: { step: cursor["step"], entry: cursor["entry"] } };
 }
 
 /** Where the consumer writes the answer to `ask`, beside its bundle in the staging bucket. */

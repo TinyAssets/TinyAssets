@@ -26,6 +26,7 @@
  */
 import { timingSafeEqual } from "node:crypto";
 
+import { object, whole } from "../../contract/src/checks";
 import { sha256 } from "../../contract/src/digest";
 import { HOOK_BODY_MAX } from "../../contract/src/limits";
 import { utf8Text } from "../../contract/src/text";
@@ -51,13 +52,8 @@ export function signed(secret: string, body: string, signature: string | null): 
 const TYPES = Object.freeze(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"]);
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
-function plain(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function count(value: unknown, most: number): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= most
-    ? value : null;
+  return whole(value, 0, most) ? value : null;
 }
 
 /**
@@ -72,7 +68,7 @@ export function lifecycleEvent(body: string):
   } catch {
     return null;
   }
-  if (!plain(parsed) || typeof parsed["id"] !== "string" || !ID.test(parsed["id"])
+  if (!object(parsed) || typeof parsed["id"] !== "string" || !ID.test(parsed["id"])
       || typeof parsed["type"] !== "string") {
     return null;
   }
@@ -87,9 +83,9 @@ export function lifecycleEvent(body: string):
     return null;
   }
   const data = parsed["event_data"];
-  const execution = plain(data) ? data["execution"] : undefined;
-  const metadata = plain(data) ? data["sandbox_metadata"] : undefined;
-  if (!plain(execution) || !plain(metadata) || typeof execution["started_at"] !== "string") {
+  const execution = object(data) ? data["execution"] : undefined;
+  const metadata = object(data) ? data["sandbox_metadata"] : undefined;
+  if (!object(execution) || !object(metadata) || typeof execution["started_at"] !== "string") {
     return null;
   }
   const started = Date.parse(execution["started_at"]);

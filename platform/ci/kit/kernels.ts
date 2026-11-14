@@ -9,6 +9,9 @@
  *   is a key's, not the digest's. The template's pin reader and the builds keep their own,
  *   since they import nothing by rule: their layers are not held.
  * - Now is the owner's clock's (`owner/src/clock.ts`), in the owner's source.
+ * - The test that a value is a JSON object is `contract/src/checks.ts`'s (`object`, `keyed`),
+ *   in every layer that may import the contract: a type guard of `Record<string, unknown>`
+ *   anywhere else is its copy. `refusal.ts`'s, the contract's leaf, guards its own `Facts`.
  *
  * Read from the syntax tree: a tripwire for our own code (a hash named at run time is not
  * seen), not proof against deliberate evasion. A source's uses of one kernel are one
@@ -62,6 +65,11 @@ function hashesSha256(node: ts.Node): boolean {
         && namesSha256(each.initializer)))));
 }
 
+/** A type guard that its argument is a `Record<string, unknown>`: an object test. */
+const testsObject = (node: ts.Node): boolean => ts.isFunctionLike(node) && node.type !== undefined
+  && ts.isTypePredicateNode(node.type) && node.type.type !== undefined
+  && node.type.type.getText().replace(/\s/g, "") === "Record<string,unknown>";
+
 /** `Date.now`, called or passed. */
 const readsNow = (node: ts.Node): boolean => ts.isPropertyAccessExpression(node)
   && ts.isIdentifier(node.expression) && node.expression.text === "Date"
@@ -73,6 +81,12 @@ export const KERNELS: readonly Kernel[] = Object.freeze([
     does: hashesSha256 },
   { name: "Date.now()", home: "platform/owner/src/clock.ts", layers: ["a Worker's source"],
     under: "platform/owner/src/", does: readsNow },
+  { name: "the object test", home: "platform/contract/src/checks.ts",
+    layers: ["the contract", "the source records", "a Worker's source", "the runner", "the probes",
+             "the E2B client", "the template", "the deploy kit", "the importer",
+             "the wrangler module", "the ci kit", "the ci guards", "a workspace's tools",
+             "a workspace's tests and memory legs", "a workspace's guards"],
+    under: "platform/", does: testsObject },
 ]);
 
 /** How many times `source` does what `kernel` does. */

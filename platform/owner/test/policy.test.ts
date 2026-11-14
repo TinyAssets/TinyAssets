@@ -17,8 +17,9 @@ import { migrate } from "../../contract/src/migrate";
 import { clock } from "../src/clock";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
+import { canonical } from "../../contract/src/canonical";
 import {
-  canonical, DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, POLICY_LIMITS,
+  DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, POLICY_LIMITS,
   policyDigest, validate,
 } from "../../contract/src/policy-document";
 import { Policy } from "../src/policy";

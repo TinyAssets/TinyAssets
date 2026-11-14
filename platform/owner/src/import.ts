@@ -52,6 +52,7 @@
  * file keeps its mtime from the old stack (`mtime_ms`, the files plane's own column).
  */
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
+import { keyed, object } from "../../contract/src/checks";
 import { HEX32, HEX64 } from "../../contract/src/ids";
 import {
   bodyId, CHECK_CHUNKS, CHECK_FILES, CHECK_PARTS, CHECK_ROWS, type CheckChunk, type CheckEntry,
@@ -157,9 +158,6 @@ function conflict(what: string): Refusal {
   return new Refusal("conflict", `conflict: ${what}`);
 }
 
-const plain = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-const keys = (value: Record<string, unknown>) => Object.keys(value).sort().join();
 
 /** A path the import may write: stored, and in the imported tree. */
 function importPath(value: unknown): string {
@@ -208,13 +206,14 @@ function batch(value: unknown, most: number, bytes: (items: unknown[]) => number
 
 function rowsOf(value: unknown): ImportRow[] {
   return batch(value, IMPORT_ROWS, (rows) => utf8Bytes(JSON.stringify(rows))).map((row) => {
-    if (!plain(row)) {
+    if (!object(row)) {
       throw invalid("a row is an object");
     }
-    if (keys(row) === "document,kind" && row["kind"] === "policy") {
+    if (keyed(row, ["document", "kind"]) && row["kind"] === "policy") {
       return { kind: "policy", document: row["document"] };
     }
-    if (keys(row) !== "body,collection,kind,private,row_id" || row["kind"] !== "collection"
+    if (!keyed(row, ["body", "collection", "kind", "private", "row_id"])
+        || row["kind"] !== "collection"
         || typeof row["collection"] !== "string" || typeof row["row_id"] !== "string"
         || (row["private"] !== 0 && row["private"] !== 1)) {
       throw invalid("a row is the policy or a collection's row");
@@ -226,13 +225,13 @@ function rowsOf(value: unknown): ImportRow[] {
 
 function entriesOf(value: unknown): ImportEntry[] {
   const size = (entries: unknown[]) => entries.reduce((sum: number, entry) => sum
-    + (plain(entry) && entry["bytes"] instanceof Uint8Array ? entry["bytes"].byteLength : 0)
-    + (plain(entry) && typeof entry["path"] === "string" ? utf8Bytes(entry["path"]) : 0), 0);
+    + (object(entry) && entry["bytes"] instanceof Uint8Array ? entry["bytes"].byteLength : 0)
+    + (object(entry) && typeof entry["path"] === "string" ? utf8Bytes(entry["path"]) : 0), 0);
   return batch(value, IMPORT_FILES, size).map((entry): ImportEntry => {
-    if (plain(entry) && keys(entry) === "kind,path" && entry["kind"] === "dir") {
+    if (keyed(entry, ["kind", "path"]) && entry["kind"] === "dir") {
       return { kind: "dir", path: importPath(entry["path"]) };
     }
-    if (!plain(entry) || keys(entry) !== "bytes,content_id,kind,mode,mtime_ms,path,size"
+    if (!keyed(entry, ["bytes", "content_id", "kind", "mode", "mtime_ms", "path", "size"])
         || entry["kind"] !== "file" || !(entry["bytes"] instanceof Uint8Array)) {
       throw invalid("an entry is a folder, or an inline file and its bytes");
     }

@@ -19,6 +19,7 @@ import { closeSync, constants, lstatSync, openSync, readFileSync, readSync } fro
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { HEX32, HEX64 } from "../contract/src/ids";
 import { CHUNK_BYTES } from "../contract/src/limits";
 import { utf8Text } from "../contract/src/text";
 
@@ -47,8 +48,6 @@ export const UID_LAST = 399_999;
  */
 export const MOUNT_OPTIONS = "ro,norecovery,nosuid,nodev,loop,nouuid";
 
-const HEX64 = /^[0-9a-f]{64}$/;
-const HEX32 = /^[0-9a-f]{32}$/;
 const ARCHIVE = /^tinyassets-data-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.tar\.gz$/;
 
 /** The work folder's layout. */

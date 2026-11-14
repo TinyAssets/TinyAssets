@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+import { keyed, object } from "../../contract/src/checks";
 import { classProblems, EVERY_WORKER, everyWorkerProblems, exactProblems, flagProblems,
          keyProblems, NO_EXPORTS, patched, secretProblems } from "../../ci/kit/config";
 import { type Config, configFiles, platformConfigs, workerSources } from "../../ci/kit/sources";
@@ -20,10 +21,6 @@ import { BOUND_KEYS, type Bound, CLASSES, ENV_KEYS, LIMITS, OWNER_QUEUES, RING_Q
 
 const OWNER = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
-
-function object(value: unknown): value is Config {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** Where a kind's bindings sit when the kind nests them: a namespace's, a queue's producers. */
 const NESTED: Readonly<Record<string, string>> = Object.freeze({
@@ -37,7 +34,7 @@ function bindingsOf(config: Config, kind: string): Config[] | null {
   const value = config[kind];
   const nest = NESTED[kind];
   const list = nest === undefined ? value
-    : object(value) && Object.keys(value).join() === nest ? value[nest] : null;
+    : keyed(value, [nest]) ? value[nest] : null;
   return Array.isArray(list) && list.every(object) ? list : null;
 }
 
@@ -111,7 +108,7 @@ function serviceProblems(services: unknown, where: string,
     return [`${where}services is not a list`];
   }
   return services.flatMap((service: unknown) => {
-    if (!object(service) || Object.keys(service).sort().join() !== "binding,service") {
+    if (!keyed(service, ["binding", "service"])) {
       return [`${where}services holds more than a binding and a service name`];
     }
     const { binding, service: name } = service;

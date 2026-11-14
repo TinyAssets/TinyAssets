@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { SANDBOX_WAITING } from "../src/sandbox";
+import { SANDBOX_WAITING } from "../../contract/src/sandbox";
 import { gated } from "./gateway-support";
 import { defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf,
          TIERS } from "./runs-support";

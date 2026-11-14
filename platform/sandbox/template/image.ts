@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 
 import { RUNS_CEILING } from "../../contract/src/control";
 import { sha256Hex } from "../../contract/src/digest";
+import { canonical } from "../../contract/src/canonical";
 import { npmInstalled, served } from "../../sources/src/served";
 import { WORKSPACE } from "../../contract/src/paths";
 import { binPath, ENGINE_ROOT } from "../runner/engine";
@@ -153,18 +154,6 @@ function staged(image: ImageSpec): Staged[] {
                                      from: join(SOURCES, "locks", engine.id, name) })))];
   return files.map((file) => ({ ...file,
                                 mode: (statSync(file.from).mode & 0o111) === 0 ? 0o644 : 0o755 }));
-}
-
-/** JSON with every object's keys sorted: the spec as it is hashed. */
-export function canonical(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonical).join(",")}]`;
-  }
-  if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 /** The image's version: `s` and the first 16 hex of the digest of its build's inputs. */

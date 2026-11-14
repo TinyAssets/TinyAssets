@@ -16,20 +16,17 @@
  * without one.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { type Migration, migrationDigest as digest } from "../../contract/src/migrate";
-import { deployAnswer, deployProblems, digests, type Lock, lockOf, lockProblems, locksOf, pin,
-         readLock } from "../kit/locks";
+import { deployAnswer, deployProblems, digests, type Lock, lockOf, lockProblems, locksOf,
+         migrated, pin, readLock } from "../kit/locks";
 import { PLATFORM, REPO } from "../paths";
-import { workerFolders } from "../wrangler";
 
-/** The Workers that state migration locks. */
-const MIGRATED = workerFolders()
-  .filter((worker) => existsSync(join(PLATFORM, worker, "guards", "locks.ts")));
+const MIGRATED = migrated();
 /** Every migration lock, from the repository's root. */
 const LOCKS = (await Promise.all(MIGRATED.map(locksOf)))
   .flatMap((locks) => Object.keys(locks).map((path) => `platform/${path}`));
