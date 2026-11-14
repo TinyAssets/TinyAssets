@@ -101,13 +101,15 @@ describe("the owner's agent definitions (review H1)", () => {
      async () => {
     const r = await rig();
     const bare = r.unbound(null);
-    const AGENT_JSON = "/workspace/agents/main/agent.json";
+    // An agent of the owner's own beside the seed's `main`.
+    const AGENT_JSON = "/workspace/agents/helper/agent.json";
     const refused = async (call: () => Promise<unknown>) => (await failure(call)).message;
     const SESSION = "interactive owner session required";
     // Without the session the owner's bare token defines, widens, moves or removes nothing.
     expect(await refused(() => r.stub.fileMkdir(bare, { path: "/workspace/agents",
                                                         expected_etag: null }))).toBe(SESSION);
-    await r.stub.fileMkdir(r.bind(null), { path: "/workspace/agents/main", expected_etag: null });
+    await r.stub.fileMkdir(r.bind(null), { path: "/workspace/agents/helper",
+                                           expected_etag: null });
     const made = await r.stub.fileWrite(r.bind(null), { path: AGENT_JSON, expected_etag: "",
       content: bytes(JSON.stringify({ engine: "auto", scopes: ["read_files"] })) });
     const etag = "entry" in made ? made.entry.etag : "";

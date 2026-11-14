@@ -18,6 +18,7 @@ import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { contentIdOf } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
 import { INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
+import { agentFilePath } from "../src/agent-file";
 import { carried } from "../src/starter-package";
 import { fileLimits, Policy } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
@@ -457,12 +458,16 @@ export function starterSeed() {
     placed: placed.length,
     contents: new Set(files.map((each) => each.content)),
     chunks: new Set(placed.map((each) => each.chunk!)),
+    /** The owner's agents it defines (an `agent.json` each), each a ledger identity. */
+    agents: files.map((each) => each.path.split("/")[3] ?? "")
+      .filter((agent, n) => agentFilePath(agent) === files[n]!.path),
     /**
-     * Of `names` (paths, a newer version's path beside its file, content ids or chunk
-     * hashes), those that are not the seed's: what the test itself wrote.
+     * Of `items`, those not the seed's: what the test itself wrote. Each is named (by
+     * `nameOf`, itself by default) by its path, a newer version's path beside its file, its
+     * content id or its chunk's hash.
      */
-    mine: <T extends string>(names: Iterable<T>): T[] => [...names].filter((name) =>
-      !seeded.has(name.replace(/\.ta-new$/, ""))),
+    mine: <T>(items: Iterable<T>, nameOf: (item: T) => string = String): T[] =>
+      [...items].filter((item) => !seeded.has(nameOf(item).replace(/\.ta-new$/, ""))),
   };
 }
 

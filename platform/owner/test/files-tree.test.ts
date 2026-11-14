@@ -8,9 +8,11 @@ import { describe, expect, it } from "vitest";
 import { type Entry, type Files } from "../src/files";
 import { INLINE_BYTES } from "../../contract/src/limits";
 import { rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
+import { failure, fileCounters, inFiles, sqlIn, starterSeed, text } from "./support";
 
 const W = "/workspace";
+/** What every owner's seed holds before a test writes (`starterSeed`). */
+const SEED = starterSeed();
 
 function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
   if (!("entry" in answer)) {
@@ -144,14 +146,16 @@ describe("a rename", () => {
     await write(r, `${W}/src/deep/b.bin`, big);
     await mkdir(r, `${W}/src/empty`);
     const [space] = await sqlIn(r.stub, "SELECT ns, data_key FROM file_space");
-    const before = await sqlIn(r.stub, "SELECT sha256, refs FROM file_chunks");
+    const chunks = async () => SEED.mine(await sqlIn(r.stub, "SELECT sha256, refs FROM file_chunks"),
+                                         (row) => row["sha256"] as string);
+    const before = await chunks();
     const moved = entryOf(await rename(r, `${W}/src`, `${W}/dst`));
     expect(moved).toMatchObject({ path: `${W}/dst`, kind: "dir" });
     expect(await stat(r, `${W}/src`)).toBeNull();
     expect(await listAll(r, `${W}/dst`)).toEqual(["a.txt", "deep", "empty"]);
     expect((await r.stub.fileRead(r.bind(null), { path: `${W}/dst/a.txt` })).inline)
       .toEqual(text("a"));
-    expect(await sqlIn(r.stub, "SELECT sha256, refs FROM file_chunks")).toEqual(before);
+    expect(await chunks()).toEqual(before);
     expect(await env.FILES.getChunks(space!["ns"] as string, space!["data_key"] as string,
                                      [{ sha256: before[0]!["sha256"] as string }]))
       .toEqual([big]);
@@ -238,7 +242,7 @@ describe("a remove", () => {
     expect((await failure(() => remove(r, `${W}/empty`))).message)
       .toBe("is_directory: a directory is removed with recursive");
     expect(await remove(r, `${W}/d`, true)).toEqual({ removed: 4 });
-    expect(await listAll(r, W)).toEqual(["empty", "keep"]);
+    expect(SEED.mine(await listAll(r, W), (name) => `${W}/${name}`)).toEqual(["empty", "keep"]);
     expect((await failure(() => remove(r, `${W}/d`))).message)
       .toBe("not_found: no such file or directory");
     expect((await failure(() => remove(r, W, true))).message).toBe("a root is never removed");
@@ -267,7 +271,8 @@ describe("the change feed", () => {
     const cursors: number[] = [];
     for (;;) {
       const page = await r.stub.fileChanges(r.bind(null), { after: cursor, limit: 2 });
-      ops.push(...page.changes.map((c) => `${c.op} ${c.path.slice(W.length)}`));
+      ops.push(...SEED.mine(page.changes, (c) => c.path)
+        .map((c) => `${c.op} ${c.path.slice(W.length)}`));
       expect(page.reset).toBe(false);
       if (page.cursor === cursor) {
         break;
@@ -288,7 +293,8 @@ describe("the change feed", () => {
   it("asks a reader to rescan once a delete it had not seen is pruned", async () => {
     const r = await rig();
     await write(r, `${W}/gone`);
-    const { cursor } = await r.stub.fileChanges(r.bind(null), { after: 0, limit: 10 });
+    const { cursor } = await r.stub.fileChanges(r.bind(null), { after: 0,
+                                                                limit: SEED.entries + 10 });
     await write(r, `${W}/kept`);
     // With no retention, the delete's record is due as soon as it is written.
     await inFiles(r.stub, { retention_days: 0 }, async (files) => {
@@ -305,6 +311,7 @@ describe("the change feed", () => {
   it("leaves the temporary area out of the feed", async () => {
     const r = await rig();
     await inFiles(r.stub, {}, (files) => files.tempDir("t-", "agent"));
-    expect((await r.stub.fileChanges(r.bind(null), { after: 0, limit: 10 })).changes).toEqual([]);
+    expect(SEED.mine((await r.stub.fileChanges(r.bind(null), {
+      after: 0, limit: SEED.entries + 10 })).changes, (c) => c.path)).toEqual([]);
   });
 });

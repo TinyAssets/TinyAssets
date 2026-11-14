@@ -27,7 +27,7 @@ import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding,
 import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { OWNER_WAITERS, ownerSlots } from "../src/holds";
 import { writeControl } from "../../ci/fixtures";
-import { drainDue, failure } from "./support";
+import { drainDue, failure, starterSeed } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */
@@ -197,6 +197,8 @@ describe("the ledger's bounds on identities", () => {
      "registry, forgetting the oldest retired one first", async () => {
     const r = await rig();
     const { maxAgents, maxAgentRows } = LEDGER_LIMITS;
+    // The owner's own agents its seed defines hold mailboxes and rows too.
+    const seeded = starterSeed().agents;
     const seen = await r.inLedger((ledger: Ledger) => {
       const refused = (act: () => unknown) => {
         try {
@@ -206,7 +208,7 @@ describe("the ledger's bounds on identities", () => {
           return (error as Error).message;
         }
       };
-      for (let n = 0; n < maxAgents - 2; n++) {
+      for (let n = 0; n < maxAgents - 2 - seeded.length; n++) {
         ledger.appear(`agent-${n}`);
       }
       ledger.appear("a");
@@ -221,7 +223,8 @@ describe("the ledger's bounds on identities", () => {
       ledger.retire("a");
       ledger.retire("b");
       ledger.appear("c");
-      const named = () => ledger.natives(true).filter((n) => !n.agent.startsWith("agent-"))
+      const named = () => ledger.natives(true)
+        .filter((n) => !n.agent.startsWith("agent-") && !seeded.includes(n.agent))
         .map((n) => [n.agent, n.retired_at === null]);
       const first = named();
       ledger.appear("d");

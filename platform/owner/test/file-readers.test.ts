@@ -11,7 +11,8 @@ import { type Entry, fileUrl } from "../src/files";
 import { SEARCH_ANSWER_BYTES, SEARCH_SCAN, searchPage, type Scanned } from "../src/file-search";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import { TIERS } from "./runs-support";
-import { failure, filesOn, inGate, text } from "./support";
+import { nameOf } from "../../contract/src/paths";
+import { failure, filesOn, inGate, starterSeed, text } from "./support";
 
 const decode = (bytes: Uint8Array | undefined) => new TextDecoder().decode(bytes);
 
@@ -134,7 +135,11 @@ describe("the MCP door's file readers", () => {
   it("search a page of the manifest at a time, from a cursor, in path order", async () => {
     expect(SEARCH_SCAN).toBe(5000);
     const r = await rig();
-    for (const path of ["/workspace/a.md", "/workspace/d/b.md", "/workspace/d/e/c.md"]) {
+    // The manifest's order is (directory, name): the seed's entries' last, and this test's
+    // below a directory that comes after all of theirs.
+    const key = (path: string) => `${path.slice(0, path.lastIndexOf("/"))}\u0000${nameOf(path)}`;
+    const seedEnd = [...starterSeed().paths].sort((a, b) => (key(a) < key(b) ? -1 : 1)).at(-1)!;
+    for (const path of ["/workspace/z/q.md", "/workspace/z/r/b.md", "/workspace/z/r/s/c.md"]) {
       await r.stub.fileWrite(r.session(null), { path, expected_etag: null,
                                              content: text("needle") });
     }
@@ -143,18 +148,18 @@ describe("the MCP door's file readers", () => {
     // From a cursor, only what comes after it; the manifest's own pages, in path order.
     const after = await r.stub.fileSearch(r.bind(null), { query: "needle",
                                                           cursor: Buffer.from(
-                                                            "/workspace/d/b.md")
+                                                            "/workspace/z/r/b.md")
                                                             .toString("base64url") });
-    expect(after.results.map((hit) => hit.id)).toEqual(["/workspace/d/e/c.md"]);
+    expect(after.results.map((hit) => hit.id)).toEqual(["/workspace/z/r/s/c.md"]);
     const pages = await inGate(r.stub, (_instance, _state, gate) => {
       const files = filesOn(gate.storage, gate.write);
-      const first = files.scan(null, 2);
+      const first = files.scan(seedEnd, 2);
       return [first, files.scan(first.next, 2)].map((page) => ({
         paths: page.entries.map((entry) => entry.path), next: page.next }));
     });
     expect(pages).toEqual([
-      { paths: ["/workspace/a.md", "/workspace/d"], next: "/workspace/d" },
-      { paths: ["/workspace/d/b.md", "/workspace/d/e"], next: "/workspace/d/e" }]);
+      { paths: ["/workspace/z/q.md", "/workspace/z/r"], next: "/workspace/z/r" },
+      { paths: ["/workspace/z/r/b.md", "/workspace/z/r/s"], next: "/workspace/z/r/s" }]);
     expect((await failure(() => r.stub.fileSearch(r.bind(null), { query: "  ,; " }))).message)
       .toMatch(/at least one word/);
   });

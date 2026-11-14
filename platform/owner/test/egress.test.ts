@@ -31,7 +31,7 @@ import {
   ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
-import { admittedOwner, drainDue, failure, gateFor, TIERS } from "./support";
+import { admittedOwner, drainDue, failure, gateFor, TIERS, unseededObject } from "./support";
 import { NETWORK_RETRY_S, type SandboxRun } from "../src/launch";
 import { LANE_CALL_MS } from "../src/schedule";
 import {
@@ -600,9 +600,9 @@ describe("an egress call", () => {
         .message).toBe("invalid sandbox binding");
     }
     expect(await r.sql("SELECT COUNT(*) AS n FROM egress_reservations")).toEqual(before);
-    // An owner whose object never opened a lease: refused, and no row of its own written.
-    const stranger = `owner-${crypto.randomUUID()}`;
-    const stub = await admittedOwner(stranger);
+    // An owner whose object no door has bound yet, so never opened a lease: refused, and no
+    // row of its own written.
+    const { name: stranger, stub } = await unseededObject();
     expect((await failure(() => stub.egressOpen(
       { owner: stranger, caller: stranger, origin: null,
         sandbox: { kind: "egress", token: lease.egress, generation: 1 } },

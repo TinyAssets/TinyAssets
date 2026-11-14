@@ -13,13 +13,15 @@ import { sha256Hex } from "../../contract/src/digest";
 import { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
 import { later } from "./runs-support";
-import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
+import { failure, fileCounters, inFiles, sqlIn, starterSeed, text } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 const W = "/workspace";
+/** What every owner's seed holds before a test writes (`starterSeed`). */
+const SEED = starterSeed();
 
 function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
   if (!("entry" in answer)) {
@@ -86,7 +88,8 @@ describe("the sync lease", () => {
     const next = await acquire(r);
     later();
     expect((await failure(() => sync(r, next, [op]))).message).toBe(FENCED);
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_entries")).toEqual([{ n: 0 }]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_entries"))
+      .toEqual([{ n: SEED.entries }]);
   });
 
   it("never stops an API write while it is held", async () => {
@@ -206,8 +209,8 @@ describe("a sync commit", () => {
       "refused", "refused", "refused", "refused", "committed"]);
     expect(outcomes[6]).toMatchObject({
       reason: "a chunk of this commit was never stored; send its bytes first" });
-    expect((await r.stub.fileList(r.bind(null), { dir: W, limit: 10 })).entries
-      .map((e) => e.path)).toEqual([`${W}/also-ok`, `${W}/ok`]);
+    expect(SEED.mine((await r.stub.fileList(r.bind(null), { dir: W, limit: 10 })).entries
+      .map((e) => e.path))).toEqual([`${W}/also-ok`, `${W}/ok`]);
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
   });
@@ -266,8 +269,8 @@ describe("a sync commit", () => {
     expect(outcomes.map((o) => o.outcome)).toEqual(["refused", "committed"]);
     expect(outcomes[0]).toMatchObject({ reason: "the conflict copy's path would pass 4096 " +
       "bytes; the sandbox keeps this file and reports it each sync" });
-    expect((await r.stub.fileList(r.bind(null), { dir: W, limit: 10 })).entries
-      .map((e) => e.path)).toEqual([`${W}/ok`, `${W}/out`]);
+    expect(SEED.mine((await r.stub.fileList(r.bind(null), { dir: W, limit: 10 })).entries
+      .map((e) => e.path))).toEqual([`${W}/ok`, `${W}/out`]);
   });
 
   it("names copies within 255 bytes, never over another file, and one per conflict", async () => {
