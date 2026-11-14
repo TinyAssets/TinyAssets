@@ -235,6 +235,18 @@ describe("the import layers", () => {
       "platform/deploy/probe.ts imports platform/deploy/guards/rules.ts",
       "platform/sandbox/runner/probe.ts imports platform/sandbox/runner/test/harness.ts",
       "platform/sandbox/runner/probes.ts imports platform/sandbox/src/control.ts"]],
+    ["the sandbox Worker reaching the E2B tools' calls, and E2B's client a Worker or a package", {
+      "platform/sandbox/src/probe.ts": 'import "../e2b/transport";\nimport "../e2b/install";\n'
+        + 'import "../e2b/admin";',
+      "platform/sandbox/e2b/probe.ts": 'import "../src/e2b";\nimport "node:fs";',
+      "platform/deploy/probe.ts": 'import "../sandbox/e2b/admin.ts";\n'
+        + 'import "../sandbox/src/e2b.ts";',
+      "platform/sandbox/template/probe.ts": 'import "../e2b/admin";\nimport "../src/e2b";' },
+     ["platform/sandbox/src/probe.ts imports platform/sandbox/e2b/admin.ts",
+      "platform/sandbox/e2b/probe.ts imports platform/sandbox/src/e2b.ts",
+      "platform/sandbox/e2b/probe.ts imports node:fs",
+      "platform/deploy/probe.ts imports platform/sandbox/src/e2b.ts",
+      "platform/sandbox/template/probe.ts imports platform/sandbox/src/e2b.ts"]],
     ["a file in no layer, and one at the platform's top", {
       "platform/doors/lib/probe.ts": "export {};", "platform/probe.ts": "export {};" },
      ["platform/doors/lib/probe.ts is in no layer", "platform/probe.ts is in no layer"]],
