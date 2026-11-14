@@ -39,6 +39,7 @@
   "queues": {
     "tinyassets-erasure": "queues#OwnerMessage",
     "tinyassets-import": "import-message#ImportMessage",
+    "tinyassets-operator": "operator-message#OperatorMessage",
     "tinyassets-sandbox-ring": "queues#OwnerMessage"
   }
 }

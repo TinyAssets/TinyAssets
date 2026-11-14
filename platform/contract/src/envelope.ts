@@ -113,7 +113,7 @@ export function base64url(bytes: Uint8Array): string {
 }
 
 /** The bytes of unpadded base64url `text`, or null when it is not that. */
-function fromBase64url(text: string): Uint8Array<ArrayBuffer> | null {
+export function fromBase64url(text: string): Uint8Array<ArrayBuffer> | null {
   if (!B64URL.test(text) || text.length % 4 === 1) {
     return null;
   }

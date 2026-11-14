@@ -6,5 +6,6 @@
 export const QUEUES = Object.freeze({
   ERASURES: "tinyassets-erasure",
   IMPORTS: "tinyassets-import",
+  OPERATOR: "tinyassets-operator",
   RING: "tinyassets-sandbox-ring",
 });

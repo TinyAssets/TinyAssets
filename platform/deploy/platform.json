@@ -17,9 +17,14 @@
     "why": "The R2 buckets the kit makes that no Worker binds, by what each holds (the name its reader takes it by, facts.ts --import), each made by dark's storage step when the account's listing lacks it, as the bound ones are. final_backup holds the off-site copy of the import window's final backup (import-window.yml, mode offsite): kept through the 14-day hold, then deleted with the old stack's final backup, on the founder's word (tasks.md section 9).",
     "unbound": { "final_backup": "tinyassets-final-backup" }
   },
+  "bucket_locks": {
+    "why": "The R2 buckets whose every object is kept, unchangeable and undeletable, for so many days, by the binding that binds each: a config names a bucket, not a lock on it. OPERATOR_LOG is the operator channel's audit log (doors/src/operator.ts): each message's acceptance record and answer, kept a year (d3 §G). dark's storage step makes each the bucket's one lock rule, over every object, when the bucket holds no rule or another.",
+    "days": { "OPERATOR_LOG": 365 }
+  },
   "made": {
     "why": "The secrets the founder's setup makes (scripts/platform_setup.py), each by its kind: mac is 32 random bytes in base64url, token a random URL-safe token, keyring a first keyring in keyring-new's shape (rotated only by adding a key). A config names a secret, not how its value is made; every other secret comes from its vendor or a shared app.",
     "secrets": { "ROUTING_MAC_KEY": "mac", "E2B_WEBHOOK_SECRET": "token",
-                 "GATEWAY_KEYRING": "keyring", "FILES_KEYRING": "keyring" }
+                 "GATEWAY_KEYRING": "keyring", "FILES_KEYRING": "keyring",
+                 "OPERATOR_KEYRING": "keyring" }
   }
 }

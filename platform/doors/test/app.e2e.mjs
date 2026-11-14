@@ -89,7 +89,8 @@ async function doors() {
         bindings: { OWNER_ISSUER: UPSTREAM,
                     ROUTING_MAC_KEY: randomBytes(32).toString("base64url"),
                     WORKOS_API_KEY: "test-client-secret",
-                    E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret" },
+                    E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
+                    OPERATOR_KEYRING: newKeyring() },
         durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
         // CODEMODE_VM, OWNER_FILES and SANDBOX: the owner object's, in this script for the
         // test; SANDBOX the owner suite's fake sandbox Worker, which SANDBOX_LOG reads back.

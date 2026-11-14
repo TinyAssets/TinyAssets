@@ -16,6 +16,9 @@
  *   `putChunks`, what the file door's bytes call (slice L), and nothing that reads a chunk,
  *   a generation or a key (review M5-1: the doors carry an owner's wrapped key); only
  *   `src/file-bytes.ts` names it.
+ * - The operator channel (`OPERATOR_CHANNEL`, `rules.ts`): the operator bucket, the operator
+ *   queue's producer and its consumer with its dead-letter queue, exactly, and named by the
+ *   generated queue name (`QUEUES.OPERATOR`), which the kit sends to.
  * - The cutover's import window (`IMPORT_WINDOW`, `rules.ts`): the staging bucket, the import
  *   queue's producer and its consumer with its dead-letter queue, exactly, and named by
  *   the generated queue name (`QUEUES.IMPORTS`, `contract/src/queue-names.ts`), which the
@@ -35,7 +38,7 @@ import { readWrangler } from "../../ci/wrangler";
 
 import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
 
-import { CONFIG, IMPORT_WINDOW } from "./rules";
+import { CONFIG, IMPORT_WINDOW, OPERATOR_CHANNEL } from "./rules";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** The sandbox tokens' routing key (`routing-mac.ts`), the owner's one secret too. */
@@ -55,7 +58,12 @@ const EGRESS_METHODS: readonly string[] = Object.freeze(["forward"]);
 const VARS = Object.fromEntries(Object.entries(CONFIG.vars!).map(([name, values]) =>
   [name, values![0]!]));
 const QUEUES = CONFIG.exact!["queues"] as { producers: object[]; consumers: object[] };
-const RING_AND_ERASURE = QUEUES.consumers.filter((consumer) => consumer !== IMPORT_WINDOW.consumer);
+const RING_AND_ERASURE = QUEUES.consumers.filter((consumer) =>
+  consumer !== IMPORT_WINDOW.consumer && consumer !== OPERATOR_CHANNEL.consumer);
+/** The consumers but the operator channel's. */
+const NOT_OPERATOR = QUEUES.consumers.filter((consumer) => consumer !== OPERATOR_CHANNEL.consumer);
+/** The consumers but the import window's. */
+const NOT_IMPORT = QUEUES.consumers.filter((consumer) => consumer !== IMPORT_WINDOW.consumer);
 const ASSETS = CONFIG.exact!["assets"] as Config;
 const FLAGS = (CONFIG.flags as { exactly: readonly string[] }).exactly;
 
@@ -200,32 +208,49 @@ configTests(CONFIG, {
                                                    not_found_handling: "single-page-application" } }],
     ["a bucket", { r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
     ["the files Worker's bucket as the staging bucket", { r2_buckets: [
-      { ...IMPORT_WINDOW.bucket, bucket_name: "tinyassets-files" }] }],
-    ["a second bucket", { r2_buckets: [IMPORT_WINDOW.bucket,
-                                       { binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
-    ["no staging bucket", { r2_buckets: [] }],
+      { ...IMPORT_WINDOW.bucket, bucket_name: "tinyassets-files" }, OPERATOR_CHANNEL.bucket] }],
+    ["the files Worker's bucket as the operator bucket", { r2_buckets: [
+      IMPORT_WINDOW.bucket, { ...OPERATOR_CHANNEL.bucket, bucket_name: "tinyassets-files" }] }],
+    ["a third bucket", { r2_buckets: [IMPORT_WINDOW.bucket, OPERATOR_CHANNEL.bucket,
+                                      { binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
+    ["no staging bucket", { r2_buckets: [OPERATOR_CHANNEL.bucket] }],
+    ["no operator bucket", { r2_buckets: [IMPORT_WINDOW.bucket] }],
     ["no ring consumer", { queues: undefined }],
-    ["a queue producer", { queues: { ...QUEUES, producers: [IMPORT_WINDOW.producer,
+    ["a queue producer", { queues: { ...QUEUES, producers: [...QUEUES.producers,
                                                             { binding: "OUT",
                                                               queue: "tinyassets-x" }] } }],
     ["the import producer to another queue", { queues: { ...QUEUES, producers: [
-      { ...IMPORT_WINDOW.producer, queue: "tinyassets-erasure" }] } }],
-    ["no import producer", { queues: { consumers: QUEUES.consumers } }],
-    ["no import consumer", { queues: { ...QUEUES, consumers: RING_AND_ERASURE } }],
+      { ...IMPORT_WINDOW.producer, queue: "tinyassets-erasure" }, OPERATOR_CHANNEL.producer] } }],
+    ["the operator producer to another queue", { queues: { ...QUEUES, producers: [
+      IMPORT_WINDOW.producer, { ...OPERATOR_CHANNEL.producer, queue: "tinyassets-import" }] } }],
+    ["no import producer", { queues: { ...QUEUES, producers: [OPERATOR_CHANNEL.producer] } }],
+    ["no operator producer", { queues: { ...QUEUES, producers: [IMPORT_WINDOW.producer] } }],
+    ["no import consumer", { queues: { ...QUEUES, consumers: NOT_IMPORT } }],
+    ["no operator consumer", { queues: { ...QUEUES, consumers: NOT_OPERATOR } }],
     ["the import consumer without its dead-letter queue", { queues: { ...QUEUES, consumers: [
-      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, dead_letter_queue: undefined }] } }],
+      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, dead_letter_queue: undefined },
+      OPERATOR_CHANNEL.consumer] } }],
     ["the import consumer taking batches", { queues: { ...QUEUES, consumers: [
-      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, max_batch_size: 10 }] } }],
+      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, max_batch_size: 10 },
+      OPERATOR_CHANNEL.consumer] } }],
     ["the import consumer at more owners at once", { queues: { ...QUEUES, consumers: [
-      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, max_concurrency: 16 }] } }],
+      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, max_concurrency: 16 },
+      OPERATOR_CHANNEL.consumer] } }],
+    ["the operator consumer without its dead-letter queue", { queues: { ...QUEUES, consumers: [
+      ...NOT_OPERATOR, { ...OPERATOR_CHANNEL.consumer, dead_letter_queue: undefined }] } }],
+    ["the operator consumer taking batches", { queues: { ...QUEUES, consumers: [
+      ...NOT_OPERATOR, { ...OPERATOR_CHANNEL.consumer, max_batch_size: 10 }] } }],
     ["another queue's consumer", { queues: { consumers: [{ queue: "tinyassets-x" }] } }],
     ["a migration", { migrations: [{ tag: "v1", new_sqlite_classes: ["X"] }] }],
     ["a rate limit", { ratelimits: [{ name: "KEY_RL", namespace_id: "1",
                                       simple: { limit: 120, period: 60 } }] }],
     ["an upstream before the deploy", { vars: { ...VARS, UPSTREAM: "{}" } }],
     ["no WORKOS_API_KEY", { secrets: { required: ["ROUTING_MAC_KEY"] } }],
+    ["no OPERATOR_KEYRING", { secrets: {
+      required: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"] } }],
     ["the import window's key required, so every deploy would set it", { secrets: {
-      required: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET", "IMPORT_KEY"] } }],
+      required: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET", "OPERATOR_KEYRING",
+                 "IMPORT_KEY"] } }],
     ["no strictly-public fetch", { compatibility_flags: ["nodejs_compat", "disable_ctx_exports"] }],
     ["ctx.exports", { compatibility_flags: [...FLAGS, "enable_ctx_exports"] }],
     ["DCR on", { vars: { ...VARS, DCR_ENABLED: "true" } }],
@@ -325,22 +350,24 @@ describe("doors Worker config", () => {
   });
 });
 
-describe("the doors' three queue consumers", () => {
-  it("take the import window's by the name the job sends to, and is its one producer", () => {
-    expect(IMPORT_WINDOW.consumer.queue).toBe(QUEUE_NAMES.IMPORTS);
-    expect(IMPORT_WINDOW.producer.queue).toBe(QUEUE_NAMES.IMPORTS);
-    expect((config["queues"] as { producers: object[] }).producers)
-      .toEqual([IMPORT_WINDOW.producer]);
-    expect(config["r2_buckets"]).toEqual([IMPORT_WINDOW.bucket]);
-    // No other Worker binds the window's bucket or sends to its queue.
-    for (const [name, other] of platform) {
-      if (name === "tinyassets-doors") {
-        continue;
+describe("the doors' four queue consumers", () => {
+  it.each([["the import window's", IMPORT_WINDOW, QUEUE_NAMES.IMPORTS],
+           ["the operator channel's", OPERATOR_CHANNEL, QUEUE_NAMES.OPERATOR]] as const)(
+    "take %s by the name its sender sends to, and are its one producer", (_what, bound, queue) => {
+      expect(bound.consumer.queue).toBe(queue);
+      expect(bound.producer.queue).toBe(queue);
+      expect((config["queues"] as { producers: object[] }).producers)
+        .toContainEqual(bound.producer);
+      expect(config["r2_buckets"]).toContainEqual(bound.bucket);
+      // No other Worker binds its bucket or sends to its queue.
+      for (const [name, other] of platform) {
+        if (name === "tinyassets-doors") {
+          continue;
+        }
+        expect(JSON.stringify(other)).not.toContain(bound.bucket.bucket_name);
+        expect(JSON.stringify(other)).not.toContain(queue);
       }
-      expect(JSON.stringify(other)).not.toContain(IMPORT_WINDOW.bucket.bucket_name);
-      expect(JSON.stringify(other)).not.toContain(QUEUE_NAMES.IMPORTS);
-    }
-  });
+    });
 
   it("are the queues the entry dispatches by name, the producers' (`QUEUES`)", () => {
     // The entry (`src/index.ts`) takes each batch by its name in `QUEUES`, generated from the

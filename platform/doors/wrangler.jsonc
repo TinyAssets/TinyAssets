@@ -43,7 +43,8 @@
 //   at an erasure), set by the deploy kit from the production environment's secrets.
 //   E2B_WEBHOOK_SECRET: the signature secret of E2B's sandbox lifecycle webhook
 //   (src/e2b-hooks.ts, `/hooks/e2b/lifecycle`), set and registered with E2B by the deploy kit.
-//   `secrets.required` makes a deploy without any of the three fail. A shared inbound app's
+//   OPERATOR_KEYRING: the operator channel's ring (below). `secrets.required` makes a deploy
+//   without any of the four fail. A shared inbound app's
 //   signing secret (shared-apps.json names it, INBOUND_SLACK_SIGNING_SECRET) is set when the
 //   app is; without it that app's door refuses loudly.
 // `global_fetch_strictly_public` is required for Client ID Metadata Documents: the
@@ -61,6 +62,14 @@
 //   that consumer, one message a batch, four owners at once, its dead-letter queue the one
 //   the job reads. Its key, IMPORT_KEY, is set only for the window, so it is not required:
 //   without it every import message is dropped.
+// - The operator channel (src/operator.ts, d3 §G), permanent: the operator queue's consumer, one
+//   message a batch, its dead-letter queue the one the kit names when no answer comes; its
+//   producer (OPERATOR), which no source sends to yet: the kit sends over the Queues API, and the
+//   binding is the queue's one home (QUEUES.OPERATOR, which the kit and the entry both take
+//   it by) and later the consumer's own continuation; and OPERATOR_LOG, the operator bucket,
+//   where each message's acceptance record and answer are kept under a lock (deploy/platform.json
+//   `bucket_locks`). Its messages are MAC'd under OPERATOR_KEYRING, which the founder's setup
+//   makes (deploy/platform.json `made`).
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tinyassets-doors",
@@ -72,7 +81,8 @@
   "preview_urls": false,
   "vars": { "DCR_ENABLED": "false", "OWNER_ISSUER": "not-configured", "FOREIGN_ISSUERS": "[]",
             "UPSTREAM": "not-configured" },
-  "secrets": { "required": ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"] },
+  "secrets": { "required": ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+                            "OPERATOR_KEYRING"] },
   "durable_objects": {
     "bindings": [
       { "name": "OWNER", "class_name": "OwnerDO", "script_name": "tinyassets-owner" }
@@ -91,17 +101,21 @@
     { "binding": "CONTROL", "id": "not-provisioned-control" }
   ],
   "r2_buckets": [
-    { "binding": "IMPORT_STAGING", "bucket_name": "tinyassets-import-staging" }
+    { "binding": "IMPORT_STAGING", "bucket_name": "tinyassets-import-staging" },
+    { "binding": "OPERATOR_LOG", "bucket_name": "tinyassets-operator" }
   ],
   "queues": {
     "producers": [
-      { "binding": "IMPORTS", "queue": "tinyassets-import" }
+      { "binding": "IMPORTS", "queue": "tinyassets-import" },
+      { "binding": "OPERATOR", "queue": "tinyassets-operator" }
     ],
     "consumers": [
       { "queue": "tinyassets-sandbox-ring" },
       { "queue": "tinyassets-erasure" },
       { "queue": "tinyassets-import", "max_batch_size": 1, "max_concurrency": 4,
-        "dead_letter_queue": "tinyassets-import-dlq" }
+        "dead_letter_queue": "tinyassets-import-dlq" },
+      { "queue": "tinyassets-operator", "max_batch_size": 1,
+        "dead_letter_queue": "tinyassets-operator-dlq" }
     ]
   }
 }

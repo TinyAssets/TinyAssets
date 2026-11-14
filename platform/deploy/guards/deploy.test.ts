@@ -51,9 +51,9 @@ import {
 } from "../deploy";
 import { BUNDLES, bundles, pairTag, treeImage } from "../../sandbox/template/pair";
 import {
-  boundBy, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS, MADE,
-  NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers, ROUTES, SECRET_INPUTS,
-  SECRETS, WORKERS, ZONE,
+  boundBy, BUCKET_LOCKS, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS,
+  MADE, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers, ROUTES,
+  SECRET_INPUTS, SECRETS, WORKERS, ZONE,
 } from "../facts";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
 import platform from "../platform.json" with { type: "json" };
@@ -119,7 +119,7 @@ const ok = (result: unknown): CfAnswer => ({ status: 200, body: { success: true,
 const ENV: Record<string, string> = {
   CLOUDFLARE_API_TOKEN: "cf-token", WORKOS_CLIENT_ID: "client_test",
   OWNER_ISSUER: "https://auth.test", WORKOS_API_KEY: "workos-key", E2B_API_KEY: E2B_KEY,
-  ROUTING_MAC_KEY: "mac-key", GATEWAY_KEYRING: RING, FILES_KEYRING: RING,
+  ROUTING_MAC_KEY: "mac-key", GATEWAY_KEYRING: RING, FILES_KEYRING: RING, OPERATOR_KEYRING: RING,
   E2B_WEBHOOK_SECRET: "hook-secret", INBOUND_SLACK_SIGNING_SECRET: "slack-secret",
   PATH: "/bin", HOME: "/home/test",
 };
@@ -167,6 +167,8 @@ interface WorldOptions {
   readonly refusingRoute?: string;
   /** DNS deletes the API refuses (403): a token without DNS Edit. */
   readonly refusingDns?: boolean;
+  /** Each bucket's lock rules, in place of none (fresh) or the kit's (held). */
+  readonly locks?: Readonly<Record<string, readonly unknown[]>>;
   /** The R2 buckets and queues the account lists, in place of none (fresh) or all (held). */
   readonly listed?: { readonly buckets: readonly string[]; readonly queues: readonly string[] };
   /** The account still holds the retired Workers (`platform.json`). */
@@ -238,6 +240,10 @@ function world(options: WorldOptions = {}) {
   const buckets = new Set(options.listed?.buckets ?? (held ? BUCKETS : []));
   const queues = new Set(options.listed?.queues ?? (held ? QUEUES : []));
   const created: string[] = [];
+  /** Each bucket's lock rules: a held account's as the kit sets them, unless `locks` says. */
+  const locks = new Map<string, unknown[]>(Object.entries(BUCKET_LOCKS).map(([bucket, days]) =>
+    [bucket, [...options.locks?.[bucket] ?? (held ? [{ id: "kept", enabled: true,
+      condition: { type: "Age", maxAgeSeconds: days * 86_400 } }] : [])]]));
   const json = (body: unknown, status = 200) => Response.json(body, { status });
   const cf = (path: string, method: string, body: string | undefined): Response => {
     const account = `/accounts/${ACCOUNT}`;
@@ -251,10 +257,23 @@ function world(options: WorldOptions = {}) {
       namespaces.set(given["title"]!, `made-${given["title"]}`);
       return json({ success: true, result: { id: `made-${given["title"]}` } });
     }
+    if (path.startsWith(`${account}/r2/buckets/`) && path.endsWith("/lock")) {
+      const locked = path.slice(`${account}/r2/buckets/`.length, -"/lock".length);
+      if (!buckets.has(locked)) {
+        return json({ success: false, errors: [{ code: 10006 }] }, 404);
+      }
+      if (method === "PUT") {
+        created.push(`R2 lock ${locked} ${body}`);
+        locks.set(locked, (JSON.parse(body!) as { rules: unknown[] }).rules);
+      }
+      return json({ success: true, result: method === "PUT" ? {}
+        : { rules: locks.get(locked) ?? [] } });
+    }
     if (path === `${account}/r2/buckets`) {
       if (method === "POST") {
         created.push(`R2 bucket ${given["name"]}`);
         buckets.add(given["name"]!);
+        locks.set(given["name"]!, []);
       }
       return json({ success: true, result: method === "POST" ? {}
         : { buckets: [...buckets].map((name) => ({ name })) } });
@@ -784,7 +803,7 @@ describe("a dark run", () => {
       .toEqual(RETIRED.map(deleting));
     const deployed = Math.max(...w.events.map((event, at) =>
       /^wrangler (deploy|versions deploy) /.test(event) ? at : -1));
-    const control = w.events.findIndex((event) => event.startsWith("cf PUT"));
+    const control = w.events.findIndex((event) => event.startsWith(CONTROL_WRITE));
     for (const name of RETIRED) {
       expect(w.events.indexOf(deleting(name))).toBeGreaterThan(deployed);
       expect(w.events.indexOf(deleting(name))).toBeLessThan(control);
@@ -805,7 +824,7 @@ describe("a dark run", () => {
     // With nothing retired there is nothing to refuse, and the run goes on.
     expect(ran).toBe(RETIRED.length === 0 ? "ran"
       : `deleting the Worker ${RETIRED[0]} failed (400, [10064])`);
-    expect(w.events.some((event) => event.startsWith("cf PUT"))).toBe(RETIRED.length === 0);
+    expect(w.events.some((event) => event.startsWith(CONTROL_WRITE))).toBe(RETIRED.length === 0);
   });
 
   it("plans the same steps without --yes, and changes nothing", async () => {
@@ -860,33 +879,72 @@ describe("a dark run", () => {
     expect(w.events).toEqual(["locks owner"]);
   });
 
-  it("makes the import window's queue, dead-letter queue and bucket, each only when its " +
-     "listing lacks it, in a fresh, a held and a partial account", async () => {
-    const WINDOW = ["R2 bucket tinyassets-import-staging", "queue tinyassets-import",
-                    "queue tinyassets-import-dlq"];
+  it.each([
+    ["the import window's", "tinyassets-import", "tinyassets-import-staging"],
+    ["the operator channel's", "tinyassets-operator", "tinyassets-operator"],
+  ])("makes %s queue, dead-letter queue and bucket, each only when its listing lacks it, in a " +
+     "fresh, a held and a partial account", async (_what, queue, bucket) => {
+    const MADE_HERE = [`R2 bucket ${bucket}`, `queue ${queue}`, `queue ${queue}-dlq`];
     const made = (w: ReturnType<typeof world>) => w.created
-      .filter((each) => !each.startsWith("KV namespace"));
+      .filter((each) => each.startsWith("R2 bucket") || each.startsWith("queue"));
+    const its = (w: ReturnType<typeof world>) => made(w)
+      .filter((each) => MADE_HERE.includes(each));
     expect(BUCKETS).toEqual(["tinyassets-files", "tinyassets-import-staging",
-                             "tinyassets-final-backup"]);
+                             "tinyassets-operator", "tinyassets-final-backup"]);
     expect(QUEUES).toEqual(["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
-                            "tinyassets-import-dlq"]);
+                            "tinyassets-operator", "tinyassets-import-dlq",
+                            "tinyassets-operator-dlq"]);
     const fresh = world();
     await runMode(fresh, "dark", ["--yes"]);
-    expect(made(fresh)).toEqual(expect.arrayContaining(WINDOW));
-    expect(made(fresh).filter((each) => each.includes("tinyassets-import"))).toEqual(WINDOW);
+    expect(its(fresh)).toEqual(MADE_HERE);
     const held = world({ held: true });
     await runMode(held, "dark", ["--yes"]);
     expect(made(held)).toEqual([]);
     // The queue made but not its dead-letter queue nor the bucket: only those two are made.
     const partial = world({ held: true, listed: {
-      buckets: ["tinyassets-files", "tinyassets-final-backup"],
-      queues: ["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import"] } });
+      buckets: BUCKETS.filter((each) => each !== bucket),
+      queues: QUEUES.filter((each) => each !== `${queue}-dlq`) } });
     const work = await runMode(partial, "dark", ["--yes"]);
-    expect(made(partial)).toEqual(["R2 bucket tinyassets-import-staging",
-                                   "queue tinyassets-import-dlq"]);
+    expect(made(partial)).toEqual([`R2 bucket ${bucket}`, `queue ${queue}-dlq`]);
     expect(work.plan).toEqual(expect.arrayContaining([
-      "create the R2 bucket tinyassets-import-staging", "create the queue tinyassets-import-dlq"]));
-    expect(work.plan).not.toContain("create the queue tinyassets-import");
+      `create the R2 bucket ${bucket}`, `create the queue ${queue}-dlq`]));
+    expect(work.plan).not.toContain(`create the queue ${queue}`);
+  });
+
+  it("locks every object of the operator bucket for a year, setting the rule only when the " +
+     "bucket holds no rule or another, and plans it without --yes", async () => {
+    const RULE = { id: "kept-365-days", enabled: true, prefix: "",
+                   condition: { type: "Age", maxAgeSeconds: 365 * 86_400 } };
+    const LINE = "lock every object of the R2 bucket tinyassets-operator for 365 days";
+    const locked = (w: ReturnType<typeof world>) => w.created
+      .filter((each) => each.startsWith("R2 lock"));
+    expect(BUCKET_LOCKS).toEqual({ "tinyassets-operator": 365 });
+    // A fresh account: the bucket made, then its rule set.
+    const fresh = world();
+    const made = await runMode(fresh, "dark", ["--yes"]);
+    expect(made.plan).toContain(LINE);
+    expect(locked(fresh))
+      .toEqual([`R2 lock tinyassets-operator ${JSON.stringify({ rules: [RULE] })}`]);
+    expect(fresh.created.indexOf("R2 bucket tinyassets-operator"))
+      .toBeLessThan(fresh.created.indexOf(locked(fresh)[0]!));
+    // Held as the kit sets it: nothing planned, nothing set.
+    const held = world({ held: true });
+    expect((await runMode(held, "dark", ["--yes"])).plan.filter((line) => line.startsWith("lock")))
+      .toEqual([]);
+    expect(locked(held)).toEqual([]);
+    // A shorter lock, a rule on a prefix alone, a disabled rule, or a second rule: replaced.
+    for (const rules of [[{ ...RULE, condition: { type: "Age", maxAgeSeconds: 86_400 } }],
+                         [{ ...RULE, prefix: "answers/" }], [{ ...RULE, enabled: false }],
+                         [RULE, { ...RULE, id: "other" }]]) {
+      const other = world({ held: true, locks: { "tinyassets-operator": rules } });
+      const work = await runMode(other, "dark", ["--yes"]);
+      expect(work.plan).toContain(`${LINE}, in place of its ${rules.length} lock rules`);
+      expect(locked(other)).toHaveLength(1);
+    }
+    // The plan job: the bucket it would make planned locked, nothing set.
+    const plan = world();
+    expect((await runMode(plan, "dark", [])).plan).toContain(LINE);
+    expect(locked(plan)).toEqual([]);
   });
 
   it("makes the off-site copy's bucket, which no Worker binds, only when its listing lacks it",
@@ -903,17 +961,13 @@ describe("a dark run", () => {
     await runMode(held, "dark", ["--yes"]);
     expect(made(held)).toEqual([]);
     const lacking = world({ held: true, listed: {
-      buckets: ["tinyassets-files", "tinyassets-import-staging"],
-      queues: ["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
-               "tinyassets-import-dlq"] } });
+      buckets: BUCKETS.filter((each) => each !== "tinyassets-final-backup"), queues: QUEUES } });
     const work = await runMode(lacking, "dark", ["--yes"]);
     expect(made(lacking)).toEqual(["R2 bucket tinyassets-final-backup"]);
     expect(work.plan).toContain("create the R2 bucket tinyassets-final-backup");
     // The plan job lists it and makes nothing.
     const plan = world({ held: true, listed: {
-      buckets: ["tinyassets-files", "tinyassets-import-staging"],
-      queues: ["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
-               "tinyassets-import-dlq"] } });
+      buckets: BUCKETS.filter((each) => each !== "tinyassets-final-backup"), queues: QUEUES } });
     const planned = await runMode(plan, "dark", []);
     expect(made(plan)).toEqual([]);
     expect(planned.plan).toContain("create the R2 bucket tinyassets-final-backup");
@@ -1782,7 +1836,8 @@ describe("the parts of a run", () => {
     const none = secretPlan({ doors: [], owner: [], gateway: [], sandbox: [] }, new Set(), NONE);
     expect(none.filter(({ name }) => name === "ROUTING_MAC_KEY").map(({ worker }) => worker)
       .sort()).toEqual(["doors", "owner"]);
-    const both = secretPlan({ doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
+    const both = secretPlan({ doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+                                      "OPERATOR_KEYRING"],
                               owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
                               sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] },
                             new Set(), NONE);
@@ -1796,7 +1851,7 @@ describe("the parts of a run", () => {
 
   it("never replaces a held keyring, and rotates one only by adding a key", () => {
     const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
-                           "INBOUND_SLACK_SIGNING_SECRET"],
+                           "OPERATOR_KEYRING", "INBOUND_SLACK_SIGNING_SECRET"],
                    owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
                    sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
     const values = (ring: string) => (name: string) =>
@@ -2575,6 +2630,9 @@ function zoneApi(start: readonly Route[], fail?: string) {
   return Object.assign(call, { calls, table, before });
 }
 
+/** A write of a KV value, as the control record's is: the event the kit's KV puts log. */
+const CONTROL_WRITE = `cf PUT /accounts/${ACCOUNT}/storage/kv/`;
+
 /** A fresh dark run's plan, in order: what the founder's first `dark` changes. */
 const DARK_FRESH = [
   "the migration locks pin every migration the owner and sandbox Workers ship",
@@ -2587,11 +2645,15 @@ const DARK_FRESH = [
     `create the KV namespace ${title} (${binding})`),
   "create the R2 bucket tinyassets-files",
   "create the R2 bucket tinyassets-import-staging",
+  "create the R2 bucket tinyassets-operator",
   "create the R2 bucket tinyassets-final-backup",
+  "lock every object of the R2 bucket tinyassets-operator for 365 days",
   "create the queue tinyassets-sandbox-ring",
   "create the queue tinyassets-erasure",
   "create the queue tinyassets-import",
+  "create the queue tinyassets-operator",
   "create the queue tinyassets-import-dlq",
+  "create the queue tinyassets-operator-dlq",
   "the Cloudflare token listed the account's KV namespaces, R2 buckets and queues",
   ...Object.entries(SECRETS).flatMap(([worker, names]) =>
     names.map((name) => `set the secret ${name} on ${NAMES[worker]}`)),

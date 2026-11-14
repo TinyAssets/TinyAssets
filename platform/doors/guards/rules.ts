@@ -13,10 +13,11 @@
  *   fills both from the issuer's live discovery (`deploy/deploy.ts`); and
  *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's slice lists its issuer, so any other
  *   issuer is refused, never taken for a new owner.
- * - Three secrets, declared by name (`secrets.required`, which binds nothing):
+ * - Four secrets, declared by name (`secrets.required`, which binds nothing):
  *   `ROUTING_MAC_KEY`, the routing key sandbox tokens are MAC'd under, the owner Worker's
- *   too; `WORKOS_API_KEY`, the upstream's client secret; and `E2B_WEBHOOK_SECRET`, E2B's
- *   lifecycle webhook's signature secret (slice P).
+ *   too; `WORKOS_API_KEY`, the upstream's client secret; `E2B_WEBHOOK_SECRET`, E2B's
+ *   lifecycle webhook's signature secret (slice P); and `OPERATOR_KEYRING`, the ring the
+ *   operator channel's messages are MAC'd under.
  * - No `ratelimits`: no number of ours bounds any caller (the founder's rule, slice L's
  *   review); Cloudflare's own DDoS protection is in front of every Worker.
  * - `ASSETS`: the owner app's files (`app/`), Workers Static Assets, the Worker first on every
@@ -24,11 +25,15 @@
  *   headers; no HTML handling or not-found page of the assets' own.
  * - The consumer of the sandbox line's ring queue (slice S, `src/ring.ts`), which turns
  *   `{owner}` into that owner's `sandboxRung` and nothing else, and of the erasure queue.
+ * - The operator channel (`src/operator.ts`, `OPERATOR_CHANNEL`), permanent: the operator
+ *   queue's consumer (one message a batch, its dead-letter queue), its producer (`OPERATOR`,
+ *   the queue's name's one home, `QUEUES.OPERATOR`), and the operator bucket
+ *   (`OPERATOR_LOG`), where its acceptance records and answers are kept.
  * - The cutover's import window (`src/import/`), deleted at the cutover with
  *   `platform/import/` and named here as its bindings alone (`IMPORT_WINDOW`): the import
  *   queue's consumer (one message a batch, four owners at once, its dead-letter queue), its
- *   producer (`IMPORTS`, the consumer's own continuation, the doors' one producer), and the
- *   staging bucket (`IMPORT_STAGING`), the doors' one bucket.
+ *   producer (`IMPORTS`, the consumer's own continuation), and the staging bucket
+ *   (`IMPORT_STAGING`).
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
  *   (the doors define no Durable Object class).
  * - Flags: `nodejs_compat` (the owner's shared code), `disable_ctx_exports` (no way to the
@@ -53,6 +58,14 @@ export const IMPORT_WINDOW = Object.freeze({
                             dead_letter_queue: "tinyassets-import-dlq" }),
 });
 
+/** The operator channel's bindings (`src/operator.ts`), each named once here. */
+export const OPERATOR_CHANNEL = Object.freeze({
+  bucket: Object.freeze({ binding: "OPERATOR_LOG", bucket_name: "tinyassets-operator" }),
+  producer: Object.freeze({ binding: "OPERATOR", queue: "tinyassets-operator" }),
+  consumer: Object.freeze({ queue: "tinyassets-operator", max_batch_size: 1,
+                            dead_letter_queue: "tinyassets-operator-dlq" }),
+});
+
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "doors",
   name: "tinyassets-doors",
@@ -63,18 +76,19 @@ export const CONFIG: ConfigRules = Object.freeze({
   flags: Object.freeze({ exactly: Object.freeze(["nodejs_compat", "disable_ctx_exports",
                                                  "global_fetch_strictly_public",
                                                  "enable_request_signal"]) }),
-  secrets: Object.freeze(["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"]),
+  secrets: Object.freeze(["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+                          "OPERATOR_KEYRING"]),
   vars: Object.freeze({ DCR_ENABLED: ["false"], OWNER_ISSUER: ["not-configured"],
                         FOREIGN_ISSUERS: ["[]"], UPSTREAM: ["not-configured"] }),
   kv: Object.freeze(["OAUTH_KV", "DIRECTORY", "CONTROL"]),
-  buckets: Object.freeze([IMPORT_WINDOW.bucket.binding]),
+  buckets: Object.freeze([IMPORT_WINDOW.bucket.binding, OPERATOR_CHANNEL.bucket.binding]),
   exact: Object.freeze({
     assets: { directory: "./app", binding: "ASSETS", run_worker_first: true,
               html_handling: "none", not_found_handling: "none" },
-    r2_buckets: [IMPORT_WINDOW.bucket],
-    queues: { producers: [IMPORT_WINDOW.producer],
+    r2_buckets: [IMPORT_WINDOW.bucket, OPERATOR_CHANNEL.bucket],
+    queues: { producers: [IMPORT_WINDOW.producer, OPERATOR_CHANNEL.producer],
               consumers: [{ queue: "tinyassets-sandbox-ring" }, { queue: "tinyassets-erasure" },
-                          IMPORT_WINDOW.consumer] },
+                          IMPORT_WINDOW.consumer, OPERATOR_CHANNEL.consumer] },
   }),
 });
 

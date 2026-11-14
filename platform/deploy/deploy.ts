@@ -42,7 +42,9 @@
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
  * "absent". So:
- * - a namespace, bucket or queue is created only when its listing answered and lacks it;
+ * - a namespace, bucket or queue is created only when its listing answered and lacks it, and
+ *   a locked bucket's one lock rule (`platform.json` `bucket_locks`) set only when its rules
+ *   answered and are not that rule alone;
  * - a secret is set only on a Worker whose secret listing answered and lacks it, or that the
  *   account's Workers listing lacks (whether a Worker exists is that listing's word alone);
  *   the kit never makes a secret's value (`keyring-new` makes a first keyring,
@@ -96,10 +98,10 @@ import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
 import {
   Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback, handover, type Kept,
-  type Moved, narrower, type Route, type RouteChange, unlike,
+  type LockRule, type Moved, narrower, type Route, type RouteChange, unlike,
 } from "./cloudflare.ts";
 import {
-  AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
+  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CALLBACK, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
   FIRST_PARTY, KEYRINGS, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, ROUTES,
   SECRET_INPUTS, SECRETS, SHARED, WORKERS, ZONE,
 } from "./facts.ts";
@@ -1091,6 +1093,42 @@ function storage(name: string, noun: string, names: readonly string[],
 const buckets = storage("buckets", "R2 bucket", BUCKETS,
                         async (cloudflare, account) => new Set(await cloudflare.buckets(account)),
                         (cloudflare, account, bucket) => cloudflare.makeBucket(account, bucket));
+
+/** A bucket's one lock rule: every object kept for `days`. */
+function keptRule(days: number): LockRule {
+  return { id: `kept-${days}-days`, enabled: true, prefix: "",
+           condition: { type: "Age", maxAgeSeconds: days * 86_400 } };
+}
+
+/** Whether the lock rule `held`, as the API lists it, keeps what `rule` keeps. */
+function keeps(held: Readonly<Record<string, unknown>>, rule: LockRule): boolean {
+  const condition = held["condition"] as { type?: unknown; maxAgeSeconds?: unknown } | undefined;
+  return held["enabled"] === true && (held["prefix"] ?? "") === rule.prefix
+    && condition?.type === rule.condition.type
+    && condition.maxAgeSeconds === rule.condition.maxAgeSeconds;
+}
+
+/**
+ * Each locked bucket's one rule (`BUCKET_LOCKS`), set when the bucket holds no rule or another:
+ * a bucket the plan would make holds none yet.
+ */
+const bucketLocks = step("bucket locks", async (run, work) => {
+  const cloudflare = made(work.cloudflare, "Cloudflare");
+  const account = made(work.account, "the account");
+  const held = new Set(await cloudflare.buckets(account));
+  for (const [bucket, days] of Object.entries(BUCKET_LOCKS)) {
+    const rule = keptRule(days);
+    const rules = held.has(bucket) ? await cloudflare.bucketLocks(account, bucket) : [];
+    if (rules.length === 1 && keeps(rules[0]!, rule)) {
+      continue;
+    }
+    work.plan.push(`lock every object of the R2 bucket ${bucket} for ${days} days${
+      rules.length === 0 ? "" : `, in place of its ${rules.length} lock rules`}`);
+    if (run.apply) {
+      await cloudflare.lockBucket(account, bucket, [rule]);
+    }
+  }
+});
 /** The queues the configs send to. */
 const queues = storage("queues", "queue", QUEUES,
                        async (cloudflare, account) => new Set((await cloudflare.queues(account))
@@ -1633,7 +1671,7 @@ const READS: readonly Step[] = [inputs, keyrings, locks, zone, upstream, templat
                                 pairPassed, hookListed];
 const CHECKS: readonly Step[] = [...READS, redirect, authorize];
 /** Storage, then the Workers, then the control record. */
-const STORAGE: readonly Step[] = [namespaces, buckets, queues, listings];
+const STORAGE: readonly Step[] = [namespaces, buckets, bucketLocks, queues, listings];
 const DEPLOY: readonly Step[] = [staged, secrets, workers, retired, control, hookLater];
 const DARK: readonly Step[] = [...CHECKS, ...STORAGE, ...DEPLOY, hook(false, ""),
                                reported("\nNothing was changed."), canary("auto"), h2Next];
