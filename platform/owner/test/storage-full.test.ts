@@ -116,7 +116,8 @@ describe("storage_full, the one wall", () => {
     const r = await rig();
     const { generation, policy } = await r.stub.policyRead(r.bind(null));
     await r.stub.policyWrite(r.session(null), {
-      expected_generation: generation, policy: { ...policy, files: { max_bytes: SEEDED + 7_000 } } as never });
+      expected_generation: generation,
+      policy: { ...policy, files: { max_bytes: SEEDED + 7_000 } } as never });
     await write(r, `${W}/a.bin`, FILE, 1);
     const { facts } = await full(() => write(r, `${W}/b.bin`, FILE, 2));
     expect(facts).toMatchObject({ limit_bytes: SEEDED + 7_000, tier_bytes: FREE, own_limit: true,

@@ -141,7 +141,8 @@ describe("the one storage number", () => {
     // the rest, within the figure, wait out their grace.
     const oldest = [...letGo].sort((a, b) => a.at - b.at
       || (a.sha256 < b.sha256 ? -1 : a.sha256 > b.sha256 ? 1 : 0));
-    expect(await ownChunks(r)).toEqual(oldest.slice(1).map(({ sha256 }) => ({ sha256, state: "garbage" })));
+    expect(await ownChunks(r))
+      .toEqual(oldest.slice(1).map(({ sha256 }) => ({ sha256, state: "garbage" })));
     expect(await sqlIn(r.stub, "SELECT garbage_bytes FROM file_space"))
       .toEqual([{ garbage_bytes: figure }]);
     // The owner reads what is kept for recovery, and for how long at most.

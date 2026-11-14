@@ -53,7 +53,8 @@ describe("the MCP door's file readers", () => {
                                  url: fileUrl("/workspace/knowledge/people/bo.md") });
     expect(results[0]!.url).toBe("https://tinyassets.io/app#data/" +
                                  encodeURIComponent("/workspace/knowledge/people"));
-    const fetched = await r.stub.fileFetch(r.bind(null), { id: "/workspace/knowledge/people/bo.md" });
+    const fetched = await r.stub.fileFetch(r.bind(null),
+                                           { id: "/workspace/knowledge/people/bo.md" });
     expect(fetched).toMatchObject({ id: "/workspace/knowledge/people/bo.md", title: "Bo",
                                     url: results[0]!.url,
                                     metadata: { type: "Person", tags: ["home", "repairs"],
@@ -169,8 +170,9 @@ describe("the MCP door's search (review M3, L4)", () => {
   it("answers every match, with nothing out of reach", async () => {
     const r = await rig();
     for (let i = 0; i < 25; i++) {
-      await r.stub.fileWrite(r.session(null), { path: `/workspace/n${String(i).padStart(2, "0")}.md`,
-                                             expected_etag: null, content: text("needle") });
+      await r.stub.fileWrite(r.session(null), {
+        path: `/workspace/n${String(i).padStart(2, "0")}.md`, expected_etag: null,
+        content: text("needle") });
     }
     const found = await r.stub.fileSearch(r.bind(null), { query: "needle" });
     expect(found.results).toHaveLength(25);
