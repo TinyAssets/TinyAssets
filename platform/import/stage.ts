@@ -24,27 +24,23 @@ import { join } from "node:path";
 
 import { HEX16 } from "../contract/src/ids";
 import { importMac, type ImportMessage, rehearsalRun, RUN } from "../contract/src/import-message";
+import { IMPORT_NAME_KEYS, type ImportNames } from "../contract/src/import-names";
 
 import { FORMAT } from "./bundle";
 
 /**
- * The live names the job reaches, by what each names: the deploy kit reads each from where it
- * is written (`deploy/facts.ts`'s `IMPORT_NAMES`, which `stage.test.ts` holds to this list).
- * The job runs away from this tree and its kit, so the window's bundle step writes them beside
- * it (`facts.json`), which the job takes by `--facts`.
+ * The job's live names from `facts.json`'s text, which the window's bundle step writes beside
+ * it (the job runs away from this tree and its kit): each of `IMPORT_NAME_KEYS`, a name, and
+ * nothing more.
  */
-const NAMED = Object.freeze(["staging_bucket", "queue", "dead_letter_queue", "files_bucket",
-                             "directory", "final_backup_bucket"] as const);
-export type Names = Readonly<Record<(typeof NAMED)[number], string>>;
-
-/** The job's names from `facts.json`'s text: each of `NAMED`, a name, and nothing more. */
-export function namesOf(text: string): Names {
+export function namesOf(text: string): ImportNames {
   const given: unknown = JSON.parse(text);
-  if (!plain(given) || Object.keys(given).sort().join() !== [...NAMED].sort().join()
-      || NAMED.some((key) => typeof given[key] !== "string" || given[key] === "")) {
+  const keys = IMPORT_NAME_KEYS;
+  if (!plain(given) || Object.keys(given).sort().join() !== [...keys].sort().join()
+      || keys.some((key) => typeof given[key] !== "string" || given[key] === "")) {
     throw new Error("the facts file is not the import job's names (deploy/facts.ts --import)");
   }
-  return given as Names;
+  return given as ImportNames;
 }
 
 /** Cloudflare's API, and R2's S3 endpoint for an account. */
@@ -248,7 +244,8 @@ export function messageOf(staged: Staged, run: string, importKey: string): Impor
 }
 
 /** What a run would send, a line a bundle by its ordinal, then the totals: no name, no key. */
-export function plannedLines(bundles: readonly Staged[], run: string, names: Names): string[] {
+export function plannedLines(bundles: readonly Staged[], run: string, names: ImportNames):
+    string[] {
   return [
     ...bundles.map((staged, n) => `bundle ${n + 1} of ${bundles.length}: ${staged.parts.length} ` +
       `objects, ${staged.bytes} bytes to ${names.staging_bucket}/${run}/<key>/, its index last; ` +
@@ -263,7 +260,7 @@ export function plannedLines(bundles: readonly Staged[], run: string, names: Nam
  * each uploaded under `<run>/<key>/`, its index last, then its message sent; refused loudly at
  * the first answer that is not a success, with nothing more sent.
  */
-export async function stage(out: string, run: string, names: Names, inputs: Inputs | null,
+export async function stage(out: string, run: string, names: ImportNames, inputs: Inputs | null,
                             fetcher: Fetcher, print: (line: string) => void,
                             now: () => Date = () => new Date(), rehearsal = false):
     Promise<StageSummary> {

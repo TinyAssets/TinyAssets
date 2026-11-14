@@ -25,7 +25,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { chunkedId, inlineId } from "../contract/src/content";
-import { TIER_NAMES, type TierName, type TierNumbers, type Tiers } from "../contract/src/control";
+import {
+  DEFAULT_TIER, TIER_NAMES, type TierName, type TierNumbers, type Tiers,
+} from "../contract/src/control";
 import { sha256Hex } from "../contract/src/digest";
 import { CHUNK_BYTES, INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
@@ -43,12 +45,6 @@ export const LINKS = `${IMPORTED}/links.txt`;
 export const REFUSED = `${IMPORTED}/refused.tar`;
 export const IGNORED = `${IMPORTED}/ignored.tar`;
 export const POLICY_REFUSED = `${IMPORTED}/policy.refused.json`;
-
-/**
- * The tier of an owner whose plan names none: the platform's first (`TIER_NAMES`), which the
- * owner's schema defaults a new owner to, and which an imported owner holds until its admit.
- */
-export const DEFAULT_TIER: TierName = TIER_NAMES[0];
 
 /** The tier the owner's plan names, by name, or `DEFAULT_TIER`. */
 export const tierName = (owner: Owner): string => owner.plan?.tier ?? DEFAULT_TIER;

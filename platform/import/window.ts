@@ -37,12 +37,14 @@ import {
   answerName, doneName, importMac, type ImportMessage, type ImportOp, importMessage, NO_ROWS,
   rehearsalRun, rowsSum, RUN,
 } from "../contract/src/import-message";
+import { DEFAULT_TIER } from "../contract/src/control";
 import { objectPrefix } from "../contract/src/files";
+import type { ImportNames } from "../contract/src/import-names";
 
-import { DEFAULT_TIER, type Entry, type Row } from "./build";
+import type { Entry, Row } from "./build";
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
 import {
-  ACCOUNT, API, bundlesIn, type Fetcher, type Inputs, type Names, pushMessage, queueId,
+  ACCOUNT, API, bundlesIn, type Fetcher, type Inputs, pushMessage, queueId,
   s3Request, type Staged,
 } from "./stage";
 
@@ -92,7 +94,7 @@ export function writeRecord(file: string, record: WindowRecord): void {
 
 /** The window's network: the live names it reaches, its inputs, a fetcher, and the clock. */
 export interface Window {
-  readonly names: Names;
+  readonly names: ImportNames;
   readonly inputs: Inputs;
   readonly fetcher: Fetcher;
   readonly clock: Clock;

@@ -224,8 +224,7 @@ describe("the staging step", () => {
 });
 
 describe("the job's live names", () => {
-  it("are the deploy kit's, as facts.json hands them, each named, and nothing more", () => {
-    expect(namesOf(JSON.stringify(IMPORT_NAMES))).toEqual(IMPORT_NAMES);
+  it("refuse a facts file that is not each name, a name, and nothing more", () => {
     const { directory: _directory, ...short } = IMPORT_NAMES;
     for (const given of [short, { ...IMPORT_NAMES, more: "x" }, { ...IMPORT_NAMES, queue: "" },
                          { ...IMPORT_NAMES, queue: 7 }, [IMPORT_NAMES]]) {

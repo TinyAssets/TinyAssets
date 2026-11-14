@@ -25,7 +25,7 @@
  *
  * `--tiers` is the control record's tiers (`deploy/control.json`'s, by the window's `jq`),
  * read by the contract's `parseTiers`; `--facts` is the live names the steps that reach the
- * account take (`deploy/facts.ts --import`, `stage.ts`'s `Names`).
+ * account take (`deploy/facts.ts --import`, the contract's `ImportNames`).
  *
  * The images are read only through mounts the kernel says are read-only XFS
  * (`/proc/self/mountinfo`), so a live or writable volume is never read. stdout holds counts
@@ -35,12 +35,13 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { parseTiers, type Tiers } from "../contract/src/control";
+import type { ImportNames } from "../contract/src/import-names";
 
 import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
 import { census } from "./census";
 import { copyMain } from "./copy";
-import { type Fetcher, type Inputs, type Names, namesOf, NETWORK, stage } from "./stage";
+import { type Fetcher, type Inputs, namesOf, NETWORK, stage } from "./stage";
 import type { Copy } from "./survey";
 import { admit, CLOCK, type Clock, deadLetters, verify, wipe } from "./window";
 
@@ -152,7 +153,7 @@ function tiersIn(argv: readonly string[]): Tiers {
 }
 
 /** `--facts`' file: the live names the job reaches. */
-function namesIn(argv: readonly string[]): Names {
+function namesIn(argv: readonly string[]): ImportNames {
   return namesOf(readFileSync(required(argv, "--facts"), "utf8"));
 }
 
