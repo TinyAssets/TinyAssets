@@ -24,7 +24,7 @@ import { failure } from "./support";
 const PULL = { command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
                recipe_id: null };
 const RINGS = { ...PULL, delivery_method: "mcp_event" };
-const { maxAgents, maxMessages, maxReceipts, maxSettledWakes, maxUnacked } = LEDGER_LIMITS;
+const { maxAgents, maxMessages, maxSettledWakes, maxUnacked } = LEDGER_LIMITS;
 
 function refusal(act: () => unknown): string {
   try {
@@ -128,7 +128,7 @@ describe("the ledger's bounds", () => {
     expect(usage).toEqual(actual);
   });
 
-  it("deletes an agent with its mail, wakes, subscriptions and receipts", async () => {
+  it("deletes an agent with its mail, wakes and subscriptions", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const dot = await r.register(DOT, "Dot");
@@ -148,9 +148,9 @@ describe("the ledger's bounds", () => {
       .toEqual([toDot.message_id]);
     expect((await r.table("message_bodies")).map((m) => m["message_id"]))
       .toEqual([toDot.message_id]);
-    expect((await r.table("ledger_recipients")).map((m) => m["agent_id"])).toEqual([dot]);
-    expect((await r.table("ledger_receipts")).map((x) => [x["agent_id"], x["kind"], x["ref"]]))
-      .toEqual([[dot, "read", toDot.message_id]]);
+    expect((await r.table("ledger_recipients")).map((m) => [m["agent_id"], m["message_id"],
+                                                             m["read_at"] !== null]))
+      .toEqual([[dot, toDot.message_id, true]]);
     expect((await r.table("ledger_readers")).map((x) => x["reader"]).sort())
       .toEqual([dot, OWNER].sort());
     expect(await r.table("ledger_wakes")).toEqual([]);
@@ -210,27 +210,6 @@ describe("the ledger's bounds", () => {
       expect(ledger.post(null, room, "c1", "hello", null)).toEqual(sent);  // acked, still hot
     });
     expect(await r.sql("SELECT COUNT(*) AS n FROM ledger_messages")).toEqual([{ n: 1 }]);
-  });
-
-  it("keeps the newest receipts only, at their ceiling", { tags: ["large"] }, async () => {
-    const r = await rig();
-    try {
-      await r.inLedger((ledger: Ledger) => {
-        const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
-        // Each message read and acked, two receipts, to one message past the ceiling.
-        for (let n = 0; 2 * n <= maxReceipts; n++) {
-          ledger.post(null, room, `c${n}`, "x", null);
-          ledger.ack(MUSE, ledger.read(MUSE, 1).messages[0]!.seq);
-        }
-      });
-      const made = maxReceipts + 2;
-      expect(await r.sql("SELECT COUNT(*) AS n, MIN(seq) AS first, MAX(seq) AS last FROM " +
-                         "ledger_receipts")).toEqual([{ n: maxReceipts, first: 3, last: made }]);
-      expect((await r.sql("SELECT kind FROM ledger_receipts WHERE seq >= ? ORDER BY seq",
-                          made - 1)).map((x) => x["kind"])).toEqual(["read", "ack"]);
-    } finally {
-      await r.letGo();
-    }
   });
 
   it("keeps settled wakes for their retention and at most the ceiling", async () => {

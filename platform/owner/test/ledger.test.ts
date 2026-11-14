@@ -7,16 +7,20 @@
  * object's RPC door with a {@link Binding}. The Python's account erasure, policy
  * bootstrap and racing-open tests have no counterpart: the object is the account.
  */
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { displayName, MAX_BODY_BYTES, OWNER } from "../src/ledger";
+import type { OwnerDO } from "../src/owner-do";
+import { MIGRATIONS } from "../src/schema";
 import { apiKeyOrigin } from "../../contract/src/binding";
+import { migrate } from "../../contract/src/migrate";
 import { policyDigest } from "../../contract/src/policy-document";
 import { DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
-import { failure } from "./support";
+import { failure, ownerObject } from "./support";
 
 describe("the sender is the verified identity", () => {
-  it("attributes, chains, receipts the reply and moves recipient states", async () => {
+  it("attributes, chains, times the reply and moves recipient states", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const first = await r.post(null, `dm:${muse}`, { body: '{"sender": "owner"}' });
@@ -35,8 +39,12 @@ describe("the sender is the verified identity", () => {
     expect(reply.recipients).toEqual([OWNER]);
     const [back] = (await r.read()).messages;
     expect([back!.sender_kind, back!.sender_id, back!.chain_depth]).toEqual(["outside", muse, 1]);
-    // The owner reads the agent's reply with its recorded time to reply.
-    expect(back!.reply_s).toBeGreaterThanOrEqual(0);
+    // The owner reads the agent's reply with its time to reply: its own and its parent's
+    // times, as the two messages hold them.
+    const at = Object.fromEntries((await r.table("ledger_messages"))
+      .map((m) => [m["message_id"], m["created_at"] as number]));
+    expect(back!.reply_s).toBe(Math.round((at[reply.message_id]! - at[first.message_id]!)
+                                          * 1000) / 1000);
     const again = await r.post(null, `dm:${muse}`, { cmid: "c2", parent: reply.message_id });
     const states = Object.fromEntries((await r.table("ledger_recipients"))
       .map((row) => [row["message_id"], row["state"]]));
@@ -45,17 +53,15 @@ describe("the sender is the verified identity", () => {
     const messages = await r.table("ledger_messages");
     expect(messages.find((m) => m["message_id"] === again.message_id)!["chain_depth"]).toBe(0);
     expect(new Set(messages.map((m) => m["chain_root"]))).toEqual(new Set([first.message_id]));
-    const receipts = (await r.table("ledger_receipts")).map((row) => ({
-      agent: row["agent_id"], kind: row["kind"], ref: row["ref"],
-      detail: JSON.parse(row["detail_json"] as string) as Record<string, number | string>,
-    }));
-    expect(receipts.map((x) => [x.agent, x.kind])).toEqual([
-      [muse, "read"], [muse, "reply"], [OWNER, "read"], [OWNER, "reply"]]);
-    const { detail } = receipts[1]!;
-    expect([detail["parent_id"], receipts[1]!.ref]).toEqual([first.message_id, reply.message_id]);
-    expect(detail["read_s"]).toBeGreaterThanOrEqual(0);
-    expect(detail["read_s"]).toBeLessThanOrEqual(detail["reply_s"] as number);
-    expect(Object.keys(detail)).toEqual(["parent_id", "read_s", "reply_s"]);
+    // Each recipient row keeps when its reader read the message, past its reply.
+    const read = Object.fromEntries((await r.table("ledger_recipients"))
+      .map((row) => [row["message_id"], [row["agent_id"], row["read_at"]]]));
+    expect(read[first.message_id]![0]).toBe(muse);
+    expect(read[first.message_id]![1]).toBeGreaterThanOrEqual(at[first.message_id]!);
+    expect(read[first.message_id]![1]).toBeLessThanOrEqual(at[reply.message_id]!);
+    expect(read[reply.message_id]![0]).toBe(OWNER);
+    expect(read[reply.message_id]![1]).toBeGreaterThanOrEqual(at[reply.message_id]!);
+    expect(read[again.message_id]).toEqual([muse, null]);
   });
 
   it("returns the original on a resend and refuses another hash as a conflict", async () => {
@@ -164,17 +170,21 @@ describe("a reader sees only its own mail", () => {
       .toEqual(first.messages.map((m) => m.message_id));
     const through = first.messages.at(-1)!.seq;
     expect((await r.ack(MUSE, through)).through).toBe(through);
+    const acked = async () => (await r.table("ledger_readers"))
+      .filter((x) => x["through_seq"] === through);
+    const [reader] = await acked();
+    expect(reader!["acked_at"]).not.toBeNull();
     expect((await r.read(MUSE)).messages).toEqual([]);  // W3-R5: a retried session
     expect((await r.ack(MUSE, 0)).through).toBe(through);  // never moves back
     expect((await r.ack(MUSE, through)).through).toBe(through);  // a retry: a no-op
     const past = await failure(() => r.ack(MUSE, through + 10));
     expect(past.message).toBe("ack is past this reader's mail");
     expect((await r.read(DOT)).messages).toHaveLength(1);  // Muse's cursor is Muse's alone
-    // Only an ack that moves the cursor leaves a receipt.
-    expect((await r.table("ledger_receipts")).filter((x) => x["kind"] === "ack")).toHaveLength(1);
+    // The reader's row holds the ack: only one that moves the cursor moves it.
+    expect(await acked()).toEqual([reader]);
   });
 
-  it("holds a message back whole, without a read receipt, until a read returns it",
+  it("holds a message back whole, unread, until a read returns it",
      async () => {
     const r = await rig();
     await r.register(MUSE);
@@ -186,8 +196,8 @@ describe("a reader sees only its own mail", () => {
     }
     const page = (budget: number) => r.read(MUSE, 10, { max_bytes: budget, pad_bytes: 200 });
     const unread = async () => [
-      new Set((await r.table("ledger_receipts")).filter((x) => x["kind"] === "read")
-        .map((x) => x["ref"])),
+      new Set((await r.table("ledger_recipients")).filter((x) => x["read_at"] !== null)
+        .map((x) => x["message_id"])),
       Object.fromEntries((await r.table("ledger_recipients"))
         .map((x) => [x["message_id"], x["state"]])),
     ] as const;
@@ -522,14 +532,62 @@ describe("the ledger's binding", () => {
     const tables = (await r.sql("SELECT name FROM sqlite_master WHERE type = 'table'"))
       .map((t) => t["name"]);
     for (const table of ["outside_agents", "ledger_messages", "ledger_recipients",
-                         "ledger_receipts", "ledger_readers", "ledger_wakes", "wake_callbacks",
+                         "ledger_readers", "ledger_wakes", "wake_callbacks",
                          "message_bodies", "ledger_usage"]) {
       expect(tables).toContain(table);
     }
+    expect(tables).not.toContain("ledger_receipts");
     expect(await r.table("ledger_usage")).toEqual([
       { only: 1, agents: 0, enabled_agents: 0, messages: 0, settled_wakes: 0, unacked: 0,
         acked_bytes: 0, last_seq: 0, archive_blocked: 0, archive_fails: 0,
         archive_error: null }]);
+  });
+
+  it("moves each receipt's fact onto its recipient row as it deletes the receipts", async () => {
+    const receipts = MIGRATIONS.findIndex((each) => each.includes("DROP TABLE ledger_receipts"));
+    const moved = await runInDurableObject(ownerObject().stub, (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      // Back to an object of the migrations before it, the owner's tables gone first.
+      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+          "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+          "AND name NOT GLOB 'cf_*'").toArray()) {
+        sql.exec(`DROP TABLE "${name}"`);
+      }
+      migrate(state.storage, MIGRATIONS.slice(0, receipts));
+      // Three messages to Muse: read twice, failed, and neither; a wake's failure beside them.
+      // The last two reply to the first: one's receipt went, so its time is its parent's.
+      for (const [seq, held] of [[1, "replied"], [2, "failed"], [3, "queued"]] as const) {
+        sql.exec("INSERT INTO ledger_messages (seq, message_id, command_center_id, room_id, " +
+                   "sender_kind, sender_id, client_message_id, body_sha256, parent_id, " +
+                   "chain_root, chain_depth, created_at, body_bytes, line_bytes) VALUES (?, ?, " +
+                   "'', 'dm:m', 'owner', 'owner', ?, ?, ?, 'm1', 0, ?, 1, 1)", seq, `m${seq}`,
+                 `c${seq}`, "0".repeat(64), seq === 1 ? null : "m1", seq);
+        sql.exec("INSERT INTO ledger_recipients (message_id, agent_id, seq, state, " +
+                   "changed_at) VALUES (?, 'muse', ?, ?, 1)", `m${seq}`, seq, held);
+      }
+      for (const [kind, ref, at, detail] of [
+        ["read", "m1", 5, "{}"], ["read", "m1", 3, "{}"], ["read", "m1", 4, "{}"],
+        ["failed", "m2", 6, '{"reason":"sender_gone"}'], ["failed", "w1", 7, '{"reason":"x"}'],
+        ["ack", "1", 8, "{}"], ["reply", "m3", 9, '{"parent_id":"m1","reply_s":2.5}']] as const) {
+        sql.exec("INSERT INTO ledger_receipts (agent_id, kind, ref, at, detail_json) VALUES " +
+                   "('muse', ?, ?, ?, ?)", kind, ref, at, detail);
+      }
+      migrate(state.storage, MIGRATIONS);
+      return {
+        rows: sql.exec("SELECT message_id, read_at, failed_reason FROM ledger_recipients " +
+                       "ORDER BY seq").toArray(),
+        replies: sql.exec("SELECT reply_s FROM ledger_messages ORDER BY seq").toArray()
+          .map((m) => m["reply_s"]),
+        receipts: sql.exec("SELECT name FROM sqlite_master WHERE name GLOB '*receipts*' AND " +
+                           "name NOT GLOB '*policy*' AND name NOT GLOB '*starter*'").toArray(),
+      };
+    });
+    expect(moved.rows).toEqual([
+      { message_id: "m1", read_at: 3, failed_reason: null },
+      { message_id: "m2", read_at: null, failed_reason: "sender_gone" },
+      { message_id: "m3", read_at: null, failed_reason: null }]);
+    expect(moved.replies).toEqual([null, 1, 2.5]);
+    expect(moved.receipts).toEqual([]);
   });
 });
 

@@ -267,12 +267,6 @@ export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER
 
 export type Rig = Awaited<ReturnType<typeof rig>>;
 
-/** Receipt kinds other than reads, replies and acks, oldest first. */
-export async function wakeReceipts(r: Rig): Promise<string[]> {
-  return (await r.table("ledger_receipts")).map((row) => row["kind"] as string)
-    .filter((kind) => kind !== "read" && kind !== "reply" && kind !== "ack");
-}
-
 /** Every counter the ledger's bounds read, and the same numbers counted from the rows. */
 export async function counters(r: Rig): Promise<[Row, Row]> {
   const [usage] = await r.sql(

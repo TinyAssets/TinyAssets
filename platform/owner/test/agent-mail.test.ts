@@ -476,8 +476,10 @@ describe("mail to an agent", () => {
     await drainDue(r.stub);
     expect(await starts(r)).toEqual([]);
     expect(await r.sql("SELECT COUNT(*) AS n FROM runs")).toEqual([{ n: 0 }]);
-    expect(await r.sql("SELECT state, unacked FROM ledger_recipients WHERE message_id = ?",
-                       posted.message_id)).toEqual([{ state: "failed", unacked: 0 }]);
+    // Its recipient row holds the refusal's code; the notice, its words.
+    expect(await r.sql("SELECT state, unacked, failed_reason FROM ledger_recipients WHERE " +
+                       "message_id = ?", posted.message_id))
+      .toEqual([{ state: "failed", unacked: 0, failed_reason: "authority_changed" }]);
     expect(await notices(r)).toContain("main: outside client authority no longer stands");
     // Nothing is left for the lane.
     expect(await r.sql("SELECT id FROM cf_agents_jobs WHERE id = 'owner-schedule/runs'"))
@@ -841,11 +843,13 @@ describe("a retired agent's mail", () => {
       return { taken, queued, held, next: ledger.nextMail() };
     });
     expect(ids.next).toBeNull();
-    expect(await r.sql("SELECT message_id, state, unacked FROM ledger_recipients " +
-                         "ORDER BY seq")).toEqual([
-      { message_id: ids.taken, state: "read", unacked: 0 },
-      { message_id: ids.queued, state: "failed", unacked: 0 },
-      { message_id: ids.held, state: "failed", unacked: 0 }]);
+    expect(await r.sql("SELECT message_id, state, unacked, read_at IS NOT NULL AS read, " +
+                         "failed_reason FROM ledger_recipients ORDER BY seq")).toEqual([
+      { message_id: ids.taken, state: "read", unacked: 0, read: 1, failed_reason: null },
+      { message_id: ids.queued, state: "failed", unacked: 0, read: 0,
+        failed_reason: "agent_retired" },
+      { message_id: ids.held, state: "failed", unacked: 0, read: 0,
+        failed_reason: "agent_retired" }]);
   });
 });
 
@@ -869,10 +873,9 @@ describe("a sender gone (review M2)", () => {
     });
     expect(seen.afterRetire).toBeNull();
     expect(seen.afterDisable).toBeNull();
-    expect(await r.sql("SELECT r.state, c.detail_json FROM ledger_recipients r JOIN " +
-                         "ledger_receipts c ON c.ref = r.message_id AND c.kind = 'failed' " +
-                         "WHERE r.message_id = ?", seen.asked))
-      .toEqual([{ state: "failed", detail_json: "{\"reason\":\"sender_gone\"}" }]);
+    expect(await r.sql("SELECT state, failed_reason FROM ledger_recipients WHERE " +
+                         "message_id = ?", seen.asked))
+      .toEqual([{ state: "failed", failed_reason: "sender_gone" }]);
   });
 });
 
