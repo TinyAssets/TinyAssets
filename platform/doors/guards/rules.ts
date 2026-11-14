@@ -44,7 +44,7 @@ import { imports, type Owed } from "../../ci/kit/owed";
 
 /**
  * The import window's bindings (`src/import.ts`), each named once here: deleted at the
- * cutover with `platform/import/`, as tasks.md §9's deletion list names them.
+ * cutover with `platform/import/`, as the cutover's manifest names them (`platform/cutover.json`).
  */
 export const IMPORT_WINDOW = Object.freeze({
   bucket: Object.freeze({ binding: "IMPORT_STAGING", bucket_name: "tinyassets-import-staging" }),
@@ -103,8 +103,4 @@ export const OWED: readonly Owed[] = Object.freeze([
   ...imports("B23", "platform/doors/test/runs.test.ts",
              ["platform/owner/test/runs-support.ts", "platform/owner/src/runs.ts"]),
   ...imports("B23", "platform/doors/test/sync.test.ts", ["platform/owner/test/runs-support.ts"]),
-  // The import window's tests, reaching the importer: B24's cutover layer lists them.
-  ...imports("B24", "platform/doors/test/import-setup.ts", [
-    "platform/import/bundle.ts", "platform/import/stage.ts", "platform/import/guards/fixture.ts"]),
-  ...imports("B24", "platform/doors/test/import.test.ts", ["platform/import/check.ts"]),
 ]);

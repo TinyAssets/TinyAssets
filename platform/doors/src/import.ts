@@ -59,10 +59,11 @@ import { chunkedId, inlineId } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX64 } from "../../contract/src/ids";
 import {
-  answerName, CHECK_PARTS, type Cursor, doneName, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_KEY,
-  importKeyBytes, importMessage, type ImportMessage, macHolds, rehearsalRun,
+  answerName, BUNDLE_FORMAT, CHECK_PARTS, type Cursor, doneName, IMPORT_BATCH_BYTES, IMPORT_FILES,
+  IMPORT_KEY, importKeyBytes, importMessage, type ImportMessage, macHolds, rehearsalRun,
 } from "../../contract/src/import-message";
 import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
+import { SUSPENSIONS } from "../../contract/src/owner";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 
 import { bindImport, bindPlatformFor, type Bound } from "./binder";
@@ -80,10 +81,6 @@ export const SLICE_BYTES = 256 * 1024 * 1024;
  * holds one; a larger object is never read (`object`).
  */
 export const IMPORT_HOLD_BYTES = 4 * 1024 * 1024;
-/** The suspensions an admit carries from the old stack (`admission.ts`'s reasons). */
-const SUSPENSIONS: readonly string[] = Object.freeze(["abuse", "billing"]);
-/** The bundle format the consumer reads (`import/bundle.ts`'s `FORMAT`). */
-export const BUNDLE_FORMAT = 1;
 
 /** A bundle's index (`bundle.json`), as the job wrote it and the MAC names it. */
 interface Index {

@@ -21,6 +21,10 @@
  * and nothing that names a place another way (an absolute path, a URL, a `#` name).
  * A module a workflow's step names inline (`node -e "import … from './…'"`) is checked as its
  * own layer, `INLINE`.
+ *
+ * The cutover layer lies over the table, read from the cutover's manifest (`cutover.ts`): what
+ * the manifest deletes may import itself whatever its layer says, and nothing that stays
+ * imports it but the imports the manifest names.
  */
 
 export interface Layer {
@@ -163,7 +167,8 @@ export const LAYERS: readonly Layer[] = Object.freeze([
   {
     name: "the ci kit",
     files: ["platform/ci/**", "!platform/ci/guards/**", "!platform/ci/{paths,wrangler}.ts"],
-    may: ["platform/ci/**", "!platform/ci/guards/**", ...CONTRACT, "platform/deploy/control.json"],
+    may: ["platform/ci/**", "!platform/ci/guards/**", ...CONTRACT, "platform/deploy/control.json",
+          "platform/cutover.json"],
     computed: true,
   },
   {
