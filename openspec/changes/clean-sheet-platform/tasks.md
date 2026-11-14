@@ -439,14 +439,22 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The two app stores' dashboards checked for anything we must follow up (a review in
   flight, an auto-release, a testing-track deadline, a policy form); the founder's sign-in
   (d3 §F2).
-- [ ] The data shapes already known to be wrong, fixed before real data (d3 §P, list3 P48),
-  each researched first (Fact 14) and given its lane PR: room ids moved off member-encoding
-  (`dm:a+b`) onto a rooms table with members, moving the mail threads and conversations keyed
-  by `chain_root` (S4's migration); the files index (shards or R2 trees), after the latency
-  probe's option B, which needs a token with Workers R2 Storage: Edit (the probe's workflow
-  and scripts removed after it); and ADR-036's four silent losses: collection history's
-  `maxHistoryCharge` pruning, the ledger's newest-50,000 receipts, `CONVERSATIONS_KEPT`
-  forgetting the oldest idle conversation's resume id, and file versions, with the index.
+- [ ] The data shapes already known to be wrong, fixed before real data, as decided in d3 §P
+  (list3 P48), each in its own lane PR:
+  - receipts onto the recipient row, deleting `ledger_receipts`, after T1b4;
+  - rooms and room members with opaque ids, in lane O after T1c and before S4;
+  - collection history (§P item 3): H1 merged (#5538); S1, the stream extraction into
+    `owner/src/stream.ts`, after T1b4, receipts and rooms; H2, the erasures stream; H3, the
+    history stream, bounding the deleter's name or taking the factor into the guard's term;
+  - conversation ids carrying the order key, idle conversations to segments, after T1b4 and
+    on S1's stream module (§P item 3);
+  - files: F1 (retention off by default, one recorded byte ceiling, `#fit`'s silent prune
+    deleted, the latency probe's workflow, scripts and branch deleted) after R5's P-shape; F2
+    (file versions to segments, with mark-and-sweep) after R1 and §P item 3; F3 (the live
+    index's R2 level) later, and whether it comes before the cutover is an open founder
+    question;
+  - `RUNS_KEPT`, the policy and egress receipts, and the settled wakes' week and 1,000
+    recorded in `limits-audit.md` as deliberate retentions, each with its reason (§P item 6).
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 
