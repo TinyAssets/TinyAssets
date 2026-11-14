@@ -3,17 +3,21 @@ name: Platform deploy (manual, founder-approved)
 # The platform's deploy kit (platform/deploy/deploy.ts), run by hand from
 # `main`, the dispatch's inputs passed to it as they are (an empty one names
 # nothing; `--mode` is a row of the kit's mode table, MODES), in three jobs:
-#   plan   - the mode's plan (`--public`), to the job summary. It holds only the
-#            Cloudflare token (not a production secret) and the repo's
-#            variables, and changes nothing.
+#   plan   - the mode's plan (`--public`), to the job summary and to the file
+#            `--plan` names, which the run keeps as its artifact `deploy-plan`.
+#            It holds only the Cloudflare token (not a production secret) and
+#            the repo's variables, and changes nothing.
 #   pair   - (dark, routes) after the plan, in the `production` environment
 #            with the E2B key alone: the sandbox's template and the runner
 #            this commit ships checked together on throwaway sandboxes,
 #            unless E2B already holds their pair's tag (`--mode pair`).
 #   apply  - needs the plan and, for dark and routes, the pair, in the
 #            main-only `production` environment:
-#            the mode with `--yes`, which stops a deploy unless the pair's tag
-#            is at E2B. The founder's dispatch is the approval: a
+#            the mode with `--yes`, held to this run's `deploy-plan`: before
+#            any change the kit makes the plan job's plan again from the live
+#            state and stops on any difference from it (the pair job can take
+#            most of an hour between the two), and it stops a deploy unless the
+#            pair's tag is at E2B. The founder's dispatch is the approval: a
 #            required reviewer on `production` would hold every scheduled job
 #            there too (platform/deploy/checklist.md).
 #
@@ -119,8 +123,20 @@ jobs:
       - name: The plan (changes nothing)
         run: >-
           node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --public
+          --plan "${RUNNER_TEMP}/deploy-plan.json"
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
+
+      # The plan the apply job is held to, kept by this run alone (a re-run of the plan job
+      # writes it again).
+      - name: Keep the plan for the apply job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deploy-plan
+          path: ${{ runner.temp }}/deploy-plan.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
 
   # The pair check, in a job of its own before apply: the pinned E2B template, the runner
   # this commit's sandbox Worker ships and the probes beside it, unless E2B already holds
@@ -196,8 +212,16 @@ jobs:
         working-directory: platform
         run: npm ci
 
+      # This run's plan alone: with no run-id, the download reads no other run's artifacts.
+      - name: The plan the plan job showed
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: deploy-plan
+          path: ${{ runner.temp }}
+
       - name: Apply
         run: >-
           node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --yes
+          --plan "${RUNNER_TEMP}/deploy-plan.json"
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
