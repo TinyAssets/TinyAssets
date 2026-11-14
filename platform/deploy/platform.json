@@ -6,8 +6,8 @@
                 "CONTROL": "tinyassets-control" }
   },
   "workers": {
-    "why": "What the kit gives a Worker that its config cannot say, by its folder. identity: it serves contract/identity.json, so it deploys with the owner issuer and WorkOS's record (its vars OWNER_ISSUER and UPSTREAM), mode routes hands it identity.json's routes and egress custom domain, and the probe the sign-in's two. shared_apps: its file of the shared apps, whose signing secrets it holds when each is given (no config requires them: without one, that app's door refuses loudly). Exactly one Worker serves the identity; a Worker not named here takes neither.",
-    "folders": { "doors": { "identity": true, "shared_apps": "shared-apps.json" } }
+    "why": "What the kit gives a Worker that its config cannot say, by its folder. identity: it serves contract/identity.json, so it deploys with the owner issuer and WorkOS's record (its vars OWNER_ISSUER and UPSTREAM), mode routes hands it identity.json's routes and egress custom domain, and the probe the sign-in's two. shared_apps: its file of the shared apps, whose signing secrets it holds when each is given (no config requires them: without one, that app's door refuses loudly). clock: it runs the platform canary's clock (doors/src/canary-clock.ts), so it holds the clock's dispatch token and the pager's keys when each is given (contract/canary.json), none required: without the token the clock dispatches nothing. Exactly one Worker serves the identity; a Worker not named here takes none of these.",
+    "folders": { "doors": { "identity": true, "shared_apps": "shared-apps.json", "clock": true } }
   },
   "secret_order": {
     "why": "The order the kit lists and sets the Workers' secrets in, so the plan names them in it. A config says which secrets its Worker needs, not this order. The codemode Worker holds no secret, so it is not here: its existence is read when it deploys.",

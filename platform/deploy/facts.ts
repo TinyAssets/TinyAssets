@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/wrangler.ts";
 import identity from "../contract/identity.json" with { type: "json" };
+import { CLOCK_SECRETS } from "../contract/src/canary.ts";
 import { routeTakes } from "../contract/src/identity.ts";
 import type { ImportNames } from "../contract/src/import-names.ts";
 import platform from "./platform.json" with { type: "json" };
@@ -135,11 +136,15 @@ function required(worker: string): readonly string[] {
 interface Given {
   readonly identity?: boolean;
   readonly shared_apps?: string;
+  readonly clock?: boolean;
 }
 
 /** What the kit gives one Worker beyond its checked-in config, by folder. */
 export interface WorkerFacts {
-  /** The shared apps' signing secrets it holds when each is given (its `shared_apps` file). */
+  /**
+   * The secrets it holds when each is given: the shared apps' signing secrets (its
+   * `shared_apps` file) and the canary clock's (`clock`, `contract/canary.json`).
+   */
   readonly optional: readonly string[];
   /** Whether it is deployed with the owner issuer and WorkOS's record (`identity`). */
   readonly upstream: boolean;
@@ -191,8 +196,9 @@ export const WORKER_FACTS: Readonly<Record<string, WorkerFacts>> = Object.freeze
     const given = GIVEN[worker] ?? {};
     const serves = worker === IDENTITY;
     return [worker, Object.freeze({
-      optional: given.shared_apps === undefined ? Object.freeze([])
-        : sharedSecrets(worker, given.shared_apps),
+      optional: Object.freeze([
+        ...given.shared_apps === undefined ? [] : sharedSecrets(worker, given.shared_apps),
+        ...given.clock === true ? CLOCK_SECRETS : []]),
       upstream: serves,
       routes: Object.freeze(serves ? [...ROUTES.map((pattern) => ({ pattern, zone_name: ZONE })),
                                       { pattern: EGRESS_DOMAIN, custom_domain: true }] : []),
@@ -204,7 +210,7 @@ export const WORKER_FACTS: Readonly<Record<string, WorkerFacts>> = Object.freeze
 export const MIGRATES: readonly string[] = Object.freeze(
   WORKERS.filter((worker) => WORKER_FACTS[worker]!.migrates));
 
-/** Every shared app's signing secret, each on the Worker whose file lists it. */
+/** Every optional secret, each on the Worker that holds it. */
 export const OPTIONAL: readonly string[] = Object.freeze(
   WORKERS.flatMap((worker) => WORKER_FACTS[worker]!.optional));
 

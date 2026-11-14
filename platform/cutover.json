@@ -4,7 +4,8 @@
     "routes": {
       "why": "After the admit, before mode routes hands the routes over (tasks.md §9 step 12).",
       "entries": [
-        { "live": "secret", "name": "IMPORT_KEY", "in": "platform/deploy/checklist.md", "what": "the doors' Worker secret, deleted (npx wrangler secret delete IMPORT_KEY --name tinyassets-doors): a replayed admit is accepted by design" }
+        { "live": "secret", "name": "IMPORT_KEY", "in": "platform/deploy/checklist.md", "what": "the doors' Worker secret, deleted (npx wrangler secret delete IMPORT_KEY --name tinyassets-doors): a replayed admit is accepted by design" },
+        { "live": "workflow", "name": "uptime-canary.yml", "in": ".github/workflows/uptime-canary.yml", "what": "the old stack's pager, disabled as the routes go (gh workflow disable uptime-canary.yml): from then its old-stack probes meet the doors and would page on every run; the platform's canary (platform-canary.yml) watches from routes on (d3 §J2)" }
       ]
     },
     "cutover": {
@@ -100,7 +101,12 @@
       "why": "When the 14-day hold ends, on the founder's word (tasks.md §10 step 16).",
       "entries": [
         { "edit": "platform/deploy/platform.json", "names": ["final_backup"], "what": "the final backup's bucket, which the kit makes" },
-        { "live": "bucket", "name": "tinyassets-final-backup", "in": "platform/deploy/platform.json", "what": "the off-site copy of the import window's final backup, deleted with the old stack's final backup" }
+        { "live": "bucket", "name": "tinyassets-final-backup", "in": "platform/deploy/platform.json", "what": "the off-site copy of the import window's final backup, deleted with the old stack's final backup" },
+        { "delete": ".github/workflows/handles-canary.yml", "what": "the old stack's handles canary (d3 §A7), which the old stack's restart after a handback runs" },
+        { "delete": "tests/test_handles_canary.py", "what": "its guard, and the old record's" },
+        { "edit": "scripts/canary_handles.json", "names": ["\"old\""], "what": "the old stack's record, by which the platform's canary knows the platform dark" },
+        { "edit": "platform/deploy/canary.ts", "names": ["oldAnswers", "sides.old"], "what": "the dark side: no handback is left to give the routes back to the old stack" },
+        { "edit": "platform/deploy/alarm.ts", "names": ["dark: the old stack serves"], "what": "the alarm's dark stand-down, with the canary's dark side" }
       ]
     }
   }

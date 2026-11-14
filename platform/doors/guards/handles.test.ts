@@ -1,6 +1,6 @@
 /**
- * The handles canary's new side (`scripts/canary_handles.json`, read by
- * `scripts/cutover_handles_canary.py`): the doors' handle set, held to the doors' real tool
+ * The handles canary's new side (`scripts/canary_handles.json`, read by the platform's
+ * canary, `deploy/canary.ts`): the doors' handle set, held to the doors' real tool
  * table so it cannot drift, and the authorization server the canary tells the sides apart
  * by, held to the doors' own issuer.
  */

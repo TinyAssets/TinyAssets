@@ -70,11 +70,19 @@
 //   where each message's acceptance record and answer are kept under a lock (deploy/platform.json
 //   `bucket_locks`). Its messages are MAC'd under OPERATOR_KEYRING, which the founder's setup
 //   makes (deploy/platform.json `made`).
+// - triggers: the platform canary's clock (src/canary-clock.ts, d3 §J2), every ten minutes.
+//   It dispatches the canary's workflow (contract/canary.json) and pages the founder when
+//   that dispatch fails. Its three secrets are optional: without PLATFORM_CANARY_TOKEN it
+//   dispatches nothing. `wrangler deploy` and the routes' `triggers deploy` set the
+//   schedule; a version upload leaves it as it is.
+// - observability: Workers Logs, as every platform Worker has them (ci/kit/config.ts).
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tinyassets-doors",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-23",
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["*/10 * * * *"] },
   "compatibility_flags": ["nodejs_compat", "disable_ctx_exports", "global_fetch_strictly_public",
                           "enable_request_signal"],
   "workers_dev": false,

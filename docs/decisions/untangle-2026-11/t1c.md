@@ -116,6 +116,46 @@ T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each gree
    - the ledger handed `() => true` for its admission fails "holds the wakes lane's claims while the owner is not admitted";
    - the manifest's `halted` without the erasure mark fails "begins no burst once the owner's erasure begins while the log ships".
 
+## T1d: the memory probe on the object's own wiring
+
+1. **What T1d builds:** the owner memory probe (`memory/probe.ts`) builds nothing the object builds. `LegArchive#ledger`, `legFiles`, the leg's own `Bodies` and the two hand-built `Backups` (`legBurst`, `legShip`) are deleted.
+   - Every case drives the real `OwnerDO` through its doors, as before: edit, append, the import check, the rest reading, and every ring of the archive lane.
+   - Where a case reaches a store directly, it reaches the object's own wiring, `ownerStores`, over a gate of the leg's own on the object's storage, as `ledger-support.ts` `storesOn` does. Those cases are the placed bodies of fetch and window, the archive cases' ledger set-up, and the manifest's lane of burst and ship.
+   - The object's env is the leg's, with `FILES` the checkpointed store (`received`), so the stores' chunk calls checkpoint in the owner isolate as before.
+2. **Picked by what each leg measures**, so each measures the same thing:
+   - Fetch and window measure `Bodies.fetch` and `Bodies.windows` alone, so they stay direct, on the object's bodies. A door would add its answer's own bytes.
+   - Burst and ship measure the manifest's lane's run at production sizes, so they stay direct, on the object's `backups`.
+     - Their outside calls are steered through the env handed to `ownerStores`, as the generation harness steers them (`generation-support.ts` `generate`). Each part and segment is a checkpoint, the burst's third part's put writes, and the roots are answered in the owner isolate with nothing kept (`ROOTLESS`).
+     - The ship case's halt is now the object's own `halted`. The owner's erasure is marked in a unit during the second segment's put (`markErasing`, as `export.test.ts` does), in place of a `halted` of the leg's own (`segments >= 2`).
+     - The lane takes a failed put as its pass's failure, so the case now throws if any part was put.
+   - The archive cases' mail is set up in the object's own ledger: registered, posted, acked and removed, each act one unit of the leg's gate, as a door's is (T1c-c's `ballast` rule: no door seeding, no bulk SQL). The rest goes through the doors, as before: the lane is rung by an owner's post and its passes run on the object's own alarm.
+3. **One leg class.** `LegArchive` differed from `LegOwner` only in its ledger copy, so the two merge. The `ARCHIVE` namespace and binding go from `leg.mjs`, and an archive case runs on the object its setup admitted.
+4. **Every case's object waits for its seed** (`object`: the `starterReceipts` door, as `support.ts` `seeded` does).
+   - The manifest's lane serves only a bound owner (`object_owner`), and the admit binds none.
+   - So the burst and ship need a door first, and a door hands the tiers, which starts the seed.
+   - Before, an archive case's first door was its first ring or post, so the seed's uploads could share the isolate with the measured pass.
+5. **`NO_FILE_CHANGE` lives in `test/stores.ts`**, with no `cloudflare:test` import, so the tests' stores and the leg's share it.
+6. **Measured** through `heavy.sh`, the memory leg before (main `eb752ef49`) and after. Every check passed both times, and every case's answer is the same: the burst's widest segment 4,193,206 bytes, the ship's 4,194,289, the tail seal's 8,072 records, the merge's 30,988, both bodies cases' 2, the rewrite's 1.
+
+   | case (MiB) | before | after |
+   |---|---|---|
+   | baseline, the isolate at rest | 6.99 | 7.13 |
+   | fetch 4 / 8 | 4.01 / 8.01 | 4.01 / 8.01 |
+   | window 8, worst; 8 − 2, least | 0.06; −0.01 | 0.06; 0.00 |
+   | burst, peak (BURST_UNITS 24) | 17.99 | 17.99 |
+   | ship, peak (SHIP_UNITS 16) | 9.21 | 9.20 |
+   | burst's ships − a ship alone | 0.08 | 0.08 |
+   | merge, peak; at its passes' ends | 13.21; 4.73 | 13.21; 4.72 |
+   | tail seal, peak; at its ends | 5.29; 1.29 | 5.30; 1.29 |
+   | bodies 8, worst; 8 − 4, least | 8.04; 0.04 | 8.05; −0.01 |
+   | rewrite 8 | 8.04 | 8.04 |
+   | edit 192, worst; 192 − 96, least | 8.03; 0.01 | 8.04; 0.00 |
+   | append 32, worst | 16.02 | 16.02 |
+
+   - The baseline is 0.14 MiB more: the object's seed now lands before the reading, and the leg's stores of the object are built beside it. It is within `OWNER_BASELINE_BYTES` (8 MiB).
+   - The leg took 3 min 6 s, against main's 3 min 5 s.
+7. **Mutation, on the object's wiring, which the leg never reached before:** `ownerStores`' `halted` without the erasure mark fails the ship case ("the ship case began a burst"). Before the throw was added, the same mutant passed every check, its ship's peak moving from 9.2 to 11.35 MiB.
+
 ## Owed
 
 - **`BackupParts`' `sizes?` and `pool?`**, with T1c-c, as T1c-b's item 6 says. Built in T1c-c (above).
@@ -125,5 +165,12 @@ T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each gree
   - `ballast` keeps seeding through the ledger's own API, on the ledger that function builds.
 - **The gate has no withdrawal of one arming.** `disarm` clears every arming, held call and record, so `watchMoves` disarms at its end.
 - **`support.ts` `filesOn` and `collectionParts`** build the files and collections as their own modules' tests need them, with tier figures and refusals of their own (`TIERLESS_FULL`). They are the same kind of copy `ledgerParts` was, and `ownerStores` can now replace them. The generation harness's writer is one of them. Not T1c-c's scope.
-- **The memory probe builds `Backups` by hand** (`memory/probe.ts` `legBurst`, `legShip`), beside `LegArchive#ledger`. That is T1d's.
+  - **Not T1d's either: its own PR, researched first.** It is past T1d's 600-line bound. It covers about 90 `inFiles` calls, 18 `filesOn` and 28 `collectionParts`, `inObject` and `inFilled` reaches, in 15 test files.
+  - The plan: `inFiles` and `inObject` reach `ownerStores` (through `storesOn`). Each test's `limits` (`keep_versions` 12 times, `retention_days` 11, `keep_recent` 3, `max_file_bytes` 3, `max_bytes` 2, `client_share` and `owner_reserve` 1 each) is set by the owner's real doors:
+    - the files policy (`policyWrite`) for the policy figures;
+    - the binding's tiers (`storage_bytes`) for `max_bytes`.
+  - `TIERLESS_FULL` goes. Its two tests assert the refusal that names the tier.
+  - `store` is steered through the env handed to `ownerStores`, as `generate` does.
+  - **The research question:** a direct `Files` write calls `changed` (`files.ts`), and a test's stores throw there (`NO_FILE_CHANGE`). Either each act that writes a file moves to its door, or the owner's `fileChanged` is reached some other way. That is decided before the build.
+- **The memory probe builds `Backups` by hand** (`memory/probe.ts` `legBurst`, `legShip`), beside `LegArchive#ledger`. Built in T1d (above).
 - **The generation harness wraps `FILES` itself**, as it did before the `FILES` gate existed. The gate can hold and refuse a call, but cannot lose an answer that landed (`failAt` "after").

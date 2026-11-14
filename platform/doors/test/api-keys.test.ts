@@ -336,7 +336,7 @@ describe("a key's use", () => {
 
   it("answers a GET 405 for each tool the key's profile serves and 404 for any other, " +
      "which the handles canary reads its new side by", async () => {
-    // scripts/cutover_handles_canary.py: one read-only GET a name, never a tool's call.
+    // deploy/canary.ts: one read-only GET a name, never a tool's call.
     const o = await signedIn();
     const { key } = await mint(o);
     const get = (tool: string) => call(new Request(url(`/api/tools/${tool}`), {

@@ -1,0 +1,16 @@
+{
+  "about": "The platform canary's clock and pager (d3 §J2), read through contract/src/canary.ts: the doors' Cron Trigger dispatches the canary's workflow every ten minutes with the dispatch token, and pages the founder directly when that dispatch fails; the workflow's alarm (platform/deploy/alarm.ts) pages through the same pager. Every name here is a live one, kept once.",
+  "dispatch": {
+    "why": "The workflow the clock starts, on this repository's main, by GitHub's workflow_dispatch (POST /repos/{repository}/actions/workflows/{workflow}/dispatches, which a fine-grained token with Actions write on the one repository may call). The token is the founder's to mint and an optional secret of the doors: without it the clock dispatches nothing.",
+    "repository": "TinyAssets/TinyAssets",
+    "workflow": "platform-canary.yml",
+    "ref": "main",
+    "token": "PLATFORM_CANARY_TOKEN"
+  },
+  "pager": {
+    "why": "Pushover's messages API, the founder's pager since GitHub's issue email alone left an outage unseen for 18 hours (2026-04-22). The two keys are the ones uptime-canary.yml pages with, and pushover-test.yml proved them (2026-09-24).",
+    "url": "https://api.pushover.net/1/messages.json",
+    "user": "PUSHOVER_USER_KEY",
+    "token": "PUSHOVER_APP_TOKEN"
+  }
+}

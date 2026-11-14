@@ -8,6 +8,7 @@
  */
 import { QUEUES } from "../../contract/src/queue-names";
 
+import { canaryClock } from "./canary-clock";
 import { NOT_CONFIGURED } from "./config";
 import type { DoorsEnv } from "./env";
 import { serve } from "./doors";
@@ -56,4 +57,7 @@ export default Object.freeze({
     }
     throw new Error(`the doors consume no queue ${JSON.stringify(batch.queue)}`);
   },
+  // The platform canary's clock, the config's one schedule (`canary-clock.ts`).
+  scheduled: (controller: ScheduledController, env: DoorsEnv): Promise<void> =>
+    canaryClock(env, controller.scheduledTime),
 });

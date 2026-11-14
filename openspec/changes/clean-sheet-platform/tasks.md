@@ -198,11 +198,11 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   routes over; the manifest disables `uptime-canary.yml` (d3 §J2), whose old canary scripts the
   platform's canary replaces rather than reworks (list3 P29). Verify: the handback's plan job
   (read-only); the control record opened for the probe owner (tester B) alone, through the
-  operator path; its API key stored as `TA_PROBE_KEY`; `handles-canary.yml` with `side` `new`;
-  the platform's canary. If verify fails, before the hold ends: `--mode handback --record <id>`,
-  the old stack restarted on its untouched volumes, then `handles-canary.yml` with `side`
-  `old`. Writes made on the new platform since `routes` are lost unless exported (decided at
-  verify).
+  operator path; its API key stored as `TA_PROBE_KEY`, and the free-tier key connected to it;
+  the platform's canary with `full`, then armed (`PLATFORM_CANARY_TOKEN`). If verify fails,
+  before the hold ends: `--mode handback --record <id>`, the old stack restarted on its
+  untouched volumes, then `handles-canary.yml`. Writes made on the new platform since `routes`
+  are lost unless exported (decided at verify).
 - [ ] **The public `/connect` page,** right after `routes`, in the site-at-the-cutover PR
   (d3 §C6 F2): branch `platform-brain-site` no longer builds, so the page is rebuilt from
   `contract/apps.json`, and its sweep checks one section per app.
@@ -292,6 +292,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     query for the identity guard.
   - B14 builds only the platform's side of the canary (`deploy/canary.ts`); the old side stays
     in Python until the hold ends (d3 §A7).
+  - B14's keyring half, owed (`x5.md` item 10): `scripts/platform_setup.py` calling the kit's
+    `keyring-new` in place of its own `make_keyring`. X5 left it, since it would make the
+    founder's local setup need Node 22 and the platform's `npm ci` for one keyring. The
+    cutover does not wait on it (the keyrings are stored, and the kit only reads them), but the
+    deletion PR must not delete `platform_setup.py` while `deploy.test.ts` "takes the keyring
+    the founder's setup makes" runs it: either this is built, or both go on the manifest.
   - `sources/chatgpt.json` and the `unwired` field deleted in their own PR, before B17 (d3 §A8,
     §L4).
   - B22: a test of the gateway's deadline before a provider's headers, on real or fake time;
@@ -429,13 +435,15 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
   `owner.state` owed under lane R.
 - [ ] The manifest's dry run green (d3 §A10).
-- [ ] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6). Its alerts
-  include the ones that are only log lines today (list3 P18): `sandbox_waiting`,
+- [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
+  `x5.md`). Live from `routes` (§9 step 13).
+- [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
   `sandbox_renewal_refused`, `sandbox_runner_mismatch`, `exceededMemory`, and E2B's team metrics
-  (`/teams/{id}/metrics/max`) against the concurrency ceiling. E2B's credit and spend have no
-  API. It also reads how long ago the off-account copy's `copy` job last passed
-  (`offsite-copy.yml`), once configured, and alarms past two nights: an erased owner's hiding
-  there must come within `HIDE_NIGHTS`, a week (`deploy/offsite.ts`; `r4.md` item 4).
+  (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
+  read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
+  and spend have no API. It also reads how long ago the off-account copy's `copy` job last
+  passed (`offsite-copy.yml`), once configured, and alarms past two nights: an erased owner's
+  hiding there must come within `HIDE_NIGHTS`, a week (`deploy/offsite.ts`; `r4.md` item 4).
 - [ ] The deletion-jobs step, a runner mode before `admit` (§9 step 11; d3 §C4).
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
