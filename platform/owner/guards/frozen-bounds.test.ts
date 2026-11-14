@@ -78,10 +78,13 @@ const times = (sql: string, text: string) => sql.split(text).length - 1;
 
 const TABLE = (name: string, ...texts: ((n: number) => string)[]): Place[] =>
   texts.map((text) => [`CREATE TABLE ${name}`, 1, text] as const);
+/** A table made `times` times (a rebuild makes it again), each spelling the texts once. */
+const MADE = (name: string, times: number, ...texts: ((n: number) => string)[]): Place[] =>
+  texts.map((text) => [`CREATE TABLE ${name}`, times, text] as const);
 const TRIGGER = (name: string, ...texts: ((n: number) => string)[]): Place[] =>
   texts.map((text) => [`CREATE TRIGGER ${name}`, 1, text] as const);
 /** A body's placement (ADR-035): inline within the bound, or placed past it. */
-const PLACED = (table: string, body: string) => TABLE(table,
+const PLACED = (table: string, body: string, times = 1) => MADE(table, times,
   (n) => `length(CAST(${body} AS BLOB)) <= ${n}`,
   (n) => `${body} = '' AND body_bytes > ${n} AND length(content_id) = 64`);
 /** An id's fixed length. */
@@ -90,15 +93,15 @@ const ID = (column: string) => (n: number) => `length(${column}) = ${n}`;
 const CAPTURE = /^CREATE TRIGGER \w+_logged_(?:insert|update|delete) /;
 const CAPTURE_UPDATE = /^CREATE TRIGGER \w+_logged_update /;
 /** The capture triggers the migrations make, and the updates among them. */
-const CAPTURES = 125;
-const UPDATES = 42;
+const CAPTURES = 131;
+const UPDATES = 44;
 /** The triggers that count a content's chunk list's rows from its size. */
 const CHUNK_LIST = new RegExp("^CREATE TRIGGER (?:file_contents_(?:added|removed)|" +
   "file_scope_contents_(?:added|removed)|file_content_chunks_planned) ");
 
 /** Each frozen bound, at every place the SQL spells it, with how many times. */
 export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze({
-  PLACE_BYTES: [...PLACED("collection_rows", "body"), ...PLACED("collection_history", "body_json"),
+  PLACE_BYTES: [...PLACED("collection_rows", "body"), ...PLACED("collection_history", "body_json", 2),
                 ...PLACED("message_bodies", "body")],
   GC_GRACE_S: TRIGGER("file_chunks_released",
                       (n) => `gc_after = unixepoch('subsec') + ${n} WHERE sha256 = NEW.sha256`),
@@ -202,10 +205,11 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  * - 1024 a stamp's (three tables), a binding's profile and the tier record, the same;
  * A number inside a name (`sha256`) is no number: only one standing alone is counted.
  * - 16 a generation's id, a key id and a readable id, 35 a sign-in's id (`si_` and 32 hex)
- *   and 36 a subscription's (`sub_` and 32 hex): ids' lengths, which their grammars hold.
+ *   and 36 a subscription's (`sub_` and 32 hex): ids' lengths, which their grammars hold;
+ *   36 also a collection deletion's four numbers in its charge (`collection_erasures`).
  */
-const SHARED: Values = Object.freeze({ 16: 4, 35: 1, 36: 1, 64: 281, 256: 8, 1024: 5,
-                                       4096: 240 });
+const SHARED: Values = Object.freeze({ 16: 4, 35: 1, 36: 11, 64: 282, 256: 8, 1024: 5,
+                                       4096: 252 });
 
 /**
  * The owner modules' names and charges the SQL spells: each place's statements, how many
@@ -431,7 +435,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(551);
+    expect(places).toBe(575);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

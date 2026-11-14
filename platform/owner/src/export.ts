@@ -147,9 +147,10 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     // Collections.
     collection_rows: t("collection row_id revision seq etag writer private body updated_at " +
                        "creator change body_bytes content_id filer", "collection row_id"),
-    collection_history: t("collection key revision op body_json at writer change " +
-                          "private_writer body_bytes content_id filer",
-                          "collection key revision"),
+    collection_history: t("change collection key revision op body_json at writer prev " +
+                          "body_bytes content_id filer", "change"),
+    collection_erasures: t("change collection key revision op at writer private_writer prev",
+                           "change"),
     collection_seqs: t("collection seq", "collection"),
     collection_clock: t("only change", "only"),
     // The ledger: agents, messages, their bodies, recipients, receipts and readers.

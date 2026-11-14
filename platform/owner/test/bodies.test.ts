@@ -382,11 +382,11 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       etag = done.row.etag;
     }
     const first = await stub.collectionHistory(as(name), { collection: "board", row_id: "r" });
-    expect([first.entries.map((e) => e.revision), first.more, first.before_revision])
-      .toEqual([[3, 4], true, 3]);
+    expect([first.entries.map((e) => e.revision), first.more, first.before])
+      .toEqual([[3, 4], true, first.entries[0]!.change]);
     const older = await stub.collectionHistory(as(name), { collection: "board", row_id: "r",
-                                                           before_revision: 3 });
-    expect([older.entries.map((e) => e.body[0]), older.more, older.before_revision])
+                                                           before: first.before! });
+    expect([older.entries.map((e) => e.body[0]), older.more, older.before])
       .toEqual([["a", "b"], false, null]);
   });
 
@@ -405,7 +405,8 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     // The delete lands while the write waits; the write then begins again and lands.
     await new Promise((resolve) => setTimeout(resolve, 150));
     await sqlIn(stub, "DELETE FROM file_chunks WHERE state = 'deleting'");
-    expect(await again).toMatchObject({ row: { revision: 1 } });
+    // A new key goes on past the revision a's delete gave (`revision_floor`).
+    expect(await again).toMatchObject({ row: { revision: 3 } });
     expect((await stub.collectionGet(as(name), { collection: "board", row_id: "b" })).row!.body)
       .toBe(LARGE);
   });

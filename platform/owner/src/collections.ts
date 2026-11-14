@@ -13,22 +13,22 @@
  * bound a write is refused. Only the owner deletes a row, or clears a collection or one
  * writer's rows in it (the object enforces that at its RPC door).
  *
- * Each write, and each delete's or clear's history entry, also takes the owner-wide
- * clock's next change (`collection_clock`), so one cursor covers many collections
- * (`changed`): a main agent's digests (slice M) read the board and every room in one call,
- * deletions included. A row keeps the privacy it was made with, so a row turns private
- * only by being deleted and made again, which its delete reports.
+ * Each write, and each delete or clear of a row, also takes the owner-wide clock's next
+ * change (`collection_clock`), so one cursor covers many collections (`changed`): a main
+ * agent's digests (slice M) read the board and every room in one call, deletions included.
+ * A row keeps the privacy it was made with, so a row turns private only by being deleted and
+ * made again, which its delete reports.
  *
- * `collection_history` is the primitive's own record: each write appends the revision
- * it committed (its writer, op and body), and a delete or clear appends one body-less
- * entry and drops the row's earlier bodies, so a row made again under that key goes on
- * from the next revision and never repeats one. The history is bounded by what it takes,
- * not by rows times revisions: its
- * entries as SQLite lays them out (`maxHistoryCharge`), an erased key's last entry (its
- * tombstone) among them, the oldest pruned first; a key whose every entry was pruned goes
- * on past the newest revision a prune let go, so none repeats. It is a retention, never
- * refused, and its placed bodies are the first room made at the files byte quota
- * (`reclaim`).
+ * `collection_history` is the primitive's own record: each write appends the revision it
+ * committed (its writer, op and body), keyed by the change it took and naming the entry it
+ * follows (`prev`), so the row's own `change` is the head of its chain. A delete or clear
+ * drops the row's entries and appends its deletion to `collection_erasures`, keyed the same
+ * way, which no later erase touches; a row made again under that key starts a new chain past
+ * the newest revision any erase gave (`revision_floor`), so none repeats. The history and
+ * the erasures are bounded together by what they take, not by rows times revisions: their
+ * entries as SQLite lays them out (`maxHistoryCharge`), the oldest change pruned first. It is
+ * a retention, never refused, and its placed bodies are the first room made at the files
+ * byte quota (`reclaim`).
  *
  * Where a body lives is the placement rule (ADR-035, `bodies.ts`): a body past
  * `PLACE_BYTES` is placed in R2 before its write (the door's `Bodies.begin`), and the row
@@ -97,8 +97,6 @@ export interface Shares {
 /** The owner's own files scope (`manifest.ts`'s `OWNER_SCOPE`). */
 export const OWNER_FILER = "owner";
 
-/** The history ops a write never names. */
-const ERASES: readonly string[] = Object.freeze(["delete", "clear"]);
 /** Python's `str.isidentifier()`. */
 const IDENTIFIER = /^[\p{XID_Start}_]\p{XID_Continue}*$/u;
 const LONE_SURROGATE = /\p{Cs}/u;
@@ -117,6 +115,8 @@ export interface Row {
 }
 
 interface HistoryEntry {
+  /** The owner-wide change the entry's write took: its key. */
+  readonly change: number;
   readonly revision: number;
   readonly op: string;
   readonly writer: string;
@@ -130,8 +130,8 @@ export interface History {
   readonly entries: HistoryEntry[];
   /** Whether older entries are kept that this page did not return. */
   readonly more: boolean;
-  /** The revision to read before (`before_revision`) for them; null when none are left. */
-  readonly before_revision: number | null;
+  /** The change to read before (`before`) for them: the page's oldest; null when none are left. */
+  readonly before: number | null;
 }
 
 export interface Page {
@@ -162,6 +162,9 @@ const FILERS = "(? = '*' OR (? = 'client:*' AND filer GLOB 'client:*') OR filer 
 
 /** History entries one prune step reads, oldest first. */
 const PRUNE_BATCH = 64;
+
+/** An entry the prune or `reclaim` lets go: its change, and whether it is a deletion's. */
+type Entry = { readonly change: number; readonly erased: 0 | 1 };
 
 /**
  * A row as a digest shows it, where it lives and its owner-wide change; or a row's
@@ -241,9 +244,10 @@ function shown(row: StoredRow): Row {
 }
 
 /**
- * `changed`'s query: each part read by its change index (named, so a plan that would scan
- * a collection's rows instead fails loudly) from the cursor on, the rows written past it and
- * the deletions past it of rows the caller could see; then filtered by collection.
+ * `changed`'s query: each part read by its change order from the cursor on, the rows written
+ * past it by their index (named, so a plan that would scan a collection's rows instead fails
+ * loudly) and the deletions past it of rows the caller could see by their key, a range of it
+ * (`NOT INDEXED`: no index may stand in for it); then filtered by collection.
  */
 export function changedSql(where: "collection" | "prefix"): string {
   const test = where === "collection" ? "collection = ?" : "collection >= ? AND collection < ?";
@@ -252,7 +256,7 @@ export function changedSql(where: "collection" | "prefix"): string {
     "INDEXED BY collection_changes " +
     `WHERE change > ? AND ${test} AND (private = 0 OR writer = ?) ` +
     "UNION ALL SELECT collection, key, revision, 0, '', writer, 0, '', change, 0, NULL, 1, op " +
-    "FROM collection_history INDEXED BY collection_erasures " +
+    "FROM collection_erasures NOT INDEXED " +
     `WHERE change > ? AND ${test} AND (private_writer IS NULL OR private_writer = ?) ` +
     "ORDER BY change LIMIT ?";
 }
@@ -332,8 +336,8 @@ export class Collections {
       throw new Refusal("invalid", "invalid collection write");
     }
     if (typeof historyOp !== "string" || codePoints(historyOp) > 32
-        || !IDENTIFIER.test(historyOp) || ERASES.includes(historyOp)) {
-      throw new Refusal("invalid", "history_op is a name of at most 32 characters, not an erase");
+        || !IDENTIFIER.test(historyOp)) {
+      throw new Refusal("invalid", "history_op is a name of at most 32 characters");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -349,13 +353,9 @@ export class Collections {
       if ((row === undefined ? "" : row.etag) !== expectedEtag) {
         throw new Conflict(row === undefined ? null : shown(row));
       }
-      // A row made again goes on past its deleted revisions, so none repeats: past its
-      // kept entries, or, with none kept, past every revision a prune let go.
-      const revision = 1 + (row !== undefined ? row.revision : sql.exec<{ top: number }>(
-        "SELECT COALESCE((SELECT MAX(revision) FROM collection_history " +
-          "WHERE collection = ? AND key = ?), " +
-          "(SELECT revision_floor FROM collection_space)) AS top", collection, rowId,
-      ).one().top);
+      // A row made again goes on past every revision an erase gave, so none repeats.
+      const revision = 1 + (row !== undefined ? row.revision : sql.exec<{ floor: number }>(
+        "SELECT revision_floor AS floor FROM collection_space").one().floor);
       const bytes = utf8Bytes(body as string);
       const before = this.#charges(filer);
       return adopted(body as string, placed, filer, this.#adopt, (contentId) => {
@@ -383,9 +383,11 @@ export class Collections {
           isPrivate ? 1 : 0, kept, at, caller, bytes, contentId, filer, change,
         );
         sql.exec(
-          "INSERT INTO collection_history (collection, key, revision, op, body_json, at, " +
-            "writer, body_bytes, content_id, filer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          collection, rowId, revision, historyOp, kept, at, caller, bytes, contentId, filer,
+          "INSERT INTO collection_history (change, collection, key, revision, op, body_json, " +
+            "at, writer, prev, body_bytes, content_id, filer) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          change, collection, rowId, revision, historyOp, kept, at, caller,
+          row === undefined ? null : row.change, bytes, contentId, filer,
         );
         this.#prune();
         this.#bound(before, filer);
@@ -401,17 +403,17 @@ export class Collections {
   }
 
   /**
-   * The history within its bounds: past `maxHistoryCharge`, its oldest entries go,
-   * tombstones among them, the newest revision they held kept as the floor a key with no
-   * entries left goes on past.
+   * The history within its bounds: past `maxHistoryCharge`, its oldest entries go, by change,
+   * the erasures among them.
    */
   #prune(): void {
     const sql = this.#sql;
     const over = () => sql.exec<{ charge: number }>("SELECT charge FROM collection_space")
       .one().charge > LIMITS.maxHistoryCharge;
     while (over()) {
-      const oldest = sql.exec<{ collection: string; key: string; revision: number }>(
-        "SELECT collection, key, revision FROM collection_history ORDER BY at, rowid LIMIT ?",
+      const oldest = sql.exec<Entry>(
+        "SELECT change, 0 AS erased FROM collection_history UNION ALL " +
+          "SELECT change, 1 FROM collection_erasures ORDER BY change LIMIT ?",
         PRUNE_BATCH).toArray();
       if (oldest.length === 0) {
         throw new Error("the collection history is over its bounds with nothing to prune");
@@ -426,27 +428,18 @@ export class Collections {
   }
 
   /**
-   * One history entry let go, its revision kept as the floor; a delete's or clear's entry
-   * its change too (`erasure_floor`), so a feed reader behind it is told to read again.
+   * One entry let go; a deletion its change too (`erasure_floor`), so a feed reader behind it
+   * is told to read again.
    */
-  #let(entry: { collection: string; key: string; revision: number }): void {
-    const gone = this.#sql.exec<{ change: number | null }>(
-      "DELETE FROM collection_history WHERE collection = ? AND key = ? AND revision = ? " +
-        "RETURNING change", entry.collection, entry.key, entry.revision).toArray()[0];
-    this.#sql.exec("UPDATE collection_space SET revision_floor = MAX(revision_floor, ?), " +
-                     "erasure_floor = MAX(erasure_floor, ?)", entry.revision,
-                   gone?.change ?? 0);
+  #let({ change, erased }: Entry): void {
+    if (erased === 0) {
+      this.#sql.exec("DELETE FROM collection_history WHERE change = ?", change);
+      return;
+    }
+    this.#sql.exec("DELETE FROM collection_erasures WHERE change = ?", change);
+    this.#sql.exec("UPDATE collection_space SET erasure_floor = MAX(erasure_floor, ?)", change);
   }
 
-  /**
-   * In a change at the files byte quota (`Files.#fit`, ADR-035): the oldest history entry
-   * of the writers `filer` names (`FILERS`) whose placed body no live row
-   * also names, let go, so its bytes can go; false when none is left.
-   */
-  /**
-   * The bytes of every collection body the owner stores, its rows' and their history's,
-   * inline or placed (once a content). A read.
-   */
   /**
    * A read for the cutover's check (`import.ts`, `importCheck`): `limit` rows from the
    * `offset`th, by collection and id: each one's privacy, and its body inline or its placed
@@ -461,6 +454,10 @@ export class Collections {
       .toArray().map((row) => ({ ...row, private: row.private === 1 ? 1 : 0 }));
   }
 
+  /**
+   * The bytes of every collection body the owner stores, its rows' and their history's,
+   * inline or placed (once a content). A read.
+   */
   storedBytes(): number {
     return this.#sql.exec<{ bytes: number }>(
       "SELECT coalesce((SELECT SUM(body_bytes) FROM collection_rows WHERE content_id IS NULL), " +
@@ -471,14 +468,19 @@ export class Collections {
       .one().bytes;
   }
 
+  /**
+   * In a change at the files byte quota (`Files.#fit`, ADR-035): the oldest history entry
+   * of the writers `filer` names (`FILERS`) whose placed body no live row
+   * also names, let go, so its bytes can go; false when none is left.
+   */
   readonly reclaim = (filer: string): boolean => {
     // The oldest history entry that holds bytes no live row holds: an inline body (never
     // the row's own revision), or placed content the row no longer names.
-    const entry = this.#sql.exec<{ collection: string; key: string; revision: number }>(
-      "SELECT collection, key, revision FROM collection_history h WHERE body_bytes > 0 AND " +
+    const entry = this.#sql.exec<Entry>(
+      "SELECT change, 0 AS erased FROM collection_history h WHERE body_bytes > 0 AND " +
         `${FILERS} AND NOT EXISTS (SELECT 1 FROM collection_rows r WHERE ` +
         "r.collection = h.collection AND r.row_id = h.key AND (r.revision = h.revision OR " +
-        "r.content_id = h.content_id)) ORDER BY at, rowid LIMIT 1", filer, filer, filer)
+        "r.content_id = h.content_id)) ORDER BY change LIMIT 1", filer, filer, filer)
       .toArray()[0];
     if (entry === undefined) {
       return false;
@@ -570,14 +572,14 @@ export class Collections {
   /**
    * Whether a row anyone may see in one of `collections` was written or deleted past the
    * owner-wide change `after` (slice W: which rooms a wake's subscription follows changed).
-   * Each part read by its change index from the cursor on, so it reads only what changed.
+   * Each part read by its change order from the cursor on, so it reads only what changed.
    */
   touched(collections: readonly string[], after: number): boolean {
     const list = JSON.stringify(collections);
     return this.#sql.exec(
       "SELECT 1 FROM collection_rows INDEXED BY collection_changes WHERE change > ? " +
         "AND private = 0 AND collection IN (SELECT value FROM json_each(?)) " +
-        "UNION ALL SELECT 1 FROM collection_history INDEXED BY collection_erasures " +
+        "UNION ALL SELECT 1 FROM collection_erasures NOT INDEXED " +
         "WHERE change > ? AND private_writer IS NULL " +
         "AND collection IN (SELECT value FROM json_each(?)) LIMIT 1",
       after, list, after, list,
@@ -605,48 +607,53 @@ export class Collections {
   }
 
   /**
-   * A row's kept history, oldest first, before `before_revision` when it is given; none for
-   * a row `get` would not show. A page holds the newest entries, at most `maxPull`, whose
-   * bodies fit `PAGE_BYTES`, at least one (the door fits it to one answer); `more` and the cursor name the older ones it
-   * left.
+   * A row's kept history since it was made, oldest first, before the change `before` when it
+   * is given (an answer's `before`); none for a row `get` would not show. A page holds the
+   * newest entries, at most `maxPull`, whose bodies fit `PAGE_BYTES`, at least one (the door
+   * fits it to one answer); `more` and the cursor name the older ones it left.
    */
   history(caller: string, collection: string, rowId: string, before: unknown = null):
       History {
-    if (before !== null && (typeof before !== "number" || !Number.isSafeInteger(before)
-                            || before < 1)) {
-      throw new Refusal("invalid", "before_revision is a revision");
+    if (before !== null && (typeof before !== "number" || !Number.isSafeInteger(before))) {
+      throw new Refusal("invalid", "before is a history entry's change");
     }
-    if (this.#visible(caller, collection, rowId) === undefined) {
-      return { entries: [], more: false, before_revision: null };
+    const row = this.#visible(caller, collection, rowId);
+    if (row === undefined) {
+      return { entries: [], more: false, before: null };
     }
-    const found = this.#sql.exec<{ revision: number; op: string; writer: string; at: number;
-                                   body_json: string; body_bytes: number;
-                                   content_id: string | null }>(
-      "SELECT revision, op, writer, at, body_json, body_bytes, content_id FROM " +
-        "collection_history WHERE collection = ? AND key = ? AND revision < ? " +
-        "ORDER BY revision DESC LIMIT ?", collection, rowId, before ?? Number.MAX_SAFE_INTEGER,
+    // The row's chain is its key's entries: an erase took every older one. In one key,
+    // revision and change rise together, so the key's index holds them in change order.
+    const found = this.#sql.exec<{ change: number; revision: number; op: string;
+                                   writer: string; at: number; body_json: string;
+                                   body_bytes: number; content_id: string | null }>(
+      "SELECT change, revision, op, writer, at, body_json, body_bytes, content_id FROM " +
+        "collection_history WHERE collection = ? AND key = ? AND change < ? " +
+        "ORDER BY revision DESC LIMIT ?", collection, rowId, before ?? row.change + 1,
       LIMITS.maxPull + 1,
     ).toArray();
     const page = paged(found.slice(0, LIMITS.maxPull), PAGE_BYTES);
     const more = page.length < found.length;
     return {
       entries: page.reverse().map((e) => ({
-        revision: e.revision, op: e.op, writer: e.writer, at: e.at, body: e.body_json,
-        ...(e.content_id === null ? {} : { content_id: e.content_id }),
+        change: e.change, revision: e.revision, op: e.op, writer: e.writer, at: e.at,
+        body: e.body_json, ...(e.content_id === null ? {} : { content_id: e.content_id }),
       })),
       more,
-      before_revision: more ? page[0]!.revision : null,
+      before: more ? page[0]!.change : null,
     };
   }
 
-  /** Delete the rows `where` matches; each keeps one body-less `op` history entry. */
+  /**
+   * Delete the rows `where` matches: each row's entries go, and its deletion is kept in
+   * `collection_erasures`, naming the head of the chain it ended (`prev`).
+   */
   #erase(caller: string, collection: string, op: string, where: string,
          params: unknown[]): number {
     const sql = this.#sql;
     const rows = sql.exec<{ row_id: string; revision: number; private: number;
-                            writer: string }>(
-      "SELECT row_id, revision, private, writer FROM collection_rows WHERE collection = ?" +
-        where, collection, ...params,
+                            writer: string; change: number }>(
+      "SELECT row_id, revision, private, writer, change FROM collection_rows " +
+        "WHERE collection = ?" + where, collection, ...params,
     ).toArray();
     // The high-water seq stays where the rows had it, so no cursor goes back.
     sql.exec(
@@ -654,17 +661,18 @@ export class Collections {
         "DO UPDATE SET seq = excluded.seq", collection, this.top(collection),
     );
     const at = now();
-    for (const { row_id: rowId, revision, private: hidden, writer } of rows) {
+    for (const { row_id: rowId, revision, private: hidden, writer, change } of rows) {
       sql.exec("DELETE FROM collection_history WHERE collection = ? AND key = ?",
                collection, rowId);
-      sql.exec("INSERT INTO collection_history (collection, key, revision, op, body_json, at, " +
-                 "writer, body_bytes, filer, change, private_writer) " +
-                 "VALUES (?, ?, ?, ?, '', ?, ?, 0, ?, ?, ?)",
-               collection, rowId, revision + 1, op, at, caller, OWNER_FILER, this.#tick(),
-               hidden ? writer : null);
+      sql.exec("INSERT INTO collection_erasures (change, collection, key, revision, op, at, " +
+                 "writer, private_writer, prev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+               this.#tick(), collection, rowId, revision + 1, op, at, caller,
+               hidden ? writer : null, change);
       sql.exec("DELETE FROM collection_rows WHERE collection = ? AND row_id = ?",
                collection, rowId);
     }
+    sql.exec("UPDATE collection_space SET revision_floor = MAX(revision_floor, ?)",
+             rows.reduce((top, { revision }) => Math.max(top, revision + 1), 0));
     // A collection left with no row gives its seq to the floor and goes, so the seqs kept
     // are the collections with rows.
     if (sql.exec("SELECT 1 FROM collection_rows WHERE collection = ? LIMIT 1", collection)
@@ -796,11 +804,11 @@ export interface GetRequest extends KeyRequest {
   readonly etag?: string;
 }
 /**
- * A history read: a row's key, and the revision to read before for older entries; with
- * `body_offset`, the page's newest entry's body from that byte.
+ * A history read: a row's key, and the change to read before for older entries (an answer's
+ * `before`); with `body_offset`, the page's newest entry's body from that byte.
  */
 export interface HistoryRequest extends KeyRequest {
-  readonly before_revision?: number;
+  readonly before?: number;
   readonly body_offset?: number;
 }
 export interface DeleteRequest {
@@ -896,18 +904,18 @@ export const collectionsDoors = Object.freeze({
       const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
       const kept = o.collections.history(caller, r["collection"] as string,
-                                             r["row_id"] as string, r["before_revision"] ?? null);
+                                             r["row_id"] as string, r["before"] ?? null);
       const newest = kept.entries.at(-1)?.content_id;
       return { value: { kept, offset }, contents: contentsOf(kept.entries),
                offsetOf: (contentId) => contentId === newest ? offset : 0 };
     }, ({ kept, offset }, windows) => {
       const fitted = kept.entries.length === 0 ? [] : fitPage(
-        jsonBytes({ entries: [], more: true, before_revision: kept.before_revision }),
+        jsonBytes({ entries: [], more: true, before: kept.before }),
         windowedAll([...kept.entries].reverse(), windows, offset),
         ({ item, window }, room, first) => bodied(item, window, room, first));
       const entries = (fitted as HistoryEntry[]).reverse();
       return entries.length === kept.entries.length ? { ...kept, entries }
-        : { entries, more: true, before_revision: entries[0]!.revision };
+        : { entries, more: true, before: entries[0]!.change };
     });
   },
   async collectionWrite(o: OwnerState, door: Door<WriteRequest>):

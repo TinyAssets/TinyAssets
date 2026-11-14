@@ -2063,4 +2063,103 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "document = '{\"egress\":{\"destinations\":[],\"mode\":\"open\"}}'",
     "DROP TRIGGER policy_reshape_refused",
   ]),
+  // 7, after R5's 6 (untangle H1, `history_keys_research.md` §2.2): every history entry keyed
+  // by the owner-wide change its write ticked, linked to the entry it follows (`prev`), and
+  // a delete's or clear's entry moved to its own table, `collection_erasures`, keyed the same
+  // way, so the feed reads deletions as a range of that key and an erase never drops an
+  // earlier deletion. A rebuild: SQLite changes no CHECK in place. The old table is renamed
+  // with its taking-back triggers, the new tables made with their charge, placement and
+  // inline triggers, the entries copied, and the old ones deleted, so each counter and
+  // content reference goes up before it comes down and no content reaches zero references.
+  // Each live row's newest entry takes the row's own change; the older entries take negative
+  // keys in their insertion order (`rowid`, which within a key is revision order), so no
+  // cursor moves and the clock does not tick. An erased key's next revision goes past the
+  // newest an erase gave (`revision_floor`), as a key with no entries left already did.
+  // A migration ends the generation under way (`backup.ts`), so no capture runs mid-way.
+  Object.freeze([
+    "DROP TRIGGER collection_history_logged_insert",
+    "DROP TRIGGER collection_history_logged_update",
+    "DROP TRIGGER collection_history_logged_delete",
+    "DROP TRIGGER collection_history_inline_came",
+    "DROP TRIGGER collection_history_inline_went",
+    "DROP TRIGGER collection_history_added",
+    "DROP TRIGGER collection_history_placed",
+    "DROP TRIGGER collection_history_inline_added",
+    "DROP TRIGGER collection_history_kept",
+    "DROP INDEX collection_erasures",
+    "DROP INDEX collection_history_by_age",
+    "ALTER TABLE collection_history RENAME TO collection_history_old",
+    "CREATE TABLE collection_history (change INTEGER PRIMARY KEY, " +
+      "collection TEXT NOT NULL, key TEXT NOT NULL, revision INTEGER NOT NULL, " +
+      "op TEXT NOT NULL, body_json TEXT NOT NULL CHECK (length(CAST(body_json AS BLOB)) <= 2048), " +
+      "at REAL NOT NULL, writer TEXT NOT NULL, " +
+      "prev INTEGER CHECK (prev IS NULL OR prev < change), " +
+      "body_bytes INTEGER NOT NULL, content_id TEXT, filer TEXT NOT NULL CHECK (filer = 'owner' OR (length(filer) = 71 AND filer GLOB 'client:*')), " +
+      "CHECK (CASE WHEN content_id IS NULL THEN body_bytes = length(CAST(body_json AS BLOB)) ELSE body_json = '' AND body_bytes > 2048 AND length(content_id) = 64 END), " +
+      "UNIQUE (collection, key, revision))",
+    "CREATE TABLE collection_erasures (change INTEGER PRIMARY KEY, " +
+      "collection TEXT NOT NULL, key TEXT NOT NULL, revision INTEGER NOT NULL, " +
+      "op TEXT NOT NULL CHECK (op IN ('delete', 'clear')), at REAL NOT NULL, " +
+      "writer TEXT NOT NULL, private_writer TEXT, prev INTEGER)",
+    "CREATE TRIGGER collection_history_added AFTER INSERT ON collection_history BEGIN " +
+      "UPDATE collection_space SET charge = charge + ((4096 / max(1, 3066 / ((CASE WHEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + length(CAST(NEW.body_json AS BLOB)) + coalesce(length(CAST(NEW.content_id AS BLOB)), 0) + length(CAST(NEW.filer AS BLOB)) + 45 + 48) <= 4061 THEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + length(CAST(NEW.body_json AS BLOB)) + coalesce(length(CAST(NEW.content_id AS BLOB)), 0) + length(CAST(NEW.filer AS BLOB)) + 45 + 48) ELSE 489 END) + 4)) + 4096 * (((length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + length(CAST(NEW.body_json AS BLOB)) + coalesce(length(CAST(NEW.content_id AS BLOB)), 0) + length(CAST(NEW.filer AS BLOB)) + 45 + 48) - (CASE WHEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + length(CAST(NEW.body_json AS BLOB)) + coalesce(length(CAST(NEW.content_id AS BLOB)), 0) + length(CAST(NEW.filer AS BLOB)) + 45 + 48) <= 4061 THEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + length(CAST(NEW.body_json AS BLOB)) + coalesce(length(CAST(NEW.content_id AS BLOB)), 0) + length(CAST(NEW.filer AS BLOB)) + 45 + 48) ELSE 489 END) + 4091) / 4092)) + (4096 / max(1, 3066 / ((CASE WHEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + 18 + 48) <= 1002 THEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + 18 + 48) ELSE 489 END) + 4)) + 4096 * (((length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + 18 + 48) - (CASE WHEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + 18 + 48) <= 1002 THEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + 18 + 48) ELSE 489 END) + 4091) / 4092))); END",
+    "CREATE TRIGGER collection_history_placed AFTER INSERT ON collection_history WHEN NEW.content_id IS NOT NULL BEGIN " +
+      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
+      "INSERT INTO file_scope_contents (scope, content_id, refs) SELECT who, NEW.content_id, 1 FROM (SELECT '*' AS who WHERE NEW.filer GLOB 'client:*' UNION ALL SELECT NEW.filer WHERE NEW.filer GLOB 'client:*' UNION ALL SELECT 'owner' WHERE NEW.filer NOT GLOB 'client:*') WHERE NEW.content_id IS NOT NULL ON CONFLICT (scope, content_id) DO UPDATE SET refs = refs + 1; END",
+    "CREATE TRIGGER collection_history_inline_added AFTER INSERT ON collection_history WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN " +
+      "UPDATE file_space SET body_bytes = body_bytes + NEW.body_bytes; " +
+      "INSERT INTO file_shares (who, entries, history, chunk_bytes, inline_bytes, manifest_bytes, body_bytes) SELECT who, 0, 0, 0, 0, 0, NEW.body_bytes FROM (SELECT '*' AS who WHERE NEW.filer GLOB 'client:*' UNION ALL SELECT NEW.filer WHERE NEW.filer GLOB 'client:*' UNION ALL SELECT 'owner' WHERE NEW.filer NOT GLOB 'client:*') WHERE 1 ON CONFLICT (who) DO UPDATE SET body_bytes = body_bytes + excluded.body_bytes; END",
+    "CREATE TRIGGER collection_erasures_added AFTER INSERT ON collection_erasures BEGIN " +
+      "UPDATE collection_space SET charge = charge + (4096 / max(1, 3066 / ((CASE WHEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + coalesce(length(CAST(NEW.private_writer AS BLOB)), 0) + 36 + 48) <= 4061 THEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + coalesce(length(CAST(NEW.private_writer AS BLOB)), 0) + 36 + 48) ELSE 489 END) + 4)) + 4096 * (((length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + coalesce(length(CAST(NEW.private_writer AS BLOB)), 0) + 36 + 48) - (CASE WHEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + coalesce(length(CAST(NEW.private_writer AS BLOB)), 0) + 36 + 48) <= 4061 THEN (length(CAST(NEW.collection AS BLOB)) + length(CAST(NEW.key AS BLOB)) + length(CAST(NEW.op AS BLOB)) + length(CAST(NEW.writer AS BLOB)) + coalesce(length(CAST(NEW.private_writer AS BLOB)), 0) + 36 + 48) ELSE 489 END) + 4091) / 4092)); END",
+    "INSERT INTO collection_history (change, collection, key, revision, op, body_json, at, " +
+      "writer, prev, body_bytes, content_id, filer) SELECT change, collection, key, revision, " +
+      "op, body_json, at, writer, LAG(change) OVER (PARTITION BY collection, key ORDER BY " +
+      "revision), body_bytes, content_id, filer FROM (SELECT *, coalesce(head, -ROW_NUMBER() " +
+      "OVER (PARTITION BY head IS NULL ORDER BY id DESC)) AS change FROM (SELECT h.rowid AS id, " +
+      "h.collection, h.key, h.revision, h.op, h.body_json, h.at, h.writer, h.body_bytes, " +
+      "h.content_id, h.filer, r.change AS head FROM collection_history_old h LEFT JOIN " +
+      "collection_rows r ON r.collection = h.collection AND r.row_id = h.key AND " +
+      "r.revision = h.revision WHERE h.change IS NULL))",
+    "INSERT INTO collection_erasures (change, collection, key, revision, op, at, writer, " +
+      "private_writer, prev) SELECT change, collection, key, revision, op, at, writer, " +
+      "private_writer, NULL FROM collection_history_old WHERE change IS NOT NULL",
+    "UPDATE collection_space SET revision_floor = max(revision_floor, " +
+      "coalesce((SELECT MAX(revision) FROM collection_erasures), 0))",
+    "DELETE FROM collection_history_old",
+    "DROP TABLE collection_history_old",
+    "CREATE TRIGGER collection_history_removed AFTER DELETE ON collection_history BEGIN " +
+      "UPDATE collection_space SET charge = charge - ((4096 / max(1, 3066 / ((CASE WHEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + length(CAST(OLD.body_json AS BLOB)) + coalesce(length(CAST(OLD.content_id AS BLOB)), 0) + length(CAST(OLD.filer AS BLOB)) + 45 + 48) <= 4061 THEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + length(CAST(OLD.body_json AS BLOB)) + coalesce(length(CAST(OLD.content_id AS BLOB)), 0) + length(CAST(OLD.filer AS BLOB)) + 45 + 48) ELSE 489 END) + 4)) + 4096 * (((length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + length(CAST(OLD.body_json AS BLOB)) + coalesce(length(CAST(OLD.content_id AS BLOB)), 0) + length(CAST(OLD.filer AS BLOB)) + 45 + 48) - (CASE WHEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + length(CAST(OLD.body_json AS BLOB)) + coalesce(length(CAST(OLD.content_id AS BLOB)), 0) + length(CAST(OLD.filer AS BLOB)) + 45 + 48) <= 4061 THEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + length(CAST(OLD.body_json AS BLOB)) + coalesce(length(CAST(OLD.content_id AS BLOB)), 0) + length(CAST(OLD.filer AS BLOB)) + 45 + 48) ELSE 489 END) + 4091) / 4092)) + (4096 / max(1, 3066 / ((CASE WHEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + 18 + 48) <= 1002 THEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + 18 + 48) ELSE 489 END) + 4)) + 4096 * (((length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + 18 + 48) - (CASE WHEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + 18 + 48) <= 1002 THEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + 18 + 48) ELSE 489 END) + 4091) / 4092))); END",
+    "CREATE TRIGGER collection_history_unplaced AFTER DELETE ON collection_history WHEN OLD.content_id IS NOT NULL BEGIN " +
+      "UPDATE file_scope_contents SET refs = refs - 1 WHERE content_id = OLD.content_id AND scope IN (CASE WHEN OLD.filer GLOB 'client:*' THEN '*' ELSE 'owner' END, OLD.filer); " +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    "CREATE TRIGGER collection_history_inline_removed AFTER DELETE ON collection_history WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN " +
+      "UPDATE file_space SET body_bytes = body_bytes - OLD.body_bytes; " +
+      "UPDATE file_shares SET body_bytes = body_bytes - (OLD.body_bytes) WHERE who IN (CASE WHEN OLD.filer GLOB 'client:*' THEN '*' ELSE 'owner' END, OLD.filer); END",
+    "CREATE TRIGGER collection_history_kept BEFORE UPDATE ON collection_history " +
+      "BEGIN SELECT RAISE(ABORT, 'a history entry is never changed'); END",
+    "CREATE TRIGGER collection_erasures_removed AFTER DELETE ON collection_erasures BEGIN " +
+      "UPDATE collection_space SET charge = charge - (4096 / max(1, 3066 / ((CASE WHEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + coalesce(length(CAST(OLD.private_writer AS BLOB)), 0) + 36 + 48) <= 4061 THEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + coalesce(length(CAST(OLD.private_writer AS BLOB)), 0) + 36 + 48) ELSE 489 END) + 4)) + 4096 * (((length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + coalesce(length(CAST(OLD.private_writer AS BLOB)), 0) + 36 + 48) - (CASE WHEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + coalesce(length(CAST(OLD.private_writer AS BLOB)), 0) + 36 + 48) <= 4061 THEN (length(CAST(OLD.collection AS BLOB)) + length(CAST(OLD.key AS BLOB)) + length(CAST(OLD.op AS BLOB)) + length(CAST(OLD.writer AS BLOB)) + coalesce(length(CAST(OLD.private_writer AS BLOB)), 0) + 36 + 48) ELSE 489 END) + 4091) / 4092)); END",
+    "CREATE TRIGGER collection_erasures_kept BEFORE UPDATE ON collection_erasures " +
+      "BEGIN SELECT RAISE(ABORT, 'an erasure entry is never changed'); END",
+    "CREATE TRIGGER collection_history_logged_insert AFTER INSERT ON collection_history WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'collection_history', 'row', json_object('change', NEW.change, 'collection', NEW.collection, 'key', NEW.key, 'revision', NEW.revision, 'op', NEW.op, 'body_json', NEW.body_json, 'at', NEW.at, 'writer', NEW.writer, 'prev', NEW.prev, 'body_bytes', NEW.body_bytes, 'content_id', NEW.content_id, 'filer', NEW.filer)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER collection_history_logged_update AFTER UPDATE ON collection_history WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'collection_history', 'key', json_array(OLD.change)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.change IS NEW.change); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'collection_history', 'row', json_object('change', NEW.change, 'collection', NEW.collection, 'key', NEW.key, 'revision', NEW.revision, 'op', NEW.op, 'body_json', NEW.body_json, 'at', NEW.at, 'writer', NEW.writer, 'prev', NEW.prev, 'body_bytes', NEW.body_bytes, 'content_id', NEW.content_id, 'filer', NEW.filer)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER collection_history_logged_delete AFTER DELETE ON collection_history WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'collection_history', 'key', json_array(OLD.change)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER collection_erasures_logged_insert AFTER INSERT ON collection_erasures WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'collection_erasures', 'row', json_object('change', NEW.change, 'collection', NEW.collection, 'key', NEW.key, 'revision', NEW.revision, 'op', NEW.op, 'at', NEW.at, 'writer', NEW.writer, 'private_writer', NEW.private_writer, 'prev', NEW.prev)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER collection_erasures_logged_update AFTER UPDATE ON collection_erasures WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'collection_erasures', 'key', json_array(OLD.change)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.change IS NEW.change); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'collection_erasures', 'row', json_object('change', NEW.change, 'collection', NEW.collection, 'key', NEW.key, 'revision', NEW.revision, 'op', NEW.op, 'at', NEW.at, 'writer', NEW.writer, 'private_writer', NEW.private_writer, 'prev', NEW.prev)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER collection_erasures_logged_delete AFTER DELETE ON collection_erasures WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'collection_erasures', 'key', json_array(OLD.change)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+  ]),
 ]);

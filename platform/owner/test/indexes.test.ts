@@ -65,8 +65,8 @@ describe("the owner-bound guard against the database", () => {
     });
   });
 
-  it("charges a delete's history entry at the widest names at least what it takes, slice " +
-     "M's change, private writer and `collection_erasures` entry with it", async () => {
+  it("charges a delete's entry at the widest names at least what it takes, its private " +
+     "writer with it", async () => {
     const { stub } = ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const charge = () => state.storage.sql.exec<{ charge: number }>(
@@ -76,19 +76,16 @@ describe("the owner-bound guard against the database", () => {
       const store = new Collections(...collectionParts(state.storage));
       const made = store.write(who, who, name("c"), name("r"), "b", "", true);
       store.delete(who, name("c"), name("r"), made.etag);
-      // The delete drops the row's earlier entries: its own is the history's one entry.
+      // The delete drops the row's entries: its own is the history's one entry.
       expect(state.storage.sql.exec<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM collection_history WHERE op = 'delete' AND change IS NOT " +
-          "NULL AND private_writer IS NOT NULL").one().n).toBe(1);
-      expect(state.storage.sql.exec<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM collection_history").one().n).toBe(1);
+        "SELECT (SELECT COUNT(*) FROM collection_erasures WHERE op = 'delete' AND " +
+          "private_writer IS NOT NULL) + (SELECT COUNT(*) FROM collection_history) AS n")
+        .one().n).toBe(1);
       const N = 9;
       const [collection, key, principal] = [1024, 1024, 2048];
-      // Its record (names, op, writer, files scope, private writer, numbers), its key's,
-      // its age's and its change's (`collection_erasures`) index entries.
-      const honest = laid(collection + key + 6 + principal + 5 + principal + 5 * N, TABLE_KEPT)
-        + laid(collection + key + 2 * N, INDEX_KEPT) + laid(2 * N, INDEX_KEPT)
-        + laid(2 * N, INDEX_KEPT);
+      // Its record (names, op, writer, private writer, numbers, its change the rowid): its
+      // table has no index.
+      const honest = laid(collection + key + 6 + principal + principal + 4 * N, TABLE_KEPT);
       expect(charge() * WORST_FILL).toBeGreaterThanOrEqual(honest);
     });
   });
