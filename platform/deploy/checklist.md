@@ -99,9 +99,10 @@ It never counts as "absent".
    before `routes`.
 2. **Storage, created only when its listing answered and lacks it:** the KV namespaces
    `platform/deploy/platform.json` titles, one for each binding the configs make, and the
-   R2 buckets and the queues the Workers' configs name (a queue its producer's).
-3. **Secrets, set only when the Worker's secret listing answered and lacks them** (or the API
-   says the Worker does not exist yet). Values come from the environment's secrets: each
+   R2 buckets and the queues the Workers' configs name (a queue its producer's), each listed
+   to its last page and made over Cloudflare's API (`deploy/cloudflare.ts`).
+3. **Secrets, set only when the Worker's secret listing answered and lacks them** (or the
+   account's Workers listing lacks the Worker). Values come from the environment's secrets: each
    Worker's `secrets.required` (its `wrangler.jsonc`), and on the doors, if set, each shared
    app's signing secret (`platform/doors/shared-apps.json`). A secret two Workers require
    (the routing key, the doors' and the owner's) is set on both or neither.

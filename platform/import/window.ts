@@ -44,7 +44,7 @@ import type { ImportNames } from "../contract/src/import-names";
 
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
 import {
-  ACCOUNT, API, bundlesIn, type Fetcher, type Inputs, pushMessage, queueId,
+  ACCOUNT, API, bundlesIn, cloudflareOf, type Fetcher, type Inputs, pushMessage, queueId,
   s3Request, type Staged,
 } from "./stage";
 
@@ -339,34 +339,12 @@ export async function admit(out: string, run: string, window: Window, recordFile
 
 /** The directory's KV namespace id, by its title. */
 async function directoryId(window: Window): Promise<string> {
-  const found = (await api<{ id: string; title: string }[]>(
-    window, "/storage/kv/namespaces?per_page=100"))
-    .filter((each) => each.title === window.names.directory);
-  if (found.length !== 1) {
+  const id = (await cloudflareOf(window.inputs, window.fetcher).namespaces(window.inputs.account))
+    .get(window.names.directory);
+  if (id === undefined) {
     throw new Error(`the account lists no KV namespace ${window.names.directory}: nothing is done`);
   }
-  return found[0]!.id;
-}
-
-/** Every directory key under `prefix`. */
-async function directoryKeys(window: Window, namespace: string, prefix: string):
-    Promise<string[]> {
-  const keys: string[] = [];
-  let cursor = "";
-  do {
-    const answer = await window.fetcher(new Request(`${API}/accounts/${window.inputs.account}` +
-      `/storage/kv/namespaces/${namespace}/keys?prefix=${encodeURIComponent(prefix)}` +
-      (cursor === "" ? "" : `&cursor=${encodeURIComponent(cursor)}`),
-      { headers: { authorization: `Bearer ${window.inputs.apiToken}` } }));
-    const body = await answer.json().catch(() => null) as {
-      success?: boolean; result?: { name: string }[]; result_info?: { cursor?: string } } | null;
-    if (!answer.ok || body?.success !== true) {
-      throw new Error(`the directory's listing was refused (${answer.status})`);
-    }
-    keys.push(...(body.result ?? []).map((key) => key.name));
-    cursor = body.result_info?.cursor ?? "";
-  } while (cursor !== "");
-  return keys;
+  return id;
 }
 
 /** What a wipe proved: each listing's count, every one 0 when the wipe holds. */
@@ -406,7 +384,8 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
   const directory = await directoryId(window);
   const prefix = `o:rehearsal-${run}-`;
   // The run's own records: a run whose id extends this one's (`r1-x` of `r1`) shares the prefix.
-  const runs = async () => (await directoryKeys(window, directory, prefix))
+  const runs = async () => (await cloudflareOf(window.inputs, window.fetcher)
+    .keys(window.inputs.account, directory, prefix))
     .filter((key) => rehearsalRun(key.slice(2)) === run);
   const records = await runs();
   for (let at = 0; at < records.length; at += 1000) {

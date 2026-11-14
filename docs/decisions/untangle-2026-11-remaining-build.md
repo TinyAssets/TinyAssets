@@ -433,3 +433,12 @@ It builds as its own PR, **C2b**, right after C2.
      - `template/image.ts:47` `NAME`: E2B's template name, an image input.
      - `guards/config.test.ts:74,78-79`: fixtures the guard must refuse.
      - `src/index.ts:2`: a comment.
+
+## X2 as built (2026-11-14)
+
+1. **A listing is read to its last page by what each answer's `result_info` says,** with wrangler's own two rules (`fetchListResult`'s `hasCursor` and `hasMorePages`): a non-empty `cursor` reads the next page by it (R2 buckets, a namespace's keys), and otherwise the next page number while `page * per_page` is short of `total_count` (KV namespaces, queues). No listing guesses from its row count, and a listing with no paging (the Workers scripts, a zone's routes) ends at its one page. Every listing of the client goes through the one loop.
+2. **The KV namespaces are made by REST too** (`x2:2.1 KV made by wrangler then REST`): one POST, its answer's id the binding's, so the re-listing after `wrangler kv namespace create` goes. Wrangler is left deploying Workers and setting secrets.
+3. **The client takes the token and the fetcher itself** (`new Cloudflare(token, fetcher)`), so `cfApi`, `CfApi` and `CfAnswer` go (`x2:2.2 CfAnswer.body`). The fetcher has no default: the importer's guard keeps `fetch` named in `import/stage.ts` alone, and the kit passes `run.io.fetch`.
+4. **One Workers listing a run decides existence.** The `secrets` step reads it, reads the secrets only of the Workers it lists (a missing one holds none), and the `workers` and `retired` steps take it from there. `secrets()` throws on any failure, the 404 of a missing Worker too. Mode `probe`'s `doors deployed` reads the listing.
+5. **The handover and the handback are one route change, `RouteChange`, and one loop, `reroute(zone, steps, say)`**, which `say`s a failed step as the plan said it. The failure's tail is the same for both: "the steps before it are done, the rest are not: run it again for the rest", since both plan from the zone as it stands.
+6. **The importer's three Cloudflare reads are adopted here, not in I1b** (a few lines each, in lane I's files): `stage.ts`'s `queueId`, and `window.ts`'s directory id and directory keys, through `cloudflareOf(inputs, fetcher)`. Left for I1b: the importer's writes (the queue's messages, the dead-letter queue's consumer, pull and ack, the directory's bulk delete) through `window.ts`'s `api()`, and `stage.ts`'s `API`, with `QUEUES.IMPORTS` and the account id's second source (`I-H22`).
