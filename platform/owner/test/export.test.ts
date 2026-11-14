@@ -366,7 +366,7 @@ describe("a generation", () => {
      "segment's inside its own, never a burst's (burstlease, rvburst W1)", async () => {
     const pool = ownerSlots();
     const o = await owner();
-    await notices(o, 200);
+    await notices(o, BURST + PAGE);  // two bursts, the first of two parts
     // Another object's holds: past what leaves a burst its units beside the reserve.
     const other = await pool.acquire(OWNER_POOL_UNITS - OWNER_RESERVE_UNITS - BURST_UNITS + 1);
     const held = await generate(o.stub);
@@ -389,6 +389,7 @@ describe("a generation", () => {
     } });
     expect(made.notices).toEqual([]);
     expect(digest(replay(made.lines))).toBe(made.atE);
+    expect(seen["part"]!.length).toBeGreaterThan(2);
     expect(new Set(seen["part"])).toEqual(new Set([BURST_UNITS]));
     expect(new Set(seen["segment"])).toEqual(new Set([SHIP_UNITS]));
     expect(seen["root"]).toEqual([0]);
