@@ -75,6 +75,7 @@
  * the owner's in-flight turns.
  */
 import type { SandboxToken } from "../../contract/src/binding";
+import { keyed, object } from "../../contract/src/checks";
 import { CONNECTION_ID, HEX32, HEX64, randomHex, RUN_ID } from "../../contract/src/ids";
 
 import { apiRules, freeCall, tierMultiplier } from "../../contract/src/api-rules";
@@ -291,14 +292,9 @@ type Row = {
   settled_at: number | null;
 };
 
-function plain(value: unknown, keys: string): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    && Object.keys(value).sort().join() === keys;
-}
-
 /** The request's fields, exactly, or `invalid`. */
 export function egressRequest(value: unknown): EgressRequest {
-  if (!plain(value, "bytes_hint,connection,method,path,run")) {
+  if (!keyed(value, ["bytes_hint", "connection", "method", "path", "run"])) {
     throw new Refusal("invalid", "invalid egress request");
   }
   const { run, connection, method, path, bytes_hint: hint } = value;
@@ -314,7 +310,7 @@ export function egressRequest(value: unknown): EgressRequest {
 
 /** A reserve's fields, exactly, or `invalid`. */
 function reserveRequest(value: unknown): ReserveRequest {
-  if (!plain(value, "model,reservation,tier")) {
+  if (!keyed(value, ["model", "reservation", "tier"])) {
     throw new Refusal("invalid", "invalid egress reserve");
   }
   const { reservation, model, tier } = value;
@@ -329,10 +325,10 @@ function reserveRequest(value: unknown): ReserveRequest {
 /** The binding's sandbox fields, exactly, or `invalid`. */
 export function sandboxBinding(value: unknown): SandboxToken {
   // At most one of a run's own secret and the runner's, each a SHA-256 hex.
-  const egress = plain(value, "generation,kind,token") ? "none"
-    : plain(value, "generation,kind,secret,token") ? "secret"
-      : plain(value, "generation,kind,runner,token") ? "runner" : null;
-  if (egress !== null && plain(value, Object.keys(value as object).sort().join())
+  const egress = keyed(value, ["generation", "kind", "token"]) ? "none"
+    : keyed(value, ["generation", "kind", "secret", "token"]) ? "secret"
+      : keyed(value, ["generation", "kind", "runner", "token"]) ? "runner" : null;
+  if (egress !== null && object(value)
       && value["kind"] === "egress"
       && typeof value["token"] === "string" && HEX64.test(value["token"])
       && typeof value["generation"] === "number" && Number.isSafeInteger(value["generation"])
@@ -349,7 +345,7 @@ export function sandboxBinding(value: unknown): SandboxToken {
       return { kind: "egress", token: value["token"], generation: value["generation"] };
     }
   }
-  if (plain(value, "egress,kind,token") && value["kind"] === "sync"
+  if (keyed(value, ["egress", "kind", "token"]) && value["kind"] === "sync"
       && typeof value["token"] === "string" && HEX64.test(value["token"])
       && typeof value["egress"] === "string" && HEX64.test(value["egress"])) {
     return { kind: "sync", token: value["token"], egress: value["egress"] };
@@ -358,13 +354,13 @@ export function sandboxBinding(value: unknown): SandboxToken {
 }
 
 function spendOutcome(value: unknown): MeterOutcome {
-  if (plain(value, "state") && (value["state"] === "failed" || value["state"] === "unknown")) {
+  if (keyed(value, ["state"]) && (value["state"] === "failed" || value["state"] === "unknown")) {
     return { state: value["state"] };
   }
   const served = typeof value === "object" && value !== null && "served" in value
     ? (value as { served: unknown }).served : undefined;
-  if ((plain(value, "cost,state,tokens")
-       || (plain(value, "cost,served,state,tokens") && typeof served === "string"
+  if ((keyed(value, ["cost", "state", "tokens"])
+       || (keyed(value, ["cost", "served", "state", "tokens"]) && typeof served === "string"
            && SERVED.test(served)))
       && value["state"] === "succeeded"
       && typeof value["tokens"] === "number" && Number.isSafeInteger(value["tokens"])
@@ -378,7 +374,7 @@ function spendOutcome(value: unknown): MeterOutcome {
 
 /** The settle's fields, exactly, or `invalid`. */
 function settleRequest(value: unknown): SettleRequest {
-  if (!plain(value, "bytes,outcome,reservation,spend,status")) {
+  if (!keyed(value, ["bytes", "outcome", "reservation", "spend", "status"])) {
     throw new Refusal("invalid", "invalid egress settle");
   }
   const { reservation, outcome, status, bytes, spend } = value;

@@ -24,7 +24,7 @@
  *
  * Node runs this file as it is (type stripping), so its own imports name their `.ts` files.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,6 +32,7 @@ import { keyed } from "../../contract/src/checks.ts";
 import { HEX64 } from "../../contract/src/ids.ts";
 import { type Migration, migrationDigest } from "../../contract/src/migrate.ts";
 import { PLATFORM } from "../paths.ts";
+import { workerFolders } from "../wrangler.ts";
 
 /** A lock, as its file holds it. */
 export interface Lock {
@@ -134,6 +135,12 @@ export function deployAnswer(worker: string, locks: Locks,
     throw new Error(problems.join("\n"));
   }
   return JSON.stringify(digests(locks));
+}
+
+/** The Workers whose Durable Objects keep tables: each states its locks (`guards/locks.ts`). */
+export function migrated(): string[] {
+  return workerFolders()
+    .filter((worker) => existsSync(join(PLATFORM, worker, "guards", "locks.ts")));
 }
 
 /** `worker`'s locks, as its `guards/locks.ts` states them. */

@@ -50,6 +50,7 @@
  * revokes it at the provider or tells the owner to delete it there. Nothing minted is
  * dropped silently.
  */
+import { keyed } from "../../contract/src/checks";
 import { secret, SECRET_MAX } from "../../contract/src/egress-scope";
 import type { Verified } from "../../contract/src/gateway";
 import {
@@ -62,7 +63,7 @@ import {
   CONNECT_CALLBACK, CONNECT_CALLBACK_PATH, CONNECTED_PAGE, now, PUBLIC_ORIGIN,
 } from "./config";
 import type { DoorsEnv } from "./env";
-import { answer, exactKeys, plain, redirect } from "./kit";
+import { answer, plain, redirect } from "./kit";
 import { clearedConnectCookie, connectBound, connectCookie } from "./session";
 import { sealedSource } from "../../sources/src/check";
 import type { ConnectMethod, OAuthSpec, SourceRecord, Sources } from "../../sources/src/schema";
@@ -85,7 +86,7 @@ const MIXED_UP = "the authorization came back on another source's callback";
 /** Exactly `required`, and any of `optional`: the owner, connection and version are never fields. */
 function fields(body: Record<string, unknown>, required: readonly string[],
                 optional: readonly string[] = []): Record<string, unknown> {
-  if (!exactKeys(body, required, optional)) {
+  if (!keyed(body, required, optional)) {
     throw new Refusal("invalid",
                       `the request has exactly ${required.join(", ") || "no fields"}` +
                       (optional.length > 0 ? ` (and optionally ${optional.join(", ")})` : ""));

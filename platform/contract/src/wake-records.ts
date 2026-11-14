@@ -38,6 +38,7 @@
  * (`gateway/src/doorbell.ts`; its isolation guard walks the closure). What builds a wake,
  * and a subscription's id, is `wake-kinds.ts`.
  */
+import { keyed, whole } from "./checks.ts";
 import { ZONE } from "./egress.ts";
 import { Refusal } from "./refusal.ts";
 import raw from "../wake-kinds.json" with { type: "json" };
@@ -92,11 +93,13 @@ const HEADER = /^[A-Za-z0-9-]{1,64}$/;
 const HOST = /^[a-z0-9.-]{1,253}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const EVENT_NAME = /^[a-z][a-z0-9_.]{0,63}$/;
-const KEYS = "agents,catch_up,citations,delivery_method,id,push,vendor,vendor_limits";
-const PUSH_KEYS = "auth,body,callback,events,headers,max_body_bytes,mechanism,secret," +
-  "token_dead,url";
-const EVENTS_KEYS = "default_ttl_ms,description,name,rotation_grace_s,verify_error_code," +
-  "verify_timeout_ms";
+const KEYS = Object.freeze(["agents", "catch_up", "citations", "delivery_method", "id", "push",
+                            "vendor", "vendor_limits"]);
+const PUSH_KEYS = Object.freeze(["auth", "body", "callback", "events", "headers",
+                                 "max_body_bytes", "mechanism", "secret", "token_dead", "url"]);
+const EVENTS_KEYS = Object.freeze(["default_ttl_ms", "description", "name",
+                                   "rotation_grace_s", "verify_error_code",
+                                   "verify_timeout_ms"]);
 /**
  * A callback URL's and secret's characters at most (a subscription's canonical arguments'
  * are `ARGUMENTS_CHARS`, a frozen bound of the owner's schema, in `limits.ts`): technical
@@ -122,12 +125,12 @@ export const AUTH_HEADER = /^authorization$|^webhook-/i;
 const LABEL = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;
 const IPV4 = /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/;
 
-function record(value: unknown, keys: string, what: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)
-      || Object.keys(value).sort().join() !== keys) {
-    throw new Error(`wake kinds: ${what} is not exactly {${keys}}`);
+function record(value: unknown, keys: readonly string[], what: string):
+    Record<string, unknown> {
+  if (!keyed(value, keys)) {
+    throw new Error(`wake kinds: ${what} is not exactly {${keys.join()}}`);
   }
-  return value as Record<string, unknown>;
+  return value;
 }
 
 function text(value: unknown, what: string): string {
@@ -144,8 +147,8 @@ function strings(value: unknown, what: string): string[] {
   return value.map((item, n) => text(item, `${what}[${n}]`));
 }
 
-function whole(value: unknown, low: number, what: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < low) {
+function integer(value: unknown, low: number, what: string): number {
+  if (!whole(value, low)) {
     throw new Error(`wake kinds: ${what} is a whole number from ${low}`);
   }
   return value;
@@ -184,9 +187,9 @@ function events(value: unknown, what: string): Events | null {
   }
   return Object.freeze({
     name: e["name"], description: text(e["description"], `${what}.description`),
-    verify_error_code: code, verify_timeout_ms: whole(e["verify_timeout_ms"], 1, what),
-    default_ttl_ms: whole(e["default_ttl_ms"], 1, what),
-    rotation_grace_s: whole(e["rotation_grace_s"], 0, what),
+    verify_error_code: code, verify_timeout_ms: integer(e["verify_timeout_ms"], 1, what),
+    default_ttl_ms: integer(e["default_ttl_ms"], 1, what),
+    rotation_grace_s: integer(e["rotation_grace_s"], 0, what),
   });
 }
 
@@ -195,7 +198,7 @@ function push(value: unknown, what: string): Push | null {
     return null;
   }
   const p = record(value, PUSH_KEYS, what);
-  const url = record(p["url"], "hosts,path", `${what}.url`);
+  const url = record(p["url"], ["hosts", "path"], `${what}.url`);
   const hosts = url["hosts"] === null ? null : strings(url["hosts"], `${what}.url.hosts`);
   if (hosts !== null && (!hosts.length || !hosts.every((host) => HOST.test(host)))) {
     throw new Error(`wake kinds: ${what}.url.hosts are not host names`);
@@ -226,7 +229,7 @@ function push(value: unknown, what: string): Push | null {
   template(headers, `${what}.headers`);
   const max = p["max_body_bytes"];
   if (max !== null) {
-    whole(max, 1024, `${what}.max_body_bytes`);
+    integer(max, 1024, `${what}.max_body_bytes`);
   }
   const dead = p["token_dead"];
   if (!Array.isArray(dead) || !dead.every((s) => Number.isSafeInteger(s) && s >= 400 && s < 600)) {
@@ -249,7 +252,7 @@ function push(value: unknown, what: string): Push | null {
 
 /** The records as the file holds them, checked whole: a bad record fails loudly. */
 export function checkKinds(value: unknown): readonly WakeKind[] {
-  const file = record(value, "about,kinds", "the file");
+  const file = record(value, ["about", "kinds"], "the file");
   if (!Array.isArray(file["kinds"]) || !file["kinds"].length) {
     throw new Error("wake kinds: kinds is not a list of records");
   }
@@ -264,7 +267,7 @@ export function checkKinds(value: unknown): readonly WakeKind[] {
       throw new Error(`wake kinds: ${id} cites no source`);
     }
     const citations = k["citations"].map((c, m): Citation => {
-      const cite = record(c, "evidence,read,url", `${id}.citations[${m}]`);
+      const cite = record(c, ["evidence", "read", "url"], `${id}.citations[${m}]`);
       if (typeof cite["url"] !== "string" || !cite["url"].startsWith("https://")
           || typeof cite["read"] !== "string" || !DATE.test(cite["read"])
           || !["V", "VS", "3P"].includes(cite["evidence"] as string)) {

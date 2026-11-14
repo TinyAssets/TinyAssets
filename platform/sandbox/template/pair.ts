@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readWrangler } from "../../ci/wrangler.ts";
+import { HEX64 } from "../../contract/src/ids.ts";
 
 const TEMPLATE = dirname(fileURLToPath(import.meta.url));
 const SANDBOX = join(TEMPLATE, "..");
@@ -84,7 +85,7 @@ export function bundles(exec: typeof execFileSync = execFileSync, out?: string):
  * the probes carry what the checks judge by.
  */
 export function pairTag(template: string, runner: string, probes: string): string {
-  if (!/^[0-9a-f]{64}$/.test(runner) || !/^[0-9a-f]{64}$/.test(probes)) {
+  if (!HEX64.test(runner) || !HEX64.test(probes)) {
     throw new Error("a runner and its probes are each named by their SHA-256");
   }
   return `${template}-r${runner.slice(0, 16)}-p${probes.slice(0, 16)}`;

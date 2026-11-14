@@ -59,6 +59,7 @@
  * gateway sends its own parse, so an alias is the one way a body could say what the rules did
  * not read.
  */
+import { valueAtPath } from "./checks.ts";
 
 /** A call the provider does not bill, with the page that says so (`free`). */
 export interface FreeCall {
@@ -267,13 +268,6 @@ export function apiRules(api: string): ApiRules | null {
   return Object.hasOwn(RULES, api) ? RULES[api]! : null;
 }
 
-/** The value at `path` in `body`, or undefined. */
-export function valueAt(body: unknown, path: readonly string[]): unknown {
-  return path.reduce<unknown>((at, key) =>
-    (typeof at === "object" && at !== null && !Array.isArray(at)
-      ? (at as Record<string, unknown>)[key] : undefined), body);
-}
-
 /** The methods that read and carry no body: a sealed endpoint's reads (a model list). */
 export const READS: readonly string[] = Object.freeze(["GET", "HEAD"]);
 
@@ -296,17 +290,17 @@ export function freeCall(rules: ApiRules | null, provider: string, method: strin
 /** Whether the request asks for more than one choice. */
 export function manyChoices(rules: ApiRules, body: unknown): boolean {
   return rules.counts.some((path) => {
-    const count = valueAt(body, path);
+    const count = valueAtPath(body, path);
     return count !== undefined && count !== null && count !== 1;
   });
 }
 
 /** Whether the request enables a server-side tool the provider bills beyond tokens. */
 export function paidTool(rules: ApiRules, body: unknown): boolean {
-  if (rules.paid.some((path) => valueAt(body, path) !== undefined)) {
+  if (rules.paid.some((path) => valueAtPath(body, path) !== undefined)) {
     return true;
   }
-  const tools = valueAt(body, rules.tools.list);
+  const tools = valueAtPath(body, rules.tools.list);
   if (tools === undefined || tools === null) {
     return false;
   }
@@ -332,7 +326,7 @@ export function paidTool(rules: ApiRules, body: unknown): boolean {
 /** Whether the request lists fallback models, any of which may serve it. */
 export function fallbackList(rules: ApiRules, body: unknown): boolean {
   return rules.fallbacks.some((path) => {
-    const listed = valueAt(body, path);
+    const listed = valueAtPath(body, path);
     return Array.isArray(listed) && listed.length > 0;
   });
 }
@@ -343,7 +337,7 @@ export function fallbackList(rules: ApiRules, body: unknown): boolean {
  */
 export function unpricedOption(rules: ApiRules, body: unknown): boolean {
   return rules.unpriced.some(({ path, allowed }) => {
-    const value = valueAt(body, path);
+    const value = valueAtPath(body, path);
     if (value === undefined) {
       return false;
     }
@@ -399,11 +393,12 @@ export function aliased(rules: ApiRules, body: unknown): boolean {
     return Object.keys(value).some((key) => NOT_ASCII.test(key)
       || (!names.has(key) && read.has(folded(key))));
   };
-  if ([...levels.values()].some(({ at, names }) => spelledOtherwise(valueAt(body, at), names))) {
+  if ([...levels.values()].some(({ at, names }) =>
+    spelledOtherwise(valueAtPath(body, at), names))) {
     return true;
   }
   const kind = rules.tools.kind;
-  const tools = valueAt(body, rules.tools.list);
+  const tools = valueAtPath(body, rules.tools.list);
   return kind !== undefined && Array.isArray(tools)
     && tools.some((tool) => spelledOtherwise(tool, new Set([kind.field])));
 }
@@ -456,11 +451,12 @@ export async function servedPriced(rules: ApiRules, body: ReadableStream<Uint8Ar
     } catch {
       return;  // not JSON (`[DONE]`): no tier in it
     }
-    if (served.events !== undefined && !served.events.includes(valueAt(event, ["type"]) as string)) {
+    if (served.events !== undefined
+        && !served.events.includes(valueAtPath(event, ["type"]) as string)) {
       return;  // not an event the served tier is read from
     }
     for (const path of served.paths) {
-      const tier = valueAt(event, path);
+      const tier = valueAtPath(event, path);
       if (tier !== undefined) {
         seen = true;
         if (typeof tier !== "string" || !served.priced.includes(tier)) {

@@ -22,6 +22,7 @@ import { createHash, createHmac } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { keyed, object } from "../contract/src/checks";
 import { HEX16 } from "../contract/src/ids";
 import {
   BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, importMac, type ImportMessage, PART, rehearsalRun,
@@ -39,7 +40,7 @@ import { Cloudflare } from "../deploy/cloudflare";
 export function namesOf(text: string): ImportNames {
   const given: unknown = JSON.parse(text);
   const keys = IMPORT_NAME_KEYS;
-  if (!plain(given) || Object.keys(given).sort().join() !== [...keys].sort().join()
+  if (!keyed(given, keys)
       || keys.some((key) => typeof given[key] !== "string" || given[key] === "")) {
     throw new Error("the facts file is not the import job's names (deploy/facts.ts --import)");
   }
@@ -92,8 +93,6 @@ export interface StageSummary {
 }
 
 const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex");
-const plain = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Every file under `dir`, as names relative to it; a link or anything but a file refused. */
 function filesIn(dir: string, at = ""): string[] {
@@ -118,8 +117,8 @@ export function checkedBundle(dir: string, key: string): Staged {
   const files = filesIn(dir);
   const index = readFileSync(join(dir, BUNDLE_INDEX));
   const parsed: unknown = JSON.parse(index.toString("utf8"));
-  if (!plain(parsed) || parsed["format"] !== BUNDLE_FORMAT || parsed["key"] !== key
-      || typeof parsed["owner"] !== "string" || !plain(parsed["parts"])) {
+  if (!object(parsed) || parsed["format"] !== BUNDLE_FORMAT || parsed["key"] !== key
+      || typeof parsed["owner"] !== "string" || !object(parsed["parts"])) {
     throw new Error("a bundle's index is out of shape, or not its folder's");
   }
   const parts = parsed["parts"] as Record<string, unknown>;

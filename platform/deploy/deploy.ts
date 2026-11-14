@@ -106,6 +106,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PLATFORM, REPO } from "../ci/paths.ts";
+import { migrated } from "../ci/kit/locks.ts";
 import { WRANGLER } from "../ci/wrangler.ts";
 // The envelope and the E2B client import only by their own names, so Node's type stripping
 // runs them here.
@@ -344,9 +345,6 @@ function report({ summarize: add }: Reporter, plan: readonly string[], run: Run)
 }
 
 // --- The migration locks ----------------------------------------------------------------
-
-/** The Workers whose Durable Objects keep tables, each held to the locks it states. */
-export const MIGRATED = ["owner", "sandbox"] as const;
 
 /**
  * Why `worker` may not deploy under its migration locks, or null: the locks' command line
@@ -959,13 +957,14 @@ async function egressBefore({ cloudflare, account, zone: id }:
 
 /** No Worker deploys a migration its lock does not pin, checked before anything is changed. */
 const locks = step(({ run, say }) => {
-  for (const worker of MIGRATED) {
+  const workers = migrated();
+  for (const worker of workers) {
     const refused = lockRefusal(worker, run);
     if (refused !== null) {
       throw new Error(refused);
     }
   }
-  say(`the migration locks pin every migration the ${MIGRATED.join(" and ")} Workers ship`);
+  say(`the migration locks pin every migration the ${workers.join(" and ")} Workers ship`);
 });
 
 /** The zone and its account, which Cloudflare's client and wrangler are given. */

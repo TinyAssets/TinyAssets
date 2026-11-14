@@ -21,6 +21,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { canonical } from "../../contract/src/canonical";
 import { ANSWERS, COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL, INTERNAL_COMMANDS,
          JOBS, LEASE_FILE, LOADER, PROTOCOL, RETIRED_IN_1, RUNNERS, SPEAKS, STATE_DIR,
          WORKER_COMMANDS } from "./protocol";
@@ -37,18 +38,6 @@ const FROZEN = Object.freeze({
   formats: { "1": "a19128179e56fbfc00a07a0aec3a84aa274a692db344bf2b042e56cab0f07263" },
   protocols: { "1": "aa417ab2b758c766a2278a57f2437bb570fa6ece2cd3ced66b20f684eb42c8b2" },
 });
-
-/** Canonical JSON (sorted keys), for an entry's digest. */
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonical).join(",")}]`;
-  }
-  if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
 

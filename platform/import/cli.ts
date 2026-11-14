@@ -35,8 +35,8 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { parseTiers, type Tiers } from "../contract/src/control";
+import { HEX32 } from "../contract/src/ids";
 import type { ImportNames } from "../contract/src/import-names";
-import { ACCOUNT_ID } from "../deploy/cloudflare";
 
 import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
@@ -73,7 +73,7 @@ export function stageInputs(given: Readonly<Record<string, string | undefined>>)
   if (missing.length > 0) {
     throw new Error(`a staging run takes ${missing.join(", ")} from its stdin`);
   }
-  if (!ACCOUNT_ID.test(given[STAGE_INPUTS.account]!)) {
+  if (!HEX32.test(given[STAGE_INPUTS.account]!)) {
     throw new Error("the account is 32 hex");
   }
   return Object.fromEntries(Object.entries(STAGE_INPUTS)

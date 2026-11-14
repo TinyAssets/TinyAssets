@@ -136,13 +136,16 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     packages: ["esbuild", "node:crypto", "node:fs", "node:module", "node:path", "node:url"],
   },
   {
-    // A Worker's own data beside its config is the deploy kit's to read: it deploys them.
+    // A Worker's own data beside its config is the deploy kit's to read: it deploys them. The
+    // migration locks' kit names the Workers whose locks it runs, from the contract and the
+    // wrangler module alone, which the deploy kit may already import.
     name: "the deploy kit",
     files: ["platform/deploy/**", "!platform/deploy/guards/**",
             "!platform/deploy/vitest.config.ts", ...NOT_TESTS],
     may: ["platform/deploy/**", "!platform/deploy/guards/**", ...CONTRACT, ...SOURCES,
           "platform/sandbox/e2b/**", "platform/sandbox/template/pair.ts",
-          "platform/ci/{paths,wrangler}.ts", "platform/<worker>/*.json", ...NOT_TESTS],
+          "platform/ci/{paths,wrangler}.ts", "platform/ci/kit/locks.ts",
+          "platform/<worker>/*.json", ...NOT_TESTS],
   },
   {
     // The starter's package, to count what it seeds, as the owner reads it.

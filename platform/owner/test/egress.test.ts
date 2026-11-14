@@ -38,8 +38,9 @@ import {
   defineAgent, hashed, later, ownerRun, recorder, runnerBinding, runnerSandbox, scripted,
   secretOf, whileOut,
 } from "./runs-support";
-import type { NetworkPlan, SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
-import { SANDBOX_WAITING } from "../src/sandbox";
+import {
+  type NetworkPlan, SANDBOX_WAITING, type SandboxSignin, type SandboxStart,
+} from "../../contract/src/sandbox";
 import { bundledSources } from "../../sources/src/catalog";
 import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
 import { erasedWhole } from "./erasure-support";
@@ -204,14 +205,18 @@ async function refusedWith(r: Gated, binding: Binding, connection: string,
 /** Each end signal's one read: it resolves, done or failed, when the object ends it. */
 const signals = new WeakMap<ReadableStream<Uint8Array>, Promise<boolean>>();
 
-/** Whether the end signal closed within `waitMs`. */
-async function ended(opened: EgressOpened, waitMs = 2000): Promise<boolean> {
+/**
+ * Whether the end signal closed within 2 s, once the test ended its stream. That a stream
+ * was not ended is read from its row instead: the object marks the row of each stream it
+ * ends, and a later end marks only a stream still open.
+ */
+async function ended(opened: EgressOpened): Promise<boolean> {
   let read = signals.get(opened.ended);
   if (read === undefined) {
     read = opened.ended.getReader().read().then(() => true, () => true);
     signals.set(opened.ended, read);
   }
-  const late = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), waitMs));
+  const late = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000));
   return Promise.race([read, late]);
 }
 
@@ -831,7 +836,10 @@ describe("admit, then reserve (egress shape research, A′)", () => {
                                                   charge: "held" });
     // The charge counts to its run, and to the source's day, as an admitted call's did.
     expect(await runs(r)).toMatchObject([{ requests: 1 }]);
-    expect(await ended(opened, 50)).toBe(false);
+    // The reserve left its stream open: the run's end is what ends it.
+    await over(r, lease);
+    expect(await ended(opened)).toBe(true);
+    expect((await rows(r))[0]).toMatchObject({ ended: "run" });
   });
 
   it("refuses a second reserve, a free call's, a settled call's, or another token's",
@@ -1148,7 +1156,7 @@ describe("a change that ends egress", () => {
     const a = await admitted(r, lease, first);
     // Another connection's revoke leaves the stream be; its own connection's ends it.
     await r.stub.connectionRevoke(r.session(), { connection: second });
-    expect(await ended(a, 300)).toBe(false);
+    expect((await rows(r))[0]).toMatchObject({ ended: null });
     await r.stub.connectionRevoke(r.session(), { connection: first });
     expect(await ended(a)).toBe(true);
     await over(r, lease);

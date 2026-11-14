@@ -29,7 +29,7 @@ import { describe, expect, it } from "vitest";
 import { DARK, keyring as ringSecret } from "../../ci/fixtures";
 import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
-import { deployProblems, locksOf, readLock } from "../../ci/kit/locks";
+import { deployProblems, locksOf, migrated, readLock } from "../../ci/kit/locks";
 import { WRANGLER, workerFolders } from "../../ci/wrangler";
 import { type Domain, openBlob, parseRing, sealBlob } from "../../contract/src/envelope";
 import {
@@ -52,7 +52,7 @@ import {
 import {
   authorizeCheck, authorizeLink, deployedConfig,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
-  lifecycleHook, lockRefusal, MIGRATED, type Mode, MODES, parse,
+  lifecycleHook, lockRefusal, type Mode, MODES, parse,
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, routedConfig,
   type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
@@ -2106,7 +2106,7 @@ describe("the parts of a run", () => {
      "(review M5-2), by the locks' own command line", async () => {
     // The real command line's answer, whatever the checked-in locks pin: the kit's own.
     const run = parse(["--mode", "dark"], ENV, { ...world().io, spawn: spawnSync });
-    for (const worker of MIGRATED) {
+    for (const worker of migrated()) {
       const locks = await locksOf(worker);
       const refused = deployProblems(worker, locks, Object.fromEntries(Object.keys(locks)
         .map((path) => [path, readLock(path)])));

@@ -72,7 +72,7 @@ export function bodied<T extends { readonly body: string | null }>(
 }
 
 /** An item answered as it is, when its JSON fits `room`. */
-export function whole<T>(item: T, room: number): Fitted<T> | null {
+export function asIs<T>(item: T, room: number): Fitted<T> | null {
   const bytes = jsonBytes(item);
   return bytes <= room ? { item, bytes } : null;
 }
@@ -113,7 +113,7 @@ export function fitList<V, I>(value: V, items: readonly I[], empty: V,
   if (items.length === 0 || jsonBytes(value) <= PAGE_BYTES) {
     return value;
   }
-  const kept = fitPage(jsonBytes(empty), items, (item, room) => whole(item, room));
+  const kept = fitPage(jsonBytes(empty), items, (item, room) => asIs(item, room));
   return kept.length === items.length ? value : rebuild(kept);
 }
 
@@ -196,7 +196,7 @@ export function heads(changes: Changes, chars: number, windows: ReadonlyMap<stri
   const reset = changes.reset === true ? { reset: true as const } : {};
   const fixed = jsonBytes({ ...reset, cursor: changes.cursor, rows: [] });
   const kept = rows.length === 0 ? [] : fitPage(fixed, rows, ({ row }, room, first) => {
-    const fit = whole(row, room);
+    const fit = asIs(row, room);
     if (fit !== null || !first || row.deleted) {
       return fit;
     }
@@ -204,7 +204,7 @@ export function heads(changes: Changes, chars: number, windows: ReadonlyMap<stri
     if (room - meta + 2 < 2) {
       throw new Refusal("result_too_large", RESULT_TOO_LARGE);
     }
-    return whole({ ...row, head: fitted(row.head, room - meta + 2).text }, room);
+    return asIs({ ...row, head: fitted(row.head, room - meta + 2).text }, room);
   }, bytes);
   if (kept.length === 0 && changes.rows.length > 0) {
     throw new Error("a digest's first row is always read");
@@ -293,7 +293,7 @@ export function agentsPage<A extends { readonly agent_id: string },
     return empty;
   }
   const kept = fitPage(jsonBytes({ ...empty, next: `owner_agents:${"\u0001".repeat(512)}` }),
-                       items, (entry, room) => whole(entry.item, room));
+                       items, (entry, room) => asIs(entry.item, room));
   const page: { agents: A[]; owner_agents: N[]; apps: P[] } =
     { agents: [], owner_agents: [], apps: [] };
   for (const [index, entry] of kept.entries()) {

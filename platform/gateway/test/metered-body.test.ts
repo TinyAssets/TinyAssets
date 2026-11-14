@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { aliased, apiRules, ruledApis, valueAt } from "../../contract/src/api-rules";
+import { aliased, apiRules, ruledApis } from "../../contract/src/api-rules";
+import { valueAtPath } from "../../contract/src/checks";
 import type { Meter } from "../../contract/src/egress-scope";
 import {
   ASCII_BYTE_COST, BYTE_COST, GATEWAY_POOL_SLOTS, heldDeadlineMs, MIN_RATE, parseWeight, TEXT_COST,
@@ -89,7 +90,7 @@ function todayClamped(meter: Meter, body: Record<string, unknown>, cap: number,
                      path.join("\0") !== meter.output_field.join("\0"))];
   for (const [index, path] of aliases.entries()) {
     const owner = index === 0 ? objectAt(copy, path.slice(0, -1))
-      : valueAt(copy, path.slice(0, -1));
+      : valueAtPath(copy, path.slice(0, -1));
     if (typeof owner !== "object" || owner === null || Array.isArray(owner)) {
       continue;
     }
@@ -102,13 +103,13 @@ function todayClamped(meter: Meter, body: Record<string, unknown>, cap: number,
     at[last] = typeof asked === "number" && Number.isSafeInteger(asked) && asked >= 1
       ? Math.min(asked, cap) : cap;
   }
-  if (rules !== null && (rules.stream === null || valueAt(copy, rules.stream) === true)) {
+  if (rules !== null && (rules.stream === null || valueAtPath(copy, rules.stream) === true)) {
     for (const [path, value] of rules.usage) {
       objectAt(copy, path.slice(0, -1))[path.at(-1)!] = value;
     }
   }
   for (const { path, default_when_absent: value } of rules?.unpriced ?? []) {
-    if (value !== undefined && valueAt(copy, path) === undefined) {
+    if (value !== undefined && valueAtPath(copy, path) === undefined) {
       objectAt(copy, path.slice(0, -1))[path.at(-1)!] = value;
     }
   }

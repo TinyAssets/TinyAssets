@@ -39,6 +39,7 @@
 import { sha256Hex } from "../../contract/src/digest";
 import { randomBytes } from "node:crypto";
 
+import { SESSION_TTL_S } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
@@ -46,8 +47,6 @@ import type { Call, Door, OwnerState } from "./owner-do";
 import { clock } from "./clock";
 
 interface SessionLimits {
-  /** A session's life from its sign-in or its last renewal: the Python's 28,800 s. */
-  readonly ttlS: number;
   readonly maxSessions: number;
   /** How old a verified sign-in may be when its session opens: the login flow's 600 s. */
   readonly signInMaxAgeS: number;
@@ -56,7 +55,6 @@ interface SessionLimits {
 }
 
 export const SESSION_LIMITS: SessionLimits = Object.freeze({
-  ttlS: 28_800,
   maxSessions: 64,
   signInMaxAgeS: 600,
   clockMarginS: 5,
@@ -93,7 +91,7 @@ export class Sessions {
       throw new Refusal("refused", "a session opens only from a fresh interactive sign-in");
     }
     const session = randomBytes(32).toString("base64url");
-    const expiresAt = now + limits.ttlS;
+    const expiresAt = now + SESSION_TTL_S;
     const sql = this.#sql;
     this.#storage.transactionSync(() => {
       sql.exec("DELETE FROM owner_sessions WHERE expires_at <= ?", now);
@@ -125,7 +123,7 @@ export class Sessions {
 
   /** Slide a live session while its own browser keeps renewing. */
   extend(proof: unknown, now: number): { expires_at: number } {
-    const expiresAt = now + SESSION_LIMITS.ttlS;
+    const expiresAt = now + SESSION_TTL_S;
     return this.#storage.transactionSync(() => {
       const id = this.live(proof, now);
       this.#sql.exec("UPDATE owner_sessions SET expires_at = ? WHERE session_hash = ?",

@@ -76,8 +76,9 @@
  */
 import { FILE_DEFAULTS, type FileDefaults } from "../../contract/src/file-defaults";
 import { keyed, object, whole } from "../../contract/src/checks";
+import { canonical } from "../../contract/src/canonical";
 import {
-  canonical, CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, MODEL_DEFAULTS, policyDigest,
+  CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, MODEL_DEFAULTS, policyDigest,
   type PolicyDocument, POLICY_LIMITS, type SourceCeilings, validate,
 } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";

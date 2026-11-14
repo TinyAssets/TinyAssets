@@ -13,7 +13,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, expect, inject, it } from "vitest";
 
 import { inlineId } from "../../contract/src/content";
-import { canonical } from "../../contract/src/policy-document";
+import { canonical } from "../../contract/src/canonical";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
   answerName, doneName, type Entry, importMac, type ImportMessage, NO_ROWS, rehearsalName,
