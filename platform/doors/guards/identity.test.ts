@@ -1,15 +1,16 @@
 /**
  * The doors' public identity (`contract/identity.json`) is written once. Its readers that cannot
  * read it are held to it here: the owner app's own scripts, browser modules that build its
- * sign-in from their origin; and every URL the outside world reaches the doors by, against the
- * routes the cutover hands them (`routes`), as Cloudflare matches them (`routeTakes`).
+ * sign-in from their origin; and every URL the outside world reaches the doors by, and every
+ * file and page of the website, against the routes the cutover hands them (`routes`), as
+ * Cloudflare matches them (`routeTakes`).
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../ci/paths";
+import { PLATFORM, REPO } from "../../ci/paths";
 import identity from "../../contract/identity.json" with { type: "json" };
 import { routeTakes } from "../../contract/src/identity";
 
@@ -39,11 +40,21 @@ const TAKEN: readonly string[] = [
   "/.well-known/oauth-authorization-server",
 ];
 
-/** The website's URLs, which no doors route may take (`WebSite/site-react`). */
+/** Every path below `folder` of the website (`WebSite/site-react`), from it. */
+function below(folder: string): string[] {
+  return (readdirSync(join(REPO, "WebSite", "site-react", folder), { recursive: true }) as string[])
+    .map((path) => path.replaceAll("\\", "/"));
+}
+
+/**
+ * The website's URLs, which no doors route may take: each public file, each page by its folder
+ * under `app/` (exported with a trailing slash), and the marks' versioned links.
+ */
 const SITE: readonly string[] = [
-  "/", "/connect/", "/legal/", "/account/", "/llms.txt", "/favicon.ico?v=x",
-  "/site.webmanifest?v=x", "/icons/apple-touch-icon.png?v=x",
-  "/.well-known/openai-apps-challenge",
+  "/favicon.ico?v=x", "/site.webmanifest?v=x", "/icons/apple-touch-icon.png?v=x",
+  ...below("public").map((path) => `/${path}`),
+  ...below("app").filter((path) => /(^|\/)page\.tsx$/.test(path) && !/(^|\/)_/.test(path))
+    .map((path) => `/${path.slice(0, -"page.tsx".length)}`),
 ];
 
 function taken(url: string): boolean {
@@ -64,6 +75,7 @@ describe("the doors' public identity", () => {
     for (const url of TAKEN) {
       expect([url, taken(url)]).toEqual([url, true]);
     }
+    expect(SITE).toEqual(expect.arrayContaining(["/", "/connect/", "/icons/apple-touch-icon.png"]));
     for (const url of SITE) {
       expect([url, taken(url)]).toEqual([url, false]);
     }

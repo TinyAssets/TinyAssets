@@ -287,7 +287,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H). The `apply` job runs
     the plan it was approved on: the plan passes as an artifact, and `apply` stops on any
     difference (list3 P26).
-  - B13: the routes of d3 §J1; `/apple-touch-icon.png` moved off the `app` prefix, with a site
+  - B13: the routes of d3 §J1; `/apple-touch-icon.png` moved off the `app` prefix, with a
     test that fails on any site file under a doors pattern; one shared matcher of path plus
     query for the identity guard.
   - B14 builds only the platform's side of the canary (`deploy/canary.ts`); the old side stays

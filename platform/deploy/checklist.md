@@ -193,7 +193,7 @@ It never counts as "absent".
     Cloudflare's known issue "Route specificity" sends `x/*` URLs to another Worker's `x*`.
     So the doors take `app*` and `api*` whole, which a route matches against the query too
     (`/app?upgrade=1`), and the website serves no path under a doors pattern
-    (`WebSite/site-react/scripts/doors-routes.test.mjs`).
+    (`doors/guards/identity.test.ts`).
   - A refused change stops the run and says which steps are done.
 
   It then adds the egress custom domain (`egress` in `identity.json`; `wrangler triggers

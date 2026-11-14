@@ -16,13 +16,14 @@ export const APP_RESOURCE = `https://${identity.host}${identity.first_party.reso
  * Whether the Worker route `pattern` takes `url`, as Cloudflare matches one (its routes page):
  * against the whole URL a request carries, its query included, and never its fragment, which
  * no request carries. A pattern ending in `*` takes every URL it begins, any other only
- * itself; Cloudflare refuses a `*` anywhere else. Both are written alike, without a scheme:
- * from the host (the deploy kit's patterns) or from the path (`identity.json`'s).
+ * itself. Cloudflare refuses an infix `*`, and a leading one in a host, which these patterns
+ * never hold, is refused here too. Both are written alike, without a scheme: from the host
+ * (the deploy kit's patterns) or from the path (`identity.json`'s).
  */
 export function routeTakes(pattern: string, url: string): boolean {
   const star = pattern.indexOf("*");
   if (star !== -1 && star !== pattern.length - 1) {
-    throw new Error(`the route ${pattern} holds a * before its end, which Cloudflare refuses`);
+    throw new Error(`the route ${pattern} holds a * before its end`);
   }
   const sent = url.split("#", 1)[0]!;
   return star === -1 ? sent === pattern : sent.startsWith(pattern.slice(0, -1));
