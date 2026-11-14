@@ -47,7 +47,7 @@ import type {
 } from "./owner-do";
 import { signinUrls } from "../../contract/src/egress";
 import { FRAME_VERSION } from "../../contract/src/run-events";
-import { started } from "./sandbox";
+import { started, vendorHosts } from "./sandbox";
 import { clock } from "./clock";
 import { sealRoute } from "../../contract/src/routing-mac";
 import type { Runs } from "./runs";
@@ -457,6 +457,7 @@ export const signinsDoors = Object.freeze({
         id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
         authority: begun.row.authority, lease: begun.lease,
         tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
+        hosts: vendorHosts(begun.row.engine, "vendor_login_in_sandbox", begun.region),
         route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
                                                      authority: begun.row.authority }),
         urls: signinUrls(begun.row.id) }));

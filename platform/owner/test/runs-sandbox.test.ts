@@ -14,7 +14,8 @@ import { describe, expect, it } from "vitest";
 
 import { SANDBOX_WAITING } from "../src/sandbox";
 import { gated } from "./gateway-support";
-import { defineAgent, recorder, runnerBinding, scripted, startOf, TIERS } from "./runs-support";
+import { defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf,
+         TIERS } from "./runs-support";
 import { drainDue } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
@@ -71,5 +72,28 @@ describe("a lease that ends", () => {
     await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect((await recorder(r.stub)).releases).toEqual([{ lease_id: start.lease.lease_id }]);
+  });
+});
+
+describe("the vendor hosts a job hands the sandbox Worker", () => {
+  it("are its engine's sign-in and model hosts on the vendor's sign-in, none on a key",
+     async () => {
+    const r = await gated();
+    const signedIn = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    expect(signedIn.start.hosts).toEqual(["claude.ai", "platform.claude.com",
+                                          "console.anthropic.com", "api.anthropic.com",
+                                          "claude.com"]);
+    const connection = await r.connect("sk-good");
+    const keyed = await ownerRun(r.stub, r.bind(), { engine: "claude-code",
+                                                     credential: "api_key", connection,
+                                                     scopes: [] });
+    expect(keyed.start.hosts).toEqual([]);
+  });
+
+  it("are a sign-in's engine's and its chosen region's alone", async () => {
+    const r = await gated();
+    await r.stub.signinStart(r.bind(), { engine: "kimi", region: "global" });
+    expect((await recorder(r.stub)).signins.at(-1)!.hosts)
+      .toEqual(["auth.kimi.ai", "api.kimi.ai", "www.kimi.ai"]);
   });
 });

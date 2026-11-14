@@ -91,6 +91,13 @@ export interface SandboxStart {
   readonly tokens: { readonly sync_token: string; readonly runner_token: string } | null;
   /** The owner's network, its transform carrying the egress token, with `tokens` only. */
   readonly network: NetworkPlan | null;
+  /**
+   * The vendor hosts the run's sandbox network is let out to, beside the network's own: its
+   * engine's sign-in and model hosts on the vendor's own sign-in, none on a key. The owner's
+   * plan hands them as it hands the network (`owner/src/sandbox.ts`), so the sandbox Worker
+   * reads no source record.
+   */
+  readonly hosts: readonly string[];
   readonly config: RunConfig;
   /**
    * The run's MCP door (the record's `{mcp_url}`, carrying the run's own secret), its event
@@ -132,7 +139,7 @@ export type Started = { readonly started: true }
  * its sign-out: the record's `cli.login` run there by the runner as a user of its own
  * (`ta-runner login-launch`), under the sandbox's lease, which a start that opened it
  * configures (`tokens`, `network`) as a run's would. `region` is the owner's choice among
- * the record's `cli.regions` (its hosts let out), `urls.events` the sign-in's own event door
+ * the record's `cli.regions` (its hosts in `hosts`), `urls.events` the sign-in's own event door
  * and `urls.signin` the presence report's.
  */
 export interface SandboxSignin {
@@ -144,6 +151,8 @@ export interface SandboxSignin {
   readonly lease: { readonly lease_id: string; readonly epoch: number };
   readonly tokens: SandboxStart["tokens"];
   readonly network: NetworkPlan | null;
+  /** The engine's vendor hosts and its region's, let out as a start's (`SandboxStart.hosts`). */
+  readonly hosts: readonly string[];
   /**
    * Whose sandbox this is, sealed for E2B's metadata, as a start's (`SandboxStart.route`): a
    * sandbox a sign-in first makes costs as any other, and its lifecycle events reach this

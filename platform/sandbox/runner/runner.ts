@@ -66,7 +66,7 @@ import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 
 import { RUN_BASICS } from "../../sources/src/run-env";
-import type { SourceRecord } from "../../sources/src/schema";
+import { type Served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
 import { RUNNER_HEADER } from "../../contract/src/egress";
 import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
@@ -422,8 +422,8 @@ function atoms(): string[] {
  * Whether the engine is signed in inside this sandbox: its record's `status_argv` (and
  * `status_equals`), or, for a record with none, its `state_checks` over the engine's store.
  */
-async function signedIn(rec: SourceRecord): Promise<boolean> {
-  const login = rec.cli?.login;
+async function signedIn(rec: Served): Promise<boolean> {
+  const login = rec.cli.login;
   if (login === undefined) {
     return false;
   }
@@ -783,7 +783,7 @@ async function syncLocked(job: SyncJob): Promise<number> {
         await syncIn(client, place, mirror);
         const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
         const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
-        const made = project(WORKSPACE, job.agent, record(job.engine).cli!.skills_paths,
+        const made = project(WORKSPACE, job.agent, record(job.engine).cli.skills_paths,
                              previous);
         safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
         process.stdout.write(JSON.stringify({ ok: true }));
@@ -1057,7 +1057,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   const start = readJson<StartDoc>(`${dir}/${JOB_FILES.start}`);
   const lease = readJson<LeaseFile>(LEASE_FILE);
   const rec = record(start.engine);
-  const cli = rec.cli!;
+  const cli = rec.cli;
   const prior = jobState<RunState>("run", run);
   const state: RunState = { pid: process.pid, cli_pid: null, seq: prior?.seq ?? 0,
                             session_id: prior?.session_id ?? start.session_id,
@@ -1259,11 +1259,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
 
 async function reportSignins(start: StartDoc, lease: LeaseFile): Promise<void> {
   const signins: { engine: string; signed_in: boolean }[] = [];
-  for (const rec of RECORDS.values()) {
-    if (rec.cli!.credential.includes("vendor_login_in_sandbox")
-        && rec.cli!.login !== undefined) {
-      signins.push({ engine: rec.id, signed_in: await safeSignedIn(rec) });
-    }
+  for (const rec of [...RECORDS.values()].filter(signsIn)) {
+    signins.push({ engine: rec.id, signed_in: await safeSignedIn(rec) });
   }
   await postSignins(start.urls.signin, lease, signins);
 }
@@ -1282,7 +1279,7 @@ async function postSignins(url: string, lease: LeaseFile,
   }
 }
 
-async function safeSignedIn(rec: SourceRecord): Promise<boolean> {
+async function safeSignedIn(rec: Served): Promise<boolean> {
   try {
     return await signedIn(rec);
   } catch {
@@ -1333,7 +1330,7 @@ async function loginRun(id: string): Promise<number> {
   const doc = readJson<SigninDoc>(`${dir}/${JOB_FILES.start}`);
   const lease = readJson<LeaseFile>(LEASE_FILE);
   const rec = record(doc.engine);
-  const login = rec.cli!.login;
+  const login = rec.cli.login;
   const work = new Job("signin", id, doc.urls.events, lease, 0);
   const { outbox } = work;
   await work.begin();  // the sign-in's first heartbeat: it holds the lease
@@ -1343,7 +1340,7 @@ async function loginRun(id: string): Promise<number> {
   let expiry: ReturnType<typeof setTimeout> | null = null;
   let expired = false;
   try {
-    if (login === undefined || !rec.cli!.credential.includes("vendor_login_in_sandbox")) {
+    if (login === undefined) {
       throw new Error(`engine ${rec.id} has no vendor sign-in`);
     }
     if (doc.mode === "out") {

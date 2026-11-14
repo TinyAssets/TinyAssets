@@ -35,9 +35,9 @@ import { AGENTS_DIR } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 import type { NetworkDocument } from "../../contract/src/sandbox";
 import { STEP_NS, stepNanos } from "../../contract/src/sync-ignore";
-import { bundledRecords, engineHosts } from "../../sources/src/catalog";
+import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
-import type { SourceRecord } from "../../sources/src/schema";
+import { engineHosts, type Served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, signinShape } from "../../sources/src/signin";
 
 import { binPath, invocation, isKept, keptPaths } from "./engine";
@@ -47,7 +47,7 @@ import { loginArgv, onTerminal, plain, type Prompt, prompted } from "./login";
 import { COMMAND_MS, EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { CONVERSATIONS, engineEnv, giveTree, homeOf, loginFiles, record, RECORDS, shared,
-         sortedWalk, sources, spawnBounded, STORE, systemOf, withRunUser } from "./session";
+         sortedWalk, spawnBounded, STORE, systemOf, withRunUser } from "./session";
 import { asUser } from "./users";
 
 /**
@@ -118,21 +118,19 @@ const STRACE = "(command -v strace || (apt-get -qq update && apt-get -qq install
 export function plan(runner: string): Plan {
   const logins: PlanStep[] = [];
   const routes: PlanStep[] = [];
-  for (const rec of [...RECORDS.values()].sort((a, b) => (a.id < b.id ? -1 : 1))) {
-    const cli = rec.cli!;
-    if (cli.login !== undefined) {
+  for (const rec of RECORDS.values()) {
+    const cli = rec.cli;
+    if (signsIn(rec)) {
       const regions = Object.keys(cli.regions ?? {}).sort();
       for (const region of regions.length > 0 ? regions : [null]) {
         logins.push({ check: "login", timeout_s: 180,
                       argv: [PROBE.login, rec.id, ...(region === null ? [] : [region])],
-                      network: closedNetwork(engineHosts(rec, region)) });
+                      network: closedNetwork(engineHosts(rec.id, region)) });
       }
     }
-    if (cli.credential.includes("api_key")) {
-      for (const provider of Object.keys(cli.api_key_env ?? {}).sort()) {
-        routes.push({ check: "route", timeout_s: 300, network: null,
-                      argv: [PROBE.route, rec.id, provider, ...DNS_SERVERS] });
-      }
+    for (const provider of Object.keys(cli.api_key_env ?? {}).sort()) {
+      routes.push({ check: "route", timeout_s: 300, network: null,
+                    argv: [PROBE.route, rec.id, provider, ...DNS_SERVERS] });
     }
   }
   return {
@@ -160,7 +158,7 @@ export function plan(runner: string): Plan {
  */
 async function loginProbe(engine: string, region: string | null): Promise<number> {
   const rec = record(engine);
-  const login = rec.cli!.login;
+  const login = rec.cli.login;
   if (login === undefined) {
     throw new Error(`engine ${engine} has no vendor sign-in`);
   }
@@ -246,9 +244,9 @@ interface ProbeTurn {
  * second resume it, a compaction be seen; and every request of both is judged
  * (`routeVerdict`).
  */
-async function probeRoute(rec: SourceRecord, provider: string,
+async function probeRoute(rec: Served, provider: string,
                           resolvers: readonly string[]): Promise<Record<string, unknown>> {
-  const cli = rec.cli!;
+  const cli = rec.cli;
   const egress = sealedScope(provider, rec.id);
   const requests: Captured[] = [];
   const server = createHttpServer((request: IncomingMessage, response) => {
@@ -286,7 +284,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
   // The first turn's own word, which a resumed turn's requests carry only if it loaded the
   // first turn's history (a CLI that silently starts afresh fails).
   const nonce = `probe${hex(8)}`;
-  const engine = runEnv(sources, rec.id, "api_key");
+  const engine = runEnv(bundledSources(), rec.id, "api_key");
   const keyed = sandboxEnv([{ connection, provider, egress }], () => hex(16),
                            { ...engine, run, secret, connection });
   const placeholder = Object.values(keyed).find((value) => value.startsWith("ta_ph_"))!;
@@ -476,8 +474,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
 async function routeProbe(engine: string, provider: string,
                           resolvers: readonly string[]): Promise<number> {
   const rec = record(engine);
-  if (!rec.cli!.credential.includes("api_key")
-      || rec.cli!.api_key_env?.[provider] === undefined) {
+  if (rec.cli.api_key_env?.[provider] === undefined) {
     throw new Error(`engine ${engine} runs on no API key of provider ${provider}`);
   }
   const result = await probeRoute(rec, provider, resolvers);
