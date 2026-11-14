@@ -3,10 +3,12 @@
  *
  * Each Worker states its allow-list as data (`<workspace>/guards/rules.ts`): the keys its
  * config may set, its compatibility flags, its secrets (declared by name, which binds
- * nothing), the classes its migrations make, its vars, buckets and KV namespaces, and every
- * other key whose value is fixed. `configProblems` holds a config to it; what a Worker
- * checks across configs or sources (the doors' entrypoints, the owner's bound Workers) is
- * its own, built on the same rule checks.
+ * nothing), the classes its migrations make, and its namespaces, vars, buckets, KV
+ * namespaces and queue producers by binding name, and each other key whose value is itself
+ * a security statement. A value the config is the one home of (a queue's, a bucket's or a
+ * namespace's name, an id, a build command) is not restated. `configProblems` holds a config
+ * to it; what a Worker checks across configs or sources (the doors' entrypoints, the owner's
+ * bound Workers) is its own, built on the same rule checks.
  */
 import { join } from "node:path";
 
@@ -39,13 +41,23 @@ export interface ConfigRules {
   readonly secrets?: readonly string[];
   /** The classes its migrations make, all SQLite-backed, in one migration's list. */
   readonly classes?: readonly string[];
+  /**
+   * Its own classes' namespaces, by binding, in order, each a binding and one of its
+   * `classes` alone (no `script_name`, so no other Worker's class).
+   */
+  readonly objects?: readonly string[];
   /** Its vars, by name exactly, each one of the values listed, or any text (`null`). */
   readonly vars?: Readonly<Record<string, readonly string[] | null>>;
   /** Its R2 buckets, by binding, in order, each a binding and a bucket name alone. */
   readonly buckets?: readonly string[];
   /** Its KV namespaces, by binding, each a binding and a distinct placeholder id alone. */
   readonly kv?: readonly string[];
-  /** Every other key whose value is fixed, exactly. */
+  /**
+   * Its queues: its producers, by binding, in order, each a binding and a queue name alone,
+   * and whether it consumes (which queues is its own guard's to hold, against the producers').
+   */
+  readonly queues?: { readonly producers: readonly string[]; readonly consumes: boolean };
+  /** Each other key whose value is a security statement, exactly. */
   readonly exact?: Readonly<Record<string, unknown>>;
 }
 
@@ -135,8 +147,38 @@ function kvProblems(namespaces: unknown, bindings: readonly string[]): string[] 
   return fits ? [] : [`kv_namespaces are exactly ${bindings.join(", ")}, distinct placeholders`];
 }
 
+/** Whether `list` holds exactly `names`, in order, by `field`, each with exactly `keys`. */
+function named(list: unknown, names: readonly string[], keys: readonly string[],
+               field: string): list is Config[] {
+  return Array.isArray(list) && list.length === names.length
+    && list.every((each, i) => object(each) && same(Object.keys(each).sort(), keys)
+                               && each[field] === names[i]);
+}
+
+/** How `objects` binds other than exactly `bindings`, each to one of `classes`. */
+function objectProblems(objects: unknown, bindings: readonly string[],
+                        classes: readonly string[]): string[] {
+  const fits = object(objects) && same(Object.keys(objects), ["bindings"])
+    && named(objects["bindings"], bindings, ["class_name", "name"], "name")
+    && objects["bindings"].every((binding) => classes.includes(String(binding["class_name"])));
+  return fits ? [] : [`durable_objects binds exactly ${bindings.join(", ")}, each a class of ` +
+                      "its own"];
+}
+
+/** How `queues` holds other than `rule`'s producers, and consumers only where it consumes. */
+function queueProblems(queues: unknown, rule: NonNullable<ConfigRules["queues"]>): string[] {
+  const parts = rule.consumes ? ["consumers", "producers"] : ["producers"];
+  const fits = object(queues) && same(Object.keys(queues).sort(), parts)
+    && named(queues["producers"], rule.producers, ["binding", "queue"], "binding")
+    && queues["producers"].every((producer) => typeof producer["queue"] === "string")
+    && (!rule.consumes || (Array.isArray(queues["consumers"]) && queues["consumers"]
+      .every((consumer: unknown) => object(consumer) && typeof consumer["queue"] === "string")));
+  return fits ? [] : [`queues produce exactly by ${rule.producers.join(", ")}` +
+                      (rule.consumes ? ", and consume" : ", and consume none")];
+}
+
 /**
- * How the platform's Worker configs (`configs`, by Worker name) disagree on their
+ * How the platform's Worker configs (`configs`, by Worker folder) disagree on their
  * compatibility date: every Worker runs at one date, so the runtime's behaviour one Worker
  * relies on (a refusal's own fields across RPC, `contract/guards/refusal.test.ts`) is every
  * other's too, and a move of the date is one change to all of them.
@@ -201,8 +243,14 @@ export function configProblems(config: Config, rules: ConfigRules): string[] {
   if (rules.buckets !== undefined) {
     problems.push(...bucketProblems(config["r2_buckets"], rules.buckets));
   }
+  if (rules.objects !== undefined) {
+    problems.push(...objectProblems(config["durable_objects"], rules.objects, rules.classes ?? []));
+  }
   if (rules.kv !== undefined) {
     problems.push(...kvProblems(config["kv_namespaces"], rules.kv));
+  }
+  if (rules.queues !== undefined) {
+    problems.push(...queueProblems(config["queues"], rules.queues));
   }
   for (const [key, value] of Object.entries(rules.exact ?? {})) {
     problems.push(...exactProblems(config, key, value));

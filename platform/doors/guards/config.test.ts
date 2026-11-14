@@ -1,25 +1,20 @@
 /**
  * The doors Worker's config binds exactly what the doors need, and cannot deploy
  * (research §13): its allow-list (`rules.ts`), held by the platform's config checker
- * (`ci/kit/config.ts`), and what it binds held against the other Workers:
+ * (`ci/kit/config.ts`), and what it binds held against the other Workers' configs and
+ * sources, each named by its folder and read from its own config:
  *
- * - `OWNER`: the owner Worker's `OwnerDO` namespace, by `script_name`, which must be the
- *   owner Worker's own SQLite class in the platform; the owner Worker declares the same
- *   routing key, `ROUTING_MAC_KEY`.
- * - `GATEWAY`: the gateway Worker's `ConnectGateway` entrypoint, whose class in the
- *   gateway's source serves exactly `seal`, `exchange` and `verify` (the connect steps)
- *   and `sealDoorbell` and `verifyDoorbell` (a wake's secret), so the doors can make no model call through it and hold no keyring. Only
- *   `src/connect.ts` names it (the binder guard).
- * - `EGRESS`: the gateway Worker's `EgressGateway` entrypoint, whose class serves exactly
- *   `forward` (G4's egress door). Only `src/egress.ts` names it.
- * - `FILES`: the files Worker's `FilesUpload` entrypoint, whose class serves exactly
- *   `putChunks`, what the file door's bytes call (slice L), and nothing that reads a chunk,
- *   a generation or a key (review M5-1: the doors carry an owner's wrapped key); only
- *   `src/file-bytes.ts` names it.
- * - The cutover's import window (`IMPORT_WINDOW`, `rules.ts`): the staging bucket, the import
- *   queue's producer and its consumer with its dead-letter queue, exactly, and named by
- *   the generated queue name (`QUEUES.IMPORTS`, `contract/src/queue-names.ts`), which the
- *   job sends to; deleted at the cutover.
+ * - `OWNER` (`OBJECTS`): the owner Worker's `OwnerDO` namespace, by the owner Worker's name,
+ *   which must be its own SQLite class; the owner Worker declares the same routing key
+ *   (`SHARED_SECRETS`).
+ * - `GATEWAY`, `EGRESS` and `FILES` (`SERVICES`): each one entrypoint of its Worker, whose
+ *   class in that Worker's entry extends `WorkerEntrypoint` and serves exactly what the rules
+ *   list. Only `src/connect.ts`, `src/egress.ts` and `src/file-bytes.ts` name them (the
+ *   binder guard).
+ * - Its queues: it consumes exactly the queues the platform's Workers produce onto, so the
+ *   entry's dispatch by `QUEUES` (generated from those producers) takes every one; and no
+ *   other Worker binds its bucket or produces onto its queue (the import window's,
+ *   `IMPORT_WINDOW`, deleted at the cutover).
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -28,36 +23,16 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { configProblems, configTests } from "../../ci/kit/config";
+import { configProblems, configTests, patched } from "../../ci/kit/config";
 import { PLATFORM } from "../../ci/paths";
 import { type Config, platformConfigs } from "../../ci/kit/sources";
 import { readWrangler } from "../../ci/wrangler";
 
-import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
-
-import { CONFIG, IMPORT_WINDOW } from "./rules";
+import { CONFIG, IMPORT_WINDOW, OBJECTS, SERVICES, SHARED_SECRETS } from "./rules";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
-/** The sandbox tokens' routing key (`routing-mac.ts`), the owner's one secret too. */
-const OWNER_SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
-/** The files Worker, for the file door's bytes. */
-const FILES = Object.freeze({ binding: "FILES", service: "tinyassets-files",
-                             entrypoint: "FilesUpload" });
-const UPLOAD_METHODS: readonly string[] = Object.freeze(["putChunks"]);
-/** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
-const GATEWAY = Object.freeze({ binding: "GATEWAY", service: "tinyassets-gateway",
-                                entrypoint: "ConnectGateway" });
-const CONNECT_METHODS: readonly string[] = Object.freeze(["exchange", "seal", "sealDoorbell",
-                                                          "verify", "verifyDoorbell"]);
-const EGRESS = Object.freeze({ binding: "EGRESS", service: "tinyassets-gateway",
-                               entrypoint: "EgressGateway" });
-const EGRESS_METHODS: readonly string[] = Object.freeze(["forward"]);
-const VARS = Object.fromEntries(Object.entries(CONFIG.vars!).map(([name, values]) =>
-  [name, values![0]!]));
-const QUEUES = CONFIG.exact!["queues"] as { producers: object[]; consumers: object[] };
-const RING_AND_ERASURE = QUEUES.consumers.filter((consumer) => consumer !== IMPORT_WINDOW.consumer);
-const ASSETS = CONFIG.exact!["assets"] as Config;
-const FLAGS = (CONFIG.flags as { exactly: readonly string[] }).exactly;
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 /**
  * The members each class a source exports serves, by class name: its own public methods
@@ -100,52 +75,76 @@ export function extendsOf(source: string, name: string): string | null {
   return found;
 }
 
-/** Each way `config` binds more than the doors need, or could deploy. */
+/** The queues `config` produces onto. */
+function produced(config: Config): string[] {
+  const producers = (config["queues"] as { producers?: unknown } | undefined)?.producers;
+  return Array.isArray(producers) ? producers.map((each: Config) => String(each["queue"])) : [];
+}
+
+/** The buckets `config` binds, by bucket name. */
+function bucketNames(config: Config): string[] {
+  const buckets = config["r2_buckets"];
+  return Array.isArray(buckets) ? buckets.map((each: Config) => String(each["bucket_name"])) : [];
+}
+
+/**
+ * Each way `config` binds more than the doors need, or could deploy, against the platform's
+ * other configs (`platform`, by Worker folder) and their entries' sources (`sources`, by
+ * Worker folder).
+ */
 export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string, Config>,
-                                    gatewaySource: string,
-                                    filesSource: string = FILES_SOURCE): string[] {
+                                    sources: ReadonlyMap<string, string>): string[] {
   const problems = configProblems(config, CONFIG);
-  const ownerConfig = platform.get("tinyassets-owner");
-  if (JSON.stringify(ownerConfig?.["secrets"]) !== JSON.stringify(OWNER_SECRETS)) {
-    problems.push("the owner Worker declares the same ROUTING_MAC_KEY");
-  }
-  const objects = config["durable_objects"] as { bindings?: unknown } | undefined;
-  const bindings = objects?.bindings;
-  if (Object.keys(objects ?? {}).join() !== "bindings" || !Array.isArray(bindings)
-      || bindings.length !== 1
-      || JSON.stringify(bindings[0]) !== JSON.stringify(
-        { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" })) {
-    problems.push("durable_objects binds exactly OWNER to tinyassets-owner's OwnerDO");
-  } else {
-    const owner = platform.get("tinyassets-owner");
-    const classes = ((owner?.["migrations"] ?? []) as { new_sqlite_classes?: string[] }[])
-      .flatMap((m) => m.new_sqlite_classes ?? []);
-    if (!classes.includes("OwnerDO")) {
-      problems.push("OWNER's script is not the platform's owner Worker with its OwnerDO class");
+  const nameOf = (worker: string) => platform.get(worker)?.["name"];
+  for (const [worker, names] of Object.entries(SHARED_SECRETS)) {
+    const declared = (platform.get(worker)?.["secrets"] as { required?: unknown } | undefined)
+      ?.required;
+    if (!Array.isArray(declared) || !names.every((name) => declared.includes(name))) {
+      problems.push(`the ${worker} Worker declares ${names.join(", ")} too`);
     }
   }
-  const services = config["services"];
-  if (!Array.isArray(services) || services.length !== 3
-      || JSON.stringify(services[0]) !== JSON.stringify(GATEWAY)
-      || JSON.stringify(services[1]) !== JSON.stringify(EGRESS)
-      || JSON.stringify(services[2]) !== JSON.stringify(FILES)) {
-    problems.push("services binds exactly GATEWAY to tinyassets-gateway's ConnectGateway, " +
-                  "EGRESS to its EgressGateway and FILES to tinyassets-files' FilesUpload");
-  } else if (platform.get(GATEWAY.service) === undefined
-             || platform.get(FILES.service) === undefined) {
-    problems.push("GATEWAY's or FILES's service is not the platform's own Worker");
+  const objects = Object.entries(OBJECTS).map(([name, { worker, class_name }]) =>
+    ({ name, class_name, script_name: nameOf(worker) }));
+  if (!same(config["durable_objects"], { bindings: objects })) {
+    problems.push(`durable_objects binds exactly ${Object.entries(OBJECTS).map(([name, each]) =>
+      `${name} to the ${each.worker} Worker's ${each.class_name}`).join(", ")}`);
   } else {
-    for (const [service, methods] of [[GATEWAY, CONNECT_METHODS], [EGRESS, EGRESS_METHODS]] as const) {
-      if (JSON.stringify(exportedMethods(gatewaySource).get(service.entrypoint))
-          !== JSON.stringify(methods)) {
-        problems.push(`the gateway's ${service.entrypoint} serves exactly ${methods.join(", ")}`);
+    for (const { worker, class_name } of Object.values(OBJECTS)) {
+      const made = ((platform.get(worker)?.["migrations"] ?? []) as
+                    { new_sqlite_classes?: string[] }[]).flatMap((m) => m.new_sqlite_classes ?? []);
+      if (!made.includes(class_name)) {
+        problems.push(`the ${worker} Worker makes no SQLite ${class_name}`);
       }
     }
-    if (JSON.stringify(exportedMethods(filesSource).get(FILES.entrypoint))
-        !== JSON.stringify(UPLOAD_METHODS)
-        || extendsOf(filesSource, FILES.entrypoint) !== "WorkerEntrypoint") {
-      problems.push(`the files Worker's ${FILES.entrypoint} extends WorkerEntrypoint and ` +
-                    "serves exactly putChunks");
+  }
+  const services = Object.entries(SERVICES).map(([binding, { worker, entrypoint }]) =>
+    ({ binding, service: nameOf(worker), entrypoint }));
+  if (!same(config["services"], services)) {
+    problems.push(`services binds exactly ${Object.entries(SERVICES).map(([binding, each]) =>
+      `${binding} to the ${each.worker} Worker's ${each.entrypoint}`).join(", ")}`);
+  } else {
+    for (const { worker, entrypoint, serves } of Object.values(SERVICES)) {
+      const source = sources.get(worker) ?? "";
+      if (!same(exportedMethods(source).get(entrypoint), serves)
+          || extendsOf(source, entrypoint) !== "WorkerEntrypoint") {
+        problems.push(`the ${worker} Worker's ${entrypoint} extends WorkerEntrypoint and ` +
+                      `serves exactly ${serves.join(", ")}`);
+      }
+    }
+  }
+  const others = [...platform].filter(([worker]) => worker !== CONFIG.worker);
+  const consumers = (config["queues"] as { consumers?: { queue: string }[] } | undefined)
+    ?.consumers ?? [];
+  const everyProduced = new Set([config, ...others.map(([, other]) => other)].flatMap(produced));
+  if (!same(consumers.map((each) => each.queue).sort(), [...everyProduced].sort())) {
+    problems.push("the doors consume exactly the queues the platform's Workers produce onto");
+  }
+  for (const [worker, other] of others) {
+    for (const bucket of bucketNames(other).filter((name) => bucketNames(config).includes(name))) {
+      problems.push(`the ${worker} Worker binds the doors' bucket ${bucket}`);
+    }
+    for (const queue of produced(other).filter((name) => produced(config).includes(name))) {
+      problems.push(`the ${worker} Worker produces onto the doors' queue ${queue}`);
     }
   }
   return problems;
@@ -153,72 +152,91 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
 
 const config = readWrangler(DOORS);
 const platform = platformConfigs();
-const gatewaySource = readFileSync(join(PLATFORM, "gateway", "src", "index.ts"), "utf8");
-const FILES_SOURCE = readFileSync(join(PLATFORM, "files", "src", "index.ts"), "utf8");
-/** The upload entrypoint's head, whatever contract it implements. */
-const UPLOAD_HEAD = /export class FilesUpload extends WorkerEntrypoint<FilesEnv>[^{]*\{/;
+/** The entry of each Worker the doors bind a service of, by folder. */
+const SOURCES: ReadonlyMap<string, string> = new Map(
+  [...new Set(Object.values(SERVICES).map((each) => each.worker))].map((worker) =>
+    [worker, readFileSync(join(PLATFORM, worker, String(platform.get(worker)!["main"])),
+                          "utf8")]));
+/** The doors' own bindings, as the config holds them, for the probes. */
+const SERVICE = Object.fromEntries((config["services"] as Config[]).map((each) =>
+  [String(each["binding"]), each])) as Record<keyof typeof SERVICES, Config>;
+const { GATEWAY, EGRESS, FILES } = SERVICE;
+const QUEUES = config["queues"] as { producers: Config[]; consumers: Config[] };
+const IMPORTS = QUEUES.producers.find((each) => each["binding"] === IMPORT_WINDOW.producer)!;
+const IMPORT_CONSUMER = QUEUES.consumers.find((each) => each["queue"] === IMPORTS["queue"])!;
+const OTHER_CONSUMERS = QUEUES.consumers.filter((each) => each !== IMPORT_CONSUMER);
+const STAGING = (config["r2_buckets"] as Config[])
+  .find((each) => each["binding"] === IMPORT_WINDOW.bucket)!;
+const OWNER_NAMESPACE = (config["durable_objects"] as { bindings: Config[] }).bindings[0]!;
+const FILES_BUCKET = String((platform.get("files")!["r2_buckets"] as Config[])[0]!["bucket_name"]);
+const ASSETS = CONFIG.exact!["assets"] as Config;
+const FLAGS = config["compatibility_flags"] as string[];
+const VARS = Object.fromEntries(Object.entries(CONFIG.vars!).map(([name, values]) =>
+  [name, values![0]!]));
+const scriptOf = (worker: string) => String(platform.get(worker)!["name"]);
+/** The entrypoints' heads, whatever contract each implements. */
+const head = (source: string, entrypoint: string, env: string) => new RegExp(
+  `export class ${entrypoint} extends WorkerEntrypoint<${env}>[^{]*\\{`).exec(source)![0];
+const GATEWAY_SOURCE = SOURCES.get("gateway")!;
+const FILES_SOURCE = SOURCES.get("files")!;
+const UPLOAD_HEAD = head(FILES_SOURCE, "FilesUpload", "FilesEnv");
 
 configTests(CONFIG, {
   refused: ["routes", "route", "env", "migrations", "ratelimits", "d1_databases",
             "worker_loaders", "unsafe", "tail_consumers", "dispatch_namespaces"],
-  problems: (probe) => doorsConfigProblems(probe, platform, gatewaySource),
+  problems: (probe) => doorsConfigProblems(probe, platform, SOURCES),
   probes: [
-    ["a route", { routes: [{ pattern: "tinyassets.io/mcp*", zone_name: "tinyassets.io" }] }],
-    ["a custom domain", { route: { pattern: "tinyassets.io", custom_domain: true } }],
+    ["a route", { routes: [{ pattern: "example.test/mcp*", zone_name: "example.test" }] }],
+    ["a custom domain", { route: { pattern: "example.test", custom_domain: true } }],
     ["workers.dev", { workers_dev: true }],
     ["preview URLs", { preview_urls: true }],
-    ["an environment", { env: { prod: { routes: ["tinyassets.io/*"] } } }],
-    ["one service", { services: [{ binding: "FILES", service: "tinyassets-files" }] }],
+    ["an environment", { env: { prod: { routes: ["example.test/*"] } } }],
+    ["one service", { services: [{ binding: "FILES", service: FILES["service"] }] }],
     ["no service", { services: [] }],
     ["no files service", { services: [GATEWAY, EGRESS] }],
     ["no egress entrypoint", { services: [GATEWAY, FILES] }],
     ["the egress door on the gateway's default entrypoint", { services: [GATEWAY,
-      { binding: "EGRESS", service: "tinyassets-gateway" }, FILES] }],
+      { binding: "EGRESS", service: EGRESS["service"] }, FILES] }],
     ["the egress door on the connect entrypoint", { services: [GATEWAY,
-      { ...EGRESS, entrypoint: "ConnectGateway" }, FILES] }],
+      { ...EGRESS, entrypoint: GATEWAY["entrypoint"] }, FILES] }],
     ["the egress door under another name", { services: [GATEWAY, { ...EGRESS, binding: "OUT" },
                                                         FILES] }],
     ["the gateway's whole surface", { services: [{ binding: "GATEWAY",
-                                                   service: "tinyassets-gateway" }, EGRESS,
+                                                   service: GATEWAY["service"] }, EGRESS,
                                                  FILES] }],
     ["the gateway's default entrypoint", { services: [{ ...GATEWAY, entrypoint: "Gateway" },
                                                       EGRESS, FILES] }],
     ["the gateway under another name", { services: [{ ...GATEWAY, binding: "MODELS" }, EGRESS,
                                                     FILES] }],
     ["FILES to another Worker", { services: [GATEWAY, EGRESS, { ...FILES,
-                                                                service: "tinyassets-owner" }] }],
+                                                                service: scriptOf("owner") }] }],
     ["the files Worker's whole surface (review M5-1)", { services: [GATEWAY, EGRESS,
-      { binding: "FILES", service: "tinyassets-files" }] }],
+      { binding: "FILES", service: FILES["service"] }] }],
     ["the files Worker's default entrypoint", { services: [GATEWAY, EGRESS,
       { ...FILES, entrypoint: "FilesService" }] }],
     ["a fourth service", { services: [GATEWAY, EGRESS, FILES,
-      { binding: "CODEMODE_VM", service: "tinyassets-codemode" }] }],
+      { binding: "CODEMODE_VM", service: scriptOf("codemode") }] }],
     ["no app files", { assets: undefined }],
     ["app files served past the Worker", { assets: { ...ASSETS, run_worker_first: false } }],
     ["app files from another directory", { assets: { ...ASSETS, directory: "./src" } }],
     ["the assets' own not-found page", { assets: { ...ASSETS,
                                                    not_found_handling: "single-page-application" } }],
-    ["a bucket", { r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
+    ["a bucket", { r2_buckets: [{ binding: "BLOBS", bucket_name: FILES_BUCKET }] }],
     ["the files Worker's bucket as the staging bucket", { r2_buckets: [
-      { ...IMPORT_WINDOW.bucket, bucket_name: "tinyassets-files" }] }],
-    ["a second bucket", { r2_buckets: [IMPORT_WINDOW.bucket,
-                                       { binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
+      { ...STAGING, bucket_name: FILES_BUCKET }] }],
+    ["a second bucket", { r2_buckets: [STAGING, { binding: "BLOBS", bucket_name: "b" }] }],
     ["no staging bucket", { r2_buckets: [] }],
-    ["no ring consumer", { queues: undefined }],
-    ["a queue producer", { queues: { ...QUEUES, producers: [IMPORT_WINDOW.producer,
-                                                            { binding: "OUT",
-                                                              queue: "tinyassets-x" }] } }],
-    ["the import producer to another queue", { queues: { ...QUEUES, producers: [
-      { ...IMPORT_WINDOW.producer, queue: "tinyassets-erasure" }] } }],
+    ["no queues", { queues: undefined }],
+    ["a queue producer", { queues: { ...QUEUES, producers: [IMPORTS, { binding: "OUT",
+                                                                       queue: "q" }] } }],
+    ["the import producer onto another Worker's queue", { queues: { ...QUEUES, producers: [
+      { ...IMPORTS, queue: produced(platform.get("owner")!)[0] }] } }],
     ["no import producer", { queues: { consumers: QUEUES.consumers } }],
-    ["no import consumer", { queues: { ...QUEUES, consumers: RING_AND_ERASURE } }],
-    ["the import consumer without its dead-letter queue", { queues: { ...QUEUES, consumers: [
-      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, dead_letter_queue: undefined }] } }],
-    ["the import consumer taking batches", { queues: { ...QUEUES, consumers: [
-      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, max_batch_size: 10 }] } }],
-    ["the import consumer at more owners at once", { queues: { ...QUEUES, consumers: [
-      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, max_concurrency: 16 }] } }],
-    ["another queue's consumer", { queues: { consumers: [{ queue: "tinyassets-x" }] } }],
+    ["no import consumer", { queues: { ...QUEUES, consumers: OTHER_CONSUMERS } }],
+    ["no ring consumer", { queues: { ...QUEUES, consumers: QUEUES.consumers.filter((each) =>
+      each["queue"] !== produced(platform.get("sandbox")!)[0]) } }],
+    ["another queue's consumer", { queues: { ...QUEUES, consumers: [...QUEUES.consumers,
+                                                                    { queue: "q" }] } }],
     ["a migration", { migrations: [{ tag: "v1", new_sqlite_classes: ["X"] }] }],
     ["a rate limit", { ratelimits: [{ name: "KEY_RL", namespace_id: "1",
                                       simple: { limit: 120, period: 60 } }] }],
@@ -226,7 +244,8 @@ configTests(CONFIG, {
     ["no WORKOS_API_KEY", { secrets: { required: ["ROUTING_MAC_KEY"] } }],
     ["the import window's key required, so every deploy would set it", { secrets: {
       required: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET", "IMPORT_KEY"] } }],
-    ["no strictly-public fetch", { compatibility_flags: ["nodejs_compat", "disable_ctx_exports"] }],
+    ["no strictly-public fetch", { compatibility_flags: FLAGS.filter((flag) =>
+      flag !== "global_fetch_strictly_public") }],
     ["ctx.exports", { compatibility_flags: [...FLAGS, "enable_ctx_exports"] }],
     ["DCR on", { vars: { ...VARS, DCR_ENABLED: "true" } }],
     ["an owner issuer before AuthKit", { vars: { ...VARS, OWNER_ISSUER: "https://evil.example" } }],
@@ -235,12 +254,11 @@ configTests(CONFIG, {
     ["no foreign issuer list", { vars: { DCR_ENABLED: "false", OWNER_ISSUER: "not-configured" } }],
     ["another var", { vars: { ...VARS, OWNER: "alice" } }],
     ["OWNER to another script", { durable_objects: { bindings: [
-      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-files" }] } }],
+      { ...OWNER_NAMESPACE, script_name: scriptOf("files") }] } }],
     ["OWNER in this script", { durable_objects: { bindings: [
       { name: "OWNER", class_name: "OwnerDO" }] } }],
     ["a second namespace", { durable_objects: { bindings: [
-      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" },
-      { name: "OTHER", class_name: "X", script_name: "tinyassets-owner" }] } }],
+      OWNER_NAMESPACE, { ...OWNER_NAMESPACE, name: "OTHER", class_name: "X" }] } }],
     ["a real KV id", { kv_namespaces: [{ binding: "OAUTH_KV", id: "0f2ac74b498b48028cb68387c421e279" },
                                        { binding: "DIRECTORY", id: "not-provisioned-directory" },
                                        { binding: "CONTROL", id: "not-provisioned-control" }] }],
@@ -259,31 +277,23 @@ configTests(CONFIG, {
 });
 
 describe("doors Worker config", () => {
-  it("binds OWNER, the gateway's connect and egress entrypoints, OAUTH_KV, DIRECTORY and " +
-     "CONTROL, " +
-     "and cannot deploy", () => {
-    expect(doorsConfigProblems(config, platform, gatewaySource)).toEqual([]);
-    expect(exportedMethods(gatewaySource).get("ConnectGateway"))
-      .toEqual(["exchange", "seal", "sealDoorbell", "verify", "verifyDoorbell"]);
-    expect(exportedMethods(gatewaySource).get("EgressGateway")).toEqual(["forward"]);
-    expect(exportedMethods(FILES_SOURCE).get("FilesUpload")).toEqual(["putChunks"]);
+  it("binds what its rules allow of the Workers they name, and cannot deploy", () => {
+    expect(doorsConfigProblems(config, platform, SOURCES)).toEqual([]);
   });
 
-  it("is the platform's doors config", () => {
-    expect(platform.get("tinyassets-doors")).toEqual(config);
-    expect(PLATFORM).toBe(join(DOORS, ".."));
-  });
-
-  it("sees OWNER bound to a script whose class is not in the platform", () => {
+  it.each([["owner", "OWNER's script"], ["gateway", "GATEWAY's service"],
+           ["files", "FILES' service"]])("sees the %s Worker missing from the platform (%s)",
+                                         (worker) => {
     const without = new Map(platform);
-    without.delete("tinyassets-owner");
-    expect(doorsConfigProblems(config, without, gatewaySource)).not.toEqual([]);
+    without.delete(worker);
+    expect(doorsConfigProblems(config, without, SOURCES)).not.toEqual([]);
   });
 
-  it("sees GATEWAY bound to a Worker that is not in the platform", () => {
-    const without = new Map(platform);
-    without.delete("tinyassets-gateway");
-    expect(doorsConfigProblems(config, without, gatewaySource)).not.toEqual([]);
+  it("sees the owner Worker without the routing key the doors share with it", () => {
+    const owner = platform.get("owner")!;
+    expect(doorsConfigProblems(config, new Map(platform).set("owner", patched(owner,
+      { secrets: undefined })), SOURCES))
+      .toEqual(["the owner Worker declares ROUTING_MAC_KEY too"]);
   });
 
   it.each([
@@ -295,11 +305,11 @@ describe("doors Worker config", () => {
     ["the egress entrypoint", "EgressGateway", "a seal", "seal() { return 1; }"],
     ["the egress entrypoint", "EgressGateway", "a refresh", "async refresh() { return 1; }"],
   ])("sees %s grow %s", (_where, entrypoint, _what, member) => {
-    const head = new RegExp(`export class ${entrypoint} extends WorkerEntrypoint<GatewayEnv>[^{]*\\{`)
-      .exec(gatewaySource)![0];
-    const grown = gatewaySource.replace(head, `${head}\n  ${member}`);
-    expect(grown).not.toBe(gatewaySource);
-    expect(doorsConfigProblems(config, platform, grown)).not.toEqual([]);
+    const at = head(GATEWAY_SOURCE, entrypoint, "GatewayEnv");
+    const grown = GATEWAY_SOURCE.replace(at, `${at}\n  ${member}`);
+    expect(grown).not.toBe(GATEWAY_SOURCE);
+    expect(doorsConfigProblems(config, platform, new Map(SOURCES).set("gateway", grown)))
+      .not.toEqual([]);
   });
 
   it.each([
@@ -307,45 +317,37 @@ describe("doors Worker config", () => {
     ["a generation's read", "async getManifestPart() { return 1; }"],
     ["a key call", "rewrapKey = () => 1;"],
   ])("sees the upload entrypoint grow %s (review M5-1)", (_what, member) => {
-    const head = UPLOAD_HEAD.exec(FILES_SOURCE)![0];
-    const grown = FILES_SOURCE.replace(head, `${head}\n  ${member}`);
+    const grown = FILES_SOURCE.replace(UPLOAD_HEAD, `${UPLOAD_HEAD}\n  ${member}`);
     expect(grown).not.toBe(FILES_SOURCE);
-    expect(doorsConfigProblems(config, platform, gatewaySource, grown)).not.toEqual([]);
+    expect(doorsConfigProblems(config, platform, new Map(SOURCES).set("files", grown)))
+      .not.toEqual([]);
   });
 
   it("sees the upload entrypoint inherit the whole service, its own members unchanged " +
      "(review L6-1)", () => {
-    const head = UPLOAD_HEAD.exec(FILES_SOURCE)![0];
-    expect(FILES_SOURCE.includes(head)).toBe(true);
-    expect(extendsOf(FILES_SOURCE, "FilesUpload")).toBe("WorkerEntrypoint");
-    const inherits = FILES_SOURCE.replace(head, "export class FilesUpload extends FilesService {");
+    const inherits = FILES_SOURCE.replace(UPLOAD_HEAD,
+                                          "export class FilesUpload extends FilesService {");
     // Its own members are still putChunks alone; RPC would serve every inherited method.
-    expect(exportedMethods(inherits).get("FilesUpload")).toEqual(["putChunks"]);
-    expect(doorsConfigProblems(config, platform, gatewaySource, inherits)).not.toEqual([]);
+    expect(exportedMethods(inherits).get("FilesUpload")).toEqual(SERVICES.FILES.serves);
+    expect(doorsConfigProblems(config, platform, new Map(SOURCES).set("files", inherits)))
+      .not.toEqual([]);
   });
 });
 
-describe("the doors' three queue consumers", () => {
-  it("take the import window's by the name the job sends to, and is its one producer", () => {
-    expect(IMPORT_WINDOW.consumer.queue).toBe(QUEUE_NAMES.IMPORTS);
-    expect(IMPORT_WINDOW.producer.queue).toBe(QUEUE_NAMES.IMPORTS);
-    expect((config["queues"] as { producers: object[] }).producers)
-      .toEqual([IMPORT_WINDOW.producer]);
-    expect(config["r2_buckets"]).toEqual([IMPORT_WINDOW.bucket]);
-    // No other Worker binds the window's bucket or sends to its queue.
-    for (const [name, other] of platform) {
-      if (name === "tinyassets-doors") {
-        continue;
-      }
-      expect(JSON.stringify(other)).not.toContain(IMPORT_WINDOW.bucket.bucket_name);
-      expect(JSON.stringify(other)).not.toContain(QUEUE_NAMES.IMPORTS);
-    }
-  });
-
-  it("are the queues the entry dispatches by name, the producers' (`QUEUES`)", () => {
-    // The entry (`src/index.ts`) takes each batch by its name in `QUEUES`, generated from the
-    // producers' configs, and fails loudly on any other: the doors consume exactly those.
-    expect((config["queues"] as { consumers: { queue: string }[] }).consumers
-      .map((consumer) => consumer.queue).sort()).toEqual(Object.values(QUEUE_NAMES).sort());
+describe("the doors' queues and bucket, against the other Workers", () => {
+  it.each([
+    ["the files Worker bind the doors' staging bucket", "files", (files: Config) => ({
+      r2_buckets: [...(files["r2_buckets"] as Config[]), STAGING] })],
+    ["the owner Worker produce onto the doors' import queue", "owner", (owner: Config) => ({
+      queues: { producers: [...(owner["queues"] as { producers: Config[] }).producers,
+                            { binding: "X", queue: IMPORTS["queue"] }] } })],
+    ["the sandbox Worker produce onto a queue the doors do not consume", "sandbox",
+     (sandbox: Config) => ({ queues: { producers: [
+       ...(sandbox["queues"] as { producers: Config[] }).producers,
+       { binding: "X", queue: "q" }] } })],
+  ])("sees %s", (_what, worker, grow) => {
+    const other = platform.get(worker)!;
+    expect(doorsConfigProblems(config, new Map(platform).set(worker, patched(other, grow(other))),
+                               SOURCES)).not.toEqual([]);
   });
 });

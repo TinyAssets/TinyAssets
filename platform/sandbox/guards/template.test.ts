@@ -426,10 +426,9 @@ function namingBundles(scripts: ReadonlyMap<string, string>): string[] {
 }
 
 describe("the bundles' names", () => {
-  it("are pair.ts's: beside it only the runner's import as data, its declaration and the " +
-     "config guard's letter of the Worker's config (B18)", () => {
+  it("are pair.ts's: beside it only the runner's import as data and its declaration (B18)",
+     () => {
     expect(namingBundles(repoScripts())).toEqual([
-      "platform/sandbox/guards/rules.ts",
       "platform/sandbox/src/modules.d.ts",
       "platform/sandbox/src/runner-bytes.ts",
       "platform/sandbox/template/pair.ts",
