@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
 
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { base64, hex, OBJECT_OVERHEAD, sealObject } from "../../contract/src/envelope";
-import { chunkName, KEY_REFUSED, KEYRING_UNAVAILABLE, unwrap } from "../src/datakey";
+import { chunkName, unwrap } from "../src/datakey";
+import { refusalOf } from "../../contract/src/refusal";
 import FilesService from "../src/index";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import { chunkKey, manifestKey } from "../src/keys";
@@ -80,6 +81,11 @@ async function failure(call: () => Promise<unknown>): Promise<Error> {
     return error as Error;
   }
   throw new Error("expected the call to fail");
+}
+
+/** The code of the refusal `call` fails with (`undefined` for a failure that is no refusal). */
+async function refused(call: () => Promise<unknown>): Promise<string | undefined> {
+  return refusalOf(await failure(call))?.code;
 }
 
 const bytes = (text: string) => new TextEncoder().encode(text);
@@ -368,9 +374,9 @@ describe("deleteChunks", () => {
     const names = Array.from({ length: DELETE_BATCH }, (_, i) => i.toString(16).padStart(64, "0"));
     expect(await files().deleteChunks(ns(), names)).toEqual({ deleted: DELETE_BATCH });
     const space = ns();
-    expect((await failure(async () => service().deleteChunks(space, await keyOf(ns()),
-                                                             [names[0]!]))).message)
-      .toBe(KEY_REFUSED);
+    expect(await refused(async () => service().deleteChunks(space, await keyOf(ns()),
+                                                            [names[0]!])))
+      .toBe("data_key_refused");
   });
 });
 
@@ -389,12 +395,12 @@ describe("data keys", () => {
     expect(stored.byteLength).toBe(body.byteLength + OBJECT_OVERHEAD);
     expect(new TextDecoder().decode(stored)).not.toContain("keyed");
     for (const key of [undefined, "", "v1.k2.AAAA.AAAA", 7]) {
-      expect((await failure(() => service().getChunks(space, key as string,
-                                                      [chunk(hash)]))).message)
-        .toBe(KEY_REFUSED);
-      expect((await failure(() => service().putChunks(space, key as string,
-                                                      [{ sha256: hash, bytes: body }]))).message)
-        .toBe(KEY_REFUSED);
+      expect(await refused(() => service().getChunks(space, key as string,
+                                                     [chunk(hash)])))
+        .toBe("data_key_refused");
+      expect(await refused(() => service().putChunks(space, key as string,
+                                                     [{ sha256: hash, bytes: body }])))
+        .toBe("data_key_refused");
     }
   });
 
@@ -405,9 +411,9 @@ describe("data keys", () => {
     await put(mine, body);
     expect(await keyOf(mine)).not.toBe(await keyOf(theirs));
     // Their wrapped key, presented for my namespace, does not open: its tag binds theirs.
-    expect((await failure(async () => service().getChunks(mine, await keyOf(theirs),
-                                                          [chunk(hash)]))).message)
-      .toBe(KEY_REFUSED);
+    expect(await refused(async () => service().getChunks(mine, await keyOf(theirs),
+                                                         [chunk(hash)])))
+      .toBe("data_key_refused");
     // A second key minted for my very namespace opens, but names no chunk the first put.
     const second = (await service().mintKey(mine)).key;
     expect((await failure(() => service().getChunks(mine, second, [chunk(hash)]))).message)
@@ -420,8 +426,8 @@ describe("data keys", () => {
     const key = await keyOf(space);
     expect(key).toMatch(/^v1\.k2\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{64}$/);
     const flipped = key.slice(0, -2) + (key.at(-2) === "A" ? "B" : "A") + key.at(-1)!;
-    expect((await failure(() => service().getChunks(space, flipped, [chunk("a".repeat(64))])))
-      .message).toBe(KEY_REFUSED);
+    expect(await refused(() => service().getChunks(space, flipped, [chunk("a".repeat(64))])))
+      .toBe("data_key_refused");
   });
 
   it("opens a key wrapped under an older kid, and none once its kid leaves the ring", async () => {
@@ -432,8 +438,8 @@ describe("data keys", () => {
     await service().putChunks(space, old, [{ sha256: await sha(body), bytes: body }]);
     expect(await service().getChunks(space, old, [chunk(await sha(body))])).toEqual([body]);
     const without = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
-    expect((await failure(() => service(env.BLOBS, without)
-      .getChunks(space, old, [chunk("a".repeat(64))]))).message).toBe(KEY_REFUSED);
+    expect(await refused(() => service(env.BLOBS, without)
+      .getChunks(space, old, [chunk("a".repeat(64))]))).toBe("data_key_refused");
   });
 
   it("wraps a key again under the active kid: the same data key, so every chunk still reads",
@@ -451,7 +457,7 @@ describe("data keys", () => {
                                                              [chunk(await sha(body))]))
       .toEqual([body]);
     // Another namespace's key is refused, as a read refuses it.
-    expect((await failure(() => service().rewrapKey(ns(), old))).message).toBe(KEY_REFUSED);
+    expect(await refused(() => service().rewrapKey(ns(), old))).toBe("data_key_refused");
   });
 
   it("keys chunks under the data keys main wrapped (ci/keyring-vectors.json), rewrapped too",
@@ -469,9 +475,9 @@ describe("data keys", () => {
       .toEqual([body]);
     const { key } = await under(rotated).rewrapKey(space, older.wrapped);
     expect(await under(retired).getChunks(space, key, [chunk(hash)])).toEqual([body]);
-    expect((await failure(() => under(retired).getChunks(space, older.wrapped,
-                                                         [chunk(hash)]))).message)
-      .toBe(KEY_REFUSED);
+    expect(await refused(() => under(retired).getChunks(space, older.wrapped,
+                                                        [chunk(hash)])))
+      .toBe("data_key_refused");
     expect(hex(new Uint8Array(await unwrap(rotated, space, key)))).toBe(older.key);
   });
 
@@ -483,11 +489,11 @@ describe("data keys", () => {
     ["an extra field", JSON.stringify({ active: "k1", keys: { k1: ringKey() }, x: 1 })],
   ])("fails every keyed call loudly with %s", async (_what, ring) => {
     const space = ns();
-    expect((await failure(() => service(env.BLOBS, ring).mintKey(space))).message)
-      .toBe(KEYRING_UNAVAILABLE);
-    expect((await failure(async () => service(env.BLOBS, ring).getChunks(
-      space, await keyOf(space), [chunk("a".repeat(64))]))).message)
-      .toBe(KEYRING_UNAVAILABLE);
+    expect(await refused(() => service(env.BLOBS, ring).mintKey(space)))
+      .toBe("keyring_unavailable");
+    expect(await refused(async () => service(env.BLOBS, ring).getChunks(
+      space, await keyOf(space), [chunk("a".repeat(64))])))
+      .toBe("keyring_unavailable");
   });
 });
 
@@ -545,7 +551,11 @@ describe("manifests", () => {
     await service(env.BLOBS, OLD).putManifestRoot(space, old, "2222222222222222", [part], [],
                                                         { s: 1, e: 0 });
     expect((await service().getManifestRoot(space, "2222222222222222"))!.key).toBe(old);
-    const { key } = (await service().rewrapManifestRoot(space, "2222222222222222"))!;
+    // A root another pass wrote while its key was wrapped again: refused for now, run again.
+    const raced = { get: (at: string) => env.BLOBS.get(at), put: async () => null };
+    expect(await refused(() => service(raced as unknown as R2Bucket)
+      .rewrapManifestRoot(space, "2222222222222222"))).toBe("root_changed");
+    const { key } =(await service().rewrapManifestRoot(space, "2222222222222222"))!;
     expect(key.startsWith("v1.k2.")).toBe(true);
     expect(await service().rewrapManifestRoot(space, "2222222222222222")).toEqual({ key });
     expect(await service().rewrapManifestRoot(space, "3333333333333333")).toBeNull();

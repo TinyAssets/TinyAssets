@@ -10,9 +10,10 @@
  *
  * The file manifest is bounded in bytes, not rows: every row of its tables is charged what
  * SQLite lays it out in, path bytes and overflow pages included (`manifest.ts`), by triggers
- * this guard finds in the schema, against `max_manifest_bytes`, every index on them charged
- * too (`MANIFEST_INDEXES`). The charge counts a page at three quarters full; a thinned page
- * may stay a third full, so the guard counts the manifest at its high bound times
+ * this guard finds in the schema, against the index's ceiling (`files.ts` `INDEX_BYTES`), every
+ * index on them charged too (`MANIFEST_INDEXES`). The charge counts a page at three quarters
+ * full; a thinned page may stay a third full, so the guard counts the manifest at its ceiling
+ * times
  * `WORST_FILL`, and a workerd test fills, thins and refills a database against it
  * (`files-share.test.ts`). The collection history is bounded the same way, in the bytes
  * its entries take (their triggers' charge, `maxHistoryCharge`). Every other table's rows are
@@ -182,7 +183,8 @@ const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOw
                               "maxScopesBytes");
 const POLICY_LIMITS = declared(POLICY_DOCUMENT, "POLICY_LIMITS", "maxDocument", "maxChange",
                                "pendingProposals", "appliedProposals", "receiptsPerBucket");
-const FILE_SETTINGS = declared(POLICY_DOCUMENT, "FILE_SETTINGS", "max_manifest_bytes");
+/** The file index's one ceiling, in its charge's bytes (`files.ts`). */
+const INDEX_BYTES = constant("files", "INDEX_BYTES");
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
@@ -349,11 +351,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
   const K = { ...CARD_LIMITS, ...bounds.cards };
   const U = { ...USAGE_LIMITS, ...bounds.usage };
   const CN = { ...CONNECTION_LIMITS, ...bounds.connections };
-  const F = FILE_SETTINGS;
-  /** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
+  /** The file manifest's tables, together: the index's ceiling, at worst fill. */
   const MANIFEST: Term = Object.freeze({
-    rows: 1, bytes: F.max_manifest_bytes, charged: true,
-    by: "max_manifest_bytes (high) at WORST_FILL, charged by triggers to " +
+    rows: 1, bytes: INDEX_BYTES, charged: true,
+    by: "INDEX_BYTES at WORST_FILL, charged by triggers to " +
       Object.keys(MANIFEST_TABLES).join(", "),
   });
   /** An index of a rowid table: its key's bytes and the rowid. */
@@ -938,10 +939,10 @@ describe("the owner's database bound", () => {
     const bytes = worstCase();
     expect(bytes).toBeLessThan(SHARE * DATABASE_BYTES);
     // The manifest at its high bound and its worst fill, the largest term, is counted whole.
-    expect(FILE_SETTINGS.max_manifest_bytes).toBe(512 * 1024 ** 2);
+    expect(INDEX_BYTES).toBe(512 * 1024 ** 2);
     expect(WORST_FILL).toBe(2.25);
     expect(termBytes("file_manifest", MANIFEST))
-      .toBe(FILE_SETTINGS.max_manifest_bytes * WORST_FILL);
+      .toBe(INDEX_BYTES * WORST_FILL);
     expect(Object.entries(TERMS).every(([name, term]) => termBytes(name, term)
                                          <= termBytes("file_manifest", MANIFEST))).toBe(true);
     console.log(`the owner's worst case: ${bytes} bytes (${(bytes / DATABASE_BYTES * 100)
@@ -1039,7 +1040,7 @@ describe("the owner's database bound", () => {
     // Every row is counted as it is made and refused past maxAgentRows; a disabled one too.
     expect(SCHEMA).toContain("CREATE TRIGGER outside_agents_added AFTER INSERT ON " +
                              "outside_agents BEGIN UPDATE ledger_usage SET agents = agents + 1, ");
-    expect(source("ledger")).toContain("if (usage.agents >= limits.maxAgentRows) {");
+    expect(source("ledger")).toContain("if (usage.agents >= LEDGER_LIMITS.maxAgentRows) {");
   });
 
   it("sees a bound that would pass half the limit, or a table it no longer covers", () => {

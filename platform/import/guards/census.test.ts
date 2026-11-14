@@ -13,6 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { TIERS } from "../../ci/fixtures";
 import { PLATFORM } from "../../ci/paths";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { IMPORTED } from "../../contract/src/paths";
@@ -24,7 +25,7 @@ import { TAR_MEMBER_MAX } from "../tar";
 import { newTree, walkUser } from "../survey";
 import {
   ALICE, BAD_NAME, BOB, deletionJob, DORA, ERASED, ERASING, type Fixture, fixture, FOUNDER, keyOf,
-  makeStore, NEWBIE, NEWBIE_UID, sha, sparse, TIERS, unmergedStore,
+  makeStore, NEWBIE, NEWBIE_UID, sha, sparse, unmergedStore,
 } from "./fixture";
 
 const made: Fixture[] = [];
@@ -200,6 +201,19 @@ describe("rule 0", () => {
                   Buffer.concat([Buffer.from("SQLite format 3\0", "latin1"), Buffer.alloc(200, 7)]));
     const { report } = census(f.copy, TIERS);
     expect(report["problems"]).toEqual({ integrity: 1, unclean_store: 1 });
+  });
+
+  it("reads the centers list only once its store holds to its rule", () => {
+    const f = fresh();
+    // A hot journal beside Bob's centers list: the list names no center, so his center's
+    // folder is an entry no rule names, and none of his centers is counted (the erasure's
+    // read of the same list refuses it too).
+    writeFileSync(join(f.tree(BOB), ".centers.db-journal"), "a journal");
+    const { report, table } = census(f.copy, TIERS);
+    expect(report["problems"]).toEqual({ erasure_unread: 1, unclean_store: 1, unknown_entry: 1 });
+    expect(table)
+      .toContain(`${keyOf(BOB)}\tproblem unknown_entry\troot/#${sha("main").slice(0, 12)}`);
+    expect(report["owners"]).toMatchObject({ centers: 3 });
   });
 
   it("reports a store kept whole by one total, never the names its tables were given", () => {
@@ -444,16 +458,6 @@ describe("each owner's fit", () => {
     const f = fresh();
     sparse(join(f.tree(BOB), "main", "workspace", "node_modules"), TAR_MEMBER_MAX + 1);
     expect(census(f.copy, TIERS).report["problems"]).toEqual({ over_tar_member: 1 });
-  });
-
-  it("refuses an owner whose entries pass max_entries, folders counted", () => {
-    const f = fresh();
-    const many = join(f.tree(BOB), "main", "workspace", "many");
-    mkdirSync(many);
-    for (let i = 0; i < FILE_DEFAULTS.max_entries; i += 1) {
-      writeFileSync(join(many, String(i)), "");
-    }
-    expect(census(f.copy, TIERS).report["problems"]).toEqual({ over_entries: 1 });
   });
 });
 

@@ -27,9 +27,9 @@
  *   ask first, or never. A rule holds where its act is seen, and one nothing sees is refused
  *   (d3 §N). Nothing decides one yet: the decision, its asks and its once-approvals are R5's
  *   later slices (tasks.md §10, R5).
- * - The document's optional `files` table sets the owner's file quotas and history
- *   retention (`FILE_DEFAULTS`, plan §6); what it leaves out keeps the defaults. It is
- *   ours, with no Python counterpart, so the default document leaves it out.
+ * - The document's optional `files` table sets the owner's own file bounds and history
+ *   retention (`FILE_DEFAULTS`, plan §6, each off by default); what it leaves out keeps the
+ *   defaults. It is ours, with no Python counterpart, so the default document leaves it out.
  * - The optional `models` table is the owner's model budget (`MODEL_DEFAULTS`, gateway
  *   research §4): per-run requests, tokens and cost (held per sandbox run at the egress
  *   door, `egress.ts`), and owner-wide and per-source daily and monthly cost ceilings.
@@ -74,9 +74,9 @@
  *
  * Every change runs in one `transactionSync`, so a refusal leaves nothing behind.
  */
-import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
+import { FILE_DEFAULTS, type FileDefaults } from "../../contract/src/file-defaults";
 import {
-  canonical, CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, type FileSettings, keys, MODEL_DEFAULTS,
+  canonical, CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, keys, MODEL_DEFAULTS,
   plain, policyDigest, type PolicyDocument, POLICY_LIMITS, type SourceCeilings,
   validate, whole,
 } from "../../contract/src/policy-document";
@@ -94,7 +94,7 @@ import { clock } from "./clock";
  * `max_bytes` is the owner's own lower one, or null for the tier's storage alone.
  */
 function fileSettings(document: PolicyDocument):
-    Omit<FileSettings, "max_bytes"> & { readonly max_bytes: number | null } {
+    FileDefaults & { readonly max_bytes: number | null } {
   return { ...FILE_DEFAULTS, max_bytes: null, ...document.files };
 }
 
@@ -105,7 +105,7 @@ function fileSettings(document: PolicyDocument):
  * change that adds file bytes (`TIER_UNREAD`): never a figure of ours in its place.
  */
 export function fileLimits(document: PolicyDocument, storage: number | null):
-    Omit<FileSettings, "max_bytes"> & { readonly max_bytes: number | null } {
+    FileDefaults & { readonly max_bytes: number | null } {
   const settings = fileSettings(document);
   return { ...settings, max_bytes: storage === null ? null
     : Math.min(storage, settings.max_bytes ?? storage) };

@@ -48,16 +48,14 @@ import { namespace } from "../../contract/src/files";
 
 const SALT = "tinyassets/files/v1";
 
-/** What every refusal of a ring says; it names no kid and no part of it. */
-export const KEYRING_UNAVAILABLE = "files_keyring_unavailable";
-/** What a wrapped key that does not open says: never which part failed. */
-export const KEY_REFUSED = "data_key_refused";
-
-/** The ring, read from the secret; anything short of a usable ring fails loudly. */
+/**
+ * The ring, read from the secret; anything short of a usable ring fails loudly, refused
+ * `keyring_unavailable` with words that name no kid and no part of it.
+ */
 function ring(raw: unknown): Ring {
   const keys = parseRing(raw);
   if (keys === null) {
-    throw new Error(KEYRING_UNAVAILABLE);
+    throw new Refusal("keyring_unavailable", "files_keyring_unavailable");
   }
   return keys;
 }
@@ -111,20 +109,20 @@ export async function chunkName(dataKey: ArrayBuffer, sha256: string): Promise<s
 
 /**
  * The data key `wrapped` holds for `ns`, as the per-object seal takes it. Any mismatch (another
- * namespace, a changed byte, a kid the ring no longer holds) is refused as `KEY_REFUSED`,
- * with no detail of which.
+ * namespace, a changed byte, a kid the ring no longer holds) is refused
+ * `data_key_refused`, with no detail of which.
  */
 export async function unwrap(secret: unknown, ns: string, wrapped: unknown):
     Promise<ArrayBuffer> {
   return (await opened(ring(secret), ns, wrapped)).plain.buffer;
 }
 
-/** `wrapped` opened for `ns`: a data key's 32 bytes, or `KEY_REFUSED`. */
+/** `wrapped` opened for `ns`: a data key's 32 bytes, or `data_key_refused`. */
 async function opened(keys: Ring, ns: string, wrapped: unknown): Promise<Opened> {
   // A wrapped key's most characters: a blob over a data key's bytes.
   const open = await openBlob(keys, domain(ns), wrapped, blobMax(KEY_BYTES));
   if (open === null || open.plain.byteLength !== KEY_BYTES) {
-    throw new Refusal("data_key_refused", KEY_REFUSED);
+    throw new Refusal("data_key_refused");
   }
   return open;
 }

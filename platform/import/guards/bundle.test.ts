@@ -16,6 +16,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { TIERS } from "../../ci/fixtures";
 import { contentIdOf } from "../../contract/src/content";
 import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
@@ -29,7 +30,7 @@ import { survey } from "../survey";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
 import {
   ALICE, BAD_DIR, BAD_NAME, bigBytes, BOB, DORA, ERASED, ERASING, type Fixture, fixture, FOUNDER,
-  keyOf, NEWBIE, sha, sparse, TIERS,
+  keyOf, NEWBIE, sha, sparse,
 } from "./fixture";
 
 const temps: string[] = [];

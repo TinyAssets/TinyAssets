@@ -144,7 +144,7 @@ import {
   codemodeDoors, type CodeRequest, type CodeResult,
 } from "./codemode";
 import {
-  type Agent, type ChainMail, Ledger, ledgerDoors, type LedgerLimits, type MailPage,
+  type Agent, type ChainMail, Ledger, ledgerDoors, type MailPage,
   type NativeAgent, outsideOrigin, type Posted, READ_TRIES, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock } from "./clock";
@@ -379,11 +379,6 @@ export interface Internals {
   /** How long a script's read of the control record serves its calls (`control-gate.ts`). */
   readonly controlFreshMs?: number;
   /**
-   * The ledger's ceilings, smaller in a test than production's (`LEDGER_LIMITS`), so the
-   * `archive` lane's moves are seen with a handful of messages.
-   */
-  readonly ledgerLimits?: LedgerLimits;
-  /**
    * Run between an archive move's two passes, with what the move replaces and holds, so a
    * test can make its sources differ there and see the second pass refused by the chunk's
    * hash (review N5), or see each move's bound (review N7).
@@ -590,17 +585,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#tombstone = tombstoned(storage.sql);
     const admitted = () => isAdmitted(storage);
     this.#policy = new Policy(storage);
-    // The files byte quota is the tier's storage (ADR-034 decision 8), as last handed.
-    // Retention kept in R2 makes room first at the byte quota: the oldest placed history,
-    // then the oldest acked mail with a placed body (ADR-035).
+    // The files byte bound is the tier's storage (ADR-034 decision 8), as last handed.
+    // Nothing is let go to make room at it (ADR-036): the owner deletes what it chooses.
     this.#files = new Files(storage, env.FILES, () => fileLimits(
       this.#policy.read().document,
       keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write,
       // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
       (stored, needed, held, limit) => storageFullRefusal(storageFull(
         stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
-      // Mail is never let go at the figure (ADR-036): the owner deletes what it chooses.
-      (filer) => this.#collections.reclaim(filer),
       // What a file change says to the owner's other modules, in its own unit.
       (path, present, now, change) => fileChanged(this.#state, path, present, now, change),
       // Garbage the newest finished generation names is never collected early, while it is
@@ -619,8 +611,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
     this.#ledger = new Ledger(storage, this.#grants, admitted, () => this.#collections.clock(),
-                              this.#bodies.adopt, (needed) => this.#files.fullRefusal(needed),
-                              internals.ledgerLimits);
+                              this.#bodies.adopt, (needed) => this.#files.fullRefusal(needed));
     this.#backups = new Backups({
       storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
       log: this.#log,

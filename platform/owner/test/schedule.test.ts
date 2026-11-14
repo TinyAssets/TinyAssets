@@ -406,7 +406,7 @@ describe("the object's schedule", () => {
     await r.post(null, `dm:${muse}`);
     await r.stub.fileUploadBegin(r.bind(null), { size: 5000, chunks: ["e".repeat(64)] });
     const t = Date.now() / 1000;
-    await r.inLedger({}, (ledger) => {
+    await r.inLedger((ledger) => {
       const claim = ledger.claim(ledger.dueOpen(t + 120, 1)[0]!.wake_id, t + 120);
       expect(claim.outcome).toBe("claimed");
     });

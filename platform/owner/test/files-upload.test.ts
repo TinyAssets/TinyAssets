@@ -348,7 +348,7 @@ describe("garbage collection", () => {
      async () => {
     const r = await rig();
     const body = (seed: number) => filled(INLINE_BYTES + 10, seed);
-    const limits = { keep_versions: 1, keep_recent: 2 };
+    const limits = { keep_versions: 1, keep_recent: 2, retention_days: 30 };
     const other = await inFiles(r.stub, limits, async (files) => {
       const o = { expected: null, writer: "o" };
       const temp = files.tempDir("t-", "agent");
@@ -409,10 +409,10 @@ describe("a chunk", () => {
     expect(revived.begun.missing).toEqual([]);
     expect(await chunk(r, sha)).toMatchObject({ state: "live", refs: 1, gc_after: null });
     await r.stub.fileRemove(r.bind(null), { path: `${W}/b`, expected_etag: null, recursive: false });
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
-    expect(await chunk(r, sha)).toMatchObject({ state: "live" });  // the delete keeps 30 days
-    await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+    // Retention is off: the delete's history keeps it, however late housekeeping runs.
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000 + 400 * 86_400));
+    expect(await chunk(r, sha)).toMatchObject({ state: "live" });
+    await r.stub.fileHistoryPurge(r.bind(null), { path: `${W}/b` });
     expect(await chunk(r, sha)).toMatchObject({ state: "garbage" });
     expect(await inBucket(r, sha)).toBe(true);  // inside its grace
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
@@ -672,22 +672,41 @@ describe("a chunk between a pass's units", () => {
 });
 
 describe("history retention", () => {
-  it("keeps each live path's newest versions and every version younger than its days",
-     async () => {
+  /** A retention an owner set: the newest ten kept, and up to twenty for 30 days. */
+  const RETENTION = { keep_versions: 10, keep_recent: 20, retention_days: 30 };
+
+  it("keeps every version by default", async () => {
     const r = await rig();
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 25; i++) {
       await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null,
                                              content: text(`v${i}`) });
     }
+    await r.stub.fileRemove(r.bind(null), { path: `${W}/a`, expected_etag: null,
+                                            recursive: false });
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n, COUNT(prune_after) AS due FROM " +
+                                 "file_history WHERE path = ?", `${W}/a`))
+      .toEqual([{ n: 26, due: 0 }]);
+  });
+
+  it("keeps each live path's newest versions and every version younger than its days, as " +
+     "the owner set them", async () => {
+    const r = await rig();
+    await inFiles(r.stub, RETENTION, async (files) => {
+      for (let i = 0; i < 12; i++) {
+        await files.write(`${W}/a`, text(`v${i}`), { expected: null, writer: "owner" });
+      }
+    });
     const rows = await sqlIn(r.stub, "SELECT version, at, prune_after FROM file_history " +
                                        "WHERE path = ? ORDER BY version", `${W}/a`);
     expect(rows.slice(2).every((row) => row["prune_after"] === null)).toBe(true);
     for (const row of rows.slice(0, 2)) {
       expect(row["prune_after"]).toBe((row["at"] as number) + 30 * 86_400);
     }
-    // Due rows go at the alarm; the newest ten stay whatever their age.
+    // Due rows go at the alarm, once the rows are marked as the owner's retention keeps
+    // them; the newest ten stay whatever their age.
+    await inFiles(r.stub, RETENTION, (files) => files.run(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, RETENTION, (files) => files.run(Date.now() / 1000));
     expect((await r.stub.fileHistory(r.bind(null), { path: `${W}/a`, limit: 100 })).changes
       .map((c) => c.version)).toEqual(rows.slice(2).map((row) => row["version"]).reverse());
     const [kept, counted] = await fileCounters(r.stub);
@@ -697,13 +716,16 @@ describe("history retention", () => {
   it("keeps a deleted path's history for its days, and a re-created path's newest again",
      async () => {
     const r = await rig();
-    await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null, content: text("1") });
-    await r.stub.fileRemove(r.bind(null), { path: `${W}/a`, expected_etag: null, recursive: false });
+    const o = { expected: null, writer: "owner" };
+    await inFiles(r.stub, RETENTION, async (files) => {
+      await files.write(`${W}/a`, text("1"), o);
+      files.remove(`${W}/a`, o);
+    });
     const due = await sqlIn(r.stub, "SELECT at, prune_after FROM file_history WHERE path = ?",
                             `${W}/a`);
     expect(due.every((row) => row["prune_after"] === (row["at"] as number) + 30 * 86_400))
       .toBe(true);
-    await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null, content: text("2") });
+    await inFiles(r.stub, RETENTION, (files) => files.write(`${W}/a`, text("2"), o));
     expect(await sqlIn(r.stub, "SELECT prune_after FROM file_history WHERE path = ?", `${W}/a`))
       .toEqual([{ prune_after: null }, { prune_after: null }, { prune_after: null }]);
   });

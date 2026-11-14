@@ -683,8 +683,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "'rename_to', 'restore', 'conflict', 'starter')), " +
       "kind TEXT CHECK (kind IS NULL OR kind IN ('file', 'dir')), content_id TEXT, " +
       "size INTEGER NOT NULL, mode INTEGER NOT NULL, writer TEXT NOT NULL, at REAL NOT NULL, " +
-      // `released`: the path is gone, so retention has let the row go (it is always due);
-      // a change at the history quota prunes these first (files.ts `#fit`).
+      // `released`: the path is gone, so retention has let the row go (it is always due).
+      // Since untangle F1 nothing marks or reads it (files.ts `#retain`); F2 reshapes the table.
       "prune_after REAL, released INTEGER NOT NULL DEFAULT 0 CHECK (released IN (0, 1)), " +
       "CHECK (released = 0 OR prune_after IS NOT NULL))",
     "CREATE INDEX file_history_paths ON file_history (path, version)",
@@ -2161,5 +2161,21 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER collection_erasures_logged_delete AFTER DELETE ON collection_erasures WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'collection_erasures', 'key', json_array(OLD.change)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+  ]),
+  // 8, after H1's 7 (untangle F1, `datashapes_research.md` §2.4): file retention is off by
+  // default (Fact 15), so the retention the kept rows were marked by may be off, each
+  // setting null (`files.ts` `#reretain`). The three columns are made again without their
+  // NOT NULL (SQLite changes none in place; no index, check or trigger names them), null as
+  // the new defaults are, and an owner that keeps any history re-marks it all on its next
+  // housekeeping pass (`retain_cursor` '' starts one), so rows marked under the old defaults
+  // are kept as the retention in force says. `file_space` is not exported, so no capture.
+  Object.freeze([
+    "ALTER TABLE file_space DROP COLUMN retained_keep",
+    "ALTER TABLE file_space DROP COLUMN retained_recent",
+    "ALTER TABLE file_space DROP COLUMN retained_days",
+    "ALTER TABLE file_space ADD COLUMN retained_keep INTEGER",
+    "ALTER TABLE file_space ADD COLUMN retained_recent INTEGER",
+    "ALTER TABLE file_space ADD COLUMN retained_days INTEGER",
+    "UPDATE file_space SET retain_cursor = '' WHERE EXISTS (SELECT 1 FROM file_history)",
   ]),
 ]);

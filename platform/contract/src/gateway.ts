@@ -207,6 +207,13 @@ export interface GatewayService {
   /** A blob resealed under the active kid, bound to `version + 1` (the owner's sweep). */
   reseal(owner: string, connection: string, version: number, blob: string): Promise<Resealed>;
   /**
+   * A doorbell subscription's blob resealed under the active kid, bound to `version + 1`:
+   * the owner's sweep reseals its subscriptions' blobs as it does its connections', so a kid
+   * that sealed a doorbell can be retired too.
+   */
+  resealDoorbell(owner: string, subscription: string, version: number, blob: string):
+    Promise<Resealed>;
+  /**
    * One wake sent with a doorbell subscription's sealed secret (slice W): the gateway opens
    * the blob (and the replaced one's, inside its rotation window) and makes the send.
    */

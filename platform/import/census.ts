@@ -1,9 +1,9 @@
 /**
  * The census (`import_research.md` §1, slice 1): read-only counts of a backup copy, rule 0
  * held over every store, table and entry (`rules.ts`), and each owner's fit against the new
- * platform's own limits: `FILE_DEFAULTS` (`max_entries`, `max_inline_bytes`,
- * `max_file_bytes`), the stored-path rules (`contract/src/paths.ts`, read by the survey) and
- * the tier's storage from the control record, each counted by the files plane's own rule on
+ * platform's own limits: `FILE_DEFAULTS` (`max_file_bytes`), the stored-path rules
+ * (`contract/src/paths.ts`, read by the survey) and the tier's storage from the control
+ * record, each counted by the files plane's own rule on
  * the tree the bundle builder would make (`build.ts`). Every later choice is made from its
  * numbers.
  *
@@ -12,16 +12,15 @@
  */
 import { lstatSync, readdirSync } from "node:fs";
 
+import type { Tiers } from "../contract/src/control";
 import { INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { carried } from "../owner/src/starter-package";
 
 import { fileSha256, layout } from "./backup";
-import { type Built, buildTree, type Fit, fitOf, type Tiers } from "./build";
+import { type Built, buildTree, type Fit, fitOf, tierOf } from "./build";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
 import { TAR_MEMBER_MAX } from "./tar";
-
-export type { Tiers } from "./build";
 
 /**
  * The backup copy's own integrity, before anything is read from it (research §4.4): the
@@ -95,11 +94,10 @@ function largestBelow(source: Buffer): number {
 
 /**
  * What refuses an owner before its tree is made, read from sizes alone: a file past the
- * platform's largest or the tier's storage, more carried paths than `max_entries`, or a
- * file past what a tar member can hold in `refused.tar` or `ignored.tar`. So a 40 GiB file
+ * platform's largest or the tier's storage, or a file past what a tar member can hold in `refused.tar` or `ignored.tar`. So a 40 GiB file
  * is refused by its size, never read.
  */
-export function precheck(owner: Owner, tiers: Tiers): Problem[] {
+export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
   const tree = owner.tree;
   const at = `owner/${owner.key}`;
   const largest = [...tree.carried.map((item) => item.size), ...tree.archived.map((a) => a.size)]
@@ -110,13 +108,9 @@ export function precheck(owner: Owner, tiers: Tiers): Problem[] {
   if (largest > FILE_DEFAULTS.max_file_bytes) {
     problems.push({ code: "over_file_bytes", at });
   }
-  const tier = tiers[owner.plan?.tier ?? "free"];
+  const tier = tiers === null ? undefined : tierOf(owner, tiers);
   if (tier !== undefined && largest > tier.storage_bytes) {
     problems.push({ code: "over_storage", at });
-  }
-  if (tree.carried.length + tree.archived.length + carried().files.length
-      > FILE_DEFAULTS.max_entries) {
-    problems.push({ code: "over_entries", at });
   }
   if (Math.max(members(tree.refused), members(tree.ignoredTrees)) > TAR_MEMBER_MAX) {
     problems.push({ code: "over_tar_member", at });
@@ -131,7 +125,7 @@ export function precheck(owner: Owner, tiers: Tiers): Problem[] {
  */
 export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null):
     { built: Built | null; fit: Fit | null; problems: Problem[] } {
-  const first = precheck(owner, tiers ?? {})
+  const first = precheck(owner, tiers)
     .filter((problem) => tiers !== null || problem.code === "over_tar_member");
   if (first.length > 0) {
     return { built: null, fit: null, problems: first };
@@ -242,7 +236,6 @@ export function census(copy: Copy, tiers: Tiers): Census {
             collection_rows: sum((owner) => owner.tree.rows.collection),
             body_bytes: sum((owner) => owner.tree.rows.body_bytes) },
     fit: {
-      max_entries: FILE_DEFAULTS.max_entries,
       most_entries: most((fit) => fit.entries),
       most_stored: most((fit) => fit.stored),
     },

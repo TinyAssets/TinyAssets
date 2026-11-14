@@ -20,6 +20,7 @@ import type {
 } from "@earendil-works/pi-codemode/portable";
 
 import { type CodemodeWorker, executionName } from "../../contract/src/codemode";
+import { Refusal } from "../../contract/src/refusal";
 
 import type { CodemodeEnv } from "./env";
 
@@ -34,7 +35,7 @@ export default class Codemode extends WorkerEntrypoint<CodemodeEnv>
   async codemodeExecute(name: string, request: CodemodeRemoteRequest,
                         exchange: CodemodeRemoteExchange): Promise<void> {
     if (!executionName(name)) {
-      throw new Error("a code mode execution is named");
+      throw new Refusal("invalid", "a code mode execution is named");
     }
     await this.env.CODEMODE.getByName(name).execute(request, exchange);
   }

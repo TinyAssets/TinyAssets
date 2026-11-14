@@ -6,9 +6,7 @@ import { type Adopt, Bodies } from "../src/bodies";
 import { Collections } from "../src/collections";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
-import {
-  Ledger, LEDGER_LIMITS, type LedgerLimits, type Outcome, type WakeTarget,
-} from "../src/ledger";
+import { Ledger, LEDGER_LIMITS, type Outcome, type WakeTarget } from "../src/ledger";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import type { Refusal } from "../../contract/src/refusal";
 import { clock } from "../src/clock";
@@ -115,8 +113,7 @@ export function ledgerParts(storage: DurableObjectStorage): LedgerParts {
  * test that registers on it directly first admits the agent's outside client, as the
  * object's door admits every outside call before any act: an MCP client is recorded `full`.
  */
-export function ledgerOn(storage: DurableObjectStorage,
-                         limits: Partial<LedgerLimits> = {}): Ledger {
+export function ledgerOn(storage: DurableObjectStorage): Ledger {
   const parts = ledgerParts(storage);
   const grants = parts[1];
   return new (class extends Ledger {
@@ -127,7 +124,38 @@ export function ledgerOn(storage: DurableObjectStorage,
       }
       return super.register(origin, source, request, now);
     }
-  })(...parts, { ...LEDGER_LIMITS, ...limits });
+  })(...parts);
+}
+
+/** An outside agent of the test's own, its mail the ballast a ceiling is filled with. */
+export const BALLAST: Origin = origin(0xba11);
+
+/**
+ * At production's ceilings, room for `unread` more unread messages and `hot` more hot ones:
+ * the rest is a ballast agent's mail (`BALLAST`), its acked part first, so a test meets each
+ * ceiling, and the archive lane's half of the hot one, where a small one would. The
+ * ballast agent's id.
+ */
+export function ballast(ledger: Ledger, unread: number, hot: number): string {
+  const { maxMessages, maxUnacked } = LEDGER_LIMITS;
+  const agent = ledger.register(BALLAST, MCP, { command_center_id: "alpha",
+                                                display_name: "Ballast",
+                                                delivery_method: "pull", recipe_id: null })
+    .agent_id;
+  const room = `dm:${agent}`;
+  const acked = maxMessages - hot - (maxUnacked - unread);
+  let last = 0;
+  for (let n = 0; n < acked; n++) {
+    last = ledger.seqOf(ledger.post(null, room, `ballast-a${n}`, "x", null).message_id)!;
+    if (n % 1_000 === 999 || n === acked - 1) {
+      ledger.read(BALLAST, 1);
+      ledger.ack(BALLAST, last);
+    }
+  }
+  for (let n = 0; n < maxUnacked - unread; n++) {
+    ledger.post(null, room, `ballast-u${n}`, "x", null);
+  }
+  return agent;
 }
 
 /** Now, in the whole seconds a binder reports a sign-in at. */
@@ -214,9 +242,9 @@ export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER
     sql: (statement: string, ...params: SqlStorageValue[]): Promise<Row[]> =>
       runInDurableObject(stub, (_i: OwnerDO, state) =>
         state.storage.sql.exec<Row>(statement, ...params).toArray()),
-    /** The ledger on this object's own storage, with some bounds changed. */
-    inLedger: <R>(limits: Partial<LedgerLimits>, act: (ledger: Ledger) => R): Promise<R> =>
-      runInDurableObject(stub, (_i: OwnerDO, state) => act(ledgerOn(state.storage, limits))),
+    /** The ledger on this object's own storage. */
+    inLedger: <R>(act: (ledger: Ledger) => R): Promise<R> =>
+      runInDurableObject(stub, (_i: OwnerDO, state) => act(ledgerOn(state.storage))),
     /**
      * The object's storage let go, after a test that filled it to a ceiling: a filled object
      * is tens of MB on disk, kept until the test file ends (`inFilled`'s reason).

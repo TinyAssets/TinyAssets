@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/wrangler.ts";
 import identity from "../contract/identity.json" with { type: "json" };
+import type { ImportNames } from "../contract/src/import-names.ts";
 import sharedApps from "../doors/shared-apps.json" with { type: "json" };
 import platform from "./platform.json" with { type: "json" };
 
@@ -216,7 +217,7 @@ export const IMPORT_NAMES = (() => {
     files_bucket: boundAs("files", configOf("files")["r2_buckets"] as Buckets, "BLOBS").bucket_name,
     directory: platform.namespaces.titles.DIRECTORY,
     final_backup_bucket: platform.buckets.unbound.final_backup,
-  });
+  } satisfies ImportNames);
 })();
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

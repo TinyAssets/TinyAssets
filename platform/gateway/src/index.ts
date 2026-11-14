@@ -7,8 +7,8 @@
  * - `exchange`, `refresh`, `revokeAtProvider`: OAuth connections (`oauth.ts`).
  * - `verify`: the connection's setup check, and the models it can be asked for.
  * - `forward`: raw passthrough for sandbox egress (`forward.ts`).
- * - `reseal`: a blob resealed under the active kid at the next version (the sweep that
- *   retires a kid).
+ * - `reseal`, `resealDoorbell`: a connection's or a doorbell subscription's blob resealed
+ *   under the active kid at the next version (the sweep that retires a kid).
  * - `sealDoorbell`, `verifyDoorbell`, `ringDoorbell`: a wake's secret sealed, an MCP Events
  *   callback verified and sealed, and one wake sent with it (`doorbell.ts`, slice W).
  *
@@ -17,8 +17,8 @@
  * `EgressGateway`, which serves only `forward`: the egress door (the binder) streams a
  * sandbox's request through it once the owner's object admitted the request, so the
  * object sleeps while the bytes flow (research §5.4 step 4). The owner Worker binds the
- * default entrypoint: `refresh`, `revokeAtProvider`, `reseal` and `ringDoorbell`. No
- * entrypoint serves another's methods.
+ * default entrypoint: `refresh`, `revokeAtProvider`, `reseal`, `resealDoorbell` and
+ * `ringDoorbell`. No entrypoint serves another's methods.
  *
  * Every method takes the owner, connection and version the blob is bound to from its
  * caller, and the seal holds the call to them: the gateway never chooses an owner. Each
@@ -35,7 +35,7 @@ import {
   type GatewayService, type MeterOutcome, outcomeLine, type Refreshed, type Resealed,
   type Reserve, type Revoked, type RingAnswer, type Sealed, type Verified,
 } from "../../contract/src/gateway";
-import { ringDoorbell, sealDoorbell, verifyDoorbell } from "./doorbell";
+import { resealDoorbell, ringDoorbell, sealDoorbell, verifyDoorbell } from "./doorbell";
 import { codeOf, failureResponse, guarded } from "./failure";
 import { forwardMetered, forwardRead, verify } from "./forward";
 import type { GatewayEnv } from "./env";
@@ -163,5 +163,11 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv>
       const { credential } = await open(this.env, bound, blob);
       return reseal(this.env, bound, credential);
     });
+  }
+
+  /** Reseals a doorbell subscription's blob under the active kid, bound to `version + 1`. */
+  async resealDoorbell(owner: string, subscription: string, version: number,
+                       blob: string): Promise<Resealed> {
+    return guarded(() => resealDoorbell(this.env, owner, subscription, version, blob));
   }
 }

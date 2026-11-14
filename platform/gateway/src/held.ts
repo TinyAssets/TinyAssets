@@ -39,7 +39,7 @@
  * (owed live). The caller's stop ends every phase at once.
  */
 import { utf8Decoder } from "../../contract/src/text";
-import { Refusal } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";
 import {
   type Isolate, isolatePool, isSlotBusy, type Lease, type SlotPool, UNIT_BYTES,
@@ -83,17 +83,6 @@ export function parseWeight(bytes: number, tokens: number, ascii: boolean): numb
 /** The slots `weight` bytes take. */
 export function weightSlots(weight: number): number {
   return Math.max(1, Math.ceil(weight / UNIT_BYTES));
-}
-
-/** Why a held call stopped, as the gateway answers it. */
-export const HELD_CODES = Object.freeze(["busy", "egress_too_large", "invalid_request",
-                                         "aborted"] as const);
-export type HeldCode = (typeof HELD_CODES)[number];
-
-/** The held code a refusal stopped a call with, or null for anything else. */
-export function heldCode(error: unknown): HeldCode | null {
-  return error instanceof Refusal && (HELD_CODES as readonly string[]).includes(error.code)
-    ? error.code as HeldCode : null;
 }
 
 /**
@@ -295,7 +284,7 @@ export async function readHeld(request: Request, length: number, hold: Hold | nu
     }
   } catch (error) {
     reader.cancel().catch(() => undefined);
-    if (heldCode(error) !== null || signal.aborted) {
+    if (refusalOf(error) !== null || signal.aborted) {
       throw error;
     }
     throw new Refusal("invalid_request");  // not UTF-8, or the body failed

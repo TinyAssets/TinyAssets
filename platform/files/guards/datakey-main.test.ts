@@ -83,7 +83,7 @@ describe("main's golden keys", () => {
      async () => {
     for (const [ring, wrapped, ns] of [[RETIRED, OLDER.wrapped, NS], [OLD, NEWER.wrapped, NS],
                                        [ROTATED, OLDER.wrapped, "f".repeat(32)]] as const) {
-      expect(await outcome(() => datakey.unwrap(ring, ns, wrapped))).toBe(datakey.KEY_REFUSED);
+      expect(await outcome(() => datakey.unwrap(ring, ns, wrapped))).toBe("data_key_refused");
     }
   });
 });
@@ -165,7 +165,7 @@ describe("every refusal is main's", () => {
     for (const { bytes, wrapped } of sized) {
       for (const run of ["unwrap", "rewrap"] as const) {
         const ours = await outcome(() => datakey[run](ROTATED, NS, wrapped));
-        expect(ours, `${run} ${bytes}`).toBe(bytes === 32 ? "ok" : datakey.KEY_REFUSED);
+        expect(ours, `${run} ${bytes}`).toBe(bytes === 32 ? "ok" : "data_key_refused");
         expect(ours).toBe(await outcome(() => main[run](ROTATED, NS, wrapped)));
       }
     }
@@ -240,7 +240,7 @@ describe("the files Worker's domain", () => {
     for (const blob of [value.k2, VECTORS.gateway.k1, VECTORS.gateway.k2,
                         VECTORS.gateway.doorbell.k2]) {
       for (const run of ["unwrap", "rewrap"] as const) {
-        expect(await outcome(() => datakey[run](ROTATED, NS, blob))).toBe(datakey.KEY_REFUSED);
+        expect(await outcome(() => datakey[run](ROTATED, NS, blob))).toBe("data_key_refused");
       }
     }
   });

@@ -97,9 +97,29 @@ export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore =
   return new Files(storage, store, () => ({ ...FILE_DEFAULTS,
                                             max_bytes: TIERS.free.storage_bytes, ...limits }),
                    write, TIERLESS_FULL,
-                   // Alone, as these tests make them: no mail to reclaim at the figure, no
-                   // other module told of a change, and no manifest generation to protect.
-                   () => false, () => {}, () => null);
+                   // Alone, as these tests make them: no other module told of a change, and
+                   // no manifest generation to protect.
+                   () => {}, () => null);
+}
+
+/**
+ * An index this full, stood in for: `who`'s index charge (the owner's whole, `file_space`,
+ * with null; else its `file_shares` row, which must exist) raised so `room` bytes are left
+ * under `bound`. What it gives back takes the stand-in away, so the counters equal a recount
+ * again.
+ */
+export async function crowd(stub: DurableObjectStub<OwnerDO>, bound: number, room: number,
+                            who: string | null = null): Promise<() => Promise<void>> {
+  const [table, where, args] = who === null ? ["file_space", "", []]
+    : ["file_shares", " WHERE who = ?", [who]];
+  const [row] = await sqlIn(stub, `SELECT manifest_bytes AS m FROM ${table}${where}`, ...args);
+  const delta = bound - room - (row!["m"] as number);
+  const move = (by: number) => sqlIn(
+    stub, `UPDATE ${table} SET manifest_bytes = manifest_bytes + ?${where}`, by, ...args);
+  await move(delta);
+  return async () => {
+    await move(-delta);
+  };
 }
 
 /** The refusal at the storage figure with no tier named, as these files' tests make it. */

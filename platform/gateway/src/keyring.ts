@@ -114,30 +114,8 @@ export async function seal(env: KeyringEnv, bound: Binding,
  * `credential_refused`, with no detail of which.
  */
 export async function open(env: KeyringEnv, bound: Binding, blob: unknown): Promise<Opened> {
-  const keys = ring(env);
-  const { parsed, kid } = await openWith(keys, bound, blob);
-  const opened = credential(parsed);
-  if (kid === keys.active) {
-    return Object.freeze({ credential: opened, kid });
-  }
-  return Object.freeze({ credential: opened, kid, resealed: await resealWith(
-    keys, bound, Object.freeze({ ...opened, sealed_at: Date.now() })) });
-}
-
-/** A blob's plaintext as JSON, and its kid; `credential_refused` for any mismatch. */
-async function openWith(keys: Ring, bound: Binding, blob: unknown):
-    Promise<{ parsed: unknown; kid: string }> {
-  const opened = await openBlob(keys, domain(bound), blob, CONNECTION_BLOB_MAX);
-  if (opened === null) {
-    throw new Refusal("credential_refused");
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(utf8Decoder("strip").decode(opened.plain));
-  } catch {
-    throw new Refusal("credential_refused");
-  }
-  return { parsed, kid: opened.kid };
+  const { value, kid, resealed } = await openValue(env, bound, blob, credential);
+  return Object.freeze({ credential: value, kid, ...(resealed === undefined ? {} : { resealed }) });
 }
 
 /**
@@ -151,22 +129,40 @@ export async function sealValue<T>(env: KeyringEnv, bound: Binding, value: unkno
   return sealWith(ring(env), bound, check(value));
 }
 
-/** Opens a `sealValue` blob; resealed under the active kid at the next version, as `open`. */
+/**
+ * Opens a `sealValue` blob, held to `check` (`open`'s is a credential's): any mismatch is
+ * `credential_refused`, as `open` says. A blob under a kid other than the active one also
+ * comes back resealed, as it is, under the active kid at the next version, which the
+ * owner's object stores by compare-and-swap.
+ */
 export async function openValue<T>(env: KeyringEnv, bound: Binding, blob: unknown,
                                    check: (value: unknown) => T):
     Promise<{ readonly value: T; readonly kid: string; readonly resealed?: Resealed }> {
   const keys = ring(env);
-  const { parsed, kid } = await openWith(keys, bound, blob);
+  const opened = await openBlob(keys, domain(bound), blob, CONNECTION_BLOB_MAX);
+  if (opened === null) {
+    throw new Refusal("credential_refused");
+  }
   let value: T;
   try {
-    value = check(parsed);
+    value = check(JSON.parse(utf8Decoder("strip").decode(opened.plain)));
   } catch {
     throw new Refusal("credential_refused");
   }
+  const { kid } = opened;
   if (kid === keys.active) {
     return Object.freeze({ value, kid });
   }
   return Object.freeze({ value, kid, resealed: await resealWith(keys, bound, value) });
+}
+
+/**
+ * `value`, held to `check`, sealed for the next version of `bound` under the active kid:
+ * the owner's sweep that retires a kid reseals a doorbell's blob so (`doorbell.ts`).
+ */
+export async function resealValue<T>(env: KeyringEnv, bound: Binding, value: unknown,
+                                     check: (value: unknown) => T): Promise<Resealed> {
+  return resealWith(ring(env), bound, check(value));
 }
 
 /**
@@ -175,6 +171,6 @@ export async function openValue<T>(env: KeyringEnv, bound: Binding, blob: unknow
  */
 export async function reseal(env: KeyringEnv, bound: Binding,
                              plaintext: Credential): Promise<Resealed> {
-  return resealWith(ring(env), bound,
-                    Object.freeze({ ...credential(plaintext), sealed_at: Date.now() }));
+  return resealValue(env, bound, Object.freeze({ ...plaintext, sealed_at: Date.now() }),
+                     credential);
 }

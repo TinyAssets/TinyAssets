@@ -2,7 +2,8 @@
 # The cutover import window's host side: run as root on the run's import host (a disposable
 # Droplet, tinyassets-import-<run>, that .github/workflows/import-window.yml makes at the
 # run's census and destroys after its clean: platform/import/host.py), from a private stage
-# that also holds the job's bundle (import.mjs) and the control record's tiers (control.json).
+# that also holds the job's bundle (import.mjs), the control record's tiers (control.json) and
+# the live names the deploy kit reads from the Worker configs (facts.json, deploy/facts.ts).
 # import_research.md §1 (the copy), §3 (where the job runs) and §4 (the rehearsal);
 # import_host_research.md (the import host); tasks.md §9 item 7. Deleted at the cutover with
 # platform/import/.
@@ -34,9 +35,10 @@
 #   bundle first checks the disk has room for as many bytes again as the images hold.
 # - The off-site copy (offsite, the real window alone): the objects the window's copy was made
 #   from (its manifest, which must still be the store's newest, its archive and every pinned
-#   snapshot) copied from SOURCE to the R2 bucket tinyassets-final-backup, then each read back
-#   from R2 and held to the copy's manifest (`copy digests`), the read-back deleted after. It
-#   only reads SOURCE. Its keys reach rclone's environment alone, and no job is networked.
+#   snapshot) copied from SOURCE to the final backup's R2 bucket (facts.json's
+#   final_backup_bucket), then each read back from R2 and held to the copy's manifest
+#   (`copy digests`), the read-back deleted after. It only reads SOURCE. Its keys reach
+#   rclone's environment alone, and no job is networked.
 # - Output: the job's stdout and stderr kept 0600 in the work folder, and let out only through
 #   `copy release` (no principal, no owner key, no path of the copy). The host tools' own
 #   messages go to the work folder's host.private.log; this script prints fixed words and counts.
@@ -81,8 +83,6 @@ readonly OFFSITE_CREDENTIALS=(CLOUDFLARE_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_A
 # install-host-services.yml), on its region's Spaces endpoint. Neither is a secret.
 readonly SOURCE="tasrc:workflow-backups-jonnyton-sfo3/workflow-backups"
 readonly SOURCE_ENDPOINT="sfo3.digitaloceanspaces.com"
-# The off-site copy of the window's final backup: the same layout under the same prefix.
-readonly OFFSITE="taoff:tinyassets-final-backup/workflow-backups"
 readonly MANIFEST_NAME='^tinyassets-platform-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]json$'
 # What a failed rclone call may say of its cause: one of these S3 error codes and one of these
 # HTTP statuses (rclone's `status code: NNN`), each found in its stderr, or "unknown". Nothing
@@ -123,6 +123,7 @@ done
 stage="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 job_file="$stage/import.mjs"
 control="$stage/control.json"
+facts="$stage/facts.json"
 root="${TA_IMPORT_ROOT:-/var/tmp}"
 lock="${TA_IMPORT_LOCK:-/run/lock/tinyassets-import-window.lock}"
 [[ "$root" == /* && -d "$root" && ! -L "$root" ]] || refuse "the work root is no folder"
@@ -396,8 +397,14 @@ copy_backup() (
   say "the copy holds the archive and $(grep -c '^image ' "$work/plan.private") images"
 )
 
-# The window's final backup copied off-site, then read back and held to the copy's manifest.
+# The window's final backup copied off-site, then read back and held to the copy's manifest:
+# the same layout under the same prefix, in the bucket facts.json names for it.
 offsite_copy() (
+  bucket="$(sed -n 's/.*"final_backup_bucket"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+              "$facts" 2>> "$log")" || true
+  [[ "$bucket" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] \
+    || refuse "the stage's facts.json names no final-backup bucket"
+  offsite="taoff:${bucket}/workflow-backups"
   manifest="$(cat "$work/manifest.name" 2>/dev/null)" || true
   [[ "$manifest" =~ $MANIFEST_NAME ]] \
     || refuse "this run's copy names no manifest: run clean, then census"
@@ -410,15 +417,15 @@ offsite_copy() (
   total="${#images[@]}"
 
   remote copy "the manifest could not be copied off-site" /dev/null \
-    both_rclone copyto "$SOURCE/platform/$manifest" "$OFFSITE/platform/$manifest"
+    both_rclone copyto "$SOURCE/platform/$manifest" "$offsite/platform/$manifest"
   remote copy "the archive could not be copied off-site" /dev/null \
-    both_rclone copyto "$SOURCE/$archive" "$OFFSITE/$archive"
+    both_rclone copyto "$SOURCE/$archive" "$offsite/$archive"
   n=0
   for each in "${images[@]}"; do
     read -r uid sid <<< "$each"
     n=$((n + 1))
     remote copy "image $n of $total's snapshot could not be copied off-site" /dev/null \
-      both_rclone copyto "$SOURCE/$uid/$sid.img.gz" "$OFFSITE/$uid/$sid.img.gz"
+      both_rclone copyto "$SOURCE/$uid/$sid.img.gz" "$offsite/$uid/$sid.img.gz"
   done
 
   # Read back from the off-site bucket alone, into a folder of its own, and held to the
@@ -427,10 +434,10 @@ offsite_copy() (
   rm -rf -- "$back"
   mkdir -m 700 "$back"
   remote read "the off-site manifest could not be read back" "$back/manifest.json" \
-    offsite_rclone cat "$OFFSITE/platform/$manifest"
+    offsite_rclone cat "$offsite/platform/$manifest"
   cmp -s "$back/manifest.json" "$work/manifest.json" \
     || refuse "the off-site manifest read back is not the copy's"
-  fetch offsite_rclone "$OFFSITE" "$back"
+  fetch offsite_rclone "$offsite" "$back"
   rm -rf -- "$back"
   say "the off-site copy holds the manifest, the archive and ${total} images, each read back" \
       "and held to the manifest's digests"
@@ -561,17 +568,17 @@ case "$mode" in
         if [[ "$kind" == rehearsal ]]; then
           flags=(--rehearsal)
         fi
-        job - stage "$out" --run "$run" "${flags[@]}"
+        job - stage "$out" --run "$run" --facts "$facts" "${flags[@]}"
         ;;
       dlq)
         flags=()
         if [[ "$extra" == delete ]]; then
           flags=(--delete)
         fi
-        job - dlq "$out" --run "$run" "${flags[@]}"
+        job - dlq "$out" --run "$run" --facts "$facts" "${flags[@]}"
         ;;
       *)
-        job "$work/window" "$mode" "$out" --run "$run" --record "$record"
+        job "$work/window" "$mode" "$out" --run "$run" --facts "$facts" --record "$record"
         ;;
     esac
     ;;

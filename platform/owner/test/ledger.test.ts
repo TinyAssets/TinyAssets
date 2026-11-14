@@ -398,7 +398,7 @@ describe("outside agents register from a verified identity", () => {
     expect((await r.stub.disableAgent(r.session(null), { agent_id: dot, reason: "owner" }))
       .disabled_reason).toBe("owner");
     // The ledger's own rule, for an in-process caller acting as an outside agent.
-    expect(await r.inLedger({}, (ledger) => {
+    expect(await r.inLedger((ledger) => {
       try {
         ledger.disable(dot, "x", MUSE);
         return "disabled";
@@ -406,7 +406,7 @@ describe("outside agents register from a verified identity", () => {
         return (error as Error).message;
       }
     })).toBe("an outside caller disables only its own agent");
-    expect((await r.inLedger({}, (ledger) => ledger.disable(muse, "done", MUSE)))
+    expect((await r.inLedger((ledger) => ledger.disable(muse, "done", MUSE)))
       .disabled_reason).toBe("done");
   });
 

@@ -16,12 +16,13 @@
  * never followed; an answer's body is read only as the token response it must be, and
  * nothing from it reaches an error (`failure.ts`).
  */
-import { utf8Decoder } from "../../contract/src/text";
 import { type Credential, type OAuthGrant } from "./credential";
 import { object } from "../../contract/src/checks";
 import {
   keyExchangeSource, type OAuthClient, scope, secret, source, type Source,
 } from "../../contract/src/egress-scope";
+import { boundedJson } from "./answer";
+import { timeout } from "./deadline";
 import { nativeFetch } from "./egress";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 import type { Exchanged, Refreshed, Revoked } from "../../contract/src/gateway";
@@ -60,46 +61,21 @@ function basic(id: string, secret: string): string {
   return `Basic ${btoa(`${encode(id)}:${encode(secret)}`)}`;
 }
 
-/** An answer's body as JSON, read up to `ANSWER_MAX` bytes; `undefined` past it or unparsed. */
-async function boundedJson(answer: Response): Promise<unknown> {
-  if (answer.body === null) {
-    return undefined;
+/**
+ * The code an OAuth endpoint's answer other than its `200` is refused with: a redirect (never
+ * followed) or a 4xx is the call refused, its body's `invalid_grant` the grant; a 5xx is the
+ * endpoint unavailable. The body is read only for its `error`, to `ANSWER_MAX`.
+ */
+async function refusedOf(answer: Response): Promise<GatewayCode> {
+  if (answer.status >= 300 && answer.status < 400) {
+    await answer.body?.cancel();
+    return "oauth_rejected";
   }
-  const reader = answer.body.getReader();
-  const parts: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    size += value.byteLength;
-    if (size > ANSWER_MAX) {
-      await reader.cancel();
-      return undefined;
-    }
-    parts.push(value);
-  }
-  const whole = new Uint8Array(size);
-  let at = 0;
-  for (const part of parts) {
-    whole.set(part, at);
-    at += part.byteLength;
-  }
-  try {
-    return JSON.parse(utf8Decoder("strip").decode(whole));
-  } catch {
-    return undefined;
-  }
-}
-
-/** The code for a token endpoint's refusal: `invalid_grant` is the grant, else the call. */
-async function refused(answer: Response): Promise<GatewayCode> {
   if (answer.status >= 500) {
     await answer.body?.cancel();
     return "oauth_unavailable";
   }
-  const body = await boundedJson(answer);
+  const body = await boundedJson(answer, ANSWER_MAX);
   const error = object(body) ? body["error"] : undefined;
   return error === "invalid_grant" ? "oauth_invalid_grant" : "oauth_rejected";
 }
@@ -122,7 +98,7 @@ async function post(client: OAuthClient, url: string, params: Record<string, str
   }
   try {
     return await nativeFetch(url, { method: "POST", headers, body, redirect: "manual",
-                                    signal: AbortSignal.timeout(TOKEN_DEADLINE_MS) });
+                                    signal: timeout(TOKEN_DEADLINE_MS) });
   } catch {
     throw new Refusal("oauth_unreachable");
   }
@@ -134,10 +110,9 @@ async function token(client: OAuthClient, params: Record<string, string>): Promi
     ...params, ...(client.resource === undefined ? {} : { resource: client.resource }),
   });
   if (answer.status !== 200) {
-    throw new Refusal(answer.status >= 300 && answer.status < 400
-      ? "oauth_rejected" : await refused(answer));
+    throw new Refusal(await refusedOf(answer));
   }
-  const body = await boundedJson(answer);
+  const body = await boundedJson(answer, ANSWER_MAX);
   if (!object(body)) {
     throw new Refusal("oauth_malformed");
   }
@@ -224,16 +199,15 @@ async function keyExchange(env: KeyringEnv, bound: Binding, grant: unknown,
       headers: { accept: "application/json", "accept-encoding": "identity",
                  "content-type": "application/json" },
       body: JSON.stringify({ code, code_verifier: verifier, code_challenge_method: "S256" }),
-      redirect: "manual", signal: AbortSignal.timeout(TOKEN_DEADLINE_MS),
+      redirect: "manual", signal: timeout(TOKEN_DEADLINE_MS),
     });
   } catch {
     throw new Refusal("oauth_unreachable");
   }
   if (answer.status !== 200) {
-    throw new Refusal(answer.status >= 300 && answer.status < 400
-      ? "oauth_rejected" : await refused(answer));
+    throw new Refusal(await refusedOf(answer));
   }
-  const body = await boundedJson(answer);
+  const body = await boundedJson(answer, ANSWER_MAX);
   const key = object(body) ? body["key"] : undefined;
   if (!sealable(secret, key)) {
     throw new Refusal("oauth_malformed");
@@ -278,8 +252,7 @@ export async function revokeAtProvider(env: KeyringEnv, bound: Binding,
     : { token: refreshToken, token_type_hint: "refresh_token" });
   // RFC 7009 §2.2: 200 whether or not the token was still valid.
   if (answer.status !== 200) {
-    throw new Refusal(answer.status >= 300 && answer.status < 400
-      ? "oauth_rejected" : await refused(answer));
+    throw new Refusal(await refusedOf(answer));
   }
   await answer.body?.cancel();
   return Object.freeze({ revoked: true });
