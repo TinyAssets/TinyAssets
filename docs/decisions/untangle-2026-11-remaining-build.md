@@ -322,6 +322,7 @@ Every known-wrong data shape is fixed before the cutover imports real data: a fi
 
 **Decided from `datashapes_research.md`** (the coordinator, 2026-11-12; the research adopted whole, in its order):
 1. **Receipts:** each fact moves onto the recipient row and `ledger_receipts` is deleted. After T1b4.
+   Built (o-receipts, owner migration 9) with `read_at` and `failed_reason` on the recipient row, and without the research's `replied_at` and `reply_id`: a reply's sender is always its parent's recipient (`ledger.ts` `#addressed`), so the reply message is the reply fact, and the parent's row already says `replied` at `changed_at`. Two more columns would copy it. The reply's row holds its `reply_s` from the post (review: a time read from the parent was lost once the parent archived, ADR-036).
 2. **Rooms:** a `rooms` table and room members, with opaque room ids. Lane O, after T1c and before S4.
 3. **Collection history**, in the order `history_keys_research.md` adopted (it answered the
    first build's four findings, stopped under Fact 14):

@@ -50,6 +50,7 @@ import { describe, expect, it } from "vitest";
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { exported } from "../src/export";
 import { LEDGER_LIMITS } from "../src/ledger";
+import { REFUSALS } from "../../contract/src/refusal";
 import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
 import {
   ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, CONNECTION_BLOB_MAX,
@@ -233,6 +234,11 @@ const MESSAGE_ID = 36;
 const PROPOSAL_ID_CHARS = inline("policy", /codePoints\(value\) <= ([0-9]+)/);
 /** An integer's or a real's most bytes in a record. */
 const NUMBER = 9;
+/**
+ * Why a mail failed, on its recipient row: a refusal's code, or `sender_gone`, which is
+ * shorter than the longest code.
+ */
+const FAILED_REASON = Math.max(...Object.keys(REFUSALS).map((code) => code.length));
 /** A content id: 64 hex (ADR-035's placed body, the files plane's content). */
 const CONTENT_ID = 64;
 /** A row's files scope: `owner`, or `client:` and 64 hex. */
@@ -423,11 +429,12 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     ledger_messages: { rows: L.maxMessages,
                        bytes: ROW + MESSAGE_ID + 4 * UNIVERSE_CHARS + 4 * ROOM_CHARS + AGENT_ID
                          + 4 * CMID_CHARS + 64 + 4 * PARENT_CHARS + MESSAGE_ID + 7
-                         + AUTHORITY_CHARS + 8 + 8,
+                         + AUTHORITY_CHARS + 8 + 8 + NUMBER,
                        by: "maxMessages (the hot ceiling: acked mail moves to archive " +
                          "segments), each its ids, universe, room, client message id, " +
                          "body hash, parent, authority (visible ASCII), whether a person " +
-                         "sent it and its lines' bytes, at the validators' widest",
+                         "sent it, its lines' bytes and a reply's time to reply, at the " +
+                         "validators' widest",
                        indexes: { sqlite_autoindex_ledger_messages_1: key(MESSAGE_ID),
                                   sqlite_autoindex_ledger_messages_2: key(AGENT_ID,
                                                                           4 * CMID_CHARS),
@@ -439,19 +446,17 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                       by: "maxMessages, each its room and its body inline up to PLACE_BYTES " +
                         "(a larger one placed in R2) or its content id, and its files scope",
                       indexes: { sqlite_autoindex_message_bodies_1: key(MESSAGE_ID) } },
-    // Its key holds a message to one recipient.
-    ledger_recipients: { rows: L.maxMessages, bytes: ROW + MESSAGE_ID + AGENT_ID,
-                         by: "one a message (the key: message_id)",
+    // Its key holds a message to one recipient, with when it read it or why it failed.
+    ledger_recipients: { rows: L.maxMessages,
+                         bytes: ROW + MESSAGE_ID + AGENT_ID + NUMBER + FAILED_REASON,
+                         by: "one a message (the key: message_id), its read time or the " +
+                           "widest reason it failed",
                          indexes: { sqlite_autoindex_ledger_recipients_1: key(MESSAGE_ID),
                                     recipients_by_seq: key(AGENT_ID, NUMBER),
                                     recipients_unacked: key(AGENT_ID, NUMBER),
                                     recipients_by_state: key(AGENT_ID, 8) } },
     ledger_readers: { rows: L.maxAgentRows, bytes: ROW + AGENT_ID, by: "one per agent",
                       indexes: { sqlite_autoindex_ledger_readers_1: key(AGENT_ID) } },
-    ledger_receipts: { rows: L.maxReceipts, bytes: ROW + 1 * KIB,
-                       by: "maxReceipts",
-                       indexes: { receipts_by_ref: key(13, 4 * PROPOSAL_ID_CHARS, AGENT_ID),
-                                  receipts_by_agent: key(AGENT_ID) } },
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
                     bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled",
                     indexes: { sqlite_autoindex_ledger_wakes_1: key(40),
@@ -707,15 +712,24 @@ export function ownerTables(schema = `${MIGRATE}\n${SCHEMA}`): string[] {
   return [...tables].sort();
 }
 
-/** The indexes the schema makes and keeps, each with its table: a dropped one is not. */
+/**
+ * The indexes the schema makes and keeps, each with its table: a dropped one is not, nor one
+ * on a dropped table, which SQLite drops with it.
+ */
 function madeIndexes(schema: string = SCHEMA): Map<string, string> {
   const made = new Map<string, string>();
-  for (const [, name, table, dropped] of schema.matchAll(
-    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)|DROP INDEX (?:IF EXISTS )?([a-zA-Z_0-9]+)/g)) {
-    if (dropped === undefined) {
-      made.set(name!, table!);
-    } else {
+  for (const [, name, table, dropped, gone] of schema.matchAll(
+    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)|DROP INDEX (?:IF EXISTS )?([a-zA-Z_0-9]+)|DROP TABLE (?:IF EXISTS )?([a-zA-Z_0-9]+)/g)) {
+    if (name !== undefined) {
+      made.set(name, table!);
+    } else if (dropped !== undefined) {
       made.delete(dropped);
+    } else {
+      for (const [index, on] of made) {
+        if (on === gone) {
+          made.delete(index);
+        }
+      }
     }
   }
   return made;
