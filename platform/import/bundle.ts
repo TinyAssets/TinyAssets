@@ -1,20 +1,11 @@
 /**
  * The bundle builder (`import_research.md` §3, slice 2): the backup copy read into one
- * bundle an owner, in the format the import doors and the doors' consumer take (slices 3
- * and 4), written to a local folder. Uploading it to R2 staging is slice 4's.
- *
- * A bundle, at `<out>/<key>/` (`key` = `sha256(principal)[:16]`):
- * - `owner.json`: the owner's name (the old principal), uid, admission, tier and notice;
- * - `manifest/<n>.json`: every folder and file of the owner's imported tree (`build.ts`),
- *   parents first, with each file's size, executable bit, mtime and expected content id,
- *   computed by the contract's own `inlineId`/`chunkedId` over the backup's bytes; a page
- *   holds at most `PAGE_ROWS` entries and `PAGE_BYTES` encoded (the export's page);
- * - `inline/<content id>` (content of `INLINE_BYTES` or less) and `chunks/<sha256>` (each
- *   `CHUNK_BYTES` chunk of larger content): the bytes, each named by what checks it;
- * - `rows/<n>.json`: the rows that carry live, the policy then the collections, in pages
- *   of the same bounds;
- * - `bundle.json`, written last: each part's SHA-256 and the counts. Its own SHA-256 is the
- *   bundle's digest, which the consumer's message is signed over.
+ * bundle an owner, in the contract's format (THE BUNDLE, `contract/src/import-message.ts`),
+ * which the import doors and the doors' consumer take (slices 3 and 4), written to a local
+ * folder at `<out>/<key>/` (`key` = `sha256(principal)[:16]`): the owner's imported tree
+ * (`build.ts`), each file's content id computed by the contract's own `inlineId`/`chunkedId`
+ * over the backup's bytes, its live rows, and the index last. Uploading it to R2 staging is
+ * slice 4's.
  *
  * The owners on the exclusion list (the founder's and the canary's: they start fresh) get
  * the same bundle in the private folder instead, never in `out`, and the two folders are
@@ -29,18 +20,16 @@ import { join, sep } from "node:path";
 
 import type { Tiers } from "../contract/src/control";
 import { sha256Hex } from "../contract/src/digest";
-import { rehearsalName } from "../contract/src/import-message";
+import {
+  BUNDLE_FORMAT, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, type BundleOwner, bundlePages,
+  pageName, rehearsalName,
+} from "../contract/src/import-message";
 
 import { tierName } from "./build";
 import { admissionProblems, erased, measure, verifyCopy, withheld } from "./census";
 import { names } from "./erasure";
 import { type Copy, type Fleet, type Owner, type Problem, survey } from "./survey";
 
-/** The bundle format this builder writes. */
-export const FORMAT = 1;
-/** A page's most entries or rows, and its most bytes encoded: the export's page. */
-export const PAGE_ROWS = 256;
-export const PAGE_BYTES = 1024 * 1024;
 /** The notice the owner is given once imported (research §3, order step 4). */
 export const NOTICE = "Your files from the old TinyAssets are in /workspace/imported";
 /** The private folder's records: the billing ids, and each bundle's digest by owner key. */
@@ -85,27 +74,6 @@ export interface Summary {
 export function exclusionList(text: string): Set<string> {
   return new Set(text.split("\n").map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("#")));
-}
-
-/** Items in pages of at most `PAGE_ROWS` items and `PAGE_BYTES` encoded. */
-export function pages<T>(items: readonly T[]): T[][] {
-  const found: T[][] = [];
-  let page: T[] = [];
-  let bytes = 0;
-  for (const item of items) {
-    const size = Buffer.byteLength(JSON.stringify(item)) + 1;
-    if (page.length > 0 && (page.length === PAGE_ROWS || bytes + size > PAGE_BYTES)) {
-      found.push(page);
-      page = [];
-      bytes = 0;
-    }
-    if (size > PAGE_BYTES) {
-      throw new Error("one entry or row is larger than a page");
-    }
-    page.push(item);
-    bytes += size;
-  }
-  return page.length > 0 ? [...found, page] : found;
 }
 
 /**
@@ -172,21 +140,23 @@ function writeBundle(owner: Owner, copy: Copy, dir: string | null, tiers: Tiers,
     writeFileSync(join(dir, name), text, { flag: "wx", mode: 0o600 });
     parts[name] = sha256Hex(text);
   };
-  part("owner.json", {
-    format: FORMAT, owner: owner.principal, key: owner.key, uid: owner.uid,
+  const ownerPart: BundleOwner = {
+    format: BUNDLE_FORMAT, owner: owner.principal, key: owner.key, uid: owner.uid,
     // An owner the old stack never admitted is "absent", never admitted by slice 5.
     admission: owner.admission ?? { state: "absent", reasons: [] },
     tier: tierName(owner), notice: NOTICE, centers: owner.centers,
-  });
-  pages(entries).forEach((page, n) => part(`manifest/${n}.json`, { entries: page }));
-  pages(rows).forEach((page, n) => part(`rows/${n}.json`, { rows: page }));
-  const index = `${JSON.stringify({
-    format: FORMAT, key: owner.key, owner: owner.principal, parts,
+  };
+  part(BUNDLE_OWNER, ownerPart);
+  bundlePages(entries).forEach((page, n) => part(pageName("manifest", n), { entries: page }));
+  bundlePages(rows).forEach((page, n) => part(pageName("rows", n), { rows: page }));
+  const bundleIndex: BundleIndex = {
+    format: BUNDLE_FORMAT, key: owner.key, owner: owner.principal, parts,
     counts: { entries: entries.length, inline: store.inline, chunks: store.chunks,
               chunk_bytes: store.chunkBytes, inline_bytes: store.inlineBytes,
               rows: rows.length },
-  })}\n`;
-  writeFileSync(join(dir, "bundle.json"), index, { flag: "wx", mode: 0o600 });
+  };
+  const index = `${JSON.stringify(bundleIndex)}\n`;
+  writeFileSync(join(dir, BUNDLE_INDEX), index, { flag: "wx", mode: 0o600 });
   return { problems: [], digest: sha256Hex(index), counts };
 }
 
@@ -270,10 +240,10 @@ export function buildBundles(copy: Copy, options: Options): Summary {
   erasureGuard(fleet, record.map((entry) => String(entry["owner"])));
   if (!dry) {
     writeFileSync(join(options.private!, PRIVATE_RECORD),
-                  `${JSON.stringify({ format: FORMAT, owners: record }, null, 2)}\n`,
+                  `${JSON.stringify({ format: BUNDLE_FORMAT, owners: record }, null, 2)}\n`,
                   { flag: "wx", mode: 0o600 });
     writeFileSync(join(options.private!, DIGESTS),
-                  `${JSON.stringify({ format: FORMAT, digests }, null, 2)}\n`,
+                  `${JSON.stringify({ format: BUNDLE_FORMAT, digests }, null, 2)}\n`,
                   { flag: "wx", mode: 0o600 });
   }
   return { dry_run: dry, owners: fleet.owners.length, erased: fleet.owners.filter(erased).length,

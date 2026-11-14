@@ -103,8 +103,14 @@ type Handed<Door extends keyof DoorRequests, Values extends object = object> =
   (DoorRequests[Door] & Values) | JsonBody;
 
 /**
+ * Why the platform suspends an owner (`admission.ts`): the reasons the import's admit carries
+ * from the old stack too (`doors/src/import.ts`, `import/survey.ts`).
+ */
+export const SUSPENSIONS: readonly string[] = Object.freeze(["abuse", "billing"]);
+
+/**
  * The platform's change of the owner's admission (`admission.ts`): its admit at sign-up, or
- * a suspension's reason and whether it holds.
+ * a suspension's reason (`SUSPENSIONS`) and whether it holds.
  */
 export type AdmissionRequest =
   | { readonly admit: true }

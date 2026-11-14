@@ -19,12 +19,11 @@
  */
 import { chunkPlan, cut } from "../contract/src/content";
 import {
-  bodyId, type CheckChunk, type CheckEntry, type CheckState, NO_ROWS, rowLeaf, rowsSum,
+  bodyId, type CheckChunk, type CheckEntry, type CheckState, type Entry, NO_ROWS, type Row, rowLeaf,
+  rowsSum,
 } from "../contract/src/import-message";
 import { PLACE_BYTES } from "../contract/src/limits";
 import { DEFAULT_POLICY_DIGEST, policyDigest } from "../contract/src/policy-document";
-
-import type { Entry, Row } from "./build";
 
 /** What one owner's object should hold, by its bundle. */
 export interface Expected {

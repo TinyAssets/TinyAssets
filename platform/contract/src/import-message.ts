@@ -1,8 +1,10 @@
 /**
  * The cutover import's queue messages (`import_research.md` §3 and §4, slices 3 to 5): what
  * the importer's job puts on the import queue for each owner (`platform/import/stage.ts`,
- * `platform/import/window.ts`), and what the doors' consumer takes (`doors/src/import.ts`).
- * One module, so the two cannot disagree; deleted at the cutover with both.
+ * `platform/import/window.ts`), and what the doors' consumer takes (`doors/src/import.ts`);
+ * and the bundle each message names (THE BUNDLE, below), which the job writes and both read.
+ * One module, so the two cannot disagree; deleted at the cutover with both
+ * (`platform/cutover.json`).
  *
  * A message is `{op, owner, bundle, prefix, mac}`; `check`, `discard` and `admit` add `ask`,
  * and a consumer's own continuation adds `cursor`:
@@ -13,7 +15,7 @@
  *   whose object the bundle goes into;
  * - `bundle`, the SHA-256 of the bundle's `bundle.json` (`import/bundle.ts`), which names
  *   every other part by its own SHA-256;
- * - `prefix`, where the bundle sits in the staging bucket: `<run>/<key>`;
+ * - `prefix`, where the bundle sits in the staging bucket: `<run>/<key>` (`bundlePrefix`);
  * - `mac`, HMAC-SHA-256 under the window's `IMPORT_KEY` over the op, the owner and the
  *   bundle's digest, base64url: the key is the doors' Worker secret, set only for the
  *   window, and the job's input, so a stray or forged message names no bundle the doors take;
@@ -33,7 +35,8 @@ import { principal } from "./text";
  * The import doors' bounds (`owner/src/import.ts`), which the consumer batches by: a call's
  * most rows, and its most bytes encoded (the export's page); a call's most folders and
  * inline files, their bytes held to the same; and the most import uploads open at once,
- * under the files plane's `MAX_OPEN_INTENTS` (64).
+ * under the files plane's `MAX_OPEN_INTENTS` (64). A bundle's page is held to the first two
+ * (`bundlePages`), since the consumer hands a rows page to `importRows` as one call.
  */
 export const IMPORT_ROWS = 256;
 export const IMPORT_BATCH_BYTES = 1024 * 1024;
@@ -148,6 +151,117 @@ export function answerName(prefix: string, ask: string, page?: string): string {
 /** Where the consumer marks an owner's import done: its whole bundle through the doors. */
 export function doneName(prefix: string): string {
   return `${prefix}/answers/import.json`;
+}
+
+// -- THE BUNDLE (`import/bundle.ts` writes it; `import/{stage,window,check}.ts` and the doors'
+// consumer read it) ------------------------------------------------------------------------
+
+/*
+ * One owner's bundle (`import_research.md` §3), at `<out>/<key>/` where the job writes it and
+ * below its `prefix` in the staging bucket (`bundlePrefix`, `stagedName`):
+ * - `owner.json` (`BundleOwner`): the owner as the old stack held it, and its notice;
+ * - `manifest/<n>.json`, `{entries}`: every folder and file of the owner's imported tree
+ *   (`Entry`), parents first;
+ * - `inline/<content id>` and `chunks/<sha256>`: the bytes, each named by what checks it;
+ * - `rows/<n>.json`, `{rows}`: the rows that carry live (`Row`), the policy then the collections;
+ * - `bundle.json` (`BundleIndex`), written last: each other part's SHA-256 and the counts. Its
+ *   own SHA-256 is the bundle's digest, which a message names and is MAC'd over.
+ * Each kind's pages are numbered from 0 with no gap, and each holds what `bundlePages` puts in.
+ */
+
+/** The bundle's format, its index's and its owner's `format`. */
+export const BUNDLE_FORMAT = 1;
+export const BUNDLE_INDEX = "bundle.json";
+export const BUNDLE_OWNER = "owner.json";
+/** The paged parts. */
+export type Paged = "manifest" | "rows";
+/** Every part's name. */
+export const PART =
+  /^(?:bundle\.json|owner\.json|(?:manifest|rows)\/(?:0|[1-9][0-9]{0,8})\.json|inline\/[0-9a-f]{64}|chunks\/[0-9a-f]{64})$/;
+const PAGE = /^(manifest|rows)\/(0|[1-9][0-9]{0,8})\.json$/;
+
+export const pageName = (kind: Paged, n: number): string => `${kind}/${n}.json`;
+export const inlineName = (contentId: string): string => `inline/${contentId}`;
+export const chunkName = (sha256: string): string => `chunks/${sha256}`;
+
+/** The number of the page of `kind` that `name` is, or null for any other part. */
+export function pageNumber(kind: Paged, name: string): number | null {
+  const match = PAGE.exec(name);
+  return match !== null && match[1] === kind ? Number(match[2]) : null;
+}
+
+/** Where run `run`'s bundle of the owner keyed `key` sits in the staging bucket. */
+export const bundlePrefix = (run: string, key: string): string => `${run}/${key}`;
+/** A part's object in the staging bucket, below its bundle's prefix. */
+export const stagedName = (prefix: string, part: string): string => `${prefix}/${part}`;
+
+/**
+ * A folder or a file of the manifest: a file's size, executable bit, mtime and content id
+ * (the contract's own `inlineId`/`chunkedId`), and a chunked file's chunks.
+ */
+export interface Entry {
+  readonly path: string;
+  readonly kind: "dir" | "file";
+  readonly size?: number;
+  readonly mode?: 0 | 1;
+  readonly mtime_ms?: number;
+  readonly content_id?: string;
+  /** A chunked file's chunks, in order (`chunks/<sha256>`). */
+  readonly chunks?: readonly string[];
+}
+
+export type Row =
+  | { readonly kind: "policy"; readonly document: unknown }
+  | { readonly kind: "collection"; readonly collection: string; readonly row_id: string;
+      readonly private: 0 | 1; readonly body: string };
+
+/** `owner.json`: an owner the old stack never admitted is `absent`, and never admitted. */
+export interface BundleOwner {
+  readonly format: typeof BUNDLE_FORMAT;
+  readonly owner: string;
+  readonly key: string;
+  readonly uid: number | null;
+  readonly admission: { readonly state: "admitted" | "suspended" | "erased" | "absent";
+                        readonly reasons: readonly string[] };
+  readonly tier: string;
+  readonly notice: string;
+  readonly centers: readonly { readonly name: string; readonly retired: boolean }[];
+}
+
+/** `bundle.json`. */
+export interface BundleIndex {
+  readonly format: typeof BUNDLE_FORMAT;
+  readonly key: string;
+  readonly owner: string;
+  readonly parts: Readonly<Record<string, string>>;
+  readonly counts: { readonly entries: number; readonly inline: number; readonly chunks: number;
+                     readonly chunk_bytes: number; readonly inline_bytes: number;
+                     readonly rows: number };
+}
+
+/**
+ * Items in pages of at most `IMPORT_ROWS` items, each page's list at most `IMPORT_BATCH_BYTES`
+ * as JSON, as the import doors measure a call.
+ */
+export function bundlePages<T>(items: readonly T[]): T[][] {
+  const found: T[][] = [];
+  let page: T[] = [];
+  // A list's JSON is its brackets, and each item with a comma after all but the last.
+  let bytes = 1;
+  for (const item of items) {
+    const size = Buffer.byteLength(JSON.stringify(item)) + 1;
+    if (page.length > 0 && (page.length === IMPORT_ROWS || bytes + size > IMPORT_BATCH_BYTES)) {
+      found.push(page);
+      page = [];
+      bytes = 1;
+    }
+    if (1 + size > IMPORT_BATCH_BYTES) {
+      throw new Error("one entry or row is larger than a page");
+    }
+    page.push(item);
+    bytes += size;
+  }
+  return page.length > 0 ? [...found, page] : found;
 }
 
 // -- THE CHECK (`importCheck`, `owner/src/import.ts`; the job's `verify`, `import/window.ts`) --

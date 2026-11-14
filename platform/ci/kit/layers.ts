@@ -21,6 +21,10 @@
  * and nothing that names a place another way (an absolute path, a URL, a `#` name).
  * A module a workflow's step names inline (`node -e "import … from './…'"`) is checked as its
  * own layer, `INLINE`.
+ *
+ * The cutover layer lies over the table, read from the cutover's manifest (`cutover.ts`): what
+ * the manifest deletes may import itself whatever its layer says, and nothing that stays
+ * imports it but the imports the manifest names.
  */
 
 export interface Layer {
@@ -72,7 +76,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
   },
   {
     // A Worker's own data beside its config (`doors/shared-apps.json`) and its build's
-    // output (the sandbox's `dist/runner.mjs`, imported as data) are its own folder's.
+    // output (the sandbox's runner in `dist/`, imported as data) are its own folder's.
     name: "a Worker's source",
     files: ["platform/<worker>/src/**", ...NOT_TESTS],
     may: ["platform/<worker>/src/**", "platform/<worker>/*.json", "platform/<worker>/dist/**",
@@ -116,10 +120,20 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     packages: [],
   },
   {
+    // The pin's one reader (`pair.ts`) reads the sandbox's config by `ci/wrangler.ts` (B18).
     name: "the template",
     files: ["platform/sandbox/template/**", ...NOT_TESTS],
     may: ["platform/sandbox/template/**", "platform/sandbox/runner/**",
-          "platform/sandbox/e2b/**", ...CONTRACT, ...SOURCES, ...NOT_TESTS],
+          "platform/sandbox/e2b/**", "platform/ci/wrangler.ts", ...CONTRACT, ...SOURCES,
+          ...NOT_TESTS],
+  },
+  {
+    // The sandbox Worker's build (`wrangler.jsonc`'s `build.command`, B18): the runner and
+    // the probes, by the workspace's esbuild, from entries it names by path, not by import.
+    name: "the sandbox's build",
+    files: ["platform/sandbox/build/**", ...NOT_TESTS],
+    may: ["platform/sandbox/build/**", ...NOT_TESTS],
+    packages: ["esbuild", "node:crypto", "node:fs", "node:module", "node:path", "node:url"],
   },
   {
     // A Worker's own data beside its config is the deploy kit's to read: it deploys them.
@@ -153,7 +167,8 @@ export const LAYERS: readonly Layer[] = Object.freeze([
   {
     name: "the ci kit",
     files: ["platform/ci/**", "!platform/ci/guards/**", "!platform/ci/{paths,wrangler}.ts"],
-    may: ["platform/ci/**", "!platform/ci/guards/**", ...CONTRACT, "platform/deploy/control.json"],
+    may: ["platform/ci/**", "!platform/ci/guards/**", ...CONTRACT, "platform/deploy/control.json",
+          "platform/cutover.json"],
     computed: true,
   },
   {

@@ -14,6 +14,7 @@ import { lstatSync, readdirSync, readlinkSync, type Stats } from "node:fs";
 import { join } from "node:path";
 
 import { sha256Hex } from "../contract/src/digest";
+import { SUSPENSIONS } from "../contract/src/owner";
 import { IMPORTED, storedPath, WORKSPACE } from "../contract/src/paths";
 import { DEFAULT_IGNORES, ignoredBy, type Matcher } from "../contract/src/sync-ignore";
 
@@ -523,7 +524,7 @@ function admissions(read: (store: string, table: string) => Record<string, unkno
     const reasons = JSON.parse(String(row["reasons"])) as unknown;
     const state = row["state"];
     if ((state !== "admitted" && state !== "suspended" && state !== "erased")
-        || !Array.isArray(reasons) || reasons.some((r) => r !== "billing" && r !== "abuse")
+        || !Array.isArray(reasons) || !reasons.every((r) => SUSPENSIONS.includes(r))
         || (state === "suspended") !== (reasons.length > 0)) {
       throw new Error("an owner_admission row is no state and reasons the old stack wrote");
     }

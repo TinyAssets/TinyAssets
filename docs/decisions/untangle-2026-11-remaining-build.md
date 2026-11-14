@@ -413,3 +413,22 @@ It builds as its own PR, **C2b**, right after C2.
    - **Lane C, then D:** the inbound door's own answers with no contract code (`too_large`, `too_many_headers`, `event_identity_required`, `invalid_signature`, `inbound_app_unconfigured`), and its `Retry-After: 5` on the object's `retry` answer, each needs a code first; `doors.ts`'s overloaded `429` is the runtime's, not a refusal.
    - **Lane D:** the connect door's `N5` rule (it answers a gateway failure only for a `502`, `deadline` or `invalid_request`, and throws every other as a fault) stays its own classification; it now rethrows the gateway's refusal rather than rebuilding one.
    - **Lane O, then D:** the events door's `subscription_limit → ResourceExhausted` stays in `asEvent` until the owner's refusal carries the limit as facts.
+
+## S6 as built (2026-11-14)
+
+1. **B18's departures, accepted:**
+   - `modules.d.ts` stays, narrowed to `*/dist/runner.mjs`. §R stopped committing wrangler's types, so no generated declaration is left to replace it; generating one is lane C's (`ci/kit/types.ts`).
+   - The names guard (`template.test.ts`, "the bundles' names") allows four files: `pair.ts`, `src/runner-bytes.ts`, `src/modules.d.ts`, and `guards/rules.ts` (the config guard's letter of `wrangler.jsonc`).
+   - The runner's bundle is byte-identical. The probes' bundle changes by N40 alone, so the pair tag's `-p` moves, and the pair check is owed at the dark redeploy.
+2. **Owed:**
+   - **N39, `bundles()`'s `exec`, goes to lane X.** Passing the kit's `io` another way rewrites `shippedPair` and `deploy.test.ts`'s fake world.
+   - **The loader's installed name, `<sha>/runner.mjs`, has no home yet.**
+     - The founder's home for it is `pair.ts`, beside `BUNDLES`. `template/ta-runner` keeps its own spelling and is allowed by the names guard, because it is the image's input, pinned by the template digest.
+     - It is not built in S6. One reader, `runner/probes.ts:501`, may not import `pair.ts`: the layer table lets the probes import only `runner/**`, the contract and the records, and `pair.ts` would carry Node's processes and the test kit into the probes' bundle.
+     - The other readers are `runner/test/harness.ts:791`, `runner/loader.test.ts` and `runner/runner.test.ts`.
+     - The home has to be one the probes can read (one option is `runner/protocol.ts`, beside `RUNNERS`). That is decided before it is built.
+   - **B10's literal guard:** S6 is not its last adopter, because O4 hasn't merged. The sandbox's `tinyassets-*` literals it must list:
+     - `guards/rules.ts:16,38`: the config guard's letter of the config.
+     - `template/image.ts:47` `NAME`: E2B's template name, an image input.
+     - `guards/config.test.ts:74,78-79`: fixtures the guard must refuse.
+     - `src/index.ts:2`: a comment.

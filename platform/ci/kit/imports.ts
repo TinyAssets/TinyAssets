@@ -7,8 +7,10 @@
  * import (`layerProblems`); a workflow's inline module is held the same way
  * (`inlineImports`). Imports are read from the syntax tree, every way one module names
  * another, and a relative one is held by the path it resolves to, however it is spelled
- * (`./../../owner/...` included). `ci/guards/isolation.test.ts` holds it over every file, with
- * what each workspace owes (`owed.ts`) the only exceptions.
+ * (`./../../owner/...` included). Over the table lies the cutover layer (untangle B24,
+ * `cutover.ts`): the files the cutover's manifest deletes may import one another, and a file
+ * that stays imports them only where the manifest names the import. `ci/guards/isolation.test.ts`
+ * holds it over every file, with what each workspace owes (`owed.ts`) the only exceptions.
  *
  * **Banned names** (`<workspace>/guards/rules.ts`, `ImportRules`). A workspace names what no
  * source of its own may use (an identifier, a private name or any string, template parts
@@ -32,6 +34,7 @@ import { parse as parseYaml } from "yaml";
 
 import { PLATFORM, REPO } from "../paths.ts";
 import { workerFolders } from "../wrangler.ts";
+import { type CutoverLayer, cutoverLayer, isGone } from "./cutover.ts";
 import { INLINE, type Layer, LAYERS, SCRIPT } from "./layers.ts";
 import type { Found } from "./owed.ts";
 import { KINDS, parse, reporter, scriptsIn, workerSources } from "./sources.ts";
@@ -444,13 +447,16 @@ function landing(from: string, specifier: string, has: (path: string) => boolean
 /**
  * Each import of `from` (held as `layer`, in workspace `ws`) its layer does not allow, as a
  * violation: `<from> imports <where it lands>`, or the specifier itself where it is no
- * relative path, or a computed module.
+ * relative path, or a computed module. The cutover layer's files may import one another, and
+ * a file that stays may import one of them only where the manifest names that import, by the
+ * file `at` (`from`, or the workflow whose inline module `from` is).
  */
 function edgeViolations(layer: Layer, layers: readonly Layer[], from: string, ws: string | null,
                         named: readonly (string | null)[], has: (path: string) => boolean,
-                        workers: readonly string[]): string[] {
+                        workers: readonly string[], cutover: CutoverLayer, at: string): string[] {
   const holders = [layer, ...(layer.inherits === true && ws !== null
     ? ownLayers(layer, ws, layers, workers) : [])];
+  const goes = isGone(cutover.gone, at);
   const out: string[] = [];
   for (const specifier of named) {
     if (specifier === null) {
@@ -460,8 +466,15 @@ function edgeViolations(layer: Layer, layers: readonly Layer[], from: string, ws
     } else if (specifier.startsWith("./") || specifier.startsWith("../")
                || workspaceNamed(specifier) !== null) {
       const to = workspaceNamed(specifier) ?? landing(from, specifier, has);
+      const gone = isGone(cutover.gone, to);
+      if (goes && gone) {
+        continue;
+      }
       if (!holders.some((each) => mayImport(each, ws, to, workers))) {
         out.push(`${from} imports ${to}`);
+      } else if (gone && !(cutover.entries.get(at) ?? []).includes(to)) {
+        out.push(`${from} imports ${to}, which the cutover deletes: name the import on the ` +
+                 "file's edit in platform/cutover.json");
       }
     } else if (specifier.startsWith("#")) {
       out.push(`${from} imports ${specifier}, a name its package maps to a path`);
@@ -490,6 +503,7 @@ export interface LayerInputs {
   readonly layers?: readonly Layer[];
   readonly inline?: Layer;
   readonly workers?: readonly string[];
+  readonly cutover?: CutoverLayer;
 }
 
 /**
@@ -500,7 +514,7 @@ export interface LayerInputs {
  */
 export function layerProblems(inputs: LayerInputs): LayerReport {
   const { files, workflows = new Map<string, string>(), layers = LAYERS, inline = INLINE,
-          workers = workerFolders() } = inputs;
+          workers = workerFolders(), cutover = cutoverLayer() } = inputs;
   const has = (path: string) => files.has(path) || isFile(join(REPO, path));
   const unplaced: string[] = [];
   const violations: Found[] = [];
@@ -513,7 +527,7 @@ export function layerProblems(inputs: LayerInputs): LayerReport {
     }
     const ws = workspaceOf(path);
     for (const what of edgeViolations(placed[0]!, layers, path, ws, specifiers(path, source),
-                                      has, workers)) {
+                                      has, workers, cutover, path)) {
       violations.push({ workspace: ws ?? path.split("/")[0]!, what });
     }
   }
@@ -531,7 +545,8 @@ export function layerProblems(inputs: LayerInputs): LayerReport {
         [posix.join(dir, "[inline]"), named.filter((_each, at) => rooted[at] == null)],
         ["[inline]", rooted.filter((each) => each != null).map((each) => `./${each}`)],
       ] as const) {
-        for (const what of edgeViolations(inline, layers, from, null, held, has, workers)) {
+        for (const what of edgeViolations(inline, layers, from, null, held, has, workers,
+                                          cutover, path)) {
           found.add(`${path}${what.slice(from.length)}`);
         }
       }

@@ -191,7 +191,7 @@ describe("r2-keys guard", () => {
     ["files/src/index.ts", "function manifestKey(a) { return a; }\nclass S { f(p) { " +
      "return this.env.BLOBS.put(manifestKey(p), x); } }"],
   ])("sees %s: %s", (path, source) => {
-    expect(keyProblems(path, source.startsWith("import") ? source
+    expect(keyProblems(path, /^import\b/.test(source) ? source
       : header + source)).not.toEqual([]);
   });
 

@@ -1,6 +1,6 @@
 /**
- * The template's standing checks, a bundle of their own beside the runner (`probes.mjs`,
- * `template/bundle.mjs`): nothing in the runner imports them, so the runner every sandbox
+ * The template's standing checks, a bundle of their own beside the runner (the Worker's
+ * build, `build/bundle.mjs`): nothing in the runner imports them, so the runner every sandbox
  * runs carries none of them, and this bundle carries what they judge by (the owner's run
  * environment, `runEnv` and `sandboxEnv`, the egress door's paths, `STEP_NS`). The pair the
  * deploy looks for names both bundles' digests (`template/pair.ts`).
@@ -50,9 +50,11 @@ import { CONVERSATIONS, engineEnv, giveTree, homeOf, loginFiles, record, RECORDS
          sortedWalk, sources, spawnBounded, STORE, systemOf, withRunUser } from "./session";
 import { asUser } from "./users";
 
-/** The digest of the runner built beside this bundle (`bundle.mjs` defines it). */
+/**
+ * The digest of the runner built beside this bundle: `build/bundle.mjs` defines it, and
+ * nothing runs this module unbundled.
+ */
 declare const TA_RUNNER_SHA: string;
-const RUNNER: string | null = typeof TA_RUNNER_SHA === "string" ? TA_RUNNER_SHA : null;
 
 const STATE = STATE_DIR;
 const OK = EXIT.ok;
@@ -496,13 +498,10 @@ function matcherProbe(): number {
  * must be installed here, byte for byte, as the loader installed it.
  */
 function unpaired(): string | null {
-  if (RUNNER === null) {
-    return "the probes were built without their runner's digest (template/bundle.mjs)";
-  }
-  const file = `${RUNNERS}/${RUNNER}/runner.mjs`;
+  const file = `${RUNNERS}/${TA_RUNNER_SHA}/runner.mjs`;
   if (!existsSync(file)
-      || sha256Hex(readFileSync(file)) !== RUNNER) {
-    return `the runner ${RUNNER} the probes were built beside is not installed here`;
+      || sha256Hex(readFileSync(file)) !== TA_RUNNER_SHA) {
+    return `the runner ${TA_RUNNER_SHA} the probes were built beside is not installed here`;
   }
   return null;
 }
@@ -510,10 +509,7 @@ function unpaired(): string | null {
 export async function main(argv: readonly string[]): Promise<number> {
   const [command, ...args] = argv;
   if (command === PROBE.plan) {
-    if (RUNNER === null) {
-      throw new Error("the probes were built without their runner's digest");
-    }
-    process.stdout.write(`${JSON.stringify(plan(RUNNER))}\n`);
+    process.stdout.write(`${JSON.stringify(plan(TA_RUNNER_SHA))}\n`);
     return OK;
   }
   if (command !== PROBE.login && command !== PROBE.route && command !== PROBE.matcher) {

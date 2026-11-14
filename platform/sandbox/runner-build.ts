@@ -8,9 +8,10 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { bundles } from "./template/pair";
+
 const SANDBOX = dirname(fileURLToPath(import.meta.url));
 
 export function setup(): void {
-  execFileSync(process.execPath, [join(SANDBOX, "template", "bundle.mjs"), join(SANDBOX, "dist")],
-               { stdio: "ignore" });
+  bundles(execFileSync, join(SANDBOX, "dist"));
 }

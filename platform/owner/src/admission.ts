@@ -40,15 +40,12 @@ import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { ADMISSION_TABLE } from "./schema";
 import type { TierName } from "../../contract/src/control";
-import type { AdmissionRequest } from "../../contract/src/owner";
+import { type AdmissionRequest, SUSPENSIONS } from "../../contract/src/owner";
 import { tierName } from "./tier";
 import type {
   Door, OwnerState,
 } from "./owner-do";
 import { clock } from "./clock";
-
-/** Why the platform suspends an owner. */
-export const SUSPENSIONS: readonly string[] = Object.freeze(["abuse", "billing"]);
 
 /** The refusals, each fixed: what a door or a `require_work` lane answers. */
 export const OWNER_SUSPENDED = "owner_suspended: the owner's account is suspended";

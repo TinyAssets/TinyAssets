@@ -7,9 +7,9 @@
  * the Worker runs one, `ta-runner <sha> <command>` through the loader as it ships, so the
  * runner runs at the sandbox's real paths; its teardown is one SIGKILL of that process.
  * The test reads and writes the box's files from outside (`path`). A `Sandbox` adds a fake
- * CLI per record at the record's own binary path and the runner the template carries
- * (`template/bundle.mjs`), installed; `Doors` is a fake doors server for the run's event
- * door, the sign-in report and the sync doors.
+ * CLI per record at the record's own binary path and the runner the Worker ships, built as
+ * its build makes it (`template/pair.ts`), installed; `Doors` is a fake doors server for the
+ * run's event door, the sign-in report and the sync doors.
  */
 import { execFileSync, spawn, type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { egressDoor } from "../../../contract/src/egress";
 import { bundledSources } from "../../../sources/src/catalog";
 
+import { BUNDLES, bundles } from "../../template/pair";
 import { binPath } from "../engine";
 import { incoming, inboxDoc, INSTALL, LEASE_FILE, type LeaseFile, LOADER, RUNNERS,
          type SigninDoc, type StartDoc } from "../protocol";
@@ -57,10 +58,10 @@ const UNSHARE = ["--mount", "--pid", "--fork", "--kill-child", "--uts", "--propa
 let bundled: string | null = null;
 
 /** The bundles' directory: the runner and the probes beside it, built once per test file. */
-function bundles(): string {
+function built(): string {
   if (bundled === null) {
     const out = mkdtempSync(join(tmpdir(), "ta-runner-bundle-"));
-    execFileSync(process.execPath, [join(SANDBOX, "template", "bundle.mjs"), out]);
+    bundles(execFileSync, out);
     bundled = out;
   }
   return bundled;
@@ -68,12 +69,12 @@ function bundles(): string {
 
 /** The runner's bundle, built once per test file (outside every box). */
 export function runnerBundle(): string {
-  return join(bundles(), "runner.mjs");
+  return join(built(), BUNDLES.runner);
 }
 
 /** The template's probes, built beside the runner (`runner/probes.ts`). */
 export function probesBundle(): string {
-  return join(bundles(), "probes.mjs");
+  return join(built(), BUNDLES.probes);
 }
 
 /** Every box's process this one started, killed when it exits (a test that died left it). */
