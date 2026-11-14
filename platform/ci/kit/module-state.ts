@@ -347,7 +347,7 @@ export function unexempted(sources: ReadonlyMap<string, string>,
       }
       return exempt === undefined;
     }).map(({ line, what }) => `${path}:${line}: ${what}`));
-  return [...problems, ...exemptions.filter((each) => !used.has(each) && sources.has(each.file))
+  return [...problems, ...exemptions.filter((each) => !used.has(each))
     .map((each) => `${each.file} exempts ${each.symbol}, which keeps no module state: ` +
                    "delete the exemption")];
 }

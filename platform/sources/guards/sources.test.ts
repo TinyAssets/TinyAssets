@@ -27,7 +27,7 @@ import { RUN_BASICS, runEnv } from "../src/run-env";
 import { type Install, type SourceRecord, SourceRecordError } from "../src/schema";
 import { SUPPORTED_APIS } from "../../contract/src/egress-scope";
 import { forbids } from "../../contract/src/text";
-import { recordFiles } from "../write-records";
+import { RECORDS_DIR, recordFiles } from "../write-records";
 
 const SOURCES = join(PLATFORM, "sources");
 
@@ -37,7 +37,7 @@ function files(dir: string): Map<string, unknown> {
                     JSON.parse(readFileSync(join(dir, name), "utf8")) as unknown]));
 }
 
-const records = files(SOURCES);
+const records = files(RECORDS_DIR);
 const groq = records.get("groq") as Record<string, unknown>;
 const openrouter = records.get("openrouter_user_models_v1") as Record<string, unknown>;
 const openai = records.get("openai") as Record<string, unknown>;

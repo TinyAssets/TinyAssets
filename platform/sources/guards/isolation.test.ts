@@ -22,7 +22,7 @@ isolationTests(IMPORTS, {
       "import { SOURCE_ID } from '../../contract/src/text';",
       "import type { EngineEvents } from '../../contract/src/run-events';",
     ].join("\n")],
-    ["its record files", "sources/src/probe.ts", "import groq from '../groq.json';"],
+    ["its record files", "sources/src/probe.ts", "import groq from '../records/groq.json';"],
   ],
 });
 

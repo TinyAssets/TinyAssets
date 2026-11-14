@@ -18,7 +18,7 @@ import { SourceRecordError } from "../src/schema";
 
 type Json = Record<string, unknown>;
 const load = (id: string): Json =>
-  JSON.parse(readFileSync(join(PLATFORM, "sources", `${id}.json`), "utf8")) as Json;
+  JSON.parse(readFileSync(join(PLATFORM, "sources", "records", `${id}.json`), "utf8")) as Json;
 const claude = load("claude-code");
 const codex = load("codex");
 const gemini = load("gemini");

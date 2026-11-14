@@ -49,7 +49,7 @@ export interface Layer {
 /** The contract: its modules and its data files. */
 const CONTRACT = Object.freeze(["platform/contract/src/**", "platform/contract/*.json"]);
 /** The source records, a contract module beside their files (untangle A1). */
-const SOURCES = Object.freeze(["platform/sources/src/**", "platform/sources/*.json"]);
+const SOURCES = Object.freeze(["platform/sources/src/**", "platform/sources/records/*.json"]);
 /** A workspace's tests, in its `test/` folders or named `*.test.*`, wherever they sit. */
 const NOT_TESTS = Object.freeze(["!**/test/**", "!**/*.test.*"]);
 

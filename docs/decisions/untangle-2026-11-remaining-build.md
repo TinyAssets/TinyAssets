@@ -390,3 +390,12 @@ It builds as its own PR, **C2b**, right after C2.
 
 1. **B6's egress door grammars are one reader, `egressDoor(path)` (`contract/src/egress.ts`), not regexes built from the ids.** The module-state guard refuses a regex a call builds at load, so the reader holds each segment to its own grammar in `ids.ts` (`RUN_ID`, `HEX64`, `CONNECTION_ID`, `SIGNIN_ID`) and returns the door it names. No regex copy is left, and `contract/guards/wire.test.ts` reads back every URL the contract makes. The sync agent's door names are `SYNC_DOORS`, and the runner's sync client takes a `SyncDoor`.
 2. **Corrects `d2` B19:** `REMEMBERED_NAME_BYTES` and `automatonStates` stay in `contract/src/sync-ignore.ts`. `ignoredBy` reads the first, and the second measures the matcher's private automaton for its own tests. Only `SANDBOX_HEAP`, `AGENT_PEAK` and `HEAP_PER_LIST_BYTE` move to `sandbox/runner/sizing.ts` (S4).
+
+## §T. C5 as built (2026-11-14)
+
+1. **The source records live in `sources/records/`,** so the records reader reads only records and `sources/package.json` needs no skip. The runner's bundle moves with the paths; its pair check is the one owed at the dark redeploy.
+2. **The tools' and apps' constants are not derived from `profiles.json`** (corrects `d2` B8): `NEVER_RUN`, `MAILBOX_TOOLS` and the like are the guard's statement of what each profile must hold, and deriving them from the file would test the file against itself.
+3. **Owed for C5b,** each a split of B8 left out of C5:
+   - `owner/guards/rules.ts`'s four rules imports (files, gateway, codemode, sandbox) for `SERVICES`: "`rules.ts` drops the values the configs already state" needs `owner/guards/config.test.ts`'s `boundProblems` reworked, deciding which bound-Worker facts are the owner's own security statement and which the bound config's;
+   - `s2:S93` (`sandbox/guards/rules.ts` `exact`);
+   - `d2:N81` (`doors/guards/rules.ts` `exact`, and `config.test.ts`'s restated names).

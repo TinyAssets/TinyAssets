@@ -47,6 +47,9 @@ describe("module-state guard", () => {
                       [pool]))
       .toEqual(["w/src/b.ts:1: POOL holds a mutable value",
                 "w/src/a.ts exempts POOL, which keeps no module state: delete the exemption"]);
+    // So is an exemption whose file is gone.
+    expect(unexempted(new Map([["w/src/b.ts", "export const A = 1;\n"]]), [pool]))
+      .toEqual(["w/src/a.ts exempts POOL, which keeps no module state: delete the exemption"]);
     // A write through the global object is named by the member it writes.
     const interposer = "export function f(g: typeof fetch) { globalThis.fetch = g; }\n";
     expect(unexempted(new Map([["w/src/e.ts", interposer]]),
