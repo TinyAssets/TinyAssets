@@ -16,6 +16,9 @@ name: Platform canary
 #     nothing that could notice;
 #   - by hand, `full` running the day's full run now.
 # The kit runs the same canary after each deploy mode (deploy.ts), as Fact 11's.
+# Every run on the doors' side also reads, with this job's token, how long ago a
+# night of the off-account copy (offsite-copy.yml) passed, and fails alone past
+# two nights once the copy is configured (platform/deploy/offsite.ts `watch`).
 #
 # Before the deploy it pages no one: the alarm acts only once the production
 # environment holds PLATFORM_CANARY_TOKEN (CANARY_ARMED) and the doors serve

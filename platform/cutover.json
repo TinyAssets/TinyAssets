@@ -70,7 +70,6 @@
         { "edit": "platform/deploy/checklist.md", "names": ["## The import window's credentials"], "what": "the import window's credentials" },
         { "edit": "docs/architecture.md", "names": ["`platform/import/`"], "what": "the importer's row" },
         { "edit": "openspec/changes/clean-sheet-platform/specs/doors/spec.md", "names": ["say nothing of the cutover's import"], "what": "the MCP instructions' silence on the import, which the importer's README explains" },
-        { "edit": "AGENTS.md", "names": ["import-window.yml"], "what": "the window's workflow, named as a reader of CLOUDFLARE_ACCOUNT_ID" },
 
         { "move": "platform/contract/src/content.ts", "to": "platform/owner/src/content.ts", "what": "the content ids: the owner, its starter and the importer gave the same bytes the same id, and after the importer only the owner names content" },
         { "move": "platform/contract/src/policy-document.ts", "to": "platform/owner/src/policy-document.ts", "what": "the policy document, the importer its only other reader; EgressMode, which contract/src/sandbox.ts reads, stays in the contract" },

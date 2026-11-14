@@ -121,6 +121,18 @@ describe("the files gate", () => {
       .toMatchObject({ message: "no call 1000000 is held at the gate" });
   });
 
+  it("loses a held call's answer: the call throws, and a call not held is refused", async () => {
+    const s = await space();
+    await e.FILES_GATE.arm({ method: "getChunks", hold: "after" });
+    const reading = outcome(() => e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }]));
+    const [held] = await e.FILES_GATE.held(HELD_WAIT_MS);
+    await e.FILES_GATE.lose(held!.id);
+    expect(await reading).toMatchObject({ message: "the gate lost getChunks's answer" });
+    expect(await e.FILES_GATE.held()).toEqual([]);
+    expect(await outcome(() => e.FILES_GATE.lose(held!.id)))
+      .toMatchObject({ message: `no call ${held!.id} is held at the gate` });
+  });
+
   it("passes an injected refusal through unchanged, as many times as armed", async () => {
     const s = await space();
     const refusal = { code: "busy", message: "busy: the files Worker is full", retryAfterS: 3,

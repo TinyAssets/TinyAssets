@@ -45,7 +45,7 @@ import {
 } from "../../contract/src/control";
 import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
 import { E2bAdmin } from "../../sandbox/e2b/admin";
-import { maskLine, runOf, summarize } from "../actions";
+import { annotate, maskLine, output, runLink, runOf, summarize } from "../actions";
 import {
   Cloudflare, describeStep, handback, handover, type Route,
 } from "../cloudflare";
@@ -2577,6 +2577,32 @@ describe("the Actions job", () => {
       .toEqual({ id: "7001", attempt: "2" });
     expect(runOf({ GITHUB_RUN_ID: "" }, NOW)).toEqual({ id: "local-20261107T120000Z", attempt: null });
   });
+
+  it("links the run's page, and none by hand", () => {
+    expect(runLink({ GITHUB_SERVER_URL: "https://github.com", GITHUB_REPOSITORY: "o/r",
+                     GITHUB_RUN_ID: "7001" })).toBe("https://github.com/o/r/actions/runs/7001");
+    expect(runLink({ GITHUB_SERVER_URL: "https://github.com", GITHUB_REPOSITORY: "o/r" }))
+      .toBeNull();
+  });
+
+  it("annotates the run, escaped as the runner reads it, and prints it plainly by hand", () => {
+    expect(annotate({ GITHUB_ACTIONS: "true" }, "error", "A: b, c", "50% done\nthen not"))
+      .toBe("::error title=A%3A b%2C c::50%25 done%0Athen not");
+    expect(annotate({}, "notice", "Copy", "not configured")).toBe("Copy: not configured");
+  });
+
+  it("writes a step's output for a later job, and nowhere outside Actions", () => {
+    const out = mkdtempSync(join(tmpdir(), "ta-output-"));
+    try {
+      const file = join(out, "output");
+      output({ GITHUB_OUTPUT: file }, "configured", "false");
+      output({}, "configured", "true");
+      expect([readdirSync(out), readFileSync(file, "utf8")]).toEqual([["output"],
+                                                                      "configured=false\n"]);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("the template and the pair", () => {
@@ -2938,6 +2964,7 @@ describe("mode restore", () => {
 describe("platform-deploy.yml", () => {
   type Job = { if?: string; needs?: string | string[]; environment?: string;
                "timeout-minutes"?: number; env?: Record<string, string>;
+               permissions?: Record<string, string>;
                steps: { name?: string; run?: string; env?: Record<string, string>; uses?: string;
                         with?: Record<string, string | number | boolean> }[] };
   const file = workflow("platform-deploy.yml") as {
@@ -3141,6 +3168,8 @@ describe("platform-deploy.yml", () => {
 
   it("applies in production the mode's own run", () => {
     expect(apply!.environment).toBe("production");
+    // Its token reads only: the canary after each mode lists the off-account copy's nights.
+    expect(apply!.permissions).toEqual({ contents: "read", actions: "read" });
     for (const inputs of [...offered.filter((mode) => MODES[mode].applies).map(dispatchOf),
                           ...OPTIONS]) {
       const ran = invoked(apply!, inputs);

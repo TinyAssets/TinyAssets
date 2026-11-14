@@ -10,7 +10,9 @@ name: Off-account copy (nightly)
 # Dark until the founder's Backblaze steps (platform/deploy/checklist.md, "The off-account
 # copy"): with none of its settings stored, `settings` notes "not configured" and `copy` is
 # skipped, so the night passes green and installs nothing. With some of them, or with all and
-# any error, the run fails.
+# any error, the run fails. The platform canary (platform-canary.yml) reads these
+# nights by their two jobs' names, `settings` and `copy` (offsite.ts `NIGHTLY`), and
+# alarms once no night has passed in two.
 #
 # Its settings (`SETTINGS` in offsite.ts) are `production` secrets and the repository variable
 # OFFSITE_BUCKET, read by both jobs; the Cloudflare account id is the repository variable

@@ -83,6 +83,23 @@ def test_a_weakened_platform_assertion_is_caught(repo) -> None:
     assert hygiene.evaluate(delta, _REASON) == []
 
 
+def test_a_python_test_weakened_beside_product_code_needs_only_the_line(repo) -> None:
+    """As a platform test: a stale test never blocks the fix that makes it stale."""
+    root, base = repo
+    case = "def test_x():\n    assert f(1) == 1\n    assert f(2) == 2\n"
+    base = _commit(root, {"tests/test_x.py": case, "tinyassets/x.py": "def f(n): return n\n"})
+    change = {"tests/test_x.py": case.replace("    assert f(2) == 2\n", ""),
+              "tinyassets/x.py": "def f(n):\n    return n if n < 2 else 0\n"}
+    head = _commit(root, change)
+    delta = hygiene.compute_delta(base, head, root, dt.date(2026, 11, 12))
+    delta.shape = []  # this tree has no shape registry for the case to name
+
+    failures = hygiene.evaluate(delta, "")
+    assert len(failures) == 1 and "assertions loosened (2 -> 1)" in failures[0], failures
+    for reason in ("wrong", "consolidated", "retired"):
+        assert hygiene.evaluate(delta, _REASON.replace("wrong", reason)) == [], reason
+
+
 @pytest.mark.parametrize("edit,what", [
     (lambda t: t.replace('  it("refuses a string"', '  it.skip("refuses a string"'),
      "new skip or todo (0 -> 1)"),
