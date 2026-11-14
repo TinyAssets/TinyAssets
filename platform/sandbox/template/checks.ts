@@ -180,7 +180,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const out = mkdtempSync(join(tmpdir(), "ta-checks-"));
   try {
     const { runner, probes } = bundles(execFileSync, out);
-    const plan = JSON.parse(execFileSync(process.execPath, [join(out, "probes.mjs"), "plan"],
+    const plan = JSON.parse(execFileSync(process.execPath, [join(out, BUNDLES.probes), "plan"],
                                          { encoding: "utf8" })) as Plan;
     if (plan.runner !== runner.sha) {
       throw new Error(`the probes were built beside the runner ${plan.runner}, not ${runner.sha}`);
