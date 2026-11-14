@@ -17,11 +17,11 @@
  * Each value one side builds and the gateway reads has its checker beside its type
  * (`metering`, `doorbellInput`, `ringRequest`), so its builder and its reader hold one rule.
  */
-import { keyed, object, whole } from "./checks";
-import type { EgressScope, Source } from "./egress-scope";
-import type { ModelRecord } from "./model-record";
-import { Refusal } from "./refusal";
-import { AUTH_HEADER } from "./wake-records";
+import { keyed, object, whole } from "./checks.ts";
+import type { EgressScope, Source } from "./egress-scope.ts";
+import type { ModelRecord } from "./model-record.ts";
+import { Refusal } from "./refusal.ts";
+import { AUTH_HEADER } from "./wake-records.ts";
 
 /** A sealed blob and the kid it is under. */
 export interface Sealed {
@@ -88,7 +88,7 @@ function named(value: unknown): value is string {
 
 /** A reservation's metering, checked; anything else is the owner's object's bug (`internal`). */
 export function metering(value: unknown): Metering {
-  if (!keyed(value, "input_bytes,max_output_tokens,model,tier")
+  if (!keyed(value, ["input_bytes", "max_output_tokens", "model", "tier"])
       || !whole(value["input_bytes"], 1) || !whole(value["max_output_tokens"], 1)
       || !named(value["model"]) || (value["tier"] !== null && !named(value["tier"]))) {
     throw new Refusal("internal");
@@ -147,7 +147,7 @@ export interface DoorbellInput {
  * its record's own rules where it is sealed.
  */
 export function doorbellInput(value: unknown): DoorbellInput {
-  if (!keyed(value, "record,secret,url") || typeof value["record"] !== "string"
+  if (!keyed(value, ["record", "secret", "url"]) || typeof value["record"] !== "string"
       || typeof value["url"] !== "string" || typeof value["secret"] !== "string") {
     throw new Refusal("invalid_request");
   }
@@ -179,7 +179,7 @@ export const EVENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
  */
 export function ringRequest(value: unknown): RingRequest {
   const headers = object(value) ? value["headers"] : undefined;
-  if (!keyed(value, "body,event_id,headers") || typeof value["body"] !== "string"
+  if (!keyed(value, ["body", "event_id", "headers"]) || typeof value["body"] !== "string"
       || typeof value["event_id"] !== "string" || !EVENT_ID.test(value["event_id"])
       || !object(headers) || !Object.entries(headers).every(([name, text]) =>
         typeof text === "string" && !AUTH_HEADER.test(name))) {

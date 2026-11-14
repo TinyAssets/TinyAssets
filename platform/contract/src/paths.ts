@@ -19,9 +19,9 @@
  * definitions, the abilities' trees that reach every engine's instructions, the owner's
  * goals and the owner's profile.
  */
-import { Refusal } from "./refusal";
-import { MAX_PATH_BYTES } from "./limits";
-import { utf8Bytes } from "./text";
+import { Refusal } from "./refusal.ts";
+import { MAX_PATH_BYTES } from "./limits.ts";
+import { utf8Bytes } from "./text.ts";
 
 export const WORKSPACE = "/workspace";
 export const TEMP = "/.ta/tmp";

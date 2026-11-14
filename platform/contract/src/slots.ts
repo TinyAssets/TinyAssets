@@ -32,8 +32,8 @@
  * `isolateTails` here. What they hold is a count of units in use, the calls waiting, and
  * which objects' tails share the budget, never an owner's data.
  */
-import { CHUNK_BYTES, SLOT_WAIT_MS } from "./limits";
-import { Refusal } from "./refusal";
+import { CHUNK_BYTES, SLOT_WAIT_MS } from "./limits.ts";
+import { Refusal } from "./refusal.ts";
 
 /** A unit: one chunk, the files plane's own (`CHUNK_BYTES`). */
 export const UNIT_BYTES = CHUNK_BYTES;

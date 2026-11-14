@@ -15,9 +15,9 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { sha256 } from "./digest";
-import { Refusal } from "./refusal";
-import { HEX64 } from "./ids";
+import { sha256 } from "./digest.ts";
+import { Refusal } from "./refusal.ts";
+import { HEX64 } from "./ids.ts";
 
 const HEADER = /^[a-z0-9][a-z0-9-]{0,127}$/;
 const STAMP = /^[0-9]{1,12}$/;

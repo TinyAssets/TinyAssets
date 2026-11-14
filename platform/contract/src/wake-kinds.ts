@@ -3,12 +3,12 @@
  * server-derived id, and each wake's headers and body (`doorbellRequest`). The records and
  * the callback checks are `wake-records.ts`.
  */
-import { sha256Hex } from "./digest";
-import { Refusal } from "./refusal";
-import { codePoints, isPrintable } from "./text";
-import { ARGUMENTS_CHARS } from "./limits";
-import { type RingRequest, ringRequest } from "./gateway";
-import type { WakeKind } from "./wake-records";
+import { sha256Hex } from "./digest.ts";
+import { Refusal } from "./refusal.ts";
+import { codePoints, isPrintable } from "./text.ts";
+import { ARGUMENTS_CHARS } from "./limits.ts";
+import { type RingRequest, ringRequest } from "./gateway.ts";
+import type { WakeKind } from "./wake-records.ts";
 
 /** What a wake says changed: mail to the agent, a room's rows, or the board's. */
 export type Change = "mail" | "rooms" | "board";

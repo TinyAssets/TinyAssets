@@ -13,13 +13,14 @@
  * holds where its act is seen (`acts.ts`), so one nothing could see is refused here. The old
  * rule tables and the spend caps are gone: nothing read them (d3 §N6).
  */
-import { actNamed } from "./acts";
-import { sha256Hex } from "./digest";
-import { actDoors, toolNames } from "./doors";
-import { type FileDefaults, KEEP_CEILING } from "./file-defaults";
-import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "./limits";
-import { Refusal } from "./refusal";
-import { codePoints, SOURCE_ID } from "./text";
+import { actNamed } from "./acts.ts";
+import { keyed, object, whole } from "./checks.ts";
+import { sha256Hex } from "./digest.ts";
+import { actDoors, toolNames } from "./doors.ts";
+import { type FileDefaults, KEEP_CEILING } from "./file-defaults.ts";
+import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "./limits.ts";
+import { Refusal } from "./refusal.ts";
+import { codePoints, SOURCE_ID } from "./text.ts";
 
 /**
  * The refusal of an IP-literal egress destination. Workers `fetch` shows no resolved
@@ -43,11 +44,10 @@ const IPV4 = /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/;
  * `xn--` label) is invalid.
  */
 export function checkDestination(entry: unknown): void {
-  if (typeof entry !== "object" || entry === null || Array.isArray(entry)
-      || Object.keys(entry).sort().join() !== "host,port") {
+  if (!keyed(entry, ["host", "port"])) {
     throw new Refusal("invalid", "invalid egress destination");
   }
-  const { host, port } = entry as Record<string, unknown>;
+  const { host, port } = entry;
   if (typeof host !== "string" || typeof port !== "number" || !Number.isSafeInteger(port)
       || port < 1 || port > 65_535) {
     throw new Refusal("invalid", "invalid egress destination");
@@ -135,8 +135,8 @@ function checkActions(actions: unknown): void {
     throw new Refusal("invalid", "invalid actions policy");
   }
   for (const rule of actions) {
-    const tools = plain(rule) ? rule["tools"] : undefined;
-    if (!plain(rule) || !keys(rule, ["act", "do", ...(tools === undefined ? [] : ["tools"])])
+    const tools = object(rule) ? rule["tools"] : undefined;
+    if (!keyed(rule, ["act", "do", ...(tools === undefined ? [] : ["tools"])])
         || (rule["do"] !== "ask" && rule["do"] !== "never")
         || (tools !== undefined && (!Array.isArray(tools) || tools.length === 0
             || new Set(tools).size !== tools.length
@@ -219,7 +219,7 @@ export interface CodemodePolicy {
 
 /** The `codemode` table: `on` alone, a boolean. */
 function validCodemode(codemode: unknown): boolean {
-  return plain(codemode) && Object.entries(codemode).every(([key, value]) =>
+  return object(codemode) && Object.entries(codemode).every(([key, value]) =>
     key === "on" && typeof value === "boolean");
 }
 
@@ -231,7 +231,7 @@ export interface ToolPolicy {
 /** The `tools` table: `custom` alone, distinct names of the table's tools. */
 function validTools(tools: unknown): boolean {
   const names = toolNames();
-  return plain(tools) && Object.entries(tools).every(([key, value]) =>
+  return object(tools) && Object.entries(tools).every(([key, value]) =>
     key === "custom" && Array.isArray(value) && new Set(value).size === value.length
     && value.every((name) => typeof name === "string" && names.includes(name)));
 }
@@ -283,19 +283,19 @@ export interface ModelPolicy {
 }
 
 function bounded(value: unknown, [low, high]: readonly [number, number]): boolean {
-  return whole(value) && value >= low && value <= high;
+  return whole(value, low, high);
 }
 
 /** The `models` table: known keys only, each in its range; null only for a ceiling. */
 function validModels(models: unknown): boolean {
-  if (!plain(models)) {
+  if (!object(models)) {
     return false;
   }
   return Object.entries(models).every(([key, value]) => {
     if (key === "sources") {
-      return plain(value) && Object.keys(value).length <= MODEL_SOURCES_MAX
+      return object(value) && Object.keys(value).length <= MODEL_SOURCES_MAX
         && Object.entries(value).every(([id, ceilings]) => SOURCE_ID.test(id)
-          && plain(ceilings) && Object.entries(ceilings).every(([name, cap]) =>
+          && object(ceilings) && Object.entries(ceilings).every(([name, cap]) =>
             (name === "daily_cost" || name === "monthly_cost")
             && (cap === null || bounded(cap, MODEL_SETTINGS[name]))));
     }
@@ -318,21 +318,6 @@ export interface PolicyDocument {
                      readonly destinations: { readonly host: string; readonly port: number }[] };
 }
 
-/** A JSON object: not an array, not null, not a class instance. */
-export function plain(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-export function keys(value: Record<string, unknown>, expected: readonly string[]):
-    boolean {
-  const own = Object.keys(value);
-  return own.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
-}
-
 /**
  * The Python's `json.dumps(value, sort_keys=True, separators=(",", ":"),
  * ensure_ascii=False)`, for the JSON values a request carries.
@@ -341,7 +326,7 @@ export function canonical(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((item) => (item === undefined ? "null" : canonical(item))).join(",")}]`;
   }
-  if (plain(value)) {
+  if (object(value)) {
     return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
       .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
   }
@@ -353,14 +338,9 @@ export function policyDigest(value: unknown): string {
   return "sha256:" + sha256Hex(canonical(value));
 }
 
-/** A non-negative whole number the store can hold exactly: the Python's `type(v) is int`. */
-export function whole(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
 /** `_validate`: the whole document, or a refusal naming its first fault. */
 export function validate(document: unknown): PolicyDocument {
-  if (!plain(document) || !keys(document, ["egress",
+  if (!object(document) || !keyed(document, ["egress",
     ...(["actions", "codemode", "files", "models", "tools"] as const).filter((table) =>
       Object.hasOwn(document, table))])) {
     throw new Refusal("invalid", "invalid policy document");
@@ -376,14 +356,13 @@ export function validate(document: unknown): PolicyDocument {
                       "invalid tools policy: custom, distinct names of the MCP door's tools");
   }
   const files = document["files"];
-  if (files !== undefined && (!plain(files) || Object.entries(files).some(([key, value]) =>
-    !Object.hasOwn(FILE_SETTINGS, key) || !whole(value)
-    || value < FILE_SETTINGS[key as keyof FileSettings][0]
-    || value > FILE_SETTINGS[key as keyof FileSettings][1]))) {
+  if (files !== undefined && (!object(files) || Object.entries(files).some(([key, value]) =>
+    !Object.hasOwn(FILE_SETTINGS, key)
+    || !whole(value, ...FILE_SETTINGS[key as keyof FileSettings])))) {
     throw new Refusal("invalid", "invalid files policy");
   }
   const egress = document["egress"];
-  if (!plain(egress) || !keys(egress, ["mode", "destinations"])
+  if (!keyed(egress, ["mode", "destinations"])
       || !(EGRESS_MODES as readonly unknown[]).includes(egress["mode"])
       || !Array.isArray(egress["destinations"])) {
     throw new Refusal("invalid", "invalid egress policy");

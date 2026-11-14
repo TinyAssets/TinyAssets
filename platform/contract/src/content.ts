@@ -8,8 +8,8 @@
  * cut into `CHUNK_BYTES` chunks, each named by its SHA-256, and the content by its size and
  * ordered chunks.
  */
-import { sha256Hex } from "./digest";
-import { CHUNK_BYTES, INLINE_BYTES } from "./limits";
+import { sha256Hex } from "./digest.ts";
+import { CHUNK_BYTES, INLINE_BYTES } from "./limits.ts";
 
 /** The content id of small content kept inline: its kind, size and bytes. */
 export function inlineId(bytes: Uint8Array): string {

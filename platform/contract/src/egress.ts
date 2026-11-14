@@ -30,11 +30,12 @@
  */
 import identity from "../identity.json" with { type: "json" };
 
-import type { EgressScope } from "./egress-scope";
-import type { NetworkRule } from "./sandbox";
-import { Refusal } from "./refusal";
-import { CONNECTION_ID, HEX64, RUN_ID, SIGNIN_ID } from "./ids";
-import { forbids } from "./text";
+import { object } from "./checks.ts";
+import type { EgressScope } from "./egress-scope.ts";
+import type { NetworkRule } from "./sandbox.ts";
+import { Refusal } from "./refusal.ts";
+import { CONNECTION_ID, HEX64, RUN_ID, SIGNIN_ID } from "./ids.ts";
+import { forbids } from "./text.ts";
 
 // Read from `identity.json`, their one copy, as text, so this module holds strings alone.
 /** Our zone: the public host's, the egress host's, and every name a callback never reaches. */
@@ -87,8 +88,7 @@ export function doorHeaders(network: unknown): Readonly<Record<string, unknown>>
   const door = rules?.[EGRESS_HOST];
   const first = Array.isArray(door) ? door[0] as { transform?: { headers?: unknown } } : undefined;
   const headers = first?.transform?.headers;
-  return typeof headers === "object" && headers !== null
-    ? headers as Readonly<Record<string, unknown>> : null;
+  return object(headers) ? headers : null;
 }
 
 /** `network` with the door's one transform setting `name` to `value` beside what it sets. */

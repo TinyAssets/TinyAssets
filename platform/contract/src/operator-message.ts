@@ -26,9 +26,10 @@
  * channel's audit log.
  *
  * Pure: WebCrypto's HMAC, the contract's digest (`digest.ts`, the platform's one SHA-256) and its
- * own leaves, imported by path, so the kit runs it under Node's type stripping as the doors
+ * shape checks (`checks.ts`), so the kit runs it under Node's type stripping as the doors
  * bundle it.
  */
+import { keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
 import { base64url, fromBase64url, hex, KID, type Ring } from "./envelope.ts";
 import { HEX32 } from "./ids.ts";
@@ -101,20 +102,9 @@ export interface Refused {
 export type OperatorAnswer = Omit<OperatorMessage, "mac"> & { readonly done: number } &
   ({ readonly result: unknown } | { readonly refused: Refused });
 
-const plain = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const whole = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-
-/** `body`'s keys are exactly `keys`, in any order. */
-function exactly(body: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(body).sort().join() === [...keys].sort().join();
-}
-
 /** The args in their exact shape, or a throw. */
 function argsOf(value: unknown): OperatorArgs {
-  if (!plain(value) || Object.entries(value).some(([key, arg]) => !ARG.test(key)
+  if (!object(value) || Object.entries(value).some(([key, arg]) => !ARG.test(key)
       || !(typeof arg === "string" || typeof arg === "boolean"
            || (typeof arg === "number" && Number.isSafeInteger(arg))))) {
     throw new Error("an operator message's args are lowercase keys of strings, safe " +
@@ -136,12 +126,12 @@ export async function argsDigest(args: OperatorArgs): Promise<string> {
 
 /** A message in its exact shape, or a throw: no field more, none missing, each its grammar. */
 export function operatorMessage(value: unknown): OperatorMessage {
-  if (!plain(value) || !exactly(value, ["v", "op", "owner", "args", "ask", "at", "kid", "mac"])) {
+  if (!keyed(value, ["v", "op", "owner", "args", "ask", "at", "kid", "mac"])) {
     throw new Error("an operator message is exactly v, op, owner, args, ask, at, kid and mac");
   }
   const { v, op, ask, at, kid, mac } = value;
   if (v !== OPERATOR_VERSION || typeof op !== "string" || !OP.test(op)
-      || typeof ask !== "string" || !HEX32.test(ask) || !whole(at)
+      || typeof ask !== "string" || !HEX32.test(ask) || !whole(at, 0)
       || typeof kid !== "string" || !KID.test(kid) || typeof mac !== "string" || !MAC.test(mac)) {
     throw new Error("an operator message's v, op, ask, at, kid or mac is out of shape");
   }
@@ -201,9 +191,9 @@ export async function acceptanceOf(message: OperatorMessage): Promise<Acceptance
 
 /** An acceptance record as the bucket holds it, or a throw: a malformed one is a bug. */
 export function acceptance(value: unknown): Acceptance {
-  if (!plain(value) || !exactly(value, ["op", "owner", "digest", "at", "kid"])
+  if (!keyed(value, ["op", "owner", "digest", "at", "kid"])
       || typeof value["op"] !== "string" || typeof value["owner"] !== "string"
-      || typeof value["digest"] !== "string" || !whole(value["at"])
+      || typeof value["digest"] !== "string" || !whole(value["at"], 0)
       || typeof value["kid"] !== "string") {
     throw new Error("an operator acceptance record is malformed");
   }
@@ -223,19 +213,19 @@ export function answerOf(message: OperatorMessage, done: number,
  * naming the message's own ask, op, owner, args, `at` and kid.
  */
 export function operatorAnswer(value: unknown, message: OperatorMessage): OperatorAnswer {
-  const outcome = plain(value) && Object.hasOwn(value, "refused") ? "refused" : "result";
-  if (!plain(value) || !exactly(value, ["v", "op", "owner", "args", "ask", "at", "kid", "done",
-                                        outcome]) || !whole(value["done"])) {
+  const outcome = object(value) && Object.hasOwn(value, "refused") ? "refused" : "result";
+  if (!keyed(value, ["v", "op", "owner", "args", "ask", "at", "kid", "done", outcome])
+      || !whole(value["done"], 0)) {
     throw new Error(`the answer to ${message.ask} is out of shape`);
   }
   const named = (["v", "op", "owner", "ask", "at", "kid"] as const)
     .every((field) => value[field] === message[field]);
-  if (!named || !plain(value["args"])
+  if (!named || !object(value["args"])
       || argsText(value["args"] as OperatorArgs) !== argsText(message.args)) {
     throw new Error(`the answer to ${message.ask} names another message`);
   }
   const refused = value["refused"];
-  if (outcome === "refused" && (!plain(refused) || !exactly(refused, ["code", "message"])
+  if (outcome === "refused" && (!keyed(refused, ["code", "message"])
       || typeof refused["code"] !== "string" || !Object.hasOwn(REFUSALS, refused["code"])
       || typeof refused["message"] !== "string")) {
     throw new Error(`the answer to ${message.ask} carries a refusal out of shape`);
