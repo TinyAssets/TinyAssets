@@ -72,11 +72,11 @@ jobs:
         if: env.MODE == 'build'
         run: python3 -m pip install --require-hashes -r platform/sandbox/template/requirements.txt
 
-      # The one step that holds the E2B key: the checks runner (checks.ts), on the E2B client
-      # the Worker and the deploy kit use. In build mode it asks E2B whether this tree's tag
-      # already has a ready build, and builds (image.py) only when it has none; an answer it
-      # cannot read stops it before anything is spent. A ready build gets the checks and
-      # their record alone, never a second build.
+      # The one step that holds the E2B key: the checks runner (checks.ts), on the tools' E2B
+      # client (sandbox/e2b/admin.ts), the deploy kit's too. In build mode it asks E2B
+      # whether this tree's tag already has a ready build, and builds (image.py) only when it
+      # has none; an answer it cannot read stops it before anything is spent. A ready build
+      # gets the checks and their record alone, never a second build.
       - name: Build and check
         env:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
