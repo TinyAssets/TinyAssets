@@ -28,6 +28,7 @@ import {
   RUN, stagedName,
 } from "../contract/src/import-message";
 import { IMPORT_NAME_KEYS, type ImportNames } from "../contract/src/import-names";
+import { Cloudflare } from "../deploy/cloudflare";
 
 /**
  * The job's live names from `facts.json`'s text, which the window's bundle step writes beside
@@ -212,20 +213,19 @@ export function s3Request(inputs: Inputs, method: "GET" | "PUT" | "DELETE", buck
                ...(body === null ? {} : { "content-type": "application/octet-stream" }) } });
 }
 
+/** The kit's Cloudflare client with the window's API token, over `fetcher`. */
+export function cloudflareOf(inputs: Inputs, fetcher: Fetcher): Cloudflare {
+  return new Cloudflare(inputs.apiToken, (url, init) => fetcher(new Request(url, init)));
+}
+
 /** A queue's id in the account, by its name, from the Queues API's listing. */
 export async function queueId(inputs: Inputs, fetcher: Fetcher, name: string): Promise<string> {
-  const answer = await fetcher(new Request(
-    `${API}/accounts/${inputs.account}/queues?per_page=100`,
-    { headers: { authorization: `Bearer ${inputs.apiToken}` } }));
-  const body = await answer.json() as { success?: boolean;
-                                        result?: { queue_id?: string; queue_name?: string }[] };
-  const found = answer.ok && body.success === true
-    ? (body.result ?? []).filter((queue) => queue.queue_name === name) : [];
-  if (found.length !== 1 || typeof found[0]!.queue_id !== "string") {
-    throw new Error(`the account lists no queue ${name} (${answer.status}): ` +
-                    "nothing is sent; run the deploy kit's dark mode first");
+  const id = (await cloudflareOf(inputs, fetcher).queues(inputs.account)).get(name);
+  if (id === undefined) {
+    throw new Error(`the account lists no queue ${name}: nothing is sent; run the deploy ` +
+                    "kit's dark mode first");
   }
-  return found[0]!.queue_id;
+  return id;
 }
 
 /** One message's push onto the queue over the Queues HTTP API, as JSON. */

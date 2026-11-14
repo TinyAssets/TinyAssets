@@ -102,7 +102,7 @@ describe("the staging step", () => {
                                 () => new Date("2026-11-08T12:00:00.000Z"));
     expect(summary).toMatchObject({ dry_run: false, bundles: 3, messages: 3 });
     expect(calls[0]).toMatchObject({ method: "GET", auth: `Bearer ${INPUTS.apiToken}`,
-      url: `https://api.cloudflare.com/client/v4/accounts/${INPUTS.account}/queues?per_page=100` });
+      url: `https://api.cloudflare.com/client/v4/accounts/${INPUTS.account}/queues` });
     const r2 = `https://${INPUTS.account}.r2.cloudflarestorage.com/${NAMES.staging_bucket}/` +
       "rehearsal-1/";
     const messages = calls.filter((call) => call.method === "POST");
@@ -216,7 +216,7 @@ describe("the staging step", () => {
     expect(refused.calls.filter((call) => call.method === "POST")).toEqual([]);
     const none = apis({ queues: [] });
     await expect(stage(out, "r1", NAMES, INPUTS, none.fetcher, () => undefined))
-      .rejects.toThrow(`lists no queue ${NAMES.queue} `);
+      .rejects.toThrow(`lists no queue ${NAMES.queue}:`);
     expect(none.calls.length).toBe(1);
     await expect(stage(out, "Bad Run", NAMES, INPUTS, none.fetcher, () => undefined))
       .rejects.toThrow(/run's id/);

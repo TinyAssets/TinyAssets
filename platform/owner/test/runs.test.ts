@@ -341,10 +341,15 @@ describe("a run's settle", () => {
     expect(lost).toMatchObject({ state: "unknown", code: "start_lost" });
     // In case it did start, it is cancelled too.
     expect((await recorder(r.stub)).cancels.map((cancel) => cancel.run)).toEqual([lost.run_id]);
-    await scripted(r.stub, { answer: { started: false, code: "e2b_down" } });
+    // A code that is none of the contract's start codes is no answer either.
+    await scripted(r.stub, { answer: { started: false, code: "e2b_down" } as never });
+    expect(await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+                                    { message: "x", client_send_id: "s-3" }))
+      .toMatchObject({ state: "unknown", code: "start_lost" });
+    await scripted(r.stub, { answer: { started: false, code: "sandbox_unconfigured" } });
     const refused = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
                                              { message: "x", client_send_id: "s-2" });
-    expect(refused).toMatchObject({ state: "failed", code: "e2b_down" });
+    expect(refused).toMatchObject({ state: "failed", code: "sandbox_unconfigured" });
     // Neither holds the lease: the last live run's settle gave it back.
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
   });

@@ -177,6 +177,11 @@ export const REFUSALS = Object.freeze({
   egress_aborted: Object.freeze({ status: 503 }),
   egress_ended: Object.freeze({ status: 503 }),
 
+  // The sandbox Worker's (`sandbox/src/control.ts`), the founder's alert: a sandbox's runner
+  // whose bytes are not their digest, or that speaks a protocol the Worker does not.
+  sandbox_runner_mismatch: BAD_GATEWAY,
+  sandbox_runner_protocol: BAD_GATEWAY,
+
   // The gateway's, the only text it lets out (`gateway/src/failure.ts`): provider prose can
   // echo credentials, so its message is its code and nothing else.
   invalid_request: Object.freeze({ status: 400 }),
