@@ -237,6 +237,12 @@ export function gateFor(gate: GateControl, name: string) {
         await gate.release(call.id);
       }
     },
+    /** Every held call of `method` let go with its answer lost: each throws to its caller. */
+    lose: async (method: string): Promise<void> => {
+      for (const call of await mine(method)) {
+        await gate.lose(call.id);
+      }
+    },
     calls: async (): Promise<Crossed[]> => {
       crossed.push(...await gate.seen(name));
       return crossed;

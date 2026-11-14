@@ -1,0 +1,10 @@
+# wakes-lost as built (2026-11-14)
+
+A doorbell ring whose gateway answer is lost (`owner/src/wakes.ts`, `Doorbell.send`'s catch around `ring`) was caught with no log and settled `unknown` (d3 §I, which names it `:326` as "a doorbell open failure"; Fact 8).
+
+1. **The wake still settles `unknown`; the error does not propagate.** The cause is recorded: `{ state: "unknown", reason: "answer_lost" }` on the wake's row (`receipt_json`, in the owner's export), and the error in the operator's log, as `Doorbell.open` logs a kill switch it could not read.
+   - **Why not propagate:** by the time `ring` is called, the wake is marked and each subscription `rung`, and earlier subscriptions' answers are recorded (`answered`). A throw out of `send` reaches `runWakes`' catch, which logs with no cause and defers the row a lease; the marked row then recovers as `unknown` (`reason: "recovered"`) anyway. So propagating gives the same state a lease later, with the cause gone and the other subscriptions' outcomes dropped: a 2xx from one of them no longer wakes the mail, and a 429's `Retry-After` is not kept.
+   - **Why `unknown`, never a retry:** the gateway fails the call loudly only after the request is checked, and a dropped RPC can come after the send left, so a byte may have left. The ledger never replays a wake once one may have (`ledger.ts`, Wakes); the agent's next change opens its next wake.
+   - **No owner notice:** the owner has nothing to do about a lost gateway answer (a `token_dead` notice exists because the owner can paste a new token). The row's reason is the owner's record; the log is the operator's.
+   - A lost answer outranks the gateway's own `unknown` (its send to the vendor threw), which keeps no reason.
+2. **The `GATEWAY` gate can lose a held answer** (`ci/gate-worker.ts`, `Control.lose`; lane C's file). A held call let go with `lose` throws, as a call whose connection dropped does. The gate had no act that loses an answer after the real call made its send, which is the case this proves.

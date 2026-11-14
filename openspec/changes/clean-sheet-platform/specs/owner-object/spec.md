@@ -292,11 +292,15 @@ An enabled agent MAY hold several doorbell subscriptions (a ChatGPT dot and a Wo
 - **THEN** the wake settles failed, it is not retried, and the subscription is kept
 
 ### Requirement: A send that may have left is never replayed
-The doorbell SHALL mark a wake before its first byte and recheck the agent's subscriptions and its client's grant immediately before it; a disable, unsubscribe or grant change that landed meanwhile SHALL send nothing. A transport failure after the mark SHALL settle `unknown`; a send past `LANE_CALL_MS` SHALL be left to its lease and recover `unknown`; neither SHALL be sent again. A `429` SHALL wait the Retry-After as sent; an unreadable one, or one naming no time after now (zero, a past date), an exponential backoff from `WAKE_LEASE_S`, so a callback never keeps the object busy.
+The doorbell SHALL mark a wake before its first byte and recheck the agent's subscriptions and its client's grant immediately before it; a disable, unsubscribe or grant change that landed meanwhile SHALL send nothing. A transport failure after the mark SHALL settle `unknown`, and a gateway answer lost on its way back SHALL settle `unknown` with `answer_lost` on the wake's row and its cause logged; a send past `LANE_CALL_MS` SHALL be left to its lease and recover `unknown`; neither SHALL be sent again. A `429` SHALL wait the Retry-After as sent; an unreadable one, or one naming no time after now (zero, a past date), an exponential backoff from `WAKE_LEASE_S`, so a callback never keeps the object busy.
 
 #### Scenario: A slow send
 - **WHEN** a callback never answers
 - **THEN** the pass moves on, the wake recovers `unknown` after its lease, and it is never sent again
+
+#### Scenario: A lost gateway answer
+- **WHEN** the gateway made the send and its answer to the object is lost
+- **THEN** the wake settles `unknown` with `answer_lost` on its row, the log names the loss, and it is never sent again
 
 #### Scenario: A door names a wake claim
 - **WHEN** a binding calls a claim, mark or settle method on the object

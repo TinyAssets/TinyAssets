@@ -312,8 +312,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
     depth (Fact 15; the coordinator, 2026-11-12, below).
-  - B2: `owner/src/wakes.ts`'s swallowed doorbell open failure surfaces, rather than settling
-    the wake `unknown` (Fact 8; d3 §I).
+  - B2: `owner/src/wakes.ts`'s lost ring answer surfaces: the wake still settles `unknown` (a
+    byte may have left), with `answer_lost` on its row and the cause in the log (Fact 8; d3 §I;
+    `docs/decisions/untangle-2026-11/wakes-lost.md`).
   - A later S PR: S13's `lease_id` half (d3 §L5).
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `node ci/budgets.mjs` (d3 §I): the large from the Vitest reports the `platform-sizes` legs

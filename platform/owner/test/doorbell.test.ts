@@ -15,7 +15,7 @@ import { createHmac } from "node:crypto";
 
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
 import { WAKE_LEASE_S } from "../src/ledger";
@@ -723,6 +723,35 @@ describe("a send's answer", () => {
     });
     expect(out).toEqual({ first: 0, late: { state: "sending", marked: 1 }, again: 0,
                           after: { state: "unknown", marked: 1 }, sent: 1 });
+  });
+
+  it("settles a ring whose gateway answer was lost unknown, its cause logged and on its row",
+     async () => {
+    const r = await rung();
+    await control([r.owner]);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await subscribed(r);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      // The gateway rings the receiver, and its answer is lost on the way back.
+      await r.gateway.arm("ringDoorbell", { hold: "after" });
+      await r.post(null, `dm:${muse}`);
+      const pass = runDurableObjectAlarm(r.stub);
+      await r.gateway.held("ringDoorbell");
+      await r.gateway.lose("ringDoorbell");
+      await pass;
+      expect(await received(r)).toHaveLength(1);  // a byte left
+      const [wake] = await r.sql("SELECT state, receipt_json FROM ledger_wakes");
+      expect([wake!["state"], JSON.parse(wake!["receipt_json"] as string)])
+        .toMatchObject(["unknown", { reason: "answer_lost" }]);
+      expect(logged.mock.calls.map(([line]) => line))
+        .toContain("a doorbell ring's gateway answer was lost; the wake is unknown");
+    } finally {
+      logged.mockRestore();
+    }
+    // Never sent again: the agent's next change opens its next wake.
+    await runDurableObjectAlarm(r.stub);
+    expect(await r.rang()).toHaveLength(1);
   });
 
   it("waits out a Retry-After of days as sent, keeps a subscription on 410, never redirects",
