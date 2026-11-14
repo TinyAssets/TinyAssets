@@ -754,6 +754,29 @@ describe("a send's answer", () => {
     expect(await r.rang()).toHaveLength(1);
   });
 
+  it("settles a ring the gateway refused before its send failed, its code logged and on its row",
+     async () => {
+    const r = await rung();
+    await control([r.owner]);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await subscribed(r);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      // The gateway's own failure before the send (a keyring it lost), as a refusal crosses.
+      await r.gateway.arm("ringDoorbell", { refuse: { code: "internal", message: "internal" } });
+      await r.post(null, `dm:${muse}`);
+      await runDurableObjectAlarm(r.stub);
+      expect(await received(r)).toEqual([]);  // nothing left
+      const [wake] = await r.sql("SELECT state, receipt_json FROM ledger_wakes");
+      expect([wake!["state"], JSON.parse(wake!["receipt_json"] as string)])
+        .toMatchObject(["failed", { reason: "internal" }]);
+      expect(logged.mock.calls.map(([line]) => line))
+        .toContain("the gateway refused a doorbell ring before its send");
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   it("waits out a Retry-After of days as sent, keeps a subscription on 410, never redirects",
      async () => {
     const r = await rung();
