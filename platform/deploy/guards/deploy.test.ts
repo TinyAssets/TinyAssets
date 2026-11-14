@@ -29,6 +29,7 @@ import { describe, expect, it } from "vitest";
 import { DARK, keyring as ringSecret } from "../../ci/fixtures";
 import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
+import { deployProblems, locksOf, readLock } from "../../ci/kit/locks";
 import { WRANGLER, workerFolders } from "../../ci/wrangler";
 import { type Domain, openBlob, sealBlob } from "../../contract/src/envelope";
 import {
@@ -1748,10 +1749,16 @@ describe("the parts of a run", () => {
   });
 
   it("refuses to deploy unless each migration lock pins every migration it ships, in order " +
-     "(review M5-2), by the locks' own command line", () => {
-    // The checked-in locks pin what the code ships: the real command line passes each.
+     "(review M5-2), by the locks' own command line", async () => {
+    // The real command line's answer, whatever the checked-in locks pin: the kit's own.
     const run = parse(["--mode", "dark"], ENV, { ...world().io, spawn: spawnSync });
-    expect(MIGRATED.map((worker) => lockRefusal(worker, run))).toEqual([null, null]);
+    for (const worker of MIGRATED) {
+      const locks = await locksOf(worker);
+      const refused = deployProblems(worker, locks, Object.fromEntries(Object.keys(locks)
+        .map((path) => [path, readLock(path)])));
+      expect(lockRefusal(worker, run), worker).toBe(refused.length === 0 ? null
+        : `${worker}'s migration locks refuse the deploy (exit 1): ${refused.join("\n")}`);
+    }
     // A Worker that states no lock is refused, never read as nothing to check.
     expect(lockRefusal("doors", run)).toMatch(/^doors's migration locks refuse the deploy \(exit 1\)/);
   });

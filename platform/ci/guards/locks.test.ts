@@ -22,8 +22,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { type Migration, migrationDigest as digest } from "../../contract/src/migrate";
-import { deployProblems, digests, type Lock, lockOf, lockProblems, locksOf,
-         pin } from "../kit/locks";
+import { deployProblems, digests, type Lock, lockOf, lockProblems, locksOf, pin,
+         readLock } from "../kit/locks";
 import { PLATFORM, REPO } from "../paths";
 import { workerFolders } from "../wrangler";
 
@@ -162,14 +162,20 @@ describe("the migration locks' kit", () => {
       .toEqual(["w states no migration lock: each Worker the deploy holds to locks has one"]);
   });
 
-  it("prints each Worker's digests from its command line, and refuses one with no locks", () => {
+  it("answers from its command line as the kit does: each Worker's digests when its locks " +
+     "pin them, else each refusal; and refuses a Worker with no locks", async () => {
     const run = (...args: string[]) => spawnSync(process.execPath,
       [join(PLATFORM, "ci", "kit", "locks.ts"), ...args], { cwd: PLATFORM, encoding: "utf8" });
     for (const worker of MIGRATED) {
+      const locks = await locksOf(worker);
+      const refused = deployProblems(worker, locks, Object.fromEntries(Object.keys(locks)
+        .map((path) => [path, readLock(path)])));
       const printed = run("digests", worker);
-      expect(printed.status, printed.stderr).toBe(0);
-      expect(Object.keys(JSON.parse(printed.stdout) as object).map((path) => `platform/${path}`))
-        .toEqual(LOCKS.filter((path) => path.startsWith(`platform/${worker}/`)));
+      expect([printed.status, printed.stderr.trim()], worker)
+        .toEqual(refused.length === 0 ? [0, ""] : [1, refused.join("\n")]);
+      if (refused.length === 0) {
+        expect(JSON.parse(printed.stdout)).toEqual(digests(locks));
+      }
     }
     expect(run("digests", "doors").status).toBe(1);
     expect(run("pin", "owner").stderr).toMatch(/^usage: /);
