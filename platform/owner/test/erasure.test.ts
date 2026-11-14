@@ -22,7 +22,8 @@ import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_ONLY, PLATFORM_RESERVED, tombstoned, writeTombstone,
 } from "../src/admission";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S } from "../src/erasure";
+import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
+import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS } from "../src/erasure";
 import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
 import { Ledger } from "../src/ledger";

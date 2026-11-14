@@ -22,8 +22,9 @@
  *    it then, and every put this instance began has landed (no put begins under the mark, and
  *    the manifest lane is halted); repeatable, and repeated after the wipe. Each generation's
  *    root carries the owner's wrapped data key, so once they and the object's own copy are
- *    gone nothing holds it: a chunk the bucket still keeps is unreadable (crypto-erasure,
- *    `files/src/datakey.ts`).
+ *    gone nothing in the account holds it: a chunk the bucket still keeps is unreadable
+ *    (crypto-erasure, `files/src/datakey.ts`). The off-account copy keeps them inside
+ *    `RECOVERY_WINDOW_S` (`deploy/offsite.ts`).
  * 5. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
  *    empty database in the same synchronous turn (`WriteGate.wipe`). A killed turn can lose
@@ -42,20 +43,12 @@
  * nothing ever makes owner state there again. The erasure door is the owner's
  * `ownerErase` (slice L), which marks the owner and leaves the rest to the job.
  */
+import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import type {
   Call, Door, OwnerState,
 } from "./owner-do";
-
-/**
- * How long after the wipe an erasure is complete: a SQLite Durable Object can be restored
- * "to any point in the past 30 days" (Cloudflare's SQLite storage API, point-in-time
- * recovery), and that copy holds the owner's wrapped data key. So the prefix deletes are the
- * erasure, and crypto-erasure (`files/src/datakey.ts`) its backstop, complete only once the
- * wipe is older than this window. The account-erase answer says so (`erasureAnswer`).
- */
-export const RECOVERY_WINDOW_S = 30 * 86_400;
 
 /**
  * What the account-erase door answers (slice L's door, which marks first and answers at

@@ -892,7 +892,7 @@ Erasing the owner SHALL mark it erasing, after which every door refuses and no l
 
 #### Scenario: Erasure is complete past the platform's recovery window
 - **WHEN** the owner is erased
-- **THEN** the account-erase answer names `complete_at`, the wipe plus 30 days: a Durable Object's point-in-time recovery can restore its database, and with it the wrapped data key, for 30 days, so crypto-erasure is complete only past that window
+- **THEN** the account-erase answer names `complete_at`, the wipe plus 30 days: a Durable Object's point-in-time recovery can restore its database, and with it the wrapped data key, for 30 days, and the off-account copy keeps its chunks and generations (each root a copy of the wrapped key) at most a night, 28 days and a lifecycle pass after the wipe, so crypto-erasure is complete only past that window
 
 #### Scenario: A crash mid-erasure
 - **WHEN** the object dies after the mark, or after every run ended, or after Lifecycle's alarm was disabled, or its wipe failed
