@@ -4,18 +4,20 @@
  * trailer, one fence row a segment; the `archive` lane from half the hot ceiling, a post at
  * the ceiling `storage_busy` and never a delete; the two-unit move; a reply and the chain
  * read reaching archived mail by the seq its id carries; a deleted agent's mail dropped at
- * once and rewritten out; export version 3 shipping the segments as they are. The object
- * here (`ArchivingOwnerDO`) holds eight messages hot, four unread, and seals a segment at two.
+ * once and rewritten out; export version 3 shipping the segments as they are. Every object
+ * here runs production's ceilings (`LEDGER_LIMITS`): a ballast agent's unread mail sets it a
+ * few messages short of half the hot ceiling (`seeded`), and a segment seals at 8 MiB of
+ * records, which one body at the cap reaches alone and two of 4 MiB together.
  */
 import { createHash } from "node:crypto";
 
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
-import { refusalOf } from "../../contract/src/refusal";
+import { refusalOf, STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";
 import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
 import type { Origin } from "../../contract/src/binding";
@@ -23,8 +25,8 @@ import type { OwnerDO } from "../src/owner-do";
 import type { ArchivingOwnerDO } from "./worker";
 import { parseTiers, TIER_STORAGE_MAX } from "../../contract/src/control";
 import {
-  type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable,
-  orderedId,
+  type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_RECORDS,
+  MoveTable, orderedId,
   parseRecord,
   parseTrailer, planSegment, recordBytes, recordParts, recordRows, type SegmentRecord,
   type Source,
@@ -32,27 +34,55 @@ import {
 import { exported } from "../src/export";
 import type { ChunkStore } from "../../contract/src/files";
 import { digest, generate, replay } from "./generation-support";
-import { DOT, ledgerOn, MUSE, rig } from "./ledger-support";
+import { ballast, DOT, ledgerOn, MCP, MUSE, origin, rig } from "./ledger-support";
 import { referenceSegment, storedContent, streamed } from "./segment-support";
 import { drainDue, failure, sqlIn } from "./support";
 
 const ARCHIVING = env.ARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
 const EVE: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
-/** The test object's ceilings (`test/worker.ts`). */
-const LIMITS = { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4, archiveRecords: 2 };
+const { maxAgentRows, maxMessages, maxUnacked } = LEDGER_LIMITS;
+const MIB = 1024 * 1024;
 
 type Rig = Awaited<ReturnType<typeof rig>>;
+type Seeded = Rig & { readonly ballast: string };
+
+/**
+ * A fresh owner (on `namespace`) at production's ceilings, its ballast agent's
+ * `maxUnacked - room` messages hot and unread (`ballast`): the test's own `room + 1`th hot
+ * message takes the hot set past half, where the `archive` lane moves acked mail, and `room`
+ * more may wait unread. Its storage is let go as the test ends (`letGo`).
+ */
+async function seeded(namespace = ARCHIVING, room = 4): Promise<Seeded> {
+  const r = await rig(namespace);
+  const agent = await r.inLedger((ledger: Ledger) =>
+    ballast(ledger, room, maxMessages - maxUnacked + room));
+  onTestFinished(() => r.letGo());
+  return Object.assign(r, { ballast: agent });
+}
+
+/**
+ * The ballast agent deleted, its hot mail with it, and the lane settled: an export then pages
+ * the test's own mail alone, not the ballast's thousands of rows.
+ */
+async function unballast(r: Seeded): Promise<void> {
+  await r.stub.deleteAgent(r.session(null), { agent_id: r.ballast });
+  await settle(r);
+}
 
 /** The recipient a dm with an outside agent goes to from the owner: that agent. */
 const MUSE_ID = (rows: Record<string, Record<string, unknown>>) =>
   (rows["ledger_messages"]!["room_id"] as string).slice(3);
 
-/** The owner's mail to `room`, read and acked by `reader` at once: acked, so it may move. */
+/**
+ * The owner's mail to `room`, read and acked by `reader` at once: acked, so it may move. Each
+ * body is `prefix i`, padded to `bytes` when given (a body at the cap seals a segment alone).
+ */
 async function sentAndAcked(r: Rig, reader: typeof MUSE, room: string, n: number,
-                            prefix = "m"): Promise<string[]> {
+                            prefix = "m", bytes = 0): Promise<string[]> {
   const ids: string[] = [];
   for (let i = 0; i < n; i++) {
-    const posted = await r.post(null, room, { body: `${prefix} ${i}`, cmid: `${prefix}${i}` });
+    const posted = await r.post(null, room, { body: `${prefix} ${i}`.padEnd(bytes, "x"),
+                                              cmid: `${prefix}${i}` });
     ids.push(posted.message_id);
     const page = await r.read(reader);
     if (page.messages.length > 0) {
@@ -62,24 +92,33 @@ async function sentAndAcked(r: Rig, reader: typeof MUSE, room: string, n: number
   return ids;
 }
 
-/** The lane's work as the ledger reads it (`archiveDue`), and any purge or move left. */
-const BUSY_SQL = "SELECT (SELECT COUNT(*) FROM archive_moves) + (SELECT COUNT(*) FROM " +
-  "archive_purges) + (SELECT CASE WHEN u.messages > ? AND (u.messages - u.unacked >= 2 OR " +
-  "EXISTS (SELECT 1 FROM ledger_messages WHERE unacked = 0 AND seq < (SELECT " +
-  "coalesce(max(last_key), 0) FROM archive_segments))) THEN 1 ELSE 0 END FROM ledger_usage u) " +
-  "AS n";
+/** A body at the cap, acked by `reader`: past half the hot ceiling, it seals what is before it. */
+async function sealed(r: Rig, reader: typeof MUSE, room: string): Promise<string> {
+  return (await sentAndAcked(r, reader, room, 1, "seal", BODY_BYTES_MAX))[0]!;
+}
+
+/** Whether the lane has work, as its schedule reads it (`Archive.next`), or a move in flight. */
+async function busy(r: Rig): Promise<boolean> {
+  const due = await r.inLedger((ledger: Ledger) => ledger.archiveDue()
+    || ledger.purgedAgents().length > 0 || ledger.archiveCompactPending());
+  return due || (await sqlIn(r.stub, "SELECT 1 FROM archive_moves")).length > 0;
+}
 
 /** Drive the object's lanes until the archive has nothing due. */
 async function settle(r: Rig): Promise<void> {
   for (let i = 0; i < 60; i++) {
     await drainDue(r.stub);
-    const [{ n }] = await sqlIn(r.stub, BUSY_SQL, LIMITS.maxMessages / 2) as [{ n: number }];
-    if (n === 0) {
+    if (!await busy(r)) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("the archive lane did not settle");
+}
+
+/** A message's seq, by its id. */
+function seqOf(r: Rig, id: string): Promise<number> {
+  return r.inLedger((ledger: Ledger) => ledger.seqOf(id)!);
 }
 
 /** Any two segments whose key ranges overlap: none, ever (review H1). */
@@ -364,18 +403,23 @@ describe("segments", () => {
 describe("the archive lane", () => {
   it("moves acked mail out from half the hot ceiling, its bytes counted the same, and the " +
      "chain read finds it", async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
-    const ids = await sentAndAcked(r, MUSE, room, 6);
+    // Acked mail to half the hot ceiling, short of a seal: nothing moves.
+    const ids = await sentAndAcked(r, MUSE, room, 4);
+    await settle(r);
+    expect(await sqlIn(r.stub, "SELECT * FROM archive_segments")).toEqual([]);
+    // A body at the cap past half: the five are a seal's worth, one segment.
+    const seal = await sealed(r, MUSE, room);
     const before = (await r.stub.storageUsage(r.bind(null))).breakdown.messages;
     await settle(r);
-    const hot = await sqlIn(r.stub, "SELECT seq FROM ledger_messages ORDER BY seq");
+    const [usage] = await sqlIn(r.stub, "SELECT messages FROM ledger_usage");
+    expect(usage!["messages"]).toBeLessThanOrEqual(maxMessages / 2);
+    expect(await sqlIn(r.stub, "SELECT seq FROM ledger_messages WHERE room_id = ?", room))
+      .toEqual([]);
     const fences = await sqlIn(r.stub, "SELECT * FROM archive_segments ORDER BY segment");
-    expect(hot.length).toBeLessThanOrEqual(LIMITS.maxMessages / 2);
-    expect(fences.reduce((sum, fence) => sum + (fence["records"] as number), 0) + hot.length)
-      .toBe(6);
-    expect(fences.length).toBeGreaterThan(0);
+    expect(fences.map((fence) => fence["records"])).toEqual([5]);
     // The one number counts archived mail at its real bytes, as it counted it hot (D2).
     const after = (await r.stub.storageUsage(r.bind(null))).breakdown.messages;
     expect(Math.abs(after - before)).toBeLessThan(before * 0.2);
@@ -385,52 +429,19 @@ describe("the archive lane", () => {
       expect(chain.messages.map((m) => [m.message_id, m.body, m.integrity]))
         .toEqual([[id, `m ${n}`, "ok"]]);
     }
+    expect((await chained(r, seal)) === "seal 0".padEnd(BODY_BYTES_MAX, "x")).toBe(true);
     // No move is left in flight, and no upload behind one.
     expect(await sqlIn(r.stub, "SELECT * FROM archive_moves")).toEqual([]);
     expect(await sqlIn(r.stub, "SELECT * FROM file_intents")).toEqual([]);
   });
 
-  it("holds a post at the hot ceiling as storage_busy, deleting nothing, until a move lands",
-     async () => {
-    const r = await rig(ARCHIVING);
-    const muse = await r.register(MUSE);
-    const room = `dm:${muse}`;
-    // Straight into the ledger, so no lane runs between: eight hot, every one acked.
-    const refused = await r.inLedger(LIMITS, (ledger: Ledger) => {
-      for (let i = 0; i < 8; i++) {
-        ledger.post(null, room, `c${i}`, `body ${i}`, null);
-        ledger.read(MUSE, 10);
-        ledger.ack(MUSE, ledger.read(MUSE, 10).messages.at(-1)?.seq ?? i + 1);
-      }
-      try {
-        ledger.post(null, room, "c8", "body 8", null);
-        return null;
-      } catch (error) {
-        return (error as Error).message;
-      }
-    });
-    expect(refused).toMatch(/^storage_busy: your storage is catching up/);
-    expect(JSON.parse(refused!.slice(refused!.indexOf("{")))).toEqual({ retry_after_s: 30 });
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM ledger_messages")).toEqual([{ n: 8 }]);
-    // The doors' post: busy alike, until the lane (rung by the post) has moved mail out.
-    expect((await failure(() => r.post(null, room, { cmid: "c8", body: "body 8" }))).message)
-      .toMatch(/^storage_busy:/);
-    await settle(r);
-    await r.post(null, room, { cmid: "c8", body: "body 8" });
-    await settle(r);  // the post rang the lane: let any move it started land first
-    // Both counts in one read, so no move can land between them (review M2).
-    const [held] = await sqlIn(r.stub, "SELECT (SELECT COUNT(*) FROM ledger_messages) + " +
-                                       "(SELECT coalesce(SUM(records), 0) FROM " +
-                                       "archive_segments) AS n");
-    expect(held!["n"]).toBe(9);
-  });
-
   it("lets a reply name an archived parent, and the chain reads it with the reply",
      async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
-    const [first] = await sentAndAcked(r, MUSE, room, 6);
+    const [first] = await sentAndAcked(r, MUSE, room, 4);
+    await sealed(r, MUSE, room);
     await settle(r);
     const archived = await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
                                  first!);
@@ -449,7 +460,7 @@ describe("the archive lane", () => {
 
   it("pages a chain of large bodies to one answer each, archived and hot, read on by offset",
      { tags: ["large"] }, async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
     const big = (c: string) => c.repeat(5 * 1024 * 1024);
@@ -461,6 +472,7 @@ describe("the archive lane", () => {
     const third = await r.post(null, room, { cmid: "b2", body: big("c"),
                                              parent: second.message_id });
     await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
+    // Past half: the first two seal a segment; the third stays hot.
     await sentAndAcked(r, MUSE, room, 4);
     await settle(r);
     expect(await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
@@ -490,12 +502,13 @@ describe("the archive lane", () => {
 
   it("finds a chain's mail that the lane moves between its fences and its hot unit (N9)",
      async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const held = r.stub as unknown as DurableObjectStub<ArchivingOwnerDO>;
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
     // A chain of four, each a reply to the last, the owner and the muse in turn, unread so
-    // none can move yet; then its read held before its hot unit.
+    // none can move yet (the unread ceiling's last room); then its read held before its hot
+    // unit.
     const chain: string[] = [];
     for (let i = 0; i < 4; i++) {
       chain.push((await r.post(i % 2 === 0 ? null : MUSE, room, {
@@ -506,11 +519,11 @@ describe("the archive lane", () => {
     const reading = r.stub.mailChain(r.bind(null), { message_id: chain[0]!, limit: 50 });
     try {
       await held.chainHeld();
-      // There: the chain read and acked, more mail past half the hot ceiling, and the lane
-      // moves the chain out of the hot rows into segments the held read never saw.
+      // There: the chain read and acked, a body at the cap past half the hot ceiling, and
+      // the lane moves the chain out of the hot rows into a segment the held read never saw.
       await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
       await r.ack(null, (await r.read(null)).messages.at(-1)!.seq);
-      await sentAndAcked(r, MUSE, room, 2, "x");
+      await sealed(r, MUSE, room);
       await settle(r);
       const hot = new Set((await sqlIn(r.stub, "SELECT message_id FROM ledger_messages"))
         .map((row) => row["message_id"] as string));
@@ -523,13 +536,19 @@ describe("the archive lane", () => {
       chain.map((id, i) => [id, `chain ${i}`]), false]);
   });
 
-  it("reads a still chain while another room's mail moves and segments are replaced, " +
-     "never failing inside (N10)", { tags: ["large"] }, async () => {
-    const r = await rig(ARCHIVING);
+  it("reads a still chain while stragglers merge into its segment, replacing it, never " +
+     "failing inside (N10)", { tags: ["large"] }, async () => {
+    const r = await seeded(ARCHIVING, 30);
     const held = r.stub as unknown as DurableObjectStub<ArchivingOwnerDO>;
     const muse = await r.register(MUSE);
     const eve = await r.register(EVE, "Eve");
-    // The muse's chain: twelve, the owner and the muse in turn, each acked, all moved.
+    // Eve's mail first, unread: each acked later is a straggler, below the muse's segment.
+    const STRAGGLERS = 26;
+    for (let i = 0; i < STRAGGLERS; i++) {
+      await r.post(null, `dm:${eve}`, { cmid: `e${i}`, body: `eve ${i}` });
+    }
+    // The muse's chain: twelve, the owner and the muse in turn, each acked, all moved with a
+    // body at the cap; then small acked mail keeps the hot set past half, short of a seal.
     const chain: string[] = [];
     for (let i = 0; i < 12; i++) {
       const from = i % 2 === 0 ? null : MUSE;
@@ -538,15 +557,16 @@ describe("the archive lane", () => {
       const reader = from === null ? MUSE : null;
       await r.ack(reader, (await r.read(reader)).messages.at(-1)!.seq);
     }
+    await sealed(r, MUSE, `dm:${muse}`);
     await settle(r);
-    const last = await r.inLedger((ledger: Ledger) => ledger.seqOf(chain.at(-1)!)!);
-    // One of Eve's messages, acked, and the lane run at once: moves, merges and compactions,
-    // which replace segments, the muse's among them.
-    let sent = 0;
+    await sentAndAcked(r, MUSE, `dm:${muse}`, STRAGGLERS + 5, "past");
+    const last = await seqOf(r, chain.at(-1)!);
+    // Eve acks her oldest, and the lane runs at once: the straggler merges into the muse's
+    // segment, which the merge replaces.
+    let acked = 0;
     const churn = async () => {
-      await r.post(null, `dm:${eve}`, { cmid: `e${sent}`, body: `eve ${sent}` });
-      sent++;
-      await r.ack(EVE, (await r.read(EVE)).messages.at(-1)!.seq);
+      await r.ack(EVE, (await r.read(EVE, 1)).messages[0]!.seq);
+      acked++;
       await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
                           "'owner-schedule/archive'");
       await drainDue(r.stub);
@@ -562,7 +582,7 @@ describe("the archive lane", () => {
     // One read while the churn runs beside it.
     let stop = false;
     const beside = (async () => {
-      while (!stop) {
+      while (!stop && acked < 6) {
         await churn();
       }
     })();
@@ -572,9 +592,10 @@ describe("the archive lane", () => {
       stop = true;
       await beside;
     }
-    // Then 25, each held just past the unit that took its fences while the lane runs once.
+    // Then the rest, each read held just past the unit that took its fences while one
+    // straggler merges.
     let replaced = 0;
-    for (let n = 0; n < 25; n++) {
+    while (acked < STRAGGLERS) {
       const before = await museSegments();
       await held.holdChain("fenced");
       const reading = read();
@@ -587,15 +608,18 @@ describe("the archive lane", () => {
       await reading;
       replaced += before === await museSegments() ? 0 : 1;
     }
-    // The muse's segments were replaced under held reads, and each read held.
+    // The muse's segment was replaced under held reads, and each read held.
     expect(replaced).toBeGreaterThan(0);
   });
 
   it("holds its move's units on the isolate's pool; refused busy at once, the lane holds " +
      "with no failure counted, tells the owner once at the hot ceiling, and moves once there " +
-     "is room (round 11, Lows A and B)", async () => {
+     "is room (round 11, Lows A and B)", { tags: ["large"] }, async () => {
     const r = await rig(ARCHIVING);
+    onTestFinished(() => r.letGo());
     const muse = await r.register(MUSE);
+    // Three short of the hot ceiling, a segment's worth of it acked, three unread to spare.
+    await r.inLedger((ledger: Ledger) => ballast(ledger, 3, 3));
     const lane = async () => {
       await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
                           "'owner-schedule/archive'");
@@ -610,7 +634,7 @@ describe("the archive lane", () => {
     const held = await pool.acquire(OWNER_POOL_UNITS - OWNER_RESERVE_UNITS);
     let released = false;
     try {
-      await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
+      await sentAndAcked(r, MUSE, `dm:${muse}`, 1);  // rings the lane
       // Refused at once, never waiting on the pool inside the alarm: no failure counted, no
       // notice while the hot set is below its ceiling, nothing moved. The pool's units stay
       // held through the pass, so a pass that waited would be refused only by the pool's own
@@ -649,18 +673,18 @@ describe("the archive lane", () => {
 
   it("keeps a segment a purge's rewrite makes again byte for byte, its content still held",
      async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
-    // Two bodies of the least each: each sealed alone. Dot's deleted, its segment's rewrite
-    // takes in the muse's whole, alone in its piece: the same bytes as it stands.
-    const big = (c: string) => c.repeat(8 * 1024 * 1024);
+    // Two bodies at the cap: each sealed alone. Dot's deleted, its segment's rewrite takes
+    // in the muse's whole, alone in its piece: the same bytes as it stands.
+    const big = (c: string) => c.repeat(BODY_BYTES_MAX);
     const kept = await r.post(null, `dm:${muse}`, { cmid: "b0", body: big("a") });
     await r.post(null, `dm:${dot}`, { cmid: "b1", body: big("b") });
     await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
     await r.ack(DOT, (await r.read(DOT)).messages.at(-1)!.seq);
     // Small acked mail past half the hot ceiling, then one post that rings the lane.
-    await r.inLedger(LIMITS, (ledger: Ledger) => {
+    await r.inLedger((ledger: Ledger) => {
       let last = 0;
       for (let n = 0; n < 3; n++) {
         last = ledger.seqOf(ledger.post(null, `dm:${muse}`, `s${n}`, "x", null).message_id)!;
@@ -689,20 +713,17 @@ describe("the archive lane", () => {
     const r = await rig(ARCHIVING);
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
-    const outcome = await r.inLedger(LIMITS, (ledger: Ledger) => {
-      for (let i = 0; i < 4; i++) {
-        ledger.post(null, room, `c${i}`, `body ${i}`, null);
-      }
-      ledger.read(MUSE, 10);
-      ledger.ack(MUSE, 2);
-      ledger.post(null, room, "c4", "body 4", null);
+    // A body at the cap, acked: a seal's worth to pick (the hot set far from half, so no
+    // lane moves it first).
+    await sealed(r, MUSE, room);
+    const outcome = await r.inLedger((ledger: Ledger) => {
       const pick = ledger.archivePick()!;
-      const batch = batchOf(ledger, pick.seqs)!;
+      const batch = ledger.archiveBatch(pick.seqs, new MoveTable(), () => 0)!;
       // Between the units: the agent deleted, its mail with it.
       ledger.remove(muse);
       try {
         ledger.archiveCommit(pick.seqs, batch.digest, [], [{ content_id: "e".repeat(64),
-          fence: { first_key: 1, last_key: 2, first_at: 1, last_at: 1, records: 2, bytes: 1,
+          fence: { first_key: 1, last_key: 1, first_at: 1, last_at: 1, records: 1, bytes: 1,
                    trailer_offset: 0, trailer_bytes: 1, members: "0".repeat(128) } }], 1);
         return "applied";
       } catch (error) {
@@ -717,16 +738,17 @@ describe("the archive lane", () => {
 describe("an agent's deletion", () => {
   it("drops its archived mail at once, and the lane rewrites it out, keeping the rest",
      async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
-    // Their mail interleaved, so a segment holds both.
+    // Their mail interleaved, then a body at the cap to Dot: one segment holds both.
     const kept: string[] = [];
     const gone: string[] = [];
     for (let i = 0; i < 3; i++) {
       gone.push(...await sentAndAcked(r, MUSE, `dm:${muse}`, 1, `muse${i}`));
       kept.push(...await sentAndAcked(r, DOT, `dm:${dot}`, 1, `dot${i}`));
     }
+    await sealed(r, DOT, `dm:${dot}`);
     await settle(r);
     const archivedGone = [];
     for (const id of gone) {
@@ -758,15 +780,55 @@ describe("an agent's deletion", () => {
       expect(chain.messages.map((m) => m.body)).toEqual([`dot${n} 0`]);
     }
   });
+
+  it("waits on at most maxAgentRows purges: past them a deletion is refused busy in plain " +
+     "words, deleting nothing, and lands once the lane has caught up", async () => {
+    const r = await seeded();
+    const muse = await r.register(MUSE);
+    const [first] = await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
+    await sealed(r, MUSE, `dm:${muse}`);
+    await settle(r);
+    expect((await sqlIn(r.stub, "SELECT * FROM archive_segments")).length).toBeGreaterThan(0);
+    // A segment stands, so each deletion leaves a purge waiting: an agent registered and
+    // deleted maxAgentRows times, its rows never more than one.
+    const refused = await r.inLedger((ledger: Ledger) => {
+      for (let n = 0; n < maxAgentRows; n++) {
+        ledger.remove(ledger.register(origin(1), MCP, { command_center_id: "alpha",
+          display_name: "Passing", delivery_method: "pull", recipe_id: null }).agent_id);
+      }
+      try {
+        ledger.remove(muse);
+        return null;
+      } catch (error) {
+        return (error as Error).message;
+      }
+    });
+    expect(refused).toBe("storage_busy: earlier deleted agents' mail is still being removed " +
+                         `from the archive; try again in ${STORAGE_BUSY_RETRY_S} seconds. ` +
+                         JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S }));
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_purges"))
+      .toEqual([{ n: maxAgentRows }]);
+    expect((await chained(r, first!))).toBe("m 0");  // the muse and its mail kept
+    // The lane, rung, catches up; then the deletion lands.
+    await sentAndAcked(r, MUSE, `dm:${muse}`, 1, "ring");
+    await settle(r);
+    expect(await sqlIn(r.stub, "SELECT * FROM archive_purges")).toEqual([]);
+    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
+    expect((await failure(() => r.stub.mailChain(r.bind(null), { message_id: first!,
+                                                                 limit: 10 }))).message)
+      .toBe("no such message held");
+  });
 });
 
 describe("the export, version 3", () => {
   it("ships each segment as it is, and its rows read back as the mail before the move",
      async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
-    const ids = await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
+    const ids = await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
+    const seal = await sealed(r, MUSE, `dm:${muse}`);
     await settle(r);
+    await unballast(r);
     const fences = await sqlIn(r.stub, "SELECT * FROM archive_segments ORDER BY segment");
     expect(fences.length).toBeGreaterThan(0);
     // The export's pages: the fence rows among its tables, the segment's chunks named.
@@ -779,10 +841,13 @@ describe("the export, version 3", () => {
     const hot = (await sqlIn(r.stub, "SELECT message_id FROM ledger_messages"))
       .map((row) => row["message_id"]);
     expect([...hot, ...archived.map((rows) => rows["ledger_messages"]!["message_id"])].sort())
-      .toEqual([...ids].sort());
+      .toEqual([...ids, seal].sort());
+    const bodies = new Map([...ids.map((id, n) => [id, `m ${n}`] as const),
+                            [seal, "seal 0".padEnd(BODY_BYTES_MAX, "x")] as const]);
     for (const rows of archived) {
-      const n = ids.indexOf(rows["ledger_messages"]!["message_id"] as string);
-      expect(rows["message_bodies"]).toMatchObject({ body: `m ${n}`, content_id: null });
+      const id = rows["ledger_messages"]!["message_id"] as string;
+      expect(rows["message_bodies"]!["body"] === bodies.get(id)).toBe(true);
+      expect(rows["message_bodies"]).toMatchObject({ content_id: null });
       expect(rows["ledger_recipients"]).toMatchObject({ agent_id: MUSE_ID(rows), unacked: 0 });
     }
   });
@@ -790,9 +855,10 @@ describe("the export, version 3", () => {
 
 describe("segments never overlap in key range (review H1)", () => {
   it("are refused by the schema when two would", async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
-    await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
+    await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
+    await sealed(r, MUSE, `dm:${muse}`);
     await settle(r);
     const [fence] = await sqlIn(r.stub, "SELECT * FROM archive_segments ORDER BY first_key");
     const [first0, last0] = [fence!["first_key"] as number, fence!["last_key"] as number];
@@ -807,27 +873,29 @@ describe("segments never overlap in key range (review H1)", () => {
       expect((await failure(() => insert(first, last))).message)
         .toMatch(/archive segments never overlap in key range/);
     }
-    await insert(10_000, 10_001);  // past every key: disjoint, taken
+    await insert(last0 + 10_000, last0 + 10_001);  // past every key: disjoint, taken
     expect(await overlaps(r)).toEqual([]);
   });
 
   it("stay disjoint, and every message readable by its chain, through two deletions " +
-     "(the reviewer's case)", async () => {
-    const r = await rig(ARCHIVING);
-    const eve = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
+     "(the reviewer's case)", { tags: ["large"] }, async () => {
+    const r = await seeded();
     const x = await r.register(MUSE, "Muse");
     const y = await r.register(DOT, "Dot");
-    const a = await r.register(eve, "Eve");
-    const who = (seq: number) => seq === 1 ? [MUSE, x] as const
-      : seq === 23 ? [DOT, y] as const : [eve, a] as const;
+    const a = await r.register(EVE, "Eve");
+    // The reviewer's run: its first message to Muse, its 23rd to Dot, the rest to Eve; each
+    // body 4 MiB, so two seal a segment, and its last four stay hot.
+    const who = (n: number) => n === 1 ? [MUSE, x] as const
+      : n === 23 ? [DOT, y] as const : [EVE, a] as const;
+    const body = (n: number) => `m${n} `.padEnd(4 * MIB, "x");
     const ids: string[] = [];
-    for (let seq = 1; seq <= 28; seq++) {
-      const [origin, agent] = who(seq);
-      const posted = await r.post(null, `dm:${agent}`, { body: `m${seq}`, cmid: `c${seq}` });
+    for (let n = 1; n <= 28; n++) {
+      const [from, agent] = who(n);
+      const posted = await r.post(null, `dm:${agent}`, { body: body(n), cmid: `c${n}` });
       ids.push(posted.message_id);
-      const page = await r.read(origin);
-      await r.ack(origin, page.messages.at(-1)!.seq);
-      if (seq % 2 === 0) {
+      const page = await r.read(from);
+      await r.ack(from, page.messages.at(-1)!.seq);
+      if (n % 2 === 0) {
         await settle(r);
       }
     }
@@ -839,73 +907,92 @@ describe("segments never overlap in key range (review H1)", () => {
     await r.stub.deleteAgent(r.session(null), { agent_id: y });
     await settle(r);
     expect(await overlaps(r)).toEqual([]);
-    for (let seq = 2; seq <= 28; seq++) {
-      if (seq !== 23) {
-        expect(await chained(r, ids[seq - 1]!), `seq ${seq}`).toBe(`m${seq}`);
+    // Each one's chain answers it whole and intact (its first answer cut to fit).
+    for (let n = 2; n <= 28; n++) {
+      if (n !== 23) {
+        const page = await r.stub.mailChain(r.bind(null), { message_id: ids[n - 1]!,
+                                                            limit: 1 });
+        const [m] = page.messages;
+        expect([m!.message_id, m!.integrity, m!.body_bytes, body(n).startsWith(m!.body!)],
+               `message ${n}`).toEqual([ids[n - 1], "ok", 4 * MIB, true]);
       }
     }
-    for (const seq of [1, 23]) {
+    for (const n of [1, 23]) {
       expect((await failure(() => r.stub.mailChain(r.bind(null), {
-        message_id: ids[seq - 1]!, limit: 10 }))).message).toBe("no such message held");
+        message_id: ids[n - 1]!, limit: 10 }))).message).toBe("no such message held");
     }
   });
 
-  it("merges a straggler (acked after the mail around it moved) into the segment its key " +
-     "falls in", async () => {
-    const r = await rig(ARCHIVING);
+  it("merges a lone straggler (acked after the mail around it moved) into the segment its " +
+     "key falls in: due by itself, with no seal's worth behind it", async () => {
+    const r = await seeded();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
-    // Seq 1 to Muse, left unread; Dot's mail after it is acked and moves.
+    // The first to Muse, left unread; Dot's mail after it is acked and moves.
     const first = await r.post(null, `dm:${muse}`, { body: "late", cmid: "late" });
-    await sentAndAcked(r, DOT, `dm:${dot}`, 6, "d");
+    await sentAndAcked(r, DOT, `dm:${dot}`, 3, "d");
+    await sealed(r, DOT, `dm:${dot}`);
     await settle(r);
+    const late = await seqOf(r, first.message_id);
     const before = await sqlIn(r.stub, "SELECT first_key, last_key FROM archive_segments " +
                                        "ORDER BY first_key");
-    expect(before.length).toBeGreaterThan(0);
-    expect(before[0]!["first_key"]).toBeGreaterThan(1);
-    // Muse acks it now: it is below the archive's last key, so it merges, never overlaps.
-    await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
-    await sentAndAcked(r, DOT, `dm:${dot}`, 3, "e");  // over half the ceiling again
+    expect(before.length).toBe(1);
+    expect(before[0]!["first_key"]).toBeGreaterThan(late);
+    // Dot's small mail past half the hot ceiling again, far short of a seal: nothing is due.
+    await sentAndAcked(r, DOT, `dm:${dot}`, 4, "e");
+    await settle(r);
+    expect(await r.inLedger((ledger: Ledger) => ledger.archiveDue())).toBe(false);
+    // Muse acks it now, in the ledger (so no lane runs first): it is below the archive's
+    // last key, a straggler, and makes the lane due alone.
+    const pick = await r.inLedger((ledger: Ledger) => {
+      ledger.read(MUSE, 1);
+      ledger.ack(MUSE, late);
+      return [ledger.archiveDue(), ledger.archivePick()?.seqs];
+    });
+    expect(pick).toEqual([true, [late]]);
+    await sentAndAcked(r, DOT, `dm:${dot}`, 1, "ring");
     await settle(r);
     expect(await overlaps(r)).toEqual([]);
     const held = await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
                              first.message_id);
     expect(held).toEqual([]);
     expect(await chained(r, first.message_id)).toBe("late");
+    // Merged, never a seal: Dot's small mail is still hot.
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM ledger_messages WHERE room_id = ?",
+                       `dm:${dot}`)).toEqual([{ n: 5 }]);
   });
 });
 
 describe("a merge's byte budget (reviews N1 and N3)", () => {
   it("merges large late-acked mail a budget at a pass, never all at once, every message kept",
      { tags: ["large"] }, async () => {
-    const big = env.BIGARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
-    const bigLimits = { ...LEDGER_LIMITS, maxMessages: 12, maxUnacked: 6, archiveRecords: 6 };
-    const r = await rig(big);
+    const r = await seeded(ARCHIVING, 8);
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
-    // Five messages near 7 MiB each to Muse, left unread; Dot's small mail after them moves.
+    // Five messages near 7 MiB each to Muse, left unread; Dot's mail after them moves.
     const large: string[] = [];
     for (let i = 0; i < 5; i++) {
       large.push((await r.post(null, `dm:${muse}`, {
-        cmid: `big${i}`, body: `${i}`.padEnd(7 * 1024 * 1024, "x") })).message_id);
+        cmid: `big${i}`, body: `${i}`.padEnd(7 * MIB, "x") })).message_id);
     }
-    await sentAndAcked(r, DOT, `dm:${dot}`, 7, "d");
-    for (let i = 0; i < 20; i++) {
-      await drainDue(r.stub);
-    }
+    await sentAndAcked(r, DOT, `dm:${dot}`, 3, "d");
+    await sealed(r, DOT, `dm:${dot}`);
+    await settle(r);
     const [{ n: segments }] = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM " +
                                                   "archive_segments") as [{ n: number }];
     expect(segments).toBe(1);
     // Muse acks them now (a read pages at 8 MiB of bodies, so a page each): five stragglers,
-    // about 35 MiB, inside that segment's keys.
+    // about 35 MiB, inside that segment's keys; the hot set at half, so none merges yet.
     for (let i = 0; i < 5; i++) {
       await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
     }
-    const pick = await r.inLedger(bigLimits, (ledger: Ledger) => ledger.archivePick());
+    const pick = await r.inLedger((ledger: Ledger) => ledger.archivePick());
     expect(pick!.into).not.toBeNull();
-    expect(pick!.seqs).toHaveLength(4);  // 28 MiB within MOVE_BYTES (32 MiB); the fifth waits
-    // Past half the ceiling until both merges have run: each pass merges one budget.
-    await sentAndAcked(r, DOT, `dm:${dot}`, 8, "e");
+    // 21 MiB within MOVE_BYTES less the segment's 8 MiB and more; the other two wait.
+    expect(pick!.into!.bytes + 4 * 7 * MIB).toBeGreaterThan(MOVE_BYTES);
+    expect(pick!.seqs).toHaveLength(3);
+    // Past half the ceiling until every merge has run: each pass merges one budget.
+    await sentAndAcked(r, DOT, `dm:${dot}`, 12, "e");
     for (let i = 0; i < 40; i++) {
       await drainDue(r.stub);
       const left = await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id IN " +
@@ -921,9 +1008,10 @@ describe("a merge's byte budget (reviews N1 and N3)", () => {
     expect(await overlaps(r)).toEqual([]);
     // Every one whole in its segment (read by the export's rule: the chain read pages a
     // 7 MiB body a hundred and fifty answers at a time, which the tests above cover).
+    await unballast(r);
     const bodies = await archivedBodies(r);
     for (const [n, id] of large.entries()) {
-      expect(bodies.get(id)?.length).toBe(7 * 1024 * 1024);
+      expect(bodies.get(id)?.length).toBe(7 * MIB);
       expect(bodies.get(id)?.[0]).toBe(`${n}`);
     }
   });
@@ -933,14 +1021,17 @@ describe("an export across a move (review H2)", () => {
   it("replays exactly the owner at E by v3's reading: segments' rows after the log",
      async () => {
     const r = await rig(ARCHIVING);
+    onTestFinished(() => r.letGo());
     const muse = await r.register(MUSE);
-    const ids = await r.inLedger(LIMITS, (ledger: Ledger) => {
+    // Acked mail of bodies as large as the object keeps inline, past a seal's worth.
+    const body = (i: number) => `body ${i} `.padEnd(2_000, "x");
+    const ids = await r.inLedger((ledger: Ledger) => {
       const sent: string[] = [];
-      for (let i = 0; i < 6; i++) {
-        sent.push(ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}`, null).message_id);
-        ledger.read(MUSE, 10);
-        ledger.ack(MUSE, i + 1);
+      for (let i = 0; i < 4_000; i++) {
+        sent.push(ledger.post(null, `dm:${muse}`, `c${i}`, body(i), null).message_id);
       }
+      ledger.read(MUSE, 1);
+      ledger.ack(MUSE, ledger.seqOf(sent.at(-1)!)!);
       return sent;
     });
     // A generation, with one archive move made inside its window (after its first unit, so
@@ -951,7 +1042,7 @@ describe("an export across a move (review H2)", () => {
         return;
       }
       moved = true;
-      const ledger = ledgerOn(gate.storage as unknown as DurableObjectStorage, LIMITS);
+      const ledger = ledgerOn(gate.storage as unknown as DurableObjectStorage);
       const pick = await gate.write(() => ledger.archivePick())!;
       const batch = await gate.write(() => batchOf(ledger, pick!.seqs))!;
       // Placed as a move places it: planned, then streamed a chunk at a time.
@@ -963,7 +1054,9 @@ describe("an export across a move (review H2)", () => {
       }
       const begun = await gate.write(() => files.begin(plan.size,
         chunks.map((chunk) => chunk.sha256), "owner", [], true, null, true));
-      await files.upload(begun.intent_id, chunks);
+      for (const chunk of chunks) {  // an upload sends at most a chunk's bytes at once
+        await files.upload(begun.intent_id, [chunk]);
+      }
       await gate.write(() => files.adopt(begun.intent_id, "owner", (contentId) =>
         ledger.archiveCommit(pick!.seqs, batch!.digest, [], [{ content_id: contentId, fence: {
           first_key: plan.first, last_key: plan.last, first_at: 1, last_at: 1,
@@ -990,9 +1083,13 @@ describe("an export across a move (review H2)", () => {
       const whole = Buffer.from(await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
         const space = state.storage.sql.exec<{ ns: string; data_key: string }>(
           "SELECT ns, data_key FROM file_space").one();
-        const parts = await (env.FILES as ChunkStore).getChunks(space.ns, space.data_key,
-          shas.map((sha) => ({ sha256: sha as string })));
-        return Buffer.concat(parts.map((part) => Buffer.from(part))).toString("base64");
+        const parts: Buffer[] = [];
+        for (const sha of shas) {  // a get moves at most a chunk's bytes at once
+          const [part] = await (env.FILES as ChunkStore).getChunks(space.ns, space.data_key,
+                                                                   [{ sha256: sha as string }]);
+          parts.push(Buffer.from(part!));
+        }
+        return Buffer.concat(parts).toString("base64");
       }), "base64");
       const trailer = parseTrailer(whole.subarray(fence["trailer_offset"] as number,
         (fence["trailer_offset"] as number) + (fence["trailer_bytes"] as number)).toString());
@@ -1009,14 +1106,14 @@ describe("an export across a move (review H2)", () => {
     expect(read.sort()).toEqual([...ids].sort());
     const bodies = Object.values(atE["message_bodies"]!).map((row) =>
       (JSON.parse(row) as Record<string, unknown>)["body"]).sort();
-    expect(bodies).toEqual(ids.map((_id, i) => `body ${i}`).sort());
+    expect(bodies).toEqual(ids.map((_id, i) => body(i)).sort());
   });
 });
 
 describe("a body of control characters (review N3)", () => {
   it("moves as its own bytes, reads back byte-exact by its chain, and exports whole",
      { tags: ["large"] }, async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     // The reviewer's message: a body at the cap, every byte a control character (which JSON
     // escapes six times over), placed in R2 as any large body is.
@@ -1027,8 +1124,7 @@ describe("a body of control characters (review N3)", () => {
     await settle(r);
     const fences = await sqlIn(r.stub, "SELECT first_key, last_key, bytes FROM " +
                                        "archive_segments");
-    const seq = (await r.inLedger(LIMITS, (ledger: Ledger) =>
-      ledger.seqOf(posted.message_id)))!;
+    const seq = await seqOf(r, posted.message_id);
     const holding = fences.find((fence) => (fence["first_key"] as number) <= seq
       && seq <= (fence["last_key"] as number));
     expect(holding).toBeDefined();
@@ -1037,6 +1133,7 @@ describe("a body of control characters (review N3)", () => {
     expect(await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
                        posted.message_id)).toEqual([]);
     expect((await chained(r, posted.message_id)) === body).toBe(true);
+    await unballast(r);
     const { archived } = await exportArchived(r);
     const exported = archived.find((rows) =>
       rows["ledger_messages"]!["message_id"] === posted.message_id);
@@ -1049,11 +1146,9 @@ describe("a body of control characters (review N3)", () => {
 describe("the worst merge (review N3)", () => {
   it("merges a straggler into pack's largest piece, every body control characters, intact",
      { tags: ["large"] }, async () => {
-    const big = env.BIGARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
-    const r = await rig(big);
+    const r = await seeded(ARCHIVING, 8);
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
-    const MIB = 1024 * 1024;
     const near = "\u0001".repeat(8 * MIB - 100 * 1024);  // short of the least: no cut beside it
     const cap = "\u0001".repeat(BODY_BYTES_MAX);
     /** Read and ack `who`'s mail a page at a time (a page holds 8 MiB of bodies). */
@@ -1072,11 +1167,13 @@ describe("the worst merge (review N3)", () => {
     const k2b = await r.post(null, `dm:${dot}`, { cmid: "k2b", body: cap });
     const k3 = await r.post(null, `dm:${muse}`, { cmid: "k3", body: near });
     await drain(MUSE);
+    // Small mail after them, Dot's unread and Muse's acked: the hot set past half throughout.
     for (let i = 0; i < 3; i++) {
       await r.post(null, `dm:${dot}`, { cmid: `u${i}`, body: `u ${i}` });
       await r.post(null, `dm:${muse}`, { cmid: `a${i}`, body: `a ${i}` });
       await drain(MUSE);
     }
+    await sentAndAcked(r, MUSE, `dm:${muse}`, 4, "b");
     const segments = () => sqlIn(r.stub, "SELECT first_key, last_key, bytes FROM " +
                                          "archive_segments ORDER BY first_key");
     const moved = async (n: number) => {
@@ -1090,9 +1187,7 @@ describe("the worst merge (review N3)", () => {
     expect((await segments()).map((fence) => fence["bytes"] as number))
       .toEqual([expect.any(Number)]);
     // k2 acked: merged into it, pack's largest piece (no cut leaves both sides the least).
-    const seqOf = (id: string) => r.inLedger(LEDGER_LIMITS, (ledger: Ledger) =>
-      ledger.seqOf(id)!);
-    await drain(DOT, await seqOf(k2.message_id));
+    await drain(DOT, await seqOf(r, k2.message_id));
     for (let i = 0; i < 40; i++) {
       await drainDue(r.stub);
       if ((await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
@@ -1104,7 +1199,7 @@ describe("the worst merge (review N3)", () => {
     const [piece] = await segments();
     expect(piece!["bytes"] as number).toBeGreaterThan(2 * 8 * MIB + 7 * MIB);
     // k2b acked: the worst merge, that piece and one straggler at the cap (the measured one).
-    await drain(DOT, await seqOf(k2b.message_id));
+    await drain(DOT, await seqOf(r, k2b.message_id));
     await moved(2);
     const after = await segments();
     expect(after).toHaveLength(2);
@@ -1112,6 +1207,7 @@ describe("the worst merge (review N3)", () => {
     expect(await overlaps(r)).toEqual([]);
     // Each byte-exact in its segment, by the export's rule (a chain read of a body of
     // control characters, a thousand answers of it, is the test above's).
+    await unballast(r);
     const bodies = await archivedBodies(r);
     for (const [id, body] of [[k1.message_id, near], [k2.message_id, cap],
                               [k2b.message_id, cap], [k3.message_id, near]] as const) {
@@ -1132,15 +1228,35 @@ describe("the archive lane's failures (review N3)", () => {
   };
   const notices = (r: Rig) => sqlIn(r.stub, "SELECT detail FROM owner_notices WHERE type = " +
                                             "'storage_busy_long'");
+  /**
+   * Four small messages to Muse acked straight in the ledger (no lane rung), then a body at
+   * the cap posted, unread, past half the hot ceiling: nothing is due until it is acked. The
+   * small ones' seqs, and the cap's.
+   */
+  const unsealed = async (r: Seeded, muse: string, suffix: string) => {
+    const seqs = await r.inLedger((ledger: Ledger) => {
+      const sent: number[] = [];
+      for (let i = 0; i < 4; i++) {
+        sent.push(ledger.seqOf(ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}${suffix}`,
+                                           null).message_id)!);
+      }
+      ledger.read(MUSE, 10);
+      ledger.ack(MUSE, sent.at(-1)!);
+      return sent;
+    });
+    const cap = await r.post(null, `dm:${muse}`, { cmid: "cap", body: "c".repeat(BODY_BYTES_MAX) });
+    return { seqs, cap: await seqOf(r, cap.message_id) };
+  };
 
   it("are counted in storage as a pass begins: passes killed with their isolate still tell",
      async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     // Three passes begun that never ended or said why (an isolate killed for memory runs no
     // catch): the count is the row's, not the isolate's.
     await sqlIn(r.stub, "UPDATE ledger_usage SET archive_fails = 3, archive_error = NULL");
-    await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
+    await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
+    await sealed(r, MUSE, `dm:${muse}`);
     await settle(r);
     const told = await notices(r);
     expect(told).toHaveLength(1);
@@ -1152,17 +1268,10 @@ describe("the archive lane's failures (review N3)", () => {
 
   it("refuse a move whose second pass differs from its first, loudly, by the chunk's hash",
      async () => {
-    const diverging = env.DIVERGING as unknown as DurableObjectNamespace<OwnerDO>;
-    const r = await rig(diverging);
+    const r = await seeded(env.DIVERGING as unknown as DurableObjectNamespace<OwnerDO>);
     const muse = await r.register(MUSE);
-    await r.inLedger(LIMITS, (ledger: Ledger) => {
-      for (let i = 0; i < 6; i++) {
-        ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}a`, null);
-        ledger.read(MUSE, 10);
-        ledger.ack(MUSE, i + 1);
-      }
-    });
-    await r.stub.mailboxAck(r.bind(MUSE), { through: 6 });  // rings the schedule
+    const { cap } = await unsealed(r, muse, "a");
+    await r.stub.mailboxAck(r.bind(MUSE), { through: cap });  // rings the schedule
     for (let pass = 0; pass < 4; pass++) {
       await passAgain(r);
     }
@@ -1172,10 +1281,16 @@ describe("the archive lane's failures (review N3)", () => {
       .toEqual([{ n: 0 }]);
     // Every message still hot and whole (its row, its body, its acked recipient), and no
     // upload left begun: each failed pass aborted its intents.
+    expect(await sqlIn(r.stub, "SELECT m.body_bytes FROM ledger_messages m JOIN " +
+                               "message_bodies b ON b.message_id = m.message_id JOIN " +
+                               "ledger_recipients t ON t.message_id = m.message_id AND " +
+                               "t.unacked = 0 ORDER BY m.seq"))
+      .toEqual([...Array.from({ length: 4 }, () => ({ body_bytes: 7 })),
+                { body_bytes: BODY_BYTES_MAX }]);
     expect(await sqlIn(r.stub, "SELECT b.body FROM ledger_messages m JOIN message_bodies b " +
-                               "ON b.message_id = m.message_id JOIN ledger_recipients t ON " +
-                               "t.message_id = m.message_id AND t.unacked = 0 ORDER BY m.seq"))
-      .toEqual(Array.from({ length: 6 }, (_, i) => ({ body: `body ${i}a` })));
+                               "ON b.message_id = m.message_id WHERE m.room_id = ? AND " +
+                               "b.content_id IS NULL ORDER BY m.seq", `dm:${muse}`))
+      .toEqual(Array.from({ length: 4 }, (_, i) => ({ body: `body ${i}a` })));
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_moves")).toEqual([{ n: 0 }]);
     const [{ n }] = await sqlIn(r.stub, "SELECT archive_fails AS n FROM ledger_usage") as
@@ -1188,19 +1303,13 @@ describe("the archive lane's failures (review N3)", () => {
 
   it("tell the owner once at three in a row, quoting the error, and clear on success",
      async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
-    await r.inLedger(LIMITS, (ledger: Ledger) => {
-      for (let i = 0; i < 6; i++) {
-        ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}`, null);
-        ledger.read(MUSE, 10);
-        ledger.ack(MUSE, i + 1);
-      }
-    });
+    const { seqs, cap } = await unsealed(r, muse, "");
     // The oldest acked message's hash no longer matches its body: every move fails.
-    await sqlIn(r.stub, "UPDATE ledger_messages SET body_sha256 = ? WHERE seq = 1",
-                "0".repeat(64));
-    await r.stub.mailboxAck(r.bind(MUSE), { through: 6 });  // rings the schedule
+    await sqlIn(r.stub, "UPDATE ledger_messages SET body_sha256 = ? WHERE seq = ?",
+                "0".repeat(64), seqs[0]!);
+    await r.stub.mailboxAck(r.bind(MUSE), { through: cap });  // rings the schedule
     for (let pass = 0; pass < 5; pass++) {
       await passAgain(r);
     }
@@ -1211,8 +1320,8 @@ describe("the archive lane's failures (review N3)", () => {
     expect(told).toHaveLength(1);
     expect(told[0]!["detail"]).toMatch(/an archived body is not the body its message holds/);
     // Mended, the next pass moves the mail and clears the count.
-    await sqlIn(r.stub, "UPDATE ledger_messages SET body_sha256 = ? WHERE seq = 1",
-                createHash("sha256").update("body 0").digest("hex"));
+    await sqlIn(r.stub, "UPDATE ledger_messages SET body_sha256 = ? WHERE seq = ?",
+                createHash("sha256").update("body 0").digest("hex"), seqs[0]!);
     await passAgain(r);
     await settle(r);
     expect(await sqlIn(r.stub, "SELECT archive_fails AS n FROM ledger_usage"))
@@ -1227,7 +1336,7 @@ describe("the tail's seal at the production limits (review N4)", () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const seen = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      const ledger = ledgerOn(state.storage, LEDGER_LIMITS);
+      const ledger = ledgerOn(state.storage);
       const sql = state.storage.sql;
       const room = `dm:${muse}`;
       const post = (from: number, to: number) => {
@@ -1279,7 +1388,6 @@ describe("the tail's seal at the production limits (review N4)", () => {
 });
 
 describe("a purge's rewrite, bounded a pass (review N7)", () => {
-  const MIB = 1024 * 1024;
   /** The lane's job made due now, then run: one pass. */
   const pass = async (r: Rig) => {
     await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
@@ -1293,8 +1401,7 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
    * each acked at once, then the lane settled: a run of real-sized segments (8 MiB each).
    */
   const build = async (n: number, every: number, size: number) => {
-    const purging = env.PURGING as unknown as DurableObjectNamespace<OwnerDO>;
-    const r = await rig(purging);
+    const r = await seeded(env.PURGING as unknown as DurableObjectNamespace<OwnerDO>);
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
     const kept = new Map<string, string>();
@@ -1382,11 +1489,12 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
 
 describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve)", () => {
   it("keeps pace: a pass moves mail whenever it is due, a rewrite or not", { tags: ["large"] }, async () => {
-    const MIB = 1024 * 1024;
-    const purging = env.PURGING as unknown as DurableObjectNamespace<OwnerDO>;
-    const r = await rig(purging);
+    const r = await seeded(env.PURGING as unknown as DurableObjectNamespace<OwnerDO>);
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
+    const eve = await r.register(EVE, "Eve");
+    // Eve's message first, left unread: acked with the deletion, it is a straggler.
+    const late = await r.post(null, `dm:${eve}`, { cmid: "late", body: "late" });
     // A production-sized archive (8 MiB segments), Muse's mail 19 in 20 of it.
     for (let i = 0; i < 240; i++) {
       const toDot = i % 20 === 19;
@@ -1403,20 +1511,22 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
     expect((await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_segments"))[0]!["n"])
       .toBeGreaterThan(15);
     await sqlIn(r.stub, "DELETE FROM test_moves");
-    // Muse deleted and Dot's mail past half the hot ceiling in one unit of the ledger, which
-    // rings no lane; then one post rings it, so its first pass finds both the purge and mail
-    // due. (Deleted through the door first, its ring could start a pass that rewrote alone
+    // Muse deleted, Eve's message acked (a straggler, so mail is due) and Dot's small mail,
+    // acked, past half the hot ceiling, in one unit of the ledger, which rings no lane; then
+    // one post rings it, so its first pass finds both the purge and mail due.
+    // (Deleted through the door first, its ring could start a pass that rewrote alone
     // before the mail was due, as one in a loaded leg did: 2026-11-04 18:33, `rrM`.)
-    await r.inLedger({ ...LEDGER_LIMITS, maxMessages: 40, maxUnacked: 20, archiveRecords: 20 },
-                     (ledger: Ledger) => {
+    const straggler = await seqOf(r, late.message_id);
+    await r.inLedger((ledger: Ledger) => {
       ledger.remove(muse);
+      ledger.read(EVE, 1);
+      ledger.ack(EVE, straggler);
       for (let i = 0; i < 30; i++) {
-        ledger.post(null, `dm:${dot}`, `pre${i}`, `pre ${i}`, null);
-        if (i % 10 === 9) {
-          ledger.ack(DOT, ledger.read(DOT, 100).messages.at(-1)?.seq ?? 0);
-        }
+        const seq = ledger.seqOf(ledger.post(null, `dm:${dot}`, `pre${i}`, `pre ${i}`, null)
+          .message_id)!;
+        ledger.read(DOT, 1);
+        ledger.ack(DOT, seq);
       }
-      ledger.ack(DOT, ledger.read(DOT, 100).messages.at(-1)?.seq ?? 0);
     });
     await r.post(null, `dm:${dot}`, { cmid: "ring", body: "ring" });
     await r.ack(DOT, (await r.read(DOT)).messages.at(-1)!.seq);
@@ -1460,14 +1570,19 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
 describe("a full owner's archive (review M1)", () => {
   it("still drains: a move may place past the figure, since it frees what it places",
      async () => {
-    const r = await rig(ARCHIVING);
+    const r = await seeded();
     const muse = await r.register(MUSE);
-    await r.inLedger(LIMITS, (ledger: Ledger) => {
-      for (let i = 0; i < 8; i++) {
-        ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}`, null);
-        ledger.read(MUSE, 10);
-        ledger.ack(MUSE, i + 1);
+    // A seal's worth of acked mail, its bodies as large as the object keeps inline, posted
+    // straight into the ledger (no lane rung), past half the hot ceiling.
+    const last = await r.inLedger((ledger: Ledger) => {
+      let seq = 0;
+      for (let i = 0; i < 4_000; i++) {
+        seq = ledger.seqOf(ledger.post(null, `dm:${muse}`, `c${i}`,
+                                       `body ${i} `.padEnd(2_000, "x"), null).message_id)!;
+        ledger.read(MUSE, 1);
+        ledger.ack(MUSE, seq);
       }
+      return seq;
     });
     // The owner's own figure: exactly what is stored, so no segment fits beside the mail.
     const { stored } = await r.stub.storageUsage(r.bind(null)).then((usage) =>
@@ -1476,7 +1591,7 @@ describe("a full owner's archive (review M1)", () => {
     await r.stub.policyWrite(r.session(null), {
       expected_generation: generation,
       policy: { ...policy, files: { max_bytes: stored } } as never });
-    await r.stub.mailboxAck(r.bind(MUSE), { through: 8 });  // rings the schedule
+    await r.stub.mailboxAck(r.bind(MUSE), { through: last });  // rings the schedule
     await settle(r);
     const [moved] = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_segments");
     expect(moved!["n"]).toBeGreaterThan(0);
@@ -1487,20 +1602,15 @@ describe("a full owner's archive (review M1)", () => {
   });
 
   it("makes a post at the hot ceiling storage_full, the one wall, when a move cannot land",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await rig(ARCHIVING);
-    const muse = await r.register(MUSE);
-    await r.inLedger(LIMITS, (ledger: Ledger) => {
-      for (let i = 0; i < 8; i++) {
-        ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}`, null);
-        ledger.read(MUSE, 10);
-        ledger.ack(MUSE, i + 1);
-      }
-    });
+    onTestFinished(() => r.letGo());
+    // The hot set at its ceiling, a segment's worth of it acked, four unread to spare.
+    const agent = await r.inLedger((ledger: Ledger) => ballast(ledger, 4, 0));
     // A move refused for the figure leaves the archive blocked (the lane's own mark).
     await sqlIn(r.stub, "UPDATE ledger_usage SET archive_blocked = 1");
-    const refused = await failure(() => r.post(null, `dm:${muse}`, { cmid: "c8",
-                                                                     body: "body 8" }));
+    const refused = await failure(() => r.post(null, `dm:${agent}`, { cmid: "over",
+                                                                      body: "over" }));
     expect(refused.message).toMatch(/^storage_full: your storage is full/);
     expect(refusalOf(refused)?.facts).toMatchObject({ limit_bytes: expect.any(Number) });
   });
@@ -1550,7 +1660,7 @@ function counted(storage: DurableObjectStorage) {
 describe("the ledger at its production limits (rs_cap §2.2)", () => {
   /** A message's body: over 335 bytes, as most mail is, so a segment seals by its bytes. */
   const BODY = "m".repeat(600);
-  const { maxMessages, maxUnacked, archiveBytes, archiveRecords } = LEDGER_LIMITS;
+  const { archiveBytes, archiveRecords } = LEDGER_LIMITS;
 
   it("reads and writes the same rows for a post at 1 and at 49,999 hot (never a scan), " +
      "and at the hot ceiling tells a post busy until one lane pass moves a segment sealed " +
@@ -1560,7 +1670,7 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
     const room = `dm:${muse}`;
     const filled = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
       const count = counted(state.storage);
-      const ledger = ledgerOn(count.storage as DurableObjectStorage, LEDGER_LIMITS);
+      const ledger = ledgerOn(count.storage as DurableObjectStorage);
       const acked = () => {
         ledger.read(MUSE, 1);
         ledger.ack(MUSE, state.storage.sql.exec<{ seq: number }>(
@@ -1599,7 +1709,9 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
                 `${filled.hot} hot: ${JSON.stringify(filled.last)}`);
     expect(filled.hot).toBe(maxMessages - 1);
     expect(filled.last).toEqual(filled.first);
-    expect(filled.refused).toMatch(/^storage_busy:/);
+    expect(filled.refused).toMatch(/^storage_busy: your storage is catching up/);
+    expect(JSON.parse(filled.refused.slice(filled.refused.indexOf("{"))))
+      .toEqual({ retry_after_s: STORAGE_BUSY_RETRY_S });
     // The doors' post: busy alike, nothing deleted; it rings the lane, which may move mail
     // out at once, so hot and archived are counted together, in one read.
     expect((await failure(() => r.post(null, room, { cmid: "past", body: BODY }))).message)
@@ -1655,7 +1767,7 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
     const dot = await r.register(DOT, "Dot");
     const seen = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
       const count = counted(state.storage);
-      const ledger = ledgerOn(count.storage as DurableObjectStorage, LEDGER_LIMITS);
+      const ledger = ledgerOn(count.storage as DurableObjectStorage);
       const unread = () => state.storage.sql.exec<{ n: number }>(
         "SELECT unacked AS n FROM ledger_usage").one().n;
       const refusal = (cmid: string) => {

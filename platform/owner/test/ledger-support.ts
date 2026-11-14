@@ -146,14 +146,14 @@ export function ballast(ledger: Ledger, unread: number, hot: number): string {
   const acked = maxMessages - hot - (maxUnacked - unread);
   let last = 0;
   for (let n = 0; n < acked; n++) {
-    last = ledger.seqOf(ledger.post(null, room, `a${n}`, "x", null).message_id)!;
+    last = ledger.seqOf(ledger.post(null, room, `ballast-a${n}`, "x", null).message_id)!;
     if (n % 1_000 === 999 || n === acked - 1) {
       ledger.read(BALLAST, 1);
       ledger.ack(BALLAST, last);
     }
   }
   for (let n = 0; n < maxUnacked - unread; n++) {
-    ledger.post(null, room, `u${n}`, "x", null);
+    ledger.post(null, room, `ballast-u${n}`, "x", null);
   }
   return agent;
 }

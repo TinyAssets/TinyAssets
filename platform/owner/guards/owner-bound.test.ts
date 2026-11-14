@@ -1039,7 +1039,7 @@ describe("the owner's database bound", () => {
     // Every row is counted as it is made and refused past maxAgentRows; a disabled one too.
     expect(SCHEMA).toContain("CREATE TRIGGER outside_agents_added AFTER INSERT ON " +
                              "outside_agents BEGIN UPDATE ledger_usage SET agents = agents + 1, ");
-    expect(source("ledger")).toContain("if (usage.agents >= limits.maxAgentRows) {");
+    expect(source("ledger")).toContain("if (usage.agents >= LEDGER_LIMITS.maxAgentRows) {");
   });
 
   it("sees a bound that would pass half the limit, or a table it no longer covers", () => {
