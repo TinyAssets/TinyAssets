@@ -24,24 +24,25 @@
  *    so a delivery replayed later is refused by the time it signs, and one replayed sooner
  *    by the execution it names. A sandbox with no route of ours answers `200`, logged.
  */
-import { utf8Decoder } from "../../contract/src/text";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
+
+import { sha256 } from "../../contract/src/digest";
+import { HOOK_BODY_MAX } from "../../contract/src/limits";
+import { utf8Text } from "../../contract/src/text";
 
 import { ownerObject } from "./binder";
 import type { DoorsEnv } from "./env";
 import type { BilledEvent } from "../../contract/src/owner";
 import { openRoute } from "../../contract/src/routing-mac";
 
-/** A lifecycle event's most bytes: a few hundred in practice, the metadata's included. */
-export const HOOK_BODY_MAX = 64 * 1024;
+import { answer, boundedBytes } from "./kit";
 
 /** Whether `signature` is E2B's over `body` under `secret`, compared in constant time. */
 export function signed(secret: string, body: string, signature: string | null): boolean {
   if (signature === null) {
     return false;
   }
-  const expected = createHash("sha256").update(secret + body, "utf8").digest("base64")
-    .replace(/=+$/, "");
+  const expected = sha256(secret + body).toString("base64").replace(/=+$/, "");
   const given = Buffer.from(signature.replace(/=+$/, ""), "utf8");
   const wanted = Buffer.from(expected, "utf8");
   return given.byteLength === wanted.byteLength && timingSafeEqual(given, wanted);
@@ -105,46 +106,6 @@ export function lifecycleEvent(body: string):
            memory_mb: memory };
 }
 
-/**
- * The request's body as text, read through a byte count that stops past `most`: null once
- * it has more bytes than that, or bytes that are not UTF-8. Nothing past `most` is read.
- */
-async function cappedText(request: Request, most: number): Promise<string | null> {
-  if (request.body === null) {
-    return "";
-  }
-  const reader = request.body.getReader();
-  const parts: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    size += value.byteLength;
-    if (size > most) {
-      await reader.cancel();
-      return null;
-    }
-    parts.push(value);
-  }
-  const bytes = new Uint8Array(size);
-  let at = 0;
-  for (const part of parts) {
-    bytes.set(part, at);
-    at += part.byteLength;
-  }
-  try {
-    return utf8Decoder("keep").decode(bytes);
-  } catch {
-    return null;
-  }
-}
-
-function answer(status: number, body: unknown): Response {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
-}
-
 /** The webhook door: verified, parsed, routed to the owner's object as the platform. */
 export async function e2bLifecycle(request: Request, env: DoorsEnv): Promise<Response> {
   if (request.method !== "POST") {
@@ -155,13 +116,15 @@ export async function e2bLifecycle(request: Request, env: DoorsEnv): Promise<Res
     console.error("e2b_webhook_unconfigured: no signature secret is set");
     return answer(503, { error: "e2b_webhook_unconfigured" });
   }
-  const length = Number(request.headers.get("Content-Length") ?? "0");
-  if (!Number.isFinite(length) || length > HOOK_BODY_MAX) {
+  const bytes = await boundedBytes(request, HOOK_BODY_MAX);
+  if (bytes === null) {
     return answer(413, { error: "the event is too large" });
   }
-  const body = await cappedText(request, HOOK_BODY_MAX);
-  if (body === null) {
-    return answer(413, { error: "the event is too large" });
+  let body: string;
+  try {
+    body = utf8Text(bytes, "keep");
+  } catch {
+    return answer(400, { error: "the event is out of shape" });
   }
   if (!signed(secret, body, request.headers.get("e2b-signature"))) {
     return answer(401, { error: "the event's signature does not verify" });

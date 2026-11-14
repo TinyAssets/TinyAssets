@@ -6,6 +6,8 @@
  */
 import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 
+import { NO_STORE } from "./kit";
+
 /** A tool's result's one text, its JSON, held to `RESULT_CHARS`. */
 export function resultText(name: string, result: unknown): string {
   const bytes = jsonBytes(result);
@@ -20,6 +22,5 @@ export function resultText(name: string, result: unknown): string {
 /** A tool's result as a JSON response (`/api`, the owner app's `tools/<name>`). */
 export function answerJson(name: string, result: unknown): Response {
   return new Response(resultText(name, result),
-                      { headers: { "Content-Type": "application/json",
-                                   "Cache-Control": "no-store" } });
+                      { headers: { "Content-Type": "application/json", ...NO_STORE } });
 }

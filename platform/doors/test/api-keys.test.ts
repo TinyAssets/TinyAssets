@@ -6,14 +6,14 @@
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { BUSY, slotBusy } from "../../contract/src/slots";
 import { refuseOnce } from "./entry";
-import { createHash } from "node:crypto";
 
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { GRANT_LIMITS } from "../../owner/src/grants";
 import { apiKeyOrigin } from "../../contract/src/binding";
-import { newKey, parseKey, secretHash } from "../src/api-keys";
+import { newKey, parseKey } from "../src/api-keys";
+import { sha256Hex } from "../../contract/src/digest";
 import { MAX_KEYS } from "../../contract/src/limits";
 import { now } from "../src/config";
 import type { DoorsEnv } from "../src/env";
@@ -199,20 +199,15 @@ describe("the key format", () => {
     }
   });
 
-  it("stores the secret's SHA-256 hex, as hashlib.sha256(secret.encode())", async () => {
-    const { secret } = newKey();
-    expect(await secretHash(secret)).toBe(createHash("sha256").update(secret, "utf8").digest("hex"));
-    expect(await secretHash("abc"))
-      .toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-  });
-
   it("keeps a cutover-imported key working", async () => {
     const o = await signedIn();
     const { key_id } = await mint(o);
-    // The Python minted this key: its entry is the same shape, its secret its own.
+    // The Python minted this key: its entry is the same shape, its digest
+    // `hashlib.sha256(secret.encode()).hexdigest()`.
     const imported = `ta_key_${key_id}_${"Z".repeat(43)}`;
     await env.DIRECTORY.put(`k:${key_id}`, JSON.stringify({
-      o: o.owner, h: await secretHash("Z".repeat(43)), c: now() - 86_400 }));
+      o: o.owner, h: "4587a2535bc507ba17c302e7fd1e46a8028d13c6528ed84d89b9e2794072d632",
+      c: now() - 86_400 }));
     const response = await api(imported, "agents_list", {});
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ agents: [], owner_agents: [],
@@ -235,7 +230,7 @@ describe("a mint", () => {
     expect(await grantRow(o.owner, key_id)).toEqual([
       { source: "api_key", mode: "scoped", revoked_at: null }]);
     expect(await env.DIRECTORY.get(`k:${key_id}`, { type: "json" })).toEqual({
-      o: o.owner, h: await secretHash(parseKey(key)!.secret), c: created_at });
+      o: o.owner, h: sha256Hex(parseKey(key)!.secret), c: created_at });
   });
 
   it("writes no entry when the grant is refused", async () => {
@@ -322,7 +317,7 @@ describe("a key's use", () => {
   ])("is 401 for %s, and no object is reached", async (_what, alter) => {
     const victim = owner();
     const { key, keyId, secret } = newKey();
-    await env.DIRECTORY.put(`k:${keyId}`, JSON.stringify({ o: victim, h: await secretHash(secret),
+    await env.DIRECTORY.put(`k:${keyId}`, JSON.stringify({ o: victim, h: sha256Hex(secret),
                                                            c: now() }));
     const response = await api(alter(key), "agents_list", {});
     expect(response.status).toBe(401);

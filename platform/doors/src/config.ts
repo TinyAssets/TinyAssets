@@ -71,18 +71,6 @@ export const REFRESH_TOKEN_TTL_S = 30 * 86_400;
 export const SIGN_IN_MAX_AGE_S = 600;
 export const CLOCK_MARGIN_S = 5;
 
-/** The largest body each door reads; past it, `413` before anything is parsed. */
-/** The consent form: its handle and decision, a few short fields. */
-export const AUTHORIZE_BODY_MAX = 4 * 1024;
-/**
- * A tool call's arguments: the request body's one ceiling (`EGRESS_BODY_MAX`, 16 MiB, the
- * isolate's 128 MB), which carries a body of the most bytes (`BODY_BYTES_MAX`, half of it)
- * with room for its JSON escapes; a test holds the three.
- */
-export const API_BODY_MAX = 16 * 1024 * 1024;
-/** The owner surface's requests (a run's input among them): as a tool call's. */
-export const APP_BODY_MAX = API_BODY_MAX;
-
 /**
  * `OWNER_ISSUER` and `UPSTREAM` until the deploy writes them: AuthKit's production issuer,
  * and its endpoints from AuthKit's live discovery (`deploy/`).
@@ -91,12 +79,6 @@ export const NOT_CONFIGURED = "not-configured";
 
 /** The inbound door's path: `/hooks/inbound/<token>`, one segment (`inbound.ts`). */
 export const INBOUND_PATH = "/hooks/inbound/";
-/**
- * An inbound event's body: the platform's one request ceiling, the same as a tool call's
- * (`API_BODY_MAX`, 16 MiB), never a ceiling of its own.
- */
-export const INBOUND_BODY_MAX = API_BODY_MAX;
-
 /**
  * The erasure queue (`erase.ts`), the one the owner Worker's `ERASURES` producer sends to:
  * the queue handler takes a batch of neither it nor the import queue as the sandbox's ring

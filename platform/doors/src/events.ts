@@ -27,7 +27,7 @@ import { type McpServer, ProtocolError, type StandardSchemaV1 } from "@modelcont
 import {
   callbackSecret, callbackUrl, eventKind, type WakeKind,
 } from "../../contract/src/wake-records";
-import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
+import { COMMAND_CENTER_MAX, SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { follows, subscriptionId } from "../../contract/src/wake-kinds";
 import { refusalOf } from "../../contract/src/refusal";
 
@@ -116,7 +116,7 @@ function argumentsOf(value: unknown): Record<string, unknown> {
     throw invalid("arguments do not match the event's inputSchema");
   }
   const center = (value as Record<string, unknown>)["command_center_id"];
-  if (typeof center !== "string" || !center || center.length > 512) {
+  if (typeof center !== "string" || !center || center.length > COMMAND_CENTER_MAX) {
     throw invalid("arguments do not match the event's inputSchema");
   }
   return { command_center_id: center, board: follow.board, rooms: follow.rooms };

@@ -55,9 +55,8 @@
  * object is read only when the bucket says it is at most `IMPORT_HOLD_BYTES` (one chunk, as
  * the upload door holds one), so at most one is in hand at once.
  */
-import { createHash } from "node:crypto";
-
 import { chunkedId, inlineId } from "../../contract/src/content";
+import { sha256Hex } from "../../contract/src/digest";
 import { HEX64 } from "../../contract/src/ids";
 import {
   answerName, CHECK_PARTS, type Cursor, doneName, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_KEY,
@@ -147,14 +146,13 @@ async function answer(env: DoorsEnv, name: string, value: unknown): Promise<void
   await env.IMPORT_STAGING.put(name, `${JSON.stringify(value)}\n`);
 }
 
-const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const plain = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The bundle's index, held to the digest the MAC names, the message's owner and format. */
 async function indexOf(env: DoorsEnv, message: ImportMessage): Promise<Index> {
   const bytes = await object(env, message, "bundle.json");
-  if (sha256(bytes) !== message.bundle) {
+  if (sha256Hex(bytes) !== message.bundle) {
     throw new Dropped("the bundle's index is not the bundle its message names");
   }
   const index: unknown = JSON.parse(new TextDecoder().decode(bytes));
@@ -175,7 +173,7 @@ async function part(env: DoorsEnv, message: ImportMessage, index: Index, name: s
     throw new Dropped(`the bundle's index names no ${name}`);
   }
   const bytes = await object(env, message, name);
-  if (sha256(bytes) !== want) {
+  if (sha256Hex(bytes) !== want) {
     throw new Dropped(`the bundle's ${name} is not the part its index names`);
   }
   const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
@@ -406,7 +404,7 @@ class Slice {
         throw new Error("an import upload's plan names no such chunk");
       }
       const bytes = await object(this.#env, this.#message, `chunks/${sha}`);
-      if (sha256(bytes) !== sha) {
+      if (sha256Hex(bytes) !== sha) {
         throw new Dropped("a chunk's bytes are not its hash");
       }
       await putImportChunk(this.#env, upload, chunk, bytes);

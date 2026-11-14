@@ -12,7 +12,8 @@ import { describe, expect, it } from "vitest";
 import { E2B_HOOK_PATH } from "../src/config";
 import type { DoorsEnv } from "../src/env";
 import { BILLED_WINDOW_S } from "../../owner/src/sandbox-time";
-import { HOOK_BODY_MAX, lifecycleEvent, signed } from "../src/e2b-hooks";
+import { lifecycleEvent, signed } from "../src/e2b-hooks";
+import { HOOK_BODY_MAX } from "../../contract/src/limits";
 import { openRoute, sealRoute } from "../../contract/src/routing-mac";
 import {
   admitOwner, appPost, call, doorsEnv, OPEN, recorded, serveFirstPartyDocument, setControl,
@@ -143,6 +144,14 @@ describe("E2B's lifecycle webhook", () => {
     // Bytes, not UTF-16 units: a body of multi-byte characters past the bound is refused.
     const wide = "\u00e9".repeat(HOOK_BODY_MAX / 2 + 1);
     expect((await deliver(wide, signature(wide))).status).toBe(413);
+  });
+
+  it("refuses a body that is not UTF-8 as out of shape, before its signature", async () => {
+    const response = await call(new Request(url(E2B_HOOK_PATH), {
+      method: "POST", body: new Uint8Array([0x7b, 0xff, 0x7d]),
+      headers: { "e2b-signature": "x" } }), doorsEnv);
+    expect([response.status, await response.json()])
+      .toEqual([400, { error: "the event is out of shape" }]);
   });
 
   it("refuses a delivery whose signature does not verify, or with no secret set", async () => {

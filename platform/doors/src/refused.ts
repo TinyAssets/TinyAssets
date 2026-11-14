@@ -7,17 +7,13 @@
  */
 import type { Refusal } from "../../contract/src/refusal";
 
-/** A refusal's `Retry-After`, as a header, when it has one. */
-export function retryAfter(refusal: Refusal): Record<string, string> {
-  const seconds = refusal.retryAfter;
-  return seconds === undefined ? {} : { "Retry-After": String(seconds) };
-}
+import { failure } from "./kit";
 
-/** A refusal's answer, with `headers` (a surface's own, such as its `Cache-Control`). */
-export function refusalResponse(refusal: Refusal, headers: Record<string, string> = {}):
-    Response {
-  return Response.json({ error: refusal.message },
-                       { status: refusal.status, headers: { ...headers, ...retryAfter(refusal) } });
+/** A refusal's answer. */
+export function refusalResponse(refusal: Refusal): Response {
+  const seconds = refusal.retryAfter;
+  return failure(refusal.status, refusal.message,
+                 seconds === undefined ? {} : { "Retry-After": String(seconds) });
 }
 
 /**

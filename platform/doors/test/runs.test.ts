@@ -280,8 +280,8 @@ describe("a run's own doors on the egress host", () => {
     expect(wrong.status).not.toBe(200);
   });
 
-  it("answer a post refused for the moment 503, for the runner to post again no sooner " +
-     "than the refusal asks", async () => {
+  it("answer a post refused for the moment 503, with the object's whole message, for the " +
+     "runner to post again no sooner than the refusal asks", async () => {
     const { who, app } = await owned();
     await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "r-1" });
     const [start] = await starts(who);
@@ -295,7 +295,7 @@ describe("a run's own doors on the egress host", () => {
       refuseOnce("runEvents", who, refusal);
       const refused = await report(start!, { frames: [] });
       expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
-        .toEqual([503, retry, { error: { code: refusal.code, message: refusal.code } }]);
+        .toEqual([503, retry, { error: { code: refusal.code, message: refusal.message } }]);
     }
     refuseOnce("runEvents", who, new Refusal("run_ended", "run_ended: the run is no longer live"));
     const ended = await report(start!, { frames: [] });
@@ -315,6 +315,10 @@ describe("a run's own doors on the egress host", () => {
     const missing = await post({}, []);
     expect([missing.status, await missing.json()])
       .toEqual([401, { error: { code: "runner_token_missing", message: "runner_token_missing" } }]);
+    // As at every sandbox JSON door, the method is checked before any credential.
+    const got = await call(new Request(`${EGRESS_ORIGIN}/r/${start!.run}/events`, {
+      headers: { [SANDBOX_HEADER]: tokenOf(start!), [GENERATION_HEADER]: "1" } }));
+    expect(got.status).toBe(405);
     const many = Array.from({ length: EVENT_FRAMES_MAX + 1 },
                             (_, i) => ({ seq: i + 1, at: 1, event: {} }));
     const large = await post(runnerOf(start!), many);
