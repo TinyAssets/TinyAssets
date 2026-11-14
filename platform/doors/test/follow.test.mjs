@@ -3,7 +3,9 @@
 // dropping, and the run's kept frames the doors send again on each new socket (the relay's
 // tail, `owner/src/relay.ts`) are shown once. A fake browser: `location`, `sessionStorage`,
 // `fetch` (the ticket door) and a WebSocket whose server sends the live run's tail on every
-// connect, as the relay does. Run with `npm run test:app` (node's test runner).
+// connect, as the relay does. Time is node's mock clock (`setTimeout` and `Date`), moved
+// on by each test, so a wait is the code's own and never the host's. Run with
+// `npm run test:app` (node's test runner).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -72,10 +74,23 @@ class FakeSocket extends EventTarget {
 globalThis.WebSocket = FakeSocket;
 
 const { follow } = await import("../app/api.js");
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The mock clock moved on by `ms`, a millisecond at a time, what each step woke settled. */
+async function wait(ms) {
+  for (let step = 0; step < ms; step++) {
+    clock.tick(1);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+/** The test's mock clock, started from 0 (`t.mock.timers`, reset after each test). */
+let clock;
+function mocked(t) {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  clock = t.mock.timers;
+}
 const frame = (run, seq) => ({ v: 1, run, seq, at: seq, kind: "event", event: { n: seq } });
 
-test("a dropped socket is followed by a new one, and no frame is shown twice", async () => {
+test("a dropped socket is followed by a new one, and no frame is shown twice", async (t) => {
+  mocked(t);
   behaviour = "tail";
   tail = [frame("r1", 1), frame("r1", 2), frame("r1", 3)];
   const shown = [];
@@ -87,7 +102,9 @@ test("a dropped socket is followed by a new one, and no frame is shown twice", a
   assert.deepEqual(shown, ["r1:1", "r1:2", "r1:3"]);
   sockets.at(-1).drop(1006, "");  // the network drops it
   tail = [...tail, frame("r1", 4)];  // the run went on meanwhile
-  await wait(1200);
+  await wait(999);
+  assert.equal(attached, 0, "no new socket before the first wait, 1 s");
+  await wait(10);
   assert.equal(attached, 1, "a new socket was attached");
   // The new socket's tail is the whole kept run again: only the frame not yet shown shows.
   assert.deepEqual(shown, ["r1:1", "r1:2", "r1:3", "r1:4"]);
@@ -100,7 +117,8 @@ test("a dropped socket is followed by a new one, and no frame is shown twice", a
   assert.equal(ended, 1000);
 });
 
-test("a final close ends the follow, with no new socket", async () => {
+test("a final close ends the follow, with no new socket", async (t) => {
+  mocked(t);
   behaviour = "tail";
   tail = [];
   const before = sockets.length;
@@ -114,12 +132,15 @@ test("a final close ends the follow, with no new socket", async () => {
 });
 
 test("sockets that keep dropping are asked for again with a doubling wait, not in a loop",
-     async () => {
+     async (t) => {
+  mocked(t);
   behaviour = "flap";
   const before = tickets;
   const handle = await follow("c2", () => undefined, () => undefined);
+  // The first ticket at once, then after 1 s, then after 2 s more: two by 2.5 s, three by 3.5.
   await wait(2500);
-  handle.close();
-  // The first ticket at once, then after 1 s, then after 2 s more: two by 2.5 s.
   assert.equal(tickets - before, 2);
+  await wait(1000);
+  assert.equal(tickets - before, 3);
+  handle.close();
 });
