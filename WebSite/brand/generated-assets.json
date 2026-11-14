@@ -5,11 +5,11 @@
     "WebSite/brand/mark-tile.svg": "86811b0de3ccec32243b300f2fe9d5419fc4c11202e053feb5b303089b2bd0b6",
     "WebSite/brand/mark.svg": "029a7c580808f3599a2aa505a87b8d866416c64bb69a103e70745663fa732772",
     "WebSite/site-react/components/TinyAssetsMark.tsx": "5e53443fb64b85fd9a7a63ef9a045c6c3c31c89c15b61ce7539aa59ca4ff2d22",
-    "WebSite/site-react/public/apple-touch-icon.png": "20fab1071c01570869d78738c11ab415d1a6522b42b0ac706cea74c95c5411f2",
     "WebSite/site-react/public/favicon.ico": "b7a2f8d262a597e8a1b80cbd7703c25b5873bb061c70615096d19c1865f01ca7",
     "WebSite/site-react/public/icon-192.png": "894b3bdb0282cc5ce5c50a43644a5df7dbb174e0e3b61cef84b202d481d1c7f8",
     "WebSite/site-react/public/icon-512.png": "48d3b31242c6eb570cb4f5209ec3016bc282f67a42e0143c56ef4fb42f5a6fa1",
     "WebSite/site-react/public/icon.svg": "86811b0de3ccec32243b300f2fe9d5419fc4c11202e053feb5b303089b2bd0b6",
+    "WebSite/site-react/public/icons/apple-touch-icon.png": "20fab1071c01570869d78738c11ab415d1a6522b42b0ac706cea74c95c5411f2",
     "WebSite/site-react/public/logo-mark.png": "48d3b31242c6eb570cb4f5209ec3016bc282f67a42e0143c56ef4fb42f5a6fa1",
     "WebSite/site-react/public/site.webmanifest": "0e869b7227a71a5606e3d012ab8cc1533a5d317108681b07cc26c755fb417f51",
     "WebSite/site-react/public/tinyassets-mark.png": "9cb5ae7d9a10c2f0b87197f9fadda6f0f481d9fcb77fc17a37f2987d990a49e4",
@@ -54,7 +54,7 @@
     "tinyassets/desktop/app.ico": "cfbe78e2719ed6543b87d9ea2767ec7493b8d78199855724452ccbf105a6fc87"
   },
   "generators": {
-    "WebSite/brand/render_marks.py": "2d7c104a94b6d118e0c969885aa6ce43b8885c872d72bb53697762df16a16202",
+    "WebSite/brand/render_marks.py": "2bdebd9b70dd22deb8cc85cab5a8e404f2779b3de3088bf01f2d12c1189590a2",
     "mobile/scripts/render_app_icons.py": "6c036ede0981de3d8462f05c98e46543abe3911c8e8874d1bddee39df729846c",
     "tinyassets/desktop/icon_gen.py": "4ad87af4b04892726b001951fc623799d31ae865e659883b5b325d5877379fbb"
   },

@@ -333,26 +333,3 @@ export function searchPage(entries: readonly Scanned[], more: boolean, query: Re
 export function titleOf(path: string, front: Front | null): string {
   return front?.title !== undefined && front.title !== "" ? front.title : nameOf(path);
 }
-
-/**
- * The window of `bytes` from `offset`, at most `max` bytes, cut back to a UTF-8 character
- * boundary: its end, or null when `offset` is inside a character. A window that holds less
- * than one whole character is widened to hold it.
- */
-export function windowEnd(bytes: Uint8Array, offset: number, max: number): number | null {
-  const continuation = (at: number) => at < bytes.byteLength && (bytes[at]! & 0xc0) === 0x80;
-  if (continuation(offset)) {
-    return null;
-  }
-  let end = Math.min(bytes.byteLength, offset + max);
-  while (end > offset && continuation(end)) {
-    end -= 1;
-  }
-  if (end === offset && offset < bytes.byteLength) {
-    end = offset + 1;
-    while (continuation(end)) {
-      end += 1;
-    }
-  }
-  return end;
-}

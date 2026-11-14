@@ -68,6 +68,18 @@ const plain = (value: unknown): value is Record<string, unknown> =>
 
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
+/** `at`'s own `key`, never one it inherits (`__proto__`, `constructor`). */
+const own = (at: Record<string, unknown>, key: string): unknown =>
+  Object.hasOwn(at, key) ? at[key] : undefined;
+
+/**
+ * `value` made `at`'s own `key`, as JSON would hold it: a key such as `__proto__` is a field
+ * like any other, which the parser then refuses, and never a prototype.
+ */
+function setOwn(at: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(at, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
 /** A copy of the record `base` with `edits` made in order; `base` is left as it is. */
 export function edited(base: unknown, edits: readonly Edit[]): Record<string, unknown> {
   if (!plain(base)) {
@@ -77,8 +89,10 @@ export function edited(base: unknown, edits: readonly Edit[]): Record<string, un
   for (const { path, how, value } of edits) {
     let at: Record<string, unknown> = record;
     for (const key of path.slice(0, -1)) {
-      at[key] ??= {};
-      const next = at[key];
+      if (own(at, key) === undefined) {
+        setOwn(at, key, {});
+      }
+      const next = own(at, key);
       if (!plain(next)) {
         throw new Error(`the control record's ${path.join(".")} is inside no object`);
       }
@@ -86,16 +100,16 @@ export function edited(base: unknown, edits: readonly Edit[]): Record<string, un
     }
     const last = path.at(-1)!;
     if (how === "=") {
-      at[last] = value;
+      setOwn(at, last, value);
       continue;
     }
-    const list = at[last] ?? [];
+    const list = own(at, last) ?? [];
     if (!Array.isArray(list)) {
       throw new Error(`the control record's ${path.join(".")} is no list to ${
         how === "+=" ? "add to" : "take from"}`);
     }
     const others = list.filter((item) => !same(item, value));
-    at[last] = how === "+=" ? [...others, value] : others;
+    setOwn(at, last, how === "+=" ? [...others, value] : others);
   }
   return record;
 }

@@ -15,7 +15,11 @@ import {
 import type { OwnerDO } from "../src/owner-do";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
-import { PLACE_BYTES } from "../../contract/src/limits";
+import { contentIdOf } from "../../contract/src/content";
+import { sha256Hex } from "../../contract/src/digest";
+import { INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
+import { agentFilePath } from "../src/agent-file";
+import { carried, NEWER } from "../src/starter-package";
 import { fileLimits, Policy } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
 import { storageFull, storageFullRefusal } from "../src/storage-full";
@@ -394,25 +398,103 @@ export interface Owner {
 }
 
 /**
- * `name`'s object (in `namespace`, the owner's by default), admitted first by the platform's
- * door, as the doors' sign-in callback admits a new owner at sign-up (`admission.ts`, slice
- * L): a fresh object is `pending` and refuses every door until then.
+ * `name`'s object, admitted by the platform's door, as the doors' sign-in callback admits a
+ * new owner at sign-up (`admission.ts`, slice L): a fresh object is `pending` and refuses
+ * every door until then. Its seed has not landed yet (`seeded`).
  */
-export async function admittedOwner(name: string,
-                               namespace: DurableObjectNamespace<OwnerDO> = env.OWNER):
-    Promise<Stub> {
-  const stub = namespace.getByName(name);
+export async function admitted(name: string): Promise<Stub> {
+  const stub = env.OWNER.getByName(name);
   await stub.admissionSet({ owner: name, caller: PLATFORM_CALLER, origin: null },
                           { admit: true });
   return stub;
 }
 
-/** A fresh owner's admitted object, and the binder's bindings on it. */
+/**
+ * `name`'s object once its seed of the starter package this code carries has landed: a door
+ * hands it the tier's numbers, and its lanes run until its starter says the carried version
+ * is reconciled (the `starterReceipts` door), so no test races the seed's alarm.
+ */
+export async function seeded(stub: Stub, name: string): Promise<Stub> {
+  const binding: Binding = { owner: name, caller: name, origin: null, tiers: TIERS };
+  for (let tries = 0; tries < 200; tries++) {
+    const { version, carried } = await stub.starterReceipts(binding);
+    if (version === carried) {
+      return stub;
+    }
+    await drainDue(stub);
+  }
+  throw new Error(`${name}'s seed did not land`);
+}
+
+/**
+ * What every owner's seed writes, read from the starter package this code carries
+ * (`carried()`), never a literal: its files (path and bytes, inline or placed in R2 past
+ * `INLINE_BYTES`, each in one chunk), the directories they make below the workspace, their
+ * content ids and chunks, and their totals. A test that counts files, bytes, rows, listing
+ * pages or changes adds this to its own; one that means "only what I wrote" filters to its
+ * own paths, contents or chunks (`mine`).
+ */
+export function starterSeed() {
+  const files = carried().files.map((each) => {
+    const bytes = text(each.text);
+    return { path: each.path, bytes: bytes.byteLength, content: contentIdOf(bytes),
+             chunk: bytes.byteLength > INLINE_BYTES ? sha256Hex(bytes) : null };
+  });
+  const dirs = [...new Set(files.flatMap((each) => {
+    const parts = each.path.split("/").slice(1, -1);
+    return parts.slice(1).map((_, n) => `/${parts.slice(0, n + 2).join("/")}`);
+  }))].sort();
+  const placed = files.filter((each) => each.chunk !== null);
+  const sum = (some: typeof files) => some.reduce((total, each) => total + each.bytes, 0);
+  const paths = new Set([...files.map((each) => each.path), ...dirs]);
+  const seeded = new Set([...paths, ...files.map((each) => each.content),
+                          ...placed.map((each) => each.chunk!)]);
+  return {
+    files, dirs, paths,
+    entries: paths.size,
+    bytes: sum(files),
+    inlineBytes: sum(files.filter((each) => each.chunk === null)),
+    placedBytes: sum(placed),
+    placed: placed.length,
+    contents: new Set(files.map((each) => each.content)),
+    chunks: new Set(placed.map((each) => each.chunk!)),
+    /** The owner's agents it defines (an `agent.json` each), each a ledger identity. */
+    agents: files.map((each) => each.path.split("/")[3] ?? "")
+      .filter((agent, n) => agentFilePath(agent) === files[n]!.path),
+    /**
+     * Of `items`, those not the seed's: what the test itself wrote. Each is named (by
+     * `nameOf`, itself by default) by its path, a newer version's path beside its file, its
+     * content id or its chunk's hash.
+     */
+    mine: <T>(items: Iterable<T>, nameOf: (item: T) => string = String): T[] =>
+      [...items].filter((item) => {
+        const named = nameOf(item);
+        return !seeded.has(named.endsWith(NEWER) ? named.slice(0, -NEWER.length) : named);
+      }),
+  };
+}
+
+/** `name`'s object, admitted, its seed landed: the rigs' owner (`admitted`, `seeded`). */
+export async function admittedOwner(name: string): Promise<Stub> {
+  return seeded(await admitted(name), name);
+}
+
+/** A fresh owner's admitted object, its seed landed, and the binder's bindings on it. */
 export async function ownerObject(): Promise<Owner> {
+  const owner = await unseededObject();
+  await seeded(owner.stub, owner.name);
+  return owner;
+}
+
+/**
+ * As `ownerObject`, before any door of its own has bound it, so before its seed: for the
+ * tests of what a first call binds.
+ */
+export async function unseededObject(): Promise<Owner> {
   const name = `owner-${crypto.randomUUID()}`;
   return {
     name,
-    stub: await admittedOwner(name),
+    stub: await admitted(name),
     as: (caller, owner = name) => ({ owner, caller, origin: null, tiers: TIERS }),
   };
 }

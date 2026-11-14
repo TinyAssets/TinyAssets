@@ -99,7 +99,7 @@ import { PLATFORM, REPO } from "../ci/paths.ts";
 import { WRANGLER } from "../ci/wrangler.ts";
 // The envelope and the E2B client import only by their own names, so Node's type stripping
 // runs them here.
-import { CONTROL_KEY, parseControl } from "../contract/src/control.ts";
+import { closedToAll, CONTROL_KEY, parseControl } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import { argsText, OPERATOR_KEYRING } from "../contract/src/operator-message.ts";
 import { principal } from "../contract/src/text.ts";
@@ -732,18 +732,6 @@ export function probeSteps(routes: readonly Route[]): RouteChange[] {
 }
 
 /**
- * Whether a control record, as KV holds it, admits nobody: no owner's sign-in and no outside
- * client (`doors/src/control.ts`), as the dark record does. Missing or any other shape is
- * not.
- */
-export function admitsNobody(record: unknown): boolean {
-  const held = record as { ordinary?: unknown; canary?: unknown } | null | undefined;
-  return typeof held === "object" && held !== null
-    && (held.ordinary === "none"
-        || (held.ordinary === "canary" && Array.isArray(held.canary) && held.canary.length === 0));
-}
-
-/**
  * The one first-party sign-in link the probe prints: the doors' own app's authorization
  * (`doors/app/api.js`), with a fresh S256 challenge whose verifier is dropped, so no code it
  * could end in is ever redeemable.
@@ -1290,10 +1278,10 @@ const retired = step<"cloudflare" | "account" | "deployed">(async ({ run, say },
   }
 });
 
-/** `value` written to `key`, or a loud stop. */
+/** `text` written to `key` as it is, or a loud stop. */
 async function putOrStop({ cloudflare, account }: Pick<Values, "cloudflare" | "account">,
-                         namespace: string, key: string, value: unknown): Promise<void> {
-  const status = await cloudflare.put(account, namespace, key, value);
+                         namespace: string, key: string, text: string): Promise<void> {
+  const status = await cloudflare.putText(account, namespace, key, text);
   if (status !== 200) {
     throw new Error(`writing ${key} failed (${status})`);
   }
@@ -1306,7 +1294,7 @@ const control = step<"cloudflare" | "account" | "ids">(async ({ run, say }, got)
     say("write the control record closed (outside off, canary none, inbound off, the " +
         "founder's tier numbers): the API answered there is none");
     if (run.apply) {
-      await putOrStop(got, id!, CONTROL_KEY, DARK_CONTROL);
+      await putOrStop(got, id!, CONTROL_KEY, JSON.stringify(DARK_CONTROL));
     }
   }
 });
@@ -1331,14 +1319,22 @@ const controlEdit = step<"cloudflare" | "account">(async ({ run, say }, got) => 
     throw new Error(`the control record is kept in ${title}, which a dark run makes: run dark ` +
                     "first; nothing is changed");
   }
-  const live = await got.cloudflare.value(got.account, namespace, CONTROL_KEY);
+  // The live record's bytes, and the record they are when they are JSON.
+  const held = await got.cloudflare.text(got.account, namespace, CONTROL_KEY);
+  let live: unknown = held;
+  try {
+    live = held === undefined ? undefined : JSON.parse(held);
+  } catch {
+    // Not JSON: the bytes themselves, which only --replace replaces.
+  }
   if (run.replace === undefined && parseControl(live) === null) {
-    throw new Error(`the control record is ${live === undefined ? "missing"
-      : `one no reader takes: ${JSON.stringify(live)}`}; give the whole record with ` +
-                    "--replace; nothing is changed");
+    throw new Error(`the control record is ${held === undefined ? "missing"
+      : `one no reader takes: ${held}`}; give the whole record with --replace; nothing is ` +
+                    "changed");
   }
   const record = edited(run.replace ?? live, run.edits);
-  if (parseControl(record) === null) {
+  const control = parseControl(record);
+  if (control === null) {
     throw new Error("the control record as edited is one no reader takes (parseControl): " +
                     `${JSON.stringify(record)}; nothing is changed`);
   }
@@ -1349,20 +1345,21 @@ const controlEdit = step<"cloudflare" | "account">(async ({ run, say }, got) => 
   }
   const kept = `${KEPT_PREFIX}${runOf(run.env, run.io.now()).id}`;
   say(...changes.map((change) => `set the control record's ${change}`),
-      live === undefined ? "keep no previous record: there is none"
-        : `keep the previous record as ${kept} in ${title}, to put back with --replace`);
+      ...closedToAll(control) ? ["the record then admits no owner: closed to all"] : [],
+      held === undefined ? "keep no previous record: there is none"
+        : `keep the previous record's bytes as ${kept} in ${title}, to put back with --replace`);
   if (!run.apply) {
     return;
   }
-  if (live !== undefined && await got.cloudflare.value(got.account, namespace, kept) ===
-      undefined) {
-    await putOrStop(got, namespace, kept, live);
+  if (held !== undefined
+      && await got.cloudflare.text(got.account, namespace, kept) === undefined) {
+    await putOrStop(got, namespace, kept, held);
   }
-  await putOrStop(got, namespace, CONTROL_KEY, record);
-  const back = await got.cloudflare.value(got.account, namespace, CONTROL_KEY);
-  if (JSON.stringify(back) !== JSON.stringify(record)) {
-    throw new Error(`the control record read back is not the one written: ${
-      JSON.stringify(back)}`);
+  const text = JSON.stringify(record);
+  await putOrStop(got, namespace, CONTROL_KEY, text);
+  const back = await got.cloudflare.text(got.account, namespace, CONTROL_KEY);
+  if (back !== text) {
+    throw new Error(`the control record read back is not the one written: ${back ?? "none"}`);
   }
   say("read the control record back: it is the one written");
 });
@@ -1474,8 +1471,9 @@ const doorsDeployed = step<"cloudflare" | "account">(async ({ say }, got) => {
 /** The control record admits nobody, as a dark run writes it. */
 const gatesClosed = step<"cloudflare" | "account">(async ({ say }, got) => {
   const namespace = await controlNamespace(got.cloudflare, got.account);
-  if (namespace === undefined
-      || !admitsNobody(await got.cloudflare.value(got.account, namespace, CONTROL_KEY))) {
+  const control = namespace === undefined ? null
+    : parseControl(await got.cloudflare.value(got.account, namespace, CONTROL_KEY));
+  if (control === null || !closedToAll(control)) {
     throw new Error("the control record is missing or admits someone: the probe runs only " +
                     "with every gate closed, as a dark run writes it");
   }

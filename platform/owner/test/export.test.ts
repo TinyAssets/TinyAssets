@@ -9,7 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { mint } from "../../files/src/datakey";
+import { rewrap } from "../../files/src/datakey";
 import {
   CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY,
   SLOT_WAIT_MS,
@@ -39,7 +39,8 @@ import {
 } from "./generation-support";
 import { MUSE } from "./ledger-support";
 import { erasedWhole } from "./erasure-support";
-import { drainDue, failure, laneAt, sqlIn } from "./support";
+import { drainDue, failure, laneAt, sqlIn, starterSeed } from "./support";
+import { carried } from "../src/starter-package";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -54,6 +55,8 @@ const bucket = () => env.FILES as unknown as Pick<FilesService, "getManifestRoot
                                                                   "getManifestPart">;
 
 const W = "/workspace";
+/** What every owner's seed holds before a test writes (`starterSeed`). */
+const SEED = starterSeed();
 const filled = (size: number, seed: number) =>
   Uint8Array.from({ length: size }, (_, i) => (i * 31 + seed) % 251);
 
@@ -270,16 +273,12 @@ describe("a generation", () => {
 
   it("carries the starter's receipts as they change while it runs (slice STARTER)",
      async () => {
+    // The seed's own receipts, one a file, and its state at the carried version: a pass of
+    // a later version changes them while the generation runs.
     const o = await owner();
     await notices(o, 200);
-    const receipt = (i: number) => sqlIn(o.stub, "INSERT INTO starter_receipts (path, version, " +
-      "class, state, installed, offered) VALUES (?, 1, 'managed', 'installed', ?, NULL)",
-      `/workspace/.agents/skills/s${i}/SKILL.md`, "a".repeat(64));
-    for (let i = 0; i < 3; i++) {
-      await receipt(i);
-    }
-    await sqlIn(o.stub, "INSERT INTO starter_state (only, version, retry_at, noticed) " +
-                        "VALUES (1, 1, NULL, NULL)");
+    const [edited, dropped] = SEED.files.map((file) => file.path);
+    const later = carried().version + 1;
     let after = 0;
     const made = await generate(o.stub, {
       afterUnit: async ({ gate }) => {
@@ -288,13 +287,11 @@ describe("a generation", () => {
           const sql = gate.storage.sql;
           if (after === 1) {
             sql.exec("UPDATE starter_receipts SET state = 'edited', offered = ? WHERE path = ?",
-                     "b".repeat(64), "/workspace/.agents/skills/s0/SKILL.md");
+                     "b".repeat(64), edited!);
           } else if (after === 2) {
-            sql.exec("DELETE FROM starter_receipts WHERE path = ?",
-                     "/workspace/.agents/skills/s1/SKILL.md");
+            sql.exec("DELETE FROM starter_receipts WHERE path = ?", dropped!);
           } else if (after === 3) {
-            sql.exec("INSERT INTO starter_state (only, version, retry_at, noticed) VALUES " +
-                     "(1, 2, NULL, NULL) ON CONFLICT (only) DO UPDATE SET version = 2");
+            sql.exec("UPDATE starter_state SET version = ?", later);
           }
         });
       },
@@ -303,9 +300,9 @@ describe("a generation", () => {
     expect(after).toBeGreaterThan(3);
     const rows = replay(made.lines);
     expect(digest(rows)).toBe(made.atE);
-    expect(Object.keys(rows["starter_receipts"]!)).toHaveLength(2);
+    expect(Object.keys(rows["starter_receipts"]!)).toHaveLength(SEED.files.length - 1);
     expect(Object.values(rows["starter_state"]!).map((row) => JSON.parse(row)["version"]))
-      .toEqual([2]);
+      .toEqual([later]);
   });
 
   it("settles though a 5,000-file sync runs through its pass (review R4-3)", { tags: ["large"] },
@@ -365,13 +362,14 @@ describe("a generation", () => {
 
   it("gives up one with a line longer than any part may be, loudly and the owner told " +
      "once, never a part no root may name (review rvbackup 5)", async () => {
-    // Parts of at most 4 KiB, and one notice of 1,000 control characters: its line is past
-    // 6 KB.
-    const sizes = { page: 16 * 1024, part: 4096, gather: 8192, most: 4096 };
+    // Parts of 4 KiB, none past 6 KiB: wider than the line of any inline file (the seed's
+    // among them, at most 4,096 bytes as base64), narrower than one notice of 1,024 control
+    // characters, each six as JSON.
+    const sizes = { page: 16 * 1024, part: 4096, gather: 8192, most: 6 * 1024 };
     const o = await owner();
     await notices(o, 20);
     await sqlIn(o.stub, "INSERT INTO owner_notices (at, type, detail) VALUES (0, 'wide', " +
-                        "replace(printf('%.1000c', 'a'), 'a', char(1)))");
+                        "replace(printf('%.1024c', 'a'), 'a', char(1)))");
     const first = await generate(o.stub, { sizes });
     expect(first.notices).toEqual([MANIFEST_LINE]);
     expect(first.lines).toEqual([]);  // no root: nothing finished
@@ -622,7 +620,7 @@ describe("an open export", () => {
     // A file written and deleted after it opened: garbage, in no owner's storage number.
     const sha = await writeThenDelete(o, `${W}/after.bin`, 3);
     expect(await stateOf(o, sha)).toEqual([{ state: "garbage" }]);
-    expect((await o.stub.storageUsage(o.bind())).used_bytes).toBe(0);
+    expect((await o.stub.storageUsage(o.bind())).used_bytes).toBe(SEED.bytes);
     // Its grace passed (30 days): the sweep takes it, the export open or not.
     await sqlIn(o.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/x`, expected_etag: null });
@@ -717,8 +715,10 @@ describe("the nightly manifest", () => {
     const lines: Line[] = Buffer.concat(parts).toString("utf8").trimEnd().split("\n")
       .map((line: string) => JSON.parse(line) as Line);
     expect(lines[0]).toMatchObject({ t: "header", owner: o.name, gen });
-    // The same stream as the export's, the chunks' bytes left in the bucket.
-    const chunks = lines.filter((line) => line.t === "chunk");
+    // The same stream as the export's, the chunks' bytes left in the bucket: the seed's,
+    // and this test's one.
+    const chunks = SEED.mine(lines.filter((line) => line.t === "chunk"),
+                             (line) => line["sha256"] as string);
     expect(chunks).toHaveLength(1);
     expect(chunks[0]).not.toHaveProperty("data");
     expect(lines.some((line) => line["table"] === "file_entries"
@@ -764,11 +764,14 @@ describe("the nightly manifest", () => {
   it("is wrapped again, with the object's key, by a rotation's sweep, an idle owner's too " +
      "(review M4)", async () => {
     const o = await owner();
-    // The owner's key was minted before a rotation, under the files ring's older kid.
+    // The owner's key, which its seed's files are under, as a wrap before a rotation left
+    // it: under the files ring's older kid.
     const ring = JSON.parse(env.FILES_TEST_RING) as { keys: Record<string, string> };
-    const older = JSON.stringify({ active: "k1", keys: { k1: ring.keys["k1"] } });
-    const ns = crypto.randomUUID().replaceAll("-", "");
-    await sqlIn(o.stub, "UPDATE file_space SET ns = ?, data_key = ?", ns, await mint(older, ns));
+    const older = JSON.stringify({ active: "k1", keys: ring.keys });
+    const [held] = await sqlIn(o.stub, "SELECT ns, data_key FROM file_space");
+    const ns = held!["ns"] as string;
+    await sqlIn(o.stub, "UPDATE file_space SET data_key = ?",
+                await rewrap(older, ns, held!["data_key"]));
     const body = filled(INLINE_BYTES + 10, 11);
     await write(o, `${W}/kept.bin`, body);
     await sqlIn(o.stub, LAST_YEARS);

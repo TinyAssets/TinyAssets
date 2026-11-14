@@ -35,12 +35,14 @@ import { type Domain, openBlob, parseRing, sealBlob } from "../../contract/src/e
 import {
   AUTHORIZE_PATH, E2B_HOOK_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
 } from "../../doors/src/config";
-import { APP_RESOURCE } from "../../contract/src/identity";
+import { APP_RESOURCE, routeTakes } from "../../contract/src/identity";
 import {
   answerKey, answerOf, macHolds, type OperatorMessage, operatorMessage,
 } from "../../contract/src/operator-message";
 import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
-import { CONTROL_KEY, outsideOpen, ownerOpen, parseControl } from "../../contract/src/control";
+import {
+  closedToAll, CONTROL_KEY, outsideOpen, ownerOpen, parseControl,
+} from "../../contract/src/control";
 import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
 import { E2bAdmin } from "../../sandbox/e2b/admin";
 import { maskLine, runOf, summarize } from "../actions";
@@ -48,7 +50,7 @@ import {
   Cloudflare, describeStep, handback, handover, type Route,
 } from "../cloudflare";
 import {
-  admitsNobody, authorizeCheck, authorizeLink, deployedConfig,
+  authorizeCheck, authorizeLink, deployedConfig,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
   lifecycleHook, lockRefusal, MIGRATED, type Mode, MODES, parse,
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, routedConfig,
@@ -1255,10 +1257,12 @@ describe("the route record", () => {
     expect(again.plan).toContain(`keep the route record ${KEY} as attempt 1 wrote it at ${
       NOW.toISOString()}, before its first change: hand back with --mode handback --record 7001`);
     const later = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
-    expect(later.plan.find((line) => line.startsWith("record "))).toBe(`record the zone's 11 routes and the handover's 0 changes, the ` +
+    // The doors hold the old proxy's three in place, in the zone's order, and the five added.
+    expect(later.plan.find((line) => line.startsWith("record "))).toBe(`record the zone's 9 routes and the handover's 0 changes, the ` +
       `egress domain (${DOORS}) and E2B's lifecycle webhook (enabled) as deploy:routes:7002 in ` +
       "tinyassets-control, before any change: hand back with --mode handback --record 7002; " +
-      `${DOORS} holds ${ROUTES.filter((pattern) => !PROBE_ROUTES.includes(pattern)).join(", ")} ` +
+      `${DOORS} holds ${["mcp*", "app*", "api*", "hooks/inbound/*", "hooks/e2b/*",
+                         ".well-known/oauth-*"].map((path) => `${ZONE}/${path}`).join(", ")} ` +
       "already: the record of the routes run that moved them is the one to hand back, and it " +
       "covers this run's changes too");
     const at = w.events.length;
@@ -1328,8 +1332,9 @@ describe("a handback run", () => {
       "tinyassets-mcp-proxy",
       "add the route tinyassets.io/.well-known/oauth-authorization-server* back for " +
       "tinyassets-mcp-proxy",
-      `move the route tinyassets.io/mcp* from ${DOORS} back to tinyassets-mcp-proxy`,
-      ...["api/*", "hooks/inbound/*", "hooks/e2b/*", "app/api/*", ".well-known/oauth-*"].map(
+      ...["mcp*", "api*", "app*"].map((path) =>
+        `move the route tinyassets.io/${path} from ${DOORS} back to tinyassets-mcp-proxy`),
+      ...["hooks/inbound/*", "hooks/e2b/*", ".well-known/oauth-*"].map(
         (path) => `delete ${DOORS}'s route tinyassets.io/${path}, which the handover added`),
       `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_DOMAIN} (100::), where ` +
       "the detach leaves them",
@@ -1569,8 +1574,9 @@ describe("a handback run", () => {
     };
     for (const [change, why] of [
       // An addition of the handover's, pointed elsewhere since: not the doors' to delete.
-      [changed("tinyassets.io/api/*", "someone-else"), "tinyassets.io/api/* is someone-else's, " +
-       `neither as the handover left it (${DOORS}'s) nor as the record has it (absent)`],
+      [changed("tinyassets.io/hooks/e2b/*", "someone-else"), "tinyassets.io/hooks/e2b/* is " +
+       `someone-else's, neither as the handover left it (${DOORS}'s) nor as the record has it ` +
+       "(absent)"],
       // A recorded route the handover never changed.
       [changed("tinyassets.io/site*", "site-2"), "tinyassets.io/site* is site-2's, the record " +
        "has it site's and the handover never changed it"],
@@ -1743,6 +1749,15 @@ describe("a probe run", () => {
      async () => {
     await expect(runMode(world(), "probe", ["--yes"])).rejects.toThrow(
       `${DOORS} is not deployed: the probe runs after a dark run`);
+    // A record that admits an owner, or that the doors read as malformed, stops it unchanged.
+    for (const record of [{ ...DARK, canary: ["user_a"] }, { ...DARK, ordinary: "all" },
+                          { ...DARK, ordinary: "nobody" }]) {
+      const w = world({ held: true, probed: false });
+      w.kv.set(`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(record));
+      await expect(runMode(w, "probe", ["--yes"])).rejects.toThrow(
+        "the control record is missing or admits someone");
+      expect(w.events.filter((event) => ROUTE_CHANGE.test(event))).toEqual([]);
+    }
   });
 });
 
@@ -2074,20 +2089,21 @@ describe("the parts of a run", () => {
     const { id: zone, account } = await cloudflare.zone(ZONE);
     expect(account).toBe("a".repeat(32));
     const steps = handover(await cloudflare.routes(zone), DOORS, ROUTES);
-    // Identical patterns move in place; a narrower old one is deleted after the doors' wider
-    // one exists; a wider old one (app*, api*) keeps only the paths the doors do not cover.
+    // Identical patterns move in place, and a narrower old one is deleted after the doors'
+    // wider one exists: the old proxy is left with no route.
     expect(steps.filter((each) => each.method === "PUT").map((each) => each.pattern))
-      .toEqual(["tinyassets.io/mcp*"]);
+      .toEqual(["tinyassets.io/mcp*", "tinyassets.io/api*", "tinyassets.io/app*"]);
     expect(steps.filter((each) => each.method === "DELETE").map((each) => each.pattern))
       .toEqual(["tinyassets.io/.well-known/oauth-protected-resource*",
                 "tinyassets.io/.well-known/oauth-authorization-server*"]);
     const added = steps.findIndex((each) => each.pattern === "tinyassets.io/.well-known/oauth-*");
     expect(steps.findIndex((each) => each.method === "DELETE")).toBeGreaterThan(added);
     await cloudflare.reroute(zone, steps, (each) => describeStep(each, DOORS));
-    for (const path of PROBES.slice(0, 10)) {
+    for (const path of PROBES.slice(0, -1)) {
       expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
     }
-    expect(servedBy(fake.table.values(), "tinyassets.io/app")).toBe("tinyassets-mcp-proxy");
+    expect([...fake.table.values()].filter((route) => route.script === "tinyassets-mcp-proxy"))
+      .toEqual([]);
     expect(servedBy(fake.table.values(), "tinyassets.io/site/x")).toBe("site");
     // Run again, it changes nothing.
     expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
@@ -2114,7 +2130,7 @@ describe("the parts of a run", () => {
     expect(after).toEqual(handover(LIVE, DOORS, ROUTES)
       .filter((each) => !PROBE_ROUTES.includes(each.pattern)));
     await cloudflare.reroute("z", after, (each) => describeStep(each, DOORS));
-    for (const path of PROBES.slice(0, 10)) {
+    for (const path of PROBES.slice(0, -1)) {
       expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
     }
     expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
@@ -2129,27 +2145,6 @@ describe("the parts of a run", () => {
     ] as Route[]) {
       expect(() => probeSteps([...LIVE, held])).toThrow(/nothing is changed/);
     }
-  });
-
-  it("probes only behind a control record that admits nobody, as the doors read it", () => {
-    const owners = ["user_a", "user_b"];
-    const records: [unknown, boolean][] = [
-      [DARK, true], [{ ...DARK, ordinary: "none" }, true],
-      [{ ...DARK, canary: ["user_a"] }, false], [{ ...DARK, ordinary: "all" }, false],
-      [undefined, false], [{}, false], [null, false],
-    ];
-    for (const [record, closed] of records) {
-      expect([record, admitsNobody(record)]).toEqual([record, closed]);
-      const control = parseControl(record);
-      if (closed && control !== null) {
-        for (const owner of owners) {
-          expect(ownerOpen({ kind: "read", control }, owner)).toBe(false);
-          expect(outsideOpen({ kind: "read", control }, owner)).toBe(false);
-        }
-      }
-    }
-    // A missing record opens the owner's sign-in: never a probe.
-    expect(ownerOpen({ kind: "missing" }, "user_a")).toBe(true);
   });
 
   it("prints the doors' own first-party sign-in, a fresh S256 challenge each run", () => {
@@ -2356,8 +2351,7 @@ describe("E2B's lifecycle webhook", () => {
                                     { id: "b", url: E2B_HOOK.url }]).e2b))
       .rejects.toThrow(/holds 2 webhooks/);
     // A route hands the hook's path to the doors.
-    expect(ROUTES.some((pattern) => pattern.endsWith("*")
-      && `${ZONE}${E2B_HOOK_PATH}`.startsWith(pattern.slice(0, -1)))).toBe(true);
+    expect(ROUTES.some((pattern) => routeTakes(pattern, `${ZONE}${E2B_HOOK_PATH}`))).toBe(true);
   });
 
   it("changes its secret only with the doors' copy: both or neither", async () => {
@@ -2523,7 +2517,7 @@ describe("the operator path's modes", () => {
         'set the control record\'s ordinary: "canary" → "all"',
         'set the control record\'s canary: [] → ["user_bob"]',
         "set the control record's tiers.free.runs: 5 → 6",
-        `keep the previous record as ${KEPT} in ${NAMESPACES["CONTROL"]}, to put back with ` +
+        `keep the previous record's bytes as ${KEPT} in ${NAMESPACES["CONTROL"]}, to put back with ` +
         "--replace"]);
       expect(writes(w)).toEqual([]);
       expect(live(w)).toEqual(DARK);
@@ -2566,9 +2560,9 @@ describe("the operator path's modes", () => {
     expect(live(w)).toEqual(DARK);
   });
 
-  it("control shows a missing or malformed record as it is, and replaces it only with " +
-     "--replace", async () => {
-    for (const held of [undefined, '{"outside":"on"}']) {
+  it("control shows a missing, malformed or non-JSON record as it is, and replaces it only " +
+     "with --replace, its bytes kept as they were", async () => {
+    for (const held of [undefined, '{"outside":"on"}', '{"outside": "on", ', "off\n"]) {
       const w = world({ held: true });
       if (held === undefined) {
         w.kv.delete(`${CONTROL_NS}/${CONTROL_KEY}`);
@@ -2582,11 +2576,41 @@ describe("the operator path's modes", () => {
       const work = await runMode(w, "control", ["--yes", "--replace", JSON.stringify(DARK),
                                                 "--set", "inbound=true"]);
       expect(live(w)).toEqual({ ...DARK, inbound: true });
-      expect(live(w, KEPT)).toEqual(held === undefined ? undefined : JSON.parse(held));
+      expect(w.kv.get(`${CONTROL_NS}/${KEPT}`)).toBe(held);
       expect(work.plan).toContain(held === undefined ? "keep no previous record: there is none"
-        : `keep the previous record as ${KEPT} in ${NAMESPACES["CONTROL"]}, to put back with ` +
-          "--replace");
+        : `keep the previous record's bytes as ${KEPT} in ${NAMESPACES["CONTROL"]}, to put ` +
+          "back with --replace");
+      expect(work.plan.at(-1)).toBe("read the control record back: it is the one written");
     }
+  });
+
+  it.each([
+    ["__proto__=1"], ["__proto__.outside=on"], ["constructor.name=x"], ["tiers.__proto__.runs=1"],
+    ["signins.__proto__=true"], ["canary.__proto__=1"],
+  ])("control refuses %s, a key no reader keeps, and touches no prototype", async (edit) => {
+    const w = world({ held: true });
+    await expect(runMode(w, "control", ["--yes", "--set", edit]))
+      .rejects.toThrow(/no reader takes \(parseControl\)|is inside no object/);
+    expect(writes(w)).toEqual([]);
+    expect(live(w)).toEqual(DARK);
+    expect(Object.keys(Object.prototype)).toEqual([]);
+    expect(({} as Record<string, unknown>)["outside"]).toBeUndefined();
+  });
+
+  it("control says when the record it writes admits no owner: the kill switch", async () => {
+    const w = world({ held: true });
+    await runMode(w, "control", ["--yes", "--set", "outside=on canary+=user_bob"]);
+    const work = await runMode(w, "control", ["--yes", "--set", "outside=off ordinary=none"]);
+    expect(work.plan).toContain("the record then admits no owner: closed to all");
+    const control = parseControl(live(w))!;
+    expect(closedToAll(control)).toBe(true);
+    expect(outsideOpen({ kind: "read", control }, "user_bob")).toBe(false);
+    // The dark record is closed to all, outside on or off; a canary owner opens it.
+    const dark = world({ held: true });
+    expect((await runMode(dark, "control", ["--set", "outside=on"])).plan)
+      .toContain("the record then admits no owner: closed to all");
+    expect((await runMode(dark, "control", ["--set", "outside=on canary+=user_bob"])).plan)
+      .not.toContain("the record then admits no owner: closed to all");
   });
 
   it("control stops loudly when the record read back is not the one written", async () => {
@@ -2922,23 +2946,21 @@ describe("platform-deploy.yml", () => {
   });
 });
 
-/** Paths the doors' routes cover, and two they do not. */
+/** URLs the doors' routes cover, and the last, which they do not. */
 const PROBES = ["tinyassets.io/mcp", "tinyassets.io/mcp?x=1", "tinyassets.io/api/tools/a",
                 "tinyassets.io/.well-known/oauth-protected-resource/mcp",
                 "tinyassets.io/.well-known/oauth-authorization-server",
                 "tinyassets.io/app/api/keys", "tinyassets.io/oauth/token",
                 "tinyassets.io/authorize", "tinyassets.io/hooks/inbound/x",
                 "tinyassets.io/hooks/e2b/lifecycle",
-                "tinyassets.io/app", "tinyassets.io/site/x"];
+                "tinyassets.io/app", "tinyassets.io/app?upgrade=1", "tinyassets.io/site/x"];
 
 /** The Worker Cloudflare sends `path` to: the most specific matching pattern's. */
 function servedBy(routes: Iterable<Route>, path: string): string | undefined {
+  const stem = (route: Route) => route.pattern.replace(/\*$/, "").length;
   let best: Route | undefined;
   for (const route of routes) {
-    const wild = route.pattern.endsWith("*");
-    const stem = wild ? route.pattern.slice(0, -1) : route.pattern;
-    if ((wild ? path.startsWith(stem) : path === stem)
-        && (best === undefined || stem.length > best.pattern.replace(/\*$/, "").length)) {
+    if (routeTakes(route.pattern, path) && (best === undefined || stem(route) > stem(best))) {
       best = route;
     }
   }
@@ -3030,11 +3052,10 @@ const ROUTES_HELD = [
   `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser to ` +
   "auth.test's sign-in",
   ...WORKERS.map((worker) => `upload and deploy a version of ${NAMES[worker]}, touching no route`),
-  `move the route tinyassets.io/mcp* from tinyassets-mcp-proxy to ${DOORS}`,
-  `add the route tinyassets.io/api/* for ${DOORS}`,
+  ...["mcp*", "api*", "app*"].map((path) =>
+    `move the route tinyassets.io/${path} from tinyassets-mcp-proxy to ${DOORS}`),
   `add the route tinyassets.io/hooks/inbound/* for ${DOORS}`,
   `add the route tinyassets.io/hooks/e2b/* for ${DOORS}`,
-  `add the route tinyassets.io/app/api/* for ${DOORS}`,
   `add the route tinyassets.io/.well-known/oauth-* for ${DOORS}`,
   `delete tinyassets-mcp-proxy's narrower route ` +
   `tinyassets.io/.well-known/oauth-protected-resource*, its paths now ${DOORS}'s`,

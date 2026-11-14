@@ -277,6 +277,47 @@ def _ensure_protected_regular(path: Path | None = None) -> None:
         raise SystemExit("[oracle] fs.protected_regular is not 2")
 
 
+#: Loops one --docker-engine rehearsal holds at once: step (g) of
+#: tests/test_owner_volumes_proof.py binds its outer store and six owners together.
+REHEARSAL_LOOPS = 7
+#: Run as root on the Docker host: LOOP_CTL_ADD (0x4C80) adds each loopN, and
+#: devtmpfs gives it a /dev node before the ioctl returns.
+_ADD_LOOPS = ("import fcntl, os, sys\nfd = os.open('/dev/loop-control', os.O_RDWR)\n"
+              "for n in sys.argv[1:]:\n    fcntl.ioctl(fd, 0x4C80, int(n))\n")
+
+
+def _ensure_loop_devices() -> None:
+    """Leave REHEARSAL_LOOPS unbound loop devices, with nodes, on the Docker host.
+
+    A ``--privileged`` rehearsal container gets a copy of the host's /dev made
+    when it starts. Once those loops are bound, ``losetup --find`` has the
+    kernel add the next one, whose node exists only on the host, so losetup
+    exits 1 inside the container. ubuntu-26.04 runner image 20261111.82.6 left
+    too few free, so add them before Docker starts.
+    """
+    sysfs = Path("/sys/block")
+    if not sysfs.is_dir():
+        return  # Docker Desktop: the engine's kernel is in its VM, out of reach.
+
+    def free() -> int:
+        return sum(not (p / "loop").exists() and Path("/dev", p.name).exists()
+                   for p in sysfs.glob("loop[0-9]*"))
+
+    missing = REHEARSAL_LOOPS - free()
+    if missing <= 0:
+        return
+    if not Path("/dev/loop-control").exists():
+        raise SystemExit("[oracle] the Docker host lacks loop devices: no /dev/loop-control")
+    start = 1 + max((int(p.name[4:]) for p in sysfs.glob("loop[0-9]*")), default=-1)
+    print(f"[oracle] {REHEARSAL_LOOPS - missing} free loop devices on the Docker host; "
+          f"adding loop{start}-loop{start + missing - 1}", file=sys.stderr)
+    add = [sys.executable, "-c", _ADD_LOOPS, *map(str, range(start, start + missing))]
+    subprocess.run(add if os.geteuid() == 0 else ["sudo", "-n", *add], check=True)
+    if free() < REHEARSAL_LOOPS:
+        raise SystemExit(f"[oracle] the Docker host lacks loop devices: {free()} free, "
+                         f"a rehearsal needs {REHEARSAL_LOOPS}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -298,6 +339,8 @@ def main(argv: list[str] | None = None) -> int:
             f"docker info said: {(probe.stderr or probe.stdout).strip()[:200]}"
         )
     _ensure_protected_regular()
+    if args.docker_engine:
+        _ensure_loop_devices()
 
     root = _repo_root()
     tag = _image_tag(root)

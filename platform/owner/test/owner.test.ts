@@ -9,7 +9,7 @@ import { doorTable } from "../../contract/src/doors";
 import { OwnerDO } from "../src/owner-do";
 import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../../contract/src/migrate";
 import { MIGRATIONS } from "../src/schema";
-import { failure, ownerObject } from "./support";
+import { failure, ownerObject, unseededObject } from "./support";
 
 function version(state: DurableObjectState): number {
   return state.storage.sql.exec<{ version: number }>("SELECT version FROM schema_version").one()
@@ -187,7 +187,7 @@ describe("the object's name", () => {
   });
 
   it("binds the object: only the owner it is named by is served", async () => {
-    const { stub, as, name } = await ownerObject();
+    const { stub, as, name } = await unseededObject();
     for (const binding of [as("bob", "cara"), as("cara", "cara"), as(name, `${name}x`)]) {
       const refused = await failure(() => stub.collectionPull(binding, PULL));
       expect([refused.code, refused.message])
@@ -239,7 +239,7 @@ describe("the object's stored owner", () => {
      });
 
   it("refuses an invalid principal before binding anything", async () => {
-    const { stub } = await ownerObject();
+    const { stub } = await unseededObject();
     for (const binding of [{ owner: "", caller: "bob" }, { owner: " alice", caller: "bob" },
                            { owner: "alice", caller: "bo\nb" },
                            { owner: "a".repeat(513), caller: "bob" }]) {

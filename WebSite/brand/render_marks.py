@@ -15,8 +15,9 @@ Outputs (all overwritten):
 
 - ``WebSite/brand/mark.svg`` (full seal), ``mark-compact.svg`` (compact disc),
   and ``mark-tile.svg`` (compact tile)
-- ``WebSite/site-react/public/``: favicon.ico, icon.svg, apple-touch-icon.png,
-  icon-192.png, icon-512.png, logo-mark.png, tinyassets-mark.png
+- ``WebSite/site-react/public/``: favicon.ico, icon.svg, icons/apple-touch-icon.png
+  (off the ``app`` prefix, which the doors' ``app*`` route takes), icon-192.png,
+  icon-512.png, logo-mark.png, tinyassets-mark.png
 - ``assets/icon.png``, ``assets/icon.svg``, ``assets/brand/tinyassets-logo-{icon,mark}.{png,svg}``
 - ``assets/brand/tinyassets-app.{ico,icns}`` (Electron package icons)
 - ``tinyassets/desktop/app.ico`` (Windows tray; also used by the launcher)
@@ -252,7 +253,7 @@ def _generated_paths() -> list[Path]:
         SITE_COMPONENT,
         SITE_PUBLIC / "favicon.ico",
         SITE_PUBLIC / "icon.svg",
-        SITE_PUBLIC / "apple-touch-icon.png",
+        SITE_PUBLIC / "icons" / "apple-touch-icon.png",
         SITE_PUBLIC / "icon-192.png",
         SITE_PUBLIC / "icon-512.png",
         SITE_PUBLIC / "logo-mark.png",
@@ -329,7 +330,7 @@ def main() -> int:
     # Site.
     _ico(SITE_PUBLIC / "favicon.ico", (16, 32, 48))
     _write(SITE_PUBLIC / "icon.svg", tile_svg)
-    _png(SITE_PUBLIC / "apple-touch-icon.png", 180, tile=True)
+    _png(SITE_PUBLIC / "icons" / "apple-touch-icon.png", 180, tile=True)
     _png(SITE_PUBLIC / "icon-192.png", 192, tile=True)
     _png(SITE_PUBLIC / "icon-512.png", 512, tile=True)
     _png(SITE_PUBLIC / "logo-mark.png", 512, tile=True)

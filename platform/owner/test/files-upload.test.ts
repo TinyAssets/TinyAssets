@@ -23,10 +23,12 @@ import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
 import {
   alarmOf, drainDue, failure, faulty, fileCounters, filesOn, inFiles, laneAt, lostContent, sqlIn,
-  STORAGE_FAULT, text, through,
+  starterSeed, STORAGE_FAULT, text, through,
 } from "./support";
 
 const W = "/workspace";
+/** What every owner's seed holds before a test writes (`starterSeed`). */
+const SEED = starterSeed();
 
 function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
   if (!("entry" in answer)) {
@@ -112,12 +114,14 @@ describe("an upload", () => {
     expect(entryOf(committed)).toMatchObject({ size: CHUNK_BYTES + 10, kind: "file" });
     expect(sha256Hex(await read(r, `${W}/two.bin`))).toBe(sha256Hex(new Uint8Array([
       ...pieces[0]!, ...pieces[1]!])));
-    expect(await sqlIn(r.stub, "SELECT content_id FROM file_contents"))
-      .toEqual([{ content_id: chunkedId(CHUNK_BYTES + 10, shas(pieces)) }]);
+    expect(SEED.mine((await sqlIn(r.stub, "SELECT content_id FROM file_contents"))
+      .map((row) => row["content_id"] as string)))
+      .toEqual([chunkedId(CHUNK_BYTES + 10, shas(pieces))]);
     // The same chunks again send nothing, and dedupe into the same content.
     const again = await upload(r, `${W}/copy.bin`, pieces);
     expect(again.begun.missing).toEqual([]);
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_contents")).toEqual([{ n: 1 }]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_contents"))
+      .toEqual([{ n: SEED.contents.size + 1 }]);
     expect(await chunk(r, sha256Hex(pieces[1]!))).toMatchObject({ state: "live", stored: 1,
                                                                    refs: 1, holds: 0 });
     const [kept, counted] = await fileCounters(r.stub);
@@ -207,7 +211,8 @@ describe("an upload", () => {
       `${W}/huge`, new Uint8Array(WHOLE_BYTES + 1), { expected: null, writer: "o" })));
     expect([WHOLE_BYTES, error.message]).toEqual([16 * 1024 * 1024,
       `a whole write moves at most ${WHOLE_BYTES} bytes; upload larger files`]);
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 0 }]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks"))
+      .toEqual([{ n: SEED.chunks.size }]);
   });
 
   it("sends at most two chunks a call", async () => {
@@ -233,7 +238,8 @@ describe("an upload", () => {
     expect((await failure(() => r.stub.fileUploadBegin(r.bind(null),
                                                         { size, chunks: chunks as string[] })))
       .code).toBe("invalid");
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 0 }]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks"))
+      .toEqual([{ n: SEED.chunks.size }]);
   });
 
   it("refuses a begin past the file size quota, or past the chunks one intent holds",
@@ -299,7 +305,8 @@ describe("a content id", () => {
       }
       expect(await read(r, `${W}/small`)).toEqual(small);
       expect((await read(r, `${W}/big`)).byteLength).toBe(CHUNK_BYTES + 100);
-      expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_contents")).toEqual([{ n: 2 }]);
+      expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_contents"))
+        .toEqual([{ n: SEED.contents.size + 2 }]);
     });
 
   it("names the kind and the size of what it names", () => {
@@ -384,7 +391,8 @@ describe("garbage collection", () => {
       }
     });
     // Only what nothing names went: a's older versions and b's bytes.
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 3 }]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks"))
+      .toEqual([{ n: SEED.chunks.size + 3 }]);
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
   });
@@ -479,7 +487,7 @@ describe("a chunk", () => {
     await begin(r, [piece]);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
-    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
     const failing: ChunkStore = through({
       deleteChunks: async () => { throw new Error("FILES is down"); },
     });
@@ -491,7 +499,7 @@ describe("a chunk", () => {
     expect((await failure(() => begin(r, [piece]))).message)
       .toBe("a chunk of this upload is being deleted; begin again");
     // A delete that outlasts its pass's budget is tried again, as a failed one is.
-    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
     const hung: ChunkStore = { ...failing, deleteChunks: () => new Promise(() => undefined) };
     await inFiles(r.stub, {}, (files) => files.run(
       Date.now() / 1000, Date.now() + DELETE_FLOOR_MS + 20), hung);
@@ -506,13 +514,14 @@ describe("a chunk", () => {
     // Half a second is too little to begin one (the floor is a second), and so is none.
     expect(DELETE_FLOOR_MS).toBeGreaterThan(500);
     for (const left of [500, -1]) {
-      await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+      await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
       await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000,
                                                          Date.now() + left), recording);
       expect(await chunk(r, sha)).toMatchObject({ state: "deleting", gc_after: 1 });
     }
     expect(asked).toEqual([]);
-    await sqlIn(r.stub, "UPDATE file_chunks SET state = 'garbage', gc_after = 1");
+    await sqlIn(r.stub, "UPDATE file_chunks SET state = 'garbage', gc_after = 1 " +
+                        "WHERE sha256 = ?", sha);
     await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect((await begin(r, [piece])).missing).toEqual([sha]);
@@ -530,7 +539,7 @@ describe("a chunk", () => {
     expect(armed).not.toBeNull();
     expect(armed!).toBeLessThanOrEqual(Math.ceil((due + HOUSEKEEPING_SLACK_S) * 1000) / 1000);
     expect(await alarmOf(r.stub)).toBeLessThanOrEqual(armed!);  // Lifecycle armed it
-    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
     // Any change re-derives the lane's job from the rows: due now, so Lifecycle runs it.
     await r.stub.fileMkdir(r.bind(null), { path: `${W}/d`, expected_etag: null });
     await drainDue(r.stub);
@@ -567,7 +576,8 @@ describe("a chunk between a pass's units", () => {
     await r.stub.fileUploadChunks(r.bind(null), {
       intent_id: begun.intent_id, chunks: [{ sha256: sha256Hex(piece), bytes: piece }] });
     await r.stub.fileUploadAbort(r.bind(null), { intent_id: begun.intent_id });
-    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?",
+                sha256Hex(piece));
   }
 
   it("held again by an upload while the pass waits on the queue is never deleted under it",
@@ -737,7 +747,8 @@ describe("history retention", () => {
         await files.write(`${W}/a`, text(`v${i}`), { expected: null, writer: "owner" });
       }
     });
-    const rows = await sqlIn(r.stub, "SELECT at, prune_after FROM file_history ORDER BY version");
+    const rows = await sqlIn(r.stub, "SELECT at, prune_after FROM file_history WHERE path = ? " +
+                                     "ORDER BY version", `${W}/a`);
     expect(rows.map((row) => row["prune_after"] === null)).toEqual([false, false, true, true]);
     expect(rows[0]!["prune_after"]).toBe((rows[0]!["at"] as number) + 86_400);
   });

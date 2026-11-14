@@ -19,8 +19,9 @@ import {
   inTime, type Lane, LANE_HUNG_S, LANE_PASS_S, LANE_RETRY_S, laneJob, Schedule, SCHEDULE,
 } from "../src/schedule";
 import { Doorbell } from "../src/wakes";
+import { sha256Hex } from "../../contract/src/digest";
 import { MUSE, rig } from "./ledger-support";
-import { alarmOf, failure, laneJobs, ownerObject, sqlIn } from "./support";
+import { alarmOf, failure, laneJobs, ownerObject, sqlIn, unseededObject } from "./support";
 
 /** A lane over a script: its next work, and what each run does. */
 class ScriptedLane implements Lane {
@@ -139,9 +140,12 @@ function probe(state: DurableObjectState, names: string[]): Probe {
   return Object.assign(p, { schedule, lifecycle: new Lifecycle(host).use(schedule) });
 }
 
-/** Run `act` on a probe over a fresh owner's object. */
+/**
+ * Run `act` on a probe over a fresh owner's object, before any door of its own has handed it
+ * work (`unseededObject`): its own lanes have no job, so the probe's jobs are the test's.
+ */
 async function withProbe<R>(names: string[], act: (p: Probe) => Promise<R>): Promise<R> {
-  const { stub } = await ownerObject();
+  const { stub } = await unseededObject();
   return runInDurableObject(stub, (_i: OwnerDO, state) => act(probe(state, names)));
 }
 
@@ -433,11 +437,10 @@ describe("the object's schedule", () => {
       .chunks).toEqual([bytes]);
     await r.stub.fileRemove(r.bind(null), { path, expected_etag: null, recursive: false });
     await r.stub.fileHistoryPurge(r.bind(null), { path });
-    const [{ sha256 }] = await sqlIn(r.stub, "SELECT sha256 FROM file_chunks") as
-      [{ sha256: string }];
+    const sha256 = sha256Hex(bytes);
     // The alarm's files pass deletes the garbage chunk, each of its writes a unit; a pass
     // that wrote outside one would throw, and the chunk would stay.
-    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha256);
     await r.stub.fileMkdir(r.bind(null), { path: "/workspace/d", expected_etag: null });
     // The door re-derived the files job: due now; or workerd already fired the alarm it
     // armed, and the lane deleted the chunk (the slice D review's round 2 race).

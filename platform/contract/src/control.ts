@@ -265,6 +265,16 @@ export function ownerOpen(read: ControlRead, owner: string): boolean {
 }
 
 /**
+ * Whether the record admits nobody, so neither gate above opens for any owner: its maintenance
+ * gate admits none (`none`, or `canary` naming none), as the dark record's does. The sign-in
+ * probe runs only behind such a record (`deploy/deploy.ts`).
+ */
+export function closedToAll(control: Control): boolean {
+  return control.ordinary === "none"
+    || (control.ordinary === "canary" && control.canary.length === 0);
+}
+
+/**
  * The hooks gate (`/hooks/inbound`), before any route is read: `unavailable` when the record
  * is malformed or unreadable, `off` when it is missing or its `inbound` is off, else the
  * record, by whose maintenance gate the event's owner is then held (`ordinaryAdmits`).

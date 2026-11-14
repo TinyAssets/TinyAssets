@@ -537,6 +537,8 @@ def inner_proof(root):
         command("umount", str(store))
         command("losetup", "--detach", outer)
         raise
+    # (g) binds the outer store and every uid at once; scripts/linux_oracle.py
+    # REHEARSAL_LOOPS leaves that many free loop devices on the Docker host.
     uids = list(range(300001, 300007))
     size = int(os.environ["TA_SMALLEST_VOLUME"])
     metrics = {"image_bytes": size, "kernel": os.uname().release,
