@@ -47,7 +47,7 @@ import {
   type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority, SIGNIN_REQUIRED,
   type SpendCaps, type UsableSource,
 } from "./runs";
-import { SANDBOX_WAITING, started } from "./sandbox";
+import { SANDBOX_WAITING, started, vendorHosts } from "./sandbox";
 import { inTime, LANE_CALL_MS } from "./schedule";
 import { switchedOn } from "./signins";
 import { tierNumbers } from "./tier";
@@ -285,6 +285,7 @@ export class Launcher implements RunHost {
         session_id: admitted.session_id, prompt: admitted.prompt, unattended,
         authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
         network: admitted.network, config: admitted.config,
+        hosts: vendorHosts(admitted.engine, admitted.credential, null),
         route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
                                                         authority: admitted.authority }),
         urls: runUrls(admitted.run, admitted.secret) }));

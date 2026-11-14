@@ -84,13 +84,22 @@ const NETWORK = {
   mode: "allowlist", unexpressed: [], boundary: false, note: "",
 };
 
+/**
+ * The vendor hosts the owner hands a start on Claude Code's sign-in (`hosts`), and on
+ * Gemini's: names the Worker lets out as it is handed them, whatever any record says.
+ */
+const CLAUDE_HOSTS = ["claude.ai", "api.anthropic.com"];
+const GEMINI = { engine: "gemini", hosts: ["accounts.google.com"] };
+/** A run on a key: no vendor hosts. */
+const ON_KEY = { credential: "api_key", hosts: [] } as const;
+
 function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
     credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
     unattended: false, authority: "owner", lease: LEASE, route: "r".repeat(64),
     tokens: { sync_token: "sync", runner_token: hex(64, "d") },
-    network: NETWORK as never,
+    network: NETWORK as never, hosts: CLAUDE_HOSTS,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
               env: { HOME: "{home}" }, inherit: ["PATH"] },
     urls: runUrls(RUN, hex(64, "e")),
@@ -229,7 +238,22 @@ describe("a start", () => {
         .then(() => null, (error: unknown) => error);
       expect(String(refused)).toMatch(/https doors/);
     }
+    // Its vendor hosts are a list of names, or nothing starts.
+    for (const hosts of [undefined, "claude.ai", [1]]) {
+      const refused = await stub(who).start(who, start({ hosts: hosts as never }))
+        .then(() => null, (error: unknown) => error);
+      expect(String(refused)).toMatch(/vendor hosts/);
+    }
     expect((await seen()).calls).toEqual([]);
+  });
+
+  it("lets out the vendor hosts the start hands, and reads no record for them", async () => {
+    await e2b("/script", { signin: { "claude-code": 0 } });
+    const who = owner();
+    expect(await stub(who).start(who, start({ hosts: ["vendor.example"] })))
+      .toEqual({ started: true });
+    const allowOut = (await seen()).sandboxes[0]!.network.allowOut;
+    expect(allowOut).toEqual(["github.com", "vendor.example", EGRESS_HOST]);
   });
 
   it("answers signin_required, and launches nothing, where no login is in that sandbox", async () => {
@@ -245,7 +269,7 @@ describe("a start", () => {
 
   it("runs an API-key run with no sign-in check and no vendor hosts", async () => {
     const who = owner();
-    expect(await stub(who).start(who, start({ credential: "api_key" })))
+    expect(await stub(who).start(who, start(ON_KEY)))
       .toEqual({ started: true });
     const state = await seen();
     expect(state.sandboxes[0]!.network.allowOut).toEqual(["github.com", EGRESS_HOST]);
@@ -259,7 +283,7 @@ describe("a start", () => {
   it("hands the control record's scratch retention to the runner", async () => {
     await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
     const who = owner();
-    expect(await stub(who).start(who, start({ credential: "api_key" })))
+    expect(await stub(who).start(who, start(ON_KEY)))
       .toEqual({ started: true });
     const state = await seen();
     const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(RUN)}`]!;
@@ -270,11 +294,11 @@ describe("a start", () => {
      async () => {
     await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
     const who = owner();
-    expect(await stub(who).start(who, start({ credential: "api_key" })))
+    expect(await stub(who).start(who, start(ON_KEY)))
       .toEqual({ started: true });
     await writeControl(env.CONTROL, "not json");
     const second = `run_${hex(32, "2")}`;
-    expect(await stub(who).start(who, start({ run: second, credential: "api_key",
+    expect(await stub(who).start(who, start({ run: second, ...ON_KEY,
                                              tokens: null, network: null })))
       .toEqual({ started: true });
     const state = await seen();
@@ -298,13 +322,13 @@ describe("a start", () => {
     it(`keeps the retention the last start handed, not one ${what} read`, async () => {
       await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
       const who = owner();
-      expect(await stub(who).start(who, start({ credential: "api_key" })))
+      expect(await stub(who).start(who, start(ON_KEY)))
         .toEqual({ started: true });
       await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 7 });
       await between(who);
       await writeControl(env.CONTROL, "not json");
       const third = `run_${hex(32, "3")}`;
-      expect(await stub(who).start(who, start({ run: third, credential: "api_key",
+      expect(await stub(who).start(who, start({ run: third, ...ON_KEY,
                                                tokens: null, network: null })))
         .toEqual({ started: true });
       const state = await seen();
@@ -319,7 +343,7 @@ describe("a start", () => {
     const who = owner();
     await stub(who).start(who, start());
     const second = `run_${hex(32, "2")}`;
-    expect(await stub(who).start(who, start({ run: second, engine: "gemini", tokens: null,
+    expect(await stub(who).start(who, start({ run: second, ...GEMINI, tokens: null,
                                              network: null }))).toEqual({ started: true });
     const state = await seen();
     expect(state.sandboxes).toHaveLength(1);
@@ -352,10 +376,10 @@ describe("a start", () => {
   it("starts nothing new once the founder takes the numbers out, kept numbers or not",
      async () => {
     const who = owner();
-    expect(await stub(who).start(who, start({ credential: "api_key" })))
+    expect(await stub(who).start(who, start(ON_KEY)))
       .toEqual({ started: true });
     await control(OPEN);
-    expect(await stub(who).start(who, start({ run: `run_${hex(32, "4")}`, credential: "api_key",
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "4")}`, ...ON_KEY,
                                              tokens: null, network: null })))
       .toEqual({ started: false, code: "sandbox_unconfigured" });
   });
@@ -1161,18 +1185,18 @@ describe("a sign-in", () => {
   const ROUTE = "s".repeat(64);
   function signin(over: Record<string, unknown> = {}) {
     return { id: SI, engine: "kimi", region: "global", mode: "in" as const, authority: "owner",
-             lease: LEASE, tokens: start().tokens, network: NETWORK as never, route: ROUTE,
-             urls: signinUrls(SI), ...over };
+             lease: LEASE, tokens: start().tokens, network: NETWORK as never,
+             hosts: ["auth.kimi.ai", "api.kimi.ai"], route: ROUTE, urls: signinUrls(SI), ...over };
   }
 
-  it("starts the record's login in the authority's sandbox, its region's hosts let out",
+  it("starts the record's login in the authority's sandbox, the hosts it hands let out",
      async () => {
     const who = owner();
     expect(await stub(who).signin(who, signin() as never)).toEqual({ started: true });
     const state = await seen();
     const box = state.sandboxes[0]!;
-    expect(box.network.allowOut).toEqual(expect.arrayContaining(["auth.kimi.ai", "api.kimi.ai"]));
-    expect(box.network.allowOut).not.toContain("auth.kimi.com");
+    expect(box.network.allowOut).toEqual(["api.kimi.ai", "auth.kimi.ai", "github.com",
+                                          EGRESS_HOST]);
     // The sandbox a sign-in first makes carries its route, so its lifecycle events reach the
     // owner's object as a run's sandbox's do (S14).
     expect(box.metadata["ta_route"]).toBe(ROUTE);
@@ -1228,9 +1252,9 @@ describe("a sign-in", () => {
     expect([await turn(who), await turn("nobody")]).toEqual([true, false]);
   });
 
-  it("refuses a sign-in that is not one: its id, a region the record lacks, plain HTTP", async () => {
+  it("refuses a sign-in that is not one: its id, its hosts, plain HTTP", async () => {
     const who = owner();
-    for (const bad of [signin({ id: "run_x" }), signin({ region: "moon" }),
+    for (const bad of [signin({ id: "run_x" }), signin({ hosts: undefined }),
                        signin({ route: undefined }), signin({ route: "short" }),
                        signin({ urls: { events: `http://${EGRESS_HOST}/x`,
                                         signin: start().urls.signin } })]) {
@@ -1326,7 +1350,7 @@ describe("the network", () => {
       .toEqual({ started: true });
     expect((await seen()).sandboxes[0]!.network.allowOut)
       .toEqual(["*", EGRESS_HOST]);
-    expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, engine: "gemini",
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, ...GEMINI,
                                              tokens: null, network: null })))
       .toEqual({ started: true });
     expect(await updates()).toBe(0);
@@ -1335,7 +1359,7 @@ describe("the network", () => {
   it("hands prepare the network's own resolvers, and none it made up", async () => {
     const who = owner();
     const none = { ...NETWORK, network: { ...NETWORK.network, dnsServers: [] } };
-    await stub(who).start(who, start({ credential: "api_key", network: none as never }));
+    await stub(who).start(who, start({ ...ON_KEY, network: none as never }));
     const prepare = (await seen()).commands.find((command) => command.argv[1] === "prepare")!;
     expect(prepare.argv.slice(1)).toEqual(["prepare"]);
   });
@@ -1361,7 +1385,7 @@ describe("a live lease's network re-applied (E2)", () => {
     const who = owner();
     await stub(who).start(who, start());
     // A run joins on another engine's sign-in: its vendor's hosts are let out.
-    await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, engine: "gemini",
+    await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, ...GEMINI,
                                        tokens: null, network: null }));
     expect(await stub(who).network(reapply())).toEqual({ state: "applied" });
     const network = await networkOf();
@@ -1376,7 +1400,7 @@ describe("a live lease's network re-applied (E2)", () => {
      "no generation", async () => {
     const who = owner();
     expect(await stub(who).network(reapply())).toEqual({ state: "lost" });
-    await stub(who).start(who, start({ credential: "api_key" }));
+    await stub(who).start(who, start(ON_KEY));
     expect(await stub(who).network(reapply({ lease: { lease_id: hex(32, "9"), epoch: 2 } })))
       .toEqual({ state: "lost" });
     const tokened = { ...PLAN, network: withEgressToken(PLAN.network, "forged") };
@@ -1395,7 +1419,7 @@ describe("a live lease's network re-applied (E2)", () => {
     const who = owner();
     const bare = { ...NETWORK, network: withEgressToken(closedNetwork(["github.com"]),
                                                         EGRESS_TOKEN) };
-    await stub(who).start(who, start({ credential: "api_key", network: bare as never }));
+    await stub(who).start(who, start({ ...ON_KEY, network: bare as never }));
     expect(String(await stub(who).network(reapply()).then(() => null, (error: unknown) => error)))
       .toMatch(/the egress generation it was made under/);
     expect((await networkOf()).generation).toBeNull();
@@ -1424,15 +1448,15 @@ describe("a live lease's network re-applied (E2)", () => {
     const who = owner();
     // The sandbox runs under an older lease; then a new lease's joining job (gemini, on its
     // own sign-in) reaches the Worker before the start that opened that lease.
-    await stub(who).start(who, start({ credential: "api_key" }));
+    await stub(who).start(who, start(ON_KEY));
     const next = { lease_id: hex(32, "c"), epoch: 2 };
-    expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, engine: "gemini",
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "2")}`, ...GEMINI,
                                              lease: next, tokens: null, network: null })))
       .toEqual({ started: true });
     expect((await networkOf()).allowOut).toEqual(expect.arrayContaining(["accounts.google.com"]));
     // The opener's network replaces the live one whole, and keeps the joiner's vendor.
     expect(await stub(who).start(who, start({ run: `run_${hex(32, "3")}`, lease: next,
-                                             credential: "api_key" })))
+                                             ...ON_KEY })))
       .toEqual({ started: true });
     expect((await networkOf()).allowOut).toEqual(expect.arrayContaining(["accounts.google.com"]));
   });

@@ -12,7 +12,9 @@
  *   `tokens` and `network` come only with the start that opened the sandbox's lease: the
  *   sandbox is then (re)configured with that network, whose transform carries the egress
  *   token, and the runner's sync agent takes the sync token. A run that joins a live lease
- *   gets neither: its sandbox is configured already. `config` is the run's whole
+ *   gets neither: its sandbox is configured already. Every start, and every sign-in's, hands
+ *   the engine's vendor hosts (`vendorHosts`), which the sandbox Worker lets out beside that
+ *   network, so it reads no source record. `config` is the run's whole
  *   environment (slice E's `runEnv`, G4's `sandboxEnv`), which the runner sets as it is,
  *   from an empty one. The runner reaches the object only by `urls`: the run's MCP door,
  *   its event door and the sign-in report door (`signin`: each engine that signs in with
@@ -39,7 +41,18 @@
  *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
  *   passed. It limits nothing: the founder's cost view.
  */
-import { START_CODES, type Started } from "../../contract/src/sandbox";
+import { type CredentialKind, START_CODES, type Started } from "../../contract/src/sandbox";
+import { engineHosts } from "../../sources/src/served";
+
+/**
+ * The vendor hosts a job's sandbox network is let out to (`SandboxStart.hosts`,
+ * `SandboxSignin.hosts`): on the vendor's own sign-in (a sign-in's always), the engine's
+ * sign-in and model hosts and the chosen region's; none on a key.
+ */
+export function vendorHosts(engine: string, credential: CredentialKind,
+                            region: string | null): string[] {
+  return credential === "vendor_login_in_sandbox" ? engineHosts(engine, region) : [];
+}
 
 /**
  * The start's answer when the E2B team runs as many sandboxes as its plan allows (the

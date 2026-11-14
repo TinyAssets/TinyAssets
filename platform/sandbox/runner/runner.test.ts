@@ -20,6 +20,7 @@ import { dirname } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { bundledSources } from "../../sources/src/catalog";
+import { served } from "../../sources/src/served";
 import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
 import { readEvent } from "../../contract/src/run-events";
@@ -957,7 +958,7 @@ describe("an API-key run's base URL (codexurl_research.md)", () => {
                      events: `https://egress.tinyassets.io/r/${RUN}/events`,
                      signin: "https://egress.tinyassets.io/signin" } };
   }
-  const call = (start: StartDoc) => invocation(sources.get(start.engine)!, start, {}, {
+  const call = (start: StartDoc) => invocation(served().get(start.engine)!, start, {}, {
     continued: false, home: "/h", system: "/s", conversationDir: "/conv" });
 
   it("gives Codex's key run the door through its own model provider, and no sign-in run any",
