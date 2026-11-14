@@ -72,7 +72,7 @@
     },
     "sandbox/workerd": {
       "slowest_ms": 926,
-      "test": "sandbox/test/sandbox.test.ts > cancel, status and release reaps an idle sandbox whose release's pause did not land (E2B busy)"
+      "test": "sandbox/test/sandbox.test.ts > cancel and release reaps an idle sandbox whose release's pause did not land (E2B busy)"
     },
     "sources/guards": {
       "slowest_ms": 259,

@@ -162,7 +162,7 @@ export interface LiveLease {
   readonly signins?: readonly string[];
 }
 
-/** A live run, and the lease it runs under: what a sandbox cancel names. */
+/** A live run, and the lease it runs under. */
 export type LiveRun = {
   readonly run: string;
   readonly lease_id: string;
@@ -1339,8 +1339,8 @@ export class Runs {
 
   /**
    * In a unit: a live run marked cancelled and its grant revoked at once, so its MCP and
-   * model calls are refused from this unit on and its streams end; the run and its lease,
-   * for the sandbox's cancel. It settles `failed` (`cancelled`) from the runner's end, or
+   * model calls are refused from this unit on and its streams end; the live run, for the
+   * sandbox's cancel. It settles `failed` (`cancelled`) from the runner's end, or
    * `unknown` when its heartbeat lapses. A waiting run is settled `failed` (`cancelled`) at
    * once: it never started.
    */
@@ -1804,7 +1804,7 @@ export const runsDoors = Object.freeze({
       return { schedule_id: found.schedule, cancelled: true };
     }
     if (found.live !== null) {
-      await o.launcher.cancel(found.live);
+      await o.launcher.cancel(found.live.run);
     }
     return o.door(() => fittedRun(o.runs.receipt(found.run, found.client)));
   },

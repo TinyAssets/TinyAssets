@@ -24,8 +24,6 @@
  * - `cancel`: stop the run's CLI (SIGTERM, then a kill after a grace; "Stop a run with
  *   SIGTERM", Claude's headless docs). The run settles from the runner's last report, or
  *   `unknown` if the runner is lost.
- * - `status`: whether the run's runner still runs, for slice S's lost-runner checks; the
- *   object's status doors read the run's receipt, never this.
  * - `release` (slice S): the lease ended, so the sandbox is paused unless a run started in
  *   it since (zero idle tail).
  * - `unwait` (slice S): the owner has no run waiting for a sandbox any more, so it leaves

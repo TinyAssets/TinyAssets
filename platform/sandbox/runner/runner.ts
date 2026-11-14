@@ -609,11 +609,7 @@ function adopt(): number {
   return OK;
 }
 
-// -- launch, cancel, status, state, renewal ------------------------------------------
-
-function status(run: string): number {
-  return living(jobState("run", run)) ? OK : NO;
-}
+// -- launch, cancel, state, renewal ---------------------------------------------------
 
 /**
  * Whether a run's CLI is between turns, as its events show: none running (its runner is
@@ -1499,7 +1495,6 @@ const HANDLERS: { readonly [C in Command]: Handler } = {
   [COMMAND.signinCheck]: async (args) => await signedIn(record(args[0] ?? "")) ? OK : NO,
   [COMMAND.launch]: (args) => launchJob("run", args[0] ?? ""),
   [COMMAND.cancel]: (args) => cancelJob("run", args[0] ?? ""),
-  [COMMAND.status]: (args) => status(args[0] ?? ""),
   [COMMAND.state]: () => stateCommand(),
   [COMMAND.quietWait]: (args) => quietWait(Number(args[0])),
   [COMMAND.renewWait]: (args) => renewWait(Number(args[0])),

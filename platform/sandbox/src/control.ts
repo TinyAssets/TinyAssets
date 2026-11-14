@@ -970,44 +970,25 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     });
   }
 
-  /** The sandbox a run was launched in, as E2B has it now (`#find`). */
-  async #launchedIn(run: string): Promise<{ found: SandboxInfo | null; handle: Box | null }> {
-    const at = this.#sql.exec<{ authority: string }>(
-      "SELECT authority FROM launched WHERE run = ?", run).toArray()[0];
-    return this.#find(at === undefined ? null : this.#row(at.authority));
-  }
-
-  async cancel(request: { run: string; lease_id: string }):
-      Promise<{ cancelled: boolean }> {
+  /**
+   * A run's CLI stopped in the sandbox it was launched in (`launched`), whichever lease that
+   * was: the run's id names its one job, and the owner's object, which alone calls, settles
+   * the run whatever this answers.
+   */
+  async cancel(request: { run: string }): Promise<{ cancelled: boolean }> {
     if (!RUN_ID.test(request.run)) {
       throw new Error("a cancel names its run");
     }
     return this.#serial(async () => {
-      const { handle } = await this.#launchedIn(request.run);
+      const at = this.#sql.exec<{ authority: string }>(
+        "SELECT authority FROM launched WHERE run = ?", request.run).toArray()[0];
+      const handle = at === undefined ? null : await this.#running(at.authority);
       if (handle === null) {
         return { cancelled: false };
       }
       // SIGTERM to the CLI, then a kill after its grace; the runner then syncs and ends.
       return { cancelled: (await this.#run(handle, [JOBS.run.cancel, request.run])).code
         === EXIT.ok };
-    });
-  }
-
-  async status(request: { run: string; lease_id: string }):
-      Promise<{ state: "running" | "exited" | "gone" }> {
-    if (!RUN_ID.test(request.run)) {
-      throw new Error("a status names its run");
-    }
-    return this.#serial(async () => {
-      const { found, handle } = await this.#launchedIn(request.run);
-      if (found === null) {
-        return { state: "gone" };
-      }
-      if (handle === null) {
-        return { state: "exited" };
-      }
-      return { state: (await this.#run(handle, [COMMAND.status, request.run])).code === EXIT.ok
-        ? "running" : "exited" };
     });
   }
 
