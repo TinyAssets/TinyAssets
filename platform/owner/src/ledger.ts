@@ -1829,7 +1829,9 @@ export class Ledger {
             seq: message.seq, message_id: message.message_id, room_id: message.room_id,
             sender_kind: message.sender_kind, sender_id: message.sender_id,
             parent_id: message.parent_id, chain_depth: message.chain_depth,
-            created_at: message.created_at, reply_s: null, body: null, integrity,
+            // A segment sealed before migration 9 holds no `reply_s`.
+            created_at: message.created_at, reply_s: message.reply_s ?? null, body: null,
+            integrity,
             recipients: [...recipients],
           } as ChainMail,
           text: integrity === "ok" ? window : null, unread: false,
@@ -1852,7 +1854,8 @@ export class Ledger {
         mail: {
           seq: row.seq, message_id: row.message_id, room_id: row.room_id,
           sender_kind: row.sender_kind, sender_id: row.sender_id, parent_id: row.parent_id,
-          chain_depth: row.chain_depth, created_at: row.created_at, reply_s: null, body: null,
+          chain_depth: row.chain_depth, created_at: row.created_at, reply_s: row.reply_s,
+          body: null,
           integrity,
           recipients: sql.exec<{ agent_id: string; state: string }>(
             "SELECT agent_id, state FROM ledger_recipients WHERE message_id = ? " +

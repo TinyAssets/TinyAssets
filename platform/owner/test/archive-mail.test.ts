@@ -565,6 +565,11 @@ describe("the archive lane", () => {
     const page = await reading;
     expect([page.messages.map((m) => [m.message_id, m.body]), page.more]).toEqual([
       chain.map((id, i) => [id, `chain ${i}`]), false]);
+    // Each reply's time to reply, hot or from its segment, is its row's, exact.
+    const again = (await r.stub.mailChain(r.bind(null), { message_id: chain[0]!, limit: 50 }))
+      .messages;
+    expect(again.map((m) => m.reply_s)).toEqual(again.map((m, i) => i === 0 ? null
+      : Math.round((m.created_at - again[i - 1]!.created_at) * 1000) / 1000));
   });
 
   it("reads a still chain while stragglers merge into its segment, replacing it, never " +
