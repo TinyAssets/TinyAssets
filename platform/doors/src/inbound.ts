@@ -23,7 +23,9 @@
  *
  * A route the directory does not hold is `404` (a capability URL) or a no-op (a shared
  * app's install no owner made); the directory's lag can only route a dead entry to the
- * object's own refusal (`binding_withdrawn`).
+ * object's own refusal (`binding_withdrawn`). A refusal, a closed gate's (`unavailable`)
+ * among them, is answered by its code's status and `Retry-After` (`refused.ts`); a shared
+ * app's, past its gates, is a `200`, so its failure budget with its vendor is kept.
  */
 import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
@@ -32,17 +34,19 @@ import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
 import type { InboundAnswer } from "../../contract/src/binding";
 import type { JsonBody } from "../../contract/src/owner";
-import { refusalOf } from "../../contract/src/refusal";
+import { Refusal } from "../../contract/src/refusal";
 
 import apps from "../shared-apps.json" with { type: "json" };
 
 import { bindInbound, type Bound, withTiers } from "./binder";
 import { INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN } from "./config";
 import type { DoorsEnv } from "./env";
-import { inboundGate, ordinaryAdmits, readControl } from "../../contract/src/control";
+import {
+  inboundGate, MAINTENANCE, ordinaryAdmits, readControl,
+} from "../../contract/src/control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { answer, boundedBytes, exactKeys, mediaType, randomToken } from "./kit";
-import { shownCode } from "./refused";
+import { answered, asInbound, asShared } from "./refused";
 import type { Sources } from "../../sources/src/schema";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -213,12 +217,16 @@ function delivered(shared: boolean, accepted: InboundAnswer): Response {
 }
 
 /** `POST /hooks/inbound/<token>`. */
-export async function serveInbound(request: Request, env: DoorsEnv, sources: Sources):
+export function serveInbound(request: Request, env: DoorsEnv, sources: Sources):
     Promise<Response> {
+  return answered(asInbound, () => inbound(request, env, sources));
+}
+
+async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promise<Response> {
   const read = await readControl(env.CONTROL);
   const gate = inboundGate(read);
   if (gate === "unavailable") {
-    return answer(503, { error: "unavailable" }, RETRY);
+    throw new Refusal("unavailable");
   }
   if (gate === "off") {
     return answer(404, { error: "not_found" });
@@ -249,24 +257,13 @@ export async function serveInbound(request: Request, env: DoorsEnv, sources: Sou
     return routed.shared ? answer(200, { state: "no_op" }) : answer(404, { error: "not_found" });
   }
   if (!ordinaryAdmits(gate, entry.o)) {
-    return answer(503, { error: "maintenance" }, RETRY);
+    throw new Refusal("unavailable", MAINTENANCE);
   }
   // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
   const { binding, stub } = withTiers(bindInbound(env, entry), read, sources);
-  try {
-    return delivered(routed.shared, await stub.inboundAccept(binding, {
-      event_id: routed.eventId, event_at: routed.eventAt, body, headers }));
-  } catch (error) {
-    const refused = refusalOf(error);
-    if (refused === null) {
-      throw error;
-    }
-    if (routed.shared) {
-      return answer(200, { state: "refused", error: shownCode(refused) });
-    }
-    return answer(refused.code === "inbound_proof_invalid" ? 401 : 404,
-                  { error: shownCode(refused) });
-  }
+  return answered(routed.shared ? asShared : asInbound, async () =>
+    delivered(routed.shared, await stub.inboundAccept(binding, {
+      event_id: routed.eventId, event_at: routed.eventAt, body, headers })));
 }
 
 /**

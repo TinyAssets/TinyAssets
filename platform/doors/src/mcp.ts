@@ -34,32 +34,26 @@ import {
 import { resultText } from "./answers";
 import type { Bound } from "./binder";
 import { MCP_BODY_MAX } from "../../contract/src/limits";
-import { refusalOf } from "../../contract/src/refusal";
 
 import type { DoorsEnv } from "./env";
 import { serveEvents } from "./events";
 import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "./instructions";
-import { refusalResponse } from "./refused";
+import { answered, asJson, asTool } from "./refused";
 import { type ProfileName, type Tool, toolsNamed } from "../../contract/src/doors";
 import { callDoor } from "./tools";
 
 const SERVER_INFO = Object.freeze({ name: "tinyassets", version: "1.0.0" });
 
 async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallToolResult> {
-  let result: unknown;
   try {
-    result = await callDoor(bound.stub, bound.binding, tool.door, args);
+    return await answered(asTool, async () => ({ content: [{ type: "text", text: resultText(
+      tool.name, await callDoor(bound.stub, bound.binding, tool.door, args)) }] }));
   } catch (error) {
-    const refused = refusalOf(error);
-    if (refused === null) {
-      // A bug, never a refusal: reported here in full, and to the client without its
-      // detail (the SDK answers every thrown error as the tool's error result).
-      console.error(`the ${tool.name} tool failed`, error);
-      throw new Error("internal error");
-    }
-    return { isError: true, content: [{ type: "text", text: refused.message }] };
+    // A bug, never a refusal: reported here in full, and to the client without its detail
+    // (the SDK answers every thrown error as the tool's error result).
+    console.error(`the ${tool.name} tool failed`, error);
+    throw new Error("internal error");
   }
-  return { content: [{ type: "text", text: resultText(tool.name, result) }] };
 }
 
 /**
@@ -87,32 +81,20 @@ function server(bound: Bound, tools: readonly Tool[], env: DoorsEnv,
   return mcp;
 }
 
-/**
- * The profile and tools the object serves this caller (`toolProfile`, from its grant or its
- * run), or the object's refusal as the answer, with its reason.
- */
+/** The profile and tools the object serves this caller (`toolProfile`: its grant or its run). */
 export async function profileOf(bound: Bound):
-    Promise<{ profile: ProfileName; tools: readonly Tool[] } | Response> {
-  try {
-    const { profile, tools } = await bound.stub.toolProfile(bound.binding);
-    return { profile, tools: toolsNamed(tools) };
-  } catch (error) {
-    const refused = refusalOf(error);
-    if (refused === null) {
-      throw error;
-    }
-    return refusalResponse(refused);
-  }
+    Promise<{ profile: ProfileName; tools: readonly Tool[] }> {
+  const { profile, tools } = await bound.stub.toolProfile(bound.binding);
+  return { profile, tools: toolsNamed(tools) };
 }
 
-export async function serveMcp(request: Request, bound: Bound, env: DoorsEnv):
-    Promise<Response> {
-  const got = await profileOf(bound);
-  if (got instanceof Response) {
-    return got;
-  }
-  const instructions = got.profile === "run" ? RUN_INSTRUCTIONS : CLIENT_INSTRUCTIONS;
-  return createMcpHandler(() => server(bound, got.tools, env, instructions), {
-    legacy: "stateless", responseMode: "auto", maxRequestBodySize: MCP_BODY_MAX,
-  }).fetch(request);
+/** An MCP request, or the object's refusal of the caller as JSON, with its reason. */
+export function serveMcp(request: Request, bound: Bound, env: DoorsEnv): Promise<Response> {
+  return answered(asJson, async () => {
+    const got = await profileOf(bound);
+    const instructions = got.profile === "run" ? RUN_INSTRUCTIONS : CLIENT_INSTRUCTIONS;
+    return createMcpHandler(() => server(bound, got.tools, env, instructions), {
+      legacy: "stateless", responseMode: "auto", maxRequestBodySize: MCP_BODY_MAX,
+    }).fetch(request);
+  });
 }

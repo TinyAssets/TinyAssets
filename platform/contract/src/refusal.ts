@@ -58,8 +58,9 @@ export const REFUSALS = Object.freeze({
   agent_undefined: REFUSED,
   archive_changed: REFUSED,
   archive_full: REFUSED,
-  binding_not_configured: REFUSED,
-  binding_withdrawn: REFUSED,
+  // An inbound binding never made, or withdrawn: 404, as the doors answer a route never made.
+  binding_not_configured: Object.freeze({ status: 404 }),
+  binding_withdrawn: Object.freeze({ status: 404 }),
   code_mode_off: REFUSED,
   conflict: REFUSED,
   conversation_busy: REFUSED,
@@ -76,7 +77,8 @@ export const REFUSALS = Object.freeze({
   file_index_full: Object.freeze({ status: 507 }),
   file_quota: REFUSED,
   file_share: REFUSED,
-  inbound_proof_invalid: REFUSED,
+  // An inbound sender whose proof does not verify.
+  inbound_proof_invalid: Object.freeze({ status: 401 }),
   install_proof_required: REFUSED,
   ledger_agents_full: REFUSED,
   ledger_full: REFUSED,

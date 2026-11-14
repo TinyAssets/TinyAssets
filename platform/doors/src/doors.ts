@@ -52,6 +52,7 @@ import { plain } from "./kit";
 import { serveMcp } from "./mcp";
 import { authorizationServer, mcpResource } from "./oauth";
 import { appPath, servePage } from "./pages";
+import { answered, asJson } from "./refused";
 import { OWNER_SURFACE, withoutCookie } from "./session";
 import type { Sources } from "../../sources/src/schema";
 import type { Upstream } from "./upstream";
@@ -78,9 +79,9 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   }
   return mcpResource(async (req, environment, token) => {
     const bound = await bindMcp(environment, token);
-    const read = await outsideRead(environment, bound.binding.owner);
-    return read instanceof Response ? read : serveMcp(req, withTiers(bound, read, sources),
-                                                      environment);
+    return answered(asJson, async () => serveMcp(
+      req, withTiers(bound, await outsideRead(environment, bound.binding.owner), sources),
+      environment));
   }).fetch(request, env, ctx);
 }
 
