@@ -1653,8 +1653,7 @@ describe("prepare, at the sandbox's real paths", () => {
   // GitHub's `ubuntu-26.04` image (tens of GB of toolchains in /usr): 8.3 s with the tree
   // cached, 35-71 s cold, 144-147 s cold with other walks beside it (runs 42652506363,
   // 42654769214, 42658221560, 42670631102). The tests make no two walks at once (the host's
-  // other walk is the next describe's, in this file), so the large class's budget is set from
-  // the worst lone walk, 71 s (`ci/budgets.json`).
+  // other walk is the next describe's, in this file).
   it("pins the resolvers, hides /proc, leaves nothing writable, lets no one but root sudo, " +
      "and keeps only its own runner", { tags: ["large"] }, () => {
     const hostSudoers = readFileSync("/etc/sudoers", "utf8");
