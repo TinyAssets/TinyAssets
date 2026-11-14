@@ -127,15 +127,3 @@ export async function gated() {
 }
 
 export type Gated = Awaited<ReturnType<typeof gated>>;
-
-/** Wait until `check` holds. */
-export async function until(check: () => Promise<boolean> | boolean, what: string,
-                            tries = 500): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    if (await check()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`timed out waiting for ${what}`);
-}

@@ -195,6 +195,21 @@ export async function drainDue(stub: DurableObjectStub<OwnerDO>): Promise<void> 
   throw new Error("the due jobs did not run");
 }
 
+/**
+ * Wait until `check` holds: an event the test caused, or a record it reads, polled; the
+ * bound is a liveness bound only.
+ */
+export async function until(check: () => Promise<boolean> | boolean, what: string,
+                            tries = 500): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    if (await check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
 /** The object's physical alarm in seconds, as Lifecycle armed it, or null. */
 export function alarmOf(stub: DurableObjectStub<OwnerDO>): Promise<number | null> {
   return runInDurableObject(stub, async (_instance: OwnerDO, state) => {

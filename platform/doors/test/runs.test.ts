@@ -16,7 +16,7 @@ import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import type { Binding } from "../../contract/src/binding";
-import { TICKET_REFUSED } from "../../contract/src/socket-shape";
+import { SOCKET_VERSION, TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { RUN_INSTRUCTIONS } from "../src/instructions";
 import { profileNames } from "../../contract/src/doors";
@@ -408,6 +408,19 @@ async function until(check: () => boolean, what: string): Promise<void> {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+/**
+ * The frames `socket` was sent before a ping's pong: the object answers a ping on the
+ * socket's own line, after whatever it sent it first, so what has not come by then was
+ * never sent.
+ */
+async function sentBefore(socket: ReturnType<typeof frames>): Promise<Frame[]> {
+  const pongs = () => socket.frames.filter((frame) => "type" in frame && frame.type === "pong");
+  const asked = pongs().length;
+  socket.ws.send(JSON.stringify({ v: SOCKET_VERSION, type: "ping" }));
+  await until(() => pongs().length > asked, "the pong");
+  return socket.frames.filter((frame) => !("type" in frame && frame.type === "pong"));
+}
+
 describe("a run's live events", () => {
   it("reach a socket on the run's conversation, a late joiner its tail, never committed",
      async () => {
@@ -442,8 +455,7 @@ describe("a run's live events", () => {
     // Its tail went with its settle: a joiner now sees none of its frames.
     const after = frames(await socket(await ticketFor(app.access_token, run.conversation_id),
                                       run.conversation_id));
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(after.frames).toEqual([]);
+    expect(await sentBefore(after)).toEqual([]);
     after.ws.close(1000, "done");
     early.ws.close(1000, "done");
     late.ws.close(1000, "done");
@@ -510,8 +522,7 @@ describe("a run's live events", () => {
                                        second.conversation_id));
     await report(start!, { frames: [{ seq: 1, at: 1, event: { type: "result", result: "x" } }] });
     await until(() => mine.frames.length === 1, "the frame");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(theirs.frames).toEqual([]);
+    expect(await sentBefore(theirs)).toEqual([]);
     mine.ws.close(1000, "done");
     theirs.ws.close(1000, "done");
   });
@@ -550,7 +561,8 @@ describe("a run's live events", () => {
     expect(out.status).toBe(200);
     await until(() => open.closed() !== null, "the close");
     expect(open.closed()).toBe(4440);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The other's still answers on its own line, after anything the sign-out sent it.
+    expect(await sentBefore(kept)).toEqual([]);
     expect(kept.closed()).toBeNull();
     kept.ws.close(1000, "done");
     void who;

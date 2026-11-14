@@ -8,12 +8,12 @@
 import { createExecutionContext } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import { aliased, apiRules } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
-import { EGRESS_BODY_MAX } from "../../contract/src/limits";
+import { EGRESS_BODY_MAX, SLOT_WAIT_MS } from "../../contract/src/limits";
 import {
   GATEWAY_POOL_SLOTS, gatewaySlots, Hold, heldDeadlineMs, readHeld, Tokens,
 } from "../src/held";
@@ -190,14 +190,33 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     const stalled = new ReadableStream<Uint8Array>({ start(controller) {
       controller.enqueue(new TextEncoder().encode('{"model":"'));
     } });
-    const started = Date.now();
-    const answer = await egress.forward("alice", "c1", 1, blob, new Request(
-      "https://egress/v1/responses", { method: "POST", body: stalled,
-                                        headers: { "content-length": "100" } }),
-      granting(), new ReadableStream());
-    expect(await answer.response.json()).toMatchObject({ error: { code: "invalid_request" } });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(heldDeadlineMs(100) - 50);
-    expect(await outcome(answer)).toEqual({ state: "failed" });
+    // On the fake clock, once the body's first bytes hold their unit: refused at the
+    // sender's deadline, never before it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    let said: unknown;
+    let answer: Awaited<ReturnType<EgressGateway["forward"]>> | undefined;
+    try {
+      const asked = egress.forward("alice", "c1", 1, blob, new Request(
+        "https://egress/v1/responses", { method: "POST", body: stalled,
+                                          headers: { "content-length": "100" } }),
+        granting(), new ReadableStream()).then(async (answered) => {
+        answer = answered;
+        said = await answered.response.json();
+      });
+      // Polled on workerd's own timer: `vi.waitFor` would move the fake clock as it polls.
+      for (let tries = 0; tries < 500 && gatewaySlots().state().held === 0; tries++) {
+        await scheduler.wait(10);
+      }
+      expect(gatewaySlots().state().held).toBeGreaterThan(0);
+      await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 1);
+      expect(said).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(heldDeadlineMs(100) - SLOT_WAIT_MS + 1);
+      await asked;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(said).toMatchObject({ error: { code: "invalid_request" } });
+    expect(await outcome(answer!)).toEqual({ state: "failed" });
     expect(gatewaySlots().state().held).toBe(0);
   });
 

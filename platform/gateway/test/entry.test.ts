@@ -68,15 +68,19 @@ async function anthropicModel(): Promise<{ id: string }> {
   throw new Error("no metered Messages model in the catalog");
 }
 
-async function until(check: () => boolean): Promise<void> {
+async function until(check: () => boolean | Promise<boolean>): Promise<void> {
   for (let tries = 0; tries < 500; tries++) {
-    if (check()) {
+    if (await check()) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("timed out");
 }
+
+/** Once the provider has the request sent with `x-fake-id: id` (the fake records it). */
+const arrived = (id: string) => until(async () => (await (await fetch(
+  `https://status.test/cancelled?id=${id}`)).json() as { arrived: boolean }).arrived);
 
 async function rejected(run: () => Promise<unknown>): Promise<string> {
   const error = await run().then(() => undefined, (caught: unknown) => caught);
@@ -246,9 +250,9 @@ describe("the gateway Worker", () => {
     const model = await responsesModel();
     const cutStop = new IdentityTransformStream();
     const cut = egress.forward("alice", "c1", 1, blob, posted("/v1/responses", JSON.stringify({
-      model: model.id, input: "hi", stream: true }), { "x-fake-mode": "hang" }),
-      granting(), cutStop.readable);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+      model: model.id, input: "hi", stream: true }),
+      { "x-fake-mode": "hang", "x-fake-id": "cut-metered" }), granting(), cutStop.readable);
+    await arrived("cut-metered");
     await cutStop.writable.getWriter().close();
     expect(await outcome(await cut)).toEqual({ state: "unknown" });
     // A priority call is priced as pi-ai prices it, above the standard call's price.
@@ -525,7 +529,7 @@ describe("the gateway Worker", () => {
     const whole = JSON.stringify({ model: model.id,
                                    input: `${"x".repeat(15 * 1024 * 1024 - 300)}é` });
     const first = egress.forward("alice", "c1", 1, blob, posted("/v1/responses", whole,
-      { "x-fake-mode": "held" }), async (call) => {
+      { "x-fake-mode": "held", "x-fake-id": "held-whole" }), async (call) => {
       await pending;
       return granting()(call);
     }, new ReadableStream());
@@ -543,7 +547,7 @@ describe("the gateway Worker", () => {
             await busy.response.json()])
       .toEqual([503, "1", { error: { code: "busy", message: "busy" } }]);
     // Reserved, the first uploads and lets its slots go at the upload's end: the waiting
-    // calls land while the provider still holds its answer.
+    // calls land while the provider still holds its answer, until the test lets it go.
     let answeredYet = false;
     void first.then(() => { answeredYet = true; });
     grant();
@@ -553,6 +557,7 @@ describe("the gateway Worker", () => {
     }
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
     expect(answeredYet).toBe(false);
+    await fetch("https://status.test/release?id=held-whole");
     const answered = await first;
     // The provider read the whole upload: the call as clamped, its output cap added.
     expect(await answered.response.json()).toEqual({ length: new TextEncoder().encode(

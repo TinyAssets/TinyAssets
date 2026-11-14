@@ -16,13 +16,14 @@ import {
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { Lifecycle } from "agents/lifecycle";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_ONLY, PLATFORM_RESERVED, tombstoned, writeTombstone,
 } from "../src/admission";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
+import { Erasure } from "../src/erase";
 import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS } from "../src/erasure";
 import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
@@ -31,11 +32,13 @@ import { OwnerDO } from "../src/owner-do";
 import { doorTable } from "../../contract/src/doors";
 import {
   eraseBegun, erasedWhole, erasuresSent, finished, outsideConfirmed, pastGrace, tables,
-  until, wipedWhole,
+  wipedWhole,
 } from "./erasure-support";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { later, recorder } from "./runs-support";
-import { admittedOwner, alarmOf, failure, gateFor, sqlIn, storesOn, TIERS } from "./support";
+import {
+  admittedOwner, alarmOf, failure, gateFor, sqlIn, storesOn, TIERS, until,
+} from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -350,14 +353,19 @@ describe("the owner's erasure", () => {
     expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
     await until(() => fault.failed() === 1, "the first attempt's failure");
     fault.undo();
-    // Within its interval, a refused door resumes nothing.
+    // Within its interval, a refused door begins no attempt. The object runs in this isolate,
+    // so its attempts are seen here, and a door's resume begins one before the door answers
+    // (`Erasure.resume`'s microtask): the count is whole once the refusal is back.
+    const attempts = vi.spyOn(Erasure.prototype, "erase");
+    onTestFinished(() => attempts.mockRestore());
     expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
-    await sleep(200);
+    expect(attempts).not.toHaveBeenCalled();
     expect(await tables(r.stub())).toContainEqual({ name: "collection_rows" });
     // An interval on, on the object's clock, the next refused door resumes it.
     later(ERASE_RETRY_MS / 1000 + 1);
     expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
     await until(() => wipedWhole(r.stub()), "the door's resume");
+    expect(attempts).toHaveBeenCalledTimes(1);
   });
 
   it("disables Lifecycle's alarm before it wipes the owner", async () => {

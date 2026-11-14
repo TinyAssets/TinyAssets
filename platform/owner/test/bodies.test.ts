@@ -8,13 +8,13 @@ import { createHash } from "node:crypto";
 
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 
 import { refusalOf } from "../../contract/src/refusal";
 import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { LIMITS } from "../src/collections";
-import { PLACE_TTL_S } from "../src/files";
+import { Files, PLACE_TTL_S } from "../src/files";
 import { GC_GRACE_S, INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { GRANT_LIMITS, scopes } from "../src/grants";
 import { MAX_BODY_BYTES } from "../src/ledger";
@@ -26,6 +26,7 @@ import { MUSE, rig, signedIn } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import {
   admittedOwner, failure, ownerObject, setFiles, sqlIn, starterSeed, storesOn, text, TIERS,
+  until,
 } from "./support";
 
 afterEach(() => {
@@ -425,9 +426,14 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     expect(await sqlIn(stub, "SELECT state FROM file_chunks WHERE sha256 = ?", sha(LARGE)))
       .toEqual([{ state: "garbage" }]);
     await sqlIn(stub, "UPDATE file_chunks SET state = 'deleting' WHERE sha256 = ?", sha(LARGE));
+    // The object runs in this isolate: its uploads' begins are seen here, each refusal too.
+    const begins = vi.spyOn(Files.prototype, "begin");
+    onTestFinished(() => begins.mockRestore());
+    const refused = () => begins.mock.results.filter((result) => result.type === "throw"
+      && (result.value as { code?: string }).code === "chunk_deleting").length;
     const again = put("b");
-    // The delete lands while the write waits; the write then begins again and lands.
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    // The delete lands once the write was refused and waits; it then begins again and lands.
+    await until(() => refused() > 0, "the write's refusal");
     await sqlIn(stub, "DELETE FROM file_chunks WHERE state = 'deleting'");
     // A new key goes on past the revision a's delete gave (`revision_floor`).
     expect(await again).toMatchObject({ row: { revision: 3 } });

@@ -497,10 +497,17 @@ describe("L7: the provider's pins", () => {
     const before = (await oauth.listUserGrants(alice)).items[0]!;
     expect(before.expiresAt!).toBeGreaterThanOrEqual(exchanging + 30 * 86_400);
     expect(before.expiresAt!).toBeLessThanOrEqual(exchanged + 30 * 86_400);
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
-    expect((await refresh(client, issued.refresh_token)).status).toBe(200);
+    // A day on, on the fake clock (the provider runs in this isolate): the refresh slides
+    // the grant's expiry that day on.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime((exchanged + 86_400) * 1000);
+      expect((await refresh(client, issued.refresh_token)).status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
     const after = (await oauth.listUserGrants(alice)).items[0]!;
-    expect(after.expiresAt!).toBeGreaterThan(before.expiresAt!);
+    expect(after.expiresAt!).toBeGreaterThanOrEqual(before.expiresAt! + 86_400);
   });
 });
 

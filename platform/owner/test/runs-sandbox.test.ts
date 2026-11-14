@@ -16,7 +16,7 @@ import { SANDBOX_WAITING } from "../../contract/src/sandbox";
 import { gated } from "./gateway-support";
 import { defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf,
          TIERS } from "./runs-support";
-import { drainDue } from "./support";
+import { drainDue, until } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
@@ -70,7 +70,7 @@ describe("a lease that ends", () => {
     const start = await startOf(r.stub, run.run_id);
     expect((await recorder(r.stub)).releases).toEqual([]);
     await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(async () => (await recorder(r.stub)).releases.length > 0, "the release");
     expect((await recorder(r.stub)).releases).toEqual([{ lease_id: start.lease.lease_id }]);
   });
 });

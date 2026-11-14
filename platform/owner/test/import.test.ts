@@ -26,9 +26,9 @@ import type { OwnerDO } from "../src/owner-do";
 import {
   DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, policyDigest, type PolicyDocument,
 } from "../../contract/src/policy-document";
-import { erasuresSent, until } from "./erasure-support";
+import { erasuresSent } from "./erasure-support";
 import { recorder } from "./runs-support";
-import { failure, gateFor, spaceOf, TIERS } from "./support";
+import { failure, gateFor, spaceOf, TIERS, until } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const BUNDLE = "b".repeat(64);
