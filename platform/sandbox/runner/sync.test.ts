@@ -8,9 +8,10 @@
  * - an upload given up (its file changed mid-sync) is aborted at once;
  * - the sync-ignore never hides itself, and its defaults never stop a path already kept;
  * - lines past the matcher's ceilings keep their files syncing, and are said (the matcher
- *   itself, as git reads a .gitignore, is `sync-ignore.test.ts`);
+ *   itself, as git reads a .gitignore, is `contract/guards/sync-ignore.test.ts`);
  * - memory stays bounded both ways: sync-in of a file larger than the sandbox's memory, and
- *   sync-out over many paths.
+ *   sync-out over many paths; the matcher's, at `LIST_BYTES` of any class, within what the
+ *   sandbox's heap leaves beside the agent (`sizing.ts`).
  */
 import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync,
          writeFileSync } from "node:fs";
@@ -26,11 +27,11 @@ import { runInNewContext } from "node:vm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import {
-  AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, SYNC_IGNORE,
-  wildcard,
+  AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SYNC_IGNORE, wildcard,
 } from "../../contract/src/sync-ignore";
 import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX }
   from "../../contract/src/limits";
+import { AGENT_PEAK, HEAP_PER_LIST_BYTE, SANDBOX_HEAP } from "./sizing";
 import { openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
 
 /** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
@@ -662,6 +663,65 @@ describe("the engines' sessions in the workspace", () => {
       : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
     expect(sent.filter((path) => path !== SYNC_IGNORE))
       .toEqual(["/workspace/notes/.sessions/kept.md"]);
+  });
+});
+
+describe("the matcher's memory in the sync agent's heap", () => {
+  // `gc` for this test alone, so a list's heap is read after the garbage of its making.
+  setFlagsFromString("--expose-gc");
+  const gc = runInNewContext("gc") as () => void;
+  // Heads the lines share, and heads that diverge (a trie's and Aho–Corasick's worst, R7-3).
+  const head = (i: number) => (Math.imul(i + 1, 2654435761) >>> 0).toString(36);
+  const shapes: Record<string, (i: number) => string> = {
+    literalName: (i) => `name-${i.toString(36)}-xxxxxxxx`,
+    literalPath: (i) => `dir/${i.toString(36)}/name-xxxx`,
+    suffix: (i) => `*.ext-${i.toString(36)}-xxxx`,
+    prefix: (i) => `pre-${i.toString(36)}-xxxx*`,
+    pathPrefix: (i) => `dir/${i.toString(36)}/x*`,
+    anywhere: (i) => `**/dir/${i.toString(36)}/x`,
+    automaton: (i) => `*${i.toString(36)}?x*y`,
+    negated: (i) => `!name-${i.toString(36)}-xxxx`,
+    literalNameDiverging: (i) => `${head(i)}${i.toString(36)}`,
+    literalPathDiverging: (i) => `${head(i)}/${i.toString(36)}`,
+    suffixDiverging: (i) => `*${head(i)}${i.toString(36)}`,
+    prefixDiverging: (i) => `${head(i)}${i.toString(36)}*`,
+    pathPrefixDiverging: (i) => `${head(i)}/${i.toString(36)}*`,
+    anywhereDiverging: (i) => `**/${head(i)}/${i.toString(36)}`,
+  };
+
+  it("holds, at `LIST_BYTES` of any class (each measured at a quarter of it, a list byte's " +
+     "heap), what the sandbox's heap leaves beside the agent",
+     { tags: ["large"] }, () => {
+    expect(LIST_BYTES * HEAP_PER_LIST_BYTE).toBeLessThanOrEqual(SANDBOX_HEAP - AGENT_PEAK);
+    const used = () => process.memoryUsage().heapUsed + process.memoryUsage().arrayBuffers;
+    // Two full collections settle what a collection leaves for the next (weak maps, the
+    // code a first call compiles), so a sample is the matcher's own heap.
+    const settled = () => {
+      gc();
+      gc();
+      return used();
+    };
+    for (const [label, shape] of Object.entries(shapes)) {
+      // The least of three samples: a sample is the matcher's heap plus whatever else the
+      // process held for a moment (its own lazily made structures, measured once in a
+      // whole-suite run at 53 against 45 alone); the least is the matcher's own, the bound
+      // unchanged.
+      let perByte = Number.POSITIVE_INFINITY;
+      for (let sample = 0; sample < 3; sample++) {
+        const base = settled();
+        const lines: string[] = [];
+        let bytes = 0;
+        for (let i = 0; bytes < LIST_BYTES / 4; i++) {
+          lines.push(shape(i));
+          bytes += shape(i).length + 1;
+        }
+        const matcher = ignoredBy(lines);
+        matcher("a/b.c");
+        perByte = Math.min(perByte, (settled() - base) / bytes);
+        expect(lines.length + (typeof matcher === "function" ? 0 : 1)).toBeGreaterThan(0);
+      }
+      expect(perByte, label).toBeLessThanOrEqual(HEAP_PER_LIST_BYTE);
+    }
   });
 });
 
