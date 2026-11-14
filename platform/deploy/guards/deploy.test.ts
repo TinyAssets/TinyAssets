@@ -2868,13 +2868,30 @@ describe("the operator path's modes", () => {
 const FROM = `${"a".repeat(32)}/${"b".repeat(16)}`;
 
 describe("mode restore", () => {
-  /** The doors as a restore's ops find them: begun, two steps, done, then admitted. */
-  const restoring = (failed = false) => {
+  const FRESH = "c".repeat(16);
+  const CONFIRMED = `wipe-user_alice-${FRESH}`;
+  /**
+   * The doors as a restore's ops find them, for an owner whose object stands as `source`
+   * says: pinned and its present state written on the second pin, wiped, begun, two steps,
+   * done, then admitted.
+   */
+  const restoring = (source: { state: string; restore: unknown }, failed = false) => {
     let steps = 0;
+    let pins = 0;
     return (message: OperatorMessage) => {
       switch (message.op) {
+        case "restore.pin":
+          pins++;
+          return { result: { step: "pinned", namespace: "a".repeat(32), gen: "b".repeat(16),
+                             fresh: FRESH, written: pins > 1,
+                             confirm: pins > 1 ? CONFIRMED : null } };
+        case "restore.wipe":
+          return { result: { step: "wiped", namespace: "a".repeat(32), gen: "b".repeat(16),
+                             fresh: FRESH, written: true, confirm: null } };
+        case "restore.release":
+          return { result: { released: true } };
         case "restore.begin":
-          return { result: { step: "stage", done: false } };
+          return { result: { step: "index", done: false } };
         case "restore.step":
           steps++;
           return { result: steps < 2 ? { step: "apply", done: false }
@@ -2884,41 +2901,89 @@ describe("mode restore", () => {
         case "owner.admit":
           return { result: { state: "admitted", reasons: [] } };
         default:
-          return { result: { namespace: "a".repeat(32), generations: [], state: "admitted",
-                             restore: null } };
+          return { result: { namespace: "a".repeat(32), generations: [], ...source } };
       }
     };
   };
+  const LOST = { state: "pending", restore: null };
+  const LIVE = { state: "admitted", restore: null };
+  const flags = ["--owner", "user_alice", "--generation", FROM];
+  const ops = (w: ReturnType<typeof world>) =>
+    w.sent.map(({ message }) => [message.op, message.args]);
 
-  it("plans the restore and what the owner loses; with --yes begins it, steps it until done " +
-     "and admits the owner, each op through the operator channel", async () => {
-    const flags = ["--owner", "user_alice", "--generation", FROM];
+  it("plans the restore and what the owner loses; with --yes, into a lost owner's empty " +
+     "object, begins it, steps it until done and admits the owner", async () => {
     const planned = world({ held: true });
     expect((await runMode(planned, "restore", ["--public", ...flags], PUBLIC)).plan).toEqual([
       `restore user_alice from generation ${"b".repeat(16)} of namespace ${"a".repeat(32)}, ` +
-      "into its own object only while it is pending and empty, then admit it, through the " +
-      `operator channel: ${RESTORE_LOSES}`]);
+      "into its own object only while it is pending and empty (a live owner held first, its " +
+      "present state written as a fresh generation, and its object wiped once --confirm " +
+      "names that generation), then admit it, through the operator channel: " +
+      RESTORE_LOSES]);
     expect(planned.sent).toEqual([]);
-    const w = world({ held: true, doors: restoring() });
+    const w = world({ held: true, doors: restoring(LOST) });
     const work = await runMode(w, "restore", ["--yes", ...flags]);
-    expect(w.sent.map(({ message }) => [message.op, message.args])).toEqual([
+    expect(ops(w)).toEqual([["restore.source", {}],
       ["restore.begin", { namespace: "a".repeat(32), gen: "b".repeat(16) }],
       ["restore.step", {}], ["restore.step", {}], ["owner.admit", {}]]);
     expect(work.plan).toContain(`restored user_alice from ${"b".repeat(16)}: 12 rows, 3 chunks ` +
                                 "read back, the owner admitted as at the generation");
   });
 
-  it("asks the owner's source with no --generation, and stops a failed restore unadmitted",
-     async () => {
-    const w = world({ held: true, doors: restoring() });
-    await runMode(w, "restore", ["--yes", "--owner", "user_alice"]);
-    expect(w.sent.map(({ message }) => message.op)).toEqual(["restore.source"]);
-    const failing = world({ held: true, doors: restoring(true) });
-    await expect(runMode(failing, "restore", ["--yes", "--owner", "user_alice", "--generation",
-                                              FROM])).rejects.toThrow(
+  it("into a live owner: pins until its present state is written, then stops and names " +
+     "the words; with them, wipes, restores and admits, in order", async () => {
+    const held = world({ held: true, doors: restoring(LIVE) });
+    const stopped = await runMode(held, "restore", ["--yes", ...flags]);
+    expect(ops(held)).toEqual([["restore.source", {}], ["restore.pin", { gen: "b".repeat(16) }],
+                               ["restore.pin", { gen: "b".repeat(16) }]]);
+    expect(stopped.plan.join("\n")).toContain(`run again with --confirm ${CONFIRMED}; to give ` +
+                                              "the pin up, --confirm release-user_alice");
+    const w = world({ held: true, doors: restoring(LIVE) });
+    await runMode(w, "restore", ["--yes", ...flags, "--confirm", CONFIRMED]);
+    expect(ops(w)).toEqual([["restore.source", {}], ["restore.pin", { gen: "b".repeat(16) }],
+      ["restore.pin", { gen: "b".repeat(16) }], ["restore.wipe", { confirm: CONFIRMED }],
+      ["restore.begin", { namespace: "a".repeat(32), gen: "b".repeat(16) }],
+      ["restore.step", {}], ["restore.step", {}], ["owner.admit", {}]]);
+  });
+
+  it("stops on words that are not the pin's, on a refusal, and on a failed restore, " +
+     "never wiping or admitting past it", async () => {
+    const wrong = world({ held: true, doors: restoring(LIVE) });
+    await expect(runMode(wrong, "restore", ["--yes", ...flags, "--confirm",
+                                            "wipe-user_alice-x"])).rejects.toThrow(
+      `--confirm wipe-user_alice-x is not the wipe's words for user_alice: ${CONFIRMED}`);
+    expect(ops(wrong).map(([op]) => op)).not.toContain("restore.wipe");
+    const refusing = world({ held: true, doors: (message: OperatorMessage) =>
+      message.op === "restore.pin"
+        ? { refused: { code: "refused", message: "the pin is refused" } }
+        : restoring(LIVE)(message) });
+    await expect(runMode(refusing, "restore", ["--yes", ...flags, "--confirm", CONFIRMED]))
+      .rejects.toThrow("the doors refused restore.pin for user_alice (refused): the pin is " +
+                       "refused");
+    expect(ops(refusing).map(([op]) => op)).toEqual(["restore.source", "restore.pin"]);
+    const failing = world({ held: true, doors: restoring(LOST, true) });
+    await expect(runMode(failing, "restore", ["--yes", ...flags])).rejects.toThrow(
       "the restore of user_alice failed its check, and the owner is not admitted: board's row " +
       "t1 differs");
-    expect(failing.sent.map(({ message }) => message.op)).not.toContain("owner.admit");
+    expect(ops(failing).map(([op]) => op)).not.toContain("owner.admit");
+  });
+
+  it("asks the owner's source with no --generation, gives a pin up with release, and only " +
+     "admits an owner restored from that generation already", async () => {
+    const w = world({ held: true, doors: restoring(LIVE) });
+    await runMode(w, "restore", ["--yes", "--owner", "user_alice"]);
+    expect(ops(w)).toEqual([["restore.source", {}]]);
+    const released = world({ held: true, doors: restoring(LIVE) });
+    await runMode(released, "restore", ["--yes", "--owner", "user_alice", "--confirm",
+                                        "release-user_alice"]);
+    expect(ops(released)).toEqual([["restore.release", {}]]);
+    await expect(runMode(world({ held: true }), "restore", ["--yes", "--owner", "user_alice",
+                                                            "--confirm", CONFIRMED]))
+      .rejects.toThrow(`--confirm ${CONFIRMED} with no --generation is release-user_alice`);
+    const done = world({ held: true, doors: restoring({ state: "admitted", restore: {
+      step: "done", gen: "b".repeat(16), fresh: FRESH } }) });
+    await runMode(done, "restore", ["--yes", ...flags]);
+    expect(ops(done)).toEqual([["restore.source", {}], ["owner.admit", {}]]);
   });
 
   it("takes a generation only as <namespace>/<gen>, and only for mode restore", () => {
@@ -2932,6 +2997,10 @@ describe("mode restore", () => {
     expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", "admit",
                         "--generation", FROM], ENV, w.io))
       .toThrow("mode owner takes no --generation: it is mode restore's");
+    expect(() => parse(["--mode", "restore", "--owner", "user_alice", "--confirm", "yes"],
+                       ENV, w.io)).toThrow(
+      "--confirm is the words that confirm a restore's wipe, wipe-<owner>-<gen> as " +
+      "restore.pin answers them, or give its pin up, release-<owner>");
   });
 });
 
@@ -3077,7 +3146,7 @@ describe("platform-deploy.yml", () => {
   const PLAN = ["--plan", `${RUNNER_TEMP}/deploy-plan.json`];
   /** The dispatch's inputs, each handed to the kit as its option of the same name. */
   const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "SET", "REPLACE", "OWNER", "ACT",
-                    "GENERATION"];
+                    "GENERATION", "CONFIRM"];
   const dispatched = (inputs: Record<string, string>) =>
     DISPATCH.flatMap((name) => [`--${name.toLowerCase()}`, inputs[name]!]);
   /** `mode` dispatched with what it needs and nothing else. */
@@ -3087,16 +3156,18 @@ describe("platform-deploy.yml", () => {
   const OPTIONS: Record<string, string>[] = [{ ...dispatchOf("dark"), ROTATE: "ROUTING_MAC_KEY", MIGRATE: "owner" },
                    { ...dispatchOf("control"), SET: "outside=on canary+=user_bob",
                      REPLACE: JSON.stringify(DARK) },
-                   { ...dispatchOf("restore"), GENERATION: FROM }];
+                   { ...dispatchOf("restore"), GENERATION: FROM,
+                     CONFIRM: `wipe-user_alice-${"c".repeat(16)}` }];
   /** What the kit reads of a run's own options. */
   const ownOf = (run: ReturnType<typeof parse>) =>
     [run.record, run.edits.length, run.replace, run.owner, run.act?.op ?? null,
-     run.generation?.gen ?? null];
+     run.generation?.gen ?? null, run.confirm];
   const wanted = (inputs: Record<string, string>) =>
     [inputs["RECORD"] || null, inputs["SET"]!.split(" ").filter(Boolean).length,
      inputs["REPLACE"] ? JSON.parse(inputs["REPLACE"]) : undefined, inputs["OWNER"] || null,
      inputs["ACT"] ? `owner.${inputs["ACT"].split("=")[0]}` : null,
-     inputs["GENERATION"] ? inputs["GENERATION"].split("/")[1] : null];
+     inputs["GENERATION"] ? inputs["GENERATION"].split("/")[1] : null,
+     inputs["CONFIRM"] || null];
 
   it("plans in a job of its own, with no production secret, the chosen mode's plan", () => {
     expect(plan!.environment).toBeUndefined();

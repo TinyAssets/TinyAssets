@@ -385,6 +385,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] `restore.wipe`, a live owner brought to pending and empty for a restore, the
     generation to restore pinned first, since a fresh generation's finish prunes every older
     unpinned one (`r5r.md` item 14); and owner migration 10's pin PR (`r5r.md` item 4).
+  - [ ] Owner migration 11's pin PR, after `restore.wipe` merges (`r5w.md` item 9).
+  - [ ] A restore's kept generations' chunks kept from early collection: the files plane
+    collects early only garbage the newest generation does not name, so the fallback a
+    restore loads can lose a chunk and its restore retries its chunks step without end
+    (`r5w.md` item 11).
+  - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
+    proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
+    `facet-probe.md` Q8 never sampled it).
   - [ ] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
     (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, after lane O's T1c
     (`r3.md` item 9).

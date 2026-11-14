@@ -1127,6 +1127,23 @@
       "capability": null, "handler": "restore", "gate": "units", "args": "none"
     },
     {
+      "door": "restorePin", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "restore", "gate": "units",
+      "args": { "refused": "invalid restore request", "required": { "gen": {} }, "optional": {} }
+    },
+    {
+      "door": "restoreWipe", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "restore", "gate": "units",
+      "args": {
+        "refused": "invalid restore request", "required": { "confirm": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "restoreRelease", "class": "admission", "caller": "reserved",
+      "action": "admission", "capability": null, "handler": "restore", "gate": "units",
+      "args": "none"
+    },
+    {
       "door": "egressOpen", "class": "work", "caller": "egress", "capability": null,
       "handler": "egress", "gate": "units", "args": "loose"
     },

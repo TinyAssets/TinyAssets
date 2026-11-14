@@ -38,7 +38,7 @@ import type { DoorClass as TableClass } from "../../contract/src/doors";
 import { wiped } from "./erasure";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
-import { RESTORING, restoring } from "./restore";
+import { refuseRestoring } from "./restore";
 import { ADMISSION_TABLE } from "./schema";
 import type { TierName } from "../../contract/src/control";
 import { type AdmissionRequest, SUSPENSIONS } from "../../contract/src/owner";
@@ -224,9 +224,7 @@ export const admissionDoors = Object.freeze({
   async admissionSet(o: OwnerState, door: Door<AdmissionRequest>): Promise<Admission> {
     const set = await o.synced(() => {
       door.check();
-      if (restoring(o.storage)) {
-        throw new Refusal("refused", RESTORING);
-      }
+      refuseRestoring(o.storage);
       return setAdmission(o.storage, door.request);
     });
     if (set.state === "suspended") {

@@ -2261,4 +2261,22 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE owner_backups ADD COLUMN log_bytes INTEGER NOT NULL DEFAULT 0 CHECK " +
       "(log_bytes >= 0)",
   ]),
+  // 11 (lane R's wipe, `restore.ts`; `untangle-2026-11/r5w.md`): a restore's record begins
+  // at the pin, on a live owner, and holds through the wipe: two steps before `index`
+  // (`pinned`, the generation held and the owner's present state written; `wiped`, the object
+  // emptied for it), and the generation the pin wrote of the present state (`fresh`): the
+  // wipe's confirmation and its undo. The record made again with them, its row kept.
+  Object.freeze([
+    "CREATE TABLE owner_restore_next (only INTEGER PRIMARY KEY CHECK (only = 1), ns TEXT NOT " +
+      "NULL CHECK (length(ns) = 32 AND ns NOT GLOB '*[^0-9a-f]*'), gen TEXT NOT NULL CHECK " +
+      "(length(gen) = 16 AND gen NOT GLOB '*[^0-9a-f]*'), step TEXT NOT NULL CHECK (step IN " +
+      "('pinned', 'wiped', 'index', 'log', 'apply', 'check', 'chunks', 'clear', 'done', " +
+      "'failed')), at INTEGER NOT NULL CHECK (at >= 0), after TEXT, held TEXT, spans TEXT, " +
+      "failed TEXT, fresh TEXT CHECK (fresh IS NULL OR (length(fresh) = 16 AND fresh NOT GLOB " +
+      "'*[^0-9a-f]*')), CHECK ((step = 'failed') = (failed IS NOT NULL)))",
+    "INSERT INTO owner_restore_next (only, ns, gen, step, at, after, held, spans, failed) " +
+      "SELECT only, ns, gen, step, at, after, held, spans, failed FROM owner_restore",
+    "DROP TABLE owner_restore",
+    "ALTER TABLE owner_restore_next RENAME TO owner_restore",
+  ]),
 ]);

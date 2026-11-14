@@ -22,7 +22,7 @@ import { now } from "../src/config";
 import { putKey, putOwner, readKey, readOwner } from "../src/directory";
 import type { DoorsEnv } from "../src/env";
 import worker from "../src/index";
-import { doorsEnv, sqlIn } from "./support";
+import { appCallback, doorsEnv, serveFirstPartyDocument, sqlIn } from "./support";
 
 const RING = parseRing(doorsEnv.OPERATOR_KEYRING)!;
 const OTHER = parseRing(keyring())!;
@@ -369,5 +369,73 @@ describe("the operator's restore ops, on a real owner object", () => {
     expect(await asked(owner, "restore.step")).toMatchObject({
       result: { step: "done", done: true, keys: [key] } });
     expect(await readKey(doorsEnv, key)).toBeNull();
+  });
+});
+
+describe("an owner a restore holds, on a real owner object", () => {
+  const GEN = { namespace: "a".repeat(32), gen: "b".repeat(16) };
+  const FRESH = "c".repeat(16);
+  /** The error a sign-in's redirect back to the app carries, or null for a code. */
+  const signInError = async (owner: string) =>
+    new URL((await appCallback({ owner })).back.headers.get("Location")!).searchParams
+      .get("error");
+
+  it("answers a sign-in during a restore, and one after a failed restore, " +
+     "temporarily_unavailable: never a thrown bug", async () => {
+    serveFirstPartyDocument();
+    // An owner the directory holds no record of (R8's case, its account lost): its sign-in's
+    // admit meets the restore under way, and the directory is left without it.
+    const lost = fresh();
+    await sqlIn(lost, "INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
+                      "'index', 0)", GEN.namespace, GEN.gen);
+    expect(await signInError(lost)).toBe("temporarily_unavailable");
+    expect(await readOwner(doorsEnv, lost)).toBeNull();
+    // An owner signed up before, whose restore failed: its session's open meets it.
+    const known = fresh();
+    expect(await signInError(known)).toBeNull();
+    await sqlIn(known, "UPDATE owner_admission SET state = 'pending'");
+    await sqlIn(known, "INSERT INTO owner_restore (only, ns, gen, step, at, failed) VALUES " +
+                       "(1, ?, ?, 'failed', 0, 'x')", GEN.namespace, GEN.gen);
+    expect(await signInError(known)).toBe("temporarily_unavailable");
+  });
+
+  it("refuses a pin of a pending owner and a wipe with none pinned, and releases none as " +
+     "released; an erased owner's pin, wipe and release are refused", async () => {
+    const owner = fresh();
+    expect(refusedOf(await asked(owner, "restore.pin", { gen: GEN.gen }))).toEqual({
+      code: "refused", message: "the owner is pending: a pin holds a live owner, and a " +
+                                "pending one is restored into with none" });
+    expect(refusedOf(await asked(owner, "restore.wipe", { confirm: "x" }))).toEqual({
+      code: "refused", message: "no generation of this owner is pinned: restore.pin first" });
+    expect(await asked(owner, "restore.release")).toMatchObject({
+      result: { released: true } });
+    const erased = fresh();
+    await putOwner(doorsEnv, erased, { s: "erased", t: now() });
+    for (const [op, args] of [["restore.pin", { gen: GEN.gen }], ["restore.wipe",
+                              { confirm: "x" }], ["restore.release", {}]] as const) {
+      expect(refusedOf(await asked(erased, op, args))).toEqual({
+        code: "refused", message: "the owner is erased" });
+    }
+  });
+
+  it("answers a confirmed wipe on its redelivery: the wipe resets the object, and the " +
+     "record it left answers", async () => {
+    const owner = fresh();
+    await asked(owner, "owner.admit");
+    await sqlIn(owner, "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
+                       "bytes, s, schema, started_at, finished_at) VALUES (?, '20261114', " +
+                       "'done', 'ended', 0, '', 0, 1, 11, 1, 2)", FRESH);
+    await sqlIn(owner, "INSERT INTO owner_restore (only, ns, gen, step, at, fresh) VALUES " +
+                       "(1, ?, ?, 'pinned', 0, ?)", GEN.namespace, GEN.gen, FRESH);
+    const message = await sign(owner, "restore.wipe", { confirm: `wipe-${owner}-${FRESH}` });
+    const logged = logs();
+    expect(await deliver(message)).toEqual({ acked: 0, retried: 1 });
+    expect(logged()).toEqual(["an operator message failed; the queue tries again"]);
+    expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
+    expect(operatorAnswer((await held(message.ask)).answer, message)).toMatchObject({
+      result: { step: "wiped", namespace: GEN.namespace, gen: GEN.gen, fresh: FRESH } });
+    expect(await sqlIn(owner, "SELECT (SELECT state FROM owner_admission) AS state, (SELECT " +
+                              "count(*) FROM owner_backups) AS gens")).toEqual([
+      { state: "pending", gens: 0 }]);
   });
 });

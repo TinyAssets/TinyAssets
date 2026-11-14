@@ -364,8 +364,8 @@ describe("policy-boundary guard", () => {
     expect(guarded.filter((table) => literals.some((literal) => sqlNaming(table).test(literal))))
       .toEqual([]);
     expect(Object.keys(MODULES).filter((module) => importer(module).test(source))).toEqual([]);
-    expect(doorTable().filter((row) => row.handler === "restore")
-      .map((row) => row.caller)).toEqual(["reserved", "reserved", "reserved"]);
+    expect(new Set(doorTable().filter((row) => row.handler === "restore")
+      .map((row) => row.caller))).toEqual(new Set(["reserved"]));
     expect(sqlNaming("owner_keys").test('"SELECT key_id FROM owner_keys"')).toBe(true);
   });
 

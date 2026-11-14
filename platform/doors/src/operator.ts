@@ -30,7 +30,9 @@ import {
   type Refused,
 } from "../../contract/src/operator-message";
 import { parseRing } from "../../contract/src/envelope";
-import type { RestoreBeginRequest, TierRequest } from "../../contract/src/owner";
+import type {
+  RestoreBeginRequest, RestorePinRequest, RestoreWipeRequest, TierRequest,
+} from "../../contract/src/owner";
 import { refusalOf } from "../../contract/src/refusal";
 
 import { admit } from "./authorize";
@@ -83,6 +85,20 @@ const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
       await revokeAll(env, owner);
     }
     return step;
+  },
+  "restore.pin": (env, owner, args) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.restorePin(binding, args as unknown as RestorePinRequest);
+  },
+  // The wipe ends its own call with the object's reset: the queue's redelivery answers it,
+  // from the record the wipe left.
+  "restore.wipe": (env, owner, args) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.restoreWipe(binding, args as unknown as RestoreWipeRequest);
+  },
+  "restore.release": (env, owner) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.restoreRelease(binding);
   },
 });
 

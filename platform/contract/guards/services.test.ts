@@ -242,7 +242,7 @@ describe("the services' contracts", () => {
     expect(doors.map(([door, parameters, request]) => doorProblem(door, parameters, request))
       .filter((problem) => problem !== null)).toEqual([]);
     expect(doors.filter(([, , request]) => /^(?:Asked|Handed)</.test(request ?? "")).length)
-      .toBe(48);
+      .toBe(50);
     expect(doorProblem("grantRevoke", 2, "object"))
       .toBe('grantRevoke: takes object, not its row\'s fields (Asked<"grantRevoke"> or Handed)');
     expect(doorProblem("grantRevoke", 2, 'Asked<"grantForget">')).not.toBeNull();

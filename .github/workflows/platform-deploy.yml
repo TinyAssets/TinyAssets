@@ -37,8 +37,10 @@ name: Platform deploy (manual, founder-approved)
 # The operator path (deploy/operator.ts): `control` edits the control record
 # in KV itself (`set`, from `replace` in place of the live one), never through
 # the doors; `owner` asks the doors `act` for `owner` through the operator
-# channel; `restore` restores `owner` from `generation` through it, or with no
-# `generation` asks the owner's namespace and finished generations. Each shares
+# channel; `restore` restores `owner` from `generation` through it (a live
+# owner's object wiped only once `confirm` names the generation its pin wrote),
+# or with no `generation` asks the owner's namespace and finished generations
+# (`confirm` release-<owner> gives a pin up). Each shares
 # this file's concurrency group, so no operator run ever interleaves with a deploy.
 
 on:
@@ -90,6 +92,11 @@ on:
         required: false
         default: ''
         type: string
+      confirm:
+        description: 'restore: wipe-<owner>-<gen> as restore.pin answers it, or release-<owner>'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -116,6 +123,7 @@ jobs:
       OWNER: ${{ inputs.owner }}
       ACT: ${{ inputs.act }}
       GENERATION: ${{ inputs.generation }}
+      CONFIRM: ${{ inputs.confirm }}
     steps:
       - uses: actions/checkout@v4
 
@@ -133,7 +141,7 @@ jobs:
           --plan "${RUNNER_TEMP}/deploy-plan.json"
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
-          --generation "${GENERATION}"
+          --generation "${GENERATION}" --confirm "${CONFIRM}"
 
       # The plan the apply job is held to, kept by this run alone (a re-run of the plan job
       # writes it again).
@@ -210,6 +218,7 @@ jobs:
       OWNER: ${{ inputs.owner }}
       ACT: ${{ inputs.act }}
       GENERATION: ${{ inputs.generation }}
+      CONFIRM: ${{ inputs.confirm }}
     steps:
       - uses: actions/checkout@v4
 
@@ -234,4 +243,4 @@ jobs:
           --plan "${RUNNER_TEMP}/deploy-plan.json"
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
-          --generation "${GENERATION}"
+          --generation "${GENERATION}" --confirm "${CONFIRM}"
