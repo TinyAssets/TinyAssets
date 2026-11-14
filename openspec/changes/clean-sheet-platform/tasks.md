@@ -279,8 +279,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
     - V2 (#5543): `owner/src/egress.ts:266` `HINT`, and the three range builders.
     - D1: `ledger.ts:1252`'s `512` is `COMMAND_CENTER_MAX`.
-    - contract-copies: `ledger.ts` `count` is `checks.ts`'s `whole`, once `pages.ts`'s own
-      `whole` (a page's fit) is renamed (`contract-copies.md`; O4).
     - C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
     - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
     - C6: the owner's kernel debt, 8 SHA-256 uses and 43 `Date.now()` (`c6.md`; O4).

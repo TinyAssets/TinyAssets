@@ -4,7 +4,7 @@
 
 1. **The shape tests are `checks.ts`'s, everywhere they were copied.**
    - **D:** `doors/src/import/index.ts` `plain` (its own `object`, the staging bucket's read, is `staged`); `e2b-hooks.ts` `plain` and its inline `whole`; `inbound.ts`'s inline test; `oidc.ts` `whole`; and the doors kit's exported `exactKeys`, which was `keyed` to the letter, with its 16 calls in `app.ts`, `connect.ts`, `directory.ts`, `inbound.ts` and `operator.ts`.
-   - **O:** `owner/src/import.ts` `plain` and its sorted-key strings; `egress.ts` `plain(value, keys)`, ten calls as `keyed`; `connections.ts` `object` and `count` (a `whole`); `sandbox.ts` `started`'s key counts; `ledger.ts`'s two sorted-key checks; `owner/guards/config.test.ts` `object`.
+   - **O:** `owner/src/import.ts` `plain` and its sorted-key strings; `egress.ts` `plain(value, keys)`, ten calls as `keyed`; `connections.ts` `object` and `count` (a `whole`); `ledger.ts` `count` (a `whole`), with `pages.ts`'s own `whole` (a page's fit) renamed `asIs` (the review); `sandbox.ts` `started`'s key counts; `ledger.ts`'s two sorted-key checks; `owner/guards/config.test.ts` `object`.
    - **V:** `wake-records.ts`'s readers refuse in their own words through `keyed` and `whole` (the wrapper is `integer`, as binding's); `gateway/src/oauth.ts`'s inline `keyed`.
    - **I:** `import-message.ts` `whole` and its two sorted-key checks; `import/stage.ts` `plain` and its inline `keyed`; `ci/guards/cutover.test.ts` `plain` (the phases' ordered check stays: order is held there); `import/backup.ts`'s HEX64 and HEX32.
    - **S:** the E2B client's exported `object` (its importers `admin.ts` and the Worker's `e2b.ts` read `checks.ts`); `template/pair.ts`'s HEX64.
@@ -21,7 +21,6 @@
    - `contract/src/refusal.ts` `plainObject` and `ci/gate-worker.ts`'s inline test: C8's reasons (`c8.md` item 6) stand.
    - `doors/app/app.js:663` `"sandbox_waiting"`: the owner app's pages are browser modules the doors serve as files, with no build, and their layer may import only `doors/app/`. Nothing serves them a contract value.
    - `deploy/guards/rules.ts:9`, the deploy test's import of `doors/src/{config,oidc}.ts`: not a copy but B13's sign-in half (`tasks.md`'s B13 line, d2 B13), which puts the `UPSTREAM` record, `authorizeUrl` and the origins in the contract first. **Fix: `untangle/b13-signin`.**
-   - `owner/src/ledger.ts` `count` is `whole`, but the ledger imports `pages.ts`'s own `whole` (a page's fit), so one of the two is renamed first. **Fix: `untangle/o4`** (lane O, `tasks.md`).
    - `owner/src/schema.ts`'s trigger text `subscription_limit: 16` is a frozen migration's SQL.
    - `sandbox/src/control.ts`'s start codes are literals typed `StartCode`, held by the type.
    - Inline object tests in other files, and readers such as `files.ts`'s `whole` that refuse in their own words, are not helpers; the guard holds the helpers.

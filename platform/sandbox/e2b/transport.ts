@@ -18,8 +18,8 @@
  *   from keeps running (probed); the runner's own launch daemonizes anyway, so nothing relies
  *   on that.
  *
- * It imports nothing at run time, so Node's type stripping runs it in the deploy kit by its
- * own name. Every answer outside the documented shape fails loudly, never a guess.
+ * It imports only the contract, each by its own name, so Node's type stripping runs it in the
+ * deploy kit. Every answer outside the documented shape fails loudly, never a guess.
  */
 import { object } from "../../contract/src/checks.ts";
 import type { NetworkDocument } from "../../contract/src/sandbox.ts";

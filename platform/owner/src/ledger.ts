@@ -97,7 +97,7 @@ import type { Binding, Origin, Source } from "../../contract/src/binding";
 import { codePoints, isPrintable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 import { canonical } from "../../contract/src/canonical";
-import { keyed } from "../../contract/src/checks";
+import { keyed, whole } from "../../contract/src/checks";
 import { HEX16, HEX64, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
 
@@ -114,7 +114,7 @@ import {
 import type { OwnerStorage } from "./gate";
 import {
   agentsPage, bodied, contentsOf, type Cut, fitPage, headChars, heads, headWindow, INBOX_PART,
-  PAGE_BYTES, whole,
+  PAGE_BYTES, asIs,
 } from "./pages";
 import {
   bloomHas, bloomOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
@@ -702,11 +702,6 @@ function text(value: unknown, limit: number, what: string): string {
   return value;
 }
 
-function count(value: unknown, low: number, high: number): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= low
-    && value <= high;
-}
-
 /** A mail authority as kept with its message, or null; `universe` is its message's own. */
 function authorityOf(stored: string | null, universe: string): MailAuthority | null {
   if (stored === null) {
@@ -785,7 +780,7 @@ export function outcome(value: unknown): Outcome {
   if (!states.includes(given["state"] as string)
       || !keys.every((k) => ["state", "status", "retry_after", "reason", "accepted"].includes(k))
       || ("accepted" in given && (typeof given["accepted"] !== "boolean" || given["state"] !== "rate_limited"))
-      || ("status" in given && !count(given["status"], 100, 599))
+      || ("status" in given && !whole(given["status"], 100, 599))
       || ("retry_after" in given && given["retry_after"] !== null && typeof given["retry_after"] !== "number")
       || ("reason" in given && (typeof given["reason"] !== "string" || !REASON.test(given["reason"])))) {
     throw new Refusal("invalid", "invalid wake outcome");
@@ -1405,12 +1400,12 @@ export class Ledger {
       throw new Refusal("invalid", "agent_id is an agent id");
     }
     const { low: hourLow, high: hourHigh } = WAKE_SETTINGS.maxWakesPerHour;
-    if (maxWakesPerHour !== null && !count(maxWakesPerHour, hourLow, hourHigh)) {
+    if (maxWakesPerHour !== null && !whole(maxWakesPerHour, hourLow, hourHigh)) {
       throw new Refusal("invalid",
                         `max_wakes_per_hour is a whole number from ${hourLow}, or null for none`);
     }
     const { low: batchLow, high: batchHigh } = WAKE_SETTINGS.batchWindowS;
-    if (!count(batchWindowS, batchLow, batchHigh)) {
+    if (!whole(batchWindowS, batchLow, batchHigh)) {
       throw new Refusal("invalid", `batch_window_s is a whole number of seconds from ${batchLow}`);
     }
     return this.#storage.transactionSync(() => {
@@ -1793,8 +1788,8 @@ export class Ledger {
       root: string; messages: ChainMail[]; more: boolean; placed: string[]; first: string | null;
     } {
     const maxRead = LEDGER_LIMITS.maxRead;
-    if (typeof messageId !== "string" || !count(after, 0, Number.MAX_SAFE_INTEGER)
-        || !count(limit, 1, maxRead)) {
+    if (typeof messageId !== "string" || !whole(after, 0)
+        || !whole(limit, 1, maxRead)) {
       throw new Refusal("invalid",
                         `a chain read names a message id, after a seq, and 1 to ${maxRead}`);
     }
@@ -1878,7 +1873,7 @@ export class Ledger {
     const readable = stop < 0 ? shown : shown.slice(0, stop);
     const fixed = jsonBytes({ root, messages: [], more: true });
     const messages = readable.length === 0 ? [] : fitPage(fixed, readable,
-      (m, room, isFirst) => m.text === null ? whole(m.mail, room)
+      (m, room, isFirst) => m.text === null ? asIs(m.mail, room)
         : bodied(m.mail, m.text, room, isFirst));
     return { root, messages,
              more: merged.length > messages.length || archived?.frontier != null,
@@ -2493,13 +2488,13 @@ export class Ledger {
        now: number = clock(), placed: ReadonlyMap<string, Window> = new Map(),
        bodyOffset = 0, pageBytes: number = PAGE_BYTES, bodyMessage: unknown = null): MailPage {
     const maxRead = LEDGER_LIMITS.maxRead;
-    if (!count(limit, 1, maxRead)) {
+    if (!whole(limit, 1, maxRead)) {
       throw new Refusal("invalid", `limit is 1 to ${maxRead}`);
     }
-    if (maxBytes !== null && !count(maxBytes, 1, Number.MAX_SAFE_INTEGER)) {
+    if (maxBytes !== null && !whole(maxBytes, 1)) {
       throw new Refusal("invalid", "max_bytes is a positive integer");
     }
-    if (!count(padBytes, 0, Number.MAX_SAFE_INTEGER)) {
+    if (!whole(padBytes, 0)) {
       throw new Refusal("invalid", "pad_bytes is a non-negative integer");
     }
     const sql = this.#sql;
@@ -2547,7 +2542,7 @@ export class Ledger {
         };
         const comma = messages.length ? 1 : 0;
         const room = pageBytes - used - comma;
-        const fit = room <= 0 ? null : text === null ? whole(message, room)
+        const fit = room <= 0 ? null : text === null ? asIs(message, room)
           : bodied(message, text, room, messages.length === 0);
         if (fit === null || fit.bytes > room) {
           if (messages.length === 0) {
@@ -2582,7 +2577,7 @@ export class Ledger {
   placedNext(origin: Actor, limit: unknown, pageBytes: number = PAGE_BYTES):
       { contents: string[]; first: string | null } {
     const maxRead = LEDGER_LIMITS.maxRead;
-    if (!count(limit, 1, maxRead)) {
+    if (!whole(limit, 1, maxRead)) {
       throw new Refusal("invalid", `limit is 1 to ${maxRead}`);
     }
     const reader = this.#reader(origin);
@@ -2620,7 +2615,7 @@ export class Ledger {
 
   ack(origin: Actor, through: unknown, now: number = clock()):
       { reader: string; through: number } {
-    if (!count(through, 0, Number.MAX_SAFE_INTEGER)) {
+    if (!whole(through, 0)) {
       throw new Refusal("invalid", "through is a ledger seq");
     }
     return this.#storage.transactionSync(() => {
@@ -2685,7 +2680,7 @@ export class Ledger {
     }
     const follow = follows({ board: request.board, rooms: request.rooms });
     if (typeof request.blob !== "string" || !request.blob || typeof request.kid !== "string"
-        || !count(request.version, 1, Number.MAX_SAFE_INTEGER)) {
+        || !whole(request.version, 1)) {
       throw new Refusal("invalid", "invalid sealed subscription");
     }
     const sql = this.#sql;
