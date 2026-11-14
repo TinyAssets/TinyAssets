@@ -1,0 +1,59 @@
+# The public site's production dependencies carry no critical or high advisory.
+#
+# A pull request runs the check only when it changes the site's dependencies, so an
+# advisory published upstream never turns an unrelated pull request red. The weekly run
+# catches those: it keeps one open issue while the audit fails and closes it on the
+# first clean run. Recorded in docs/decisions/untangle-2026-11/site-deps.md.
+name: site-audit
+
+on:
+  pull_request:
+    paths:
+      - 'WebSite/site-react/package.json'
+      - 'WebSite/site-react/package-lock.json'
+      - '.github/workflows/site-audit.yml'
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: WebSite/site-react
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high --package-lock-only
+
+  issue:
+    needs: audit
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RESULT: ${{ needs.audit.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      TITLE: 'site-audit: a critical or high advisory in the public site production dependencies'
+    steps:
+      - name: Open, update or close the issue
+        run: |
+          open=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          if [ "$RESULT" = success ]; then
+            if [ -n "$open" ]; then
+              gh issue close "$open" --comment "Clean again: $RUN_URL"
+            fi
+          elif [ -n "$open" ]; then
+            gh issue comment "$open" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --title "$TITLE" --body "npm audit --omit=dev --audit-level=high fails in WebSite/site-react: $RUN_URL. Upgrade the package to its fixed version in a pull request; that pull request runs the same check."
+          fi

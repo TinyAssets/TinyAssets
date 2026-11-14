@@ -6,7 +6,7 @@ description: "Conventions for editing the TinyAssets public site (WebSite/site-r
 # Website editing
 
 `WebSite/site-react/` is the only source for `tinyassets.io`. It is a Next.js
-14 App Router static export that consumes `@tiny/design-system`
+15 App Router static export that consumes `@tiny/design-system`
 (`WebSite/design-system/`, tokens + base styles + components). Site source on
 `main` runs `deploy-site-react.yml` (see `WebSite/DEPLOY.md`).
 `confirm: deploy` rolls back. The Svelte rollback tree was retired
