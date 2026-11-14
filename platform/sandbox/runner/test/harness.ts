@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { egressDoor } from "../../../contract/src/egress";
-import { bundledSources } from "../../../sources/src/catalog";
+import { served } from "../../../sources/src/served";
 
 import { BUNDLES, bundles } from "../../template/pair";
 import { binPath } from "../engine";
@@ -752,7 +752,7 @@ export class Doors {
   }
 }
 
-const sources = bundledSources();
+const SERVED = served();
 
 /**
  * A box with a fake CLI per record at the record's own binary path (what each was run with
@@ -767,7 +767,7 @@ export class Sandbox extends Box {
     try {
       mkdirSync(this.path("/fake-seen"), { mode: 0o777 });
       chmodSync(this.path("/fake-seen"), 0o777);
-      for (const rec of sources.ids().map((id) => sources.get(id)!).filter((each) => each.cli)) {
+      for (const rec of SERVED.values()) {
         const bin = this.path(binPath(rec));
         mkdirSync(dirname(bin), { recursive: true, mode: 0o755 });
         writeFileSync(bin, FAKE, { mode: 0o755 });
@@ -792,7 +792,7 @@ export class Sandbox extends Box {
   }
 
   cli(engine: string, plan: FakeCli): void {
-    writeFileSync(`${this.path(binPath(sources.get(engine)!))}.plan.json`,
+    writeFileSync(`${this.path(binPath(SERVED.get(engine)!))}.plan.json`,
                   JSON.stringify(plan), { mode: 0o644 });
   }
 
@@ -801,7 +801,7 @@ export class Sandbox extends Box {
                           stdin: string; uid: number; gid: number; groups: number[];
                           dumps: Record<string, string | null>;
                           owners: Record<string, { path: string; uid: number }[]> }[] {
-    const bin = sources.get(engine)!.cli!.install.bin;
+    const bin = SERVED.get(engine)!.cli.install.bin;
     const dir = this.path("/fake-seen");
     return readdirSync(dir).filter((name) => name.startsWith(`${bin}.`) && name.endsWith(".json"))
       .map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")))
@@ -923,14 +923,14 @@ export function simulated(shape: string, { arg = "", file = "runner/test/box.tes
 /** A start document for `engine`, its URLs on the fake doors. */
 export function startDoc(doors: Doors, engine: string, over: Partial<StartDoc> = {}): StartDoc {
   const run = over.run ?? `run_${crypto.randomUUID().replace(/-/g, "")}`;
-  const rec = sources.get(engine)!;
-  const credential = over.credential ?? rec.cli!.credential[0]!;
+  const rec = SERVED.get(engine)!;
+  const credential = over.credential ?? rec.cli.credential[0]!;
   return {
     run, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine, credential,
     model: null, session_id: null, prompt: "do the thing", unattended: false,
     authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
     config: { generation: 1, egress: { mode: "open", destinations: [] },
-              env: { HOME: "{home}", ...rec.cli!.home_env, ...rec.cli!.env },
+              env: { HOME: "{home}", ...rec.cli.home_env, ...rec.cli.env },
               inherit: ["PATH", "LANG"] },
     urls: { mcp: `${doors.origin}/r/${run}/${"e".repeat(64)}/mcp`,
             mcp_bare: `${doors.origin}/r/${run}/mcp`, events: `${doors.origin}/r/${run}/events`,
