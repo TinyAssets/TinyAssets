@@ -45,5 +45,16 @@ def test_a_file_in_one_copy_only_is_drift(tmp_path: Path) -> None:
     }
 
 
+def test_line_endings_and_undecodable_bytes_are_drift(tmp_path: Path) -> None:
+    _tree(tmp_path)
+    mirror = tmp_path / ".claude/skills/ops/SKILL.md"
+    mirror.write_bytes(b"# s\r\n")
+    want = {("skill-mirror-drift", ".claude/skills/ops/SKILL.md")}
+    assert _codes(tmp_path) == want
+    for tree, data in ((".agents", b"\xff\x00"), (".claude", b"\xfe\x00")):
+        (tmp_path / tree / "skills/ops/SKILL.md").write_bytes(data)
+    assert _codes(tmp_path) == want
+
+
 def test_the_repository_skills_are_mirrored_whole() -> None:
     assert drift.check_skill_mirrors(_SCRIPTS.parent, None) == []
