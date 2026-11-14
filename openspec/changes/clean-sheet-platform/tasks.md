@@ -136,33 +136,13 @@ end.
 
 ## 9. Cutover window
 
-The window is d3 §D steps 10 to 15, in this order. The deletion list below becomes a pointer to
-`platform/cutover.json` when d2 B24 lands it as the whole cutover's manifest, in three phases
-(d3 §A10).
+The window is d3 §D steps 10 to 15, in this order. What the cutover deletes, edits, moves and
+takes down is `platform/cutover.json`, the cutover's manifest in its three phases (d2 B24,
+d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 
 - [ ] **The importer** (`import_research.md`; `platform/import/`, run on each run's disposable
   import host from the verified backup copy). It is deleted in the cutover's deletion change,
-  with everything of the import window:
-  - the owner's import doors: `owner/src/import.ts`, the eight `import` rows in
-    `contract/doors.json`, the `import` class and the `import` and `discard` callers,
-    `Policy.imported`, `Files.openUploads`, `Files.entriesPage`, `Files.chunksPage`,
-    `Collections.rowsPage`, the files plane's `mtime_ms` write option, `Erasure.discard` and its
-    `bare` wipe, the object's `#discarded`, `DISCARDED` and the binding's `import` field;
-  - `contract/src/import-message.ts`, with its rehearsal names and the doors' sign-in refusal of
-    one;
-  - the doors' consumer (`doors/src/import.ts`, `putImportChunk`, `bindImport`, `importTiers`)
-    and its bindings in `doors/wrangler.jsonc` (`IMPORT_STAGING`, the `IMPORTS` producer, the
-    consumer and its dead-letter queue); the account's `tinyassets-import` and
-    `tinyassets-import-dlq` queues and `tinyassets-import-staging` bucket; the doors'
-    `IMPORT_KEY`;
-  - the window's runner: `.github/workflows/import-window.yml`, the job's `copy.ts`, the host's
-    `window.sh` and `host.py`; its `production` secrets (`IMPORT_EXCLUSION_LIST`,
-    `IMPORT_R2_ACCESS_KEY_ID`, `IMPORT_R2_SECRET_ACCESS_KEY`, `IMPORT_CLOUDFLARE_API_TOKEN`,
-    `IMPORT_KEY`, `IMPORT_DO_TOKEN`, `IMPORT_RESERVED_IP`, `IMPORT_SPACES_ACCESS_KEY_ID`,
-    `IMPORT_SPACES_SECRET_ACCESS_KEY`); both Cloudflare tokens, the DigitalOcean token and the
-    Spaces read key revoked; the reserved IP released; and no `import-window` Droplet left.
-  - The R2 bucket `tinyassets-final-backup` (the off-site copy) is kept through the 14-day
-    hold, then deleted with the old stack's final backup, on the founder's word.
+  with everything of the import window, as the manifest lists it.
   - [x] 1. The census (`census.ts`, #5461).
   - [x] 2. The bundle builder (`bundle.ts`, #5461).
   - [x] 3. The owner object's import doors (`owner/src/import.ts`, #5475).

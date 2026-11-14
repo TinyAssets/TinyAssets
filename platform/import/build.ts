@@ -31,6 +31,7 @@ import {
 import { sha256Hex } from "../contract/src/digest";
 import { CHUNK_BYTES, INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
+import { chunkName, type Entry, inlineName, type Row } from "../contract/src/import-message";
 import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
@@ -54,22 +55,6 @@ export function tierOf(owner: Owner, tiers: Tiers): TierNumbers | undefined {
   const name = tierName(owner);
   return (TIER_NAMES as readonly string[]).includes(name) ? tiers[name as TierName] : undefined;
 }
-
-export interface Entry {
-  readonly path: string;
-  readonly kind: "dir" | "file";
-  readonly size?: number;
-  readonly mode?: 0 | 1;
-  readonly mtime_ms?: number;
-  readonly content_id?: string;
-  /** A chunked file's chunks, in order (`chunks/<sha256>`). */
-  readonly chunks?: readonly string[];
-}
-
-export type Row =
-  | { readonly kind: "policy"; readonly document: unknown }
-  | { readonly kind: "collection"; readonly collection: string; readonly row_id: string;
-      readonly private: 0 | 1; readonly body: string };
 
 /** Path order, parents first: by each component's UTF-8 bytes. */
 function byPath(a: string, b: string): number {
@@ -141,14 +126,13 @@ export class Store {
     this.#dir = dir;
   }
 
-  #put(kind: "inline" | "chunks", name: string, bytes: Uint8Array): boolean {
-    const key = `${kind}/${name}`;
-    if (this.#seen.has(key)) {
+  #put(part: string, bytes: Uint8Array): boolean {
+    if (this.#seen.has(part)) {
       return false;
     }
-    this.#seen.add(key);
+    this.#seen.add(part);
     if (this.#dir !== null) {
-      writeFileSync(join(this.#dir, kind, name), bytes, { flag: "wx" });
+      writeFileSync(join(this.#dir, part), bytes, { flag: "wx" });
     }
     return true;
   }
@@ -166,7 +150,7 @@ export class Store {
           throw new Error("a file changed size while the import read it");
         }
         const id = inlineId(bytes);
-        if (this.#put("inline", id, bytes)) {
+        if (this.#put(inlineName(id), bytes)) {
           this.inline += 1;
           this.inlineBytes += size;
         }
@@ -182,7 +166,7 @@ export class Store {
         const piece = buffer.subarray(0, want);
         const sha = sha256Hex(piece);
         shas.push(sha);
-        if (this.#put("chunks", sha, piece)) {
+        if (this.#put(chunkName(sha), piece)) {
           this.chunks += 1;
           this.chunkBytes += want;
         }

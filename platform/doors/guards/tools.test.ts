@@ -12,7 +12,8 @@
  * the table's order; `code`, a generic executor, never in the directory's.
  *
  * And the agent's definition (the starter's text and the MCP instructions): it names only the
- * table's tools, and nothing of the cutover's import.
+ * table's tools. That it says nothing of the cutover's import is the cutover manifest's
+ * vocabulary rule (`ci/guards/cutover.test.ts`).
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,7 +22,6 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import profiles from "../../contract/profiles.json" with { type: "json" };
-import { IMPORTED } from "../../contract/src/paths";
 import {
   CLIENT_PROFILES, DEFAULT_PROFILE, doorTable, type DoorRow, profileNames, type Tool, toolNames,
   toolTable,
@@ -400,12 +400,5 @@ describe("the agent's definition", () => {
     // A misspelt tool and a family's wildcard are seen; a field of a tool's answer is not one.
     expect(strayTools("use `file_*` or run_stauts, then agents_list's connect_url", toolNames()))
       .toEqual(["file_*", "run_stauts"]);
-  });
-
-  it("says nothing of the cutover's import, which only the importer's README explains", () => {
-    for (const [where, text] of texts) {
-      expect([where, text.includes(IMPORTED), /old TinyAssets/i.test(text)])
-        .toEqual([where, false, false]);
-    }
   });
 });

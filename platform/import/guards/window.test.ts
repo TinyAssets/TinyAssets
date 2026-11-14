@@ -20,8 +20,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { TIERS } from "../../ci/fixtures";
 import { chunkPlan } from "../../contract/src/content";
 import {
-  answerName, bodyId, type CheckEntry, doneName, importMessage, type ImportMessage, macHolds,
-  NO_ROWS, rehearsalName, rehearsalRun, rowLeaf, rowsSum,
+  answerName, bodyId, type CheckEntry, doneName, type Entry, importMessage, type ImportMessage,
+  macHolds, NO_ROWS, rehearsalName, rehearsalRun, type Row, rowLeaf, rowsSum,
 } from "../../contract/src/import-message";
 import { DEFAULT_POLICY_DIGEST, policyDigest } from "../../contract/src/policy-document";
 import { PLACE_BYTES } from "../../contract/src/limits";
@@ -29,7 +29,6 @@ import { cut } from "../../contract/src/content";
 import { objectPrefix } from "../../contract/src/files";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
-import type { Entry, Row } from "../build";
 import { windowMain } from "../cli";
 import { bundlesIn, type Fetcher, type Inputs, type Staged } from "../stage";
 import { admit, type Clock, deadLetters, readRecord, verify, type Window, wipe } from "../window";
