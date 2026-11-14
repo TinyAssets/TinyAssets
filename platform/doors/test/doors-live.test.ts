@@ -21,7 +21,8 @@ import { NO_ERASURE } from "../../owner/src/erasure";
 import { LEDGER_LIMITS } from "../../owner/src/ledger";
 import { defineAgent } from "../../owner/test/runs-support";
 import { failure } from "../../owner/test/support";
-import { API_BODY_MAX, ERASURE_QUEUE, INBOUND_BODY_MAX, MCP_RESOURCE, now } from "../src/config";
+import { ERASURE_QUEUE, MCP_RESOURCE, now } from "../src/config";
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { readOwner, readRoute } from "../src/directory";
 import { eraseOutside, erasureQueue } from "../src/erase";
 import { contentDigest } from "../src/file-bytes";
@@ -497,9 +498,8 @@ describe("/hooks/inbound, a capability URL", () => {
   it("takes a body up to the platform's one request ceiling, and refuses one past it",
      async () => {
     const { url: hookUrl } = await hooked();
-    const over = await call(event(hookUrl, "big", "x".repeat(INBOUND_BODY_MAX + 1)));
+    const over = await call(event(hookUrl, "big", "x".repeat(EGRESS_BODY_MAX + 1)));
     expect(over.status).toBe(413);
-    expect(INBOUND_BODY_MAX).toBe(API_BODY_MAX);
   });
 
   it("is refused at every door but inboundAccept, and inboundAccept refuses any other binding",

@@ -52,15 +52,15 @@ import {
   RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER, SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
 import { HEX64 } from "../../contract/src/ids";
-import type { SettleSent } from "../../contract/src/owner";
+import type { JsonBody, SettleSent } from "../../contract/src/owner";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SYNC_BODY_MAX } from "../../contract/src/limits";
 import { EVENTS_BODY_MAX, eventsBounded } from "../../contract/src/run-events";
-import { faultOf, type Refusal, REFUSALS, refusalOf } from "../../contract/src/refusal";
+import { faultOf, Refusal, REFUSALS, refusalOf } from "../../contract/src/refusal";
 
 import { type Bound, bindRun, bindSandbox, bindSync, type Presented, rebound } from "./binder";
-import { jsonObject } from "./body";
 import type { DoorsEnv } from "./env";
 import { ownerGate } from "./control";
+import { answer, jsonObject } from "./kit";
 import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 import { serveMcp } from "./mcp";
 
@@ -88,17 +88,14 @@ const OUTCOME_WAIT_MS = 10_000;
 function refused(code: string, status: number, receipt?: string | null,
                  message: string = code, retryAfterS?: number): Response {
   const retry = status === 429 || status === 503 || retryAfterS !== undefined;
-  return Response.json({ error: { code, message },
-                         ...(receipt === undefined || receipt === null ? {} : { receipt }) },
-                       { status, headers: { "Cache-Control": "no-store",
-                                            ...(retry ? { "Retry-After":
-                                              String(Math.max(1, retryAfterS ?? 1)) } : {}) } });
+  return answer(status, { error: { code, message },
+                          ...(receipt === undefined || receipt === null ? {} : { receipt }) },
+                retry ? { "Retry-After": String(Math.max(1, retryAfterS ?? 1)) } : {});
 }
 
 /** The object's refusal as a door answers it: `refused`, from its code, status and wait. */
-function refusedBy(refusal: Refusal, message?: string): Response {
-  return refused(codeOf(refusal), refusal.status, null, message ?? codeOf(refusal),
-                 refusal.retryAfter);
+function refusedBy(refusal: Refusal, message: string = codeOf(refusal)): Response {
+  return refused(codeOf(refusal), refusal.status, null, message, refusal.retryAfter);
 }
 
 /**
@@ -143,8 +140,7 @@ async function settleOnce(env: DoorsEnv, bound: Bound, request: SettleSent):
  * sync token reaches no object, not even the gate's; then its expiry, the network's
  * generation and the maintenance gate. Its owner, hash and generation, or the refusal.
  */
-async function sandboxToken(request: Request, env: DoorsEnv):
-    Promise<Response | { owner: string; hash: string; generation: number }> {
+async function sandboxToken(request: Request, env: DoorsEnv): Promise<Response | Sandbox> {
   const token = request.headers.get(SANDBOX_HEADER);
   if (token === null || token === "") {
     return refused("egress_token_missing", 401);
@@ -176,64 +172,24 @@ function runnerOf(request: Request): Response | Presented {
     : refused("runner_token_missing", 401);
 }
 
-/**
- * A run's own doors (ADR-034 decisions 6 and 10): its MCP door, the table's tools but the
- * run and mailbox tools, every one held by the object to the run's grant (the `run`
- * profile), by the run's own secret; and its event door, the runner's `POST` of its frames
- * and its end
- * (`runEvents`), by the runner's secret, each frame and the post bounded (`EVENTS_BODY_MAX`,
- * `EVENT_FRAMES_MAX`, `FRAME_UNITS_MAX`). Only the engine and the runner in the sandbox call
- * them, so an `Origin` (a browser's) is refused.
- */
-async function serveRun(request: Request, env: DoorsEnv, run: string,
-                        door: { mcp: string } | "events"): Promise<Response> {
-  if (request.headers.get("Origin") !== null) {
-    return refused("not_found", 404);
-  }
-  const presented = door === "events" ? runnerOf(request) : { secret: door.mcp };
-  if (presented instanceof Response) {
-    return presented;
-  }
-  const verified = await sandboxToken(request, env);
-  if (verified instanceof Response) {
-    return verified;
-  }
-  const bound = bindRun(env, verified.owner, verified.hash, verified.generation, run,
-                        presented);
-  if (door !== "events") {
-    return serveMcp(request, bound, env);
-  }
-  if (request.method !== "POST") {
-    return refused("method_not_allowed", 405);
-  }
-  const body = await jsonObject(request, EVENTS_BODY_MAX);
-  if (body instanceof Response) {
-    return body;
-  }
-  if (!eventsBounded(body)) {
-    return refused("events_too_large", 413);
-  }
-  try {
-    return Response.json(await bound.stub.runEvents(bound.binding, body),
-                         { headers: { "Cache-Control": "no-store" } });
-  } catch (error) {
-    const answer = refusalOf(error);
-    if (answer === null) {
-      throw error;
-    }
-    return refusedBy(answer);
-  }
+/** What a sandbox's egress token verified: its owner, hash and network generation. */
+interface Sandbox {
+  readonly owner: string;
+  readonly hash: string;
+  readonly generation: number;
 }
 
-/** A sign-in's event door's path: the sign-in's id. */
-
 /**
- * A sign-in's event door (slice SIGNIN): the runner's `ta.signin` frames of the vendor's own
- * sign-in it drives, by the egress token and the runner's secret of the lease that holds it,
- * each frame and the post bounded as a run's (`EVENTS_BODY_MAX`). The object keeps the
- * latest prompt, renews the lease and relays each frame to the owner's app sockets.
+ * The sandbox's JSON doors' one preamble: only the sandbox calls them, so an `Origin` (a
+ * browser's) is refused; `POST`; `bound`, the door's own credential checked before the egress
+ * token it is bound with; then the JSON body, to `max`. `call`'s answer, as JSON, or the
+ * object's refusal with its whole message, so the runner and its sync agent can say what was
+ * refused and why (the used and the total of a full storage among it); a path missing or of the wrong kind,
+ * or one the sandbox may not see, is its code (`404`).
  */
-async function serveSigninEvents(request: Request, env: DoorsEnv, id: string):
+async function sandboxDoor(request: Request, max: number,
+                           bound: () => Promise<Bound | Response>,
+                           call: (bound: Bound, body: JsonBody) => Promise<unknown>):
     Promise<Response> {
   if (request.headers.get("Origin") !== null) {
     return refused("not_found", 404);
@@ -241,34 +197,88 @@ async function serveSigninEvents(request: Request, env: DoorsEnv, id: string):
   if (request.method !== "POST") {
     return refused("method_not_allowed", 405);
   }
+  const held = await bound();
+  if (held instanceof Response) {
+    return held;
+  }
+  const body = await jsonObject(request, max);
+  if (body instanceof Response) {
+    return body;
+  }
+  try {
+    return answer(200, await call(held, body));
+  } catch (error) {
+    const fault = faultOf(error);
+    if (fault !== null) {
+      return refused(fault, 404);
+    }
+    const refusal = refusalOf(error);
+    if (refusal === null) {
+      throw error;
+    }
+    return refusedBy(refusal, refusal.message);
+  }
+}
+
+/** A runner's door's binding: the runner's secret, then the egress token, bound by `bind`. */
+async function runnerBound(request: Request, env: DoorsEnv,
+                           bind: (sandbox: Sandbox, presented: Presented) => Bound):
+    Promise<Bound | Response> {
   const presented = runnerOf(request);
   if (presented instanceof Response) {
     return presented;
   }
-  const verified = await sandboxToken(request, env);
-  if (verified instanceof Response) {
-    return verified;
-  }
-  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
-                            presented);
-  const body = await jsonObject(request, EVENTS_BODY_MAX);
-  if (body instanceof Response) {
-    return body;
-  }
+  const sandbox = await sandboxToken(request, env);
+  return sandbox instanceof Response ? sandbox : bind(sandbox, presented);
+}
+
+/** A frames post held to its frames' bounds (`eventsBounded`), or refused. */
+function framesOf(body: JsonBody): JsonBody {
   if (!eventsBounded(body)) {
-    return refused("events_too_large", 413);
+    throw new Refusal("events_too_large");
   }
-  try {
-    return Response.json(await bound.stub.signinEvents(bound.binding, {
-      id, frames: body["frames"], ...(body["end"] === undefined ? {} : { end: body["end"] }) }),
-                         { headers: { "Cache-Control": "no-store" } });
-  } catch (error) {
-    const answer = refusalOf(error);
-    if (answer === null) {
-      throw error;
-    }
-    return refusedBy(answer);
+  return body;
+}
+
+/**
+ * A run's MCP door (ADR-034 decisions 6 and 10): the table's tools but the run and mailbox
+ * tools, every one held by the object to the run's grant (the `run` profile), by the run's
+ * own secret. Only the engine in the sandbox calls it, so an `Origin` is refused.
+ */
+async function serveRunMcp(request: Request, env: DoorsEnv, run: string, secret: string):
+    Promise<Response> {
+  if (request.headers.get("Origin") !== null) {
+    return refused("not_found", 404);
   }
+  const sandbox = await sandboxToken(request, env);
+  if (sandbox instanceof Response) {
+    return sandbox;
+  }
+  return serveMcp(request, bindRun(env, sandbox.owner, sandbox.hash, sandbox.generation, run,
+                                   { secret }), env);
+}
+
+/**
+ * A run's event door (ADR-034 decision 10), the runner's `POST` of its frames and its end
+ * (`runEvents`), and a sign-in's (slice SIGNIN), the runner's `ta.signin` frames of the
+ * vendor's own sign-in it drives (`signinEvents`): each by the runner's secret, each frame
+ * and the post bounded (`EVENTS_BODY_MAX`, `EVENT_FRAMES_MAX`, `FRAME_UNITS_MAX`). For a
+ * sign-in the object keeps the latest prompt, renews the lease and relays each frame to the
+ * owner's app sockets.
+ */
+function serveEvents(request: Request, env: DoorsEnv,
+                     door: { run: string } | { signin: string }): Promise<Response> {
+  return sandboxDoor(request, EVENTS_BODY_MAX, () => runnerBound(request, env,
+    (sandbox, presented) => "run" in door
+      ? bindRun(env, sandbox.owner, sandbox.hash, sandbox.generation, door.run, presented)
+      : bindSandbox(env, sandbox.owner, sandbox.hash, sandbox.generation, presented)),
+  async ({ binding, stub }, body) => {
+    const frames = framesOf(body);
+    return "run" in door ? stub.runEvents(binding, frames)
+      : stub.signinEvents(binding, { id: door.signin, frames: frames["frames"],
+                                     ...(frames["end"] === undefined ? {}
+                                       : { end: frames["end"] }) });
+  });
 }
 
 /**
@@ -276,37 +286,11 @@ async function serveSigninEvents(request: Request, env: DoorsEnv, id: string):
  * with the vendor's own login, whether its record's `status_argv` succeeded, and the models
  * it offers. Presence only; the runner alone calls it, so an `Origin` is refused.
  */
-async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
-  if (request.headers.get("Origin") !== null) {
-    return refused("not_found", 404);
-  }
-  if (request.method !== "POST") {
-    return refused("method_not_allowed", 405);
-  }
-  const presented = runnerOf(request);
-  if (presented instanceof Response) {
-    return presented;
-  }
-  const verified = await sandboxToken(request, env);
-  if (verified instanceof Response) {
-    return verified;
-  }
-  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
-                            presented);
-  const body = await jsonObject(request, EGRESS_BODY_MAX);
-  if (body instanceof Response) {
-    return body;
-  }
-  try {
-    return Response.json(await bound.stub.signinReport(bound.binding, body),
-                         { headers: { "Cache-Control": "no-store" } });
-  } catch (error) {
-    const answer = refusalOf(error);
-    if (answer === null) {
-      throw error;
-    }
-    return refusedBy(answer);
-  }
+function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
+  return sandboxDoor(request, EGRESS_BODY_MAX, () => runnerBound(request, env,
+    (sandbox, presented) => bindSandbox(env, sandbox.owner, sandbox.hash, sandbox.generation,
+                                        presented)),
+  ({ binding, stub }, body) => stub.signinReport(binding, body));
 }
 
 /**
@@ -326,47 +310,25 @@ function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 }
 
-/** A commit's ops with each `inline` decoded from base64; anything else as sent. */
-function decodedOps(ops: unknown): unknown {
-  if (!Array.isArray(ops)) {
-    return ops;
-  }
-  return ops.map((op: unknown) => {
-    if (typeof op !== "object" || op === null || !("inline" in op)) {
-      return op;
-    }
-    const inline = (op as { inline: unknown }).inline;
-    if (typeof inline !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(inline)) {
-      return { ...op, inline: null };  // refused by the object's own check
-    }
-    return { ...op, inline: new Uint8Array(Buffer.from(inline, "base64")) };
-  });
+/** Base64 as its bytes, or null for anything else, which the object's own check refuses. */
+function bytesOf(text: unknown): Uint8Array | null {
+  return typeof text === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(text)
+    ? new Uint8Array(Buffer.from(text, "base64")) : null;
 }
 
-/** An upload's chunks with each `bytes` decoded from base64; anything else as sent. */
-function decodedChunks(chunks: unknown): unknown {
-  if (!Array.isArray(chunks)) {
-    return chunks;
+/** Each item's `field` decoded from base64; anything else as sent (the object checks it). */
+function decoded(items: unknown, field: string): unknown {
+  if (!Array.isArray(items)) {
+    return items;
   }
-  return chunks.map((chunk: unknown) => {
-    if (typeof chunk !== "object" || chunk === null || !("bytes" in chunk)) {
-      return chunk;
-    }
-    const bytes = (chunk as { bytes: unknown }).bytes;
-    if (typeof bytes !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(bytes)) {
-      return { ...chunk, bytes: null };  // refused by the object's own check
-    }
-    return { ...chunk, bytes: new Uint8Array(Buffer.from(bytes, "base64")) };
-  });
+  return items.map((item: unknown) =>
+    typeof item !== "object" || item === null || !(field in item) ? item
+      : Object.fromEntries(Object.entries(item).map(([key, value]) =>
+        [key, key === field ? bytesOf(value) : value])));
 }
 
-async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promise<Response> {
-  if (request.headers.get("Origin") !== null) {
-    return refused("not_found", 404);
-  }
-  if (request.method !== "POST") {
-    return refused("method_not_allowed", 405);
-  }
+/** The sync token, then the egress token of the same owner's sandbox, bound as the syncer. */
+async function syncBound(request: Request, env: DoorsEnv): Promise<Bound | Response> {
   const token = request.headers.get(SYNC_HEADER);
   if (token === null || token === "") {
     return refused("sync_token_missing", 401);
@@ -388,53 +350,36 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
   if (inside.owner !== parsed.owner) {
     return refused("sync_token_unknown", 401);
   }
-  const { binding, stub } = bindSync(env, parsed.owner, parsed.hash, inside.hash);
-  const body = await jsonObject(request, SYNC_BODY_MAX);
-  if (body instanceof Response) {
-    return body;
-  }
-  const answer = (value: unknown) => Response.json(value, {
-    headers: { "Cache-Control": "no-store" } });
-  try {
+  return bindSync(env, parsed.owner, parsed.hash, inside.hash);
+}
+
+function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promise<Response> {
+  return sandboxDoor(request, SYNC_BODY_MAX, () => syncBound(request, env),
+                     async ({ binding, stub }, body) => {
     switch (door) {
       case "changes":
-        return answer(await stub.fileChanges(binding, body));
+        return stub.fileChanges(binding, body);
       case "list":
-        return answer(await stub.fileList(binding, body));
+        return stub.fileList(binding, body);
       case "read": {
         const read = await stub.fileRead(binding, body);
-        return answer({ ...read, ...(read.inline === undefined ? {}
-          : { inline: base64(read.inline) }) });
+        return { ...read, ...(read.inline === undefined ? {} : { inline: base64(read.inline) }) };
       }
       case "chunks": {
         const read = await stub.fileReadChunks(binding, body);
-        return answer({ chunks: read.chunks.map(base64) });
+        return { chunks: read.chunks.map(base64) };
       }
       case "commit":
-        return answer(await stub.fileSyncCommit(binding, {
-          ...body, ops: decodedOps(body["ops"]) }));
+        return stub.fileSyncCommit(binding, { ...body, ops: decoded(body["ops"], "inline") });
       case "upload_begin":
-        return answer(await stub.fileSyncUploadBegin(binding, body));
+        return stub.fileSyncUploadBegin(binding, body);
       case "upload_chunks":
-        return answer(await stub.fileSyncUploadChunks(binding, {
-          ...body, chunks: decodedChunks(body["chunks"]) }));
+        return stub.fileSyncUploadChunks(binding, {
+          ...body, chunks: decoded(body["chunks"], "bytes") });
       case "upload_abort":
-        return answer(await stub.fileSyncUploadAbort(binding, body));
+        return stub.fileSyncUploadAbort(binding, body);
     }
-  } catch (error) {
-    const fault = faultOf(error);
-    if (fault !== null) {
-      // A path missing or of the wrong kind, or one the sandbox may not see: its code.
-      return refused(fault, 404);
-    }
-    const refusedAs = refusalOf(error);
-    if (refusedAs === null) {
-      throw error;
-    }
-    // The object's whole message, so the sync agent can say what was refused and why (the
-    // used and the total of a full storage among it); its code first, as every door's.
-    return refusedBy(refusedAs, refusedAs.message);
-  }
+  });
 }
 
 export async function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
@@ -453,14 +398,14 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
       if (secret === undefined) {
         return refused("run_secret_missing", 401);
       }
-      return serveRun(request, env, door.run, { mcp: secret });
+      return serveRunMcp(request, env, door.run, secret);
     }
     case "events":
-      return serveRun(request, env, door.run, "events");
+      return serveEvents(request, env, { run: door.run });
     case "signin":
       return serveSignin(request, env);
     case "signin_events":
-      return serveSigninEvents(request, env, door.signin);
+      return serveEvents(request, env, { signin: door.signin });
     case "sync":
       return serveSync(request, env, door.sync);
     case "model":

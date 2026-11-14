@@ -10,26 +10,20 @@
  * fail-closed. The request's `Cookie` header is gone before this sees it (`index.ts`).
  */
 import { answerJson } from "./answers";
-import { bearer } from "./app";
 import { verifyKey } from "./api-keys";
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { refusalOf } from "../../contract/src/refusal";
 
-import { jsonObject } from "./body";
-import { API_BODY_MAX } from "./config";
 import type { DoorsEnv } from "./env";
 import { outsideRead } from "./control";
 import { withTiers } from "./binder";
-import { mediaType } from "./session";
+import { bearer, failure, jsonObject, mediaType } from "./kit";
 import { profileOf } from "./mcp";
 import { refusalResponse } from "./refused";
 import { callDoor } from "./tools";
 import type { Sources } from "../../sources/src/schema";
 
 const TOOL_PATH = /^\/api\/tools\/([a-z_]{1,64})$/;
-
-function failure(status: number, message: string, headers: HeadersInit = {}): Response {
-  return Response.json({ error: message }, { status, headers });
-}
 
 export async function serveApi(request: Request, env: DoorsEnv, sources: Sources):
     Promise<Response> {
@@ -59,7 +53,7 @@ export async function serveApi(request: Request, env: DoorsEnv, sources: Sources
   if (mediaType(request) !== "application/json") {
     return failure(415, "the API takes application/json");
   }
-  const args = await jsonObject(request, API_BODY_MAX);
+  const args = await jsonObject(request, EGRESS_BODY_MAX);
   if (args instanceof Response) {
     return args;
   }

@@ -93,7 +93,7 @@ async function providerRevoke(env: DoorsEnv, owner: string, client: string,
                                      pageSize: number = GRANT_PAGE): Promise<number> {
   const oauth = authorizationServer(env).getOAuthApi(env);
   const matching = await grantsWhere(oauth, owner, pageSize, async (grant) =>
-    grant.resource === MCP_RESOURCE && await mcpClient(grant.clientId) === client);
+    grant.resource === MCP_RESOURCE && mcpClient(grant.clientId) === client);
   for (const id of matching) {
     await oauth.revokeGrant(id, owner);
   }

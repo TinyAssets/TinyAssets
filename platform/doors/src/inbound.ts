@@ -7,7 +7,7 @@
  * 1. The `inbound` gate of the platform's control record (`CONTROL`): off or missing, the
  *    door does not exist (`404`, as the Python's switch); malformed or unreadable, `503`.
  * 2. `POST`, one path segment, and a body within the platform's one request ceiling
- *    (`INBOUND_BODY_MAX`); the `Cookie` header is gone before this sees it (`doors.ts`).
+ *    (`EGRESS_BODY_MAX`); the `Cookie` header is gone before this sees it (`doors.ts`).
  * 3. The two shapes:
  *    - **a shared app** (`shared-apps.json`, data: Slack's today), when the segment is an
  *      app's endpoint: its signature checked against the platform's signing secret, which
@@ -27,6 +27,7 @@
  */
 import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 
 import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
 import type { InboundAnswer } from "../../contract/src/binding";
@@ -36,12 +37,11 @@ import { refusalOf } from "../../contract/src/refusal";
 import apps from "../shared-apps.json" with { type: "json" };
 
 import { bindInbound, type Bound, withTiers } from "./binder";
-import { boundedBytes } from "./body";
-import { INBOUND_BODY_MAX, INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN,
-} from "./config";
+import { INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN } from "./config";
 import type { DoorsEnv } from "./env";
 import { inboundGate, ordinaryAdmits, readControl } from "../../contract/src/control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
+import { answer, boundedBytes, exactKeys, mediaType, randomToken } from "./kit";
 import { shownCode } from "./refused";
 import type { Sources } from "../../sources/src/schema";
 
@@ -50,6 +50,8 @@ const STAMP = /^[0-9]{1,12}$/;
 /** The headers an event carries to the object (its owner-held proof may name any). */
 const HEADERS_MAX = 64;
 const HEADER_VALUE_MAX = 8 * 1024;
+/** How long a sender waits before it delivers again. */
+const RETRY = Object.freeze({ "Retry-After": "5" });
 
 /** A shared app, as `shared-apps.json` declares it. */
 interface SharedApp {
@@ -80,7 +82,7 @@ export function sharedApps(declared: unknown = apps): readonly SharedApp[] {
   return list.map((app: Record<string, unknown>) => {
     const { id, endpoint, secret, profile, envelope } = app;
     const fields = envelope as Record<string, unknown> | null;
-    if (Object.keys(app).sort().join() !== "endpoint,envelope,id,profile,secret"
+    if (!exactKeys(app, ["endpoint", "envelope", "id", "profile", "secret"])
         || typeof id !== "string" || !/^[a-z][a-z0-9_]{0,31}$/.test(id)
         || typeof endpoint !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(endpoint)
         || typeof secret !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(secret)
@@ -94,11 +96,6 @@ export function sharedApps(declared: unknown = apps): readonly SharedApp[] {
     return Object.freeze({ id, endpoint, secret, profile: checkedProfile(profile),
                            envelope: fields as unknown as SharedApp["envelope"] });
   });
-}
-
-function answer(status: number, body: unknown, retry = false): Response {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store",
-                                                  ...(retry ? { "Retry-After": "5" } : {}) } });
 }
 
 /** The request's headers for the object: lowercase names, bounded (its `Cookie` is gone). */
@@ -116,9 +113,8 @@ function headersOf(request: Request): Record<string, string> | null {
 
 /** A JSON object from an uncompressed UTF-8 JSON body, or null (`_json_object`). */
 function envelopeOf(request: Request, body: Uint8Array): Record<string, unknown> | null {
-  const type = (request.headers.get("Content-Type") ?? "").split(";")[0]!.trim().toLowerCase();
   const encoding = (request.headers.get("Content-Encoding") ?? "identity").toLowerCase();
-  if (type !== "application/json" || encoding !== "identity") {
+  if (mediaType(request) !== "application/json" || encoding !== "identity") {
     return null;
   }
   try {
@@ -142,7 +138,7 @@ function sharedEvent(app: SharedApp, request: Request, body: Uint8Array,
   const secret = namedSecret(env, app.secret);
   if (secret === null) {
     console.error(`the shared app ${app.id} has no signing secret (${app.secret})`);
-    return { kind: "answer", response: answer(503, { error: "inbound_app_unconfigured" }, true) };
+    return { kind: "answer", response: answer(503, { error: "inbound_app_unconfigured" }, RETRY) };
   }
   if (!proves(app.profile, headers, body, secret, now())) {
     return { kind: "answer", response: answer(401, { error: "invalid_signature" }) };
@@ -210,7 +206,7 @@ function delivered(shared: boolean, accepted: InboundAnswer): Response {
     return answer(200, accepted);
   }
   if (accepted.retry === true) {
-    return answer(429, accepted, true);
+    return answer(429, accepted, RETRY);
   }
   return shared ? answer(200, accepted)
     : answer(accepted.error === "too_large" ? 413 : 409, accepted);
@@ -222,7 +218,7 @@ export async function serveInbound(request: Request, env: DoorsEnv, sources: Sou
   const read = await readControl(env.CONTROL);
   const gate = inboundGate(read);
   if (gate === "unavailable") {
-    return answer(503, { error: "unavailable" }, true);
+    return answer(503, { error: "unavailable" }, RETRY);
   }
   if (gate === "off") {
     return answer(404, { error: "not_found" });
@@ -234,7 +230,7 @@ export async function serveInbound(request: Request, env: DoorsEnv, sources: Sou
   if (request.method !== "POST") {
     return answer(405, { error: "method_not_allowed" });
   }
-  const body = await boundedBytes(request, INBOUND_BODY_MAX);
+  const body = await boundedBytes(request, EGRESS_BODY_MAX);
   if (body === null) {
     return answer(413, { error: "too_large" });
   }
@@ -253,7 +249,7 @@ export async function serveInbound(request: Request, env: DoorsEnv, sources: Sou
     return routed.shared ? answer(200, { state: "no_op" }) : answer(404, { error: "not_found" });
   }
   if (!ordinaryAdmits(gate, entry.o)) {
-    return answer(503, { error: "maintenance" }, true);
+    return answer(503, { error: "maintenance" }, RETRY);
   }
   // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
   const { binding, stub } = withTiers(bindInbound(env, entry), read, sources);
@@ -286,7 +282,7 @@ export const HOOK_ROUTES: Readonly<Record<string, (env: DoorsEnv, bound: Bound,
                                                    request: JsonBody) =>
                                                    Promise<unknown>>> = Object.freeze({
   "hooks/create": async (env, { binding, stub }, request) => {
-    const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+    const token = randomToken(32);
     const route = `h:${sha256Hex(token)}`;
     const made = await stub.inboundCreate(binding, { ...request, kind: "capability",
                                                      route });

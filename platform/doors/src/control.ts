@@ -12,6 +12,7 @@ import {
 } from "../../contract/src/control";
 
 import type { DoorsEnv } from "./env";
+import { answer } from "./kit";
 
 /** The outside gate, read once: its refusal, or the record it admitted the call on. */
 export async function outsideRead(env: DoorsEnv, owner: string): Promise<Response | ControlRead> {
@@ -41,6 +42,5 @@ export async function importTiers(env: DoorsEnv): Promise<unknown> {
 }
 
 function refusal(message: string): Response {
-  return Response.json({ error: "unavailable", message },
-                       { status: 503, headers: { "Retry-After": "60" } });
+  return answer(503, { error: "unavailable", message }, { "Retry-After": "60" });
 }
