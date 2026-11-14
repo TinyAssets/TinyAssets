@@ -148,6 +148,11 @@ export interface RestoreSource {
   readonly generations: readonly { readonly gen: string; readonly finished_at: number;
                                    readonly restorable: boolean }[];
   readonly state: string;
+  /**
+   * Whether a restore may begin, or go on, in this object as it stands: pending and empty,
+   * wiped for it, or begun. Else a pin and a wipe come first (a live owner, a failed restore).
+   */
+  readonly begins: boolean;
   /** The restore's record, from its pin: its step, its generation and the pin's own. */
   readonly restore: { readonly step: string; readonly gen: string;
                       readonly fresh: string | null } | null;

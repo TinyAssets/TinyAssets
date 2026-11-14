@@ -707,10 +707,12 @@ export const restoreDoors = Object.freeze({
     return o.door(() => {
       door.check();
       const held = record(o.storage.sql);
+      const begun = held !== null && !["pinned", "wiped", "done", "failed"].includes(held.step);
       return { namespace: o.files.storedNamespace(),
                generations: o.backups.manifests().map(({ gen, finished_at, log_bytes }) =>
                  ({ gen, finished_at, restorable: log_bytes <= LOG_BYTES })),
-               state: o.admission().state, restore: held === null ? null
+               state: o.admission().state, begins: begun || emptiness(o) === null,
+               restore: held === null ? null
                  : { step: held.step, gen: held.gen, fresh: held.fresh } };
     });
   },

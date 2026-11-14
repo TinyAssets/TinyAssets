@@ -1470,7 +1470,7 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
       JSON.stringify(await ask("owner.admit"))}`);
     return;
   }
-  if (held === null ? source.state !== "pending" : WIPED_FIRST.includes(held.step)) {
+  if (!source.begins) {
     let hold = await ask("restore.pin", { gen: from.gen }) as RestoreHold;
     while (!hold.written) {
       say(`${owner} is held; its present state is being written as a fresh generation`);
@@ -1506,9 +1506,6 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   }
   say(`the doors answered owner.admit for ${owner}: ${JSON.stringify(await ask("owner.admit"))}`);
 });
-
-/** The records whose object is wiped before a restore begins: a live owner's, a failed one's. */
-const WIPED_FIRST: readonly string[] = Object.freeze(["pinned", "failed", "done"]);
 
 /** What `--confirm` takes: a wipe's words or a release's, each naming the owner. */
 const CONFIRM = /^(?:wipe|release)-\S+$/;

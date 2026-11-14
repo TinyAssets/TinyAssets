@@ -326,7 +326,8 @@ describe("the operator's restore ops, on a real owner object", () => {
      async () => {
     const owner = fresh();
     expect(await asked(owner, "restore.source")).toMatchObject({
-      result: { namespace: null, generations: [], state: "pending", restore: null } });
+      result: { namespace: null, generations: [], state: "pending", begins: true,
+                restore: null } });
   });
 
   it("refuses a restore into an admitted owner, and a step with none begun", async () => {

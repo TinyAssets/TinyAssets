@@ -535,6 +535,7 @@ describe("a restore into a live owner", () => {
     // Written after E: the fresh generation's finish would prune `gen` but for the pin.
     await o.stub.fileWrite(o.bind(), { path: `${W}/after.txt`, expected_etag: null,
                                        content: `${PLAIN} after` });
+    expect((await o.stub.restoreSource(platform(o.name))).begins).toBe(false);
     const first = await o.stub.restorePin(platform(o.name), { gen: gen.gen });
     expect(first).toMatchObject({ step: "pinned", namespace: ns, gen: gen.gen });
     // From the pin, the owner is held: its doors and its admission.
@@ -557,7 +558,7 @@ describe("a restore into a live owner", () => {
     const stub = await wipedWith(o.stub, o.name, hold.confirm!);
     // Pending and empty, as a new object's start makes it, the pin's record held across.
     expect(await stub.restoreSource(platform(o.name))).toEqual({
-      namespace: null, generations: [], state: "pending",
+      namespace: null, generations: [], state: "pending", begins: true,
       restore: { step: "wiped", gen: gen.gen, fresh: hold.fresh } });
     const fresh = await owner();
     expect(await schemaOf(stub)).toEqual(await schemaOf(await lose(fresh)));

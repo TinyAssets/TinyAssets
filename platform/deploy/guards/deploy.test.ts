@@ -2875,7 +2875,8 @@ describe("mode restore", () => {
    * says: pinned and its present state written on the second pin, wiped, begun, two steps,
    * done, then admitted.
    */
-  const restoring = (source: { state: string; restore: unknown }, failed = false) => {
+  const restoring = (source: { state: string; begins: boolean; restore: unknown },
+                     failed = false) => {
     let steps = 0;
     let pins = 0;
     return (message: OperatorMessage) => {
@@ -2905,8 +2906,8 @@ describe("mode restore", () => {
       }
     };
   };
-  const LOST = { state: "pending", restore: null };
-  const LIVE = { state: "admitted", restore: null };
+  const LOST = { state: "pending", begins: true, restore: null };
+  const LIVE = { state: "admitted", begins: false, restore: null };
   const flags = ["--owner", "user_alice", "--generation", FROM];
   const ops = (w: ReturnType<typeof world>) =>
     w.sent.map(({ message }) => [message.op, message.args]);
@@ -2980,8 +2981,8 @@ describe("mode restore", () => {
     await expect(runMode(world({ held: true }), "restore", ["--yes", "--owner", "user_alice",
                                                             "--confirm", CONFIRMED]))
       .rejects.toThrow(`--confirm ${CONFIRMED} with no --generation is release-user_alice`);
-    const done = world({ held: true, doors: restoring({ state: "admitted", restore: {
-      step: "done", gen: "b".repeat(16), fresh: FRESH } }) });
+    const done = world({ held: true, doors: restoring({ state: "admitted", begins: false,
+      restore: { step: "done", gen: "b".repeat(16), fresh: FRESH } }) });
     await runMode(done, "restore", ["--yes", ...flags]);
     expect(ops(done)).toEqual([["restore.source", {}], ["owner.admit", {}]]);
   });
