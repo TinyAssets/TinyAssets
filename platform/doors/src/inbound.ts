@@ -23,11 +23,12 @@
  *
  * A route the directory does not hold is `404` (a capability URL) or a no-op (a shared
  * app's install no owner made); the directory's lag can only route a dead entry to the
- * object's own refusal (`binding_withdrawn`). Every refusal, the door's own and a closed
- * gate's (`unavailable`) among them, is a contract code, answered by its status and
- * `Retry-After` (`refused.ts`), and so is the object's refused answer; a shared app's, past
- * its gates, is a `200`, so its failure budget with its vendor is kept, unless it is for the
- * moment only (`mailbox_full`, a full pool's `busy`), when the app is told to send it again.
+ * object's own refusal (`binding_withdrawn`). Every refusal, the door's own, a closed gate's
+ * (`unavailable`), the object's thrown one and its refused answer alike, is a contract code,
+ * answered as its sender's surface answers any refusal (`refused.ts`): a capability URL's
+ * sender by its status, `Retry-After` and `{error}`; a shared app's, past its gates, with a
+ * `200`, so its failure budget with its vendor is kept, unless it is for the moment only
+ * (`mailbox_full`, a full pool's `busy`), when the app is told to send it again.
  */
 import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
@@ -48,7 +49,7 @@ import {
 } from "../../contract/src/control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { answer, boundedBytes, exactKeys, mediaType, randomToken } from "./kit";
-import { answered, asInbound, asShared, retryAfter } from "./refused";
+import { answered, asInbound, asShared } from "./refused";
 import type { Sources } from "../../sources/src/schema";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -145,7 +146,7 @@ function sharedEvent(app: SharedApp, request: Request, body: Uint8Array,
     throw new Refusal("inbound_app_unconfigured");
   }
   if (!proves(app.profile, headers, body, secret, now())) {
-    throw new Refusal("invalid_signature");
+    throw new Refusal("inbound_proof_invalid");
   }
   const shape = app.envelope;
   const envelope = envelopeOf(request, body);
@@ -200,20 +201,12 @@ function capabilityEvent(token: string, request: Request): Routed {
            route: `h:${sha256Hex(token)}` };
 }
 
-/**
- * The object's answer as the sender gets it, a refused one by its code's status and wait: a
- * shared app's never spends its budget, unless it is to be sent again.
- */
-function delivered(shared: boolean, accepted: InboundAnswer): Response {
-  if (accepted.state === "admitted") {
-    return answer(202, accepted);
+/** The object's answer as the sender gets it; a refused one is thrown, for its surface. */
+function delivered(accepted: InboundAnswer): Response {
+  if (accepted.state === "refused") {
+    throw new Refusal(accepted.error);
   }
-  if (accepted.state === "no_op") {
-    return answer(200, accepted);
-  }
-  const refusal = new Refusal(accepted.error);
-  return shared && !refusal.transient ? answer(200, accepted)
-    : answer(refusal.status, accepted, retryAfter(refusal));
+  return answer(accepted.state === "admitted" ? 202 : 200, accepted);
 }
 
 /** `POST /hooks/inbound/<token>`. */
@@ -256,14 +249,15 @@ async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promi
     }
     return answer(200, { state: "no_op" });
   }
-  if (!ordinaryAdmits(gate, entry.o)) {
-    throw new Refusal("unavailable", MAINTENANCE);
-  }
-  // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
-  const { binding, stub } = withAccount(bindInbound(env, entry), read, sources);
-  return answered(routed.shared ? asShared : asInbound, async () =>
-    delivered(routed.shared, await stub.inboundAccept(binding, {
-      event_id: routed.eventId, event_at: routed.eventAt, body, headers })));
+  return answered(routed.shared ? asShared : asInbound, async () => {
+    if (!ordinaryAdmits(gate, entry.o)) {
+      throw new Refusal("unavailable", MAINTENANCE);
+    }
+    // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
+    const { binding, stub } = withAccount(bindInbound(env, entry), read, sources);
+    return delivered(await stub.inboundAccept(binding, {
+      event_id: routed.eventId, event_at: routed.eventAt, body, headers }));
+  });
 }
 
 /**

@@ -367,7 +367,7 @@ export type BindingKind = keyof typeof BINDING_PARSERS;
  */
 export type InboundAnswer =
   | { readonly state: "admitted"; readonly receipt: string; readonly deduped: boolean }
-  | { readonly state: "refused"; readonly error: RefusalCode; readonly retry?: true }
+  | { readonly state: "refused"; readonly error: RefusalCode }
   | { readonly state: "no_op"; readonly error: string };
 
 /**

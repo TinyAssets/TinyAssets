@@ -79,8 +79,6 @@ export const REFUSALS = Object.freeze({
   file_index_full: Object.freeze({ status: 507 }),
   file_quota: REFUSED,
   file_share: REFUSED,
-  // An inbound sender whose proof does not verify.
-  inbound_proof_invalid: Object.freeze({ status: 401 }),
   install_proof_required: REFUSED,
   ledger_agents_full: REFUSED,
   ledger_full: REFUSED,
@@ -157,11 +155,13 @@ export const REFUSALS = Object.freeze({
 
   // The inbound door's (`doors/src/inbound.ts`): an event too large to read or to mail, too
   // many headers or one too long, a capability URL's event with no id or time of its own, a
-  // shared app's signature that fails, or a shared app whose signing secret is not set.
+  // sender whose proof does not verify (`inbound-proof.ts` `proves`: a shared app's by the
+  // platform's signing secret here, an owner-held one in the object), or a shared app whose
+  // signing secret is not set.
   too_large: Object.freeze({ status: 413 }),
   too_many_headers: Object.freeze({ status: 400 }),
   event_identity_required: Object.freeze({ status: 400 }),
-  invalid_signature: Object.freeze({ status: 401 }),
+  inbound_proof_invalid: Object.freeze({ status: 401 }),
   inbound_app_unconfigured: Object.freeze({ status: 503, retryAfterS: INBOUND_RETRY_S,
                                             transient: true }),
   // The owner's object's answers to an event (`InboundAnswer`), with `too_large`: the agent's
