@@ -25,7 +25,7 @@
  * doors' own rule: the lane asks `open()` once a pass, before it claims, and claims nothing
  * on closed, a failure or no answer.
  */
-import { Refusal } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import type { Write } from "./gate";
 import {
   type Ledger, type LiveCallback, type Outcome, outcome, WAKE_LEASE_S, type WakeTarget,
@@ -212,8 +212,10 @@ type Answered = { readonly status: number; readonly retry_after: number | null }
  * kid retired, and its outcome is its own: marked sent this wake before the byte, its answer
  * recorded, a 429 leaving it owed the wake again. The wake is `rate_limited` while any
  * subscription is owed it (for the longest 429's `Retry-After`; the next try rings only
- * those), else `unknown` if any send may have left without an answer, else `sent` if any
- * was accepted (2xx), else `failed` with the first status: a 410 or 413 keeps the
+ * those), else `unknown` if any send may have left without an answer (`answer_lost` on its
+ * row, and in the log, when the gateway's own answer was lost), else `sent` if any
+ * was accepted (2xx), else `failed` with the first status (or, when the gateway refused
+ * every ring before its send, its refusal's code, logged): a 410 or 413 keeps the
  * subscription (the MCP Events spec), and a status the record names `token_dead` leaves the
  * owner one notice that its pasted token no longer works, until it is pasted again.
  */
@@ -311,18 +313,32 @@ export class Doorbell implements WakeSender, Lane {
     const { ledger, write } = this.#deps;
     await write(() => ledger.rung(sending.map(({ callback }) => callback.subscription_id), wake));
     const answers: Answered[] = [];
-    let unknown = false;
+    // A send that may have left without an answer; the gateway's own answer lost says so.
+    let unknown: Outcome | null = null;
+    // The code of the gateway's first refusal of a ring before its send: nothing left.
+    let refused: string | null = null;
     for (const { callback, request } of sending) {
       let rung: RingAnswer;
       try {
         rung = await this.#deps.ring(callback.subscription_id, callback.version, callback.blob,
                                      callback.previous, request);
-      } catch {
-        unknown = true;  // the gateway's answer was lost: a byte may have left
+      } catch (error) {
+        // A refusal crossed: the gateway failed the ring before its send (a keyring it lost),
+        // so nothing left. Anything else is its answer lost on the way back: a byte may have
+        // left, so the wake is unknown. Either cause is the operator's log and the row's; the
+        // other subscriptions' answers still count.
+        const refusal = refusalOf(error);
+        if (refusal !== null) {
+          console.error("the gateway refused a doorbell ring before its send", error);
+          refused ??= refusal.code;
+        } else {
+          console.error("a doorbell ring's gateway answer was lost; the wake is unknown", error);
+          unknown = { state: "unknown", reason: "answer_lost" };
+        }
         continue;
       }
       if (rung.state === "unknown") {
-        unknown = true;
+        unknown ??= { state: "unknown" };
         continue;
       }
       if (rung.state === "refused") {
@@ -352,14 +368,14 @@ export class Doorbell implements WakeSender, Lane {
                retry_after: waits.includes(null) ? null
                  : Math.max(...waits.map((wait) => wait ?? 0)) };
     }
-    if (unknown) {
-      return { state: "unknown" };
+    if (unknown !== null) {
+      return unknown;
     }
     if (accepted !== undefined) {
       return { state: "sent", status: accepted.status };
     }
     const first = answers[0];
-    return first === undefined ? { state: "failed", reason: "not_sent" }
+    return first === undefined ? { state: "failed", reason: refused ?? "not_sent" }
       : { state: "failed", status: first.status };
   }
 }

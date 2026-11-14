@@ -26,10 +26,12 @@ import { fileURLToPath } from "node:url";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { chromium } from "playwright";
 
+import { installed } from "../../ci/deps.ts";
 import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts";
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
 
+installed();
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ORIGIN = "https://tinyassets.io";
 const EGRESS = "https://egress.tinyassets.io";

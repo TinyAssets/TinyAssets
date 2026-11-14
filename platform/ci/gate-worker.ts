@@ -3,7 +3,8 @@
  * front of the real Worker or object that binding names (`REAL`), and forwards every call to
  * it unchanged unless the test armed that call through the gate's `Control` entrypoint (bound
  * to the test Worker alone):
- * - held before it is sent, or after its answer, until the test lets it go;
+ * - held before it is sent, or after its answer, until the test lets it go, or loses it: the
+ *   call then throws, as one whose connection dropped does, its answer (if any) never handed on;
  * - its bytes changed in flight (the first byte of each byte array it carries);
  * - refused, with the refusal the test gave, crossing as a real refusal crosses.
  * It records what crossed, by method and by name: an object's name, or for a service the call's
@@ -74,6 +75,8 @@ const SETUP = JSON.parse((env as unknown as { GATE: string }).GATE) as GateSetup
 
 const arms: { arm: Arm; left: number }[] = [];
 const held = new Map<number, Held>();
+/** The held calls the test lost (`Control.lose`): each throws once let go. */
+const lost = new Set<number>();
 const crossed: Crossed[] = [];
 let lastId = 0;
 
@@ -132,6 +135,9 @@ async function hold(method: string, name: string | null, at: Held["at"]): Promis
   held.set(id, { id, method, name, at });
   while (held.has(id)) {
     await scheduler.wait(2);
+  }
+  if (lost.delete(id)) {
+    throw new Error(`the gate lost ${method}'s answer`);
   }
 }
 
@@ -263,6 +269,15 @@ export class Control extends WorkerEntrypoint {
     }
   }
 
+  /** The held call `id` let go with its answer lost: it throws; loud for a call not held. */
+  async lose(id: number): Promise<void> {
+    if (!held.has(id)) {
+      throw new Error(`no call ${id} is held at the gate`);
+    }
+    lost.add(id);
+    held.delete(id);
+  }
+
   /**
    * The gate as it started: every arming dropped, every held call let go and the record
    * emptied. Module state outlives a test (only a test file gets a fresh copy of the gate),
@@ -271,6 +286,7 @@ export class Control extends WorkerEntrypoint {
   async disarm(): Promise<void> {
     arms.length = 0;
     held.clear();
+    lost.clear();
     crossed.length = 0;
   }
 
