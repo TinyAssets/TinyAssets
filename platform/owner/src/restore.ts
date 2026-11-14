@@ -709,9 +709,9 @@ export const restoreDoors = Object.freeze({
    */
   async restoreStep(o: OwnerState, door: Door<undefined>): Promise<RestoreAnswer> {
     await o.door(() => door.check());
-    const until = Date.now() + RESTORE_PASS_MS;
+    const until = clock() + RESTORE_PASS_MS / 1000;
     const source: GenerationSource = o.env.FILES;
-    while (await piece(o, door, source) && Date.now() < until) {
+    while (await piece(o, door, source) && clock() < until) {
       // the next piece
     }
     await o.sync();
