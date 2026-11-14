@@ -1,8 +1,7 @@
 /**
  * The doors' public identity (`contract/identity.json`) is written once. Its readers that cannot
- * read it are held to it here: the contract, whose `ZONE` and `EGRESS_HOST` the runner the
- * sandbox template ships is built from (so they change only with a new template pair), and
- * the owner app's own scripts, browser modules that build its sign-in from their origin.
+ * read it are held to it here: the owner app's own scripts, browser modules that build its
+ * sign-in from their origin.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +9,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { EGRESS_HOST, ZONE } from "../../contract/src/egress";
 import identity from "../../contract/identity.json" with { type: "json" };
 
 /** Whether the route pattern `pattern` (from the origin) takes `path`. */
@@ -19,10 +17,6 @@ function takes(pattern: string, path: string): boolean {
 }
 
 describe("the doors' public identity", () => {
-  it("is the contract's zone and egress host", () => {
-    expect([ZONE, EGRESS_HOST]).toEqual([identity.host, identity.egress]);
-  });
-
   it("hands the doors, at the cutover, every path the outside world reaches them by", () => {
     for (const path of [identity.mcp, identity.signin.authorize, identity.signin.callback,
                         identity.first_party.client, identity.hook]) {

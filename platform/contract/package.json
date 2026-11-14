@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run --tags-filter=!large"
+    "test": "vitest run --tags-filter=!large",
+    "test:sizes": "vitest run --tags-filter=large"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.4.0",

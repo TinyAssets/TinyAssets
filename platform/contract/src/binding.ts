@@ -6,6 +6,9 @@
  */
 import type { Vendor } from "./apps";
 import { sha256Hex } from "./digest";
+import { HEX16, HEX32, HEX64, RUN_ID } from "./ids";
+import { Refusal } from "./refusal";
+import { principal } from "./text";
 
 /**
  * The reserved caller only the platform's admin path sends (the binder's `bindPlatformFor`, the
@@ -33,7 +36,7 @@ export interface Source {
  * is, the SHA-256 of its secret, and for the egress token the egress generation E2B's
  * transform set beside it.
  */
-export type SandboxBinding =
+export type SandboxToken =
   | { readonly kind: "egress"; readonly token: string; readonly generation: number;
       /** The SHA-256 of the run's own secret its path carried (`/r/<run>/<secret>/...`). */
       readonly secret?: string;
@@ -76,7 +79,7 @@ export interface Binding {
    * the egress generation its
    * network's transform set. Only the egress doors take it; every other door refuses it.
    */
-  readonly sandbox?: SandboxBinding;
+  readonly sandbox?: SandboxToken;
   /**
    * A run's call on the egress host (its MCP door, its event door): the run its path named,
    * beside the egress token's `sandbox`. The object resolves the live lease, the run under
@@ -121,6 +124,242 @@ export interface Binding {
    */
   readonly vendor?: Vendor | null;
 }
+
+// -- The kinds ----------------------------------------------------------------------------
+//
+// A binding is one of these kinds, each the fields of `Binding` it carries, and each with its
+// one parser: the binder builds a kind, and the object parses a door's binding with the
+// parser of the kind its row's caller takes (`BINDING_PARSERS`), so a field the binder sends
+// and the parser lacks is a type error. A parser refuses anything else as `invalid`. Two doors
+// take no binding (`UNBOUND_DOORS`, `doors.ts`).
+
+/** The tier numbers and switched-on sign-ins a door's binding carries, as the binder read them. */
+type Gated = Pick<Binding, "tiers" | "signins">;
+
+/**
+ * The owner's own account, acting itself or through a verified outside client (an MCP
+ * client or an API key), or another owner visiting; its first-party token's grant, a fresh
+ * sign-in's time, and the browser's session cookie where one rode the request.
+ */
+export type AccountBinding = Pick<Binding, "owner" | "caller" | "origin" | "source"
+  | "authenticated_at" | "session" | "grant" | "expires_at" | "vendor"> & Gated;
+/** The owner in its live session: an account binding with its session cookie. */
+export type SessionBinding = AccountBinding & { readonly session: string };
+/** A sandbox's token at its own doors (the egress door's, the runner's, the sync agent's). */
+export type SandboxBinding = Pick<Binding, "owner" | "caller"> & {
+  readonly origin: null; readonly sandbox: SandboxToken };
+/** A run's call on the egress host: the egress token, and the run its path names. */
+export type RunBinding = Pick<Binding, "owner" | "caller"> & {
+  readonly origin: null; readonly sandbox: Extract<SandboxToken, { kind: "egress" }>;
+  readonly run: string };
+/** An inbound event's route, at its binding's revision. */
+export type InboundBinding = Pick<Binding, "owner" | "caller"> & Gated & {
+  readonly origin: null; readonly inbound: NonNullable<Binding["inbound"]> };
+/**
+ * The platform's reserved caller for an owner, with no outside client and no session: its
+ * admit and tier doors, and an erasure's doors (the same binding, while the owner is marked).
+ */
+export type ReservedBinding = Pick<Binding, "owner"> & {
+  readonly caller: typeof PLATFORM_CALLER; readonly origin: null };
+/** The cutover's import: the reserved caller with the verified bundle and the tier numbers. */
+export type ImportBinding = ReservedBinding & {
+  readonly import: NonNullable<Binding["import"]>; readonly tiers: unknown };
+
+function invalid(kind: string): never {
+  throw new Refusal("invalid", `invalid ${kind} binding`);
+}
+
+/** `value` as a plain object whose keys are all `required` and some of `optional`. */
+function fields(value: unknown, kind: string, required: readonly string[],
+                optional: readonly string[] = []): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return invalid(kind);
+  }
+  const keys = Object.keys(value);
+  if (required.some((key) => !keys.includes(key))
+      || keys.some((key) => !required.includes(key) && !optional.includes(key))) {
+    return invalid(kind);
+  }
+  return value as Record<string, unknown>;
+}
+
+function hex(value: unknown, grammar: RegExp, kind: string): string {
+  return typeof value === "string" && grammar.test(value) ? value : invalid(kind);
+}
+
+/** A whole number from `min`: seconds, a generation, a revision. */
+function whole(value: unknown, min: number, kind: string): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= min ? value
+    : invalid(kind);
+}
+
+function text(value: unknown, kind: string): string {
+  return typeof value === "string" && value !== "" ? value : invalid(kind);
+}
+
+/** A verified outside client: exactly a 64-hex client and family. */
+function origin(value: unknown, kind: string): Origin {
+  const { client, family } = fields(value, kind, ["client", "family"]);
+  return Object.freeze({ client: hex(client, HEX64, kind), family: hex(family, HEX64, kind) });
+}
+
+/** An API key's id, or an MCP client's OAuth `client_id`. */
+function source(value: unknown, kind: string): Source {
+  const { kind: by, ref } = fields(value, kind, ["kind", "ref"]);
+  if (by === "api_key") {
+    return Object.freeze({ kind: by, ref: hex(ref, HEX16, kind) });
+  }
+  return by === "mcp" && typeof ref === "string" && ref !== "" && ref.length <= 512
+    ? Object.freeze({ kind: by, ref }) : invalid(kind);
+}
+
+function vendor(value: unknown, kind: string): Vendor | null {
+  if (value === null) {
+    return null;
+  }
+  const { id, verified } = fields(value, kind, ["id", "verified"]);
+  return typeof id === "string" && typeof verified === "boolean"
+    ? Object.freeze({ id, verified }) : invalid(kind);
+}
+
+/** The owner's own principal, as its caller too, with no outside client. */
+function own(given: Record<string, unknown>, kind: string): string {
+  const owner = principal(given["owner"]);
+  return principal(given["caller"]) === owner && given["origin"] === null ? owner
+    : invalid(kind);
+}
+
+/** The platform's reserved caller for one owner, with no outside client. */
+function platform(given: Record<string, unknown>, kind: string): string {
+  return given["caller"] === PLATFORM_CALLER && given["origin"] === null
+    ? principal(given["owner"]) : invalid(kind);
+}
+
+/** An account binding (`AccountBinding`), or `invalid`. */
+export function accountBinding(value: unknown): AccountBinding {
+  const kind = "account";
+  const given = fields(value, kind, ["owner", "caller", "origin"],
+                       ["source", "authenticated_at", "session", "grant", "expires_at", "vendor",
+                        "tiers", "signins"]);
+  const has = (key: string) => key in given;
+  return Object.freeze({
+    owner: principal(given["owner"]), caller: principal(given["caller"]),
+    origin: given["origin"] === null ? null : origin(given["origin"], kind),
+    ...(has("source") ? { source: source(given["source"], kind) } : {}),
+    ...(has("authenticated_at")
+      ? { authenticated_at: whole(given["authenticated_at"], 0, kind) } : {}),
+    ...(has("session") ? { session: text(given["session"], kind) } : {}),
+    ...(has("grant") ? { grant: text(given["grant"], kind) } : {}),
+    ...(has("expires_at") ? { expires_at: whole(given["expires_at"], 0, kind) } : {}),
+    ...(has("vendor") ? { vendor: vendor(given["vendor"], kind) } : {}),
+    ...(has("tiers") ? { tiers: given["tiers"] } : {}),
+    ...(has("signins") ? { signins: given["signins"] } : {}),
+  });
+}
+
+/** A session binding (`SessionBinding`): an account binding with its session, or `invalid`. */
+export function sessionBinding(value: unknown): SessionBinding {
+  const account = accountBinding(value);
+  return account.session === undefined ? invalid("session")
+    : { ...account, session: account.session };
+}
+
+/**
+ * A sandbox's token, exactly (`Binding.sandbox`): the egress token, with a run's or the
+ * runner's secret or neither, or the sync token; or `invalid`.
+ */
+export function sandboxToken(value: unknown): SandboxToken {
+  const kind = "sandbox";
+  if (typeof value === "object" && value !== null && "egress" in value) {
+    const given = fields(value, kind, ["kind", "token", "egress"]);
+    return given["kind"] === "sync"
+      ? Object.freeze({ kind: "sync", token: hex(given["token"], HEX64, kind),
+                        egress: hex(given["egress"], HEX64, kind) })
+      : invalid(kind);
+  }
+  const given = fields(value, kind, ["kind", "token", "generation"], ["secret", "runner"]);
+  if (given["kind"] !== "egress" || ("secret" in given && "runner" in given)) {
+    return invalid(kind);
+  }
+  const token = hex(given["token"], HEX64, kind);
+  const generation = whole(given["generation"], 1, kind);
+  return Object.freeze("secret" in given
+    ? { kind: "egress", token, generation, secret: hex(given["secret"], HEX64, kind) }
+    : "runner" in given
+      ? { kind: "egress", token, generation, runner: hex(given["runner"], HEX64, kind) }
+      : { kind: "egress", token, generation });
+}
+
+/** A sandbox binding (`SandboxBinding`), or `invalid`. */
+export function sandboxBinding(value: unknown): SandboxBinding {
+  const kind = "sandbox";
+  const given = fields(value, kind, ["owner", "caller", "origin", "sandbox"]);
+  const owner = own(given, kind);
+  return Object.freeze({ owner, caller: owner, origin: null,
+                         sandbox: sandboxToken(given["sandbox"]) });
+}
+
+/** A run binding (`RunBinding`), or `invalid`. */
+export function runBinding(value: unknown): RunBinding {
+  const kind = "run";
+  const given = fields(value, kind, ["owner", "caller", "origin", "sandbox", "run"]);
+  const owner = own(given, kind);
+  const sandbox = sandboxToken(given["sandbox"]);
+  return sandbox.kind === "egress"
+    ? Object.freeze({ owner, caller: owner, origin: null, sandbox,
+                      run: hex(given["run"], RUN_ID, kind) })
+    : invalid(kind);
+}
+
+/** An inbound binding (`InboundBinding`), or `invalid`. */
+export function inboundBinding(value: unknown): InboundBinding {
+  const kind = "inbound";
+  const given = fields(value, kind, ["owner", "caller", "origin", "inbound"],
+                       ["tiers", "signins"]);
+  const owner = own(given, kind);
+  const { binding, revision } = fields(given["inbound"], kind, ["binding", "revision"]);
+  return Object.freeze({
+    owner, caller: owner, origin: null,
+    inbound: Object.freeze({ binding: hex(binding, HEX32, kind),
+                             revision: whole(revision, 1, kind) }),
+    ...("tiers" in given ? { tiers: given["tiers"] } : {}),
+    ...("signins" in given ? { signins: given["signins"] } : {}),
+  });
+}
+
+/** A reserved binding (`ReservedBinding`), an erasure's too, or `invalid`. */
+export function reservedBinding(value: unknown): ReservedBinding {
+  const kind = "reserved";
+  const owner = platform(fields(value, kind, ["owner", "caller", "origin"]), kind);
+  return Object.freeze({ owner, caller: PLATFORM_CALLER, origin: null });
+}
+
+/** An import binding (`ImportBinding`), or `invalid`. */
+export function importBinding(value: unknown): ImportBinding {
+  const kind = "import";
+  const given = fields(value, kind, ["owner", "caller", "origin", "import", "tiers"]);
+  const owner = platform(given, kind);
+  const { bundle } = fields(given["import"], kind, ["bundle"]);
+  return Object.freeze({ owner, caller: PLATFORM_CALLER, origin: null,
+                         import: Object.freeze({ bundle: hex(bundle, HEX64, kind) }),
+                         tiers: given["tiers"] });
+}
+
+/**
+ * Each binding kind's parser, by the kind: the object parses a door's binding with the one
+ * its row's caller takes. An erasure's doors take the reserved binding, as the admit does.
+ */
+export const BINDING_PARSERS = Object.freeze({
+  account: accountBinding,
+  session: sessionBinding,
+  sandbox: sandboxBinding,
+  run: runBinding,
+  inbound: inboundBinding,
+  reserved: reservedBinding,
+  erasure: reservedBinding,
+  import: importBinding,
+});
+export type BindingKind = keyof typeof BINDING_PARSERS;
 
 /** What the inbound door answers the binder for one event (`inboundAccept`). */
 export type InboundAnswer =

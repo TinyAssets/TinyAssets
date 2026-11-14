@@ -48,9 +48,8 @@ import {
   type MeterOutcome, outcomeOf, type Reservation,
 } from "../../contract/src/gateway";
 import {
-  EGRESS_BEAT_S, EGRESS_ORIGIN, EVENTS_DOOR, GENERATION_HEADER, generationIn, MCP_DOOR,
-  MODEL_DOOR, type Outcome, RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
-  SIGNIN_DOOR, SIGNIN_EVENTS_DOOR, SYNC_DOOR, SYNC_HEADER, type SyncDoor,
+  EGRESS_BEAT_S, EGRESS_ORIGIN, egressDoor, GENERATION_HEADER, generationIn, type Outcome,
+  RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER, SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
 import { HEX64 } from "../../contract/src/ids";
 import type { SettleSent } from "../../contract/src/owner";
@@ -444,44 +443,41 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (url.origin !== EGRESS_ORIGIN) {
     return refused("not_found", 404);
   }
-  const mcp = MCP_DOOR.exec(url.pathname);
-  if (mcp !== null && url.search === "") {
-    const secret = secretOf(request, mcp[2]);
-    if (secret === undefined) {
-      return refused("run_secret_missing", 401);
-    }
-    return serveRun(request, env, mcp[1]!, { mcp: secret });
-  }
-  const events = EVENTS_DOOR.exec(url.pathname);
-  if (events !== null && url.search === "") {
-    return serveRun(request, env, events[1]!, "events");
-  }
-  if (url.pathname === SIGNIN_DOOR && url.search === "") {
-    return serveSignin(request, env);
-  }
-  const signinEvents = SIGNIN_EVENTS_DOOR.exec(url.pathname);
-  if (signinEvents !== null && url.search === "") {
-    return serveSigninEvents(request, env, signinEvents[1]!);
-  }
-  const sync = SYNC_DOOR.exec(url.pathname);
-  if (sync !== null && url.search === "") {
-    return serveSync(request, env, sync[1] as SyncDoor);
-  }
-  const route = MODEL_DOOR.exec(url.pathname);
-  if (route === null) {
+  const door = egressDoor(url.pathname);
+  if (door !== null && door.door !== "model" && url.search !== "") {
     return refused("not_found", 404);
+  }
+  switch (door?.door) {
+    case "mcp": {
+      const secret = secretOf(request, door.secret);
+      if (secret === undefined) {
+        return refused("run_secret_missing", 401);
+      }
+      return serveRun(request, env, door.run, { mcp: secret });
+    }
+    case "events":
+      return serveRun(request, env, door.run, "events");
+    case "signin":
+      return serveSignin(request, env);
+    case "signin_events":
+      return serveSigninEvents(request, env, door.signin);
+    case "sync":
+      return serveSync(request, env, door.sync);
+    case "model":
+      break;
+    case undefined:
+      return refused("not_found", 404);
   }
   const verified = await sandboxToken(request, env);
   if (verified instanceof Response) {
     return verified;
   }
-  const secret = secretOf(request, route[2]);
+  const secret = secretOf(request, door.secret);
   const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
                             secret === undefined ? {} : { secret });
   const { binding, stub } = bound;
-  const run = route[1]!;
-  const connection = route[3]!;
-  const path = `${route[4]!}${url.search}`;
+  const { run, connection } = door;
+  const path = `${door.path}${url.search}`;
   const length = request.headers.get("content-length");
   const bytesHint = length !== null && LENGTH.test(length) ? Number(length) : null;
   // The door reads none of the body: it streams to the gateway, which parses a model call's

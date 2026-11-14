@@ -522,7 +522,9 @@ export function runtimeReach(sources: ReadonlyMap<string, string>, roots: readon
       unresolved.push(`${path}: a computed specifier`);
     }
     for (const spec of specs) {
-      if (spec.startsWith(".")) {
+      if (spec.startsWith(".") && spec.endsWith(".json")) {
+        continue;  // a data file: it runs nothing
+      } else if (spec.startsWith(".")) {
         const target = resolved(sources, path, spec);
         if (target === null) {
           unresolved.push(`${path}: ${spec}`);

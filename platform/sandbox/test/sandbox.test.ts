@@ -19,7 +19,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import {
   closedNetwork, EGRESS_HOST, egressTokenOf, GENERATION_HEADER, generationOf, runUrls,
-  signinEventsUrl, withEgressToken, withGeneration,
+  signinUrls, withEgressToken, withGeneration,
 } from "../../contract/src/egress";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/migrate";
@@ -1143,7 +1143,7 @@ describe("a sign-in", () => {
   function signin(over: Record<string, unknown> = {}) {
     return { id: SI, engine: "kimi", region: "global", mode: "in" as const, authority: "owner",
              lease: LEASE, tokens: start().tokens, network: NETWORK as never, route: ROUTE,
-             urls: { events: signinEventsUrl(SI), signin: start().urls.signin }, ...over };
+             urls: signinUrls(SI), ...over };
   }
 
   it("starts the record's login in the authority's sandbox, its region's hosts let out",

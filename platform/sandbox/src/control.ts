@@ -65,7 +65,7 @@
  * running again or gone), so one the line did not take is asked again until it lands.
  */
 import { sha256Hex } from "../../contract/src/digest";
-import { HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
+import { AUTHORITY, HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
 import { readControl, type SandboxCeilings } from "../../contract/src/control";
@@ -76,6 +76,7 @@ import {
   withEgressToken,
 } from "../../contract/src/egress";
 import { migrate } from "../../contract/src/migrate";
+import { SEALED_ROUTE } from "../../contract/src/routing-mac";
 import {
   METER_BATCH, type MeterEvent, type NetworkApplied, type NetworkReapply, type SandboxSignin,
   type SandboxStart, type Started,
@@ -201,9 +202,6 @@ interface Box extends Handle {
 }
 
 const LEASE = HEX32;
-const AUTHORITY = /^(?:owner|[0-9a-f]{64})$/;
-/** A sealed route (`sealRoute`), as E2B's metadata carries it. */
-const ROUTE = /^[A-Za-z0-9_-]{40,2048}$/;
 
 function json(value: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(value));
@@ -760,7 +758,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async start(owner: string, start: SandboxStart): Promise<Started> {
     if (!RUN_ID.test(start.run) || !AUTHORITY.test(start.authority)
         || !LEASE.test(start.lease.lease_id) || (start.tokens === null) !== (start.network === null)
-        || typeof start.route !== "string" || !ROUTE.test(start.route)
+        || typeof start.route !== "string" || !SEALED_ROUTE.test(start.route)
         || !httpsDoors(start.urls)) {
       throw new Error("a sandbox start names its run, its authority, its lease and its " +
                       "https doors on the egress host");
@@ -798,7 +796,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async signin(owner: string, signin: SandboxSignin): Promise<Started> {
     if (!SIGNIN_ID.test(signin.id) || !AUTHORITY.test(signin.authority)
         || !LEASE.test(signin.lease.lease_id) || (signin.tokens === null) !== (signin.network === null)
-        || typeof signin.route !== "string" || !ROUTE.test(signin.route)
+        || typeof signin.route !== "string" || !SEALED_ROUTE.test(signin.route)
         || !httpsDoors(signin.urls) || (signin.mode !== "in" && signin.mode !== "out")) {
       throw new Error("a sign-in names its id, its authority, its lease, its route and its " +
                       "https doors on the egress host");

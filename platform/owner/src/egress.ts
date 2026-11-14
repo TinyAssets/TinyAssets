@@ -74,7 +74,7 @@
  * finish within its deadline (`EGRESS_DEADLINE_S`): here a policy write ends it, as it ends
  * the owner's in-flight turns.
  */
-import type { SandboxBinding } from "../../contract/src/binding";
+import type { SandboxToken } from "../../contract/src/binding";
 import { CONNECTION_ID, HEX32, HEX64, randomHex, RUN_ID } from "../../contract/src/ids";
 
 import { apiRules, freeCall, tierMultiplier } from "../../contract/src/api-rules";
@@ -327,7 +327,7 @@ function reserveRequest(value: unknown): ReserveRequest {
 }
 
 /** The binding's sandbox fields, exactly, or `invalid`. */
-export function sandboxBinding(value: unknown): SandboxBinding {
+export function sandboxBinding(value: unknown): SandboxToken {
   // At most one of a run's own secret and the runner's, each a SHA-256 hex.
   const egress = plain(value, "generation,kind,token") ? "none"
     : plain(value, "generation,kind,secret,token") ? "secret"
@@ -415,7 +415,7 @@ export class Egress {
    * The live lease the egress token names, or null: a lease whose egress token's hash is
    * the one presented. Read before anything else an open does (an OAuth refresh among it).
    */
-  lease(sandbox: SandboxBinding, now: number): SandboxLease | null {
+  lease(sandbox: SandboxToken, now: number): SandboxLease | null {
     return sandbox.kind === "egress" ? this.#deps.lease(sandbox.token, now) : null;
   }
 
@@ -423,7 +423,7 @@ export class Egress {
    * In the door's unit: the call admitted and reserved, an open row and its end signal; or
    * refused, with its fixed code, kept as a receipt row (the newest `refusalsKept`).
    */
-  open(sandbox: SandboxBinding, request: EgressRequest, now: number):
+  open(sandbox: SandboxToken, request: EgressRequest, now: number):
       EgressOpened | EgressRefusal {
     this.#recover(now);
     const lease = this.lease(sandbox, now);
@@ -500,7 +500,7 @@ export class Egress {
    * still streaming, never reserved, by the egress token that opened it, is reserved, once;
    * anything else is `invalid`.
    */
-  reserve(sandbox: SandboxBinding, request: ReserveRequest, now: number):
+  reserve(sandbox: SandboxToken, request: ReserveRequest, now: number):
       EgressReserved | EgressRefusal {
     this.#recover(now);
     const row = this.#sql.exec<Row>("SELECT * FROM egress_reservations WHERE id = ?",
@@ -612,7 +612,7 @@ export class Egress {
    * it; its model reservation settled with it. False for one already settled, lost or
    * refused, or presented by another token.
    */
-  settle(sandbox: SandboxBinding, request: SettleRequest, now: number):
+  settle(sandbox: SandboxToken, request: SettleRequest, now: number):
       { settled: false } | { settled: true; connection: string; version: number } {
     this.#recover(now);
     const row = this.#sql.exec<Row>("SELECT * FROM egress_reservations WHERE id = ?",
@@ -687,7 +687,7 @@ export class Egress {
     return this.#sql.exec<{ n: number }>(statement, ...params).one().n;
   }
 
-  #record(sandbox: SandboxBinding, request: EgressRequest, lease: SandboxLease | null,
+  #record(sandbox: SandboxToken, request: EgressRequest, lease: SandboxLease | null,
           generation: number, now: number,
           fields: { code?: EgressCode; version?: number }): string {
     const id = randomHex(16);
@@ -715,7 +715,7 @@ export class Egress {
    * In a unit: a streaming call's open reservation beaten by its door (`EGRESS_BEAT_S`), by
    * the egress token that opened it; false for one settled, lost or another token's.
    */
-  beat(sandbox: SandboxBinding, reservation: unknown, now: number): boolean {
+  beat(sandbox: SandboxToken, reservation: unknown, now: number): boolean {
     if (typeof reservation !== "string" || sandbox.kind !== "egress") {
       return false;
     }

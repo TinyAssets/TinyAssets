@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { EVENTS_DOOR, SIGNIN_EVENTS_DOOR } from "../../../contract/src/egress";
+import { egressDoor } from "../../../contract/src/egress";
 import { bundledSources } from "../../../sources/src/catalog";
 
 import { binPath } from "../engine";
@@ -626,7 +626,8 @@ export class Doors {
           response.writeHead(status, { "content-type": "application/json", ...headers });
           response.end(JSON.stringify(value));
         };
-        if (EVENTS_DOOR.test(path) || SIGNIN_EVENTS_DOOR.test(path)) {
+        const door = egressDoor(path)?.door;
+        if (door === "events" || door === "signin_events") {
           if (this.ended) {
             return json(403, { error: { code: "run_ended" } });
           }

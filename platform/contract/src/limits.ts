@@ -62,8 +62,8 @@ export const EGRESS_DEADLINE_S = 86_400;
 /**
  * The most bytes one request body a Worker reads whole: the platform's one ceiling for it,
  * the egress door's and the gateway's model call, the API's and the owner surface's tool
- * calls (`API_BODY_MAX`, `APP_BODY_MAX`), a row's or a message's body at half of it
- * (`BODY_BYTES_MAX`, room for its JSON escapes). A technical ceiling: the egress door
+ * calls and an inbound event, a row's or a message's body at half of it (`BODY_BYTES_MAX`,
+ * room for its JSON escapes). A technical ceiling: the egress door
  * streams a model call's body and holds none of it, and the gateway, which parses it once,
  * weighs each call by its bytes and its structural tokens in slots of its pool
  * (`gateway/src/held.ts`, measured in workerd and asserted by the memory leg), so an ASCII
@@ -72,6 +72,23 @@ export const EGRESS_DEADLINE_S = 86_400;
  * past what one pool holds.
  */
 export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
+/**
+ * A request's body on the MCP door, a technical ceiling: the MCP SDK's own default
+ * (`maxRequestBodySize`, 4 MiB), kept because the SDK materializes a JSON-RPC message whole,
+ * so its ceiling is what the doors' isolate holds a few at a time; bodies up to
+ * `BODY_BYTES_MAX` (8 MiB) go by `/api` (memshape_research.md §4).
+ */
+export const MCP_BODY_MAX = 4 * 1024 * 1024;
+/** The consent form's body: its handle and decision, a few short fields. */
+export const AUTHORIZE_BODY_MAX = 4 * 1024;
+/** An E2B lifecycle event's body: a few hundred bytes in practice, the metadata's included. */
+export const HOOK_BODY_MAX = 64 * 1024;
+
+/**
+ * An owner's protected session's life, in seconds (the Python's 28 800): the object's
+ * session row expires so, and the doors' session cookie's `Max-Age` is the same.
+ */
+export const SESSION_TTL_S = 28_800;
 
 /**
  * How long a call waits for an isolate's pool units before it is refused `busy`: the queue's
