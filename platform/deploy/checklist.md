@@ -520,17 +520,18 @@ or a check that finds an object missing or different.
 
 The account id is the repository variable `CLOUDFLARE_ACCOUNT_ID` (the import window's step 0).
 
-**The 28 days, and the erasure.** The bucket keeps each version 28 days, locked in compliance
-mode from its upload, and its lifecycle rule deletes a version 28 days after it is hidden or
-replaced. An erased owner's objects leave R2 at the wipe, and the next night's copy hides them.
-So they are gone from the copy by the wipe plus a night, 28 days and the lifecycle's daily pass:
-inside the 30 days the erase answer names (`complete_at`). Every night counts. A night that fails
-delays the hiding by a day, so an erased owner's copy outlives `complete_at` by the days the copy
-stayed red.
+**The 22 days, and the erasure.** The bucket keeps each version 22 days, locked in compliance
+mode from its upload, and its lifecycle rule deletes a version 22 days after it is hidden or
+replaced. An erased owner's objects leave R2 at the wipe, and the first night that passes hides
+them. So they are gone from the copy by the wipe plus at most a week for the hide, 22 days and
+the lifecycle's daily pass: inside the 30 days the erase answer names (`complete_at`), as long
+as a night passes at least once a week. A red night is an alarm (R6's canary), with days to fix
+it, not a breach.
 
-**A mass deletion stops the copy.** A night that would hide more than a tenth of the copy (at
-least 100 objects) stops before hiding the rest, and fails. If the deletion is meant, run the
-workflow by hand with `max_delete` set to the number to let through.
+**A mass deletion fails the night, after it is hidden.** A night that hides more than a tenth of
+the copy (at least 100 objects) hides them all and then fails, naming the count. Nothing is lost:
+each hidden version stays 22 days, and rclone's `--b2-version-at` reads it back. The copy never
+holds a deletion back, because an erasure must reach it within the week.
 
 The steps, on your own computer (about $0.50 a month at today's size):
 
@@ -539,8 +540,8 @@ The steps, on your own computer (about $0.50 a month at today's size):
 2. **The bucket.** Buckets → Create a Bucket: name `tinyassets-offsite-` and 8 random lowercase
    letters and digits; Files **Private**; Default Encryption **Disable** (the objects arrive
    encrypted); Object Lock **Enable**.
-3. **Its two rules.** On the bucket, Object Lock → Default Retention → **Compliance, 28 days**.
-   Lifecycle Settings → **Keep prior versions for this number of days: 28**. A compliance lock
+3. **Its two rules.** On the bucket, Object Lock → Default Retention → **Compliance, 22 days**.
+   Lifecycle Settings → **Keep prior versions for this number of days: 22**. A compliance lock
    can't be shortened, and nothing under it can be deleted before its time.
 4. **The two keys,** with Backblaze's `b2` command line (`pip install b2`) signed in with the
    master key (`b2 account authorize`). The web form's "Write Only" doesn't say whether it

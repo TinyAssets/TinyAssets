@@ -11,8 +11,9 @@
  *   hides (no delete, no read), the read key exactly what reads, each on the one bucket, and
  *   the bucket is private, locked in compliance mode and keeps prior versions one rule's
  *   `KEEP_DAYS`, inside the erasure's window. Anything else stops the night, copying nothing.
- * - **rclone:** the sync hides at most a tenth of the copy (at least 100) unless the dispatch
- *   says how many; every object R2 held when the run began is checked at its size, and a
+ * - **rclone:** the sync hides every deletion, and a night that hid more than a tenth of the
+ *   copy (at least 100) fails once they are made; every object R2 held when the run began is
+ *   checked at its size, and a
  *   sample byte for byte with the read key; each credential is in its one call's environment,
  *   never an argument; any failure stops loudly.
  */
@@ -48,8 +49,8 @@ const KEPT: Json = {
   bucketName: BUCKET, bucketType: "allPrivate",
   fileLockConfiguration: { isClientAuthorizedToRead: true, value: {
     isFileLockEnabled: true, defaultRetention: { mode: "compliance",
-                                                 period: { duration: 28, unit: "days" } } } },
-  lifecycleRules: [{ fileNamePrefix: "", daysFromHidingToDeleting: 28,
+                                                 period: { duration: 22, unit: "days" } } } },
+  lifecycleRules: [{ fileNamePrefix: "", daysFromHidingToDeleting: 22,
                      daysFromUploadingToHiding: null }],
 };
 
@@ -58,13 +59,13 @@ interface Call { readonly args: string[]; readonly env: Record<string, string>;
 
 /**
  * A fake Backblaze and rclone: the keys hold `capabilities` (each its own by default) on
- * `buckets`, the bucket is `bucket`, the copy holds `held` objects and R2 lists `names`, and
+ * `buckets`, the bucket is `bucket`, R2 lists `names` and the copy `names` and `gone`, and
  * the rclone call whose arguments start with `failing` exits 7.
  */
 function world(options: { readonly capabilities?: Partial<Record<"write" | "read", string[]>>;
                           readonly buckets?: (string | null)[]; readonly prefix?: string;
                           readonly bucket?: Json; readonly signIn?: number;
-                          readonly held?: number; readonly names?: string[];
+                          readonly gone?: string[]; readonly names?: string[];
                           readonly failing?: string } = {}) {
   const calls: Call[] = [];
   const asked: string[] = [];
@@ -108,11 +109,13 @@ function world(options: { readonly capabilities?: Partial<Record<"write" | "read
       return { status: 7, stdout: "" };
     }
     if (args[0] === "size") {
-      const count = args.at(-1)!.startsWith("copy:") ? options.held ?? 3000 : 5000;
+      const count = args.at(-1)!.startsWith("copy:") ? 3000 : 5000;
       return { status: 0, stdout: JSON.stringify({ count, bytes: count * 10, sizeless: 0 }) };
     }
     if (args[0] === "lsf") {
-      return { status: 0, stdout: (options.names ?? ["o/aa/c/1", "o/aa/m/2"]).join("\n") };
+      const names = options.names ?? ["o/aa/c/1", "o/aa/m/2"];
+      return { status: 0, stdout: (args.at(-1)!.startsWith("copy:")
+        ? [...names, ...options.gone ?? []] : names).join("\n") };
     }
     return { status: 0, stdout: "" };
   }) as unknown as Effects["spawn"];
@@ -121,8 +124,7 @@ function world(options: { readonly capabilities?: Partial<Record<"write" | "read
 }
 
 const SET = settings(STORED)!;
-const run = (fake: ReturnType<typeof world>, maxDelete = "") =>
-  copy(SET, SOURCE, maxDelete, fake.io);
+const run = (fake: ReturnType<typeof world>) => copy(SET, SOURCE, fake.io);
 
 describe("the copy's settings", () => {
   it("are none, all, or a loud stop naming what is missing", () => {
@@ -172,22 +174,22 @@ describe("the copy's keys and bucket", () => {
      /its files are not private/],
     ["a lock the read key can't read", { bucket: { ...KEPT, fileLockConfiguration: {
       isClientAuthorizedToRead: false, value: null } } }, /can't read its lock/],
-    ["no lock", { bucket: lock({ mode: null, period: null }) }, /not compliance, 28 days/],
+    ["no lock", { bucket: lock({ mode: null, period: null }) }, /not compliance, 22 days/],
     ["a governance lock", { bucket: lock({ mode: "governance",
-                                           period: { duration: 28, unit: "days" } }) },
-     /not compliance, 28 days/],
+                                           period: { duration: 22, unit: "days" } }) },
+     /not compliance, 22 days/],
     ["a lock past the window", { bucket: lock({ mode: "compliance",
-                                                period: { duration: 30, unit: "days" } }) },
-     /not compliance, 28 days/],
+                                                period: { duration: 23, unit: "days" } }) },
+     /not compliance, 22 days/],
     ["no lifecycle", { bucket: { ...KEPT, lifecycleRules: [] } }, /its lifecycle is not one rule/],
     ["prior versions kept past the window", { bucket: { ...KEPT, lifecycleRules: [
-      { fileNamePrefix: "", daysFromHidingToDeleting: 30, daysFromUploadingToHiding: null }] } },
-     /keeping prior versions 28 days/],
+      { fileNamePrefix: "", daysFromHidingToDeleting: 23, daysFromUploadingToHiding: null }] } },
+     /keeping prior versions 22 days/],
     ["a rule on a prefix alone", { bucket: { ...KEPT, lifecycleRules: [
-      { fileNamePrefix: "o/", daysFromHidingToDeleting: 28, daysFromUploadingToHiding: null }] } },
+      { fileNamePrefix: "o/", daysFromHidingToDeleting: 22, daysFromUploadingToHiding: null }] } },
      /its lifecycle is not one rule over every name/],
     ["a rule that hides what R2 still holds", { bucket: { ...KEPT, lifecycleRules: [
-      { fileNamePrefix: "", daysFromHidingToDeleting: 28, daysFromUploadingToHiding: 7 }] } },
+      { fileNamePrefix: "", daysFromHidingToDeleting: 22, daysFromUploadingToHiding: 7 }] } },
      /its lifecycle is not one rule/],
   ];
   for (const [what, options, refused] of refusals) {
@@ -200,15 +202,16 @@ describe("the copy's keys and bucket", () => {
 });
 
 describe("the nightly copy", () => {
-  it("syncs R2 to B2, hiding at most a tenth of the copy, then checks what R2 held when the " +
-     "run began, and a sample byte for byte", async () => {
+  it("syncs R2 to B2, hiding every deletion, then checks what R2 held when the run began, " +
+     "and a sample byte for byte", async () => {
     const fake = world();
     const lines = await run(fake);
     const began = "2026-11-15T05:37:12Z";
     const times = ["--use-server-modtime", "--fast-list"];
     expect(fake.calls.map((call) => call.args)).toEqual([
-      ["size", "--json", ...times, `copy:${BUCKET}`],
-      ["sync", `source:${SOURCE}`, `copy:${BUCKET}`, ...times, "--max-delete", "300",
+      ["lsf", "--files-only", "-R", ...times, `copy:${BUCKET}`],
+      ["lsf", "--files-only", "-R", ...times, `source:${SOURCE}`],
+      ["sync", `source:${SOURCE}`, `copy:${BUCKET}`, ...times,
        "--stats-one-line", "--stats", "1m", "--stats-log-level", "NOTICE"],
       ["check", `source:${SOURCE}`, `copy:${BUCKET}`, "--one-way", "--size-only", ...times,
        "--min-age", began],
@@ -218,10 +221,10 @@ describe("the nightly copy", () => {
       ["size", "--json", ...times, `source:${SOURCE}`],
       ["size", "--json", ...times, `copy:${BUCKET}`],
     ]);
-    expect(fake.calls[4]!.sample!.sort()).toEqual(["o/aa/c/1", "o/aa/m/2"]);
+    expect(fake.calls[5]!.sample!.sort()).toEqual(["o/aa/c/1", "o/aa/m/2"]);
     expect(lines).toEqual([
       `R2 ${SOURCE}: 5000 objects, 50000 bytes`,
-      `B2 ${BUCKET}: 3000 objects, 30000 bytes (3000 before the run)`,
+      `B2 ${BUCKET}: 3000 objects, 30000 bytes (2 before the run, 0 of them hidden)`,
       `every object R2 held at ${began} is in the copy at its size; 2 compared byte for byte`]);
   });
 
@@ -233,9 +236,9 @@ describe("the nightly copy", () => {
       .filter((name) => name.startsWith("RCLONE_CONFIG_") && name !== "RCLONE_CONFIG")
       .map((name) => name.split("_")[2]))].sort();
     expect(fake.calls.map(remotes)).toEqual([
-      ["COPY"], ["COPY", "SOURCE"], ["COPY", "SOURCE"], ["SOURCE"], ["CHECK", "SOURCE"],
-      ["SOURCE"], ["COPY"]]);
-    expect(fake.calls[1]!.env).toEqual({
+      ["COPY"], ["SOURCE"], ["COPY", "SOURCE"], ["COPY", "SOURCE"], ["SOURCE"],
+      ["CHECK", "SOURCE"], ["SOURCE"], ["COPY"]]);
+    expect(fake.calls[2]!.env).toEqual({
       RCLONE_CONFIG: "/dev/null",
       RCLONE_CONFIG_SOURCE_TYPE: "s3", RCLONE_CONFIG_SOURCE_PROVIDER: "Cloudflare",
       RCLONE_CONFIG_SOURCE_NO_CHECK_BUCKET: "true",
@@ -245,7 +248,7 @@ describe("the nightly copy", () => {
       RCLONE_CONFIG_COPY_TYPE: "b2", RCLONE_CONFIG_COPY_ACCOUNT: "b2-write-id",
       RCLONE_CONFIG_COPY_KEY: "b2-write-secret-value", RCLONE_CONFIG_COPY_HARD_DELETE: "false",
     });
-    expect(fake.calls[4]!.env).toMatchObject({ RCLONE_CONFIG_CHECK_ACCOUNT: "b2-read-id",
+    expect(fake.calls[5]!.env).toMatchObject({ RCLONE_CONFIG_CHECK_ACCOUNT: "b2-read-id",
                                                RCLONE_CONFIG_CHECK_KEY: "b2-read-secret-value" });
     for (const call of fake.calls) {
       expect(SECRETS.filter((secret) => call.args.some((arg) => arg.includes(secret))))
@@ -253,16 +256,22 @@ describe("the nightly copy", () => {
     }
   });
 
-  it("hides at least 100 from a small copy, and as many as a dispatch says", async () => {
-    for (const [held, maxDelete, limit] of [[0, "", "100"], [999, "", "100"], [12_345, "", "1234"],
-                                            [3000, "5000", "5000"], [3000, "0", "0"]] as const) {
-      const fake = world({ held });
-      await run(fake, maxDelete);
-      const sync = fake.calls.find((call) => call.args[0] === "sync")!.args;
-      expect([held, maxDelete, sync[sync.indexOf("--max-delete") + 1]])
-        .toEqual([held, maxDelete, limit]);
+  it("fails a night that hid more than a tenth of the copy (at least 100), once every hide is " +
+     "made and checked", async () => {
+    const named = (count: number, at: string) =>
+      Array.from({ length: count }, (_, each) => `o/${at}/c/${each}`);
+    for (const [kept, gone, refused] of [
+      [0, 100, null], [0, 101, "the copy hid 101 of its 101 objects, past 100"],
+      [4050, 450, null], [4050, 451, "the copy hid 451 of its 4501 objects, past 450"],
+    ] as const) {
+      const fake = world({ names: named(kept, "aa"), gone: named(gone, "bb") });
+      const ran = run(fake);
+      await (refused === null ? expect(ran).resolves.toBeDefined()
+        : expect(ran).rejects.toThrow(`${refused}: a mass deletion in R2? Each hidden version ` +
+                                      "stays 22 days"));
+      expect(fake.calls.map((call) => call.args[0]))
+        .toEqual(["lsf", "lsf", "sync", "check", "lsf", "check", "size", "size"]);
     }
-    await expect(run(world(), "lots")).rejects.toThrow(/max_delete lots is not a whole number/);
   });
 
   it("samples 16 of what R2 held, and none of an empty bucket", async () => {
@@ -278,11 +287,10 @@ describe("the nightly copy", () => {
   });
 
   for (const [step, failing, refused] of [
-    ["the sync", "sync",
-     /the copy's sync, which hides at most 300 objects .* failed \(rclone exit 7/],
+    ["the sync", "sync", /the copy's sync failed \(rclone exit 7/],
     ["the check", "check source:tinyassets-files copy:", /the copy's check of every object failed/],
     ["the byte check", "check source:tinyassets-files check:", /byte check of a sample failed/],
-    ["the listing", "lsf", /listing of R2 failed/],
+    ["the listing", "lsf", /listing of the copy failed/],
   ] as const) {
     it(`stops loudly when ${step} fails`, async () => {
       await expect(run(world({ failing }))).rejects.toThrow(refused);
@@ -301,7 +309,7 @@ describe("offsite-copy.yml", () => {
   it("runs nightly off the hour, one at a time, both jobs in production, the copy only " +
      "when its settings are stored", () => {
     expect(flow.on.schedule).toEqual([{ cron: "37 5 * * *" }]);
-    expect(Object.keys(flow.on.workflow_dispatch.inputs)).toEqual(["max_delete"]);
+    expect(flow.on).toEqual({ schedule: [{ cron: "37 5 * * *" }], workflow_dispatch: null });
     expect(flow.concurrency).toEqual({ group: "offsite-copy", "cancel-in-progress": false });
     expect(flow.permissions).toEqual({ contents: "read" });
     expect([settingsJob.environment, copyJob.environment]).toEqual(["production", "production"]);
@@ -319,7 +327,7 @@ describe("offsite-copy.yml", () => {
     const variables = ["OFFSITE_BUCKET", "CLOUDFLARE_ACCOUNT_ID"];
     expect(flow.env).toEqual(Object.fromEntries([...SETTINGS, "CLOUDFLARE_ACCOUNT_ID"].map(
       (name) => [name, `\${{ ${variables.includes(name) ? "vars" : "secrets"}.${name} }}`])));
-    expect(copied.env).toEqual({ MAX_DELETE: "${{ inputs.max_delete }}" });
+    expect(copied.env).toBeUndefined();
     expect(copied.run).toBe("node --experimental-strip-types platform/deploy/offsite.ts copy");
   });
 

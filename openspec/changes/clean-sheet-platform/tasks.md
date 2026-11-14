@@ -378,7 +378,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] The off-account copy's first live nights, after the founder's Backblaze steps
     (`checklist.md`, "The off-account copy"; `r4.md`): the dark bucket copied and checked;
     rclone hiding with a key that lacks `deleteFiles`; an object deleted in a rehearsal
-    namespace hidden in B2 and still among its versions; a night past `--max-delete` stopped;
+    namespace hidden in B2 and still among its versions; a night past the deletion limit
+    hiding every deletion and then failing;
     a one-day lock and the lifecycle rule together deleting a hidden version once the lock ends.
 - [ ] R5, where an action is decided (d3 §N): its six slices (`r5_research.md` §6), after B25
   and alongside lane O.
@@ -430,8 +431,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   `sandbox_renewal_refused`, `sandbox_runner_mismatch`, `exceededMemory`, and E2B's team metrics
   (`/teams/{id}/metrics/max`) against the concurrency ceiling. E2B's credit and spend have no
   API. It also reads how long ago the off-account copy's `copy` job last passed
-  (`offsite-copy.yml`), once configured: a red night delays an erased owner's hiding there
-  (`r4.md`).
+  (`offsite-copy.yml`), once configured, and alarms past two nights: an erased owner's hiding
+  there must come within `HIDE_NIGHTS`, a week (`deploy/offsite.ts`; `r4.md` item 4).
 - [ ] The deletion-jobs step, a runner mode before `admit` (§9 step 11; d3 §C4).
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and

@@ -12,11 +12,13 @@
  * - **Its keys:** the write key adds and hides and can't delete or read; the read key reads,
  *   for the check and a restore. Each night both are held to exactly their capabilities, and
  *   the bucket to its lock and its one lifecycle rule, before rclone runs (`held`).
- * - **The erasure:** an erased owner's objects leave R2 at the wipe; the next night hides
- *   them here, and the lifecycle deletes each hidden version `KEEP_DAYS` later, which the
- *   lock (as long, from the upload) never outlasts. A night's lag, `KEEP_DAYS` and the
- *   lifecycle's daily pass stay inside the erasure's window (`RECOVERY_WINDOW_S`), so its
- *   `complete_at` holds for the copy too, while each night's copy runs.
+ * - **The erasure:** an erased owner's objects leave R2 at the wipe; the first night that
+ *   passes hides them here, and the lifecycle deletes each hidden version `KEEP_DAYS` later,
+ *   which the lock (as long, from the upload) never outlasts. `HIDE_NIGHTS` for the hide,
+ *   `KEEP_DAYS` and the lifecycle's daily pass stay inside the erasure's window
+ *   (`RECOVERY_WINDOW_S`), so its `complete_at` holds for the copy too while a night passes
+ *   at least once in every `HIDE_NIGHTS`. Only a failure delays a hide: a mass deletion is
+ *   hidden whole, and fails the night after.
  * - **Dark until its settings are stored:** with none of `SETTINGS`, `settings` answers null
  *   and the copy is not run; with some, or with all and any error, it stops loudly.
  *
@@ -97,11 +99,17 @@ export function settings(env: Readonly<Record<string, string | undefined>>): Set
 }
 
 /**
- * How many days the copy keeps a version once R2 no longer has it, and the lock holds each
- * from its upload: the erasure's window less a night before a deletion is hidden here and a
- * day for the lifecycle's daily pass.
+ * The nights a deletion in R2 may wait to be hidden here: the first night's lag, and red,
+ * late or dropped nights after it. R6's canary alarms well inside it (`tasks.md`, R6).
  */
-const KEEP_DAYS = RECOVERY_WINDOW_S / 86_400 - 2;
+const HIDE_NIGHTS = 7;
+
+/**
+ * How many days the copy keeps a version once R2 no longer has it, and the lock holds each
+ * from its upload: the erasure's window less `HIDE_NIGHTS` before a deletion is hidden here
+ * and a day for the lifecycle's daily pass.
+ */
+export const KEEP_DAYS = RECOVERY_WINDOW_S / 86_400 - HIDE_NIGHTS - 1;
 
 /** Each B2 key's capabilities, exactly (Backblaze's application keys). */
 export const CAPABILITIES = Object.freeze({
@@ -183,9 +191,11 @@ async function held(s: Settings, io: Effects): Promise<void> {
 }
 
 /**
- * A night may hide at most this share of what the copy holds, and never fewer than
- * `MAX_DELETE_FLOOR`, unless the dispatch's `max_delete` says how many: a mass deletion in R2
- * stops the copy loudly instead of being mirrored quietly.
+ * A night that hides more than this share of what the copy held, and more than
+ * `MAX_DELETE_FLOOR`, fails once its hides are made: a mass deletion in R2 is mirrored
+ * loudly, never quietly. It is never held back, so no erasure waits past its window; every
+ * hidden version stays `KEEP_DAYS` under the lifecycle rule, which neither key can change,
+ * and `--b2-version-at` reads it back.
  */
 const MAX_DELETE_SHARE = 0.1;
 const MAX_DELETE_FLOOR = 100;
@@ -203,11 +213,7 @@ function remote(name: string, fields: Record<string, string>): Record<string, st
  * `rclone sync`, then a check of every object R2 held when the run began and a sample of them
  * byte for byte. Any failure throws. What it did, as summary lines.
  */
-export async function copy(s: Settings, source: string, maxDelete: string,
-                           io: Effects): Promise<string[]> {
-  if (!/^\d*$/.test(maxDelete)) {
-    throw new Error(`max_delete ${maxDelete} is not a whole number`);
-  }
+export async function copy(s: Settings, source: string, io: Effects): Promise<string[]> {
   await held(s, io);
   const remotes = {
     source: remote("source", { TYPE: "s3", PROVIDER: "Cloudflare", NO_CHECK_BUCKET: "true",
@@ -242,22 +248,22 @@ export async function copy(s: Settings, source: string, maxDelete: string,
     return { count, bytes };
   };
 
-  const before = sizeOf("count of the copy", "copy", to);
-  const limit = maxDelete === "" ? Math.max(MAX_DELETE_FLOOR,
-                                            Math.floor(before.count * MAX_DELETE_SHARE))
-    : Number(maxDelete);
+  const listed = (what: string, using: "source" | "copy", at: string,
+                  filters: readonly string[] = []) =>
+    rclone(what, [using], ["lsf", "--files-only", "-R", ...times, ...filters, at], true)
+      .split("\n").filter(Boolean);
   const began = io.now().toISOString().replace(/\.\d+Z$/, "Z");
-  rclone(`sync, which hides at most ${limit} objects (a dispatch's max_delete lets a ` +
-         "deletion that is meant through)", ["source", "copy"],
-         ["sync", from, to, ...times, "--max-delete", String(limit), "--stats-one-line",
-          "--stats", "1m", "--stats-log-level", "NOTICE"]);
+  const before = listed("listing of the copy", "copy", to);
+  const kept = new Set(listed("listing of R2", "source", from));
+  const hidden = before.filter((name) => !kept.has(name)).length;
+  const limit = Math.max(MAX_DELETE_FLOOR, Math.floor(before.length * MAX_DELETE_SHARE));
+  rclone("sync", ["source", "copy"],
+         ["sync", from, to, ...times, "--stats-one-line", "--stats", "1m",
+          "--stats-log-level", "NOTICE"]);
   // What R2 held when the run began: what it wrote or deleted since is the next night's.
-  const settled = [...times, "--min-age", began];
   rclone("check of every object", ["source", "copy"],
-         ["check", from, to, "--one-way", "--size-only", ...settled]);
-  const names = rclone("listing of R2", ["source"],
-                       ["lsf", "--files-only", "-R", ...settled, from], true)
-    .split("\n").filter(Boolean);
+         ["check", from, to, "--one-way", "--size-only", ...times, "--min-age", began]);
+  const names = listed("listing of R2", "source", from, ["--min-age", began]);
   const sample = Array.from({ length: Math.min(SAMPLE, names.length) },
                             () => names.splice(randomInt(names.length), 1)[0]!);
   const folder = mkdtempSync(join(tmpdir(), "offsite-"));
@@ -271,13 +277,19 @@ export async function copy(s: Settings, source: string, maxDelete: string,
   }
   const after = { source: sizeOf("count of R2", "source", from),
                   copy: sizeOf("count of the copy", "copy", to) };
-  return [
+  const lines = [
     `R2 ${source}: ${after.source.count} objects, ${after.source.bytes} bytes`,
     `B2 ${s.bucket}: ${after.copy.count} objects, ${after.copy.bytes} bytes ` +
-      `(${before.count} before the run)`,
+      `(${before.length} before the run, ${hidden} of them hidden)`,
     `every object R2 held at ${began} is in the copy at its size; ` +
       `${sample.length} compared byte for byte`,
   ];
+  if (hidden > limit) {
+    throw new Error(`the copy hid ${hidden} of its ${before.length} objects, past ${limit}: ` +
+                    `a mass deletion in R2? Each hidden version stays ${KEEP_DAYS} days ` +
+                    `(--b2-version-at reads it). ${lines.join("; ")}`);
+  }
+  return lines;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -313,7 +325,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const { FILES_BUCKET } = await import("./facts.ts");
       const { IO } = await import("./deploy.ts");
       summary(["### The off-account copy",
-               ...await copy(stored, FILES_BUCKET, process.env["MAX_DELETE"] ?? "", IO)]);
+               ...await copy(stored, FILES_BUCKET, IO)]);
     } else {
       throw new Error("offsite.ts takes settings or copy");
     }

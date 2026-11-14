@@ -4,7 +4,7 @@ name: Off-account copy (nightly)
 # night, the files bucket (every owner's chunks and generations, ciphertext and wrapped keys
 # alone) copied by rclone to a Backblaze B2 bucket outside the Cloudflare account, with a key
 # that can add and hide but never delete. The bucket's lock and lifecycle keep each version
-# 28 days, inside the erasure's 30. Each night, before rclone runs, both B2 keys are held to
+# 22 days, inside the erasure's 30 with a week for the hide. Each night, before rclone runs, both B2 keys are held to
 # exactly their capabilities and the bucket to its rules.
 #
 # Dark until the founder's Backblaze steps (platform/deploy/checklist.md, "The off-account
@@ -22,12 +22,6 @@ on:
     # pass, and off the hour, where scheduled runs are delayed or dropped under load.
     - cron: '37 5 * * *'
   workflow_dispatch:
-    inputs:
-      max_delete:
-        description: 'How many objects this run may hide, for a deletion in R2 that is meant (empty: a tenth of the copy, at least 100)'
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: read
@@ -95,6 +89,4 @@ jobs:
           echo "${RUNNER_TEMP}/rclone" >> "${GITHUB_PATH}"
 
       - name: Copy the files bucket to B2
-        env:
-          MAX_DELETE: ${{ inputs.max_delete }}
         run: node --experimental-strip-types platform/deploy/offsite.ts copy
