@@ -13,8 +13,8 @@
  *   binder guard).
  * - Its queues: it consumes exactly the queues the platform's Workers produce onto, so the
  *   entry's dispatch by `QUEUES` (generated from those producers) takes every one; and no
- *   other Worker binds its bucket or produces onto its queue (the import window's,
- *   `IMPORT_WINDOW`, deleted at the cutover).
+ *   other Worker binds its buckets or produces onto its queues (the operator channel's,
+ *   `OPERATOR_CHANNEL`, and the import window's, `IMPORT_WINDOW`, deleted at the cutover).
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -28,7 +28,9 @@ import { PLATFORM } from "../../ci/paths";
 import { type Config, platformConfigs } from "../../ci/kit/sources";
 import { readWrangler } from "../../ci/wrangler";
 
-import { CONFIG, IMPORT_WINDOW, OBJECTS, SERVICES, SHARED_SECRETS } from "./rules";
+import {
+  CONFIG, IMPORT_WINDOW, OBJECTS, OPERATOR_CHANNEL, SERVICES, SHARED_SECRETS,
+} from "./rules";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -163,10 +165,14 @@ const SERVICE = Object.fromEntries((config["services"] as Config[]).map((each) =
 const { GATEWAY, EGRESS, FILES } = SERVICE;
 const QUEUES = config["queues"] as { producers: Config[]; consumers: Config[] };
 const IMPORTS = QUEUES.producers.find((each) => each["binding"] === IMPORT_WINDOW.producer)!;
+const OPERATOR = QUEUES.producers.find((each) => each["binding"] === OPERATOR_CHANNEL.producer)!;
 const IMPORT_CONSUMER = QUEUES.consumers.find((each) => each["queue"] === IMPORTS["queue"])!;
-const OTHER_CONSUMERS = QUEUES.consumers.filter((each) => each !== IMPORT_CONSUMER);
-const STAGING = (config["r2_buckets"] as Config[])
-  .find((each) => each["binding"] === IMPORT_WINDOW.bucket)!;
+const OPERATOR_CONSUMER = QUEUES.consumers.find((each) => each["queue"] === OPERATOR["queue"])!;
+const bucketBound = (binding: string) => (config["r2_buckets"] as Config[])
+  .find((each) => each["binding"] === binding)!;
+const STAGING = bucketBound(IMPORT_WINDOW.bucket);
+const OPERATOR_LOG = bucketBound(OPERATOR_CHANNEL.bucket);
+const SECRETS = (config["secrets"] as { required: string[] }).required;
 const OWNER_NAMESPACE = (config["durable_objects"] as { bindings: Config[] }).bindings[0]!;
 const FILES_BUCKET = String((platform.get("files")!["r2_buckets"] as Config[])[0]!["bucket_name"]);
 const ASSETS = CONFIG.exact!["assets"] as Config;
@@ -223,16 +229,26 @@ configTests(CONFIG, {
                                                    not_found_handling: "single-page-application" } }],
     ["a bucket", { r2_buckets: [{ binding: "BLOBS", bucket_name: FILES_BUCKET }] }],
     ["the files Worker's bucket as the staging bucket", { r2_buckets: [
-      { ...STAGING, bucket_name: FILES_BUCKET }] }],
-    ["a second bucket", { r2_buckets: [STAGING, { binding: "BLOBS", bucket_name: "b" }] }],
-    ["no staging bucket", { r2_buckets: [] }],
+      { ...STAGING, bucket_name: FILES_BUCKET }, OPERATOR_LOG] }],
+    ["the files Worker's bucket as the operator bucket", { r2_buckets: [
+      STAGING, { ...OPERATOR_LOG, bucket_name: FILES_BUCKET }] }],
+    ["a third bucket", { r2_buckets: [STAGING, OPERATOR_LOG,
+                                      { binding: "BLOBS", bucket_name: "b" }] }],
+    ["no staging bucket", { r2_buckets: [OPERATOR_LOG] }],
+    ["no operator bucket", { r2_buckets: [STAGING] }],
     ["no queues", { queues: undefined }],
-    ["a queue producer", { queues: { ...QUEUES, producers: [IMPORTS, { binding: "OUT",
-                                                                       queue: "q" }] } }],
+    ["a queue producer", { queues: { ...QUEUES, producers: [...QUEUES.producers,
+                                                            { binding: "OUT", queue: "q" }] } }],
     ["the import producer onto another Worker's queue", { queues: { ...QUEUES, producers: [
-      { ...IMPORTS, queue: produced(platform.get("owner")!)[0] }] } }],
-    ["no import producer", { queues: { consumers: QUEUES.consumers } }],
-    ["no import consumer", { queues: { ...QUEUES, consumers: OTHER_CONSUMERS } }],
+      { ...IMPORTS, queue: produced(platform.get("owner")!)[0] }, OPERATOR] } }],
+    ["the operator producer onto another Worker's queue", { queues: { ...QUEUES, producers: [
+      IMPORTS, { ...OPERATOR, queue: produced(platform.get("owner")!)[0] }] } }],
+    ["no import producer", { queues: { ...QUEUES, producers: [OPERATOR] } }],
+    ["no operator producer", { queues: { ...QUEUES, producers: [IMPORTS] } }],
+    ["no import consumer", { queues: { ...QUEUES, consumers: QUEUES.consumers.filter((each) =>
+      each !== IMPORT_CONSUMER) } }],
+    ["no operator consumer", { queues: { ...QUEUES, consumers: QUEUES.consumers.filter((each) =>
+      each !== OPERATOR_CONSUMER) } }],
     ["no ring consumer", { queues: { ...QUEUES, consumers: QUEUES.consumers.filter((each) =>
       each["queue"] !== produced(platform.get("sandbox")!)[0]) } }],
     ["another queue's consumer", { queues: { ...QUEUES, consumers: [...QUEUES.consumers,
@@ -241,9 +257,12 @@ configTests(CONFIG, {
     ["a rate limit", { ratelimits: [{ name: "KEY_RL", namespace_id: "1",
                                       simple: { limit: 120, period: 60 } }] }],
     ["an upstream before the deploy", { vars: { ...VARS, UPSTREAM: "{}" } }],
-    ["no WORKOS_API_KEY", { secrets: { required: ["ROUTING_MAC_KEY"] } }],
+    ["no WORKOS_API_KEY", { secrets: { required: SECRETS.filter((name) =>
+      name !== "WORKOS_API_KEY") } }],
+    ["no OPERATOR_KEYRING", { secrets: { required: SECRETS.filter((name) =>
+      name !== "OPERATOR_KEYRING") } }],
     ["the import window's key required, so every deploy would set it", { secrets: {
-      required: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET", "IMPORT_KEY"] } }],
+      required: [...SECRETS, "IMPORT_KEY"] } }],
     ["no strictly-public fetch", { compatibility_flags: FLAGS.filter((flag) =>
       flag !== "global_fetch_strictly_public") }],
     ["ctx.exports", { compatibility_flags: [...FLAGS, "enable_ctx_exports"] }],
@@ -341,6 +360,11 @@ describe("the doors' queues and bucket, against the other Workers", () => {
     ["the owner Worker produce onto the doors' import queue", "owner", (owner: Config) => ({
       queues: { producers: [...(owner["queues"] as { producers: Config[] }).producers,
                             { binding: "X", queue: IMPORTS["queue"] }] } })],
+    ["the owner Worker produce onto the doors' operator queue", "owner", (owner: Config) => ({
+      queues: { producers: [...(owner["queues"] as { producers: Config[] }).producers,
+                            { binding: "X", queue: OPERATOR["queue"] }] } })],
+    ["the files Worker bind the doors' operator bucket", "files", (files: Config) => ({
+      r2_buckets: [...(files["r2_buckets"] as Config[]), OPERATOR_LOG] })],
     ["the sandbox Worker produce onto a queue the doors do not consume", "sandbox",
      (sandbox: Config) => ({ queues: { producers: [
        ...(sandbox["queues"] as { producers: Config[] }).producers,

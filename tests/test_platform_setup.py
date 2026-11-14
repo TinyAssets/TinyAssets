@@ -152,11 +152,13 @@ def test_the_made_secrets_are_set_once_each_on_stdin_alone(capsys) -> None:
     fake, said = Fake(secrets={"production": {"GATEWAY_KEYRING"}}), []
     setup.made_secrets(_gh(fake, said))
     assert fake.secrets["production"] == {"ROUTING_MAC_KEY", "E2B_WEBHOOK_SECRET",
-                                          "GATEWAY_KEYRING", "FILES_KEYRING"}
+                                          "GATEWAY_KEYRING", "FILES_KEYRING",
+                                          "OPERATOR_KEYRING"}
     assert ("production", "GATEWAY_KEYRING") not in fake.stored
     out = capsys.readouterr().out
     assert out.splitlines() == ["ROUTING_MAC_KEY: set", "E2B_WEBHOOK_SECRET: set",
-                                "GATEWAY_KEYRING: already set", "FILES_KEYRING: set"]
+                                "GATEWAY_KEYRING: already set", "FILES_KEYRING: set",
+                                "OPERATOR_KEYRING: set"]
     _no_value_shown(said, out, fake.stored.values())
     # Run again: nothing written.
     calls = len(said)
