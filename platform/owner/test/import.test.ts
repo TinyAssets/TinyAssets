@@ -26,7 +26,7 @@ import type { OwnerDO } from "../src/owner-do";
 import {
   DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, policyDigest, type PolicyDocument,
 } from "../../contract/src/policy-document";
-import { erasuresSent } from "./erasure-support";
+import { erasuresSent, until } from "./erasure-support";
 import { recorder } from "./runs-support";
 import { failure, TIERS } from "./support";
 
@@ -486,8 +486,11 @@ describe("the import's discard", () => {
     // namespace; the instance answers busy until the runtime starts the name afresh.
     expect(await left(stub, ns)).toEqual({ tables: [], objects: 0 });
     // No erasure: nothing told the doors (whose outside record writes the erased record and
-    // deletes the identity at the issuer), and no sandbox erased.
-    expect(await erasuresSent(owner)).toBe(0);
+    // deletes the identity at the issuer), and no sandbox erased. The queue delivers in order,
+    // so once a marker sent now has arrived, any send of the discard's would have before it.
+    await env.ERASURES.send({ owner });
+    await until(async () => await erasuresSent(owner) > 0, "the marker");
+    expect(await erasuresSent(owner)).toBe(1);
     expect((await recorder(stub as never)).erasures).toEqual([]);
     expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
     // Discarded, it still takes the import's binding alone.

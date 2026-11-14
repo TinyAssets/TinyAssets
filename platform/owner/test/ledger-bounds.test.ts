@@ -19,7 +19,7 @@ import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import { MOVE_BYTES, RECORD_TRAILER_BYTES } from "../src/segments";
 import { ballast, counters, DOT, MCP, MUSE, origin, rig } from "./ledger-support";
-import { failure } from "./support";
+import { failure, starterSeed } from "./support";
 
 const PULL = { command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
                recipe_id: null };
@@ -177,8 +177,8 @@ describe("the ledger's bounds", () => {
   it("caps enabled agents, and registry rows until the owner deletes one", async () => {
     const r = await rig();
     await r.inLedger((ledger: Ledger) => {
-      // The owner's own agents take the reserved mailboxes but one.
-      for (let n = 0; n < maxAgents - 1; n++) {
+      // The owner's own agents, its seed's and these, take the reserved mailboxes but one.
+      for (let n = 0; n < maxAgents - 1 - starterSeed().agents.length; n++) {
         ledger.appear(`agent-${n}`);
       }
       const muse = ledger.register(MUSE, MCP, PULL).agent_id;

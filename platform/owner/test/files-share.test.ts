@@ -27,10 +27,12 @@ import { FILE_SETTINGS } from "../../contract/src/policy-document";
 import { MIGRATIONS } from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
 import {
-  crowd, failure, fileCounters, filesOn, inFiles, namedCode, sqlIn, text,
+  crowd, failure, fileCounters, filesOn, inFiles, namedCode, sqlIn, starterSeed, text,
 } from "./support";
 
 const W = "/workspace";
+/** What every owner's seed holds before a test writes (`starterSeed`). */
+const SEED = starterSeed();
 const CLIENT = `client:${MUSE.client}`;
 
 async function setPolicy(r: Rig, files: unknown) {
@@ -189,7 +191,7 @@ describe("an outside client's share", () => {
     expect(usage.share?.manifest_bytes).toBe(mine!["manifest_bytes"]);
     expect((await r.stub.fileUsage(r.bind(null))).share)
       .toEqual((await share(r, "owner")) && { ...(await share(r, "owner")), who: undefined,
-                                               stored: 0 });
+                                               stored: SEED.bytes });
     // The owner's room is its own.
     for (let i = 0; i < 20; i++) {
       await write(r, null, longPath(dir, MAX_PATH_BYTES, 2000 + i));
@@ -479,8 +481,8 @@ describe("deduplication in each scope", () => {
       await files.write(`${W}/client-big`, big, { expected: null, writer: CLIENT });
       await files.write(`${W}/client-small`, small, { expected: null, writer: CLIENT });
     });
-    expect(await share(r, "owner")).toMatchObject({ chunk_bytes: big.length,
-                                                    inline_bytes: small.length });
+    expect(await share(r, "owner")).toMatchObject({
+      chunk_bytes: SEED.placedBytes + big.length, inline_bytes: SEED.inlineBytes + small.length });
     await inFiles(r.stub, {}, (files: Files) => {
       for (const path of [`${W}/owner-big`, `${W}/owner-small`]) {
         files.remove(path, { expected: null, writer: "owner" });
@@ -489,10 +491,12 @@ describe("deduplication in each scope", () => {
     });
     expect(await share(r, CLIENT)).toMatchObject({ chunk_bytes: big.length,
                                                    inline_bytes: small.length });
-    expect(await share(r, "owner")).toMatchObject({ chunk_bytes: 0, inline_bytes: 0 });
+    expect(await share(r, "owner")).toMatchObject({ chunk_bytes: SEED.placedBytes,
+                                                    inline_bytes: SEED.inlineBytes });
     // The real storage holds them once.
     expect((await sqlIn(r.stub, "SELECT chunk_bytes, inline_bytes FROM file_space"))[0])
-      .toEqual({ chunk_bytes: big.length, inline_bytes: small.length });
+      .toEqual({ chunk_bytes: SEED.placedBytes + big.length,
+                 inline_bytes: SEED.inlineBytes + small.length });
     await counted(r);
   });
 
@@ -514,6 +518,8 @@ describe("deduplication in each scope", () => {
   it("charges garbage to the scope that let its chunk go last", async () => {
     const r = await rig();
     const big = new Uint8Array(INLINE_BYTES + 11).fill(5);
+    // The owner's index bytes as its seed left them: its own row's and its seed's.
+    const seeded = (await share(r, "owner"))!["manifest_bytes"];
     await inFiles(r.stub, {}, async (files: Files) => {
       await files.write(`${W}/owner.bin`, big, { expected: null, writer: "owner" });
       await files.write(`${W}/client.bin`, big, { expected: null, writer: CLIENT });
@@ -522,11 +528,11 @@ describe("deduplication in each scope", () => {
         files.purge(path!);
       }
     });
-    expect(await sqlIn(r.stub, "SELECT state, holder FROM file_chunks"))
-      .toEqual([{ state: "garbage", holder: CLIENT }]);
+    expect(await sqlIn(r.stub, "SELECT state, holder FROM file_chunks WHERE sha256 = ?",
+                       sha256Hex(big))).toEqual([{ state: "garbage", holder: CLIENT }]);
     // Held as garbage, by the client alone: its share keeps the row's bytes.
     expect(await share(r, CLIENT)).toMatchObject({ chunk_bytes: 0, entries: 0, history: 0 });
-    expect((await share(r, "owner"))!["manifest_bytes"]).toBe(SHARE_BYTES);
+    expect((await share(r, "owner"))!["manifest_bytes"]).toBe(seeded);
     await counted(r);
   });
 

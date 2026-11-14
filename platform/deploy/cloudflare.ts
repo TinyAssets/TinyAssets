@@ -37,6 +37,12 @@ function envelope(answer: Answer): Envelope {
   return typeof answer.body === "object" && answer.body !== null ? answer.body as Envelope : {};
 }
 
+/** A KV key's value, by its path from `/client/v4`. */
+function valuePath(account: string, namespace: string, key: string): string {
+  return `/accounts/${account}/storage/kv/namespaces/${namespace}/values/${
+    encodeURIComponent(key)}`;
+}
+
 function codes(answer: Answer): string {
   return JSON.stringify((envelope(answer).errors ?? []).map((error) => error.code ?? 0));
 }
@@ -307,16 +313,21 @@ export class Cloudflare {
     this.#fetch = fetcher;
   }
 
-  /** One call, by its path from `/client/v4`: its status and JSON body. Any other body throws. */
-  async #call(path: string, init: RequestInit = {}): Promise<Answer> {
+  /** One call, by its path from `/client/v4`: its status and its body's text. */
+  async #raw(path: string, init: RequestInit = {}): Promise<{ status: number; text: string }> {
     const response = await this.#fetch(`${CF_API}${path}`, {
       ...init, headers: { Authorization: `Bearer ${this.#token}`, ...(init.headers ?? {}) } });
-    const text = await response.text();
+    return { status: response.status, text: await response.text() };
+  }
+
+  /** One call, by its path from `/client/v4`: its status and JSON body. Any other body throws. */
+  async #call(path: string, init: RequestInit = {}): Promise<Answer> {
+    const { status, text } = await this.#raw(path, init);
     try {
-      return { status: response.status, body: JSON.parse(text) as unknown };
+      return { status, body: JSON.parse(text) as unknown };
     } catch {
       throw new Error(`Cloudflare answered ${init.method ?? "GET"} ${path} with a body that is ` +
-                      `not JSON (${response.status})`);
+                      `not JSON (${status})`);
     }
   }
 
@@ -398,27 +409,51 @@ export class Cloudflare {
 
   /**
    * A KV key's value, as the JSON it is stored as, or undefined only when the API answers
-   * that it is absent (404 with Cloudflare's 10009, "key not found"); any other answer throws.
+   * that it is absent (`text`); a value that is not JSON throws.
    */
   async value(account: string, namespace: string, key: string): Promise<unknown> {
-    const answer = await this.#call(`/accounts/${account}/storage/kv/namespaces/${
-      namespace}/values/${encodeURIComponent(key)}`);
-    if (answer.status === 200) {
-      return answer.body;
-    }
-    if (answer.status === 404 && (envelope(answer).errors ?? []).some((error) =>
-      error.code === 10009)) {
+    const text = await this.text(account, namespace, key);
+    if (text === undefined) {
       return undefined;
     }
-    throw new Error(`reading ${key} failed (${answer.status}, ${codes(answer)})`);
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new Error(`Cloudflare answered GET ${valuePath(account, namespace, key)} with a ` +
+                      "body that is not JSON (200)");
+    }
+  }
+
+  /**
+   * A KV key's value as the bytes it holds, as text, or undefined only when the API answers
+   * that it is absent (404 with KV's 10009); any other answer throws.
+   */
+  async text(account: string, namespace: string, key: string): Promise<string | undefined> {
+    const { status, text } = await this.#raw(valuePath(account, namespace, key));
+    if (status === 200) {
+      return text;
+    }
+    let answer: Answer = { status, body: null };
+    try {
+      answer = { status, body: JSON.parse(text) as unknown };
+    } catch {
+      // An error body that is not JSON names no code: the read failed.
+    }
+    if (status === 404 && (envelope(answer).errors ?? []).some((error) => error.code === 10009)) {
+      return undefined;
+    }
+    throw new Error(`reading ${key} failed (${status}, ${codes(answer)})`);
   }
 
   /** `value`, as JSON, written to the KV key; the API's status. */
   async put(account: string, namespace: string, key: string, value: unknown): Promise<number> {
-    const answer = await this.#call(`/accounts/${account}/storage/kv/namespaces/${
-      namespace}/values/${encodeURIComponent(key)}`, {
-      method: "PUT", body: JSON.stringify(value),
-      headers: { "Content-Type": "application/json" } });
+    return this.putText(account, namespace, key, JSON.stringify(value));
+  }
+
+  /** `text`, as it is, written to the KV key; the API's status. */
+  async putText(account: string, namespace: string, key: string, text: string): Promise<number> {
+    const answer = await this.#call(valuePath(account, namespace, key), {
+      method: "PUT", body: text, headers: { "Content-Type": "application/json" } });
     return answer.status;
   }
 

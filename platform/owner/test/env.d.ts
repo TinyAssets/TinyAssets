@@ -1,21 +1,18 @@
-// The test-only namespaces of the owner object (`namespaces.ts`, each a class of the test
-// Worker, `worker.ts`), the test keyring (the one the gateway Worker run beside the tests
-// holds), and the Worker's own bindings: FILES, GATEWAY and CODEMODE_VM, each to its Worker
-// run beside it (FILES and GATEWAY through a gate each), SANDBOX to the gate in front of the fake
-// sandbox Worker, CONTROL, ERASURES (consumed by the fake erasure Worker), and its one secret,
+// The owner object's namespace, bound for the tests only (the real class, the config's
+// `main`), the test keyring (the one the gateway Worker run beside the tests holds), and the
+// Worker's own bindings: FILES, GATEWAY and CODEMODE_VM, each to its Worker run beside it
+// (FILES and GATEWAY through a gate each), SANDBOX to the gate in front of the fake sandbox
+// Worker, CONTROL, ERASURES (consumed by the fake erasure Worker), and its one secret,
 // ROUTING_MAC_KEY; and the test's handles on the fakes and the gates.
 declare namespace Cloudflare {
-  type TestNamespaces = typeof import("./namespaces").NAMESPACES;
-  type TestNamespace<Binding extends keyof TestNamespaces> =
-    DurableObjectNamespace<InstanceType<typeof import("./worker")[TestNamespaces[Binding]]>>;
-
-  type TestNamespaceBindings = { [Binding in keyof TestNamespaces]: TestNamespace<Binding> };
   /** The owner Worker's own bindings, as its generated env types them (`src/env.ts`). */
   type OwnerBound = Pick<import("../src/env").OwnerEnv, "SANDBOX" | "FILES" | "GATEWAY"
                                                        | "CODEMODE_VM" | "CONTROL" | "ERASURES"
                                                        | "ROUTING_MAC_KEY">;
 
-  interface Env extends TestNamespaceBindings, OwnerBound {
+  interface Env extends OwnerBound {
+    /** The owner's objects, of the Worker's own class (`src/index.ts`). */
+    OWNER: DurableObjectNamespace<import("../src/owner-do").OwnerDO>;
     /** The fake sandbox's record and answers, by owner (`fake-sandbox.ts` `Log`). */
     SANDBOX_LOG: Service<import("./fake-sandbox").Log>;
     /** What each owner's object sent the erasure queue (`fake-erasures.ts` `Sent`). */

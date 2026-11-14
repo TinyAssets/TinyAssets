@@ -114,8 +114,9 @@ import { type ChunkGet, type ChunkStore, GET_READS } from "../../contract/src/fi
 import { fitList, PAGE_BYTES, RESULT_TOO_LARGE } from "./pages";
 import {
   frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
-  windowEnd, words,
+  words,
 } from "./file-search";
+import { windowEnd } from "./bodies";
 import { clock } from "./clock";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { slotted } from "../../contract/src/slots";

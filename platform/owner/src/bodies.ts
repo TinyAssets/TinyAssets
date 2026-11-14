@@ -26,7 +26,6 @@ import { sha256Hex } from "../../contract/src/digest";
 
 import { RESULT_CHARS } from "../../contract/src/encoded";
 import { Refusal } from "../../contract/src/refusal";
-import { windowEnd } from "./file-search";
 import type { Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { bodyUnits, ownerSlots, WINDOW_UNITS } from "./holds";
@@ -48,6 +47,31 @@ export const BODY_BYTES_MAX = 2 * CHUNK_BYTES;
  * window of each placed body's first chunk, stay within two chunks (`BATCH_BYTES`).
  */
 export const READ_PAGE_BYTES = 2 * CHUNK_BYTES;
+
+/**
+ * The window of `bytes` from `offset`, at most `max` bytes, cut back to a UTF-8 character
+ * boundary: its end, or null when `offset` is inside a character. A window that holds less
+ * than one whole character is widened to hold it. It lives here, a leaf of the pages and
+ * the search that read it: in the search, it made an import cycle (pages, bodies, search)
+ * that set the search's answer bytes from the pages' before they were set.
+ */
+export function windowEnd(bytes: Uint8Array, offset: number, max: number): number | null {
+  const continuation = (at: number) => at < bytes.byteLength && (bytes[at]! & 0xc0) === 0x80;
+  if (continuation(offset)) {
+    return null;
+  }
+  let end = Math.min(bytes.byteLength, offset + max);
+  while (end > offset && continuation(end)) {
+    end -= 1;
+  }
+  if (end === offset && offset < bytes.byteLength) {
+    end = offset + 1;
+    while (continuation(end)) {
+      end += 1;
+    }
+  }
+  return end;
+}
 
 /**
  * The most bytes of placed bodies' windows one read holds: the rows past a page's first fit

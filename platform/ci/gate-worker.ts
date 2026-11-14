@@ -162,7 +162,10 @@ async function cross(method: string, name: string | null, args: unknown[],
   if (act !== null && "hold" in act && act.hold === "after") {
     await hold(method, name, "after");
   }
-  return answer;
+  // The answer's own fields, never the real call's result itself: handed on, that result
+  // keeps the caller's object referenced (it cannot be evicted), as no direct call does.
+  return Array.isArray(answer) ? [...answer]
+    : Object.getPrototypeOf(answer ?? 0) === Object.prototype ? { ...answer as object } : answer;
 }
 
 /** Each of the config's methods defined on `target`, forwarding through `cross`. */

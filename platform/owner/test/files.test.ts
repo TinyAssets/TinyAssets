@@ -15,9 +15,13 @@ import type { Binding } from "../../contract/src/binding";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, laneAt, ownerObject, sqlIn, text } from "./support";
+import {
+  failure, fileCounters, inFiles, laneAt, ownerObject, sqlIn, starterSeed, text,
+} from "./support";
 
 const W = "/workspace";
+/** What every owner's seed holds before a test writes (`starterSeed`). */
+const SEED = starterSeed();
 
 function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
   if (!("entry" in answer)) {
@@ -140,11 +144,13 @@ describe("a file write", () => {
     expect(big_.chunks).toEqual([{ sha256: sha256Hex(big), size: INLINE_BYTES + 1 }]);
     const [space] = await sqlIn(r.stub, "SELECT ns, data_key, inline_bytes, chunk_bytes " +
                                 "FROM file_space");
-    expect(space).toMatchObject({ inline_bytes: INLINE_BYTES, chunk_bytes: INLINE_BYTES + 1 });
+    expect(space).toMatchObject({ inline_bytes: SEED.inlineBytes + INLINE_BYTES,
+                                  chunk_bytes: SEED.placedBytes + INLINE_BYTES + 1 });
     expect(space!["data_key"]).toMatch(/^v1[.]/);
     expect(await env.FILES.getChunks(space!["ns"] as string, space!["data_key"] as string,
                                      [{ sha256: sha256Hex(big) }])).toEqual([big]);
-    expect(await sqlIn(r.stub, "SELECT sha256, state, stored, refs, holds FROM file_chunks"))
+    expect(SEED.mine(await sqlIn(r.stub, "SELECT sha256, state, stored, refs, holds " +
+                                           "FROM file_chunks"), (row) => row["sha256"] as string))
       .toEqual([{ sha256: sha256Hex(big), state: "live", stored: 1, refs: 1, holds: 0 }]);
   });
 
@@ -265,8 +271,8 @@ describe("a file path", () => {
     await write(r, decomposed, "decomposed");
     expect(new TextDecoder().decode(await readAll(r, composed))).toBe("composed");
     expect(new TextDecoder().decode(await readAll(r, decomposed))).toBe("decomposed");
-    expect((await r.stub.fileList(r.bind(null), { dir: W, limit: 10 })).entries
-      .map((e) => e.path)).toEqual([decomposed, composed]);
+    expect(SEED.mine((await r.stub.fileList(r.bind(null), { dir: W, limit: 10 })).entries
+      .map((e) => e.path))).toEqual([decomposed, composed]);
   });
 
   it.each([
@@ -351,7 +357,8 @@ describe("every file door", () => {
         .toEqual([name, "this object is not named by an owner"]);
     }
     expect(await fileCounters(r.stub).then(([kept]) => kept))
-      .toMatchObject({ entries: 0, history: 0, chunk_bytes: 0 });
+      .toMatchObject({ entries: SEED.entries, history: SEED.entries,
+                       chunk_bytes: SEED.placedBytes });
   });
 
   it("holds a scoped outside client to read_files or write_files, and the owner's own doors",
@@ -437,7 +444,8 @@ describe("every file door", () => {
   /** What a refused chunked write may leave: its intent, its chunk rows, its entry. */
   const leftBy = (r: Rig) => Promise.all([
     sqlIn(r.stub, "SELECT intent_id FROM file_intents"),
-    sqlIn(r.stub, "SELECT state, stored, holds FROM file_chunks"),
+    sqlIn(r.stub, "SELECT state, stored, holds FROM file_chunks WHERE sha256 = ?",
+          sha256Hex(new Uint8Array(INLINE_BYTES + 1))),
     sqlIn(r.stub, "SELECT name FROM file_entries WHERE name = 'big.bin'"),
   ]);
 

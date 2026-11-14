@@ -355,8 +355,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     fake consumer; the erasure and control record under a fake `Date`; the rig admitting by
     the door; the doors' entry with no third constructor argument (`t1c.md`, T1c-b).
   - [ ] T1c-b2, decided first (`t1c.md`, T1c-b item 6): the real entry, `main: src/index.ts`,
-    with `Internals` and the test classes left deleted, and the one-file starter by a Vite
-    alias, the starter tests' hand-built passes rebuilt beside an object that seeds its own.
+    with `Internals` and the test classes left deleted, and the whole owner suite on the real
+    carried package (no alias): every rig waits for the seed, the seeded part of every count
+    comes from `support.ts` `starterSeed()`, and the starter tests' hand-built passes run at
+    versions past the carried one (`t1c.md`, T1c-b2).
   - [ ] T1c-c: `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted: the
     object exports its one ledger wiring function and the tests call it; `ballast` seeds
     through the ledger's own API, with no door seeding and no bulk SQL (`t1c.md`, owed); and
@@ -370,6 +372,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and
   only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`).
+  - [ ] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
+    (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, after lane O's T1c
+    (`r3.md` item 9).
 - [ ] R5, where an action is decided (d3 §N): its six slices (`r5_research.md` §6), after B25
   and alongside lane O.
   - [ ] P-shape: the policy's `actions` table and `contract/acts.json`, the doors' rows naming
@@ -412,7 +417,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
-- [ ] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2).
+- [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
+  `owner.state` owed under lane R.
 - [ ] The manifest's dry run green (d3 §A10).
 - [ ] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6).
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
