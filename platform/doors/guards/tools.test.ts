@@ -12,8 +12,7 @@
  * the table's order; `code`, a generic executor, never in the directory's.
  *
  * And the agent's definition (the starter's text and the MCP instructions): it names only the
- * table's tools. That it says nothing of the cutover's import is the cutover manifest's
- * vocabulary rule (`ci/guards/cutover.test.ts`).
+ * table's tools.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
