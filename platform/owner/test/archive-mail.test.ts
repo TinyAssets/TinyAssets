@@ -1572,18 +1572,18 @@ describe("a full owner's archive (review M1)", () => {
      async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    // A seal's worth of acked mail, its bodies as large as the object keeps inline, posted
-    // straight into the ledger (no lane rung), past half the hot ceiling.
-    const last = await r.inLedger((ledger: Ledger) => {
-      let seq = 0;
-      for (let i = 0; i < 4_000; i++) {
-        seq = ledger.seqOf(ledger.post(null, `dm:${muse}`, `c${i}`,
-                                       `body ${i} `.padEnd(2_000, "x"), null).message_id)!;
-        ledger.read(MUSE, 1);
-        ledger.ack(MUSE, seq);
-      }
-      return seq;
-    });
+    // Four small bodies, acked in the ledger (no lane rung), then a body at the cap, placed
+    // in R2, of bytes no chunk of the segment repeats: a seal's worth past half the hot
+    // ceiling, inline and placed records together.
+    for (let i = 0; i < 4; i++) {
+      await r.post(null, `dm:${muse}`, { body: `body ${i}`, cmid: `c${i}` });
+      await r.inLedger((ledger: Ledger) =>
+        ledger.ack(MUSE, ledger.read(MUSE, 1).messages[0]!.seq));
+    }
+    const body = Array.from({ length: BODY_BYTES_MAX / 64 }, (_, i) =>
+      createHash("sha256").update(String(i)).digest("hex")).join("");
+    const last = await seqOf(r, (await r.post(null, `dm:${muse}`, { body, cmid: "cap" }))
+      .message_id);
     // The owner's own figure: exactly what is stored, so no segment fits beside the mail.
     const { stored } = await r.stub.storageUsage(r.bind(null)).then((usage) =>
       ({ stored: usage.used_bytes }));
@@ -1593,8 +1593,7 @@ describe("a full owner's archive (review M1)", () => {
       policy: { ...policy, files: { max_bytes: stored } } as never });
     await r.stub.mailboxAck(r.bind(MUSE), { through: last });  // rings the schedule
     await settle(r);
-    const [moved] = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_segments");
-    expect(moved!["n"]).toBeGreaterThan(0);
+    expect(await sqlIn(r.stub, "SELECT records FROM archive_segments")).toEqual([{ records: 5 }]);
     const after = (await r.stub.storageUsage(r.bind(null))).used_bytes;
     expect(after).toBeLessThanOrEqual(stored);
     expect(await sqlIn(r.stub, "SELECT archive_blocked AS b FROM ledger_usage"))
