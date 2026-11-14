@@ -203,10 +203,9 @@ export interface SandboxService {
   signinCancel(owner: string, request: { readonly authority: string; readonly id: string }):
     Promise<{ readonly cancelled: boolean }>;
   start(owner: string, start: SandboxStart): Promise<Started>;
-  cancel(owner: string, request: { readonly run: string; readonly lease_id: string }):
+  /** A run's CLI stopped, under whichever lease it was launched; whether it was live. */
+  cancel(owner: string, request: { readonly run: string }):
     Promise<{ readonly cancelled: boolean }>;
-  status(owner: string, request: { readonly run: string; readonly lease_id: string }):
-    Promise<{ readonly state: "running" | "exited" | "gone" }>;
   /**
    * The lease is over: no run lives under it. The sandbox Worker pauses that sandbox at
    * once unless a run started in it since (ADR-026's zero idle tail; a paused sandbox costs

@@ -362,8 +362,7 @@ describe("a run's cancel", () => {
     const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
     const cancelled = await r.stub.agentCancel(r.bind(), { run_id: run.run_id });
     expect(cancelled).toMatchObject({ run_id: run.run_id, state: "running" });
-    expect((await recorder(r.stub)).cancels).toEqual([{ run: run.run_id,
-                                                        lease_id: start.lease.lease_id }]);
+    expect((await recorder(r.stub)).cancels).toEqual([{ run: run.run_id }]);
     await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: null } });
     expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
       .toMatchObject({ state: "failed", code: "cancelled" });

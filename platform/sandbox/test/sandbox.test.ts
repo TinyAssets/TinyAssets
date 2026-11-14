@@ -516,18 +516,15 @@ describe("the platform's line", () => {
   });
 });
 
-describe("cancel, status and release", () => {
-  it("cancels through the runner, and reports its status", async () => {
+describe("cancel and release", () => {
+  it("cancels a run through the runner of the sandbox it was launched in", async () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const who = owner();
     await stub(who).start(who, start());
-    expect(await stub(who).cancel({ run: RUN, lease_id: LEASE.lease_id }))
-      .toEqual({ cancelled: true });
+    expect(await stub(who).cancel({ run: RUN })).toEqual({ cancelled: true });
     expect((await seen()).commands.at(-1)!.argv.slice(1)).toEqual(["cancel", RUN]);
-    expect(await stub(who).status({ run: RUN, lease_id: LEASE.lease_id }))
-      .toEqual({ state: "running" });
-    expect(await stub(who).status({ run: `run_${hex(32, "9")}`, lease_id: LEASE.lease_id }))
-      .toEqual({ state: "gone" });
+    expect(await stub(who).cancel({ run: `run_${hex(32, "9")}` }))
+      .toEqual({ cancelled: false });
   });
 
   it("pauses on release only when the runner has no live run, and only for its lease",
@@ -636,8 +633,8 @@ describe("the look before the runtime ceiling", () => {
     const box = (await seen()).sandboxes.find((each) => each.id === id)!;
     expect(Number(look.argv[2])).toBeLessThanOrEqual(Date.now() + WINDOW * 1000);
     expect(box.state).toBe("running");
-    expect(await stub(who).status({ run: RUN, lease_id: LEASE.lease_id }))
-      .toEqual({ state: "running" });
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "4")}`, tokens: null,
+                                             network: null }))).toEqual({ started: true });
   });
 
   it("is forced at the ceiling's edge, quiet or not", async () => {
@@ -1007,8 +1004,7 @@ describe("the runner, by digest", () => {
     const id = (await seen()).sandboxes[0]!.id;
     await e2b("/runners", { id, runners: [] });
     const before = (await seen()).commands.length;
-    expect(await stub(who).cancel({ run: RUN, lease_id: LEASE.lease_id }))
-      .toEqual({ cancelled: true });
+    expect(await stub(who).cancel({ run: RUN })).toEqual({ cancelled: true });
     expect((await seen()).commands.slice(before).map((command) => command.argv[1]))
       .toEqual(["cancel", "install", "cancel"]);
   });

@@ -29,7 +29,6 @@ export const COMMAND = Object.freeze({
   signinCheck: "signin-check",
   launch: "launch",
   cancel: "cancel",
-  status: "status",
   state: "state",
   quietWait: "quiet-wait",
   renewWait: "renew-wait",
@@ -49,9 +48,8 @@ export type Command = (typeof COMMAND)[keyof typeof COMMAND];
 /** What the Worker sends. */
 export const WORKER_COMMANDS = Object.freeze([
   COMMAND.prepare, COMMAND.adopt, COMMAND.signinCheck, COMMAND.launch, COMMAND.cancel,
-  COMMAND.status, COMMAND.state, COMMAND.quietWait, COMMAND.renewWait, COMMAND.renewed,
-  COMMAND.recover, COMMAND.loginLaunch, COMMAND.loginInput, COMMAND.loginDrop,
-  COMMAND.loginCancel,
+  COMMAND.state, COMMAND.quietWait, COMMAND.renewWait, COMMAND.renewed, COMMAND.recover,
+  COMMAND.loginLaunch, COMMAND.loginInput, COMMAND.loginDrop, COMMAND.loginCancel,
 ] as const);
 export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
 
@@ -60,13 +58,14 @@ export const INTERNAL_COMMANDS = Object.freeze([COMMAND.run, COMMAND.loginRun,
                                                 COMMAND.sync] as const);
 
 /**
- * Retired: commands protocol 1 records that the runner no longer takes, the template's
- * standing checks, which run from a bundle of their own (`probes.ts`) and were never the
- * Worker's. Recorded by mistake; the next protocol's record names the Worker's and the
- * runner's own commands alone.
+ * Retired: commands protocol 1 records that the runner no longer takes. The template's
+ * standing checks run from a bundle of their own (`probes.ts`) and were never the Worker's,
+ * recorded by mistake; `status` the Worker never sent (the owner's object finds a lost
+ * runner by its heartbeat). The next protocol's record names the Worker's and the runner's
+ * own commands alone.
  */
 export const RETIRED_IN_1: readonly string[] = Object.freeze(["login-probe", "matcher-probe",
-                                                              "route-probe"]);
+                                                              "route-probe", "status"]);
 
 /**
  * The exit codes. The runner's: done, a usage refused (no such command), "no" (not signed
