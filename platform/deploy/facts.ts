@@ -194,8 +194,8 @@ function boundAs<T extends { binding?: string }>(worker: string, entries: readon
 type Buckets = readonly { binding: string; bucket_name: string }[] | undefined;
 
 /**
- * The live names the import job reaches, each read where it is written: the staging bucket and
- * the import queue the doors bind, the dead-letter queue of the doors' consumer of that queue,
+ * The live names the import job reaches, each read where it is written: the staging bucket the
+ * doors bind, the dead-letter queue of the doors' consumer of the queue they bind as `IMPORTS`,
  * the files Worker's bucket, the directory's namespace title and the final backup's bucket
  * (`platform.json`). The job runs on its import host, away from this tree, so the window's
  * bundle step writes them beside the job (`--import`).
@@ -212,7 +212,6 @@ export const IMPORT_NAMES = (() => {
   }
   return Object.freeze({
     staging_bucket: boundAs("doors", doors["r2_buckets"] as Buckets, "IMPORT_STAGING").bucket_name,
-    queue,
     dead_letter_queue: deadLetters,
     files_bucket: boundAs("files", configOf("files")["r2_buckets"] as Buckets, "BLOBS").bucket_name,
     directory: platform.namespaces.titles.DIRECTORY,

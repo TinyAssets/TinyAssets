@@ -28,6 +28,7 @@ import {
   RUN, stagedName,
 } from "../contract/src/import-message";
 import { IMPORT_NAME_KEYS, type ImportNames } from "../contract/src/import-names";
+import { QUEUES } from "../contract/src/queue-names";
 import { Cloudflare } from "../deploy/cloudflare";
 
 /**
@@ -45,14 +46,12 @@ export function namesOf(text: string): ImportNames {
   return given as ImportNames;
 }
 
-/** Cloudflare's API, and R2's S3 endpoint for an account. */
-export const API = "https://api.cloudflare.com/client/v4";
+/** R2's S3 endpoint for an account. */
 const r2Host = (account: string) => `${account}.r2.cloudflarestorage.com`;
-export const ACCOUNT = /^[0-9a-f]{32}$/;
 
 /** The window's credentials, as the operator hands them to the run. */
 export interface Inputs {
-  /** The Cloudflare account, 32 hex. */
+  /** The Cloudflare account, 32 hex (`cli.ts`'s `stageInputs` holds it to that). */
   readonly account: string;
   /**
    * An R2 API token's S3 access key pair, with write to the staging bucket (and, for the
@@ -228,11 +227,11 @@ export async function queueId(inputs: Inputs, fetcher: Fetcher, name: string): P
   return id;
 }
 
-/** One message's push onto the queue over the Queues HTTP API, as JSON. */
-export function pushMessage(inputs: Inputs, queue: string, message: ImportMessage): Request {
-  return new Request(`${API}/accounts/${inputs.account}/queues/${queue}/messages`, {
-    method: "POST", body: JSON.stringify({ body: message, content_type: "json" }),
-    headers: { authorization: `Bearer ${inputs.apiToken}`, "content-type": "application/json" } });
+/** A run's id, or a refusal. */
+export function checkRun(run: string): void {
+  if (!RUN.test(run)) {
+    throw new Error("a run's id is lowercase letters, digits and dashes, at most 64");
+  }
 }
 
 /** A bundle's message, MAC'd under the window's key. */
@@ -248,7 +247,7 @@ export function plannedLines(bundles: readonly Staged[], run: string, names: Imp
   return [
     ...bundles.map((staged, n) => `bundle ${n + 1} of ${bundles.length}: ${staged.parts.length} ` +
       `objects, ${staged.bytes} bytes to ${names.staging_bucket}/${run}/<key>/, its index last; ` +
-      `then 1 message to ${names.queue}`),
+      `then 1 message to ${QUEUES.IMPORTS}`),
     `in all: ${bundles.reduce((sum, staged) => sum + staged.parts.length, 0)} objects, ` +
     `${bundles.reduce((sum, staged) => sum + staged.bytes, 0)} bytes, ${bundles.length} messages`,
   ];
@@ -263,9 +262,7 @@ export async function stage(out: string, run: string, names: ImportNames, inputs
                             fetcher: Fetcher, print: (line: string) => void,
                             now: () => Date = () => new Date(), rehearsal = false):
     Promise<StageSummary> {
-  if (!RUN.test(run)) {
-    throw new Error("a run's id is lowercase letters, digits and dashes, at most 64");
-  }
+  checkRun(run);
   const bundles = bundlesIn(out);
   // A rehearsal imports under this run's rehearsal names alone, and the window under none.
   if (bundles.some((staged) => rehearsalRun(staged.owner) !== (rehearsal ? run : null))) {
@@ -282,10 +279,7 @@ export async function stage(out: string, run: string, names: ImportNames, inputs
     plannedLines(bundles, run, names).forEach((line) => print(line));
     return { dry_run: true, ...totals };
   }
-  if (!ACCOUNT.test(inputs.account)) {
-    throw new Error("the account is 32 hex");
-  }
-  const queue = await queueId(inputs, fetcher, names.queue);
+  const queue = await queueId(inputs, fetcher, QUEUES.IMPORTS);
   for (const [n, staged] of bundles.entries()) {
     for (const name of staged.parts) {
       const answer = await fetcher(s3Request(inputs, "PUT", names.staging_bucket,
@@ -296,13 +290,8 @@ export async function stage(out: string, run: string, names: ImportNames, inputs
                         "nothing more is sent");
       }
     }
-    const answer = await fetcher(pushMessage(inputs, queue, messageOf(staged, run,
-                                                                      inputs.importKey)));
-    const body = await answer.json().catch(() => null) as { success?: boolean } | null;
-    if (!answer.ok || body?.success !== true) {
-      throw new Error(`bundle ${n + 1}'s message was refused (${answer.status}): ` +
-                      "nothing more is sent");
-    }
+    await cloudflareOf(inputs, fetcher).send(inputs.account, queue,
+                                             messageOf(staged, run, inputs.importKey));
     print(`bundle ${n + 1} of ${bundles.length}: ${staged.parts.length} objects uploaded, ` +
           "its message sent");
   }

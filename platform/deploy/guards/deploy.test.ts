@@ -625,8 +625,8 @@ describe("the deploy kit's facts", () => {
     expect([printed.status, printed.stderr]).toEqual([0, ""]);
     const names = JSON.parse(printed.stdout) as Record<string, string>;
     expect(names).toEqual(IMPORT_NAMES);
-    const { queue, dead_letter_queue: deadLetters, directory, ...buckets } = names;
-    expect([queue, deadLetters].filter((name) => !QUEUES.includes(name!))).toEqual([]);
+    const { dead_letter_queue: deadLetters, directory, ...buckets } = names;
+    expect(QUEUES).toContain(deadLetters);
     expect(Object.values(NAMESPACES)).toContain(directory);
     expect(Object.values(buckets).filter((name) => !BUCKETS.includes(name))).toEqual([]);
     expect(new Set(Object.values(names)).size).toBe(Object.keys(names).length);

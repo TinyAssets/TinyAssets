@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
 import { macHolds } from "../../contract/src/import-message";
+import { QUEUES } from "../../contract/src/queue-names";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
 import { credentialsFrom, STAGE_INPUTS, stageInputs, stageMain } from "../cli";
@@ -67,7 +68,7 @@ function apis(options: { refuse?: string; queues?: unknown[] } = {}) {
     if (request.method === "GET") {
       return Response.json({ success: true, result: options.queues
         ?? [{ queue_id: "q-other", queue_name: NAMES.dead_letter_queue },
-            { queue_id: "q-import", queue_name: NAMES.queue }] });
+            { queue_id: "q-import", queue_name: QUEUES.IMPORTS }] });
     }
     return request.url.startsWith("https://api.cloudflare.com/")
       ? Response.json({ success: true, result: null }) : new Response(null, { status: 200 });
@@ -145,7 +146,7 @@ describe("the staging step", () => {
     expect(calls).toEqual([]);
     expect(lines.slice(0, 3)).toEqual([1, 2, 3].map((n) => expect.stringMatching(new RegExp(
       `^bundle ${n} of 3: [0-9]+ objects, [0-9]+ bytes to ${NAMES.staging_bucket}/rehearsal-1/` +
-      `<key>/, its index last; then 1 message to ${NAMES.queue}$`))));
+      `<key>/, its index last; then 1 message to ${QUEUES.IMPORTS}$`))));
     expect(lines[3]).toMatch(/^in all: [0-9]+ objects, [0-9]+ bytes, 3 messages$/);
     expect(JSON.parse(lines[4]!)).toMatchObject({ dry_run: true, bundles: 3, messages: 3 });
     expect(lines.join("\n")).not.toContain(keyOf(ALICE));
@@ -183,6 +184,9 @@ describe("the staging step", () => {
     expect(stageInputs(credentialsFrom(`${lines.join("\n")}\n`))).toEqual(INPUTS);
     expect(() => stageInputs(credentialsFrom(lines.slice(0, 4).join("\n"))))
       .toThrow("a staging run takes IMPORT_KEY from its stdin");
+    // The account is an account's id, for every step that takes the credentials.
+    expect(() => stageInputs({ ...env, [STAGE_INPUTS.account]: "not-an-account" }))
+      .toThrow("the account is 32 hex");
     const out = bundled();
     const { calls, fetcher } = apis();
     expect(await stageMain(["stage", out, "--run", "r1", "--facts", factsFile()], env,
@@ -214,9 +218,15 @@ describe("the staging step", () => {
     await expect(stage(out, "r1", NAMES, INPUTS, refused.fetcher, () => undefined))
       .rejects.toThrow("bundle 1's upload was refused (403): nothing more is sent");
     expect(refused.calls.filter((call) => call.method === "POST")).toEqual([]);
+    // A refused message stops the run too: no later bundle is uploaded or sent.
+    const unsent = apis({ refuse: "/messages" });
+    await expect(stage(out, "r1", NAMES, INPUTS, unsent.fetcher, () => undefined))
+      .rejects.toThrow(/q-import\/messages .*\(403\)/);
+    expect(unsent.calls.filter((call) => call.method === "POST").length).toBe(1);
+    expect(unsent.calls.at(-1)!.method).toBe("POST");
     const none = apis({ queues: [] });
     await expect(stage(out, "r1", NAMES, INPUTS, none.fetcher, () => undefined))
-      .rejects.toThrow(`lists no queue ${NAMES.queue}:`);
+      .rejects.toThrow(`lists no queue ${QUEUES.IMPORTS}:`);
     expect(none.calls.length).toBe(1);
     await expect(stage(out, "Bad Run", NAMES, INPUTS, none.fetcher, () => undefined))
       .rejects.toThrow(/run's id/);
