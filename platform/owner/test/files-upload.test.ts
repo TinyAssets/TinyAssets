@@ -67,7 +67,7 @@ const inBucket = async (r: Rig, sha256: string) => {
   try {
     const [space] = await sqlIn(r.stub, "SELECT ns, data_key FROM file_space");
     await env.FILES.getChunks(space!["ns"] as string, space!["data_key"] as string,
-                              [{ sha256, verify: true }]);
+                              [{ sha256 }]);
     return true;
   } catch {
     return false;

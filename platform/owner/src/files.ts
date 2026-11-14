@@ -109,7 +109,7 @@ import type {
 } from "./owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { Edited, EditRefusal } from "./edit";
-import { type ChunkStore, GET_READS } from "../../contract/src/files";
+import { type ChunkGet, type ChunkStore, GET_READS } from "../../contract/src/files";
 import { fitList, PAGE_BYTES, RESULT_TOO_LARGE } from "./pages";
 import {
   frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
@@ -1033,16 +1033,14 @@ export class Files {
   }
 
   /** Chunk bytes in order, fetched from `FILES` `GET_READS` reads a call at most. */
-  async fetch(reads: readonly { sha256: string; offset?: number; length?: number;
-                                 verify?: true }[]): Promise<Uint8Array[]> {
+  async fetch(reads: readonly ChunkGet[]): Promise<Uint8Array[]> {
     if (reads.length === 0) {
       return [];
     }
     const { ns, key } = await this.space();
     const out: Uint8Array[] = [];
     for (let at = 0; at < reads.length; at += GET_READS) {
-      out.push(...await this.#store.getChunks(ns, key, reads.slice(at, at + GET_READS)
-        .map((read) => ({ ...read, verify: true as const }))));
+      out.push(...await this.#store.getChunks(ns, key, reads.slice(at, at + GET_READS)));
     }
     return out;
   }
@@ -3103,15 +3101,14 @@ async function textWindow(o: OwnerState, content: Content, offset: number, max: 
   if (content.inline !== undefined) {
     bytes = content.inline.subarray(offset, want);
   } else {
-    const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
+    const reads: { sha256: string; offset: number; length: number }[] = [];
     let at = 0;
     for (const chunk of content.chunks ?? []) {
       const from = Math.max(offset, at);
       const to = Math.min(want, at + chunk.size);
       if (from < to) {
         // Verified (review L7): `FILES` rechecks the whole chunk and answers the range.
-        reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from,
-                     verify: true });
+        reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from });
       }
       at += chunk.size;
     }

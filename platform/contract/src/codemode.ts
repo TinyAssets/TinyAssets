@@ -19,7 +19,7 @@ export interface CodemodeWorker<Request, Exchange> {
   codemodeExecute(name: string, request: Request, exchange: Exchange): Promise<void>;
 }
 
-/** The most characters an execution's name takes: the owner's name, a slash and a UUID. */
+/** The most characters an execution's name takes: the owner's digest, a slash and a UUID. */
 export const EXECUTION_NAME_MAX = 512;
 
 /** Whether `value` can name an execution: 1 to `EXECUTION_NAME_MAX` characters. */

@@ -14,6 +14,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { CODEMODE_TIMEOUT_MS, type CodemodeService, codemodeSandbox } from "../src/codemode";
+import { sha256Hex } from "../../contract/src/digest";
 import {
   CODEMODE_DEFAULTS, DEFAULT_POLICY_JSON, validate,
 } from "../../contract/src/policy-document";
@@ -49,13 +50,23 @@ describe("code mode's executor", () => {
     expect(result).toMatchObject({ ok: true, value: "AB" });
     expect(seen).toEqual([{ key: "a" }, { key: "b" }]);
     expect(names).toHaveLength(1);
-    expect(names[0]).toMatch(/^owner-a\/[0-9a-f-]{36}$/);
+    expect(names[0]).toMatch(new RegExp(`^${sha256Hex("owner-a")}/[0-9a-f-]{36}$`));
     // Each execution is a sandbox object of its own.
     await sandbox.execute("return 1;");
     expect(names).toHaveLength(2);
     expect(names[1]).not.toBe(names[0]);
     await sandbox.close();
     expect(CODEMODE_TIMEOUT_MS).toBe(300_000);
+  });
+
+  it("runs for an owner of any principal's length: its name is the principal's digest",
+     async () => {
+    const names: string[] = [];
+    const sandbox = codemodeSandbox({ service: named(names), owner: () => "p".repeat(2048),
+                                      tools: [] });
+    expect(await sandbox.execute("return 1;")).toMatchObject({ ok: true, value: 1 });
+    expect(names[0]).toMatch(new RegExp(`^${sha256Hex("p".repeat(2048))}/[0-9a-f-]{36}$`));
+    await sandbox.close();
   });
 
   it("is refused by the codemode Worker under no name, an empty one or one past 512 " +

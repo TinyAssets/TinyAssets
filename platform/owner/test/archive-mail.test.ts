@@ -991,7 +991,7 @@ describe("an export across a move (review H2)", () => {
         const space = state.storage.sql.exec<{ ns: string; data_key: string }>(
           "SELECT ns, data_key FROM file_space").one();
         const parts = await (env.FILES as ChunkStore).getChunks(space.ns, space.data_key,
-          shas.map((sha) => ({ sha256: sha as string, verify: true as const })));
+          shas.map((sha) => ({ sha256: sha as string })));
         return Buffer.concat(parts.map((part) => Buffer.from(part))).toString("base64");
       }), "base64");
       const trailer = parseTrailer(whole.subarray(fence["trailer_offset"] as number,

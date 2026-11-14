@@ -38,15 +38,14 @@ export interface ChunkPut {
 }
 
 /**
- * One chunk to read: whole, or `length` bytes from `offset`. Every read is verified: the files
- * Worker reads and opens the whole chunk, rechecks its hash, and answers the range alone
- * (review L7), so each read holds a whole chunk while it is checked.
+ * One chunk to read: whole, or `length` bytes from `offset`. The files Worker reads and opens
+ * the whole chunk, rechecks its hash, and answers the range alone (review L7), so each read
+ * holds a whole chunk while it is checked.
  */
 export interface ChunkGet {
   readonly sha256: string;
   readonly offset?: number;
   readonly length?: number;
-  readonly verify: true;
 }
 
 /** The most reads one `getChunks` takes: each holds a whole chunk, and a call `BATCH_BYTES`. */

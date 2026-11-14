@@ -251,8 +251,8 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
   async getChunks(ns: string, key: string, reads: ChunkGet[]): Promise<Uint8Array[]> {
     namespace(ns);
     const gets = list<ChunkGet>(reads, "a get").map((read) => {
-      if (typeof read !== "object" || read === null || read.verify !== true) {
-        throw new Refusal("invalid", "a get is a hash, an optional range and verify: true");
+      if (typeof read !== "object" || read === null) {
+        throw new Refusal("invalid", "a get is a hash and an optional range");
       }
       return { sha256: chunkHash(read.sha256), range: range(read) };
     });

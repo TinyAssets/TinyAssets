@@ -13,7 +13,7 @@ import { chunkName, KEY_REFUSED, KEYRING_UNAVAILABLE, unwrap } from "../src/data
 import FilesService from "../src/index";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import { chunkKey, manifestKey } from "../src/keys";
-import type { ChunkGet } from "../../contract/src/files";
+import { type ChunkGet, GET_READS } from "../../contract/src/files";
 
 import { ringKey } from "../../ci/fixtures";
 
@@ -58,11 +58,11 @@ async function sealedAt(space: string, hash: string, body: Uint8Array): Promise<
                     body);
 }
 
-/** A read of the whole chunk `sha256`, as every read is: verified. */
-const chunk = (sha256: string): ChunkGet => ({ sha256, verify: true });
+/** A read of the whole chunk `sha256`. */
+const chunk = (sha256: string): ChunkGet => ({ sha256 });
 
 /** What a get of more whole chunks than a batch holds is refused with. */
-const TOO_MANY = `a get reads at most 2 chunks, ${BATCH_BYTES} bytes of whole chunks`;
+const TOO_MANY = `a get reads at most ${GET_READS} chunks, ${BATCH_BYTES} bytes of whole chunks`;
 
 function ns(): string {
   return crypto.randomUUID().replaceAll("-", "");
@@ -314,12 +314,6 @@ describe("getChunks", () => {
                              () => chunk("a".repeat(64)));
     expect((await failure(() => files().getChunks(ns(), whole))).message)
       .toBe(TOO_MANY);
-  });
-
-  it.each([[undefined], [false], ["true"]])("refuses a get whose verify is %j", async (verify) => {
-    expect((await failure(() => files().getChunks(ns(), [{ sha256: "a".repeat(64), verify }] as
-                                                  never))).message)
-      .toBe("a get is a hash, an optional range and verify: true");
   });
 
   it("fails loudly when a chunk's bytes no longer match its hash", async () => {

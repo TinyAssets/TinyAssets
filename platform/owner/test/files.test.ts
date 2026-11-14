@@ -143,7 +143,7 @@ describe("a file write", () => {
     expect(space).toMatchObject({ inline_bytes: INLINE_BYTES, chunk_bytes: INLINE_BYTES + 1 });
     expect(space!["data_key"]).toMatch(/^v1[.]/);
     expect(await env.FILES.getChunks(space!["ns"] as string, space!["data_key"] as string,
-                                     [{ sha256: sha256Hex(big), verify: true }])).toEqual([big]);
+                                     [{ sha256: sha256Hex(big) }])).toEqual([big]);
     expect(await sqlIn(r.stub, "SELECT sha256, state, stored, refs, holds FROM file_chunks"))
       .toEqual([{ sha256: sha256Hex(big), state: "live", stored: 1, refs: 1, holds: 0 }]);
   });
