@@ -1,5 +1,5 @@
 /**
- * The cutover import's consumer (`src/import.ts`, slice 4), in workerd through the real owner
+ * The cutover import's consumer (`src/import/`, slice 4), in workerd through the real owner
  * object and the real files Worker: a bundle the slice-2 builder made from its old-stack
  * fixture (`import-setup.ts`) imported into a pending owner and read back through the
  * object's own read doors; each gate dropping its message loudly with nothing written; a
@@ -16,13 +16,15 @@ import { inlineId } from "../../contract/src/content";
 import { canonical } from "../../contract/src/policy-document";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
-  answerName, doneName, importMac, type ImportMessage, NO_ROWS, rehearsalName, rowsSum,
+  answerName, doneName, type Entry, importMac, type ImportMessage, NO_ROWS, rehearsalName,
+  rowsSum,
 } from "../../contract/src/import-message";
 import { type Answers, clean, differences, expectedOf } from "../../import/check";
 import type { DoorsEnv } from "../src/env";
 import { putOwner, readOwner } from "../src/directory";
 import { IMPORT_HOLD_BYTES, importQueue, type SliceBounds } from "../src/import";
 import { CHUNK_BYTES } from "../../contract/src/limits";
+import { QUEUES } from "../../contract/src/queue-names";
 import type { OwnerDO } from "./entry";
 import type { ImportBundle } from "./import-setup";
 import { admitOwner, doorsEnv, OPEN, setControl, TIERS } from "./support";
@@ -41,16 +43,6 @@ const stubOf = (owner: string) => env.OWNER.getByName(owner);
 function bundleFiles(): Map<string, Uint8Array> {
   return new Map(Object.entries(BUNDLE.files).map(([name, b64]) =>
     [name, new Uint8Array(Buffer.from(b64, "base64"))]));
-}
-
-interface Entry {
-  readonly path: string;
-  readonly kind: "dir" | "file";
-  readonly size?: number;
-  readonly mode?: number;
-  readonly mtime_ms?: number;
-  readonly content_id?: string;
-  readonly chunks?: string[];
 }
 
 /** A bundle's pages of `kind`, in order, flattened. */
@@ -104,7 +96,7 @@ function world(over: Record<string, unknown> = {}) {
 function batch(body: unknown) {
   const acked: number[] = [];
   const retried: number[] = [];
-  return { batch: { queue: "tinyassets-import", ackAll: () => undefined, retryAll: () => undefined,
+  return { batch: { queue: QUEUES.IMPORTS, ackAll: () => undefined, retryAll: () => undefined,
                     messages: [{ id: "0", timestamp: new Date(), attempts: 1, body,
                                  ack: () => acked.push(0), retry: () => retried.push(0) }] } as
              unknown as MessageBatch<unknown>, acked, retried };

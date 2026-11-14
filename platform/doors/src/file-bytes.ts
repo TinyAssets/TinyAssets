@@ -24,7 +24,7 @@
  * any step (an expired intent, the erasure's mark, a chunk R2 refused) answers its fixed
  * code. The object's chunk doors (`fileUploadChunks`) stay for in-object callers.
  */
-import { sha256, sha256Hex } from "../../contract/src/digest";
+import { sha256 } from "../../contract/src/digest";
 import { CHUNK_BYTES } from "../../contract/src/limits";
 
 import type { Bound } from "./binder";
@@ -45,19 +45,41 @@ function claimed(request: Request): string | undefined {
     : /(?:^|,)\s*sha-256=:([A-Za-z0-9+/=]+):/.exec(header)?.[1] ?? "";
 }
 
+/** Bytes that are the chunk their upload's plan declares (`held`): what `putChunk` takes. */
+export interface HeldChunk {
+  readonly sha256: string;
+  readonly bytes: Uint8Array;
+}
+
 /**
- * The cutover import's bytes (`import.ts`), on this door's path: one chunk the staging bucket
- * holds, checked against its declared SHA-256 and size, put to `FILES` under the owner's
- * namespace and wrapped key (`importFileBegin`'s), never through the owner's object.
+ * `bytes` held to `chunk` as its upload's plan declares it, the one check before a chunk's
+ * bytes are put: `size` when they are not its size (or there are none), `hash` when they are
+ * not its SHA-256, else the chunk held; their digest rides each answer past the size. A plan
+ * that names a chunk larger than a chunk is a fault: no plan makes one.
  */
-export async function putImportChunk(env: DoorsEnv, target: { namespace: string; key: string },
-                                     chunk: { sha256: string; size: number },
-                                     bytes: Uint8Array): Promise<void> {
-  if (chunk.size > CHUNK_BYTES || bytes.byteLength !== chunk.size
-      || sha256Hex(bytes) !== chunk.sha256) {
-    throw new Error("an import chunk's bytes are not the chunk its upload declared");
+export function held(chunk: { readonly sha256: string; readonly size: number },
+                     bytes: Uint8Array | null):
+    { readonly problem: "size" }
+    | { readonly problem: "hash"; readonly digest: Buffer }
+    | { readonly problem: null; readonly digest: Buffer; readonly chunk: HeldChunk } {
+  if (chunk.size > CHUNK_BYTES) {
+    throw new Error("an upload's plan names a chunk larger than a chunk");
   }
-  await env.FILES.putChunks(target.namespace, target.key, [{ sha256: chunk.sha256, bytes }]);
+  if (bytes === null || bytes.byteLength !== chunk.size) {
+    return { problem: "size" };
+  }
+  const digest = sha256(bytes);
+  return digest.toString("hex") !== chunk.sha256 ? { problem: "hash", digest }
+    : { problem: null, digest, chunk: { sha256: chunk.sha256, bytes } };
+}
+
+/**
+ * A held chunk's bytes put to `FILES` under its upload's namespace and wrapped key, never
+ * through the owner's object: the doors' one put of a file's bytes.
+ */
+export async function putChunk(env: DoorsEnv, target: { namespace: string; key: string },
+                               chunk: HeldChunk): Promise<void> {
+  await env.FILES.putChunks(target.namespace, target.key, [chunk]);
 }
 
 /** `PUT files/upload/<intent_id>/<index>`: one chunk's bytes, put to `FILES` by the binder. */
@@ -80,27 +102,23 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
   if (chunk === undefined) {
     return failure(404, `the upload has ${target.chunks.length} chunks`);
   }
-  if (chunk.size > CHUNK_BYTES) {
-    throw new Error("an upload's plan names a chunk larger than a chunk");
-  }
-  const bytes = await boundedBytes(request, chunk.size);
-  if (bytes === null || bytes.byteLength !== chunk.size) {
+  const bytes = held(chunk, await boundedBytes(request, chunk.size));
+  if (bytes.problem === "size") {
     return failure(400, `chunk ${index} is ${chunk.size} bytes`);
   }
-  const digest = sha256(bytes);
-  const headers = { "Content-Digest": contentDigest(digest) };
+  const headers = { "Content-Digest": contentDigest(bytes.digest) };
   const sent = claimed(request);
-  if (sent !== undefined && sent !== digest.toString("base64")) {
+  if (sent !== undefined && sent !== bytes.digest.toString("base64")) {
     return failure(400, "the chunk's SHA-256 is not the Content-Digest it was sent with",
                    headers);
   }
-  if (digest.toString("hex") !== chunk.sha256) {
+  if (bytes.problem === "hash") {
     return failure(400, `the bytes of chunk ${index} are not the chunk the upload declared`,
                    headers);
   }
   const needed = target.pending.includes(chunk.sha256);
   if (needed) {
-    await env.FILES.putChunks(target.namespace, target.key, [{ sha256: chunk.sha256, bytes }]);
+    await putChunk(env, target, bytes.chunk);
     await stub.fileUploadStored(binding, { intent_id: intentId, chunks: [chunk.sha256] });
   }
   return answer(200, { intent_id: intentId, index, stored: needed,

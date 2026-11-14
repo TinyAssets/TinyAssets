@@ -2,7 +2,7 @@
  * The import job's side of the queue (`import_research.md` §3, slice 4): each owner's bundle
  * (`bundle.ts`) uploaded to the staging bucket over R2's S3 API, then one message for each
  * owner, MAC'd under the window's `IMPORT_KEY` (`contract/src/import-message.ts`), put on the
- * import queue over the Queues HTTP API, for the doors' consumer (`doors/src/import.ts`). A
+ * import queue over the Queues HTTP API, for the doors' consumer (`doors/src/import/`). A
  * dry run reads and checks every bundle the same way and prints what it would send, sending
  * nothing and needing no credential. Deleted at the cutover with the rest of the job.
  *

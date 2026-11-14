@@ -18,7 +18,8 @@
  *   `src/file-bytes.ts` names it.
  * - The cutover's import window (`IMPORT_WINDOW`, `rules.ts`): the staging bucket, the import
  *   queue's producer and its consumer with its dead-letter queue, exactly, and named by
- *   the contract's queue name (`IMPORT_QUEUE`), which the job sends to; deleted at the cutover.
+ *   the generated queue name (`QUEUES.IMPORTS`, `contract/src/queue-names.ts`), which the
+ *   job sends to; deleted at the cutover.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -32,7 +33,7 @@ import { PLATFORM } from "../../ci/paths";
 import { type Config, platformConfigs } from "../../ci/kit/sources";
 import { readWrangler } from "../../ci/wrangler";
 
-import { IMPORT_QUEUE } from "../../contract/src/import-message";
+import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
 import { ERASURE_QUEUE } from "../src/config";
 
 import { CONFIG, IMPORT_WINDOW } from "./rules";
@@ -334,8 +335,8 @@ function produced(worker: string, binding: string): string | undefined {
 
 describe("the doors' three queue consumers", () => {
   it("take the import window's by the name the job sends to, and is its one producer", () => {
-    expect(IMPORT_WINDOW.consumer.queue).toBe(IMPORT_QUEUE);
-    expect(IMPORT_WINDOW.producer.queue).toBe(IMPORT_QUEUE);
+    expect(IMPORT_WINDOW.consumer.queue).toBe(QUEUE_NAMES.IMPORTS);
+    expect(IMPORT_WINDOW.producer.queue).toBe(QUEUE_NAMES.IMPORTS);
     expect((config["queues"] as { producers: object[] }).producers)
       .toEqual([IMPORT_WINDOW.producer]);
     expect(config["r2_buckets"]).toEqual([IMPORT_WINDOW.bucket]);
@@ -345,7 +346,7 @@ describe("the doors' three queue consumers", () => {
         continue;
       }
       expect(JSON.stringify(other)).not.toContain(IMPORT_WINDOW.bucket.bucket_name);
-      expect(JSON.stringify(other)).not.toContain(IMPORT_QUEUE);
+      expect(JSON.stringify(other)).not.toContain(QUEUE_NAMES.IMPORTS);
     }
   });
 
@@ -359,8 +360,9 @@ describe("the doors' three queue consumers", () => {
     expect(erasures).toBeDefined();
     expect(ERASURE_QUEUE).toBe(erasures);
     expect(rings).not.toBe(erasures);
-    expect(rings).not.toBe(IMPORT_QUEUE);
+    expect(rings).not.toBe(QUEUE_NAMES.IMPORTS);
     expect((config["queues"] as { consumers: { queue: string }[] }).consumers
-      .map((consumer) => consumer.queue).sort()).toEqual([erasures, rings, IMPORT_QUEUE].sort());
+      .map((consumer) => consumer.queue).sort())
+      .toEqual([erasures, rings, QUEUE_NAMES.IMPORTS].sort());
   });
 });

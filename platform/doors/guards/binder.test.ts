@@ -14,7 +14,7 @@
  *   has one path, to the gateway's connect entrypoint; only `egress.ts` reaches its egress
  *   entrypoint (`EGRESS`), so a blob the owner's object handed out is forwarded on one path;
  *   only `file-bytes.ts` reaches the files Worker (`FILES`), the file door's bytes (an
- *   upload's, and the cutover import's); and only `import.ts` reaches the import window's
+ *   upload's, and the cutover import's); and only `import/` reaches the import window's
  *   bucket and queue (`IMPORT_STAGING`, `IMPORTS`).
  * - Consent is never remembered: no source names `remember` or `isConsentRemembered`.
  *
@@ -47,8 +47,13 @@ const DIRECTORY = "doors/src/directory.ts";
 const CONNECT = "doors/src/connect.ts";
 const EGRESS = "doors/src/egress.ts";
 const FILE_BYTES = "doors/src/file-bytes.ts";
-const IMPORT = "doors/src/import.ts";
+const IMPORT = "doors/src/import/";
 const IMPORT_WINDOW = new Set(["IMPORT_STAGING", "IMPORTS"]);
+/**
+ * The generated queue names (`contract/src/queue-names.ts`), keyed by each queue's producer
+ * binding: a name read there (`QUEUES.IMPORTS`, the doors' queue dispatch) reaches no binding.
+ */
+const QUEUE_NAMES = "QUEUES";
 const OBJECT_IDS = new Set(["idFromName", "idFromString", "newUniqueId"]);
 const REMEMBERING = new Set(["remember", "isConsentRemembered"]);
 
@@ -95,9 +100,11 @@ export function binderProblems(fileName: string, source: string): string[] {
         && fileName !== ENV) {
       report(node, "reaches the files Worker outside file-bytes.ts");
     }
-    if (doors && ts.isIdentifier(node) && IMPORT_WINDOW.has(node.text) && fileName !== IMPORT
-        && fileName !== ENV) {
-      report(node, `reaches the import window's ${node.text} outside import.ts`);
+    if (doors && ts.isIdentifier(node) && IMPORT_WINDOW.has(node.text)
+        && !fileName.startsWith(IMPORT) && fileName !== ENV
+        && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node
+             && node.parent.expression.getText(file) === QUEUE_NAMES)) {
+      report(node, `reaches the import window's ${node.text} outside import/`);
     }
     if (doors && ts.isIdentifier(node) && node.text === "EGRESS" && fileName !== EGRESS
         && fileName !== ENV) {
@@ -155,7 +162,8 @@ describe("binder guard", () => {
     ["doors/src/sandbox.ts", "export const f = ({ EGRESS }: any) => EGRESS;"],
     ["doors/src/ring.ts", "export const f = (env: any) => env.IMPORT_STAGING.get('k');"],
     ["doors/src/erase.ts", "export const f = (env: any) => env.IMPORTS.send({});"],
-    ["doors/src/import.ts", "export const f = (env: any) => env.FILES.putChunks('n', 'k', []);"],
+    ["doors/src/index.ts", "export const f = (env: any) => env.QUEUES.IMPORTS.send({});"],
+    ["doors/src/import/index.ts", "export const f = (env: any) => env.FILES.putChunks('n', 'k', []);"],
     [CODEMODE_ENTRY, "export const f = (env: any) => env.OWNER.getByName('bob');"],
     [CODEMODE_ENTRY, "export const f = (env: any) => env.RUNNER.getByName('bob');"],
     [CODEMODE_ENTRY, "class H { env: any; f(n: string) { return this.env.RUNNER.getByName(n); } }"],
@@ -178,6 +186,8 @@ describe("binder guard", () => {
     ["doors/src/directory.ts", "export const f = (env: any) => env.DIRECTORY.get('c:control');"],
     ["doors/src/connect.ts", "export const f = (env: any) => env.GATEWAY.verify('a', 'c', 1, 'b');"],
     ["doors/src/egress.ts", "export const f = (env: any) => env.EGRESS.forward('a', 'c', 1, 'b', r);"],
+    ["doors/src/import/index.ts", "export const f = (env: any) => env.IMPORT_STAGING.get('k');"],
+    ["doors/src/index.ts", "export const f = (b: any) => b.queue === QUEUES.IMPORTS;"],
   ])("allows, in %s, %s", (fileName, source) => {
     expect(binderProblems(fileName, source)).toEqual([]);
   });

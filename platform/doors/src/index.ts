@@ -14,7 +14,7 @@ import { oidcUpstream, upstreamConfig } from "./oidc";
 import { ringQueue } from "./ring";
 import { erasureQueue } from "./erase";
 import { importQueue } from "./import";
-import { IMPORT_QUEUE } from "../../contract/src/import-message";
+import { QUEUES } from "../../contract/src/queue-names";
 import { UNWIRED, type Upstream } from "./upstream";
 import { bundledSources } from "../../sources/src/catalog";
 
@@ -39,9 +39,9 @@ export default Object.freeze({
   fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
     serve(request, env, ctx, () => upstreamOf(env), bundledSources()),
   // Three queues: the sandbox line's doorbell (`ring.ts`), the erasure's outside record
-  // (`erase.ts`), and the cutover's import window (`import.ts`), each its one consumer.
+  // (`erase.ts`), and the cutover's import window (`import/`), each its one consumer.
   queue: (batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> =>
     batch.queue === ERASURE_QUEUE ? erasureQueue(batch, env, () => upstreamOf(env))
-      : batch.queue === IMPORT_QUEUE ? importQueue(batch, env)
+      : batch.queue === QUEUES.IMPORTS ? importQueue(batch, env)
         : ringQueue(batch, env),
 });

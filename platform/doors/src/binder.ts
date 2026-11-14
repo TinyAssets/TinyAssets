@@ -397,7 +397,7 @@ export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
 }
 
 /**
- * The platform's own binding for `owner` at the cutover's import (`import.ts`): the reserved
+ * The platform's own binding for `owner` at the cutover's import (`import/`): the reserved
  * caller (`PLATFORM_CALLER`) with the bundle whose message the consumer verified under
  * `IMPORT_KEY`, and the control record's tier numbers, which the files plane's quota reads, as
  * every account door's binding carries them. The owner's object takes it at its import doors

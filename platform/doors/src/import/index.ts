@@ -5,8 +5,10 @@
  * (`IMPORT_STAGING`, at the message's `prefix`) and one message on the queue
  * (`contract/src/import-message.ts`); its later steps (`platform/import/window.ts`) put a
  * `check`, a `discard` or an `admit` message for it, each answered in the staging bucket.
- * Deleted at the cutover with the job, the import doors, the queue, its dead-letter queue,
- * the bucket and `IMPORT_KEY` (tasks.md §9).
+ * The doors' import side is this folder, its one entry this consumer (`importQueue`, which
+ * the doors' queue handler dispatches to), deleted at the cutover with the job, the import
+ * doors, the queue, its dead-letter queue, the bucket and `IMPORT_KEY` (`platform/cutover.json`,
+ * untangle B24).
  *
  * Every gate holds before anything is written, in this order, and a message that fails one
  * is dropped loudly (acknowledged, so the queue never retries it):
@@ -55,64 +57,51 @@
  * object is read only when the bucket says it is at most `IMPORT_HOLD_BYTES` (one chunk, as
  * the upload door holds one), so at most one is in hand at once.
  */
-import { chunkedId, inlineId } from "../../contract/src/content";
-import { sha256Hex } from "../../contract/src/digest";
-import { HEX64 } from "../../contract/src/ids";
+import { chunkedId, inlineId } from "../../../contract/src/content";
+import { readControl, tiersOf } from "../../../contract/src/control";
+import { sha256Hex } from "../../../contract/src/digest";
+import { HEX64 } from "../../../contract/src/ids";
 import {
-  answerName, BUNDLE_FORMAT, CHECK_PARTS, type Cursor, doneName, IMPORT_BATCH_BYTES, IMPORT_FILES,
-  IMPORT_KEY, importKeyBytes, importMessage, type ImportMessage, macHolds, rehearsalRun,
-} from "../../contract/src/import-message";
-import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
-import { SUSPENSIONS } from "../../contract/src/owner";
-import { Refusal, refusalOf } from "../../contract/src/refusal";
+  answerName, BUNDLE_FORMAT, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, CHECK_PARTS, chunkName,
+  type Cursor, doneName, type Entry, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_KEY, importKeyBytes,
+  importMessage, type ImportMessage, inlineName, macHolds, type Paged, pageName, pageNumber,
+  rehearsalRun, stagedName,
+} from "../../../contract/src/import-message";
+import { INLINE_BYTES } from "../../../contract/src/limits";
+import { SUSPENSIONS } from "../../../contract/src/owner";
+import { Refusal, refusalOf } from "../../../contract/src/refusal";
 
-import { bindImport, bindPlatformFor, type Bound } from "./binder";
-import { namedSecret, now } from "./config";
-import type { DoorsEnv } from "./env";
-import { importTiers } from "./control";
-import { putOwner, readOwner } from "./directory";
-import { putImportChunk } from "./file-bytes";
+import { bindImport, bindPlatformFor, type Bound } from "../binder";
+import { namedSecret, now } from "../config";
+import type { DoorsEnv } from "../env";
+import { putOwner, readOwner } from "../directory";
+import { held, putChunk } from "../file-bytes";
 
 /** A delivery's slice: at most this long, or this many bytes moved, then its continuation. */
-export const SLICE_MS = 60_000;
-export const SLICE_BYTES = 256 * 1024 * 1024;
+const SLICE_MS = 60_000;
+const SLICE_BYTES = 256 * 1024 * 1024;
 /**
  * What a delivery holds at once: one staged object in hand, at most a chunk, as the upload door
  * holds one; a larger object is never read (`object`).
  */
 export const IMPORT_HOLD_BYTES = 4 * 1024 * 1024;
 
-/** A bundle's index (`bundle.json`), as the job wrote it and the MAC names it. */
-interface Index {
-  readonly parts: Readonly<Record<string, string>>;
-}
-
-/** One entry of the bundle's manifest (`import/build.ts`'s `Entry`). */
-interface Entry {
-  readonly path: string;
-  readonly kind: "dir" | "file";
-  readonly size?: number;
-  readonly mode?: 0 | 1;
-  readonly mtime_ms?: number;
-  readonly content_id?: string;
-  readonly chunks?: readonly string[];
-}
+/** A bundle's index, as far as the consumer reads it: the parts the MAC's digest names. */
+type Index = Pick<BundleIndex, "parts">;
 
 /** A step of the bundle: a rows page, a manifest page, or the notice. */
-type Step = { readonly kind: "rows" | "manifest"; readonly part: string }
-  | { readonly kind: "notice" };
+type Step = { readonly kind: Paged; readonly part: string } | { readonly kind: "notice" };
 
 /** The bundle's steps in its order: the rows pages, the manifest pages, then the notice. */
-export function stepsOf(index: Index): Step[] {
-  const pages = (kind: "rows" | "manifest"): Step[] => {
-    const numbers = Object.keys(index.parts)
-      .map((name) => new RegExp(`^${kind}/(0|[1-9][0-9]{0,8})\\.json$`).exec(name))
-      .flatMap((match) => match === null ? [] : [Number(match[1])]).sort((a, b) => a - b);
+function stepsOf(index: Index): Step[] {
+  const pages = (kind: Paged): Step[] => {
+    const numbers = Object.keys(index.parts).map((name) => pageNumber(kind, name))
+      .filter((number) => number !== null).sort((a, b) => a - b);
     // Each page is numbered from 0 with no gap, so none is left out unseen.
     if (numbers.some((number, n) => number !== n)) {
       throw new Refusal("invalid", "a bundle's pages are numbered from 0 with no gap");
     }
-    return numbers.map((n) => ({ kind, part: `${kind}/${n}.json` }));
+    return numbers.map((n) => ({ kind, part: pageName(kind, n) }));
   };
   return [...pages("rows"), ...pages("manifest"), { kind: "notice" }];
 }
@@ -122,7 +111,7 @@ export function stepsOf(index: Index): Step[] {
  * `IMPORT_HOLD_BYTES` is dropped before its bytes are read, so a delivery holds one at most.
  */
 async function object(env: DoorsEnv, message: ImportMessage, name: string): Promise<Uint8Array> {
-  const found = await env.IMPORT_STAGING.get(`${message.prefix}/${name}`);
+  const found = await env.IMPORT_STAGING.get(stagedName(message.prefix, name));
   if (found === null) {
     throw new Error(`the staging bucket holds no ${name} of the bundle`);
   }
@@ -144,7 +133,7 @@ const plain = (value: unknown): value is Record<string, unknown> =>
 
 /** The bundle's index, held to the digest the MAC names, the message's owner and format. */
 async function indexOf(env: DoorsEnv, message: ImportMessage): Promise<Index> {
-  const bytes = await object(env, message, "bundle.json");
+  const bytes = await object(env, message, BUNDLE_INDEX);
   if (sha256Hex(bytes) !== message.bundle) {
     throw new Refusal("invalid", "the bundle's index is not the bundle its message names");
   }
@@ -152,7 +141,7 @@ async function indexOf(env: DoorsEnv, message: ImportMessage): Promise<Index> {
   if (!plain(index) || index["format"] !== BUNDLE_FORMAT || index["owner"] !== message.owner
       || !plain(index["parts"])
       || !Object.values(index["parts"]).every((sha) => typeof sha === "string" && HEX64.test(sha))
-      || !("owner.json" in index["parts"])) {
+      || !(BUNDLE_OWNER in index["parts"])) {
     throw new Refusal("invalid", "the bundle's index is out of shape, or another owner's");
   }
   return { parts: index["parts"] as Record<string, string> };
@@ -266,7 +255,7 @@ class Slice {
         return { step, entry };
       }
       if (each.kind === "notice") {
-        const owner = await part(this.#env, this.#message, this.#index, "owner.json");
+        const owner = await part(this.#env, this.#message, this.#index, BUNDLE_OWNER);
         if (typeof owner["notice"] !== "string") {
           throw new Refusal("invalid", "the bundle's owner holds no notice");
         }
@@ -357,7 +346,7 @@ class Slice {
 
   /** An inline file and its bytes, held to its content id. */
   async #inline(entry: Entry): Promise<unknown> {
-    const bytes = await object(this.#env, this.#message, `inline/${entry.content_id}`);
+    const bytes = await object(this.#env, this.#message, inlineName(entry.content_id!));
     if (bytes.byteLength !== entry.size || inlineId(bytes) !== entry.content_id) {
       throw new Refusal("invalid", "an inline file's bytes are not its content id");
     }
@@ -393,15 +382,15 @@ class Slice {
       }
       put += 1;
       const chunk = plan.get(sha);
-      if (chunk === undefined || chunk.size > CHUNK_BYTES) {
+      if (chunk === undefined) {
         throw new Error("an import upload's plan names no such chunk");
       }
-      const bytes = await object(this.#env, this.#message, `chunks/${sha}`);
-      if (sha256Hex(bytes) !== sha) {
+      const bytes = held(chunk, await object(this.#env, this.#message, chunkName(sha)));
+      if (bytes.problem !== null) {
         throw new Refusal("invalid", "a chunk's bytes are not its hash");
       }
-      await putImportChunk(this.#env, upload, chunk, bytes);
-      this.#moved += bytes.byteLength;
+      await putChunk(this.#env, upload, bytes.chunk);
+      this.#moved += chunk.size;
       await this.#call(stub.importFileStored(binding, { intent_id: upload.intent_id,
                                                         chunks: [sha] }));
     }
@@ -449,6 +438,15 @@ async function recorded(env: DoorsEnv, message: ImportMessage): Promise<void> {
   throw new Refusal("refused", "the directory holds a record of this owner: it is never imported into");
 }
 
+/**
+ * The control record's tier numbers, read as every account door's binding reads them
+ * (`tiersOf`); null for none, so the files plane's quota refuses rather than guesses
+ * (`tier.ts`). The import passes no gate: it runs dark, before `routes`.
+ */
+async function tiers(env: DoorsEnv): Promise<unknown> {
+  return tiersOf(await readControl(env.CONTROL));
+}
+
 /** The continuation of `message` from `cursor`, sent as JSON (the job's reader takes JSON). */
 async function goOn(env: DoorsEnv, message: ImportMessage, cursor: Cursor): Promise<"more"> {
   const { cursor: _was, ...first } = message;
@@ -462,7 +460,7 @@ async function goOn(env: DoorsEnv, message: ImportMessage, cursor: Cursor): Prom
  */
 async function admitted(env: DoorsEnv, message: ImportMessage, index: Index):
     Promise<Record<string, unknown>> {
-  const owner = await part(env, message, index, "owner.json");
+  const owner = await part(env, message, index, BUNDLE_OWNER);
   const admission = owner["admission"] as { state?: unknown; reasons?: unknown } | undefined;
   const reasons = admission?.reasons;
   if (owner["owner"] !== message.owner || typeof owner["tier"] !== "string"
@@ -500,7 +498,7 @@ export async function importOne(env: DoorsEnv, body: unknown,
   stepsOf(index);
   if (ask === undefined) {
     await verified(env, message, index);
-    const bound = bindImport(env, message.owner, message.bundle, await importTiers(env));
+    const bound = bindImport(env, message.owner, message.bundle, await tiers(env));
     const next = await new Slice(env, message, index, bound, bounds).run(message.cursor
       ?? { step: 0, entry: 0 });
     if (next !== null) {
@@ -513,14 +511,14 @@ export async function importOne(env: DoorsEnv, body: unknown,
   try {
     await recorded(env, message);
     if (message.op === "check") {
-      const bound = bindImport(env, message.owner, message.bundle, await importTiers(env));
+      const bound = bindImport(env, message.owner, message.bundle, await tiers(env));
       const next = await new Slice(env, message, index, bound, bounds).check(message.cursor
         ?? { step: 0, entry: 0 }, ask);
       return next === null ? "done" : await goOn(env, message, next);
     }
     if (message.op === "discard") {
       const { binding, stub } = bindImport(env, message.owner, message.bundle,
-                                           await importTiers(env));
+                                           await tiers(env));
       const { namespace } = await stub.importDiscard(binding);
       await answer(env, answerName(message.prefix, ask), { op: "discard",
                                                            bundle: message.bundle,
