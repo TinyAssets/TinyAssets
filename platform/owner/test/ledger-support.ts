@@ -15,7 +15,9 @@ import type { OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
-import { alarmOf, collectionParts, EVERY_SIGNIN, filesOn, laneAt, TIERS } from "./support";
+import {
+  admittedOwner, alarmOf, collectionParts, EVERY_SIGNIN, filesOn, laneAt, TIERS,
+} from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -171,7 +173,7 @@ export function signedIn(): number {
  */
 export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER) {
   const owner = `owner-${crypto.randomUUID()}`;
-  const stub: DurableObjectStub<OwnerDO> = namespace.getByName(owner);
+  const stub: DurableObjectStub<OwnerDO> = await admittedOwner(owner, namespace);
   /** A binder's binding; an outside origin comes through an MCP client unless named. */
   const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
     ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), tiers: TIERS,

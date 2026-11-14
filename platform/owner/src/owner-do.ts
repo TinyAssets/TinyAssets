@@ -161,7 +161,7 @@ import {
 } from "./import";
 import { Erasure } from "./erase";
 import {
- ERASE_RETRY_MS, erasing, erasureDoors, NO_ERASURE, outsideDone, PUT_GRACE_MS, wiped,
+  erasing, erasureDoors, NO_ERASURE, outsideDone, wiped,
 } from "./erasure";
 import {
  type Change, fileLimits, modelSettings, Policy, policyDoors, type Projection, type Receipt,
@@ -192,7 +192,7 @@ import { MIGRATIONS } from "./schema";
 import { Backups, MANIFEST_PROTECT_S } from "./backup";
 import { OpenExports } from "./open-exports";
 import { ChangeLog } from "./changelog";
-import { CONTROL_FRESH_MS, ControlGate } from "./control-gate";
+import { ControlGate } from "./control-gate";
 import { storageFull, storageFullRefusal } from "./storage-full";
 import { Doorbell, type WakeSender } from "./wakes";
 import { type Events } from "../../contract/src/wake-records";
@@ -370,14 +370,8 @@ const PLACE_TRIES = 5;
 export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail, never " +
   "converse";
 
-/** What a test reaches past the doors: the erasure's internal path and its retry interval. */
+/** What a test changes past the doors: the starter package. */
 export interface Internals {
-  readonly erasure?: (internal: Erasure) => void;
-  readonly eraseRetryMs?: number;
-  /** The erasure's wait for a put begun before its mark (`PUT_GRACE_MS`), for the tests. */
-  readonly putGraceMs?: number;
-  /** How long a script's read of the control record serves its calls (`control-gate.ts`). */
-  readonly controlFreshMs?: number;
   /**
    * The starter package the object seeds and keeps current (`starter.ts`): the one this code
    * carries when omitted, as production builds it; another for a test of updates; null for
@@ -533,7 +527,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly #posts = new PostGate();
   /** How long a script's read of the control record serves its calls. */
-  readonly #controlFreshMs: number;
   /** The owner this object is named by (`ctx.id.name`), refused when it has none. */
   readonly #ownerName: () => string;
   readonly #schedule: Schedule;
@@ -559,8 +552,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    */
   #discarded: { readonly ns: string | null } | null = null;
   /**
-   * The runtime constructs it with `ctx` and `env` alone; the workerd tests take the
-   * erasure's internal path (`internals`), which no door reaches.
+   * The runtime constructs it with `ctx` and `env` alone; the workerd tests hand it the
+   * starter package they test (`internals`).
    */
   constructor(ctx: DurableObjectState, env: OwnerEnv, internals: Internals = {}) {
     super(ctx, env);
@@ -733,9 +726,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         if (await this.#door(() => outsideDone(storage))) {
           return true;
         }
-        if (this.env.ERASURES === undefined) {
-          throw new Error("the erasure cannot reach the doors: ERASURES is not bound");
-        }
         await this.env.ERASURES.send({ owner: this.#ownerName() });
         return false;
       },
@@ -755,13 +745,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
           await this.#files.eraseNamespace(ns);
         }
       },
-      putGraceMs: internals.putGraceMs ?? PUT_GRACE_MS,
       wipe: () => this.#gate.wipe(writeTombstone),
       bare: () => this.#gate.wipe(() => undefined),
-      retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
-    internals.erasure?.(this.#erasure);
-    this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
       .use(this.#relay.capability);
     void ctx.blockConcurrencyWhile(async () => {
@@ -1983,7 +1969,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   /** The platform's gates as this object reads them (`control-gate.ts`), from `CONTROL`. */
   #control(): ControlGate {
-    return new ControlGate(this.env.CONTROL, this.#controlFreshMs);
+    return new ControlGate(this.env.CONTROL);
   }
 
   /**

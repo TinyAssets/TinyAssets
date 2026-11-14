@@ -81,7 +81,7 @@ describe("a read's pages", () => {
   });
 
   it("reads a row of each escape class whole by range, cut only at characters", { tags: ["large"] }, async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     for (const [shape, ch] of Object.entries(SHAPES)) {
       const body = ch.repeat(Math.floor(MIB / 2 / utf8Bytes(ch)));
       const { row: { etag } } = await stub.collectionWrite(as(name), {
@@ -103,7 +103,7 @@ describe("a read's pages", () => {
   });
 
   it("refuses a read on by range of a row written since, by its etag", async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     const put = (body: string, etag: string) => stub.collectionWrite(as(name), {
       collection: "board", row_id: "r", body, expected_etag: etag, private: false }) as
       Promise<{ row: WrittenRow }>;
@@ -118,7 +118,7 @@ describe("a read's pages", () => {
 
   it("fits a pull, a history and a digest to one answer, their cursors after the last kept",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     let etag = "";
     for (const n of [1, 2, 3]) {
       const done = await stub.collectionWrite(as(name), { collection: "notes", row_id: `r${n}`,
@@ -196,7 +196,7 @@ describe("a read's pages", () => {
     expect((await failure(() => r.stub.mailboxRead(r.bind(MUSE), {
       limit: 1, body_offset: next, message_id: first.message_id }))).message)
       .toMatch(/^message_changed: /);
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.collectionWrite(as(name), { collection: "board", row_id: "r",
       body: "c".repeat(80_000), expected_etag: "", private: false });
     expect((await failure(() => stub.collectionGet(as(name), {
@@ -206,7 +206,7 @@ describe("a read's pages", () => {
 
   it("pages agents_list: a thousand agents in answers under the cap, none lost (M3)",
      async () => {
-    const { stub, as, name } = ownerObject();
+    const { stub, as, name } = await ownerObject();
     await stub.outsideAgents(as(name));
     await runInDurableObject(stub, (_instance, state) => {
       for (let n = 0; n < 1000; n++) {

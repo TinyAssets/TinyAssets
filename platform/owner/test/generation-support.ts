@@ -24,8 +24,7 @@ import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { MIGRATIONS } from "../src/schema";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { drainDue, filesOn, TIERS } from "./support";
-import type { FauxOwnerDO } from "./worker";
+import { admittedOwner, drainDue, filesOn, TIERS } from "./support";
 import type { ChunkStore } from "../../contract/src/files";
 
 export type Line = Record<string, unknown> & { t: string };
@@ -40,10 +39,10 @@ export const SMALL: GenerationSizes = Object.freeze({ page: 16 * 1024, part: 32 
 /** Rows as a reader keeps them: each table's rows by key, the last line for a key winning. */
 export type Rows = Record<string, Record<string, string>>;
 
-/** An owner of its own on the class whose erasure is in reach, signed in, with a session. */
+/** An owner of its own, admitted and signed in, with a session. */
 export async function owner() {
   const name = `owner-${crypto.randomUUID()}`;
-  const stub: DurableObjectStub<FauxOwnerDO> = env.AGENT.getByName(name);
+  const stub: DurableObjectStub<OwnerDO> = await admittedOwner(name);
   const at = signedIn();
   const bind = (origin: typeof MUSE | null = null, extra: Partial<Binding> = {}): Binding =>
     ({ owner: name, caller: name, origin, tiers: TIERS,

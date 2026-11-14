@@ -485,7 +485,7 @@ describe("the policy document's new shape, migration 6 (d3 §N)", () => {
    */
   async function reshaped(before: (sql: SqlStorage) => void):
       Promise<{ row: Record<string, unknown> | null; refused: string | null; version: number }> {
-    return runInDurableObject(ownerObject().stub, (_instance: OwnerDO, state) => {
+    return runInDurableObject((await ownerObject()).stub, (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
       for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
           "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
