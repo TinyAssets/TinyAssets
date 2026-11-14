@@ -19,18 +19,11 @@ import type {
   CodemodeRemoteExchange, CodemodeRemoteRequest,
 } from "@earendil-works/pi-codemode/portable";
 
-import type { CodemodeWorker } from "../../contract/src/codemode";
+import { type CodemodeWorker, executionName } from "../../contract/src/codemode";
 
 import type { CodemodeEnv } from "./env";
 
 export { CodemodeSandbox } from "./codemode";
-
-/** The most characters an execution's name takes: the owner's name, a slash and a UUID. */
-const NAME_MAX = 512;
-
-function named(value: unknown): value is string {
-  return typeof value === "string" && value !== "" && value.length <= NAME_MAX;
-}
 
 export default class Codemode extends WorkerEntrypoint<CodemodeEnv>
     implements CodemodeWorker<CodemodeRemoteRequest, CodemodeRemoteExchange> {
@@ -40,7 +33,7 @@ export default class Codemode extends WorkerEntrypoint<CodemodeEnv>
    */
   async codemodeExecute(name: string, request: CodemodeRemoteRequest,
                         exchange: CodemodeRemoteExchange): Promise<void> {
-    if (!named(name)) {
+    if (!executionName(name)) {
       throw new Error("a code mode execution is named");
     }
     await this.env.CODEMODE.getByName(name).execute(request, exchange);

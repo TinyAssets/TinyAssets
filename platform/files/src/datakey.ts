@@ -44,7 +44,7 @@ import {
   blobMax, type Domain, hex, KEY_BYTES, openBlob, type Opened, parseRing, type Ring, sealBlob,
 } from "../../contract/src/envelope";
 import { Refusal } from "../../contract/src/refusal";
-import { namespace } from "./keys";
+import { namespace } from "../../contract/src/files";
 
 const SALT = "tinyassets/files/v1";
 

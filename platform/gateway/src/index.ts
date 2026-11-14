@@ -138,8 +138,7 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv>
   /** Refreshes an OAuth credential; the result is bound to `version + 1`. */
   async refresh(owner: string, connection: string, version: number,
                 blob: string): Promise<Refreshed> {
-    return guarded(() => refresh(this.env, binding(owner, connection, version), blob,
-                                 builtinCatalog()));
+    return guarded(() => refresh(this.env, binding(owner, connection, version), blob));
   }
 
   /** Sends one wake with its sealed secret, for the owner's object (`doorbell.ts`). */

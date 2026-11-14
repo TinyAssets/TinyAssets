@@ -1,9 +1,10 @@
 /**
- * Only `files/src/keys.ts` builds an R2 key, and only from hex (ADR-032, plan §6).
+ * Only `files/src/keys.ts` builds an R2 key, and only from hex, under its owner's prefix,
+ * which the contract alone spells (`contract/src/files.ts` `objectPrefix`; ADR-032, plan §6).
  *
  * A path must never become an R2 key: R2 NFC-normalizes keys, so two verbatim Linux
  * names would meet in one object (Fact 9). So across every Worker's source:
- * - no text outside `keys.ts` spells a key's parts (a literal that starts `o/` or holds
+ * - no text but the prefix's spells a key's parts (a literal that starts `o/` or holds
  *   `/c/`), and no text names the bucket (`"BLOBS"`);
  * - only the files Worker names the bucket or an R2 type, so the owner object holds no
  *   way to the bucket but the `FILES` service; the one other bucket is the cutover's import
@@ -28,6 +29,8 @@ import { describe, expect, it } from "vitest";
 import { envFile, parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const KEYS = "files/src/keys.ts";
+/** The one module that spells a key's text: the owner's prefix, `objectPrefix`. */
+const PREFIX = "contract/src/files.ts";
 const FILES = "files/src/";
 const CALLS: ReadonlySet<string> = new Set(["put", "get", "head", "delete"]);
 const KEY_TEXT = /^o\/|\/c\//;
@@ -93,8 +96,8 @@ export function keyProblems(fileName: string, source: string): string[] {
   const inFiles = fileName.startsWith(FILES);
   const visit = (node: ts.Node): void => {
     if (ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node)) {
-      if (fileName !== KEYS && KEY_TEXT.test(node.text)) {
-        report(node, "spells an R2 key outside keys.ts");
+      if (fileName !== PREFIX && KEY_TEXT.test(node.text)) {
+        report(node, "spells an R2 key other than by objectPrefix");
       }
       if (node.text.includes("BLOBS")) {
         report(node, "names the bucket as text");
@@ -154,8 +157,8 @@ describe("r2-keys guard", () => {
   it("finds every R2 key built by chunkKey, and the bucket named only by the files Worker",
      () => {
     const sources = workerSources();
-    expect([...sources.keys()]).toEqual(expect.arrayContaining([KEYS, "files/src/index.ts",
-                                                                "owner/src/files.ts"]));
+    expect([...sources.keys()]).toEqual(expect.arrayContaining([
+      KEYS, PREFIX, "files/src/index.ts", "owner/src/files.ts"]));
     expect([...sources].flatMap(([path, source]) => keyProblems(path, source))).toEqual([]);
   });
 
@@ -163,6 +166,7 @@ describe("r2-keys guard", () => {
   it.each([
     ["owner/src/probe.ts", "const key = `o/${ns}/c/${sha}`;"],
     ["owner/src/probe.ts", "const key = 'o/' + ns;"],
+    ["files/src/keys.ts", "const key = `o/${ns}/c/`;"],
     ["files/src/index.ts", "const key = ns + '/c/' + sha;"],
     ["owner/src/probe.ts", "type B = R2Bucket;"],
     ["doors/src/import.ts", "type B = R2Bucket;"],

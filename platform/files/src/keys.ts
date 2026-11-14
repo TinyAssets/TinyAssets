@@ -1,5 +1,6 @@
 /**
- * The one place an R2 key is built (ADR-032, plan §6): a chunk's `o/<ns>/c/<name>`, and a
+ * The one place an R2 key is built (ADR-032, plan §6), under its owner's prefix
+ * (`objectPrefix`, `o/<ns>/`, the contract's): a chunk's `o/<ns>/c/<name>`, and a
  * generation's (the owner export and the nightly manifest, `owner/src/backup.ts`) root
  * `o/<ns>/m/<gen>`, its base parts `o/<ns>/m/<gen>/<part>` and its change-log segments
  * `o/<ns>/m/<gen>/l/<a>-<b>`.
@@ -11,22 +12,14 @@
  * NFC-normalizes keys, and uploads are verbatim (Fact 9): two names a sandbox can create
  * would meet in one object. The r2-keys guard keeps every other source from building one.
  */
+import { objectPrefix, segmentSpans } from "../../contract/src/files";
 import { Refusal } from "../../contract/src/refusal";
-import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
+import { HEX16, HEX64 } from "../../contract/src/ids";
 import { MANIFEST_PARTS } from "../../contract/src/limits";
 
-const NS = HEX32;
 const SHA256 = HEX64;
 /** A generation's id: 16 lowercase hex characters, the owner's object makes it. */
 const GEN = HEX16;
-
-/** An owner namespace: 32 lowercase hex characters. */
-export function namespace(ns: unknown): string {
-  if (typeof ns !== "string" || !NS.test(ns)) {
-    throw new Refusal("invalid", "a namespace is 32 lowercase hex characters");
-  }
-  return ns;
-}
 
 /** A chunk's SHA-256: 64 lowercase hex characters. */
 export function chunkHash(sha256: unknown): string {
@@ -38,7 +31,7 @@ export function chunkHash(sha256: unknown): string {
 
 /** The R2 key of one owner's chunk, by its name (64 lowercase hex, as a hash is). */
 export function chunkKey(ns: unknown, name: unknown): string {
-  return `o/${namespace(ns)}/c/${chunkHash(name)}`;
+  return `${chunkPrefix(ns)}${chunkHash(name)}`;
 }
 
 /** A generation's id: 16 lowercase hex characters. */
@@ -51,11 +44,10 @@ export function generation(gen: unknown): string {
 
 /** A log segment's span: whole seqs, `a` before `b`. */
 export function segmentSpan(a: unknown, b: unknown): [number, number] {
-  if (typeof a !== "number" || typeof b !== "number" || !Number.isSafeInteger(a)
-      || !Number.isSafeInteger(b) || a < 0 || b <= a) {
+  if (!segmentSpans(a, b)) {
     throw new Refusal("invalid", "a manifest segment spans whole seqs, its first before its last");
   }
-  return [a, b];
+  return [a, b as number];
 }
 
 /** A manifest part's number: 0 to `MANIFEST_PARTS - 1`. */
@@ -69,7 +61,7 @@ export function manifestPart(part: unknown): number {
 
 /** The R2 key of one owner's generation root (`part` absent) or one of its base parts. */
 export function manifestKey(ns: unknown, gen: unknown, part?: unknown): string {
-  const root = `o/${namespace(ns)}/m/${generation(gen)}`;
+  const root = `${manifestPrefix(ns)}${generation(gen)}`;
   return part === undefined ? root : `${root}/${manifestPart(part)}`;
 }
 
@@ -84,12 +76,12 @@ export function manifestObjectKey(ns: unknown, gen: unknown, at: ManifestAt): st
 /** The R2 key of one of a generation's log segments: the seqs after `a` through `b`. */
 export function segmentKey(ns: unknown, gen: unknown, a: unknown, b: unknown): string {
   const [from, to] = segmentSpan(a, b);
-  return `o/${namespace(ns)}/m/${generation(gen)}/l/${from}-${to}`;
+  return `${manifestKey(ns, gen)}/l/${from}-${to}`;
 }
 
 /** The prefix every chunk key of one owner's namespace starts with: the erasure's list. */
 export function chunkPrefix(ns: unknown): string {
-  return `o/${namespace(ns)}/c/`;
+  return `${objectPrefix(ns)}c/`;
 }
 
 /** The chunk name a key listed under `chunkPrefix(ns)` holds, or a loud failure. */
@@ -103,7 +95,7 @@ export function listedChunk(ns: unknown, key: unknown): string {
 
 /** The prefix every manifest key of one owner's namespace starts with: the erasure's list. */
 export function manifestPrefix(ns: unknown): string {
-  return `o/${namespace(ns)}/m/`;
+  return `${objectPrefix(ns)}m/`;
 }
 
 /** The manifest key a key listed under `manifestPrefix(ns)` is, rebuilt, or a loud failure. */

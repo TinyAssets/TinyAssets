@@ -41,8 +41,8 @@
  *
  * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
  * `say`, `decoded`, `hdr`, `jsonesc`, `stall` (some bytes, then silence), and `held`: the body read to its end, its length
- * answered after 1.5 s, as a provider holds its answer until its first token); `auth.test` and `auth.openai.com` are token
- * endpoints; `keys.test` is a key-exchange endpoint (OpenRouter's PKCE flow); `evil.test` records everything it receives, read back from
+ * answered after 1.5 s, as a provider holds its answer until its first token); `auth.test` is a token
+ * endpoint; `keys.test` is a key-exchange endpoint (OpenRouter's PKCE flow); `evil.test` records everything it receives, read back from
  * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
  * code: its module state (the cancel registry, the evil log) is the fake's, never the
  * gateway's. `doorbell.test`, and Claude's `/fire` path on `api.anthropic.com`, are a
@@ -497,7 +497,7 @@ export default {
     if (url.hostname === "keys.test") {
       return keyExchange(request);
     }
-    if (url.hostname === "auth.test" || url.hostname === "auth.openai.com") {
+    if (url.hostname === "auth.test") {
       if (url.pathname === "/revoke") {
         const form = new URLSearchParams(new TextDecoder().decode(await request.arrayBuffer()));
         if (form.get("token") === "rt-redirect") {
