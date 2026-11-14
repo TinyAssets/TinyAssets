@@ -28,16 +28,19 @@
  * for Anthropic's, `…/r/<run>/c/<connection>/v1` for OpenAI's, so a client appends its own
  * API path.
  */
+import identity from "../identity.json" with { type: "json" };
+
 import type { EgressScope } from "./egress-scope";
 import type { NetworkRule } from "./sandbox";
 import { Refusal } from "./refusal";
-import { CONNECTION_ID, HEX64, RUN_ID } from "./ids";
+import { CONNECTION_ID, HEX64, RUN_ID, SIGNIN_ID } from "./ids";
 import { forbids } from "./text";
 
+// Read from `identity.json`, their one copy, as text, so this module holds strings alone.
 /** Our zone: the public host's, the egress host's, and every name a callback never reaches. */
-export const ZONE = "tinyassets.io";
+export const ZONE = `${identity.host}`;
 /** The egress door's host: always allowed, the one host E2B's transform is set on. */
-export const EGRESS_HOST = `egress.${ZONE}`;
+export const EGRESS_HOST = `${identity.egress}`;
 export const EGRESS_ORIGIN = `https://${EGRESS_HOST}`;
 /**
  * The one resolver the sandbox may reach. Which resolver is best is unverified (research
@@ -166,26 +169,71 @@ export type Outcome = "complete" | "aborted" | "failed" | "deadline" | "ended";
  */
 export const EGRESS_BEAT_S = 60;
 
-/** A run's model call: its run, its secret (or none: its header), a connection, the path. */
-export const MODEL_DOOR = /^\/r\/(run_[0-9a-f]{32})(?:\/([0-9a-f]{64}))?\/c\/(c[0-9a-f]{24})(\/.*)$/;
-/** A run's MCP door, by its own secret. */
-export const MCP_DOOR = /^\/r\/(run_[0-9a-f]{32})(?:\/([0-9a-f]{64}))?\/mcp$/;
-/** A run's event door, the runner's. */
-export const EVENTS_DOOR = /^\/r\/(run_[0-9a-f]{32})\/events$/;
-/** The runner's report of the engines' sign-ins, for the sandbox as a whole. */
-export const SIGNIN_DOOR = "/signin";
-/** A sign-in's events, the runner's. */
-export const SIGNIN_EVENTS_DOOR = /^\/signin\/(si_[0-9a-f]{32})\/events$/;
-/** The sync agent's doors. */
-export const SYNC_DOOR =
-  /^\/sync\/(changes|list|read|chunks|commit|upload_begin|upload_chunks|upload_abort)$/;
-export type SyncDoor = "changes" | "list" | "read" | "chunks" | "commit" | "upload_begin"
-  | "upload_chunks" | "upload_abort";
+/** The sandbox's report of the engines' sign-ins, the runner's. */
+const SIGNIN_DOOR = "/signin";
+/** The sync agent's doors, each `/sync/<door>`. */
+export const SYNC_DOORS = Object.freeze(["changes", "list", "read", "chunks", "commit",
+  "upload_begin", "upload_chunks", "upload_abort"] as const);
+export type SyncDoor = (typeof SYNC_DOORS)[number];
 
 /** The egress door's path segment before a connection id: `/c/<connection>/...`. */
 const CONNECTION_SEGMENT = "c";
 /** The egress door's path segment before a run id: `/r/<run>/...`. */
 const RUN_SEGMENT = "r";
+
+/**
+ * A door on the egress host, as its path names it (`egressDoor`): a run's model call (its
+ * run, its secret or none when its header carries it, a connection, the provider's own
+ * path), a run's MCP door (by its own secret), a run's event door (the runner's), the
+ * sandbox's sign-in report, a sign-in's events (the runner's), or a sync agent's door.
+ */
+export type EgressDoor =
+  | { readonly door: "model"; readonly run: string; readonly secret: string | undefined;
+      readonly connection: string; readonly path: string }
+  | { readonly door: "mcp"; readonly run: string; readonly secret: string | undefined }
+  | { readonly door: "events"; readonly run: string }
+  | { readonly door: "signin" }
+  | { readonly door: "signin_events"; readonly signin: string }
+  | { readonly door: "sync"; readonly sync: SyncDoor };
+
+/**
+ * The door a path on the egress host names, each id held to its own grammar (`ids.ts`), or
+ * null for any other path: the one reader of the paths `runUrls`, `signinUrls` and
+ * `egressBaseUrl` make.
+ */
+export function egressDoor(path: string): EgressDoor | null {
+  const parts = path.split("/");
+  if (parts[0] !== "") {
+    return null;
+  }
+  if (path === SIGNIN_DOOR) {
+    return { door: "signin" };
+  }
+  if (`/${parts[1]}` === SIGNIN_DOOR) {
+    const signin = parts[2] ?? "";
+    return parts.length === 4 && SIGNIN_ID.test(signin) && parts[3] === "events"
+      ? { door: "signin_events", signin } : null;
+  }
+  if (parts[1] === "sync") {
+    const sync = SYNC_DOORS.find((name) => name === parts[2]);
+    return parts.length === 3 && sync !== undefined ? { door: "sync", sync } : null;
+  }
+  const run = parts[2] ?? "";
+  if (parts[1] !== RUN_SEGMENT || !RUN_ID.test(run)) {
+    return null;
+  }
+  if (parts.length === 4 && parts[3] === "events") {
+    return { door: "events", run };
+  }
+  const secret = HEX64.test(parts[3] ?? "") ? parts[3] : undefined;
+  const rest = parts.slice(secret === undefined ? 3 : 4);
+  if (rest.length === 1 && rest[0] === "mcp") {
+    return { door: "mcp", run, secret };
+  }
+  const connection = rest[1] ?? "";
+  return rest.length >= 3 && rest[0] === CONNECTION_SEGMENT && CONNECTION_ID.test(connection)
+    ? { door: "model", run, secret, connection, path: `/${rest.slice(2).join("/")}` } : null;
+}
 
 /**
  * A run's own path on the egress host: `/r/<run>/<secret>`, before its model calls and its
@@ -216,9 +264,13 @@ export function runUrls(run: string, secret: string):
                          signin: `${EGRESS_ORIGIN}${SIGNIN_DOOR}` });
 }
 
-/** A sign-in's event door on the egress host. */
-export function signinEventsUrl(signin: string): string {
-  return `${EGRESS_ORIGIN}${SIGNIN_DOOR}/${signin}/events`;
+/** A sign-in's event door, and the sandbox's sign-in report door, on the egress host. */
+export function signinUrls(signin: string): { readonly events: string; readonly signin: string } {
+  if (!SIGNIN_ID.test(signin)) {
+    throw new Refusal("invalid", "invalid sign-in");
+  }
+  return Object.freeze({ events: `${EGRESS_ORIGIN}${SIGNIN_DOOR}/${signin}/events`,
+                         signin: `${EGRESS_ORIGIN}${SIGNIN_DOOR}` });
 }
 
 /** A connection the sandbox may reach: its id, its provider and where it may be forwarded. */

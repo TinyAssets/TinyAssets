@@ -29,6 +29,7 @@ import {
 } from "node:crypto";
 
 import { sha256Hex } from "./digest";
+import { AUTHORITY } from "./ids";
 import { principal, utf8Text } from "./text";
 
 /** A lease's egress or sync token's expiry: none of its own, its lease's (renewed). */
@@ -131,7 +132,8 @@ export interface SandboxRoute {
 }
 
 const ROUTE_DOMAIN = "ta-e2b-route-v1";
-const AUTHORITY = /^[A-Za-z0-9._:-]{1,64}$/;
+/** A sealed route's text (`sealRoute`), as E2B's metadata carries it back. */
+export const SEALED_ROUTE = /^[A-Za-z0-9_-]{40,2048}$/;
 
 /** The route key: the routing key's own, apart from every token's by its domain. */
 function routeKey(key: unknown): Buffer {
@@ -158,7 +160,7 @@ export function sealRoute(key: unknown, route: SandboxRoute): string {
 
 /** A sealed route opened, or null for anything another key or a changed byte made. */
 export function openRoute(key: unknown, sealed: unknown): SandboxRoute | null {
-  const bytes = typeof sealed === "string" && /^[A-Za-z0-9_-]{40,2048}$/.test(sealed)
+  const bytes = typeof sealed === "string" && SEALED_ROUTE.test(sealed)
     ? Buffer.from(sealed, "base64url") : null;
   if (bytes === null || bytes.byteLength < 12 + 16 + 2) {
     return null;

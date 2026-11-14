@@ -50,7 +50,7 @@ import { heldSecret } from "./guards";
 import { STATE_DIR } from "./protocol";
 import { readJson, RECORDS, STORE } from "./session";
 import { SYNC_HOME } from "./users";
-import { SYNC_HEADER } from "../../contract/src/egress";
+import { SYNC_HEADER, type SyncDoor } from "../../contract/src/egress";
 import { CLIENT_READ_ONLY, WORKSPACE } from "../../contract/src/paths";
 import {
   CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_LIST, MAX_SYNC_OPS, SYNC_BODY_MAX,
@@ -184,7 +184,7 @@ export class SyncClient {
   constructor(readonly origin: string, readonly token: string, readonly firstMs: number,
               readonly ceilingMs: number) {}
 
-  async post(door: string, body: unknown): Promise<Record<string, unknown>> {
+  async post(door: SyncDoor, body: unknown): Promise<Record<string, unknown>> {
     for (let wait = this.firstMs; ; wait = Math.min(wait * 2, this.ceilingMs)) {
       let response: Response;
       try {
