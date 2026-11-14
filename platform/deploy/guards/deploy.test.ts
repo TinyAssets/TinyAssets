@@ -2620,6 +2620,23 @@ describe("the operator path's modes", () => {
       `the control record read back is not the one written: ${JSON.stringify(DARK)}`);
   });
 
+  it("control holds the read-back to the bytes written, not to a record they parse alike",
+     async () => {
+    const w = world({ held: true });
+    const at = `${CONTROL_NS}/${CONTROL_KEY}`;
+    const fetch = w.io.fetch;
+    // KV answers the record written, reformatted: the same JSON, other bytes.
+    const io = { ...w.io, fetch: async (url: string, init?: RequestInit) => {
+      const answer = await fetch(url, init);
+      if (init?.method === "PUT" && url.endsWith(encodeURIComponent(CONTROL_KEY))) {
+        w.kv.set(at, JSON.stringify(JSON.parse(w.kv.get(at)!), null, 1));
+      }
+      return answer;
+    } };
+    await expect(perform(parse(["--mode", "control", "--yes", "--set", "outside=on"], ENV, io)))
+      .rejects.toThrow("the control record read back is not the one written: {\n");
+  });
+
   it("control refuses an account no dark run made, and edits out of grammar", async () => {
     await expect(runMode(world(), "control", ["--yes", "--set", "outside=on"])).rejects.toThrow(
       `the control record is kept in ${NAMESPACES["CONTROL"]}, which a dark run makes`);
