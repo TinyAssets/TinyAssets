@@ -86,7 +86,7 @@ function https(value: unknown, what: string): string {
   return value as string;
 }
 
-/** A URI as a redirect compares it: a loopback http one on no port, else as it is. */
+/** A URI as a redirect compares it: a loopback redirect on no port, else as it is. */
 function comparable(uri: string): URL | null {
   let url: URL;
   try {
@@ -94,13 +94,22 @@ function comparable(uri: string): URL | null {
   } catch {
     return null;
   }
-  if (url.protocol === "http:" && LOOPBACK.includes(url.hostname)) {
+  if (loopbackRedirect(url)) {
     url.port = "";
   }
   return url;
 }
 
 const LOOPBACK: readonly string[] = Object.freeze(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Whether an app's redirect is a native app's loopback one, matched on any port (RFC 8252
+ * §7.3). Not the binder's rule (`localOrigin`, `doors/src/binder.ts`), which names a local
+ * client's installation as the OAuth provider counts loopback.
+ */
+function loopbackRedirect(url: URL): boolean {
+  return url.protocol === "http:" && LOOPBACK.includes(url.hostname);
+}
 
 /**
  * An app's redirect patterns: each an https URI, a loopback http one (matched on any port,
@@ -111,9 +120,8 @@ function redirectPatterns(value: unknown, id: string): readonly string[] {
   const patterns = texts(value, `${id}.match.redirects`);
   for (const pattern of patterns) {
     const url = comparable(pattern);
-    const loopback = url !== null && url.protocol === "http:" && LOOPBACK.includes(url.hostname);
     if (url === null || url.search !== "" || url.hash !== "" || url.host === ""
-        || (url.protocol === "http:" && !loopback) || url.pathname === "") {
+        || (url.protocol === "http:" && !loopbackRedirect(url)) || url.pathname === "") {
       throw new Error(`apps.json: ${id}.match.redirects holds https, loopback or custom ` +
                       `scheme URIs with a host and no query: ${pattern}`);
     }

@@ -3,7 +3,7 @@
  *
  * The doors read the control record (`contract/src/control.ts`, its own `CONTROL` namespace)
  * once per request (`doors/src/control.ts`), and hand its tier numbers and switched-on
- * sign-ins in the binding (`doors/src/binder.ts`, `withTiers`). A `code` call then runs its script's tool calls in the
+ * sign-ins in the binding (`doors/src/binder.ts`, `withAccount`). A `code` call then runs its script's tool calls in the
  * object for up to `CODEMODE_TIMEOUT_MS`, so the object reads the same record again at
  * each of them, with the doors' own rules: an outside client's calls need outside access
  * on and the maintenance gate to admit its owner (`outsideOpen`, fail-closed), a run's or

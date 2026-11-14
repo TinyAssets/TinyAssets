@@ -56,15 +56,13 @@
         { "edit": "platform/owner/test/erasure.test.ts", "names": ["IMPORT_DOORS"], "what": "the import doors' erasure cases" },
 
         { "edit": "platform/doors/src/index.ts", "names": ["importQueue", "QUEUES.IMPORTS"], "imports": ["platform/doors/src/import/index.ts"], "what": "the import queue's dispatch" },
-        { "edit": "platform/doors/src/binder.ts", "names": ["bindImport", "rehearsalRun"], "imports": ["platform/contract/src/import-message.ts"], "what": "bindImport and the sign-in refusal of a rehearsal's name" },
-        { "edit": "platform/doors/src/config.ts", "names": ["nor the import queue"], "what": "the import queue, in the erasure queue's note" },
+        { "edit": "platform/doors/src/binder.ts", "names": ["bindImport"], "what": "bindImport" },
         { "edit": "platform/doors/src/env.ts", "names": ["IMPORT_STAGING", "IMPORTS"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import window's bindings" },
         { "edit": "platform/doors/wrangler.jsonc", "names": ["IMPORT_STAGING", "IMPORTS", "tinyassets-import-dlq"], "what": "IMPORT_STAGING, the IMPORTS producer, the consumer and its dead-letter queue" },
         { "edit": "platform/doors/vitest.config.ts", "names": ["import-setup"], "what": "the consumer's tests' bundle" },
         { "edit": "platform/doors/guards/rules.ts", "names": ["IMPORT_WINDOW"], "what": "the import window's bindings" },
         { "edit": "platform/doors/guards/config.test.ts", "names": ["IMPORT_WINDOW", "QUEUE_NAMES.IMPORTS"], "what": "the import window's config cases" },
         { "edit": "platform/doors/guards/binder.test.ts", "names": ["IMPORT_WINDOW"], "what": "the import window's bindings' reach" },
-        { "edit": "platform/doors/test/binder.test.ts", "names": ["a rehearsal's name"], "what": "the sign-in refusal of a rehearsal's name's case" },
 
         { "edit": "platform/deploy/facts.ts", "names": ["IMPORT_NAMES", "--import"], "imports": ["platform/contract/src/import-names.ts"], "what": "facts.ts --import, the job's live names" },
         { "edit": "platform/deploy/guards/deploy.test.ts", "names": ["IMPORT_NAMES"], "what": "the job's live names' case" },

@@ -38,7 +38,7 @@ import { Refusal } from "../../contract/src/refusal";
 
 import apps from "../shared-apps.json" with { type: "json" };
 
-import { bindInbound, type Bound, withTiers } from "./binder";
+import { bindInbound, type Bound, withAccount } from "./binder";
 import { INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN } from "./config";
 import type { DoorsEnv } from "./env";
 import {
@@ -260,7 +260,7 @@ async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promi
     throw new Refusal("unavailable", MAINTENANCE);
   }
   // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
-  const { binding, stub } = withTiers(bindInbound(env, entry), read, sources);
+  const { binding, stub } = withAccount(bindInbound(env, entry), read, sources);
   return answered(routed.shared ? asShared : asInbound, async () =>
     delivered(routed.shared, await stub.inboundAccept(binding, {
       event_id: routed.eventId, event_at: routed.eventAt, body, headers })));
