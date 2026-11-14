@@ -63,7 +63,7 @@
         { "edit": "platform/doors/src/env.ts", "names": ["IMPORT_STAGING", "IMPORTS"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import window's bindings" },
         { "edit": "platform/doors/wrangler.jsonc", "names": ["IMPORT_STAGING", "IMPORTS", "tinyassets-import-dlq"], "what": "IMPORT_STAGING, the IMPORTS producer, the consumer and its dead-letter queue" },
         { "edit": "platform/doors/vitest.config.ts", "names": ["import-setup"], "what": "the consumer's tests' bundle" },
-        { "edit": "platform/doors/guards/rules.ts", "names": ["IMPORT_WINDOW", "class Dropped extends Error"], "what": "the import window's bindings, and the consumer's owed refusal" },
+        { "edit": "platform/doors/guards/rules.ts", "names": ["IMPORT_WINDOW"], "what": "the import window's bindings" },
         { "edit": "platform/doors/guards/config.test.ts", "names": ["IMPORT_WINDOW", "IMPORT_QUEUE"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import window's config cases" },
         { "edit": "platform/doors/guards/binder.test.ts", "names": ["IMPORT_WINDOW"], "what": "the import window's bindings' reach" },
         { "edit": "platform/doors/test/binder.test.ts", "names": ["a rehearsal's name"], "what": "the sign-in refusal of a rehearsal's name's case" },

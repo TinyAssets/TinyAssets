@@ -404,3 +404,12 @@ It builds as its own PR, **C2b**, right after C2.
    - `owner/guards/rules.ts`'s four rules imports (files, gateway, codemode, sandbox) for `SERVICES`: "`rules.ts` drops the values the configs already state" needs `owner/guards/config.test.ts`'s `boundProblems` reworked, deciding which bound-Worker facts are the owner's own security statement and which the bound config's;
    - `s2:S93` (`sandbox/guards/rules.ts` `exact`);
    - `d2:N81` (`doors/guards/rules.ts` `exact`, and `config.test.ts`'s restated names).
+
+## D2 as built (2026-11-14)
+
+1. **Corrects `d2` B2's "JSON `{error,message}`":** the JSON doors' one refusal shape is `{error: <message>}`, the code's status and its `Retry-After`, as every refusal on `/api`, `/app/api`, `/mcp` and the owner's socket answered before D2. The closed gate's `{error: "unavailable", message}` was the one other shape, and it goes.
+2. **`egress_rate` names its wait** (lane C's file, in D2): `429`, `Retry-After: 1`, transient, as every other retryable code.
+3. **Owed, accepted:**
+   - **Lane C, then D:** the inbound door's own answers with no contract code (`too_large`, `too_many_headers`, `event_identity_required`, `invalid_signature`, `inbound_app_unconfigured`), and its `Retry-After: 5` on the object's `retry` answer, each needs a code first; `doors.ts`'s overloaded `429` is the runtime's, not a refusal.
+   - **Lane D:** the connect door's `N5` rule (it answers a gateway failure only for a `502`, `deadline` or `invalid_request`, and throws every other as a fault) stays its own classification; it now rethrows the gateway's refusal rather than rebuilding one.
+   - **Lane O, then D:** the events door's `subscription_limit → ResourceExhausted` stays in `asEvent` until the owner's refusal carries the limit as facts.
