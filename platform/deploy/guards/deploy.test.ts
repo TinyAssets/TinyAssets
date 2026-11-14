@@ -46,14 +46,14 @@ import {
   admitsNobody, authorizeCheck, authorizeLink, deployedConfig,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
   lifecycleHook, lockRefusal, maskInLog, MIGRATED, type Mode, MODES, parse,
-  perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, type RouteRecord,
-  secretPlan, upstreamFrom, versionOf, wranglerFor,
+  perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, routedConfig,
+  type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
 import { BUNDLES, bundles, pairTag, treeImage } from "../../sandbox/template/pair";
 import {
   boundBy, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS, MADE,
-  NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers, ROUTES, SECRET_INPUTS,
-  SECRETS, WORKERS, ZONE,
+  MIGRATES, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers, ROUTES,
+  SECRET_INPUTS, SECRETS, WORKERS, ZONE,
 } from "../facts";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
 import platform from "../platform.json" with { type: "json" };
@@ -556,7 +556,7 @@ describe("the deploy kit's facts", () => {
   it("deploys the checked-in config with only its ids, the upstream and the routes filled", () => {
     for (const worker of WORKERS) {
       const checked = configOf(worker);
-      const deployed = deployedConfig(worker, IDS, UPSTREAM, false);
+      const deployed = deployedConfig(worker, IDS, UPSTREAM);
       const { kv_namespaces: kv, main, vars, assets, build, $schema: _schema, ...rest } =
         checked as Json;
       const { kv_namespaces: deployedKv, main: deployedMain, vars: deployedVars,
@@ -579,7 +579,7 @@ describe("the deploy kit's facts", () => {
         expect(deployedVars).toEqual(vars);
       }
     }
-    const routed = deployedConfig("doors", IDS, UPSTREAM, true)["routes"];
+    const routed = routedConfig("doors", IDS, UPSTREAM)["routes"];
     expect(routed).toEqual([...ROUTES.map((pattern) => ({ pattern, zone_name: ZONE })),
                             { pattern: EGRESS_DOMAIN, custom_domain: true }]);
   });
@@ -593,7 +593,7 @@ describe("the deploy kit's facts", () => {
     try {
       for (const worker of WORKERS) {
         const config = join(out, `${worker}.json`);
-        writeFileSync(config, JSON.stringify(deployedConfig(worker, IDS, UPSTREAM, true)));
+        writeFileSync(config, JSON.stringify(routedConfig(worker, IDS, UPSTREAM)));
         execFileSync(process.execPath, [WRANGLER, "deploy", "--dry-run", "--outdir",
                                         join(out, worker), "--config", config],
                      { cwd: PLATFORM, stdio: "pipe",
@@ -668,8 +668,16 @@ describe("the command line", () => {
       .toThrow("--public is the plan job's: it never changes anything");
     expect(() => parse(["--mode", "plan", "--yes"], ENV, w.io))
       .toThrow("mode plan changes nothing: it takes no --yes");
-    expect(() => parse(["--mode", "dark", "--migrate", "owner,doors"], ENV, w.io))
-      .toThrow("the doors hold no Durable Object migration: --migrate never names them");
+    // --migrate names only a Worker whose config declares Durable Object migrations.
+    expect(MIGRATES).toEqual(WORKERS.filter((worker) =>
+      ((configOf(worker)["migrations"] ?? []) as unknown[]).length > 0));
+    for (const worker of [...WORKERS.filter((each) => !MIGRATES.includes(each)), "nowhere"]) {
+      expect(() => parse(["--mode", "dark", "--migrate", `owner,${worker}`], ENV, w.io), worker)
+        .toThrow(`${worker} holds no Durable Object migration: --migrate names only ` +
+                 MIGRATES.join(", "));
+    }
+    expect([...parse(["--mode", "dark", "--migrate", MIGRATES.join(",")], ENV, w.io).migrate])
+      .toEqual(MIGRATES);
     for (const option of ["--rotate", "--migrate"]) {
       expect(() => parse(["--mode", "probe", option, "owner"], ENV, w.io))
         .toThrow("mode probe deploys nothing: it takes no --rotate or --migrate");
@@ -700,8 +708,7 @@ describe("a dark run", () => {
       `cf POST /accounts/${ACCOUNT}/r2/buckets`, `cf POST /accounts/${ACCOUNT}/queues`,
       `cf POST /accounts/${ACCOUNT}/queues`, "wrangler secret put ROUTING_MAC_KEY",
       "wrangler deploy --config files/", "wrangler deploy --config doors/", "cf PUT /accounts",
-      "e2b POST /events/webhooks", "log Changed:", "python3 cutover_handles_canary.py --side auto",
-      "log H2's probes wait"]);
+      "e2b POST /events/webhooks", "log Changed:", "python3 cutover_handles_canary.py --side auto"]);
     const first = w.events.findIndex((event) =>
       /^(cf POST|wrangler secret|cf PUT)/.test(event));
     expect(at[11]).toBeLessThan(first);
@@ -710,10 +717,7 @@ describe("a dark run", () => {
     expect(w.events[at[21]!]).toContain('"signatureSecret":"hook-secret"');
     // The plan is reported whole, every step's line in it, before the canary.
     expect(work.plan).toEqual(DARK_FRESH);
-    expect(w.logs).toContain(summary("Changed", DARK_FRESH));
-    expect(w.logs.slice(-1)).toEqual([
-      "H2's probes wait for a routed door and a probe owner's key: run with --mode h2 " +
-      "(h2-probes.ts names what it needs)."]);
+    expect(w.logs).toEqual([summary("Changed", DARK_FRESH)]);
     // Every wrangler command is handed the zone's account, never wrangler's own pick.
     expect(w.accounts.length).toBeGreaterThan(0);
     expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
@@ -735,16 +739,28 @@ describe("a dark run", () => {
       [`::add-mask::${ACCOUNT}`]);
   });
 
-  it("stops before anything without an input it reads, naming where it comes from",
+  it("stops before anything without an input its row reads, naming where it comes from",
      async () => {
-    const { WORKOS_API_KEY: _key, ...secretless } = ENV;
     const w = world();
-    await expect(runMode(w, "dark", ["--yes"], secretless)).rejects.toThrow(
-      "WORKOS_API_KEY is not set (the production environment's secrets)");
-    const { OWNER_ISSUER: _issuer, ...varless } = PUBLIC;
-    await expect(runMode(w, "dark", ["--public"], varless)).rejects.toThrow(
-      "OWNER_ISSUER is not set (the workflow's inputs)");
+    const full: Record<string, string> = { ...ENV, [H2_INPUTS.a]: "probe-key",
+                                           [H2_INPUTS.b]: "probe-key-b" };
+    for (const mode of Object.keys(MODES) as Mode[]) {
+      const { inputs } = MODES[mode];
+      const record = mode === "handback" ? ["--record", "7001"] : [];
+      for (const [names, flags, where] of [
+        [inputs.public, ["--public"], "the workflow's inputs"],
+        [inputs.secret, [], "the production environment's secrets"]] as const) {
+        for (const name of names) {
+          const { [name]: _dropped, ...without } = full;
+          await expect(runMode(w, mode, [...flags, ...record], without), `${mode} ${name}`)
+            .rejects.toThrow(`${name} is not set (${where})`);
+        }
+      }
+    }
     expect(w.events).toEqual([]);
+    // A deploy reads every secret a config requires, and the plan job's inputs alone.
+    expect(MODES.dark.inputs).toEqual({ public: PUBLIC_INPUTS, secret: SECRET_INPUTS,
+                                        optional: OPTIONAL });
   });
 
   it("stops before anything when a keyring is one the Workers would refuse", async () => {
@@ -973,8 +989,7 @@ describe("a routes run", () => {
                      "cf PUT /zones/z/workers/routes/r1", "cf POST /zones/z/workers/routes",
                      "cf DELETE /zones/z/workers/routes/r4", "wrangler triggers deploy",
                      "e2b PATCH /events/webhooks/w1 {\"enabled\":true}", "log Changed:",
-                     "python3 cutover_handles_canary.py --side new --unkeyed",
-                     "log H2's probes wait"]);
+                     "python3 cutover_handles_canary.py --side new --unkeyed"]);
     // The routes are read once, before any change; the doors' last version is deployed before
     // a route moves; the hook is enabled only after the last route and the custom domain.
     expect(w.events.filter((event) => event === "cf GET /zones/z/workers/routes")).toHaveLength(1);
@@ -1649,15 +1664,20 @@ describe("the pair and h2 modes", () => {
       .rejects.toThrow("E2B_API_KEY is not set (the production environment's secrets)");
   });
 
-  it("runs H2's probes with the environment, and in the plan job only says so", async () => {
+  it("runs H2's probes with the environment once it holds their keys, and in the plan job " +
+     "runs nothing", async () => {
+    const keys = { [H2_INPUTS.a]: "probe-key", [H2_INPUTS.b]: "probe-key-b" };
     const w = world();
-    await runMode(w, "h2", ["--yes"], { ...ENV, TA_PROBE_KEY: "probe-key" });
-    expect(w.events).toEqual(["exec h2-probes.ts env has TA_PROBE_KEY,E2B_API_KEY"]);
+    await runMode(w, "h2", ["--yes"], { ...ENV, ...keys });
+    expect(w.events).toEqual([
+      "exec h2-probes.ts env has TA_PROBE_KEY,TA_PROBE_KEY_B,E2B_API_KEY"]);
+    const keyless = world();
+    await expect(runMode(keyless, "h2", ["--yes"], { ...ENV, [H2_INPUTS.a]: "probe-key" }))
+      .rejects.toThrow(`${H2_INPUTS.b} is not set (the production environment's secrets)`);
+    expect(keyless.events).toEqual([]);
     const plan = world();
     await runMode(plan, "h2", ["--public"], PUBLIC);
-    expect(plan.events).toEqual(["log Would change:"]);
-    expect(plan.logs).toEqual(["Would change:\n- run H2's probes against the routed doors; " +
-                               "nothing is changed"]);
+    expect([plan.events, plan.logs]).toEqual([[], []]);
   });
 });
 
@@ -2191,43 +2211,47 @@ describe("E2B's lifecycle webhook", () => {
   it("is registered disabled in dark, and enabled only with the routes", async () => {
     // dark, none held: registered disabled, with the stored secret, for the two events.
     const dark = e2bHooks([{ id: "x", url: "https://elsewhere.test/hook", enabled: true }]);
-    expect(await lifecycleHook(dark.e2b, "s1", true, false, false)).toBe("registered, disabled");
+    expect(await lifecycleHook(dark.e2b,
+        { secret: "s1", setSecret: false, enable: false }, true)).toBe("registered, disabled");
     expect(dark.hooks[1]).toEqual({ id: "w1", name: E2B_HOOK.name, url: E2B_HOOK.url,
                                     events: EVENTS, enabled: false, signatureSecret: "s1" });
     // dark again, the doors' secret not set this run: nothing sent; the other hook untouched.
     const calls = dark.calls.length;
-    expect(await lifecycleHook(dark.e2b, "s2", true, false, false))
+    expect(await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: false }, true))
       .toBe("present, unchanged, disabled");
     expect(dark.calls.slice(calls)).toEqual(["GET /events/webhooks"]);
     expect(dark.hooks[0]).toEqual({ id: "x", url: "https://elsewhere.test/hook", enabled: true });
     // routes: enabled; a routes run later changes nothing; dark after it never turns it off.
-    expect(await lifecycleHook(dark.e2b, "s2", true, true, false))
+    expect(await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: true }, true))
       .toBe("present, enabled set, enabled");
     expect(dark.calls.at(-1)).toBe('PATCH /events/webhooks/w1 {"enabled":true}');
-    expect(await lifecycleHook(dark.e2b, "s2", true, true, false))
+    expect(await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: true }, true))
       .toBe("present, unchanged, enabled");
-    await lifecycleHook(dark.e2b, "s2", true, false, false);
+    await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: false }, true);
     expect(dark.hooks[1]!["enabled"]).toBe(true);
     // A held hook whose events drifted is given its two events back.
     const drifted = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: false,
                                 events: ["sandbox.lifecycle.paused"] }]);
-    await lifecycleHook(drifted.e2b, "s", true, false, false);
+    await lifecycleHook(drifted.e2b, { secret: "s", setSecret: false, enable: false }, true);
     expect(drifted.hooks[0]!["events"]).toEqual(EVENTS);
     // routes with none held: registered enabled.
-    expect(await lifecycleHook(e2bHooks([]).e2b, "s", true, true, false))
+    expect(await lifecycleHook(e2bHooks([]).e2b,
+        { secret: "s", setSecret: false, enable: true }, true))
       .toBe("registered, enabled");
     // Without apply, only the listing is read: the kit's check before any change.
     const planned = e2bHooks([]);
-    expect(await lifecycleHook(planned.e2b, "s", false, true, true))
+    expect(await lifecycleHook(planned.e2b, { secret: "s", setSecret: true, enable: true }, false))
       .toBe("missing: registered, enabled");
     expect(planned.calls).toEqual(["GET /events/webhooks"]);
     // A failed listing or write stops the kit; two hooks for the URL are refused.
-    await expect(lifecycleHook(e2bHooks([], "GET").e2b, "s", false, false, false))
+    await expect(lifecycleHook(e2bHooks([], "GET").e2b,
+        { secret: "s", setSecret: false, enable: false }, false))
       .rejects.toThrow("E2B GET /events/webhooks answered 500");
-    await expect(lifecycleHook(e2bHooks([], "POST").e2b, "s", true, false, false))
+    await expect(lifecycleHook(e2bHooks([], "POST").e2b,
+        { secret: "s", setSecret: false, enable: false }, true))
       .rejects.toThrow("E2B POST /events/webhooks answered 500");
-    await expect(lifecycleHook(e2bHooks([{ id: "a", url: E2B_HOOK.url }], "PATCH").e2b, "s", true,
-                               false, true))
+    await expect(lifecycleHook(e2bHooks([{ id: "a", url: E2B_HOOK.url }], "PATCH").e2b,
+        { secret: "s", setSecret: true, enable: false }, true))
       .rejects.toThrow("E2B PATCH /events/webhooks/a answered 500");
     await expect(heldHook(e2bHooks([{ id: "a", url: E2B_HOOK.url },
                                     { id: "b", url: E2B_HOOK.url }]).e2b))
@@ -2247,14 +2271,16 @@ describe("E2B's lifecycle webhook", () => {
     expect(kept.some((each) => each.name === "E2B_WEBHOOK_SECRET")).toBe(false);
     const neither = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
                                 signatureSecret: "old" }]);
-    await lifecycleHook(neither.e2b, "new", true, true, hookSetsSecret(kept));
+    await lifecycleHook(neither.e2b,
+        { secret: "new", setSecret: hookSetsSecret(kept), enable: true }, true);
     expect(neither.hooks[0]!["signatureSecret"]).toBe("old");
     // With --rotate E2B_WEBHOOK_SECRET the doors take the new value, and E2B does too.
     const rotated = secretPlan(held, new Set(["E2B_WEBHOOK_SECRET"]), null);
     expect(rotated).toContainEqual({ worker: "doors", name: "E2B_WEBHOOK_SECRET" });
     const both = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
                              signatureSecret: "old" }]);
-    await lifecycleHook(both.e2b, "new", true, true, hookSetsSecret(rotated));
+    await lifecycleHook(both.e2b,
+        { secret: "new", setSecret: hookSetsSecret(rotated), enable: true }, true);
     expect(both.hooks[0]!["signatureSecret"]).toBe("new");
     // The doors missing it (a first deploy) sets both as well.
     const first = secretPlan({ ...held, doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"] },
@@ -2359,30 +2385,117 @@ describe("platform-deploy.yml", () => {
     on: Json; jobs: Record<string, Job> };
   const { plan, pair, apply } = file.jobs as Record<string, Job>;
   const runs = (job: Job) => job.steps.map((each) => each.run ?? "").join("\n");
+  /** The modes the dispatch offers, each a row of the kit's (the pair is its own job). */
+  const offered = (((file.on["workflow_dispatch"] as Json)["inputs"] as Json)["mode"] as
+    { options: Mode[] }).options;
+  const io = world().io;
 
   it("is run by hand alone, and reaches no host", () => {
     expect(Object.keys(file.on)).toEqual(["workflow_dispatch"]);
-    const modes = ((file.on["workflow_dispatch"] as Json)["inputs"] as Json)["mode"] as
-      { options: string[] };
-    // Every mode the workflow offers is a row of the kit's (the pair is its own job).
-    expect(modes.options.filter((mode) => !Object.hasOwn(MODES, mode))).toEqual([]);
+    expect(offered.filter((mode) => !Object.hasOwn(MODES, mode))).toEqual([]);
     for (const job of [plan!, pair!, apply!]) {
       expect(runs(job)).not.toMatch(/ssh|scp|droplet|\/etc\/tinyassets/i);
     }
   });
 
   /**
-   * Every command `job`'s steps run, its scripts run as the job runs them with `inputs` as the
-   * dispatch's, `node`, `npm` and `python3` recording their arguments in place of running.
+   * Whether Actions runs a job whose `if` is `expression` in `context` (each name it reads, by
+   * its dotted path): the expression syntax the workflow's `if`s use, read as Actions reads it.
    */
-  function invoked(job: Job, inputs: Record<string, string>): { argv: string; env: string[] }[] {
+  function runsIf(expression: string, context: Readonly<Record<string, string>>): boolean {
+    const tokens = expression.match(/\(|\)|&&|\|\||==|!=|!|'[^']*'|[A-Za-z_][\w.-]*(\(\))?/g)!;
+    expect(tokens.join(""), expression).toBe(expression.replace(/\s+/g, ""));
+    let at = 0;
+    const next = () => tokens[at++];
+    const primary = (): string | boolean => {
+      const token = next()!;
+      if (token === "(") {
+        const value = or();
+        expect(next()).toBe(")");
+        return value;
+      }
+      if (token === "!") {
+        return !truthy(primary());
+      }
+      if (token.startsWith("'")) {
+        return token.slice(1, -1);
+      }
+      if (token === "always()") {
+        return true;
+      }
+      expect(Object.keys(context), token).toContain(token);
+      return context[token]!;
+    };
+    const truthy = (value: string | boolean) => value !== false && value !== "";
+    const compared = (): string | boolean => {
+      const left = primary();
+      if (tokens[at] === "==" || tokens[at] === "!=") {
+        const equal = next() === "==";
+        return (left === primary()) === equal;
+      }
+      return left;
+    };
+    const and = (): string | boolean => {
+      let value = compared();
+      while (tokens[at] === "&&") {
+        next();
+        const right = compared();
+        value = truthy(value) && truthy(right);
+      }
+      return value;
+    };
+    const or = (): string | boolean => {
+      let value = and();
+      while (tokens[at] === "||") {
+        next();
+        const right = and();
+        value = truthy(value) || truthy(right);
+      }
+      return value;
+    };
+    const value = or();
+    expect(at, expression).toBe(tokens.length);
+    return truthy(value);
+  }
+
+  it("runs the pair for the rows that deploy and apply, and applies each row that applies, " +
+     "after the plan and, when its row deploys, the pair", () => {
+    expect([pair!.needs, apply!.needs]).toEqual(["plan", ["plan", "pair"]]);
+    for (const mode of offered) {
+      const row = MODES[mode];
+      for (const ref of ["refs/heads/main", "refs/heads/branch"]) {
+        const main = ref === "refs/heads/main";
+        const context = { "github.ref": ref, "inputs.mode": mode };
+        expect([mode, ref, runsIf(plan!.if!, context)]).toEqual([mode, ref, main]);
+        // The pair job needs the plan's success, as a job with no always() does.
+        expect([mode, ref, runsIf(pair!.if!, context)])
+          .toEqual([mode, ref, main && row.deploys && row.applies]);
+        for (const planned of ["success", "failure"]) {
+          for (const paired of ["success", "skipped", "failure"]) {
+            const at = { ...context, "needs.plan.result": planned, "needs.pair.result": paired };
+            expect([mode, ref, planned, paired, runsIf(apply!.if!, at)]).toEqual([
+              mode, ref, planned, paired, main && row.applies && planned === "success"
+                && (paired === "success" || (!row.deploys && paired === "skipped"))]);
+          }
+        }
+      }
+    }
+  });
+
+  /**
+   * Every command `job`'s steps run, each argument whole, its scripts run as the job runs them
+   * with `inputs` as the dispatch's, `node`, `npm` and `python3` recording their arguments in
+   * place of running.
+   */
+  function invoked(job: Job, inputs: Record<string, string>): { argv: string[]; env: string[] }[] {
     const bin = mkdtempSync(join(tmpdir(), "workflow-"));
     try {
       const log = join(bin, "log");
       for (const tool of ["node", "npm", "python3"]) {
-        writeFileSync(join(bin, tool), `#!/bin/sh\nprintf '%s\\t%s\\n' "${tool} $*" "$(env | ` +
-                      `cut -d= -f1 | grep -E '_KEY$|_TOKEN$|_SECRET$' | sort | tr '\\n' ' ')" ` +
-                      `>> "${log}"\n`, { mode: 0o755 });
+        writeFileSync(join(bin, tool), `#!/bin/sh\n{ printf '%s' "${tool}"; for arg in "$@"; ` +
+                      `do printf '\\037%s' "$arg"; done; printf '\\t%s\\n' "$(env | ` +
+                      `cut -d= -f1 | grep -E '_KEY$|_TOKEN$|_SECRET$' | sort | tr '\\n' ' ')"; ` +
+                      `} >> "${log}"\n`, { mode: 0o755 });
       }
       for (const each of job.steps.filter((one) => one.run !== undefined)) {
         const ran = spawnSync("bash", ["-c", each.run!], {
@@ -2393,50 +2506,43 @@ describe("platform-deploy.yml", () => {
       }
       return readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => {
         const [argv, env] = line.split("\t");
-        return { argv: argv!, env: (env ?? "").trim().split(" ").filter(Boolean) };
+        return { argv: argv!.split("\x1f"), env: (env ?? "").trim().split(" ").filter(Boolean) };
       });
     } finally {
       rmSync(bin, { recursive: true, force: true });
     }
   }
-  const KIT = "node --experimental-strip-types platform/deploy/deploy.ts";
+  const KIT = ["node", "--experimental-strip-types", "platform/deploy/deploy.ts"];
+  const dispatched = (inputs: Record<string, string>) =>
+    ["--mode", inputs["MODE"]!, "--rotate", inputs["ROTATE"]!, "--migrate", inputs["MIGRATE"]!,
+     "--record", inputs["RECORD"]!];
   const OPTIONS = { MODE: "dark", ROTATE: "ROUTING_MAC_KEY", MIGRATE: "owner", RECORD: "" };
 
   it("plans in a job of its own, with no production secret, the chosen mode's plan", () => {
     expect(plan!.environment).toBeUndefined();
     expect(Object.values(plan!.env ?? {}).some((value) => /secrets\.(?!CLOUDFLARE_API_TOKEN)/
       .test(value))).toBe(false);
-    const modes = ((file.on["workflow_dispatch"] as Json)["inputs"] as Json)["mode"] as
-      { options: string[] };
-    for (const mode of modes.options) {
-      const record = mode === "handback" ? "7001" : "";
-      const ran = invoked(plan!, { MODE: mode, ROTATE: "", MIGRATE: "", RECORD: record });
-      expect(ran.map((each) => each.argv)).toEqual(["npm ci", `${KIT} --mode ${mode} --public${
-        record === "" ? "" : ` --record ${record}`}`]);
+    for (const inputs of [...offered.map((mode) => ({ MODE: mode, ROTATE: "", MIGRATE: "",
+                                                      RECORD: mode === "handback" ? "7001" : "" })),
+                          OPTIONS]) {
+      const ran = invoked(plan!, inputs);
+      expect(ran.map((each) => each.argv)).toEqual([["npm", "ci"], [
+        ...KIT, "--mode", inputs.MODE, "--public", ...dispatched(inputs).slice(2)]]);
       // Each is a run the kit takes, and one that changes nothing.
-      const run = parse(ran[1]!.argv.split(" ").slice(3), PUBLIC);
-      expect([run.mode, run.reach, run.apply]).toEqual([mode, "public", false]);
+      const run = parse(ran[1]!.argv.slice(KIT.length), PUBLIC, io);
+      expect([run.mode, run.reach, run.apply, run.record])
+        .toEqual([inputs.MODE, "public", false, inputs.RECORD || null]);
     }
-    expect(invoked(plan!, OPTIONS).map((each) => each.argv)[1])
-      .toBe(`${KIT} --mode dark --public --rotate ROUTING_MAC_KEY --migrate owner`);
   });
 
-  it("checks the pair after the plan, in production, with the E2B key alone, for the modes " +
-     "that deploy Workers", () => {
-    expect(pair!.needs).toBe("plan");
+  it("checks the pair after the plan, in production, with the E2B key alone", () => {
     expect(pair!.environment).toBe("production");
     expect(pair!.env).toBeUndefined();
     // No Python: the checks are checks.ts, on the E2B client (image.py's SDK builds alone).
     expect(invoked(pair!, {})).toEqual([
-      { argv: "npm ci", env: [] },
-      { argv: `${KIT} --mode pair`, env: ["E2B_API_KEY"] }]);
+      { argv: ["npm", "ci"], env: [] },
+      { argv: [...KIT, "--mode", "pair"], env: [...MODES.pair.inputs.secret] }]);
     expect(JSON.stringify(pair)).not.toMatch(/setup-python|pip install/);
-    // The modes whose rows deploy Workers are the ones the pair job runs for.
-    const deploying = (Object.keys(MODES) as Mode[]).filter((mode) =>
-      MODES[mode].applies && MODES[mode].steps.some((each) => each.name === "workers"));
-    expect(deploying).toEqual(["dark", "routes"]);
-    expect(pair!.if).toContain(`(${deploying.map((mode) => `inputs.mode == '${mode}'`)
-      .join(" || ")})`);
   });
 
   it("gives the pair check longer than the checks' throwaway sandboxes live", () => {
@@ -2444,48 +2550,37 @@ describe("platform-deploy.yml", () => {
     const out = mkdtempSync(join(tmpdir(), "ta-plan-"));
     try {
       bundles(execFileSync, out);
-      const plan = JSON.parse(execFileSync(process.execPath, [join(out, BUNDLES.probes), "plan"],
-                                           { encoding: "utf8" })) as
+      const probes = JSON.parse(execFileSync(process.execPath, [join(out, BUNDLES.probes), "plan"],
+                                             { encoding: "utf8" })) as
         { sandboxes: { timeout_s: number }[] };
-      expect(plan.sandboxes).toHaveLength(3);
+      expect(probes.sandboxes).toHaveLength(3);
       expect(Number(pair!["timeout-minutes"]) * 60)
-        .toBeGreaterThan(plan.sandboxes.reduce((sum, each) => sum + each.timeout_s, 0));
+        .toBeGreaterThan(probes.sandboxes.reduce((sum, each) => sum + each.timeout_s, 0));
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
   });
 
-  it("applies after the plan and the pair, in production, the mode's own run", () => {
-    expect(apply!.needs).toEqual(["plan", "pair"]);
+  it("applies in production the mode's own run", () => {
     expect(apply!.environment).toBe("production");
-    expect(apply!.if).toContain("needs.pair.result == 'success'");
-    // The modes that deploy nothing run without a pair: the ones the workflow offers whose
-    // rows deploy no Worker.
-    const offered = (((file.on["workflow_dispatch"] as Json)["inputs"] as Json)["mode"] as
-      { options: Mode[] }).options.filter((mode) => mode !== "plan");
-    const pairless = offered.filter((mode) =>
-      !MODES[mode].steps.some((each) => each.name === "workers"));
-    expect(pairless).toEqual(["probe", "h2", "handback"]);
-    expect(apply!.if).toContain("(inputs.mode == 'h2' || inputs.mode == 'probe' || " +
-                                "inputs.mode == 'handback')");
-    for (const mode of offered) {
-      const record = mode === "handback" ? "7001" : "";
-      const ran = invoked(apply!, { MODE: mode, ROTATE: "", MIGRATE: "", RECORD: record });
-      expect(ran.map((each) => each.argv)).toEqual(["npm ci", `${KIT} --mode ${mode} --yes${
-        record === "" ? "" : ` --record ${record}`}`]);
-      const run = parse(ran[1]!.argv.split(" ").slice(3), ENV);
-      expect([run.mode, run.reach, run.apply, run.record])
-        .toEqual([mode, "secrets", true, record === "" ? null : record]);
+    for (const inputs of [...offered.filter((mode) => MODES[mode].applies).map((mode) => (
+      { MODE: mode, ROTATE: "", MIGRATE: "", RECORD: mode === "handback" ? "7001" : "" })),
+                          OPTIONS]) {
+      const ran = invoked(apply!, inputs);
+      expect(ran.map((each) => each.argv)).toEqual([["npm", "ci"], [
+        ...KIT, "--mode", inputs.MODE, "--yes", ...dispatched(inputs).slice(2)]]);
+      const run = parse(ran[1]!.argv.slice(KIT.length), ENV, io);
+      expect([run.mode, run.reach, run.apply, run.record, [...run.rotate], [...run.migrate]])
+        .toEqual([inputs.MODE, "secrets", true, inputs.RECORD || null,
+                  inputs.ROTATE.split(",").filter(Boolean), inputs.MIGRATE.split(",")
+                    .filter(Boolean)]);
     }
-    expect(invoked(apply!, OPTIONS).map((each) => each.argv)[1])
-      .toBe(`${KIT} --mode dark --yes --rotate ROUTING_MAC_KEY --migrate owner`);
     // The account is read from the zone, never held as an input.
     expect(PUBLIC_INPUTS).not.toContain("CLOUDFLARE_ACCOUNT_ID");
     expect(JSON.stringify(file)).not.toContain("CLOUDFLARE_ACCOUNT_ID");
   });
 
-  it("hands the plan and apply jobs exactly what the kit reads, every secret a config " +
-     "requires among them", () => {
+  it("hands the plan and apply jobs exactly what their rows read", () => {
     // The dispatch's own inputs, which both jobs pass to the kit.
     const dispatch = ["MODE", "ROTATE", "MIGRATE", "RECORD"];
     // The handles canary's own bearer (scripts/_canary_common.py), so Fact 11's canary runs.
@@ -2493,15 +2588,21 @@ describe("platform-deploy.yml", () => {
       "import sys; sys.path.insert(0, sys.argv[1]); " +
       "from scripts._canary_common import CANARY_TOKEN_ENV; sys.stdout.write(CANARY_TOKEN_ENV)",
       REPO], { encoding: "utf8" });
-    const secrets = [...SECRET_INPUTS, ...OPTIONAL, canary, ...H2_INPUTS_LIST];
-    expect(Object.keys(plan!.env!).sort()).toEqual([...PUBLIC_INPUTS, ...dispatch].sort());
-    expect(Object.keys(apply!.env!).sort())
-      .toEqual([...PUBLIC_INPUTS, ...secrets, ...dispatch].sort());
+    const rows = offered.map((mode) => MODES[mode]);
+    const each = (names: readonly string[]) => [...new Set(names)].sort();
+    const publics = each(rows.flatMap((row) => row.inputs.public));
+    const secrets = each(rows.filter((row) => row.applies).flatMap((row) =>
+      [...row.inputs.secret, ...row.inputs.optional, canary]).filter((name) =>
+      !publics.includes(name)));
+    // Every secret a config requires is among them: a deploy reads each.
+    expect(SECRET_INPUTS.filter((name) => !secrets.includes(name))).toEqual([]);
+    expect(Object.keys(plan!.env!).sort()).toEqual(each([...publics, ...dispatch]));
+    expect(Object.keys(apply!.env!).sort()).toEqual(each([...publics, ...secrets, ...dispatch]));
     for (const name of secrets) {
       expect([name, apply!.env![name]]).toEqual([name, `\${{ secrets.${name} }}`]);
     }
     for (const env of [plan!.env!, apply!.env!]) {
-      for (const name of PUBLIC_INPUTS) {
+      for (const name of publics) {
         expect([name, env[name]]).toEqual([name, expect.stringMatching(
           new RegExp(`^\\$\\{\\{ (secrets|vars)\\.${name} \\}\\}$`))]);
       }
@@ -2592,7 +2693,6 @@ const DARK_FRESH = [
   "create the queue tinyassets-erasure",
   "create the queue tinyassets-import",
   "create the queue tinyassets-import-dlq",
-  "the Cloudflare token listed the account's KV namespaces, R2 buckets and queues",
   ...Object.entries(SECRETS).flatMap(([worker, names]) =>
     names.map((name) => `set the secret ${name} on ${NAMES[worker]}`)),
   ...WORKERS.map((worker) => `deploy ${NAMES[worker]}, touching no route`),
@@ -2613,7 +2713,6 @@ const ROUTES_HELD = [
   `WorkOS redirect URI ${CALLBACK}: present`,
   `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser to ` +
   "auth.test's sign-in",
-  "the Cloudflare token listed the account's KV namespaces, R2 buckets and queues",
   ...WORKERS.map((worker) => `upload and deploy a version of ${NAMES[worker]}, touching no route`),
   `move the route tinyassets.io/mcp* from tinyassets-mcp-proxy to ${DOORS}`,
   `add the route tinyassets.io/api/* for ${DOORS}`,
