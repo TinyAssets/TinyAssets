@@ -323,15 +323,18 @@ Every known-wrong data shape is fixed before the cutover imports real data: a fi
 **Decided from `datashapes_research.md`** (the coordinator, 2026-11-12; the research adopted whole, in its order):
 1. **Receipts:** each fact moves onto the recipient row and `ledger_receipts` is deleted. After T1b4.
 2. **Rooms:** a `rooms` table and room members, with opaque room ids. Lane O, after T1c and before S4.
-3. **Collection history**, in three steps (the first build stopped under Fact 14):
-   - (a) **Research, now.** It starts from four findings:
-     - only delete and clear history entries carry `change`, so the research's key needs `change` on every entry, and the feed's deletion read changed to match;
-     - a delete or clear drops the key's history, so archived entries need a per-key drop set and a rewrite (mail's per-agent filter is too small for keys);
-     - the change feed reads tombstones only from the hot rows, so archiving one either raises `erasure_floor` or makes the feed read R2;
-     - `archived_head` must point by key, because segments are rewritten.
-   - (b) **After T1b4 (and T1b5 if it splits):** one PR moves the segment and lane code out of the ledger, with no behaviour change and a migration widening the segment tables' stream checks. Items 4 and F2 also build on these shared segments.
-   - (c) **The history stream**, on (b).
-4. **Conversations:** ids carry their order key, and idle conversations move to segments. After T1b4.
+3. **Collection history**, in the order `history_keys_research.md` adopted (it answered the
+   first build's four findings, stopped under Fact 14):
+   - H1, the history keys: merged (#5538, owner migration 7);
+   - S1, the stream extraction into `owner/src/stream.ts`: the segment and lane code out of the
+     ledger, no behaviour change, and a migration widening the segment tables' stream checks.
+     After T1b4, receipts and rooms;
+   - H2, the erasures stream;
+   - H3, the history stream. It owes §3.4's check: a deletion can cost more than its row (a
+     2,048-byte caller name deleting a 1-byte writer's row charges 4,096 against the row's 743,
+     H1's body), so H3 bounds the deleter's name or takes the factor into the guard's term.
+   Items 4 and F2 build on S1's module.
+4. **Conversations:** ids carry their order key, and idle conversations move to segments. On S1's module.
 5. **Files:**
    - F1: retention off by default, one recorded byte ceiling, `#fit`'s silent prune deleted, and the latency probe's workflow, scripts and branch deleted. After R5's P-shape.
    - F2: file versions move to segments, with mark-and-sweep. After R1 and item 3.

@@ -450,8 +450,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (list3 P48), each in its own lane PR:
   - receipts onto the recipient row, deleting `ledger_receipts`, after T1b4;
   - rooms and room members with opaque ids, in lane O after T1c and before S4;
+  - collection history (§P item 3): H1 merged (#5538); S1, the stream extraction into
+    `owner/src/stream.ts`, after T1b4, receipts and rooms; H2, the erasures stream; H3, the
+    history stream, bounding the deleter's name or taking the factor into the guard's term;
   - conversation ids carrying the order key, idle conversations to segments, after T1b4 and
-    on §P item 3(b)'s shared segments;
+    on S1's stream module (§P item 3);
   - files: F1 (retention off by default, one recorded byte ceiling, `#fit`'s silent prune
     deleted, the latency probe's workflow, scripts and branch deleted) after R5's P-shape; F2
     (file versions to segments, with mark-and-sweep) after R1 and §P item 3; F3 (the live
