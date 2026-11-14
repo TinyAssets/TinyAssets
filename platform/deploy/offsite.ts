@@ -21,18 +21,21 @@
  *   hidden whole, and fails the night after.
  * - **Dark until its settings are stored:** with none of `SETTINGS`, `settings` answers null
  *   and the copy is not run; with some, or with all and any error, it stops loudly.
+ * - **Watched:** the platform's canary reads how long ago a night last passed (`watch`) and
+ *   alarms past two nights, so no hide is late unseen.
  *
  * `node --experimental-strip-types deploy/offsite.ts settings` writes `configured` for the
  * workflow; `… copy` runs the copy. Node runs this file as it is (type stripping), as the kit
  * does.
  */
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { randomInt } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { RECOVERY_WINDOW_S } from "../contract/src/limits.ts";
+import { annotate, github, output, pages, type Reach, summarize } from "./actions.ts";
 import type { Io } from "./deploy.ts";
 
 /** What the copy acts on: the kit's own outside world. */
@@ -100,7 +103,7 @@ export function settings(env: Readonly<Record<string, string | undefined>>): Set
 
 /**
  * The nights a deletion in R2 may wait to be hidden here: the first night's lag, and red,
- * late or dropped nights after it. R6's canary alarms well inside it (`tasks.md`, R6).
+ * late or dropped nights after it. The platform's canary alarms well inside it (`watch`).
  */
 const HIDE_NIGHTS = 7;
 
@@ -292,30 +295,93 @@ export async function copy(s: Settings, source: string, io: Effects): Promise<st
   return lines;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const command = process.argv.slice(2).join(" ");
-  /** A file the workflow's runner names for this step. */
-  const runnerFile = (name: string) => {
-    const path = process.env[name];
-    if (!path) {
-      throw new Error(`offsite.ts writes the workflow's ${name}, which is not set`);
+/** The nightly workflow, the branch its schedule runs on, and its two jobs. */
+export const NIGHTLY = Object.freeze({ workflow: "offsite-copy.yml", ref: "main",
+                                       settings: "settings", copy: "copy" });
+
+/**
+ * How long the copy may go without a night that passed before the platform's canary alarms:
+ * two nights, and half a day for a night GitHub starts late (its schedules run hours late
+ * under load). That leaves four of `HIDE_NIGHTS` to mend it before an erasure's hide is late.
+ */
+export const OVERDUE_MS = (2 * 24 + 12) * 3600_000;
+
+/** The copy as the canary reads it: a night passed in time, nothing owed yet, or overdue. */
+export interface Watch {
+  readonly state: "passed" | "waiting" | "overdue";
+  readonly line: string;
+}
+
+/**
+ * The copy as its nights on `NIGHTLY.ref` show it, newest first. A night owes nothing when its
+ * copy job passed, or when its settings job found no setting stored, so the copy job was
+ * skipped. The newest night finding none stored: the copy isn't configured, and waits. Else
+ * the newest night that owed nothing decides: inside `OVERDUE_MS`, passed if it copied, or
+ * waiting for the first pass since it was configured; past it, or with none, overdue.
+ */
+export async function watch(reach: Reach, now: Date): Promise<Watch> {
+  const due = now.getTime() - OVERDUE_MS;
+  const overdue = (since: string): Watch => ({ state: "overdue", line:
+    `no night of ${NIGHTLY.workflow} has passed ${since}, past two nights: an erased owner's ` +
+    `objects must be hidden in the copy within ${HIDE_NIGHTS} nights (deploy/offsite.ts)` });
+  let newest = true;
+  for await (const runs of pages(reach, `/actions/workflows/${NIGHTLY.workflow}/runs?branch=${
+    NIGHTLY.ref}&status=completed`, "workflow_runs")) {
+    for (const run of runs) {
+      const { jobs } = await github(reach, "GET", `/actions/runs/${run["id"]}/jobs`) as
+        { jobs: Json[] };
+      const job = (name: string): Json => {
+        const found = jobs.find((each) => each["name"] === name);
+        if (found === undefined) {
+          throw new Error(`${NIGHTLY.workflow}'s run ${run["id"]} has no ${name} job`);
+        }
+        return found;
+      };
+      const [read, copied] = [job(NIGHTLY.settings), job(NIGHTLY.copy)];
+      const passed = copied["conclusion"] === "success";
+      const dark = read["conclusion"] === "success" && copied["conclusion"] === "skipped";
+      if (dark && newest) {
+        return { state: "waiting", line: `not configured: the night of ${run["created_at"]} ` +
+                 "found none of the copy's settings stored, so nothing is owed" };
+      }
+      if (passed || dark) {
+        const at = String((passed ? copied : read)["completed_at"]);
+        if (Date.parse(at) < due) {
+          return overdue(`since ${at}`);
+        }
+        return passed ? { state: "passed", line: `a night last passed at ${at}` }
+          : { state: "waiting", line: `configured since the night of ${at}; its first pass is ` +
+              `due by ${new Date(Date.parse(at) + OVERDUE_MS).toISOString()}` };
+      }
+      if (Date.parse(String(run["updated_at"])) < due) {
+        return overdue(`since before ${run["updated_at"]}`);
+      }
+      newest = false;
     }
-    return path;
-  };
+  }
+  return newest ? { state: "waiting", line: `no night of ${NIGHTLY.workflow} has completed on ` +
+                    `${NIGHTLY.ref}, so nothing says the copy is configured` }
+    : overdue("ever");
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const env = process.env;
+  const command = process.argv.slice(2).join(" ");
+  const title = "Off-account copy";
   const summary = (lines: readonly string[]) => {
     console.log(lines.join("\n"));
-    appendFileSync(runnerFile("GITHUB_STEP_SUMMARY"), `${lines.join("\n\n")}\n`);
+    summarize(env, `${lines.join("\n\n")}\n`);
   };
   (async () => {
-    const stored = settings(process.env);
+    const stored = settings(env);
     if (command === "settings") {
       if (stored === null) {
         const why = `none of ${SETTINGS.join(", ")} is set, so nothing is copied ` +
           "(platform/deploy/checklist.md, \"The off-account copy\")";
-        console.log(`::notice title=Off-account copy::not configured: ${why}`);
+        console.log(annotate(env, "notice", title, `not configured: ${why}`));
         summary(["### The off-account copy: not configured", why]);
       }
-      appendFileSync(runnerFile("GITHUB_OUTPUT"), `configured=${stored !== null}\n`);
+      output(env, "configured", String(stored !== null));
     } else if (command === "copy") {
       if (stored === null) {
         throw new Error("the off-account copy is not configured");
@@ -330,7 +396,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       throw new Error("offsite.ts takes settings or copy");
     }
   })().catch((error: Error) => {
-    console.error(`::error title=Off-account copy::${error.message}`);
+    console.error(annotate(env, "error", title, error.message));
     process.exit(1);
   });
 }

@@ -63,7 +63,9 @@ What the kit reads, all from the store, never a host:
   the canary clock's three (`platform/contract/canary.json`: `PLATFORM_CANARY_TOKEN` and
   the pager's `PUSHOVER_USER_KEY` and `PUSHOVER_APP_TOKEN`, each set on the doors only when
   given) and H2's probe keys (`deploy/h2-probes.ts`). `TA_PROBE_KEY` is also the platform
-  canary's key (`deploy/canary.ts`). The workflow's guard holds its apply job to that list.
+  canary's key (`deploy/canary.ts`), and the apply job's own `GITHUB_TOKEN` (`actions:
+  read`) is what the canary reads the off-account copy's nights with. The workflow's guard
+  holds its apply job to that list.
 - The repository secret `CLOUDFLARE_API_TOKEN`. The account is the doors' zone's, read from
   the zone (`Cloudflare.zone`), so no account id is stored.
 - The repository variables `OWNER_ISSUER` and `WORKOS_CLIENT_ID`.
@@ -281,11 +283,14 @@ It never counts as "absent".
   - **The doors' checks:** the anonymous challenge and resource document; `/app` and
     `/app?upgrade=1` with their CSP; the first-party client document; the egress host's
     refusal; the sign-in's start (the doors' `/authorize` to WorkOS, WorkOS to AuthKit, the
-    issuer's JWKS); E2B's template and the hook, enabled. Then, with `TA_PROBE_KEY`, the
-    canary owner's API key: the handle set (one read-only `GET /api/tools/<name>` a name:
-    each doors tool `405`, each old-only handle `404`), a file written, read and removed in
-    the owner's workspace, and **the full run**: one short turn of the owner's main agent on
-    the model source connected to it, once a day (its record is
+    issuer's JWKS); E2B's template and the hook, enabled; **the off-account copy**: read
+    with the job's own token, a night of `offsite-copy.yml` must have passed inside two and
+    a half days once the copy is configured (exit 15, enough alone to page). While the
+    newest night found no setting stored, it waits and says "not configured". Then, with
+    `TA_PROBE_KEY`, the canary owner's API key: the handle set (one read-only `GET
+    /api/tools/<name>` a name: each doors tool `405`, each old-only handle `404`), a file
+    written, read and removed in the owner's workspace, and **the full run**: one short turn
+    of the owner's main agent on the model source connected to it, once a day (its record is
     `/workspace/canary-full-run.json`; a failed day stays red until a full run passes;
     dispatch with `full` to run it now). It boots one sandbox a day.
 
@@ -298,8 +303,9 @@ It never counts as "absent".
     is the watchdog: it also fails when no run was dispatched in 30 minutes. Until
     `production` holds the token, the schedule runs nothing. The alarm
     (`deploy/alarm.ts`) acts only once `production` holds `PLATFORM_CANARY_TOKEN` and the
-    doors serve `/mcp`: two reds in a row (or the clock stopped) open the `platform-down`
-    issue and page, re-paging at 1 h, 4 h and 24 h until someone comments; green closes it.
+    doors serve `/mcp`: two reds in a row (or the clock stopped, or the off-account copy
+    overdue) open the `platform-down` issue and page, re-paging at 1 h, 4 h and 24 h until
+    someone comments; green closes it.
   - **After `routes`, in this order:**
     1. **The `routes` run's own canary.** It runs the unkeyed checks alone (`--side doors
        --unkeyed`): the doors answer `/mcp` and its document, and the old stack doesn't. It
@@ -552,8 +558,9 @@ mode from its upload, and its lifecycle rule deletes a version 22 days after it 
 replaced. An erased owner's objects leave R2 at the wipe, and the first night that passes hides
 them. So they are gone from the copy by the wipe plus at most a week for the hide, 22 days and
 the lifecycle's daily pass: inside the 30 days the erase answer names (`complete_at`), as long
-as a night passes at least once a week. A red night is an alarm (R6's canary), with days to fix
-it, not a breach.
+as a night passes at least once a week. Once no night has passed in two (and half a day for a
+late schedule), the platform's canary pages (`deploy/offsite.ts` `watch`), with four days left
+to fix it: a red night is an alarm, not a breach.
 
 **A mass deletion fails the night, after it is hidden.** A night that hides more than a tenth of
 the copy (at least 100 objects) hides them all and then fails, naming the count. Nothing is lost:
