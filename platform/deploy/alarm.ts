@@ -15,8 +15,8 @@
  *   failure enough alone (the clock stopped), opens the `platform-down` issue; while one is
  *   open, every red comments on it. It pages the founder at Pushover's emergency priority: at
  *   once when the issue opens, then 1 h, 4 h and 24 h after the last page (and every 24 h
- *   after), unless someone commented on the issue since that page. Each page leaves a `[PAGED` comment, the
- *   ladder's one state.
+ *   after), unless someone commented on the issue since that page. Each page leaves a
+ *   `[PAGED` comment, the ladder's one state.
  * - **Green** (every check passed): the open issue is closed, with a comment.
  *
  * Any failed GitHub or Pushover call stops it loudly.
@@ -25,7 +25,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { DISPATCH, PAGER, pageForm } from "../contract/src/canary.ts";
-import type { Result } from "./canary.ts";
+import { CLOCK_MS, type Result } from "./canary.ts";
 
 type Json = Record<string, unknown>;
 
@@ -37,8 +37,6 @@ export interface World {
 }
 
 export const LABEL = "platform-down";
-/** How recent the previous run must be to make this red the second in a row: the clock's. */
-const IN_A_ROW_MS = 30 * 60_000;
 /** The page ladder: how long after the last page the next is sent, while nobody answers. */
 const LADDER_S: readonly number[] = Object.freeze([3600, 4 * 3600, 24 * 3600]);
 /** What begins the comment each page leaves. */
@@ -82,7 +80,7 @@ async function previousRed(world: World): Promise<boolean> {
     { workflow_runs: Json[] };
   const previous = runs.find((run) => String(run["id"]) !== world.env["GITHUB_RUN_ID"]);
   return previous !== undefined && previous["conclusion"] === "failure"
-    && world.now().getTime() - Date.parse(String(previous["updated_at"])) <= IN_A_ROW_MS;
+    && world.now().getTime() - Date.parse(String(previous["updated_at"])) <= CLOCK_MS;
 }
 
 /** Why this tick pages, or null: the ladder over the issue's comments. */

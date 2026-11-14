@@ -122,8 +122,8 @@ const FULL_RUN_EVERY_MS = 24 * 3600_000;
 const FULL_RUN_MESSAGE = "This is the TinyAssets canary. Answer with the one word: ok";
 const FULL_RUN_WAITS = 10;
 const WAIT_MS = 60_000;
-/** How long the clock may go without dispatching a run. */
-const CLOCK_MS = 30 * 60_000;
+/** How long the clock may go without dispatching a run: three of its ticks. */
+export const CLOCK_MS = 30 * 60_000;
 
 const INITIALIZE = JSON.stringify({
   jsonrpc: "2.0", id: 1, method: "initialize",

@@ -11,10 +11,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM, REPO } from "../../ci/paths";
+import { workflow } from "../../ci/workflows";
 import { DISPATCH, PAGER } from "../../contract/src/canary";
 import { E2B_API } from "../../sandbox/e2b/transport";
 import { alarm, LABEL, pageDue } from "../alarm";
-import { canary, exitOf, FULL_RUN, type Options, type Result, type World } from "../canary";
+import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, type World }
+  from "../canary";
 import { CALLBACK, E2B_HOOK_URL, EGRESS_DOMAIN, FIRST_PARTY, ORIGIN } from "../facts";
 
 type Json = Record<string, unknown>;
@@ -220,6 +222,22 @@ describe("the platform canary", () => {
                                  { ...AUTO, clock: true });
     expect(stopped.outcomes.at(-1)).toMatchObject({ check: "the clock", state: "failed",
                                                      code: 14, alone: true });
+  });
+
+  it("runs in its workflow with exactly what it reads, armed by the clock's own token", () => {
+    const file = workflow(DISPATCH.workflow) as { on: Record<string, unknown>; jobs: Record<string,
+      { environment: string; env: Record<string, string>;
+        steps: { name?: string; run?: string; env?: Record<string, string> }[] }> };
+    expect(Object.keys(file.on).sort()).toEqual(["schedule", "workflow_dispatch"]);
+    const job = file.jobs["canary"]!;
+    expect(job.environment).toBe("production");
+    expect(Object.keys(job.env).sort()).toEqual([...Object.values(INPUTS), "GITHUB_TOKEN"].sort());
+    const step = (name: string) => job.steps.find((each) => each.name === name)!;
+    expect(step("The canary").run).toContain("platform/deploy/canary.ts");
+    expect(step("The alarm").env).toEqual({
+      CANARY_ARMED: `\${{ secrets.${DISPATCH.token} != '' }}`,
+      [PAGER.user]: `\${{ secrets.${PAGER.user} }}`,
+      [PAGER.token]: `\${{ secrets.${PAGER.token} }}` });
   });
 
   it("is the kit's one canary: no kit source runs Python", () => {
