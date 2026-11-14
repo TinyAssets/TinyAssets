@@ -1,23 +1,18 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import { isAdmitted } from "../src/admission";
-import { type Adopt, Bodies } from "../src/bodies";
-import { Collections } from "../src/collections";
+import type { Changed } from "../src/files";
 import { WriteGate } from "../src/gate";
-import { Grants } from "../src/grants";
-import { Ledger, LEDGER_LIMITS, type Outcome, type WakeTarget } from "../src/ledger";
+import {
+  type Agent, type Ledger, LEDGER_LIMITS, type Outcome, type WakeTarget,
+} from "../src/ledger";
 import { apiKeyOrigin } from "../../contract/src/binding";
-import type { Refusal } from "../../contract/src/refusal";
 import { clock } from "../src/clock";
 import type { Binding, Origin, Source } from "../../contract/src/binding";
-import type { OwnerDO } from "../src/owner-do";
-import { Policy } from "../src/policy";
+import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
-import {
-  admitted, alarmOf, collectionParts, EVERY_SIGNIN, filesOn, laneAt, seeded, TIERS,
-} from "./support";
+import { admitted, alarmOf, EVERY_SIGNIN, laneAt, seeded, TIERS } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -92,41 +87,34 @@ export interface Post {
 }
 
 /**
- * The ledger's parts on an object's own storage, a copy of the object's wiring (`OwnerDO`): its
- * grants, the owner's admission, the collections' change cursor, and its files' adoption of
- * a placed body and their one wall (`filesOn`'s, with no tier named). It goes when the tests
- * reach the ledger only by the object's doors (T1c).
+ * What a test's stores tell of a file change: nothing, loudly. Only the object's own stores
+ * tell the owner's other modules (`fileChanged`, over its whole state), and only its doors
+ * change a file; a test reaches the ledger and the manifest's lane, which change none.
  */
-export type LedgerParts = [storage: DurableObjectStorage, grants: Grants,
-                           admitted: () => boolean, changes: () => number, adopt: Adopt,
-                           wall: (needed: number) => Refusal];
-export function ledgerParts(storage: DurableObjectStorage): LedgerParts {
-  const gate = new WriteGate(storage);
-  const files = filesOn(gate.storage, gate.write);
-  const collections = new Collections(...collectionParts(storage));
-  return [storage, new Grants(storage, new Policy(storage)),
-          () => isAdmitted(storage), () => collections.clock(),
-          new Bodies(files, gate.storage, gate.write).adopt,
-          (needed: number) => files.fullRefusal(needed)];
-}
+export const NO_FILE_CHANGE: Changed = (path) => {
+  throw new Error(`a test's stores change no file: ${path} is the object's doors' to change`);
+};
 
 /**
- * The ledger on an object's own storage, built as the object builds it (`ledgerParts`). A
- * test that registers on it directly first admits the agent's outside client, as the
- * object's door admits every outside call before any act: an MCP client is recorded `full`.
+ * The object's stores on `state`'s own storage, wired as the object wires them
+ * (`ownerStores`), over a write gate of the test's own: it shares the object's queue, as
+ * every adapter over one storage does (`gate.ts`), so the ledger writes only in its units.
  */
-export function ledgerOn(storage: DurableObjectStorage): Ledger {
-  const parts = ledgerParts(storage);
-  const grants = parts[1];
-  return new (class extends Ledger {
-    override register(origin: Origin | null, source: unknown,
-                      request: Parameters<Ledger["register"]>[2], now?: number) {
-      if (origin !== null) {
-        grants.admit(origin.client, (source as Source).kind, null, clock());
-      }
-      return super.register(origin, source, request, now);
-    }
-  })(...parts);
+export function storesOn(state: Pick<DurableObjectState, "id" | "storage">) {
+  const gate = new WriteGate(state.storage);
+  return { gate, ...ownerStores(gate, env, state.id, NO_FILE_CHANGE) };
+}
+export type TestStores = ReturnType<typeof storesOn>;
+
+/**
+ * `origin`'s agent registered on the ledger as its door registers it: the outside client
+ * admitted first, as the object's door admits every outside call before any act (an MCP
+ * client is recorded `full`). In a unit.
+ */
+export function registerOn(s: Pick<Stores, "grants" | "ledger">, origin: Origin,
+                           request: Parameters<Ledger["register"]>[2]): Agent {
+  s.grants.admit(origin.client, MCP.kind, null, clock());
+  return s.ledger.register(origin, MCP, request);
 }
 
 /** An outside agent of the test's own, its mail the ballast a ceiling is filled with. */
@@ -138,12 +126,12 @@ export const BALLAST: Origin = origin(0xba11);
  * ceiling, and the archive lane's half of the hot one, where a small one would. The
  * ballast agent's id.
  */
-export function ballast(ledger: Ledger, unread: number, hot: number): string {
+export function ballast(s: Pick<Stores, "grants" | "ledger">, unread: number,
+                        hot: number): string {
+  const { ledger } = s;
   const { maxMessages, maxUnacked } = LEDGER_LIMITS;
-  const agent = ledger.register(BALLAST, MCP, { command_center_id: "alpha",
-                                                display_name: "Ballast",
-                                                delivery_method: "pull", recipe_id: null })
-    .agent_id;
+  const agent = registerOn(s, BALLAST, { command_center_id: "alpha", display_name: "Ballast",
+                                         delivery_method: "pull", recipe_id: null }).agent_id;
   const room = `dm:${agent}`;
   const acked = maxMessages - hot - (maxUnacked - unread);
   let last = 0;
@@ -250,9 +238,12 @@ export async function unseededRig() {
     sql: (statement: string, ...params: SqlStorageValue[]): Promise<Row[]> =>
       runInDurableObject(stub, (_i: OwnerDO, state) =>
         state.storage.sql.exec<Row>(statement, ...params).toArray()),
-    /** The ledger on this object's own storage. */
-    inLedger: <R>(act: (ledger: Ledger) => R): Promise<R> =>
-      runInDurableObject(stub, (_i: OwnerDO, state) => act(ledgerOn(state.storage))),
+    /** `act` on the ledger of this object's own storage (`storesOn`), in one unit. */
+    inLedger: <R>(act: (ledger: Ledger, stores: TestStores) => R): Promise<R> =>
+      runInDurableObject(stub, (_i: OwnerDO, state) => {
+        const stores = storesOn(state);
+        return stores.gate.write(() => act(stores.ledger, stores));
+      }),
     /**
      * The object's storage let go, after a test that filled it to a ceiling: a filled object
      * is tens of MB on disk, kept until the test file ends (`inFilled`'s reason).
@@ -261,9 +252,10 @@ export async function unseededRig() {
       state.storage.deleteAll()),
     /** One alarm pass at `now`, with the scripted doorbell. */
     tick: (now: number = clock()): Promise<number | typeof CLOSED> =>
-      runInDurableObject(stub, (_i: OwnerDO, state) =>
-        runWakes(ledgerOn(state.storage), sender, () => now,
-                 new WriteGate(state.storage).write)),
+      runInDurableObject(stub, (_i: OwnerDO, state) => {
+        const { ledger, gate } = storesOn(state);
+        return runWakes(ledger, sender, () => now, gate.write);
+      }),
     /** The object's physical alarm in seconds, as Lifecycle armed it, or null. */
     alarmAt: (): Promise<number | null> => alarmOf(stub),
     /** The `wakes` lane's Lifecycle job due time in seconds, or null when it has none. */

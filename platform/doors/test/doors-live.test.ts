@@ -458,7 +458,16 @@ describe("/hooks/inbound, a capability URL", () => {
     expect(await mail(who)).toHaveLength(1);
     const conflict = await call(event(hookUrl, "evt-r", "{\"other\":true}", {}, at));
     expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toMatchObject({ error: "event_conflict" });
+    expect(await conflict.json()).toEqual({ error: "event_conflict" });
+  });
+
+  it("answers the object's refused answer as the door answers any refusal: its code's " +
+     "status and wait, and {error}", async () => {
+    const { who, url: hookUrl } = await hooked();
+    await sqlIn(who, "UPDATE ledger_usage SET messages = ?", LEDGER_LIMITS.maxMessages);
+    const full = await call(event(hookUrl, "evt-f"));
+    expect([full.status, full.headers.get("Retry-After"), await full.json()])
+      .toEqual([429, "5", { error: "mailbox_full" }]);
   });
 
   it("refuses an event with no identity, an unknown token, and every method but POST", async () => {
@@ -558,7 +567,10 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     const team = "TBAD";
     const tampered = slackRequest(slackEvent(team, "Ev2"));
     const forged = new Request(tampered, { body: JSON.stringify(slackEvent(team, "Ev3")) });
-    expect((await call(forged)).status).toBe(401);
+    const refused = await call(forged);
+    // The one refusal of a proof that fails, whoever holds its secret.
+    expect([refused.status, await refused.json()])
+      .toEqual([401, { error: "inbound_proof_invalid" }]);
     expect((await call(slackRequest(slackEvent(team, "Ev4"), now(), "another-secret"))).status)
       .toBe(401);
     expect((await call(slackRequest(slackEvent(team, "Ev5"), now() - 301))).status).toBe(401);
@@ -610,15 +622,15 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
                   LEDGER_LIMITS.maxMessages, blocked);
       const refused = await call(slackRequest(slackEvent(team, `EvC${crypto.randomUUID()}`)));
       expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
-        .toEqual([429, "5", { state: "refused", error: "mailbox_full", retry: true }]);
+        .toEqual([429, "5", { state: "refused", error: "mailbox_full" }]);
     }
     // Never the breaker's: more refusals than trip it, and the events still told to retry.
     const { notices } = await env.OWNER.getByName(who).noticeList(ownerBinding(who));
     expect(notices.map((notice) => notice.type)).not.toContain("inbound");
   });
 
-  it("is told to send an event again when the object refuses it for the moment, and no-ops " +
-     "the event's own refusal", async () => {
+  it("is told to send an event again when the object or the owner's maintenance gate refuses " +
+     "it for the moment, and no-ops the event's own refusal", async () => {
     const who = owner();
     await signInApp({ owner: who });
     await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
@@ -628,6 +640,11 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     const busy = await call(slackRequest(slackEvent(team, "EvP")));
     expect([busy.status, busy.headers.get("Retry-After"), await busy.json()])
       .toEqual([503, "1", { state: "refused", error: "busy" }]);
+    await setControl({ ...OPEN, inbound: true, ordinary: "none" });
+    const closed = await call(slackRequest(slackEvent(team, "EvP")));
+    expect([closed.status, closed.headers.get("Retry-After"), await closed.json()])
+      .toEqual([503, "60", { state: "refused", error: "unavailable" }]);
+    await setControl({ ...OPEN, inbound: true });
     refuseOnce("inboundAccept", who, new Refusal("binding_withdrawn"));
     const withdrawn = await call(slackRequest(slackEvent(team, "EvP")));
     expect([withdrawn.status, withdrawn.headers.get("Retry-After"), await withdrawn.json()])

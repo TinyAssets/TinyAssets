@@ -85,26 +85,13 @@ const GATHER_BYTES = BURST_GATHER_BYTES;
  */
 export const MANIFEST_BUSY_RETRY_S = SLOT_WAIT_MS / 1000;
 /**
- * A generation's sizes: a base page's rows, a part's bytes, a burst's. The production
- * figures are these; a test passes smaller ones (`BackupParts.sizes`) to cut a small
- * fixture into many pages, parts and bursts, the bound logic the same at any size. What
- * only these figures show is held at them: one burst's cut within a third of the CPU limit,
- * and linear (`guards/backup-cut.test.ts`); an owner of several bursts finished and read
- * back exactly, its row under a row's 2 MB (`export.test.ts`, "a generation at production
- * sizes").
+ * A generation's sizes: a base page's bytes, a part's (`CHUNK_BYTES`, the most the files
+ * Worker takes), a burst's. Every lane cuts at these, a test's too, its fixtures sized from
+ * them: one burst's cut within a third of the CPU limit, and linear
+ * (`guards/backup-cut.test.ts`); an owner of several bursts finished and read back exactly,
+ * its row under a row's 2 MB (`export.test.ts`, "a generation at production sizes").
  */
-export interface GenerationSizes {
-  readonly page: number;
-  readonly part: number;
-  readonly gather: number;
-  /**
-   * The most bytes any part may hold: `CHUNK_BYTES`, what the files Worker takes (a test
-   * shrinks it to see a line past it). A part over `part` but within it, a line wider than
-   * a test's small parts, is put as it is.
-   */
-  readonly most?: number;
-}
-export const GENERATION_SIZES: GenerationSizes = Object.freeze({
+export const GENERATION_SIZES = Object.freeze({
   page: EXPORT_PAGE_BYTES, part: CHUNK_BYTES, gather: GATHER_BYTES });
 /** The notice an owner is given, once, when its generation passes `MANIFEST_PARTS`. */
 export const MANIFEST_CEILING = "manifest_ceiling";
@@ -274,10 +261,6 @@ interface BackupParts {
   readonly halted: () => boolean;
   /** In a unit: the owner told something its work reports (`notices.ts`). */
   readonly notice: (type: string, detail: string) => void;
-  /** Its sizes, `GENERATION_SIZES` unless a test shrinks them. */
-  readonly sizes?: GenerationSizes;
-  /** The pool its bursts take their units of: the isolate's (`ownerSlots`) unless a test's. */
-  readonly pool?: SlotPool;
 }
 
 export class Backups {
@@ -573,7 +556,7 @@ export class Backups {
                  cut: number | null): Promise<boolean> {
     const log = this.#parts.log;
     const shipped = log.state().shipped;
-    const slot = await unitsNow(this.#pool, SHIP_UNITS);
+    const slot = await unitsNow(ownerSlots(), SHIP_UNITS);
     try {
       const span = await this.#write(() => log.pending(
         cut !== null && shipped < cut ? Math.min(through, cut) : through));
@@ -602,7 +585,7 @@ export class Backups {
    * leg sampling it at its widest row's encode and built (`units`, the hold it is built in).
    */
   async #segment(a: number, b: number, units: number): Promise<Uint8Array> {
-    const pool = this.#pool;
+    const pool = ownerSlots();
     const observe = pool.observe;
     const bytes = await this.#parts.log.segment(a, b, observe === null ? undefined
       : () => observe(units));
@@ -618,18 +601,18 @@ export class Backups {
    * its own so its text is let go once encoded; the memory leg samples it encoded, its text
    * and its bytes both in hand (rvburst W1).
    */
-  async #page(at: GenerationRow, cursor: string | null, pageBytes: number):
+  async #page(at: GenerationRow, cursor: string | null):
       Promise<{ lines: Lines[]; next: Cursor | null; last: number | null; at: number }> {
     const log = this.#parts.log;
     const page = await this.#write(() => {
       const read = readPage(this.#sql, decodeCursor(cursor),
                             { schema: this.#parts.schema, owner: this.#parts.owner(),
                               at: Date.now(), gen: at.gen, s: at.s },
-                            Number.MAX_SAFE_INTEGER, pageBytes);
+                            Number.MAX_SAFE_INTEGER, GENERATION_SIZES.page);
       return { read, last: read.next === null ? log.state().last : null, at: Date.now() };
     });
     const encoded = encodeLines(page.read.lines);
-    const pool = this.#pool;
+    const pool = ownerSlots();
     if (pool.observe !== null) {
       await pool.observe(BURST_UNITS);
       if (page.read.lines.length === 0 && encoded.bytes.byteLength > 0) {
@@ -638,11 +621,6 @@ export class Backups {
     }
     return { lines: [encoded, encodeLines(page.read.chunks.map(chunkLine))],
              next: page.read.next, last: page.last, at: page.at };
-  }
-
-  /** The pool the lane's holds take their units of. */
-  get #pool(): SlotPool {
-    return this.#parts.pool ?? ownerSlots();
   }
 
   /**
@@ -733,16 +711,15 @@ export class Backups {
       Promise<{ e: number | null } | "ended"> {
     const log = this.#parts.log;
     let e: number | null = null;
-    const pool = this.#pool;
+    const pool = ownerSlots();
     const slot = await unitsNow(pool, BURST_UNITS);
     try {
       const lines: Lines[] = [];
       let size = 0;
       let next: string | null = at.cursor;
       let endedAt = 0;
-      const sizes = this.#parts.sizes ?? GENERATION_SIZES;
-      while (size < sizes.gather) {
-        const page = await this.#page(at, next, sizes.page);
+      while (size < GENERATION_SIZES.gather) {
+        const page = await this.#page(at, next);
         for (const each of page.lines) {
           lines.push(each);
           size += each.bytes.byteLength;
@@ -755,14 +732,14 @@ export class Backups {
         next = encodeCursor(page.next);
       }
       // Parts of whole lines, at most a chunk each, so an export streams them as they are.
-      const parts = cutParts(lines, sizes.part);
+      const parts = cutParts(lines, GENERATION_SIZES.part);
       // The pages let go once cut: the parts hold their bytes from here on (the memory
       // leg samples the cut, the pages and parts both in hand).
       if (pool.observe !== null) {
         await pool.observe(BURST_UNITS);
       }
       lines.length = 0;
-      if (parts.some((bytes) => bytes.byteLength > (sizes.most ?? CHUNK_BYTES))) {
+      if (parts.some((bytes) => bytes.byteLength > CHUNK_BYTES)) {
         await this.#abandon(ns, at, MANIFEST_LINE);
         return "ended";
       }

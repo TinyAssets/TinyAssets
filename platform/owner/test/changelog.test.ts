@@ -14,7 +14,9 @@ import { CHUNK_BYTES, IMAGE_MAX, INLINE_BYTES, LOG_BYTES } from "../../contract/
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
-import { digest, generate, type Line, owner, replay, standing } from "./generation-support";
+import {
+  BURST, digest, generate, type Line, owner, PAGE, replay, standing,
+} from "./generation-support";
 import { filesOn, sqlIn } from "./support";
 
 const W = "/workspace";
@@ -294,9 +296,10 @@ describe("the change log", () => {
   it("logs a connection's widest row whole: its token refresh fails no generation (review " +
      "L5-1)", async () => {
     const o = await owner();
+    // Past a burst, so its refreshes land before the base is read.
     await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
-      "WHERE i < 200) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
-      "printf('%.1000c', 'a') FROM n");
+      "WHERE i < ?) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
+      "printf('%.1000c', 'a') FROM n", BURST + PAGE);
     // Its models at their ceiling in bytes, every one a character JSON escapes, and its
     // egress scope at its own.
     const models = '"'.repeat(655_360);

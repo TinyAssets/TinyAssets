@@ -91,11 +91,39 @@ T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each gree
 11. **`windowEnd` lives in `bodies.ts`** (a product bug, found here): the pages, bodies and search modules' import cycle made esbuild, as wrangler bundles the owner, set `SEARCH_ANSWER_BYTES` from `PAGE_BYTES` before `PAGE_BYTES` was set, so it was `NaN` in production and a search never paged by its answer's bytes.
 12. **Measured** through `heavy.sh`: the owner workerd suite 242 s wall against main's 272 s; `owner.test.ts` 128 s to 12 s, `wakes.test.ts` 104 s to 14 s.
 
+## T1c-c: one wiring of the object's stores
+
+1. **The object's one wiring function is `ownerStores(units, env, id, changed)`** (`owner-do.ts`). It builds the stores from the object's gate's units, its env and its id: the policy, notices, change log, files, placed bodies, collections, grants, ledger and nightly manifest (`Backups`). The object's constructor calls it once.
+   - The ledger alone cannot be wired apart. Its parts are the files' adoption and wall, and the files' garbage protection reads the manifest (`backups.manifests()`), so one function builds both lanes and nothing is late-bound.
+   - `changed` is the one input only the object holds: `fileChanged` over its whole state (its runs and a sync's held-back count among it). A test passes `NO_FILE_CHANGE`, which throws: the ledger and the manifest's lane change no file.
+2. **The tests call that function** (`ledger-support.ts` `storesOn(state)`), over a write gate of their own, in place of `ledgerParts` and `ledgerOn`.
+   - `inLedger` runs its act in one unit of that gate, as a door runs the object's ledger, so no test writes the ledger outside a unit. The tests that reach it directly write in its units too. Their `runWakes` takes that gate's `write`, not a second gate's.
+   - `ledgerOn`'s `Ledger` subclass, which admitted a client inside `register`, is gone. `registerOn(stores, origin, request)` admits the client and then registers, as the door does.
+   - The erasure test of a claim held while the owner is not admitted suspends the owner by the platform's door, in place of a ledger built with `() => false`.
+   - `ballast` seeds through the ledger's own API, in the one unit of `inLedger`: up to 50,000 posts, no door and no SQL.
+3. **`BackupParts`' `sizes?` and `pool?` are deleted, with `GenerationSizes.most` and `#page`'s size parameter.** Every lane cuts at `GENERATION_SIZES` and takes the isolate's pool (`ownerSlots`). The generation harness (`generation-support.ts` `generate`) builds each pass's lane with `ownerStores`.
+   - Its outside calls are counted and failed through the env it hands the function (`FILES` wrapped, `through`), and its units noted through the `quiet` it hands it.
+   - The owner's name, `serves`, `halted`, the schema and the notices are the object's own:
+     - the migration test records the generation begun under the code before the last migration (its row's `schema`);
+     - the erasure test marks the owner erasing in a unit during the ship's put;
+     - a generation's notices are read from `owner_notices`.
+4. **Research (the coordinator's two candidates).** Measured on `export.test.ts`, every tag, through `heavy.sh`:
+   - **Production sizes, fixtures derived from them, chosen.** `generation-support.ts` `PAGE` and `BURST` are the notices that fill a page and a burst (`GENERATION_SIZES`). Each test asks for the boundaries it crosses, for example a burst and three pages for the cursor test, three bursts for the 5,000-file sync, with 125 files a step, not 25. The file's tests took 37.7 s, against main's 46.4 s at 16, 32 and 64 KiB: the crash-point test 17.7 s against 19.0 s, the sync 6.1 s against 10.0 s. A 29 MB generation at production sizes takes about 2 s, so the 64-to-128-fold growth costs little. The fixtures grow by the bursts a test crosses, not by the ratio: two bursts, not 25.
+   - **Sizes from the env: not built.** The production config would carry a var only tests change, which is the test-only product parameter the untangle rule refuses. One suite env would also have to hold both sizes, the production-size tests' and everyone else's, so it needs a second project. Its suite time is main's, 46.4 s.
+   - The changelog test of a connection's widest row crosses a burst (`BURST + PAGE`), so its refreshes land before E, as its 200 small-size notices did.
+5. **The line past any part is untested now** (`MANIFEST_LINE`). At the schema's bounds no line passes a chunk: the widest row image is `IMAGE_MAX`, 1.5 MiB, and the owner-bound guard holds it. Its test needed a part size only it passed (`most`). The branch stays as the loud backstop for a later wider column.
+6. **Mutations, each on the object's wiring, which no test reached before:**
+   - the ledger handed `() => true` for its admission fails "holds the wakes lane's claims while the owner is not admitted";
+   - the manifest's `halted` without the erasure mark fails "begins no burst once the owner's erasure begins while the log ships".
+
 ## Owed
 
-- **`BackupParts`' `sizes?` and `pool?`**, with T1c-c, as T1c-b's item 6 says.
-- **T1c-c: `ledger-support.ts` `ledgerParts`, `ledgerOn` and `inLedger`.** They copy the object's wiring of the ledger, and about 70 test reaches use them. `ballast` posts up to 50,000 messages in the ledger to seed production's ceilings, about 9 s a seed; through the doors that would be 50,000 door calls a seed. It is its own PR, after T1c-b (`tasks.md` holds the three lines), and is not built here.
+- **`BackupParts`' `sizes?` and `pool?`**, with T1c-c, as T1c-b's item 6 says. Built in T1c-c (above).
+- **T1c-c: `ledger-support.ts` `ledgerParts`, `ledgerOn` and `inLedger`.** Built in T1c-c (above). They copy the object's wiring of the ledger, and about 70 test reaches use them. `ballast` posts up to 50,000 messages in the ledger to seed production's ceilings, about 9 s a seed; through the doors that would be 50,000 door calls a seed. It is its own PR, after T1c-b (`tasks.md` holds the three lines), and is not built here.
   - **Decided (the coordinator, 2026-11-14):** the object exports its one ledger wiring function, the one it calls to build its ledger from its state and env. The tests call that same function in place of `ledgerParts`, so there is one wiring and no copy.
   - Test seeding is not routed through the doors, and no bulk SQL seeds (it would copy the post path's row shapes, which T1b5 rejected).
   - `ballast` keeps seeding through the ledger's own API, on the ledger that function builds.
 - **The gate has no withdrawal of one arming.** `disarm` clears every arming, held call and record, so `watchMoves` disarms at its end.
+- **`support.ts` `filesOn` and `collectionParts`** build the files and collections as their own modules' tests need them, with tier figures and refusals of their own (`TIERLESS_FULL`). They are the same kind of copy `ledgerParts` was, and `ownerStores` can now replace them. The generation harness's writer is one of them. Not T1c-c's scope.
+- **The memory probe builds `Backups` by hand** (`memory/probe.ts` `legBurst`, `legShip`), beside `LegArchive#ledger`. That is T1d's.
+- **The generation harness wraps `FILES` itself**, as it did before the `FILES` gate existed. The gate can hold and refuse a call, but cannot lose an answer that landed (`failAt` "after").

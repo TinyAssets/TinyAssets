@@ -133,8 +133,9 @@ import {
 import type { RingAnswer } from "../../contract/src/gateway";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import {
- type Change as FileChange, type ChunkRef, type Entry, fileChanged, Files,
- filesDoors, OWNER_AUTHORITY, type SandboxLease, SYNC_FENCED, type SyncOutcome, type Usage,
+ type Change as FileChange, type Changed as FileChanged, type ChunkRef, type Entry, fileChanged,
+ Files, filesDoors, OWNER_AUTHORITY, type SandboxLease, SYNC_FENCED, type SyncOutcome,
+ type Usage,
 } from "./files";
 import { type OwnerStorage, WriteGate } from "./gate";
 import {
@@ -370,6 +371,60 @@ const PLACE_TRIES = 5;
 export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail, never " +
   "converse";
 
+/** What the stores are built over: the object's write gate, its storage view and its units. */
+export type Units = Pick<WriteGate, "storage" | "write" | "quiet">;
+
+/**
+ * The object's stores, as it wires them over its gate's units, from its env and its id: the
+ * owner's policy, notices, change log, files, placed bodies, collections, grants, ledger and
+ * nightly manifest (`backup.ts`). The object builds its own with this, once; a test builds
+ * the same over an object's own storage to reach the ledger or the manifest's lane directly.
+ * `changed` is what a file change tells the owner's other modules (`fileChanged`), which only
+ * the object's whole state can tell.
+ */
+export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId,
+                            changed: FileChanged) {
+  const { storage, write } = units;
+  const policy = new Policy(storage);
+  const notices = new Notices(storage);
+  const log = new ChangeLog(storage);
+  // The files byte bound is the tier's storage (ADR-034 decision 8), as last handed.
+  // Nothing is let go to make room at it (ADR-036): the owner deletes what it chooses.
+  const files: Files = new Files(storage, env.FILES, () => fileLimits(
+    policy.read().document,
+    keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write,
+    // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
+    (stored, needed, held, limit) => storageFullRefusal(storageFull(
+      stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
+    changed,
+    // Garbage the newest finished generation names is never collected early, while it is
+    // a recovery point (finished within MANIFEST_PROTECT_S).
+    () => {
+      const newest = backups.manifests().at(-1);
+      return newest === undefined || newest.finished_at < clock() - MANIFEST_PROTECT_S
+        ? null : newest.started_at;
+    });
+  const bodies = new Bodies(files, storage, write);
+  // An outside writer's share of the collections is the owner's own `client_share`.
+  const collections = new Collections(storage, bodies.adopt,
+                                      () => fileLimits(policy.read().document, null));
+  const grants = new Grants(storage, policy);
+  const ledger = new Ledger(storage, grants, () => isAdmitted(storage),
+                            () => collections.clock(), bodies.adopt,
+                            (needed) => files.fullRefusal(needed));
+  const backups = new Backups({
+    storage, write: units.quiet, store: env.FILES, space: () => files.space(), log,
+    owner: () => id.name ?? "", schema: MIGRATIONS.length,
+    serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
+    halted: () => wiped(storage.sql) || erasing(storage),
+    notice: (type, detail) => notices.add(type, detail, clock()),
+  });
+  return { policy, notices, log, files, bodies, collections, grants, ledger, backups };
+}
+
+/** The object's stores (`ownerStores`). */
+export type Stores = ReturnType<typeof ownerStores>;
+
 /**
  * The object's state, as its modules are handed it: its doors' handlers, each in the module
  * its row names (`contract/doors.json`), and the run launcher (`launch.ts`). Its stores; its
@@ -550,44 +605,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#state = this.#stateOf(env, storage);
     this.#tombstone = tombstoned(storage.sql);
     const admitted = () => isAdmitted(storage);
-    this.#policy = new Policy(storage);
-    // The files byte bound is the tier's storage (ADR-034 decision 8), as last handed.
-    // Nothing is let go to make room at it (ADR-036): the owner deletes what it chooses.
-    this.#files = new Files(storage, env.FILES, () => fileLimits(
-      this.#policy.read().document,
-      keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write,
-      // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
-      (stored, needed, held, limit) => storageFullRefusal(storageFull(
-        stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
-      // What a file change says to the owner's other modules, in its own unit.
-      (path, present, now, change) => fileChanged(this.#state, path, present, now, change),
-      // Garbage the newest finished generation names is never collected early, while it is
-      // a recovery point (finished within MANIFEST_PROTECT_S).
-      () => {
-        const newest = this.#backups.manifests().at(-1);
-        return newest === undefined || newest.finished_at < clock() - MANIFEST_PROTECT_S
-          ? null : newest.started_at;
-      });
+    // What a file change says to the owner's other modules, in its own unit.
+    const stores = ownerStores(this.#gate, env, ctx.id, (path, present, now, change) =>
+      fileChanged(this.#state, path, present, now, change));
+    this.#policy = stores.policy;
+    this.#notices = stores.notices;
+    this.#log = stores.log;
+    this.#files = stores.files;
+    this.#bodies = stores.bodies;
+    this.#collections = stores.collections;
+    this.#grants = stores.grants;
+    this.#ledger = stores.ledger;
+    this.#backups = stores.backups;
     this.#exports = new OpenExports(storage);
-    this.#log = new ChangeLog(storage);
-    this.#bodies = new Bodies(this.#files, storage, write);
-    // An outside writer's share of the collections is the owner's own `client_share`.
-    this.#collections = new Collections(storage, this.#bodies.adopt,
-                                        () => fileLimits(this.#policy.read().document, null));
-    this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
-    this.#ledger = new Ledger(storage, this.#grants, admitted, () => this.#collections.clock(),
-                              this.#bodies.adopt, (needed) => this.#files.fullRefusal(needed));
-    this.#backups = new Backups({
-      storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
-      log: this.#log,
-      owner: () => this.ctx.id.name ?? "", schema: MIGRATIONS.length,
-      serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
-      halted: () => wiped(storage.sql) || erasing(storage),
-      notice: (type, detail) => this.#notices.add(type, detail, clock()),
-    });
     this.#registrations = new Registrations(storage, this.#grants);
-    this.#notices = new Notices(storage);
     this.#starter = new Starter({
       storage, files: this.#files, write, admitted, clock,
       // The files' byte quota is the tier's storage: until a door hands the numbers, no write

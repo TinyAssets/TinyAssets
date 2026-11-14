@@ -22,10 +22,10 @@ import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_ONLY, PLATFORM_RESERVED, tombstoned, writeTombstone,
 } from "../src/admission";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S } from "../src/erasure";
+import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
+import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS } from "../src/erasure";
 import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
-import { Ledger } from "../src/ledger";
 import { clock } from "../src/clock";
 import { OwnerDO } from "../src/owner-do";
 import { doorTable } from "../../contract/src/doors";
@@ -33,7 +33,7 @@ import {
   eraseBegun, erasedWhole, erasuresSent, finished, outsideConfirmed, pastGrace, tables,
   until, wipedWhole,
 } from "./erasure-support";
-import { ledgerParts, MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
+import { MCP, MUSE, rig as ledgerRig, signedIn, storesOn } from "./ledger-support";
 import { later, recorder } from "./runs-support";
 import { admittedOwner, alarmOf, failure, gateFor, sqlIn, TIERS } from "./support";
 
@@ -211,17 +211,18 @@ describe("the owner's admission", () => {
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await r.post(null, `dm:${muse}`);
     const due = clock() + 3600;
-    const out = await runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
-      const [storage, grants, , ...rest] = ledgerParts(state.storage);
-      const wake = (admitted: boolean) => {
-        const ledger = new Ledger(storage, grants, () => admitted, ...rest);
-        return { next: ledger.nextDue(clock(), admitted),
-                 claim: ledger.claim(ledger.dueOpen(due, 1)[0]!.wake_id, due).outcome };
-      };
-      return [wake(false), wake(true)];
+    const platform = { owner: r.owner, caller: PLATFORM_CALLER, origin: null };
+    // The lane's claim, at the owner's admission as its row holds it.
+    const wake = (admitted: boolean) => runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      const { ledger, gate } = storesOn(state);
+      return gate.write(() => ({
+        next: ledger.nextDue(clock(), admitted),
+        claim: ledger.claim(ledger.dueOpen(due, 1)[0]!.wake_id, due).outcome }));
     });
-    expect(out[0]).toEqual({ next: null, claim: "held" });
-    expect(out[1]).toMatchObject({ claim: "claimed" });
+    await r.stub.admissionSet(platform, { reason: "billing", suspended: true });
+    expect(await wake(false)).toEqual({ next: null, claim: "held" });
+    await r.stub.admissionSet(platform, { reason: "billing", suspended: false });
+    expect(await wake(true)).toMatchObject({ claim: "claimed" });
   });
 });
 

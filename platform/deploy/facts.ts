@@ -306,6 +306,9 @@ export const BUCKET_LOCKS: Readonly<Record<string, number>> = Object.freeze(Obje
 export const OPERATOR_NAMES = Object.freeze({ bucket: bucketOf("doors", "OPERATOR_LOG"),
                                               dead_letter_queue: deadLettersOf("OPERATOR") });
 
+/** The files Worker's bucket: every owner's chunks and generations, and the copy's source. */
+export const FILES_BUCKET = bucketOf("files", "BLOBS");
+
 /**
  * The live names the import job reaches, each read where it is written: the staging bucket the
  * doors bind, the dead-letter queue of the doors' consumer of the queue they bind as `IMPORTS`,
@@ -316,7 +319,7 @@ export const OPERATOR_NAMES = Object.freeze({ bucket: bucketOf("doors", "OPERATO
 export const IMPORT_NAMES = Object.freeze({
   staging_bucket: bucketOf("doors", "IMPORT_STAGING"),
   dead_letter_queue: deadLettersOf("IMPORTS"),
-  files_bucket: bucketOf("files", "BLOBS"),
+  files_bucket: FILES_BUCKET,
   directory: platform.namespaces.titles.DIRECTORY,
   final_backup_bucket: platform.buckets.unbound.final_backup,
 } satisfies ImportNames);

@@ -18,7 +18,6 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
-import { WriteGate } from "../src/gate";
 import { WAKE_LEASE_S } from "../src/ledger";
 import { clock } from "../src/clock";
 import type { OwnerDO } from "../src/owner-do";
@@ -27,8 +26,9 @@ import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, Doorbell, retryAfterOf, runWakes } from "../src/wakes";
 import raw from "../../contract/wake-kinds.json" with { type: "json" };
-import { DOT, EVENT, ledgerOn, ledgerSubscription, MCP, MUSE, rig, type Rig, WHSEC }
-  from "./ledger-support";
+import {
+  DOT, EVENT, ledgerSubscription, MUSE, registerOn, rig, type Rig, storesOn, WHSEC,
+} from "./ledger-support";
 import { writeControl } from "../../ci/fixtures";
 import { failure, gateFor } from "./support";
 import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
@@ -302,7 +302,9 @@ describe("the kill switch and admission", () => {
     await r.stub.admissionSet({ owner: r.owner, caller: PLATFORM_CALLER, origin: null },
                               { reason: "billing", suspended: true });
     await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      ledgerOn(state.storage).post(null, `dm:${muse}`, "c1", "hello", null, clock() - 10);
+      const { ledger, gate } = storesOn(state);
+      await gate.write(() => ledger.post(null, `dm:${muse}`, "c1", "hello", null,
+                                         clock() - 10));
     });
     await runInDurableObject(r.stub, (i: OwnerDO) => i.alarm());
     expect((await r.table("ledger_wakes")).map((w) => [w["state"], w["claim_id"]]))
@@ -442,13 +444,17 @@ describe("a revoke is never outlived", () => {
     const r = await rung();
     const t = clock();
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      const ledger = ledgerOn(state.storage);
-      const muse = ledger.register(MUSE, MCP, { command_center_id: "alpha", display_name: "Muse",
-                                               delivery_method: "mcp_event", recipe_id: null })
-        .agent_id;
-      ledger.subscribe(MUSE, ledgerSubscription(), t);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
-      const gate = new WriteGate(state.storage).write;
+      const stores = storesOn(state);
+      const { ledger } = stores;
+      const gate = stores.gate.write;
+      const muse = await gate(() => {
+        const id = registerOn(stores, MUSE, { command_center_id: "alpha",
+                                       display_name: "Muse", delivery_method: "mcp_event",
+                                       recipe_id: null }).agent_id;
+        ledger.subscribe(MUSE, ledgerSubscription(), t);
+        ledger.post(null, `dm:${id}`, "c1", "hello", null, t - 100);
+        return id;
+      });
       let units = 0;
       // The pass's second unit is the mark; the revoke lands right after it.
       const write = (async (unit: () => unknown) => {
@@ -528,10 +534,10 @@ describe("a revoke is never outlived", () => {
      async () => {
     const r = await rung();
     const t = clock();
-    const out = await r.inLedger((ledger) => {
-      ledger.register(MUSE, MCP, { command_center_id: "alpha", display_name: "Muse",
+    const out = await r.inLedger((ledger, stores) => {
+      registerOn(stores, MUSE, { command_center_id: "alpha", display_name: "Muse",
                                    delivery_method: "mcp_event", recipe_id: null });
-      const claude = ledger.register(DOT, MCP, { command_center_id: "alpha",
+      const claude = registerOn(stores, DOT, { command_center_id: "alpha",
                                                  display_name: "Claude",
                                                  delivery_method: "routine_fire",
                                                  recipe_id: null }).agent_id;
@@ -617,16 +623,19 @@ describe("a send's answer", () => {
     const r = await rung();
     const t = clock();
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      const ledger = ledgerOn(state.storage);
-      const muse = ledger.register(MUSE, MCP, { command_center_id: "alpha", display_name: "Muse",
-                                               delivery_method: "mcp_event", recipe_id: null })
-        .agent_id;
+      const stores = storesOn(state);
+      const { ledger } = stores;
+      const write = stores.gate.write;
       const [taken, limited, gone] = ["a", "b", "c"].map((n) => "sub_" + n.repeat(32));
-      for (const id of [taken!, limited!, gone!]) {
-        ledger.subscribe(MUSE, { ...ledgerSubscription(), subscription_id: id }, t);
-      }
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
-      const write = new WriteGate(state.storage).write;
+      await write(() => {
+        const muse = registerOn(stores, MUSE, { command_center_id: "alpha",
+                                       display_name: "Muse", delivery_method: "mcp_event",
+                                       recipe_id: null }).agent_id;
+        for (const id of [taken!, limited!, gone!]) {
+          ledger.subscribe(MUSE, { ...ledgerSubscription(), subscription_id: id }, t);
+        }
+        ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
+      });
       const answers: Record<string, number> = { [taken!]: 202, [limited!]: 429, [gone!]: 410 };
       const asked: string[] = [];
       const doorbell = new Doorbell({
@@ -687,13 +696,16 @@ describe("a send's answer", () => {
     const r = await rung();
     const t = clock();
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      const ledger = ledgerOn(state.storage);
-      const muse = ledger.register(MUSE, MCP, { command_center_id: "alpha", display_name: "Muse",
-                                               delivery_method: "mcp_event", recipe_id: null })
-        .agent_id;
-      ledger.subscribe(MUSE, ledgerSubscription(), t);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
-      const write = new WriteGate(state.storage).write;
+      const stores = storesOn(state);
+      const { ledger } = stores;
+      const write = stores.gate.write;
+      await write(() => {
+        const muse = registerOn(stores, MUSE, { command_center_id: "alpha",
+                                       display_name: "Muse", delivery_method: "mcp_event",
+                                       recipe_id: null }).agent_id;
+        ledger.subscribe(MUSE, ledgerSubscription(), t);
+        ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
+      });
       let sent = 0;
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
@@ -759,12 +771,15 @@ it("answers closed from the pass itself when the switch is closed, fails or neve
   const r = await rung();
   const t = clock();
   const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-    const ledger = ledgerOn(state.storage);
-    const muse = ledger.register(MUSE, MCP, { command_center_id: "alpha", display_name: "Muse",
-                                             delivery_method: "mcp_event", recipe_id: null })
-      .agent_id;
-    ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
-    const write = new WriteGate(state.storage).write;
+    const stores = storesOn(state);
+    const { ledger } = stores;
+    const write = stores.gate.write;
+    await write(() => {
+      const muse = registerOn(stores, MUSE, { command_center_id: "alpha", display_name: "Muse",
+                                              delivery_method: "mcp_event", recipe_id: null })
+        .agent_id;
+      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
+    });
     const doorbell = (gate: () => Promise<boolean>) => new Doorbell({
       ledger, live: () => true, reads: () => true, touched: () => false,
       notice: async () => undefined, write, clock: () => t, admitted: () => true,
