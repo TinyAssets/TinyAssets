@@ -1,7 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import type { Changed } from "../src/files";
 import { WriteGate } from "../src/gate";
 import {
   type Agent, type Ledger, LEDGER_LIMITS, type Outcome, type WakeTarget,
@@ -12,6 +11,7 @@ import type { Binding, Origin, Source } from "../../contract/src/binding";
 import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
+import { NO_FILE_CHANGE } from "./stores";
 import { admitted, alarmOf, EVERY_SIGNIN, laneAt, seeded, TIERS } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
@@ -85,15 +85,6 @@ export interface Post {
   cmid?: string;
   parent?: string | null;
 }
-
-/**
- * What a test's stores tell of a file change: nothing, loudly. Only the object's own stores
- * tell the owner's other modules (`fileChanged`, over its whole state), and only its doors
- * change a file; a test reaches the ledger and the manifest's lane, which change none.
- */
-export const NO_FILE_CHANGE: Changed = (path) => {
-  throw new Error(`a test's stores change no file: ${path} is the object's doors' to change`);
-};
 
 /**
  * The object's stores on `state`'s own storage, wired as the object wires them
