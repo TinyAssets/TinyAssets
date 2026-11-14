@@ -82,12 +82,13 @@ describe("a transient refusal", () => {
       .filter(([, entry]) => (entry as { transient?: true }).transient === true)
       .map(([code]) => code).sort();
     expect(transient).toEqual(["busy", "egress_rate", "events_busy", "events_raced",
-                               "root_changed", "storage_busy", "unavailable"]);
+                               "inbound_app_unconfigured", "mailbox_full", "root_changed",
+                               "storage_busy", "unavailable"]);
     expect(Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { retryAfterS?: number }).retryAfterS !== undefined)
       .map(([code]) => code).sort())
-      .toEqual(["busy", "egress_rate", "events_busy", "events_raced", "storage_busy",
-                "unavailable"]);
+      .toEqual(["busy", "egress_rate", "events_busy", "events_raced",
+                "inbound_app_unconfigured", "mailbox_full", "storage_busy", "unavailable"]);
     expect([new Refusal("busy").transient, new Refusal("storage_busy").transient,
             new Refusal("unavailable", MAINTENANCE).transient,
             new Refusal("tier_runs").transient, new Refusal("refused").transient])
@@ -125,6 +126,11 @@ describe("the code list", () => {
     ["egress_gateway_failed", 502, undefined], ["egress_deadline", 504, undefined],
     ["egress_aborted", 503, undefined], ["egress_ended", 503, undefined],
     ["egress_rate", 429, 1],
+    // The inbound door's own, and the object's answers to an event, as the door answered them.
+    ["too_large", 413, undefined], ["too_many_headers", 400, undefined],
+    ["event_identity_required", 400, undefined], ["invalid_signature", 401, undefined],
+    ["inbound_app_unconfigured", 503, 5], ["mailbox_full", 429, 5],
+    ["event_conflict", 409, undefined], ["agent_unavailable", 409, undefined],
     // The sandbox Worker's, its runner refused (the founder's alert).
     ["sandbox_runner_mismatch", 502, undefined], ["sandbox_runner_protocol", 502, undefined],
     // The files plane's.

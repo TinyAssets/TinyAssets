@@ -38,6 +38,8 @@ interface Entry {
 
 /** How long a `storage_busy` refusal says to wait before trying again: about one lane pass. */
 export const STORAGE_BUSY_RETRY_S = 30;
+/** How long an inbound sender is told to wait before it delivers the event again. */
+const INBOUND_RETRY_S = 5;
 
 const REFUSED = Object.freeze({ status: 403 });
 const QUIET_REFUSED = Object.freeze({ status: 403, quiet: true });
@@ -152,6 +154,22 @@ export const REFUSALS = Object.freeze({
   sync_token_expired: Object.freeze({ status: 401 }),
   method_not_allowed: Object.freeze({ status: 405 }),
   events_too_large: Object.freeze({ status: 413 }),
+
+  // The inbound door's (`doors/src/inbound.ts`): an event too large to read or to mail, too
+  // many headers or one too long, a capability URL's event with no id or time of its own, a
+  // shared app's signature that fails, or a shared app whose signing secret is not set.
+  too_large: Object.freeze({ status: 413 }),
+  too_many_headers: Object.freeze({ status: 400 }),
+  event_identity_required: Object.freeze({ status: 400 }),
+  invalid_signature: Object.freeze({ status: 401 }),
+  inbound_app_unconfigured: Object.freeze({ status: 503, retryAfterS: INBOUND_RETRY_S,
+                                            transient: true }),
+  // The owner's object's answers to an event (`InboundAnswer`), with `too_large`: the agent's
+  // mail full for now, so the sender sends it again; the same event id with other bytes; an
+  // agent that cannot take mail.
+  mailbox_full: Object.freeze({ status: 429, retryAfterS: INBOUND_RETRY_S, transient: true }),
+  event_conflict: Object.freeze({ status: 409 }),
+  agent_unavailable: Object.freeze({ status: 409 }),
 
   // The egress door's (`egress.ts`), answered with the object's receipt.
   egress_token_missing: Object.freeze({ status: 401 }),
