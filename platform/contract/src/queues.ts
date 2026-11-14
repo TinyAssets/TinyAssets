@@ -4,8 +4,8 @@
  * and the owner's erasure (`ERASURES`, which the doors take to make the erasure's outside
  * record). Each queue's name is its producer's config's (`queue-names.ts`, generated).
  */
-import { Refusal } from "./refusal";
-import { principal } from "./text";
+import { Refusal } from "./refusal.ts";
+import { principal } from "./text.ts";
 
 export interface OwnerMessage {
   readonly owner: string;
