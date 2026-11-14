@@ -45,15 +45,23 @@ import { callDoor } from "./tools";
 const SERVER_INFO = Object.freeze({ name: "tinyassets", version: "1.0.0" });
 
 async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallToolResult> {
+  let result: unknown;
   try {
-    return await answered(asTool, async () => ({ content: [{ type: "text", text: resultText(
-      tool.name, await callDoor(bound.stub, bound.binding, tool.door, args)) }] }));
+    const refused = await answered<CallToolResult | null>(asTool, async () => {
+      result = await callDoor(bound.stub, bound.binding, tool.door, args);
+      return null;
+    });
+    if (refused !== null) {
+      return refused;
+    }
   } catch (error) {
     // A bug, never a refusal: reported here in full, and to the client without its detail
     // (the SDK answers every thrown error as the tool's error result).
     console.error(`the ${tool.name} tool failed`, error);
     throw new Error("internal error");
   }
+  // Past the catch: a result past its bound is a bug `resultText` reports, once.
+  return { content: [{ type: "text", text: resultText(tool.name, result) }] };
 }
 
 /**

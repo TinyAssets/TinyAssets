@@ -125,12 +125,8 @@ function deliveryOf(kind: WakeKind & { push: NonNullable<WakeKind["push"]> }, va
   if (delivery["mode"] !== undefined && delivery["mode"] !== "webhook") {
     throw new ProtocolError(EVENT_ERRORS.unsupported, "Unsupported", { feature: "delivery.mode" });
   }
-  try {
-    return { url: callbackUrl(kind.push, delivery["url"]),
-             secret: withSecret ? callbackSecret(kind.push, delivery["secret"]) : "" };
-  } catch (error) {
-    throw invalid(error instanceof Error ? error.message : "invalid delivery");
-  }
+  return { url: callbackUrl(kind.push, delivery["url"]),
+           secret: withSecret ? callbackSecret(kind.push, delivery["secret"]) : "" };
 }
 
 /** The lifetime granted: `ttlMs` at most, the record's default when omitted, none for null. */

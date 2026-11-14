@@ -347,16 +347,9 @@ async function doorbell({ env, owner: { binding, stub }, body: request }: Served
       || kind.push.callback !== "owner") {
     return failure(400, "a doorbell names an agent, its kind, the URL and the token");
   }
-  let follow;
-  let url: string;
-  let secret: string;
-  try {
-    follow = follows({ board: request["board"] ?? false, rooms: request["rooms"] ?? [] });
-    url = callbackUrl(kind.push, request["url"]);
-    secret = callbackSecret(kind.push, request["secret"]);
-  } catch (error) {
-    return failure(400, error instanceof Error ? error.message : "invalid doorbell");
-  }
+  const follow = follows({ board: request["board"] ?? false, rooms: request["rooms"] ?? [] });
+  const url = callbackUrl(kind.push, request["url"]);
+  const secret = callbackSecret(kind.push, request["secret"]);
   const args = { agent_id: request["agent_id"], board: follow.board, rooms: follow.rooms };
   const id = subscriptionId("owner", url, kind.id, args);
   const sealed = await sealDoorbell(env, binding.owner, id, { record: kind.id, url, secret });

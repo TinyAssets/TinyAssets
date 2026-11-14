@@ -84,7 +84,8 @@ describe("the egress door's answer", () => {
   });
 
   it("names only its code's wait, and answers a closed gate in its own shape", async () => {
-    expect((await said(asEgress(new Refusal("egress_rate"))))[1]).toBeNull();
+    expect((await said(asEgress(new Refusal("egress_rate"))))[1]).toBe("1");
+    expect((await said(asEgress(new Refusal("egress_aborted"))))[1]).toBeNull();
     expect(await said(asEgress(new Refusal("unavailable", MAINTENANCE))))
       .toEqual([503, "60", { error: { code: "unavailable", message: MAINTENANCE } }]);
   });

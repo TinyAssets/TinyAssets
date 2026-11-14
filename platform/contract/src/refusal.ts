@@ -166,7 +166,8 @@ export const REFUSALS = Object.freeze({
   egress_endpoint_refused: REFUSED,
   egress_unmetered: REFUSED,
   egress_length_required: Object.freeze({ status: 411 }),
-  egress_rate: Object.freeze({ status: 429 }),
+  // The tier's open calls all in flight, for the moment: a second's wait.
+  egress_rate: Object.freeze({ status: 429, retryAfterS: 1, transient: true }),
   egress_spend_refused: Object.freeze({ status: 402 }),
   egress_unknown_model: Object.freeze({ status: 404 }),
   // The egress door's own, with no receipt: the gateway's call failed, or the door stopped

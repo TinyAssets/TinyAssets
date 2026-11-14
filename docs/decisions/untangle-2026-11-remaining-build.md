@@ -395,3 +395,12 @@ It builds as its own PR, **C2b**, right after C2.
 
 1. **B7's kit text guard goes to lane C after C5.** It is one `ci/kit` guard (no SHA-256 outside `contract/src/digest.ts` in a Worker's `src` or the runner; no `Date.now()` in `owner/src` outside `clock.ts`) with an `owed` ratchet, and `ci/kit/owed.ts` is lane C's, with C5 in flight. The PR that adds it lists each lane's entries; after D1 the doors owe it none.
 2. **The cookie reader stays in `session.ts`, not the doors' kit** (a departure from B7's list, accepted as better): the binder guard holds that only `session.ts` reads the `Cookie` header, so one private `cookies(request, name)` serves the session and connect cookies.
+
+## §U. D2 as built (2026-11-14)
+
+1. **Corrects `d2` B2's "JSON `{error,message}`":** the JSON doors' one refusal shape is `{error: <message>}`, the code's status and its `Retry-After`, as every refusal on `/api`, `/app/api`, `/mcp` and the owner's socket answered before D2. The closed gate's `{error: "unavailable", message}` was the one other shape, and it goes.
+2. **`egress_rate` names its wait** (lane C's file, in D2): `429`, `Retry-After: 1`, transient, as every other retryable code.
+3. **Owed, accepted:**
+   - **Lane C, then D:** the inbound door's own answers with no contract code (`too_large`, `too_many_headers`, `event_identity_required`, `invalid_signature`, `inbound_app_unconfigured`), and its `Retry-After: 5` on the object's `retry` answer, each needs a code first; `doors.ts`'s overloaded `429` is the runtime's, not a refusal.
+   - **Lane D:** the connect door's `N5` rule (it answers a gateway failure only for a `502`, `deadline` or `invalid_request`, and throws every other as a fault) stays its own classification; it now rethrows the gateway's refusal rather than rebuilding one.
+   - **Lane O, then D:** the events door's `subscription_limit → ResourceExhausted` stays in `asEvent` until the owner's refusal carries the limit as facts.

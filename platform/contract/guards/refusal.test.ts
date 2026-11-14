@@ -85,12 +85,13 @@ describe("a transient refusal", () => {
     const transient = Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { transient?: true }).transient === true)
       .map(([code]) => code).sort();
-    expect(transient).toEqual(["busy", "events_busy", "events_raced", "root_changed",
-                               "storage_busy", "unavailable"]);
+    expect(transient).toEqual(["busy", "egress_rate", "events_busy", "events_raced",
+                               "root_changed", "storage_busy", "unavailable"]);
     expect(Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { retryAfterS?: number }).retryAfterS !== undefined)
       .map(([code]) => code).sort())
-      .toEqual(["busy", "events_busy", "events_raced", "storage_busy", "unavailable"]);
+      .toEqual(["busy", "egress_rate", "events_busy", "events_raced", "storage_busy",
+                "unavailable"]);
     expect([new Refusal("busy").transient, new Refusal("storage_busy").transient,
             new Refusal("unavailable", MAINTENANCE).transient,
             new Refusal("tier_runs").transient, new Refusal("refused").transient])
@@ -127,6 +128,7 @@ describe("the code list", () => {
     ["method_not_allowed", 405, undefined], ["events_too_large", 413, undefined],
     ["egress_gateway_failed", 502, undefined], ["egress_deadline", 504, undefined],
     ["egress_aborted", 503, undefined], ["egress_ended", 503, undefined],
+    ["egress_rate", 429, 1],
     // The files plane's.
     ["keyring_unavailable", 500, undefined], ["data_key_refused", 400, undefined],
     ["root_changed", 409, undefined],
