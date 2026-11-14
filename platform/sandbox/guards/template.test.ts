@@ -11,7 +11,10 @@
  * - the pinned template passed its standing checks, and a tree whose image passed is pinned
  *   to it. That the pin is this tree's image is the deploy kit's check (`deploy.ts`'s
  *   `template` step), where it is decidable: a build is made from `main` alone, so the pin
- *   follows its build in a PR of its own.
+ *   follows its build in a PR of its own;
+ * - the bundles' file names are `pair.ts`'s alone (B18): beside it only the Worker's config,
+ *   which is not a script, the runner's import as data and its declaration, and the config
+ *   guard's letter of that config name them.
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -23,11 +26,11 @@ import { pathToFileURL } from "node:url";
 import ts from "typescript";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { repoScripts } from "../../ci/kit/imports";
 import { PLATFORM } from "../../ci/paths";
-import { readWrangler } from "../../ci/wrangler";
 import { STEP_NS } from "../../contract/src/sync-ignore";
 import { NAME, spec, stage, tag } from "../template/image";
-import { bundles, pairTag, tsTool } from "../template/pair";
+import { BUILD, BUNDLES, bundles, pairTag, pinned, tsTool } from "../template/pair";
 
 const TEMPLATE = join(PLATFORM, "sandbox", "template");
 /**
@@ -129,11 +132,6 @@ function recipe(): string {
                       { encoding: "utf8" });
 }
 
-function pinned(): string {
-  return (readWrangler(join(PLATFORM, "sandbox")) as { vars: { E2B_TEMPLATE: string } })
-    .vars.E2B_TEMPLATE;
-}
-
 let tree: string | null = null;
 
 /**
@@ -145,7 +143,7 @@ function copied(): string {
   if (tree === null) {
     tree = temp("ta-tree-");
     for (const part of ["contract/src", "contract/identity.json", "sources", "sandbox/runner",
-                        "sandbox/template"]) {
+                        "sandbox/template", "sandbox/build"]) {
       cpSync(join(PLATFORM, part), join(tree, part), { recursive: true });
     }
   }
@@ -173,7 +171,7 @@ async function changed<T>(copy: string, file: string, change: (text: string) => 
   }
 }
 
-/** One bundle as `bundle.mjs` builds it: its bytes, digest and source files. */
+/** One bundle as the Worker's build (`BUILD`) builds it: its bytes, digest and source files. */
 interface Built {
   readonly bytes: Buffer;
   readonly sha: string;
@@ -221,10 +219,10 @@ function outsideSession(path: string, source: string): string[] {
   return found;
 }
 
-/** `bundle.mjs`'s own build, both bundles of the platform tree at `root` (this one). */
+/** The Worker's own build (`BUILD`), both bundles of the platform tree at `root` (this one). */
 async function bundler(): Promise<{
   build: (root?: string) => Promise<{ runner: Built; probes: Built }> }> {
-  return await import(pathToFileURL(join(TEMPLATE, "bundle.mjs")).href) as {
+  return await import(pathToFileURL(BUILD).href) as {
     build: (root?: string) => Promise<{ runner: Built; probes: Built }> };
 }
 
@@ -311,7 +309,7 @@ describe("the image", () => {
       ["sandbox/runner/probes.ts", (text) => `${text}export const CHANGED = 1;\n`],
       ["sandbox/template/checks.ts", (text) => `${text}export const CHANGED = 1;\n`],
       ["sandbox/template/pair.ts", (text) => `${text}export const CHANGED = 1;\n`],
-      ["sandbox/template/bundle.mjs", (text) => `${text}// changed\n`],
+      ["sandbox/build/bundle.mjs", (text) => `${text}// changed\n`],
       ["sandbox/template/image.ts", (text) => `${text}// a comment is no new image\n`],
     ];
     for (const [file, change] of stays) {
@@ -326,7 +324,7 @@ describe("the pair", () => {
     const { runner, probes } = bundles();
     expect(bundles().runner.bytes.equals(runner.bytes)).toBe(true);
     // What `src/runner-bytes.ts` imports is this build's own output.
-    expect(readFileSync(join(PLATFORM, "sandbox", "dist", "runner.mjs")).equals(runner.bytes))
+    expect(readFileSync(join(PLATFORM, "sandbox", "dist", BUNDLES.runner)).equals(runner.bytes))
       .toBe(true);
     // The runner's import graph: no probe, and none of the code the probes judge by.
     const { build } = await bundler();
@@ -411,5 +409,39 @@ describe("the pair", () => {
       expect([each.runner, each.probes].every((one) => /^[0-9a-f]{64}$/.test(one ?? "")))
         .toBe(true);
     }
+  });
+});
+
+/**
+ * The scripts under `platform/` (`scripts`, path from the repository root to its text) that
+ * name a bundle's file, as a build writes it: the probes', the runner's in the Worker's
+ * `dist/`, or the runner's alone in quotes. (The loader's own file in a sandbox, under its
+ * digest, is the runner protocol's, `RUNNERS`, and no build's.)
+ */
+function namingBundles(scripts: ReadonlyMap<string, string>): string[] {
+  const names = [BUNDLES.probes, `dist/${BUNDLES.runner}`, ...["\"", "'", "`"].map((quote) =>
+    `${quote}${BUNDLES.runner}`)];
+  return [...scripts].filter(([path, text]) => path.startsWith("platform/")
+    && names.some((name) => text.includes(name))).map(([path]) => path).sort();
+}
+
+describe("the bundles' names", () => {
+  it("are pair.ts's: beside it only the runner's import as data, its declaration and the " +
+     "config guard's letter of the Worker's config (B18)", () => {
+    expect(namingBundles(repoScripts())).toEqual([
+      "platform/sandbox/guards/rules.ts",
+      "platform/sandbox/src/modules.d.ts",
+      "platform/sandbox/src/runner-bytes.ts",
+      "platform/sandbox/template/pair.ts",
+    ]);
+    // What it finds: a name spelled anywhere else, as a caller reading a build's output would.
+    for (const planted of [`join(out, "${BUNDLES.probes}")`,
+                           `readFileSync("dist/${BUNDLES.runner}")`,
+                           `join(dir, '${BUNDLES.runner}')`]) {
+      expect(namingBundles(new Map([["platform/deploy/deploy.ts", planted]])), planted)
+        .toEqual(["platform/deploy/deploy.ts"]);
+    }
+    expect(namingBundles(new Map([["platform/sandbox/runner/protocol.ts",
+                                   `\`\${RUNNERS}/\${sha}/${BUNDLES.runner}\``]]))).toEqual([]);
   });
 });

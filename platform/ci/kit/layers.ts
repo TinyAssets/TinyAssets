@@ -72,7 +72,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
   },
   {
     // A Worker's own data beside its config (`doors/shared-apps.json`) and its build's
-    // output (the sandbox's `dist/runner.mjs`, imported as data) are its own folder's.
+    // output (the sandbox's runner in `dist/`, imported as data) are its own folder's.
     name: "a Worker's source",
     files: ["platform/<worker>/src/**", ...NOT_TESTS],
     may: ["platform/<worker>/src/**", "platform/<worker>/*.json", "platform/<worker>/dist/**",
@@ -116,10 +116,20 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     packages: [],
   },
   {
+    // The pin's one reader (`pair.ts`) reads the sandbox's config by `ci/wrangler.ts` (B18).
     name: "the template",
     files: ["platform/sandbox/template/**", ...NOT_TESTS],
     may: ["platform/sandbox/template/**", "platform/sandbox/runner/**",
-          "platform/sandbox/e2b/**", ...CONTRACT, ...SOURCES, ...NOT_TESTS],
+          "platform/sandbox/e2b/**", "platform/ci/wrangler.ts", ...CONTRACT, ...SOURCES,
+          ...NOT_TESTS],
+  },
+  {
+    // The sandbox Worker's build (`wrangler.jsonc`'s `build.command`, B18): the runner and
+    // the probes, by the workspace's esbuild, from entries it names by path, not by import.
+    name: "the sandbox's build",
+    files: ["platform/sandbox/build/**", ...NOT_TESTS],
+    may: ["platform/sandbox/build/**", ...NOT_TESTS],
+    packages: ["esbuild", "node:crypto", "node:fs", "node:module", "node:path", "node:url"],
   },
   {
     // A Worker's own data beside its config is the deploy kit's to read: it deploys them.

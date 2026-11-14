@@ -20,7 +20,7 @@ import type { NetworkDocument } from "../contract/src/sandbox";
 
 import type { Handle } from "./e2b/transport";
 import { type E2b, runtimeE2b } from "./src/e2b";
-import { pinned } from "./template/checks";
+import { pinned } from "./template/pair";
 
 /** The probe's sandboxes carry `ta_probe=long-pause`, and nothing else does. */
 const PROBE = { key: "ta_probe", value: "long-pause" } as const;
