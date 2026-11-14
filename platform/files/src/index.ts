@@ -232,15 +232,11 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     if (put !== null) {
       return true;
     }
-    // The key exists. Every put here was checked and sealed, so it opens to these bytes,
+    // The key exists. Every put here was checked and sealed, so it is stored as its hash,
     // unless something wrote around this Worker: that fails loudly, never as a dedup hit.
-    // Bytes sealed under another key, or none, fail to open, so they fail here too.
-    // A bucket read that fails is its own error, never this one.
-    const object = await this.env.BLOBS.get(chunkKey(ns, name));
-    const held = object === null ? null
-      : await openObject(dataKey, chunkKey(ns, name), new Uint8Array(await object.arrayBuffer()));
-    if (held === null || held.byteLength !== bytes.byteLength
-        || await sha256Hex(held) !== sha256) {
+    // Bytes sealed under another key, or none, do not open, so they fail here too. A bucket
+    // read that fails is its own error, never this one.
+    if (!("bytes" in await this.#chunk(ns, dataKey, sha256))) {
       throw new Error("a chunk key holds bytes this Worker did not verify");
     }
     return false;
