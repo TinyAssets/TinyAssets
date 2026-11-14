@@ -13,7 +13,7 @@
  */
 import raw from "../acts.json" with { type: "json" };
 
-import { object as plain } from "./checks";
+import { keyed, object } from "./checks.ts";
 
 /** A CLI's own tool kind whose every call is the act (`kinds`). */
 export type HookKind = keyof typeof raw.kinds;
@@ -28,8 +28,8 @@ export interface Act {
   readonly unseen: readonly Unseen[];
 }
 
-const ACT_KEYS = "hook,says,unseen";
-const FILE_KEYS = "about,acts,conditions,kinds,unseen";
+const ACT_KEYS = Object.freeze(["says", "hook", "unseen"]);
+const FILE_KEYS = Object.freeze(["about", "acts", "conditions", "kinds", "unseen"]);
 /** An act's name: dotted lowercase words. */
 const ACT_NAME = /^[a-z]+(?:\.[a-z]+)*$/;
 
@@ -41,8 +41,8 @@ function namesOf(value: unknown, known: Record<string, unknown>): boolean {
 
 /** Each way `file` breaks the acts file's rules, as `act: what`. */
 export function actProblems(file: unknown): string[] {
-  if (!plain(file) || Object.keys(file).sort().join() !== FILE_KEYS
-      || !["acts", "conditions", "kinds", "unseen"].every((key) => plain(file[key]))) {
+  if (!keyed(file, FILE_KEYS)
+      || !["acts", "conditions", "kinds", "unseen"].every((key) => object(file[key]))) {
     return ["the file is its about, acts, conditions, kinds and unseen ways"];
   }
   const problems: string[] = [];
@@ -60,7 +60,7 @@ export function actProblems(file: unknown): string[] {
     if (!ACT_NAME.test(name)) {
       say("not an act's name");
     }
-    if (!plain(act) || Object.keys(act).sort().join() !== ACT_KEYS) {
+    if (!keyed(act, ACT_KEYS)) {
       say("an act is its words, its hook kinds and its unseen ways");
       continue;
     }

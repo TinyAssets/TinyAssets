@@ -23,6 +23,7 @@ import { LEDGER_LIMITS, type Ledger, mailParts, mailRecord } from "../src/ledger
 import { nativeId } from "../../contract/src/binding";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
+import { Archive } from "../src/archive";
 import { parseTiers, TIER_STORAGE_MAX } from "../../contract/src/control";
 import {
   type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_RECORDS,
@@ -570,6 +571,20 @@ describe("the archive lane", () => {
     expect((await failure(() => r.post(MUSE, room, { cmid: "r2", body: "x",
                                                      parent: `msg_${"a".repeat(32)}` })))
       .message).toBe("parent is not a message to this sender in this room");
+  });
+
+  it("takes only a parent it does not hold as none: a parent read that fails throws",
+     async () => {
+    const r = await rig();
+    const failed = await failure(() => runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      const archive = new Archive({ ledger: storesOn(state).ledger } as
+        ConstructorParameters<typeof Archive>[0]);
+      expect(archive.archivedParent({ parent_id: "not-a-message" })).toBeNull();
+      // The read itself fails, as a storage fault would.
+      state.storage.sql.exec("ALTER TABLE ledger_messages RENAME TO ledger_messages_gone");
+      return archive.archivedParent({ parent_id: "not-a-message" });
+    }));
+    expect(failed.message).toMatch(/no such table: ledger_messages/);
   });
 
   it("pages a chain of large bodies to one answer each, archived and hot, read on by offset",

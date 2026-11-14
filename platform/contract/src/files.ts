@@ -13,10 +13,10 @@
  * Every object of one owner is under its namespace's prefix (`objectPrefix`), which the files
  * Worker's keys (`files/src/keys.ts`) and the importer's wipe (`import/window.ts`) both build on.
  */
-import { keyed, whole } from "./checks";
-import { BATCH_BYTES, CHUNK_BYTES, MANIFEST_PARTS } from "./limits";
-import { HEX32, HEX64 } from "./ids";
-import { Refusal } from "./refusal";
+import { keyed, whole } from "./checks.ts";
+import { BATCH_BYTES, CHUNK_BYTES, MANIFEST_PARTS } from "./limits.ts";
+import { HEX32, HEX64 } from "./ids.ts";
+import { Refusal } from "./refusal.ts";
 
 /** An owner namespace: 32 lowercase hex characters, refused as `invalid` otherwise. */
 export function namespace(ns: unknown): string {
@@ -86,7 +86,7 @@ export interface ManifestRoot extends ManifestLists {
 }
 
 function manifestObject(value: unknown): ManifestObject | null {
-  if (!keyed(value, "sha256,size") || typeof value["sha256"] !== "string"
+  if (!keyed(value, ["sha256", "size"]) || typeof value["sha256"] !== "string"
       || !HEX64.test(value["sha256"]) || !whole(value["size"], 1, CHUNK_BYTES)) {
     return null;
   }
@@ -99,7 +99,7 @@ export function segmentSpans(a: unknown, b: unknown): a is number {
 }
 
 function manifestSegment(value: unknown): ManifestSegment | null {
-  if (!keyed(value, "a,b,sha256,size") || !segmentSpans(value["a"], value["b"])) {
+  if (!keyed(value, ["a", "b", "sha256", "size"]) || !segmentSpans(value["a"], value["b"])) {
     return null;
   }
   const object = manifestObject({ sha256: value["sha256"], size: value["size"] });
@@ -114,7 +114,7 @@ function manifestSegment(value: unknown): ManifestSegment | null {
  * a root's lists to it as it seals them and as it opens them.
  */
 export function manifestLists(value: unknown): ManifestLists | null {
-  if (!keyed(value, "at,e,parts,s,segments") || !Array.isArray(value["parts"])
+  if (!keyed(value, ["at", "e", "parts", "s", "segments"]) || !Array.isArray(value["parts"])
       || !Array.isArray(value["segments"]) || value["parts"].length === 0
       || value["parts"].length + value["segments"].length > MANIFEST_PARTS
       || !whole(value["s"], 1) || !whole(value["e"], value["s"] - 1) || !whole(value["at"], 0)) {

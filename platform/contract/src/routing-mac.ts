@@ -28,9 +28,9 @@ import {
   createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual,
 } from "node:crypto";
 
-import { sha256Hex } from "./digest";
-import { AUTHORITY } from "./ids";
-import { principal, utf8Text } from "./text";
+import { sha256Hex } from "./digest.ts";
+import { AUTHORITY } from "./ids.ts";
+import { principal, utf8Text } from "./text.ts";
 
 /** A lease's egress or sync token's expiry: none of its own, its lease's (renewed). */
 export const LEASE_LIVED = 0;

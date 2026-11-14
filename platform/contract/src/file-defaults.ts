@@ -9,7 +9,7 @@
  * every export there as one). The files plane's room in the object is no setting: it is the
  * index's ceiling (`owner/src/files.ts` `INDEX_BYTES`).
  */
-import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "./limits";
+import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "./limits.ts";
 
 /** The most versions policy can keep of a path (`FILE_SETTINGS.keep_versions`). */
 export const KEEP_CEILING = 1000;

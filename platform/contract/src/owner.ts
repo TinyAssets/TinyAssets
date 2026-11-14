@@ -26,15 +26,15 @@
  * `EgressReserved`, `EgressRefusal`) and the billed event the E2B hook routes
  * (`BilledEvent`).
  */
-import type { Binding, InboundAnswer } from "./binding";
-import type { TierName } from "./control";
-import type { ProfileName } from "./doors";
-import type { Outcome } from "./egress";
-import type { CheckPart } from "./import-message";
-import type { Metering, MeterOutcome } from "./gateway";
-import type { DoorRequests } from "./requests";
-import type { EgressCode } from "./refusal";
-import type { Events } from "./wake-records";
+import type { Binding, InboundAnswer } from "./binding.ts";
+import type { TierName } from "./control.ts";
+import type { ProfileName } from "./doors.ts";
+import type { Outcome } from "./egress.ts";
+import type { CheckPart } from "./import-message.ts";
+import type { Metering, MeterOutcome } from "./gateway.ts";
+import type { DoorRequests } from "./requests.ts";
+import type { EgressCode } from "./refusal.ts";
+import type { Events } from "./wake-records.ts";
 
 /** One execution E2B billed, from its signed lifecycle event (`doors/src/e2b-hooks.ts`). */
 export interface BilledEvent {

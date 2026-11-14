@@ -12,7 +12,7 @@
  * - the Worker's own log of the owner's sandboxes (`MeterEvent`), read `METER_BATCH` at a time.
  */
 
-import type { EgressMode } from "./policy-document";
+import type { EgressMode } from "./policy-document.ts";
 
 /** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
 export type CredentialKind = "vendor_login_in_sandbox" | "api_key";

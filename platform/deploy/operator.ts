@@ -20,6 +20,7 @@
  *
  * Node runs this file as it is (type stripping), as the kit does.
  */
+import { object } from "../contract/src/checks.ts";
 import type { Ring } from "../contract/src/envelope.ts";
 import { HEX16, HEX32 } from "../contract/src/ids.ts";
 import {
@@ -67,9 +68,6 @@ export function controlEdits(text: string): Edit[] {
   });
 }
 
-const plain = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /** `at`'s own `key`, never one it inherits (`__proto__`, `constructor`). */
@@ -86,7 +84,7 @@ function setOwn(at: Record<string, unknown>, key: string, value: unknown): void 
 
 /** A copy of the record `base` with `edits` made in order; `base` is left as it is. */
 export function edited(base: unknown, edits: readonly Edit[]): Record<string, unknown> {
-  if (!plain(base)) {
+  if (!object(base)) {
     throw new Error("the control record the edits start from is not an object");
   }
   const record = structuredClone(base);
@@ -97,7 +95,7 @@ export function edited(base: unknown, edits: readonly Edit[]): Record<string, un
         setOwn(at, key, {});
       }
       const next = own(at, key);
-      if (!plain(next)) {
+      if (!object(next)) {
         throw new Error(`the control record's ${path.join(".")} is inside no object`);
       }
       at = next;
@@ -120,7 +118,7 @@ export function edited(base: unknown, edits: readonly Edit[]): Record<string, un
 
 /** Each leaf of `value` (an object's own, a list whole), by its dotted path, as JSON. */
 function leaves(value: unknown, path: string, into: Map<string, string>): Map<string, string> {
-  if (!plain(value) || (path !== "" && Object.keys(value).length === 0)) {
+  if (!object(value) || (path !== "" && Object.keys(value).length === 0)) {
     into.set(path || "the record", JSON.stringify(value));
     return into;
   }

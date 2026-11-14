@@ -13,17 +13,33 @@ tokens searching, break less without noticing, and find root causes faster.
 ## How this project uses it
 
 - **Every builder** runs step 2 on the code it touches and its callers before
-  building, 3 and 4 while building, 5 on its diff before pushing. It fixes
-  problems in scope and adds none: no shim, alias, copy of a value, one-caller
-  parameter, test-only hook, optional binding or special case.
+  building, 3 and 4 while building, 5 on its diff before pushing. It builds
+  the design its research chose (`AGENTS.md` Fact 14). It fixes problems in
+  scope and adds none: no shim, alias, copy of a value, one-caller parameter,
+  test-only hook, optional binding or special case. A stale test, guard or rule
+  never blocks a fix: change or delete it in the same PR, with a
+  `Test-Removal:` line for a test.
 - **The PR body** is the one document. Its **Untangle check** says what was
   found, fixed and left (and why), and that the diff adds none of the four kinds.
+  Anything found and left, by builder or reviewer, names the PR, branch or
+  `live:` wait that fixes it, or is fixed in place. The PR's decisions go in a
+  file of their own, `docs/decisions/<log>/<pr>.md`, headed
+  `# <PR> as built (<date>)`; a shared log is edited only to correct an earlier
+  line. The PR ticks its own `tasks.md` line.
 - **Every reviewer** runs step 5 on the PR and checks that section; a missing
   one is a finding. A problem the PR adds or leaves in scope unexplained
-  blocks. It commits its own fixes of up to 50 lines and approves that head.
+  blocks, and so does any of these: an import edge the layer table refuses or a
+  new `owed` entry, a literal live name or founder number outside configs and
+  data, a code read from message text, a product parameter or binding only a
+  test uses, a copy of a contract value, a per-module allow-list. It commits
+  its own fixes of up to 50 lines and approves that head, posting its verdict
+  as a PR review on the commit it read (first line `APPROVE` or `BLOCK`) as
+  well as the receipt.
+- After each batch of merges, a fresh step-5 search runs across everything
+  merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run: run only what the diff can break, one mutation per
   declared change. Read only what applies. One PR in flight per lane, never
-  stacked. Known fixes and process cuts go at once, as small PRs.
+  stacked. Merge `origin/main` in; never rebase a pushed branch.
 
 ## 1. Scope
 

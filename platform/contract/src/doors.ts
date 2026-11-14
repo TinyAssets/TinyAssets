@@ -43,9 +43,10 @@
 import raw from "../doors.json" with { type: "json" };
 import profiles from "../profiles.json" with { type: "json" };
 
-import { actNamed, type Condition, isCondition } from "./acts";
-import { RUN_CAPABILITIES, type RunCapability } from "./capabilities";
-import { Refusal } from "./refusal";
+import { actNamed, type Condition, isCondition } from "./acts.ts";
+import { RUN_CAPABILITIES, type RunCapability } from "./capabilities.ts";
+import { keyed, object } from "./checks.ts";
+import { Refusal } from "./refusal.ts";
 
 type JsonSchema = Readonly<Record<string, unknown>>;
 
@@ -167,24 +168,22 @@ export interface DoorRow {
 const ROW_KEYS = Object.freeze(["door", "class", "caller", "action", "rule", "receipt",
   "registering", "closed", "live", "guard", "capability", "scope", "agent", "fieldsFirst",
   "act", "handler", "gate", "args", "tool"]);
-const TOOL_KEYS = "description,destructiveHint,idempotentHint,name,openWorldHint," +
-  "readOnlyHint,title";
+const TOOL_KEYS = Object.freeze(["name", "title", "description", "destructiveHint",
+  "idempotentHint", "openWorldHint", "readOnlyHint"]);
 
 const one = <T>(list: readonly T[], value: unknown): value is T =>
   (list as readonly unknown[]).includes(value);
-const plain = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Each way a door's arguments break the table's rules. */
 function argsProblems(value: unknown): string[] {
   if (value === "none" || value === "loose") {
     return [];
   }
-  if (!plain(value)) {
+  if (!object(value)) {
     return ["no argument schema"];
   }
   if ("owner" in value || "outside" in value) {
-    return Object.keys(value).sort().join() === "outside,owner"
+    return keyed(value, ["owner", "outside"])
       ? [...argsProblems(value["owner"]), ...argsProblems(value["outside"])]
       : ["arguments by who asks name the owner's and an outside client's"];
   }
@@ -194,11 +193,11 @@ function argsProblems(value: unknown): string[] {
   }
   for (const part of ["required", "optional"]) {
     const fields = value[part];
-    if (!plain(fields) || !Object.values(fields).every(plain)) {
+    if (!object(fields) || !Object.values(fields).every(object)) {
       problems.push(`${part} fields that are not schemas`);
     }
   }
-  if (plain(value["required"]) && plain(value["optional"])
+  if (object(value["required"]) && object(value["optional"])
       && Object.keys(value["required"]).some((key) => key in (value["optional"] as object))) {
     problems.push("a field both required and optional");
   }
@@ -220,7 +219,7 @@ export function doorProblems(rows: unknown): string[] {
   const seen = new Set<unknown>();
   const tools = new Set<unknown>();
   for (const row of rows as unknown[]) {
-    if (!plain(row)) {
+    if (!object(row)) {
       problems.push("a row that is not an object");
       continue;
     }
@@ -263,7 +262,7 @@ export function doorProblems(rows: unknown): string[] {
       say("an unknown guard");
     }
     const act = row["act"];
-    if (act !== undefined && (!plain(act) || actNamed(act["name"]) === undefined
+    if (act !== undefined && (!object(act) || actNamed(act["name"]) === undefined
         || !Object.keys(act).every((key) => key === "name" || key === "when")
         || ("when" in act && !isCondition(act["when"])))) {
       say("an act is one of acts.json's, and when, one of its conditions");
@@ -289,7 +288,7 @@ export function doorProblems(rows: unknown): string[] {
     }
     const tool = row["tool"];
     if (tool !== undefined) {
-      if (!plain(tool) || Object.keys(tool).sort().join() !== TOOL_KEYS) {
+      if (!keyed(tool, TOOL_KEYS)) {
         say("a tool is its name, title, description and four hints");
       } else if (tools.has(tool["name"])) {
         say("a tool named twice");
@@ -297,7 +296,7 @@ export function doorProblems(rows: unknown): string[] {
         tools.add(tool["name"]);
       }
       const args = row["args"];
-      if (args !== "none" && (!plain(args) || !("refused" in args))) {
+      if (args !== "none" && (!object(args) || !("refused" in args))) {
         say("a tool's door takes its fields, or none");
       }
     }

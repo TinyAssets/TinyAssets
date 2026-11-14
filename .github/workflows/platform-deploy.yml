@@ -190,6 +190,11 @@ jobs:
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The platform canary after each mode reads the off-account copy's nights with the job's
+    # own token (platform/deploy/canary.ts).
+    permissions:
+      contents: read
+      actions: read
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
@@ -209,6 +214,7 @@ jobs:
       TA_PROBE_KEY_B: ${{ secrets.TA_PROBE_KEY_B }}
       TA_PROBE_APP_TOKEN: ${{ secrets.TA_PROBE_APP_TOKEN }}
       TA_PROBE_KEY_ID: ${{ secrets.TA_PROBE_KEY_ID }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       MODE: ${{ inputs.mode }}
       ROTATE: ${{ inputs.rotate }}
       MIGRATE: ${{ inputs.migrate }}

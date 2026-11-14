@@ -157,11 +157,11 @@ export const LAYERS: readonly Layer[] = Object.freeze([
   },
   {
     // What the deploy kit and the generators take of the ci kit: where things are, and the
-    // Workers' configs as wrangler reads them. Node's own modules alone, so the deploy kit
-    // never loads TypeScript or miniflare.
+    // Workers' configs as wrangler reads them. Node's own modules and the contract's checks
+    // alone, so the deploy kit never loads TypeScript or miniflare.
     name: "the wrangler module",
     files: ["platform/ci/{paths,wrangler}.ts"],
-    may: ["platform/ci/{paths,wrangler}.ts"],
+    may: ["platform/ci/{paths,wrangler}.ts", "platform/contract/src/{checks,refusal}.ts"],
     packages: ["node:fs", "node:module", "node:path", "node:url"],
   },
   {

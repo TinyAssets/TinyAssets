@@ -11,9 +11,9 @@
  * by older code that no longer fits fails loudly rather than being half-read; anything else
  * is `invalid_source`, the gateway's fixed code.
  */
-import { count, list, shape, text } from "./checks";
-import { Refusal } from "./refusal";
-import { checkedRecord, type ModelRecord } from "./model-record";
+import { count, list, shape, text } from "./checks.ts";
+import { Refusal } from "./refusal.ts";
+import { checkedRecord, type ModelRecord } from "./model-record.ts";
 
 /** One place a credential may be sent: an HTTPS origin, its paths and its methods. */
 export interface Endpoint {

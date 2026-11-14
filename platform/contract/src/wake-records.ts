@@ -38,8 +38,8 @@
  * (`gateway/src/doorbell.ts`; its isolation guard walks the closure). What builds a wake,
  * and a subscription's id, is `wake-kinds.ts`.
  */
-import { ZONE } from "./egress";
-import { Refusal } from "./refusal";
+import { ZONE } from "./egress.ts";
+import { Refusal } from "./refusal.ts";
 import raw from "../wake-kinds.json" with { type: "json" };
 
 export interface Citation {

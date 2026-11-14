@@ -8,7 +8,8 @@ Pointers: `d2 B<n>` is fix B<n> of the untangle's wave-2 log,
 `docs/decisions/untangle-2026-11-wave-2.md`, and `d2 §X` a section of it; `d3 §X` is a section
 of the untangle's log of the whole remaining build (2026-11-11),
 `docs/decisions/untangle-2026-11-remaining-build.md`, and `list3 P<n>` a problem in that build's
-`plan` review. An id with a colon, such as `d2:N56`, is a problem in a listing those logs cite.
+`plan` review; its R1–R8 are not lane R's PRs R1–R9, whose R5 is `R5r`. An id with a colon,
+such as `d2:N56`, is a problem in a listing those logs cite.
 §10 is the order of the work; §9 is the cutover window; the founder's open questions are at the
 end.
 
@@ -267,47 +268,46 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 4. The lanes, lane T, lane R, R5, the comments and tests passes, the re-check
 
-- [ ] The wave-2 lanes as d2 §D orders them (C3–C5, S3–S8, O1–O5, D1–D4, V2–V4, X1–X5, I1–I2),
-  with d3 §A's changes:
+- [ ] The wave-2 lanes (d2 §D): lane O (O1–O5) is left, unblocked since C3 and C4 merged; the
+  merged lanes' owed items and d3 §A's changes:
   - B3 after T1, on the cleaned constructors (d3 §A2, §K1).
   - B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2).
-  - B6: the queue names generated from the Worker configs into the contract (d3 §A3).
-  - B6 (V2): `files/src/index.ts` `getChunks` charges a verified range its length but fetches
-    and opens its whole chunk, so a batch of ranges of many chunks holds more than
-    `BATCH_BYTES` (older than R1: under SSE-C a verified range was read whole too). With
-    `verify` required, the budget bounds what a batch holds, not only what it returns (R1's
-    review).
-  - B8: the compatibility date is a kit check that the six configs agree (d3 §A4).
-  - B11: a Worker's existence from `Cloudflare.workers`, never from its secret listing: the
-    `workers` and `doors deployed` steps, which read a secret listing for it
-    (`deploy/deploy.ts:1231-1236`, `:1394-1396`) (d3 §O2).
+  - Owed to lane O by merged PRs, one line each:
+    - S7: `owner/src/sandbox.ts:62` and `runs.ts:124` read `START_CODES` (`s7.md`).
+    - S8: the owner adopts `served()` (`s8.md`).
+    - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
+    - V2 (#5543): `owner/src/egress.ts:266` `HINT`, and the three range builders.
+    - D1: `ledger.ts:1252`'s `512` is `COMMAND_CENTER_MAX`.
+    - D3: `sessions.ts:59` `ttlS` is `SESSION_TTL_S` (`d3.md`).
+    - C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
+    - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
+    - C6: the owner's kernel debt, 8 SHA-256 uses and 43 `Date.now()` (`c6.md`; O4).
+    - X1: the owner tests' literals, then B10's literal guard, which waits on O4 alone.
+    - R2 (#5571): `ledger.ts:692` `canonical`.
+    - B2: the owner `Error` classes `Conflict`, `FileConflict` and `ParentMoved` (O4).
+    - D2: the events door's `subscription_limit → ResourceExhausted`, once the owner's
+      refusal carries the limit (`d2.md`; then lane D).
+    - D1: `holds.ts:36` names `API_BODY_MAX`, now `EGRESS_BODY_MAX`.
+    - D4: `import.ts:4` cites `doors/src/import.ts`, now `doors/src/import/` (comments pass).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
-    manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H). The `apply` job runs
-    the plan it was approved on: the plan passes as an artifact, and `apply` stops on any
-    difference (list3 P26).
-  - B13: the routes of d3 §J1; `/apple-touch-icon.png` moved off the `app` prefix, with a
-    test that fails on any site file under a doors pattern; one shared matcher of path plus
-    query for the identity guard.
-  - B14 builds only the platform's side of the canary (`deploy/canary.ts`); the old side stays
-    in Python until the hold ends (d3 §A7).
+    manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
+  - B13's sign-in half (`x4.md`): `contract/src/signin.ts`, `connected` and the app's page
+    paths, with `deploy/guards/rules.ts:9-10`'s owed `deploy.test.ts` edge into the doors.
+  - Lane X, owed: `doors/src/oidc.ts:138` `unbase64url` is `fromBase64url`, and `:161`
+    `bounded` the doors kit's (D1); `deploy/deploy.ts:510` `bundles(exec)` (S6's N39).
+  - V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`).
   - B14's keyring half, owed (`x5.md` item 10): `scripts/platform_setup.py` calling the kit's
     `keyring-new` in place of its own `make_keyring`. X5 left it, since it would make the
     founder's local setup need Node 22 and the platform's `npm ci` for one keyring. The
     cutover does not wait on it (the keyrings are stored, and the kit only reads them), but the
     deletion PR must not delete `platform_setup.py` while `deploy.test.ts` "takes the keyring
     the founder's setup makes" runs it: either this is built, or both go on the manifest.
-  - `sources/chatgpt.json` and the `unwired` field deleted in their own PR, before B17 (d3 §A8,
-    §L4).
-  - B22: a test of the gateway's deadline before a provider's headers, on real or fake time;
-    `resealDoorbell`, so an idle doorbell's blob leaves its kid, and the sweep's doorbell half
-    (d3 §I).
+  - B22's sweep doorbell half (O5; d3 §I).
   - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10). Its
     platform Workers are entries in the deploy kit's `retired` list (`deploy/platform.json`),
-    the one remover of a platform Worker (d3 §O2). Its vocabulary rule replaces the doors'
-    check that the agent's definition says nothing of the import
-    (`doors/guards/tools.test.ts`, B20).
+    the one remover of a platform Worker (d3 §O2).
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
@@ -315,68 +315,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B2: `owner/src/wakes.ts`'s lost ring answer surfaces: the wake still settles `unknown` (a
     byte may have left), with `answer_lost` on its row and the cause in the log (Fact 8; d3 §I;
     `docs/decisions/untangle-2026-11/wakes-lost.md`).
-  - A later S PR: S13's `lease_id` half (d3 §L5).
-  - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
-    `node ci/budgets.mjs` (d3 §I): the large from the Vitest reports the `platform-sizes` legs
-    upload, the runner's medium from a local `test:root` report (`platform-tests` uploads none).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
-  - Lane R's cipher PR: `files/src/cipher.ts`'s SSE-C premise (d3 §O8).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
-  (d3 §K1, §K2). T1 is eight PRs, each green on its own:
-  - [x] T1a: the sandbox a Worker bound by config behind a `ci/gate.ts` gate, `SANDBOX`
-    required, `SandboxLeases` deleted whole (d3 §O4), and T0's two gate nits (d3 §M6).
-  - [x] T1b: the ceilings of `Policy` (and `validate`'s), `Usage`, `Sessions`, `Egress` and
-    `Connections` read where they are defined, their tests at production's numbers;
-    `Schedule`'s `passMs` gone and `halted` required; `Files`' `reclaim`, `changed` and
-    `manifested` required; `Connections`' unbound `GATEWAY` case gone.
-  - [x] T1b2: `Grants`, `Registrations` and `Collections` read their own ceilings, their tests
-    at production's numbers (the collections' fills `large`); `Collections`' `adopt` and
-    `shares` required and `DEFAULT_SHARES` gone; code mode's `timeoutMs` gone, its wall time
-    tested on the plain owner under a stepping clock.
-  - [x] T1b3: the memory probe's archive cases at production's ledger limits, `LegSegments`
-    deleted (d3 §K1); code mode's `CODEMODE_VM` required, its unbound case gone with its test;
-    a test that a halted schedule runs no lane already due (`schedule.ts`'s `onJob`); the
-    memory leg's floor never read high by earlier work's garbage (the pool's observer made
-    outside `run`, the floor read again at the run's start).
-  - [ ] T1b4: the ledger's decisions as pure functions tested with small numbers (`sealable`,
-    `archiveDue`, `hotFull`, `postRoom`, `moveTake`); `admitted`, `changes`, `adopt` and `wall`
-    required; `ledger-bounds` and `agent-mail`'s identity bounds at production's ceilings; the
-    memory probe's measured move production's largest segment (d3 §K1).
-  - [ ] T1b5: the archive's object tests at production ceilings (`archive-mail.test.ts`), then
-    the ledger's `limits` parameter, `Internals.ledgerLimits`, `BigArchivingOwnerDO` and the
-    other three classes' ceilings deleted, `LEDGER_LIMITS` checked once at module load, and a
-    test of the purge queue's ceiling (`ledger.ts` `remove`, `maxAgentRows` purges waiting),
-    which none holds today (`b23_research.md` question 3), and one that a lone straggler makes
-    the lane due (no test fails today if `Ledger.archiveDue` asks `archiveDue` no straggler).
-  - [ ] T1c-a: the `FILES` and `GATEWAY` gates, with `GatedOwnerDO`, `RungOwnerDO`,
-    `ArchivingOwnerDO`, `DivergingOwnerDO`, `PurgingOwnerDO`, `Internals.chainStep` and
-    `Internals.archiveBetweenPasses` deleted; the owner suite's lease clock under the fake
-    `Date`, not moved by SQL (`lease_expires = 1`, in every test) (list 6, item 6j); the
-    object's `admitted` held by a test (no test fails today if the object passes the ledger
-    `() => true`: a suspension between a wakes pass's claims, the `GATEWAY` gate holding its
-    send) (`docs/decisions/untangle-2026-11/t1c.md`).
-  - [ ] T1c-b: `Internals`' erasure, grace, retry and control-freshness fields, `FauxOwnerDO`,
-    `SwitchedOwnerDO` and `CachedOwnerDO` deleted; the unbound-`ERASURES` throw gone
-    (`owner-do.ts`; the generated `OwnerEnv` already types it required, C2b) with its queue's
-    fake consumer; the erasure and control record under a fake `Date`; the rig admitting by
-    the door; the doors' entry with no third constructor argument (`t1c.md`, T1c-b).
-  - [ ] T1c-b2, decided first (`t1c.md`, T1c-b item 6): the real entry, `main: src/index.ts`,
-    with `Internals` and the test classes left deleted, and the whole owner suite on the real
-    carried package (no alias): every rig waits for the seed, the seeded part of every count
-    comes from `support.ts` `starterSeed()`, and the starter tests' hand-built passes run at
-    versions past the carried one (`t1c.md`, T1c-b2).
-  - [ ] T1c-c: `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted: the
-    object exports its one ledger wiring function and the tests call it; `ballast` seeds
-    through the ledger's own API, with no door seeding and no bulk SQL (`t1c.md`, owed); and
-    `BackupParts`' test-only `sizes?` and `pool?` gone, the generation harness's copy of the
-    backups wiring with them, researched first (`t1c.md`, T1c-b item 6).
-  - [ ] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
-    copy of the object's wiring, deleted.
-  - [ ] T1e: `support.ts` `filesOn`, `TIERLESS_FULL` and `collectionParts`, copies of the
-    object's wiring, deleted: the files and collections tests reach `ownerStores`, which wires
-    a file change itself (no `changed` parameter, no `NO_FILE_CHANGE`), each test's limits
-    set by the owner's files policy (`t1c.md`, T1e).
+  (d3 §K1, §K2).
+  - [x] T1, the owner's tests at production's numbers through the object's one wiring, twelve
+    PRs, T1a to T1e (#5515 to #5588; `t1c.md`).
+  - T2, unblocked since D3 merged: the 17 B23 entries in `doors/guards/rules.ts`, the doors'
+    test `OWNER` (C2b) and T1c-b's `owner-erasures-recorded` queue.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
@@ -385,7 +331,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`).
   - [ ] `restore.wipe`, a live owner brought to pending and empty for a restore, the
     generation to restore pinned first, since a fresh generation's finish prunes every older
-    unpinned one (`r5r.md` item 14); and owner migration 10's pin PR (`r5r.md` item 4).
+    unpinned one (`r5r.md` item 14). Restore (#5587) and owner migration 10's pin (#5589) landed.
   - [ ] Owner migration 11's pin PR, after `restore.wipe` merges (`r5w.md` item 9).
   - [ ] A restore's kept generations' chunks kept from early collection: the files plane
     collects early only garbage the newest generation does not name, so the fallback a
@@ -395,20 +341,22 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
     `facet-probe.md` Q8 never sampled it).
   - [ ] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
-    (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, after lane O's T1c
-    (`r3.md` item 9).
+    (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, unblocked since
+    T1c merged (`r3.md` item 9).
   - [ ] The off-account copy's first live nights, after the founder's Backblaze steps
-    (`checklist.md`, "The off-account copy"; `r4.md`): the dark bucket copied and checked;
+    (`checklist.md`, "The off-account copy"; `r4.md`), and not before the canary alarms on a
+    missed copy night (step 5; lane X): `KEEP_DAYS` keeps the 30-day erasure promise only
+    then (`deploy/offsite.ts:112`). The dark bucket copied and checked;
     rclone hiding with a key that lacks `deleteFiles`; an object deleted in a rehearsal
     namespace hidden in B2 and still among its versions; a night past the deletion limit
     hiding every deletion and then failing;
     a one-day lock and the lifecycle rule together deleting a hidden version once the lock ends.
 - [ ] R5, where an action is decided (d3 §N): its six slices (`r5_research.md` §6), after B25
   and alongside lane O.
-  - [ ] P-shape: the policy's `actions` table and `contract/acts.json`, the doors' rows naming
+  - [x] P-shape: the policy's `actions` table and `contract/acts.json`, the doors' rows naming
     their act, a rule nothing could see refused at write; the old rule tables, `spend` and
     egress `ask` deleted; the default document and its digest anew, with owner migration 6
-    (its pin PR owed after it merges).
+    (#5531; its pin, #5537).
   - [ ] P-decide: the decide function and its receipts bucket; `action_request` cards and the
     once-approvals (bounded, generation-bound, swept); the owner's approve and refuse doors;
     the decide step in the runner, from the rows' `act`; a rule's `agent`, with the agent id's
@@ -427,11 +375,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     host through web-fetch hooks.
 - [ ] Process (d3 §B): P2 in order: reviews posted as the App's `review` check reads them and
   seen green on a real PR, then `review` required, then the receipt half deleted (d3 §F4);
-  P6–P9 after the lanes.
+  P8 and P9's "can go now" list at once, P6 and the rest of P7 and P9 after the lanes (d3 §B5).
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
   tests pass takes the two older tests that make a call refuse by patching a class's prototype
-  (`owner/test/runs-authority.test.ts:857` `Files.prototype.open`,
-  `owner/test/erasure.test.ts:83` `Lifecycle.prototype.disableAlarms`; list 6, item 9). The
+  (`owner/test/runs-authority.test.ts:864` `Files.prototype.open`,
+  `owner/test/erasure.test.ts:92` `Lifecycle.prototype.disableAlarms`; list 6, item 9). The
   two patched calls are in-process (the owner's own SQLite; the agents library's
   `Lifecycle`), but each test's fault has a front door through `FILES`, so both move to a
   gate in front of it in the owner suite (`methodsOf` `ChunkStore`, as the ci suite's
@@ -454,9 +402,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   `sandbox_renewal_refused`, `sandbox_runner_mismatch`, `exceededMemory`, and E2B's team metrics
   (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
   read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
-  and spend have no API. It also reads how long ago the off-account copy's `copy` job last
-  passed (`offsite-copy.yml`), once configured, and alarms past two nights: an erased owner's
-  hiding there must come within `HIDE_NIGHTS`, a week (`deploy/offsite.ts`; `r4.md` item 4).
+  and spend have no API. (The off-account copy's alarm past two nights is built: `x7.md`.)
 - [ ] The deletion-jobs step, a runner mode before `admit` (§9 step 11; d3 §C4).
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
@@ -469,15 +415,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (d3 §F2).
 - [ ] The data shapes already known to be wrong, fixed before real data, as decided in d3 §P
   (list3 P48), each in its own lane PR:
-  - receipts onto the recipient row, deleting `ledger_receipts`, after T1b4;
   - rooms and room members with opaque ids, in lane O after T1c and before S4;
   - collection history (§P item 3): H1 merged (#5538); S1, the stream extraction into
     `owner/src/stream.ts`, after T1b4, receipts and rooms; H2, the erasures stream; H3, the
     history stream, bounding the deleter's name or taking the factor into the guard's term;
   - conversation ids carrying the order key, idle conversations to segments, after T1b4 and
     on S1's stream module (§P item 3);
-  - files: F1 (retention off by default, one recorded byte ceiling, `#fit`'s silent prune
-    deleted, the latency probe's workflow, scripts and branch deleted) after R5's P-shape; F2
+  - files: F1's owed census refusal at the index's ceiling (lane I; #5548's body); F2
     (file versions to segments, with mark-and-sweep) after R1 and §P item 3; F3 (the live
     index's R2 level) later, and whether it comes before the cutover is an open founder
     question;

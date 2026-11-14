@@ -27,9 +27,9 @@
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
-import { chunkedId, cut } from "./content";
-import { HEX16, HEX64 } from "./ids";
-import { principal } from "./text";
+import { chunkedId, cut } from "./content.ts";
+import { HEX16, HEX64 } from "./ids.ts";
+import { principal } from "./text.ts";
 
 /**
  * The import doors' bounds (`owner/src/import.ts`), which the consumer batches by: a call's

@@ -2,7 +2,7 @@
  * The platform's canary (`canary.ts`) and its alarm (`alarm.ts`), against a fake platform,
  * GitHub, E2B, WorkOS and Pushover: the canary reads which side serves and checks that side
  * alone, a keyed check unchecked is a failure, the full run runs once a day and its ending is
- * carried; the alarm acts only when armed and the doors serve, pages at the second red in a
+ * carried, and the off-account copy must have passed a night inside two once configured; the alarm acts only when armed and the doors serve, pages at the second red in a
  * row or a stopped clock, climbs its ladder, stops at the founder's answer and closes on green.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -14,10 +14,12 @@ import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { DISPATCH, PAGER } from "../../contract/src/canary";
 import { E2B_API } from "../../sandbox/e2b/transport";
+import { TOKEN } from "../actions";
 import { alarm, LABEL, pageDue } from "../alarm";
 import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, type World }
   from "../canary";
 import { CALLBACK, E2B_HOOK_URL, EGRESS_DOMAIN, FIRST_PARTY, ORIGIN } from "../facts";
+import { NIGHTLY } from "../offsite";
 
 type Json = Record<string, unknown>;
 
@@ -26,8 +28,9 @@ const HANDLES = JSON.parse(readFileSync(join(REPO, "scripts", "canary_handles.js
 const NOW = new Date("2026-11-14T09:00:00Z");
 const ISSUER = "https://auth.test";
 const WORKOS_AUTHORIZE = "https://api.workos.com/user_management/authorize";
-const KEYED = { TA_PROBE_KEY: "probe-key", E2B_API_KEY: "e2b-key-123",
-                OWNER_ISSUER: ISSUER, WORKOS_CLIENT_ID: "client_test" };
+const KEYED: Record<string, string> = {
+  TA_PROBE_KEY: "probe-key", E2B_API_KEY: "e2b-key-123", OWNER_ISSUER: ISSUER,
+  WORKOS_CLIENT_ID: "client_test", [TOKEN]: "run-token" };
 const AUTO: Options = { side: null, unkeyed: false, clock: false, full: false };
 const DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource/mcp`;
 
@@ -41,12 +44,28 @@ interface Platform {
   record: Json | null;
   runState: string;
   lastDispatch: string | null;
+  /** The off-account copy's completed nights on main, newest first. */
+  nights: Night[];
+  /** What GitHub answers the listing of those nights, when not 200. */
+  nightsStatus: number;
 }
+
+/** One night of `offsite-copy.yml`: when it ran, and how each of its two jobs ended. */
+interface Night {
+  at: string;
+  settings: "success" | "failure";
+  copy: "success" | "failure" | "skipped";
+}
+
+const night = (at: string, copy: Night["copy"], settings: Night["settings"] = "success"): Night =>
+  ({ at, settings, copy });
+const LAST_NIGHT = night("2026-11-14T05:40:00Z", "success");
 
 function platform(change: Partial<Platform> = {}): Platform {
   return { side: "doors", oldBody: '{"error":"authentication_required"}',
            served: new Set(HANDLES.new.handles), record: null, runState: "succeeded",
-           lastDispatch: "2026-11-14T08:50:00Z", ...change };
+           lastDispatch: "2026-11-14T08:50:00Z", nights: [LAST_NIGHT], nightsStatus: 200,
+           ...change };
 }
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -132,6 +151,26 @@ function world(p: Platform, env: Record<string, string> = KEYED): World & { sent
                         result: p.runState === "succeeded" ? "ok" : null, error: null });
         }
       }
+      const repository = `https://api.github.com/repos/${DISPATCH.repository}`;
+      if (url.startsWith(repository)
+          && new Headers(init?.headers).get("Authorization") !== `Bearer ${env[TOKEN]}`) {
+        return json({ message: "Bad credentials" }, 401);
+      }
+      if (url.startsWith(`${repository}/actions/workflows/${NIGHTLY.workflow}/runs?`)) {
+        expect([at.searchParams.get("branch"), at.searchParams.get("status")])
+          .toEqual([NIGHTLY.ref, "completed"]);
+        return p.nightsStatus !== 200 ? json({ message: "unavailable" }, p.nightsStatus)
+          : json({ workflow_runs: at.searchParams.get("page") !== "1" ? []
+            : p.nights.map((each, id) => ({ id, created_at: each.at,
+                                            updated_at: later(each.at, 20) })) });
+      }
+      const jobs = /^\/actions\/runs\/(\d+)\/jobs$/.exec(url.slice(repository.length));
+      if (jobs !== null) {
+        const each = p.nights[Number(jobs[1])]!;
+        return json({ jobs: [
+          { name: NIGHTLY.settings, conclusion: each.settings, completed_at: later(each.at, 1) },
+          { name: NIGHTLY.copy, conclusion: each.copy, completed_at: later(each.at, 20) }] });
+      }
       if (url.includes("/actions/workflows/") && url.includes("event=workflow_dispatch")) {
         return json({ workflow_runs: p.lastDispatch === null ? []
           : [{ created_at: p.lastDispatch }] });
@@ -141,6 +180,13 @@ function world(p: Platform, env: Record<string, string> = KEYED): World & { sent
   };
 }
 let lastBeat = "";
+
+const REPOSITORY = `https://api.github.com/repos/${DISPATCH.repository}`;
+const NIGHTS = `${REPOSITORY}/actions/workflows/${NIGHTLY.workflow}/runs`;
+
+/** `minutes` after `at`. */
+const later = (at: string, minutes: number) =>
+  new Date(Date.parse(at) + minutes * 60_000).toISOString().replace(".000Z", "Z");
 
 const states = (result: Result) => result.outcomes.map((each) => [each.check, each.state]);
 
@@ -173,11 +219,15 @@ describe("the platform canary", () => {
     expect(states(result)).toEqual([
       ["the challenge", "passed"], ["the app", "passed"], ["the client document", "passed"],
       ["the egress host", "passed"], ["the sign-in", "passed"], ["E2B", "passed"],
-      ["the handle set", "passed"], ["the owner's files", "passed"], ["the full run", "passed"]]);
+      ["the off-account copy", "passed"], ["the handle set", "passed"],
+      ["the owner's files", "passed"], ["the full run", "passed"]]);
     expect(w.sent).toContain(`POST ${ORIGIN}/api/tools/converse`);
     expect(p.record).toEqual({ at: NOW.toISOString(), passed: true,
                                line: "run r1 answered on pi" });
-    expect(w.sent.filter((each) => each.startsWith("GET https://api.github.com"))).toEqual([]);
+    // GitHub is read for the copy's nights alone: the clock is the watchdog's.
+    expect(w.sent.filter((each) => each.includes("api.github.com"))
+      .map((each) => each.replace(/\?.*/, "")))
+      .toEqual([`GET ${NIGHTS}`, `GET ${REPOSITORY}/actions/runs/0/jobs`]);
   });
 
   it("carries a failed full run until a day passes, then runs it again", async () => {
@@ -216,9 +266,8 @@ describe("the platform canary", () => {
   });
 
   it("on the watchdog's schedule, sees a stopped clock, a failure enough alone", async () => {
-    const env = { ...KEYED, GITHUB_TOKEN: "run-token" };
-    expect(exitOf(await canary(world(platform(), env), { ...AUTO, clock: true }))).toBe(0);
-    const stopped = await canary(world(platform({ lastDispatch: "2026-11-14T08:20:00Z" }), env),
+    expect(exitOf(await canary(world(platform()), { ...AUTO, clock: true }))).toBe(0);
+    const stopped = await canary(world(platform({ lastDispatch: "2026-11-14T08:20:00Z" })),
                                  { ...AUTO, clock: true });
     expect(stopped.outcomes.at(-1)).toMatchObject({ check: "the clock", state: "failed",
                                                      code: 14, alone: true });
@@ -226,13 +275,16 @@ describe("the platform canary", () => {
 
   it("runs in its workflow with exactly what it reads, armed by the clock's own token", () => {
     const file = workflow(DISPATCH.workflow) as { on: Record<string, unknown>; jobs: Record<string,
-      { environment: string; env: Record<string, string>;
+      { environment: string; env: Record<string, string>; permissions: Record<string, string>;
         steps: { name?: string; if?: string; run?: string; env?: Record<string, string> }[] }> };
     expect(Object.keys(file.on).sort()).toEqual(["schedule", "workflow_dispatch"]);
     const job = file.jobs["canary"]!;
     expect(job.environment).toBe("production");
     expect(Object.keys(job.env).sort())
-      .toEqual([...Object.values(INPUTS), "GITHUB_TOKEN", "CANARY_ARMED"].sort());
+      .toEqual([...Object.values(INPUTS), "CANARY_ARMED"].sort());
+    expect(job.env[TOKEN]).toBe(`\${{ secrets.${TOKEN} }}`);
+    // The job's token reads the clock's runs and the copy's nights, and writes the issue.
+    expect(job.permissions).toEqual({ contents: "read", actions: "read", issues: "write" });
     expect(job.env["CANARY_ARMED"]).toBe(`\${{ secrets.${DISPATCH.token} != '' }}`);
     const step = (name: string) => job.steps.find((each) => each.name === name)!;
     expect(step("The canary").run).toContain("platform/deploy/canary.ts");
@@ -252,6 +304,76 @@ describe("the platform canary", () => {
       expect([file, /python3?\b/.test(readFileSync(join(dir, file), "utf8"))])
         .toEqual([file, false]);
     }
+  });
+});
+
+describe("the platform canary's watch on the off-account copy", () => {
+  /** The copy's outcome, read at `now`, over `nights`. */
+  const copy = async (nights: Night[], now = NOW, change: Partial<Platform> = {},
+                      env = KEYED) => {
+    const result = await canary({ ...world(platform({ nights, ...change }), env),
+                                  now: () => now }, AUTO);
+    return result.outcomes.find((each) => each.check === "the off-account copy")!;
+  };
+
+  /** The 12th passed; the 13th and 14th failed. */
+  const missed = [night("2026-11-14T05:40:00Z", "failure"),
+                  night("2026-11-13T05:40:00Z", "failure"),
+                  night("2026-11-12T05:40:00Z", "success")];
+
+  it("passes while a night passed inside two, a missed night among them", async () => {
+    expect(await copy([night("2026-11-14T05:40:00Z", "failure"), LAST_NIGHT]))
+      .toMatchObject({ state: "passed", line: "a night last passed at 2026-11-14T06:00:00Z" });
+    // Two nights missed, but the second may have run hours late: not yet overdue.
+    expect(await copy(missed, new Date("2026-11-14T17:59:00Z")))
+      .toMatchObject({ state: "passed", line: "a night last passed at 2026-11-12T06:00:00Z" });
+  });
+
+  it("fails alone once no night has passed in two, so the alarm pages at once", async () => {
+    const overdue = await copy(missed, new Date("2026-11-14T18:01:00Z"));
+    expect(overdue).toMatchObject({ state: "failed", code: 15, alone: true });
+    expect(overdue.line)
+      .toMatch(/^no night of offsite-copy\.yml has passed since 2026-11-12T06:00:00Z, /);
+    // Nights stopped altogether: the last one listed ran three days ago and failed.
+    expect(await copy([night("2026-11-11T05:40:00Z", "failure")])).toMatchObject({
+      state: "failed", code: 15, alone: true,
+      line: expect.stringMatching(/has passed since before 2026-11-11T06:00:00Z/) });
+    const { h, w, pages } = hub();
+    expect(await alarm(w, { side: "doors", outcomes: [overdue] }))
+      .toEqual(["red: #7, paged (the first page)"]);
+    expect([pages.length, h.issue?.["title"]]).toEqual([1, "Platform down: the off-account copy"]);
+  });
+
+  it("waits, saying so, while the copy is not configured, or newly configured", async () => {
+    const dark = await copy([night("2026-11-14T05:40:00Z", "skipped"), LAST_NIGHT]);
+    expect(dark).toMatchObject({ state: "waiting" });
+    expect(dark.line).toMatch(/^not configured: the night of 2026-11-14T05:40:00Z found none /);
+    // Configured after the 13th's dark night, and the 14th's first copy failed: one day in.
+    const fresh = await copy([night("2026-11-14T05:40:00Z", "failure"),
+                              night("2026-11-13T05:40:00Z", "skipped")]);
+    expect(fresh).toMatchObject({ state: "waiting", line: "configured since the night of " +
+      "2026-11-13T05:41:00Z; its first pass is due by 2026-11-15T17:41:00.000Z" });
+    // A night stored in part fails its settings job: that is red, not unconfigured.
+    expect(await copy([night("2026-11-14T05:40:00Z", "skipped", "failure"),
+                       night("2026-11-13T05:40:00Z", "skipped")],
+                      new Date("2026-11-16T09:00:00Z")))
+      .toMatchObject({ state: "failed", code: 15, alone: true });
+    expect(await copy([])).toMatchObject({ state: "waiting",
+      line: "no night of offsite-copy.yml has completed on main, so nothing says the copy is " +
+            "configured" });
+    expect(exitOf(await canary(world(platform({ nights: [night("2026-11-14T05:40:00Z",
+                                                                 "skipped")] })), AUTO))).toBe(0);
+  });
+
+  it("fails, but not alone, when GitHub can't be read", async () => {
+    expect(await copy([LAST_NIGHT], NOW, { nightsStatus: 502 })).toMatchObject({
+      state: "failed", code: 15, alone: false,
+      line: expect.stringMatching(
+        /^GitHub answered GET \/actions\/workflows\/offsite-copy\.yml\/runs\?.* with 502$/) });
+    const { [TOKEN]: _token, ...tokenless } = KEYED;
+    expect(await copy([LAST_NIGHT], NOW, {}, tokenless)).toMatchObject({
+      state: "failed", code: 15, alone: false,
+      line: expect.stringMatching(/^GITHUB_TOKEN is not set/) });
   });
 });
 

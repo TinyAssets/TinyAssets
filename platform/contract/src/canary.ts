@@ -1,7 +1,8 @@
 /**
  * The platform canary's clock and pager (`canary.json`, d3 §J2), what the doors' Cron Trigger
- * (`doors/src/canary-clock.ts`) and the canary's alarm (`deploy/alarm.ts`) share: the
- * workflow dispatch the clock sends, and the one page form both send to the founder.
+ * (`doors/src/canary-clock.ts`) and the deploy kit (`deploy/actions.ts`, `deploy/alarm.ts`)
+ * share: the repository's GitHub API calls, the clock's dispatch among them, and the one page
+ * form both send to the founder.
  */
 import canary from "../canary.json" with { type: "json" };
 
@@ -20,17 +21,29 @@ export const PAGER = Object.freeze({
 export const CLOCK_SECRETS: readonly string[] = Object.freeze(
   [`${canary.dispatch.token}`, `${canary.pager.user}`, `${canary.pager.token}`]);
 
-/** GitHub's REST API version the dispatch is sent at. */
+/** GitHub's REST API version every call of the repository's API is sent at. */
 const GITHUB_API_VERSION = "2022-11-28";
+
+/**
+ * One call of the repository's GitHub REST API with `token`: its URL and request. The clock's
+ * dispatch and the deploy kit's calls (`deploy/actions.ts` `github`) are each one of these.
+ */
+export function repositoryCall(token: string, method: string, path: string, body?: unknown):
+    { readonly url: string; readonly init: RequestInit } {
+  return { url: `https://api.github.com/repos/${DISPATCH.repository}${path}`, init: {
+    method, headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json",
+                       "User-Agent": "tinyassets-canary",
+                       "X-GitHub-Api-Version": GITHUB_API_VERSION,
+                       ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }) } };
+}
 
 /** The clock's dispatch of the canary's workflow, on `ref`, with `token`. */
 export function dispatchRequest(token: string): Request {
-  return new Request(`https://api.github.com/repos/${DISPATCH.repository}/actions/workflows/${
-    DISPATCH.workflow}/dispatches`, {
-    method: "POST", body: JSON.stringify({ ref: DISPATCH.ref }),
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json",
-               "Content-Type": "application/json", "User-Agent": "tinyassets-canary-clock",
-               "X-GitHub-Api-Version": GITHUB_API_VERSION } });
+  const { url, init } = repositoryCall(token, "POST",
+                                       `/actions/workflows/${DISPATCH.workflow}/dispatches`,
+                                       { ref: DISPATCH.ref });
+  return new Request(url, init);
 }
 
 /** The pager's two keys, as their secrets hold them. */
