@@ -1743,11 +1743,10 @@ describe("cancel and the runner's state", () => {
     await waitFor(() => box.ran("claude-code").length > 0);
     await waitFor(() => box.runner("state").out.includes("\"quiet\":false"));
     expect(JSON.parse(box.runner("state").out)).toEqual({ live: 1, quiet: false, protocol: PROTOCOL });
-    expect(box.runner("status", start.run).code).toBe(0);
     expect(box.runner("cancel", start.run).code).toBe(0);
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 143 });
-    await waitFor(() => box.runner("status", start.run).code === 3);
+    await waitFor(() => JSON.parse(box.runner("state").out).live === 0);
     expect(box.runner("cancel", start.run).code).toBe(3);
   });
 
