@@ -4,7 +4,8 @@
  * gate dropping its message loudly with nothing written (no ring, its shape, its MAC, an
  * unknown kid, a stale or a future time, a replay after its answer, another op under an ask
  * already accepted); an erased owner answered refused; a redelivery of a message accepted
- * but not yet answered going on, past the window too.
+ * but not yet answered going on, past the window too; and a delivery racing another held to
+ * the acceptance record and the answer the other made first.
  */
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
@@ -71,6 +72,27 @@ function remac(message: OperatorMessage): OperatorMessage {
     .update(["tinyassets-operator-v1", message.op, message.owner, digest, message.ask,
              String(message.at)].join(String.fromCharCode(0))).digest("base64url");
   return { ...message, mac };
+}
+
+/**
+ * The doors' env as a delivery racing another sees the operator bucket: its first read of
+ * `hidden` finds nothing, as if the other delivery had not yet written it.
+ */
+function racing(hidden: string): DoorsEnv {
+  const bucket = doorsEnv.OPERATOR_LOG;
+  let blind = true;
+  const read = <T>(key: string, real: () => Promise<T>): Promise<T | null> => {
+    if (key === hidden && blind) {
+      blind = false;
+      return Promise.resolve(null);
+    }
+    return real();
+  };
+  return { ...doorsEnv, OPERATOR_LOG: {
+    head: (key: string) => read(key, () => bucket.head(key)),
+    get: (key: string) => read(key, () => bucket.get(key)),
+    put: (key: string, value: string, options: R2PutOptions) => bucket.put(key, value, options),
+  } as unknown as R2Bucket };
 }
 
 /** An answer's refusal. */
@@ -176,6 +198,26 @@ describe("the operator channel", () => {
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     expect(refusedOf(operatorAnswer((await held(message.ask)).answer, message)).code)
       .toBe("invalid");
+  });
+
+  it("makes the acceptance record and the answer once, a racing delivery held to them",
+     async () => {
+    const message = await sign(fresh(), "owner.tier", { tier: "paid" });
+    const first = await acceptanceOf(message);
+    await doorsEnv.OPERATOR_LOG.put(acceptanceKey(message.ask), JSON.stringify(first));
+    // Other args under the ask, by a delivery that read before the record was made: dropped.
+    const logged = logs();
+    expect(await deliver(remac({ ...message, args: { tier: "free" } }),
+                         racing(acceptanceKey(message.ask)))).toEqual({ acked: 1, retried: 0 });
+    expect(logged()).toEqual(["an operator message names another op, owner or args under an " +
+                              "ask already accepted; dropped"]);
+    expect(await held(message.ask)).toEqual({ accepted: first, answer: null });
+    // Answered, then answered again by a delivery that read before the answer was made.
+    expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
+    const version = (await doorsEnv.OPERATOR_LOG.head(answerKey(message.ask)))!.version;
+    expect(await deliver(message, racing(answerKey(message.ask))))
+      .toEqual({ acked: 1, retried: 0 });
+    expect((await doorsEnv.OPERATOR_LOG.head(answerKey(message.ask)))!.version).toBe(version);
   });
 
   it("goes on with a message accepted before, past the window a new one is dropped in",
