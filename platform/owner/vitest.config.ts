@@ -22,6 +22,9 @@ const FILES_RING = keyring("k2", ["k1", "k2"]);
 const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
 /** The gate in front of it, `SANDBOX`. */
 const SANDBOX_GATE = "sandbox-gate";
+/** The gates in front of the files and gateway Workers, `FILES` and `GATEWAY`. */
+const FILES_GATE = "files-gate";
+const GATEWAY_GATE = "gateway-gate";
 /** The gateway's fake outside world, which every fetch of the gateway and the tests reaches. */
 const FAKE_UPSTREAM = join(PLATFORM, "gateway", "test", "fake-upstream.ts");
 
@@ -32,9 +35,12 @@ export default defineConfig({
       // (`test/namespaces.ts`, each a class of the test Worker, `test/worker.ts`):
       // wrangler.jsonc gives the Worker no binding to its own namespace. FILES, GATEWAY and
       // CODEMODE_VM are the config's own bindings, to the real files, gateway and codemode
-      // Workers run beside it, each bundled from its own config as a deploy bundles it.
-      // SANDBOX is a gate (`ci/gate.ts`) in front of a fake sandbox Worker
-      // (`test/fake-sandbox.ts`), which records what each owner's object asked and answers
+      // Workers run beside it, each bundled from its own config as a deploy bundles it; FILES
+      // and GATEWAY reach theirs through a gate each (`ci/gate.ts`), which forwards every call
+      // unchanged until a test arms it, through FILES_GATE or GATEWAY_GATE (bound to the test
+      // Worker alone), to hold one owner's call, change its bytes or refuse it, and records
+      // what crossed by owner (`gates.ts` disarms them after each test). SANDBOX is a gate
+      // in front of a fake sandbox Worker (`test/fake-sandbox.ts`), which records what each owner's object asked and answers
       // as a test scripts it: a test reads and scripts it through SANDBOX_LOG, and holds a
       // call at the gate through SANDBOX_GATE, both bound to the test Worker alone. The real
       // sandbox Worker is tested against a fake E2B in its own package (`sandbox/test`).
@@ -59,6 +65,8 @@ export default defineConfig({
               serviceBindings: { CONNECT: { name: workerConfig(join(PLATFORM, "gateway")).name,
                                             entrypoint: "ConnectGateway" },
                                  SANDBOX: SANDBOX_GATE, SANDBOX_GATE: control(SANDBOX_GATE),
+                                 FILES: FILES_GATE, FILES_GATE: control(FILES_GATE),
+                                 GATEWAY: GATEWAY_GATE, GATEWAY_GATE: control(GATEWAY_GATE),
                                  SANDBOX_LOG: { name: fakeConfig(FAKE_SANDBOX).name,
                                                 entrypoint: "Log" } },
               outboundService: fakeConfig(FAKE_UPSTREAM).name,
@@ -71,6 +79,11 @@ export default defineConfig({
                 await auxiliary(join(PLATFORM, "codemode"), {}),
                 gate(SANDBOX_GATE, methodsOf(join(PLATFORM, "contract", "src", "sandbox.ts"),
                                                 "SandboxService"), { fake: FAKE_SANDBOX }),
+                gate(FILES_GATE, methodsOf(join(PLATFORM, "contract", "src", "files.ts"),
+                                          "ChunkStore"), { worker: join(PLATFORM, "files") }),
+                gate(GATEWAY_GATE, methodsOf(join(PLATFORM, "contract", "src", "gateway.ts"),
+                                            "GatewayService"),
+                     { worker: join(PLATFORM, "gateway") }),
                 fake(FAKE_SANDBOX),
                 fake(FAKE_UPSTREAM),
               ],

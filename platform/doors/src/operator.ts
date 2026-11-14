@@ -43,20 +43,20 @@ const OPS: Readonly<Record<string, Op>> = Object.freeze({});
 /** A put that only makes: null when the key is already there. */
 const ONLY_NEW = Object.freeze({ onlyIf: Object.freeze({ etagDoesNotMatch: "*" }) });
 
-/** Why a message is dropped, loudly. */
-class Dropped extends Error {}
-
-/** The message's acceptance record made, or the one there held to it; otherwise a drop. */
-async function accept(env: DoorsEnv, message: OperatorMessage): Promise<void> {
+/**
+ * The message's acceptance record made, or the one there held to it: null, or why the message
+ * is dropped.
+ */
+async function accept(env: DoorsEnv, message: OperatorMessage): Promise<string | null> {
   const key = acceptanceKey(message.ask);
   const mine = await acceptanceOf(message);
   let held = await env.OPERATOR_LOG.get(key);
   if (held === null) {
     if (Math.abs(now() - message.at) > OPERATOR_WINDOW_S) {
-      throw new Dropped(`was signed more than ${OPERATOR_WINDOW_S} s from now`);
+      return `was signed more than ${OPERATOR_WINDOW_S} s from now`;
     }
     if (await env.OPERATOR_LOG.put(key, JSON.stringify(mine), ONLY_NEW) !== null) {
-      return;
+      return null;
     }
     // Another delivery made it first: held to it as any record there is.
     held = await env.OPERATOR_LOG.get(key);
@@ -65,9 +65,8 @@ async function accept(env: DoorsEnv, message: OperatorMessage): Promise<void> {
     }
   }
   const record = acceptance(await held.json());
-  if (record.op !== mine.op || record.owner !== mine.owner || record.digest !== mine.digest) {
-    throw new Dropped("names another op, owner or args under an ask already accepted");
-  }
+  return record.op === mine.op && record.owner === mine.owner && record.digest === mine.digest
+    ? null : "names another op, owner or args under an ask already accepted";
 }
 
 /** The message's outcome: refused for an erased owner or an op `OPS` lacks; else its op's. */
@@ -92,44 +91,48 @@ async function verdict(env: DoorsEnv, message: OperatorMessage):
   }
 }
 
-/** One message through the gates, then answered; a gate's failure is a `Dropped`. */
-async function take(env: DoorsEnv, body: unknown): Promise<void> {
+/** One message through the gates, then answered: null, or why a gate dropped it. */
+async function take(env: DoorsEnv, body: unknown): Promise<string | null> {
   const ring = parseRing(env.OPERATOR_KEYRING);
   if (ring === null) {
-    throw new Dropped("finds OPERATOR_KEYRING unset or no keyring");
+    return "finds OPERATOR_KEYRING unset or no keyring";
   }
   let message: OperatorMessage;
   try {
     message = operatorMessage(body);
   } catch {
-    throw new Dropped("is out of shape");
+    return "is out of shape";
   }
   if (!(await macHolds(ring, message))) {
-    throw new Dropped("has a MAC that does not hold under its kid");
+    return "has a MAC that does not hold under its kid";
   }
   if (await env.OPERATOR_LOG.head(answerKey(message.ask)) !== null) {
-    throw new Dropped("is answered already: a replay");
+    return "is answered already: a replay";
   }
-  await accept(env, message);
+  const dropped = await accept(env, message);
+  if (dropped !== null) {
+    return dropped;
+  }
   const answer = answerOf(message, now(), await verdict(env, message));
   // A put that only makes: a delivery that answered first keeps its answer.
   await env.OPERATOR_LOG.put(answerKey(message.ask), `${JSON.stringify(answer)}\n`, ONLY_NEW);
+  return null;
 }
 
 /** The operator queue's consumer: each message gated, then answered; a failure retried. */
 export async function operatorQueue(batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> {
   for (const message of batch.messages) {
+    let dropped: string | null;
     try {
-      await take(env, message.body);
-      message.ack();
+      dropped = await take(env, message.body);
     } catch (error) {
-      if (error instanceof Dropped) {
-        console.error(`an operator message ${error.message}; dropped`);
-        message.ack();
-        continue;
-      }
       console.error("an operator message failed; the queue tries again", error);
       message.retry();
+      continue;
     }
+    if (dropped !== null) {
+      console.error(`an operator message ${dropped}; dropped`);
+    }
+    message.ack();
   }
 }

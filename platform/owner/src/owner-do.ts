@@ -187,7 +187,7 @@ import { type Receipt as StarterReceipt, Starter, starterDoors } from "./starter
 import { carried, type StarterPackage } from "./starter-package";
 import { priced, Usage as ModelUsage, usageDoors, type UsageReceipt } from "./usage";
 import { migrate } from "../../contract/src/migrate";
-import { Archive, type ArchiveMoveSeen, type ChainStep } from "./archive";
+import { Archive } from "./archive";
 import { MIGRATIONS } from "./schema";
 import { Backups, MANIFEST_PROTECT_S } from "./backup";
 import { OpenExports } from "./open-exports";
@@ -378,19 +378,6 @@ export interface Internals {
   readonly putGraceMs?: number;
   /** How long a script's read of the control record serves its calls (`control-gate.ts`). */
   readonly controlFreshMs?: number;
-  /**
-   * Run between an archive move's two passes, with what the move replaces and holds, so a
-   * test can make its sources differ there and see the second pass refused by the chunk's
-   * hash (review N5), or see each move's bound (review N7).
-   */
-  readonly archiveBetweenPasses?: (storage: OwnerStorage, move: ArchiveMoveSeen) => void;
-  /**
-   * Awaited by a chain read at two steps: `fenced`, just after the unit that took its
-   * fences, and `hot`, between its archived reads and the unit that reads its hot rows; so a
-   * test can replace its segments or move its mail there and see the read hold (reviews N9
-   * and N10).
-   */
-  readonly chainStep?: (step: ChainStep) => Promise<void>;
   /**
    * The starter package the object seeds and keeps current (`starter.ts`): the one this code
    * carries when omitted, as production builds it; another for a test of updates; null for
@@ -717,8 +704,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       storage, door: (act) => this.#door(act), ledger: this.#ledger, files: this.#files,
       bodies: this.#bodies, notices: this.#notices,
       rereadingPage: (locate, read, again) => this.#rereadingPage(locate, read, again),
-      betweenPasses: internals.archiveBetweenPasses ?? null,
-      chainStep: internals.chainStep ?? null,
     });
     // The lanes of the one schedule, each its module's own (`Lane`): its key is its job's
     // durable id. Each pass is handed its wall-clock end (`until`) and passes it on, so no

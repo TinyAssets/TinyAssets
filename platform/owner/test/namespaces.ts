@@ -6,11 +6,6 @@
 export const NAMESPACES = Object.freeze({
   OWNER: "OwnerDO",
   AGENT: "FauxOwnerDO",
-  GATED: "GatedOwnerDO",
-  ARCHIVING: "ArchivingOwnerDO",
-  DIVERGING: "DivergingOwnerDO",
-  PURGING: "PurgingOwnerDO",
-  RUNG: "RungOwnerDO",
   SWITCHED: "SwitchedOwnerDO",
   CACHED: "CachedOwnerDO",
   SEEDED: "SeededOwnerDO",

@@ -1,9 +1,13 @@
 {
-  "about": "What the deploy kit needs that no Worker's config can say (deploy/facts.ts reads it, with the six wrangler.jsonc). Everything a config says (each Worker's name, bindings, required secrets, bucket and queues, and the order its bindings set) is read from the config; the shared apps' signing secrets from doors/shared-apps.json; the doors' public identity from contract/identity.json. Each entry here carries its reason.",
+  "about": "What the deploy kit needs that no Worker's config can say (deploy/facts.ts reads it, with the six wrangler.jsonc). Everything a config says (each Worker's name, bindings, required secrets, bucket and queues, Durable Object migrations, and the order its bindings set) is read from the config; the shared apps' signing secrets from the file its workers entry names; the doors' public identity from contract/identity.json. Each entry here carries its reason.",
   "namespaces": {
     "why": "A config names a KV namespace by an id the account gives when it is made (a placeholder as checked in), never by its title: the kit finds each by its title, or makes it, and fills the id in. One title per binding name: every Worker's CONTROL is the one namespace.",
     "titles": { "OAUTH_KV": "tinyassets-oauth", "DIRECTORY": "tinyassets-directory",
                 "CONTROL": "tinyassets-control" }
+  },
+  "workers": {
+    "why": "What the kit gives a Worker that its config cannot say, by its folder. identity: it serves contract/identity.json, so it deploys with the owner issuer and WorkOS's record (its vars OWNER_ISSUER and UPSTREAM), mode routes hands it identity.json's routes and egress custom domain, and the probe the sign-in's two. shared_apps: its file of the shared apps, whose signing secrets it holds when each is given (no config requires them: without one, that app's door refuses loudly). Exactly one Worker serves the identity; a Worker not named here takes neither.",
+    "folders": { "doors": { "identity": true, "shared_apps": "shared-apps.json" } }
   },
   "secret_order": {
     "why": "The order the kit lists and sets the Workers' secrets in, so the plan names them in it. A config says which secrets its Worker needs, not this order. The codemode Worker holds no secret, so it is not here: its existence is read when it deploys.",

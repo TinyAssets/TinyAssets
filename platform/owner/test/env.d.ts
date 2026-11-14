@@ -1,8 +1,9 @@
 // The test-only namespaces of the owner object (`namespaces.ts`, each a class of the test
 // Worker, `worker.ts`), the test keyring (the one the gateway Worker run beside the tests
 // holds), and the Worker's own bindings: FILES, GATEWAY and CODEMODE_VM, each to its Worker
-// run beside it, SANDBOX to the gate in front of the fake sandbox Worker, CONTROL, and its one
-// secret, ROUTING_MAC_KEY; and the test's handles on the fake sandbox and its gate.
+// run beside it (FILES and GATEWAY through a gate each), SANDBOX to the gate in front of the fake
+// sandbox Worker, CONTROL, and its one secret, ROUTING_MAC_KEY; and the test's handles on the
+// fake sandbox and the gates.
 declare namespace Cloudflare {
   type TestNamespaces = typeof import("./namespaces").NAMESPACES;
   type TestNamespace<Binding extends keyof TestNamespaces> =
@@ -16,8 +17,10 @@ declare namespace Cloudflare {
   interface Env extends TestNamespaceBindings, OwnerBound {
     /** The fake sandbox's record and answers, by owner (`fake-sandbox.ts` `Log`). */
     SANDBOX_LOG: Service<import("./fake-sandbox").Log>;
-    /** The gate in front of SANDBOX (`ci/gate.ts`): a test holds a call there. */
+    /** The gates in front of SANDBOX, FILES and GATEWAY (`ci/gate.ts`): a test holds a call there. */
     SANDBOX_GATE: import("../../ci/gate").GateControl;
+    FILES_GATE: import("../../ci/gate").GateControl;
+    GATEWAY_GATE: import("../../ci/gate").GateControl;
     /** The gateway's connect entrypoint, test-only: a test seals a doorbell's token as the doors do. */
     CONNECT: import("../../contract/src/gateway").ConnectService;
     TEST_KEYRING: string;

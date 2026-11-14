@@ -344,7 +344,7 @@ async function token(request: Request): Promise<Response> {
     }
     const next = Number(refresh.replace(/^rt-/, "")) + 1;
     return Response.json({ access_token: `at-${next}|${client}`, token_type: "bearer",
-                           expires_in: 1800,
+                           expires_in: refresh === "rt-lapsed" ? 1 : 1800,
                            ...(refresh === "rt-keep" ? {} : { refresh_token: `rt-${next}` }),
                            scope: "openid offline_access chatgpt.tokens.use.direct" });
   }

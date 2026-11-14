@@ -6,7 +6,7 @@
  * found untested. The rest of the runs' tests are `runs.test.ts`.
  */
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { socketRequest } from "../../doors/src/binder";
 import { verifyToken } from "../../contract/src/routing-mac";
@@ -22,9 +22,14 @@ import {
 import { TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated } from "./gateway-support";
 import { ledgerOn, MCP, MUSE, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding,
-  runnerSandbox, sandboxOf, scripted, secretOf, startOf, syncOf, TIERS } from "./runs-support";
+import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
+  runnerBinding, runnerSandbox, sandboxOf, scripted, secretOf, startOf, syncOf, TIERS }
+  from "./runs-support";
 import { drainDue, failure, laneAt } from "./support";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
@@ -264,7 +269,7 @@ describe("one sandbox an authority (review H-1)", () => {
     const r = await gated();
     const first = await ownerRun(r.stub, r.bind(), SIGNED_IN);
     // Its heartbeat stopped: the lease's life, and its tokens', is over.
-    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
+    later();
     const second = await ownerRun(r.stub, r.bind(), undefined, "main");
     expect(second.start.tokens).not.toBeNull();
     expect(second.start.lease.lease_id).not.toBe(first.start.lease.lease_id);
@@ -684,7 +689,7 @@ describe("a run's cancel and its heartbeat (review M-2, M-3)", () => {
   it("settles every run unknown from the lane alone once their lease lapsed", async () => {
     const r = await gated();
     const { run } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
-    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
+    later();
     await laneRuns(r);
     expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
       .toMatchObject({ state: "unknown", code: "lost" });

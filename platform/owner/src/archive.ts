@@ -3,8 +3,8 @@
  * moves acked mail out of the hot rows into immutable segments in R2 and rewrites segments a
  * deleted agent's mail is gone from (`MoveReader`, `MoveHold`: a move's reads and its held
  * units), and the reads of archived mail: a post's archived parent, a record by its seq, and
- * the owner's view of a mail chain, archived and hot together. The object hands it its gate,
- * its stores and two test seams (`Internals.archiveBetweenPasses`, `Internals.chainStep`).
+ * the owner's view of a mail chain, archived and hot together. The object hands it its gate
+ * and its stores.
  */
 import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
@@ -225,17 +225,7 @@ function archiveFailing(said: string | null): string {
     "every minute.";
 }
 
-/** An archive move as a test sees it between its passes: its kind, what it replaces, holds. */
-export interface ArchiveMoveSeen {
-  readonly stream: "mail" | "rewrite";
-  readonly replaced: number;
-  readonly records: number;
-}
-
-/** Where a test may hold a chain read (`Internals.chainStep`). */
-export type ChainStep = "fenced" | "hot";
-
-/** What the archive works through: the object's gate and stores, and a test's seams. */
+/** What the archive works through: the object's gate and stores. */
 interface ArchiveParts {
   readonly storage: OwnerStorage;
   /** One unit of the object's write gate (`gate.ts`). */
@@ -248,10 +238,6 @@ interface ArchiveParts {
   readonly rereadingPage: <T>(locate: () => Wants,
                               read: (windows: ReadonlyMap<string, Window>) => T,
                               again: (value: T) => boolean) => Promise<T>;
-  /** A test's step between an archive move's passes. */
-  readonly betweenPasses: ((storage: OwnerStorage, move: ArchiveMoveSeen) => void) | null;
-  /** A test's steps in a chain read. */
-  readonly chainStep: ((step: ChainStep) => Promise<void>) | null;
 }
 
 /** A chain read's call (`mailChain`), checked again in each of its units. */
@@ -267,8 +253,6 @@ export class Archive {
   readonly #bodies: Bodies;
   readonly #notices: Notices;
   readonly #rereadingPage: ArchiveParts["rereadingPage"];
-  readonly #betweenPasses: ArchiveParts["betweenPasses"];
-  readonly #chainStep: ArchiveParts["chainStep"];
 
   constructor(parts: ArchiveParts) {
     this.#storage = parts.storage;
@@ -278,8 +262,6 @@ export class Archive {
     this.#bodies = parts.bodies;
     this.#notices = parts.notices;
     this.#rereadingPage = parts.rereadingPage;
-    this.#betweenPasses = parts.betweenPasses;
-    this.#chainStep = parts.chainStep;
   }
 
   /** The owner's read of a mail chain, its call checked in each unit (`mailChain`). */
@@ -345,7 +327,6 @@ export class Archive {
                seen: this.#ledger.archiveMark(),
                located: this.#bodies.locate(fences.fences.map((fence) => fence.content_id)) };
     });
-    await this.#chainStep?.("fenced");
     let frontier = fenced.frontier;
     const mail: ArchivedMail[] = [];
     const read = await this.#segmentsRead(seen.mark, async () => {
@@ -372,7 +353,6 @@ export class Archive {
     if (read === null) {
       return null;
     }
-    await this.#chainStep?.("hot");
     // Its hot messages' placed bodies (ADR-035) are read from R2 between its units, and the
     // page, hot and archived together, fits one answer.
     const archived = { root, mail, frontier };
@@ -815,11 +795,6 @@ export class Archive {
       }
     }, () => reader.letGo());
     reader.bodiesChecked();
-    if (this.#betweenPasses !== null) {
-      const between = this.#betweenPasses;
-      await this.#door(() => between(this.#storage, { stream, replaced: replaced.length,
-                                                     records: table.count }));
-    }
     const pieces = plans.map(({ plan, indices: at }) => {
       const members = new Set<string>();
       let firstAt = Number.MAX_SAFE_INTEGER;

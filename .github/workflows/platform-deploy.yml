@@ -1,8 +1,8 @@
 name: Platform deploy (manual, founder-approved)
 
 # The platform's deploy kit (platform/deploy/deploy.ts), run by hand from
-# `main`, the dispatch's mode passed to it whole (`--mode`, the kit's mode
-# table, MODES), in three jobs:
+# `main`, the dispatch's inputs passed to it as they are (an empty one names
+# nothing; `--mode` is a row of the kit's mode table, MODES), in three jobs:
 #   plan   - the mode's plan (`--public`), to the job summary. It holds only the
 #            Cloudflare token (not a production secret) and the repo's
 #            variables, and changes nothing.
@@ -88,13 +88,9 @@ jobs:
         run: npm ci
 
       - name: The plan (changes nothing)
-        run: |
-          set -euo pipefail
-          args=(--mode "${MODE}" --public)
-          if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
-          if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
-          if [ -n "${RECORD}" ]; then args+=(--record "${RECORD}"); fi
-          node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"
+        run: >-
+          node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --public
+          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}"
 
   # The pair check, in a job of its own before apply: the pinned E2B template, the runner
   # this commit's sandbox Worker ships and the probes beside it, unless E2B already holds
@@ -166,10 +162,6 @@ jobs:
         run: npm ci
 
       - name: Apply
-        run: |
-          set -euo pipefail
-          args=(--mode "${MODE}" --yes)
-          if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
-          if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
-          if [ -n "${RECORD}" ]; then args+=(--record "${RECORD}"); fi
-          node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"
+        run: >-
+          node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --yes
+          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}"
