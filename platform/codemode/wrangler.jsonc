@@ -4,7 +4,7 @@
 // service, no Worker Loader, so no script reaches an owner's object, ledger or policy. It
 // serves no URL (no route, no workers.dev or preview URL): only the owner Worker's `CODEMODE_VM`
 // service binding reaches it (guards/config.test.ts).
-// - compatibility_date: the owner Worker's.
+// - compatibility_date: every Worker's one date (`ci/kit/config.ts` `dateProblems`).
 // - disable_ctx_exports: no way to the Worker's own namespaces but its bindings.
 // - limits.cpu_ms: Workers Paid's most, 5 minutes, room above code mode's interrupt budget
 //   (about 100 s of a tight loop), since a script that reaches it resets the object

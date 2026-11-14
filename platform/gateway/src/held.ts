@@ -48,8 +48,8 @@ import {
 /** The gateway's pool: 16 slots of one 4 MiB unit, 64 MiB, beside its 12 MiB idle set. */
 export const GATEWAY_POOL_SLOTS = 16;
 /**
- * The gateway isolate's one pool, held at module scope: one of the platform's pinned
- * exemptions from the no-module-state rule (`owner/guards/module-state.test.ts`). It holds a
+ * The gateway isolate's one pool, held at module scope: one of the gateway's own exemptions
+ * from the no-module-state rule (`guards/rules.ts`, `MODULE_STATE`). It holds a
  * count of units in use and the calls waiting, never an owner's data.
  */
 const ISOLATE: Isolate = { pool: null, tails: null };

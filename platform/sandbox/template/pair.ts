@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readWrangler } from "../../ci/workers.ts";
+import { readWrangler } from "../../ci/wrangler.ts";
 
 const TEMPLATE = dirname(fileURLToPath(import.meta.url));
 const SANDBOX = join(TEMPLATE, "..");

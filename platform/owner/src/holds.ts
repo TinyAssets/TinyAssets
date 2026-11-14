@@ -212,8 +212,8 @@ export const OWNER_BASELINE_BYTES = 8 * 1024 * 1024;
 
 /**
  * The owner isolate's one pool and one budget of the relay's tails, held at module scope:
- * one of the platform's pinned exemptions from the no-module-state rule
- * (`guards/module-state.test.ts`), since the pool is the isolate's, shared by every object
+ * one of the owner's own exemptions from the no-module-state rule (`guards/rules.ts`,
+ * `MODULE_STATE`), since the pool is the isolate's, shared by every object
  * and request in it. It holds a count of units in use, the calls waiting and which objects'
  * tails share the budget, never an owner's data.
  */

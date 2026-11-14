@@ -158,7 +158,7 @@ def test_a_platform_test_is_counted_as_code_not_as_text() -> None:
 
 def test_every_platform_test_here_reads_as_cases_and_expectations() -> None:
     """The counter knows the platform's own style: every file holds a case it can see,
-    but the two configs whose cases the config kit makes (`ci/kit/config.ts`)."""
+    but the three configs whose cases the config kit makes (`ci/kit/config.ts`)."""
     root = _SCRIPTS.parent
     listed = subprocess.run(["git", "-C", str(root), "ls-files", "platform"],
                             capture_output=True, text=True, check=True).stdout.split()
@@ -174,5 +174,6 @@ def test_every_platform_test_here_reads_as_cases_and_expectations() -> None:
         counted = platform_tests.counts(texts[path])
         if counted.cases == 0 or counted.expects == 0:
             unseen.append(path)
-    assert unseen == ["platform/files/guards/config.test.ts",
+    assert unseen == ["platform/codemode/guards/config.test.ts",
+                      "platform/files/guards/config.test.ts",
                       "platform/gateway/guards/config.test.ts"]

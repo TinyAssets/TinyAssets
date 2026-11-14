@@ -30,7 +30,7 @@ import { describe, expect, it } from "vitest";
 import { configProblems, configTests } from "../../ci/kit/config";
 import { PLATFORM } from "../../ci/paths";
 import { type Config, platformConfigs } from "../../ci/kit/sources";
-import { readWrangler } from "../../ci/workers";
+import { readWrangler } from "../../ci/wrangler";
 
 import { IMPORT_QUEUE } from "../../contract/src/import-message";
 import { ERASURE_QUEUE } from "../src/config";
@@ -104,7 +104,7 @@ export function extendsOf(source: string, name: string): string | null {
 export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string, Config>,
                                     gatewaySource: string,
                                     filesSource: string = FILES_SOURCE): string[] {
-  const problems = configProblems(config, CONFIG, platform);
+  const problems = configProblems(config, CONFIG);
   const ownerConfig = platform.get("tinyassets-owner");
   if (JSON.stringify(ownerConfig?.["secrets"]) !== JSON.stringify(OWNER_SECRETS)) {
     problems.push("the owner Worker declares the same ROUTING_MAC_KEY");

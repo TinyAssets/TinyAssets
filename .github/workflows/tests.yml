@@ -257,6 +257,10 @@ jobs:
             command: npm run test -w ci
           - leg: contract
             command: npm run test -w contract
+          - leg: sources
+            command: npm run test -w sources
+          - leg: starter
+            command: npm run test -w starter
           - leg: import
             command: npm run test -w import
           - leg: deploy
@@ -300,6 +304,8 @@ jobs:
             command: npm run test:sizes -w owner -- --shard=2/2
           - leg: contract
             command: npm run test:sizes -w contract -- --shard=1/1
+          - leg: starter
+            command: npm run test:sizes -w starter -- --shard=1/1
           - leg: runner
             command: npm run test:sizes -w sandbox -- --shard=1/1
           - leg: deploy

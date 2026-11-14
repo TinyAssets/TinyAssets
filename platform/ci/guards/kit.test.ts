@@ -19,19 +19,39 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../paths";
 import { gate, methodsOf } from "../gate";
-import { configFiles, scriptsIn, workerSources } from "../kit/sources";
+import { bucketTypeProblems, type ConfigRules, dateProblems } from "../kit/config";
+import { ruleLists } from "../kit/owed";
+import { configFiles, platformConfigs, scriptsIn, workerSources } from "../kit/sources";
 import { configBindings, declaredSecrets, fake, hostSecrets, main, objectBindings, once,
-         parseWrangler, pool, readWrangler, withChanges, type WorkerConfig, workerConfig,
-         workerFolders } from "../workers";
-
-/**
- * The files under a Worker's `src/` that are no script, each named: data a source imports
- * and the guards check by its import's path. Any other file there is a script the source
- * guards must scan.
- */
-const DATA_FILES: readonly string[] = Object.freeze(["owner/src/model-ranking.json"]);
+         pool, withChanges, type WorkerConfig, workerConfig } from "../workers";
+import { parseWrangler, readWrangler, workerFolders } from "../wrangler";
 
 describe("the guard kit", () => {
+  it("lets a Worker name an R2 type only where its rules allow a bucket", async () => {
+    const rules = await ruleLists<ConfigRules>("CONFIG");
+    expect([...rules].filter(([, each]) => each.buckets !== undefined).map(([worker]) => worker))
+      .toEqual(["doors", "files"]);
+    expect(bucketTypeProblems(workerSources(), rules)).toEqual([]);
+    for (const [path, source] of [["owner/src/probe.ts", "type B = R2Bucket;"],
+                                  ["gateway/src/env.ts", "interface E { B: R2ObjectBody }"]] as
+                                 const) {
+      expect(bucketTypeProblems(new Map([[path, source]]), rules)).toEqual(
+        [expect.stringMatching(/ names R2\w+, and its Worker's rules allow no bucket$/)]);
+    }
+    expect(bucketTypeProblems(new Map([["files/src/a.ts", "type B = R2Bucket;"]]), rules))
+      .toEqual([]);
+  });
+
+  it("holds every Worker at one compatibility date", () => {
+    const configs = platformConfigs();
+    expect(configs.size).toBe(workerFolders().length);
+    expect(dateProblems(configs)).toEqual([]);
+    const [name, config] = [...configs][0]!;
+    configs.set(name, { ...config, compatibility_date: "2027-01-01" });
+    expect(dateProblems(configs)).toEqual([expect.stringMatching(
+      new RegExp(`^the Workers' compatibility dates differ: .*${name} 2027-01-01`))]);
+  });
+
   it("finds every wrangler config under a root, in order, and none of a dependency's", () => {
     const root = mkdtempSync(join(tmpdir(), "kit-config-"));
     try {
@@ -51,8 +71,8 @@ describe("the guard kit", () => {
     }
   });
 
-  it("holds every Worker's every file, a source the source guards scan unless it is a " +
-     "named data file", () => {
+  it("holds every Worker's every file, a source the source guards scan unless it is data " +
+     "(JSON, which a source imports and the guards check by its import's path)", () => {
     const sources = [...workerSources().keys()];
     const workers = readdirSync(PLATFORM, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && entry.name !== "node_modules")
@@ -64,10 +84,8 @@ describe("the guard kit", () => {
       readdirSync(join(PLATFORM, worker, "src"), { recursive: true, encoding: "utf8" })
         .filter((path) => extname(path) !== "")
         .map((path) => `${worker}/src/${path.split("\\").join("/")}`));
-    for (const data of DATA_FILES) {
-      expect(files, data).toContain(data);
-    }
-    expect([...sources].sort()).toEqual(files.filter((path) => !DATA_FILES.includes(path)).sort());
+    expect([...sources].sort())
+      .toEqual(files.filter((path) => extname(path) !== ".json").sort());
   });
 });
 
@@ -77,7 +95,11 @@ describe("the Worker kit", () => {
     expect(readWrangler(join(PLATFORM, "gateway")))
       .toEqual(readWrangler(join(PLATFORM, "gateway", "wrangler.jsonc")));
     expect(parseWrangler('{ // a comment\n "name": "x", }')).toEqual({ name: "x" });
+    expect(parseWrangler('{ "a": "b, ]//c/*\\"", /* d */ "e": [1, /* f */ ], }'))
+      .toEqual({ a: 'b, ]//c/*"', e: [1] });
     expect(() => parseWrangler('{ "name": ', "broken.jsonc")).toThrow(/broken\.jsonc/);
+    expect(() => parseWrangler('{ /* "name": "x" }', "open.jsonc")).toThrow(/open\.jsonc/);
+    expect(() => parseWrangler("[]", "list.jsonc")).toThrow(/list\.jsonc/);
   });
 
   it("builds a fake at its own Worker's compatibility date, named as its file", () => {
