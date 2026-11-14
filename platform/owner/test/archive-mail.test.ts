@@ -18,8 +18,9 @@ import { describe, expect, it, onTestFinished } from "vitest";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
 import { refusalOf, STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
-import { SLOT_WAIT_MS } from "../../contract/src/limits";
-import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
+import { PLACE_BYTES, SLOT_WAIT_MS } from "../../contract/src/limits";
+import { LEDGER_LIMITS, type Ledger, mailParts, mailRecord } from "../src/ledger";
+import { nativeId } from "../../contract/src/binding";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import type { ArchivingOwnerDO } from "./worker";
@@ -28,8 +29,8 @@ import {
   type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_RECORDS,
   MoveTable, orderedId,
   parseRecord,
-  parseTrailer, planSegment, recordBytes, recordParts, recordRows, type SegmentRecord,
-  type Source,
+  parseTrailer, planSegment, RECORD_TRAILER_BYTES, recordBytes, recordParts, recordRows,
+  type SegmentRecord, type Source,
 } from "../src/segments";
 import { exported } from "../src/export";
 import type { ChunkStore } from "../../contract/src/files";
@@ -400,6 +401,60 @@ describe("segments", () => {
   });
 });
 
+describe("a message's counted bytes", () => {
+  it("are its record's, exactly, as its recipient row changes: read, replied, acked, failed",
+     async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    const exact = async (id: string) => {
+      const [message] = await sqlIn(r.stub, "SELECT * FROM ledger_messages WHERE message_id = ?",
+                                    id);
+      const [body] = await sqlIn(r.stub, "SELECT * FROM message_bodies WHERE message_id = ?", id);
+      const recipients = await sqlIn(r.stub, "SELECT * FROM ledger_recipients WHERE " +
+                                             "message_id = ?", id);
+      const held = recordBytes(mailRecord(message!, body!, recipients,
+                                          [new TextEncoder().encode(body!["body"] as string)]))
+        + RECORD_TRAILER_BYTES;
+      expect([message!["line_bytes"], body!["meta_bytes"]])
+        .toEqual([held, held - (body!["body_bytes"] as number)]);
+      // The one number and the acked bytes move with it.
+      const [counted] = await sqlIn(r.stub, "SELECT (SELECT SUM(line_bytes) FROM " +
+        "ledger_messages) AS lines, (SELECT coalesce(SUM(line_bytes), 0) FROM ledger_messages " +
+        "WHERE unacked = 0) AS acked, (SELECT acked_bytes FROM ledger_usage) AS usage");
+      expect(counted!["usage"]).toBe(counted!["acked"]);
+      expect((await r.stub.storageUsage(r.bind(null))).breakdown.messages)
+        .toBe(counted!["lines"]);
+      return held;
+    };
+    const asked = (await r.post(null, `dm:${muse}`, { body: "hello" })).message_id;
+    const posted = await exact(asked);
+    const [mail] = (await r.read(MUSE)).messages;
+    const read = await exact(asked);
+    expect(read).toBeGreaterThan(posted);  // its read time, in its recipient row
+    await r.ack(MUSE, mail!.seq);
+    await r.post(MUSE, `dm:${muse}`, { body: "hi", cmid: "r", parent: asked });
+    await exact(asked);  // replied, while acked
+    const failed = await r.inLedger((ledger: Ledger) => {
+      ledger.appear("main");
+      const id = ledger.post(null, `dm:${nativeId("main")}`, "m", "x", null).message_id;
+      ledger.undeliverable(id, nativeId("main"), "credential_refresh_failed");
+      return id;
+    });
+    await exact(failed);
+    // A placed body's record, as the move streams it (`mailParts`), holds no content id.
+    const placed = (await r.post(null, `dm:${muse}`, { body: "p".repeat(PLACE_BYTES + 1),
+                                                       cmid: "p" })).message_id;
+    const of = (table: string) => sqlIn(r.stub, `SELECT * FROM ${table} WHERE message_id = ?`,
+                                        placed);
+    const [message] = await of("ledger_messages");
+    const [body] = await of("message_bodies");
+    const parts = mailParts(message!, body!, await of("ledger_recipients"));
+    expect(body!["content_id"]).not.toBeNull();
+    expect(message!["line_bytes"]).toBe(parts.head.byteLength + (body!["body_bytes"] as number)
+                                        + parts.tail.byteLength + RECORD_TRAILER_BYTES);
+  });
+});
+
 describe("the archive lane", () => {
   it("moves acked mail out from half the hot ceiling, its bytes counted the same, and the " +
      "chain read finds it", async () => {
@@ -452,6 +507,11 @@ describe("the archive lane", () => {
     expect(chain.root).toBe(first);
     expect(chain.messages.map((m) => [m.message_id, m.body])).toEqual([
       [first, "m 0"], [reply.message_id, "late reply"]]);
+    // The reply holds its exact time to reply, its parent archived: no read needs the parent.
+    const [parentAt, replyAt] = chain.messages.map((m) => m.created_at);
+    const [mine] = (await r.read(null)).messages;
+    expect([mine!.message_id, mine!.reply_s])
+      .toEqual([reply.message_id, Math.round((replyAt! - parentAt!) * 1000) / 1000]);
     // A forged parent id is no parent.
     expect((await failure(() => r.post(MUSE, room, { cmid: "r2", body: "x",
                                                      parent: `msg_${"a".repeat(32)}` })))
@@ -534,6 +594,11 @@ describe("the archive lane", () => {
     const page = await reading;
     expect([page.messages.map((m) => [m.message_id, m.body]), page.more]).toEqual([
       chain.map((id, i) => [id, `chain ${i}`]), false]);
+    // Each reply's time to reply, hot or from its segment, is its row's, exact.
+    const again = (await r.stub.mailChain(r.bind(null), { message_id: chain[0]!, limit: 50 }))
+      .messages;
+    expect(again.map((m) => m.reply_s)).toEqual(again.map((m, i) => i === 0 ? null
+      : Math.round((m.created_at - again[i - 1]!.created_at) * 1000) / 1000));
   });
 
   it("reads a still chain while stragglers merge into its segment, replacing it, never " +

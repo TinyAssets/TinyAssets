@@ -1,8 +1,7 @@
 /**
  * The agent's definition as the doors serve it (research §4.3): the MCP instructions tell an
  * outside client's agent the brain's rules first, and they and the starter's text name only
- * the door table's tools (`contract/guards/tools.test.ts` holds the table), and nothing of
- * the cutover's import.
+ * the door table's tools (`contract/guards/tools.test.ts` holds the table).
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +9,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { IMPORTED } from "../../contract/src/paths";
 import { CLIENT_PROFILES, profileNames, toolNames } from "../../contract/src/doors";
 import { CLIENT_INSTRUCTIONS, CLIENT_KEY, RUN_INSTRUCTIONS } from "../src/instructions";
 
@@ -64,12 +62,5 @@ describe("the agent's definition", () => {
     // A misspelt tool and a family's wildcard are seen; a field of a tool's answer is not one.
     expect(strayTools("use `file_*` or run_stauts, then agents_list's connect_url", toolNames()))
       .toEqual(["file_*", "run_stauts"]);
-  });
-
-  it("says nothing of the cutover's import, which only the importer's README explains", () => {
-    for (const [where, text] of texts) {
-      expect([where, text.includes(IMPORTED), /old TinyAssets/i.test(text)])
-        .toEqual([where, false, false]);
-    }
   });
 });

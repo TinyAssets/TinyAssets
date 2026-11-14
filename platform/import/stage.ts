@@ -23,11 +23,12 @@ import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { HEX16 } from "../contract/src/ids";
-import { importMac, type ImportMessage, rehearsalRun, RUN } from "../contract/src/import-message";
+import {
+  BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, importMac, type ImportMessage, PART, rehearsalRun,
+  RUN, stagedName,
+} from "../contract/src/import-message";
 import { IMPORT_NAME_KEYS, type ImportNames } from "../contract/src/import-names";
 import { Cloudflare } from "../deploy/cloudflare";
-
-import { FORMAT } from "./bundle";
 
 /**
  * The job's live names from `facts.json`'s text, which the window's bundle step writes beside
@@ -48,8 +49,6 @@ export function namesOf(text: string): ImportNames {
 export const API = "https://api.cloudflare.com/client/v4";
 const r2Host = (account: string) => `${account}.r2.cloudflarestorage.com`;
 export const ACCOUNT = /^[0-9a-f]{32}$/;
-/** A part's name in a bundle (`bundle.ts`). */
-const PART = /^(?:bundle\.json|owner\.json|(?:manifest|rows)\/(?:0|[1-9][0-9]{0,8})\.json|inline\/[0-9a-f]{64}|chunks\/[0-9a-f]{64})$/;
 
 /** The window's credentials, as the operator hands them to the run. */
 export interface Inputs {
@@ -118,16 +117,16 @@ export function checkedBundle(dir: string, key: string): Staged {
     throw new Error("a bundle's folder is its owner's key (16 hex)");
   }
   const files = filesIn(dir);
-  const index = readFileSync(join(dir, "bundle.json"));
+  const index = readFileSync(join(dir, BUNDLE_INDEX));
   const parsed: unknown = JSON.parse(index.toString("utf8"));
-  if (!plain(parsed) || parsed["format"] !== FORMAT || parsed["key"] !== key
+  if (!plain(parsed) || parsed["format"] !== BUNDLE_FORMAT || parsed["key"] !== key
       || typeof parsed["owner"] !== "string" || !plain(parsed["parts"])) {
     throw new Error("a bundle's index is out of shape, or not its folder's");
   }
   const parts = parsed["parts"] as Record<string, unknown>;
   let bytes = index.byteLength;
   for (const [name, want] of Object.entries(parts)) {
-    if (!PART.test(name) || typeof want !== "string" || name === "bundle.json"
+    if (!PART.test(name) || typeof want !== "string" || name === BUNDLE_INDEX
         || sha256(readFileSync(join(dir, name))) !== want) {
       throw new Error("a bundle's part is missing, or not what its index names");
     }
@@ -140,12 +139,12 @@ export function checkedBundle(dir: string, key: string): Staged {
     if (name.startsWith("chunks/") && sha256(content) !== name.slice("chunks/".length)) {
       throw new Error("a bundle's chunk is not its hash");
     }
-    if (name !== "bundle.json") {
+    if (name !== BUNDLE_INDEX) {
       bytes += content.byteLength;
     }
   }
   return { dir, key, owner: parsed["owner"], bundle: sha256(index),
-           parts: [...files.filter((name) => name !== "bundle.json"), "bundle.json"], bytes };
+           parts: [...files.filter((name) => name !== BUNDLE_INDEX), BUNDLE_INDEX], bytes };
 }
 
 /** Every bundle in the out folder, each checked whole, before anything is sent. */
@@ -239,7 +238,7 @@ export function pushMessage(inputs: Inputs, queue: string, message: ImportMessag
 /** A bundle's message, MAC'd under the window's key. */
 export function messageOf(staged: Staged, run: string, importKey: string): ImportMessage {
   return { op: "import", owner: staged.owner, bundle: staged.bundle,
-           prefix: `${run}/${staged.key}`,
+           prefix: bundlePrefix(run, staged.key),
            mac: importMac(importKey, "import", staged.owner, staged.bundle) };
 }
 
@@ -290,7 +289,7 @@ export async function stage(out: string, run: string, names: ImportNames, inputs
   for (const [n, staged] of bundles.entries()) {
     for (const name of staged.parts) {
       const answer = await fetcher(s3Request(inputs, "PUT", names.staging_bucket,
-                                             `${run}/${staged.key}/${name}`, {},
+                                             stagedName(bundlePrefix(run, staged.key), name), {},
                                              readFileSync(join(staged.dir, name)), now()));
       if (!answer.ok) {
         throw new Error(`bundle ${n + 1}'s upload was refused (${answer.status}): ` +

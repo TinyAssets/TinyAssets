@@ -22,7 +22,7 @@ import {
 } from "../src/wakes";
 import type { OwnerDO } from "../src/owner-do";
 import {
-  DOT, FakeSender, ledgerOn, MCP, MUSE, origin, rig, type Rig, subscription, wakeReceipts,
+  DOT, FakeSender, ledgerOn, MCP, MUSE, origin, rig, type Rig, subscription,
 } from "./ledger-support";
 import { drainDue, failure, faulty, laneJobs } from "./support";
 
@@ -105,7 +105,6 @@ describe("one open wake per ringing recipient", () => {
     });
     expect(await states(r)).toEqual(["sent"]);
     expect(new Set(await states(r, "ledger_recipients"))).toEqual(new Set(["woken"]));
-    expect(await wakeReceipts(r)).toEqual(["wake_accepted"]);
     const [mail] = (await r.read(MUSE)).messages;
     expect(mail!.message_id).toBe(first.message_id);
     await r.post(null, `dm:${muse}`, { body: "later", cmid: "c3" });
@@ -207,7 +206,6 @@ describe("a wake is sent once and never replayed", () => {
     expect(await r.tick(now + 121)).toBe(1);
     expect(r.sender.sent).toHaveLength(2);
     expect(await states(r)).toEqual(["sent"]);
-    expect(await wakeReceipts(r)).toEqual(["rate_limited", "wake_accepted"]);
   });
 
   it("waits a Retry-After exactly as sent; one it could not read backs off by attempt", () => {
@@ -240,7 +238,6 @@ describe("a wake is sent once and never replayed", () => {
     expect(r.sender.sent).toHaveLength(1);
     const [wake] = await wakes(r);
     expect([wake!["state"], wake!["marked"]]).toEqual(["unknown", 1]);
-    expect(await wakeReceipts(r)).toEqual(["wake_sent"]);
     expect(await r.tick(now + HOUR_S)).toBe(0);
     expect(r.sender.sent).toHaveLength(1);
     expect(new Set(await states(r, "ledger_recipients"))).toEqual(new Set(["queued"]));
@@ -284,7 +281,6 @@ describe("a wake is sent once and never replayed", () => {
     expect(await states(r)).toEqual(["sending"]);
     await r.tick(now + WAKE_LEASE_S + 1);
     expect(await states(r)).toEqual(["unknown"]);
-    expect(await wakeReceipts(r)).toEqual(["wake_sent"]);
   });
 
   it("settles a callback refused before any connection failed, not unknown", async () => {
@@ -296,10 +292,9 @@ describe("a wake is sent once and never replayed", () => {
     const [wake] = await wakes(r);
     expect([wake!["state"], JSON.parse(wake!["receipt_json"] as string)["reason"]])
       .toEqual(["failed", "not_sent"]);
-    expect(await wakeReceipts(r)).toEqual(["failed"]);
   });
 
-  it("carries no message body in any doorbell, wake row or receipt", async () => {
+  it("carries no message body in any doorbell or wake row", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const bodies: string[] = [];
@@ -313,8 +308,7 @@ describe("a wake is sent once and never replayed", () => {
       await r.tick(start + 100 * (step + 1));
       expect(r.sender.sent).toHaveLength(step + 1);
     }
-    const stored = JSON.stringify([r.sender.sent, await r.table("ledger_wakes"),
-                                   await r.table("ledger_receipts")]);
+    const stored = JSON.stringify([r.sender.sent, await r.table("ledger_wakes")]);
     for (const body of bodies) {
       expect(stored).not.toContain(body);
     }
@@ -518,7 +512,7 @@ describe("W3 limits", () => {
     expect(await states(r, "ledger_recipients")).toEqual(["woken", "held_cap"]);
     await r.read(MUSE);
     expect(await states(r, "ledger_recipients")).toEqual(["read", "read"]);
-    expect((await r.table("ledger_receipts")).filter((x) => x["kind"] === "read"))
+    expect((await r.table("ledger_recipients")).filter((x) => x["read_at"] !== null))
       .toHaveLength(2);
   });
 

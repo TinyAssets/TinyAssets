@@ -9,7 +9,7 @@
  * imported as data.
  */
 import type { ConfigRules } from "../../ci/kit/config";
-import { imports, type Owed, refusals } from "../../ci/kit/owed";
+import { type Owed, refusals } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "sandbox",
@@ -25,7 +25,7 @@ export const CONFIG: ConfigRules = Object.freeze({
   /** The template it starts, pinned (`template.test.ts` holds its tag). */
   vars: Object.freeze({ E2B_TEMPLATE: null }),
   exact: Object.freeze({
-    build: { command: "node template/bundle.mjs dist" },
+    build: { command: "node build/bundle.mjs dist/runner.mjs dist/probes.mjs" },
     rules: [{ type: "Data", globs: ["**/dist/runner.mjs"], fallthrough: false }],
     durable_objects: { bindings: [{ name: "SANDBOXES", class_name: "SandboxControl" },
                                   { name: "SLOTS", class_name: "SandboxSlots" }] },
@@ -54,9 +54,6 @@ export const OWN_OBJECTS = Object.freeze({ "sandbox/src/index.ts": OWN,
  * named removes it.
  */
 export const OWED: readonly Owed[] = Object.freeze([
-  // The template's pin, read from the Worker's config: B18 gives it one reader in `pair.ts`,
-  // and the template its row's way to `ci/wrangler.ts`.
-  ...imports("B18", "platform/sandbox/template/checks.ts", ["platform/ci/wrangler.ts"]),
   // The runner's answers as error classes of the Worker's own, each a contract refusal by
   // its code (B2, S7).
   ...refusals("B2", "platform/sandbox/src/control.ts",

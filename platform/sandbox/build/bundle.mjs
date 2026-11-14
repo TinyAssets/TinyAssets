@@ -1,12 +1,12 @@
-// The runner as the Worker ships it, and the template's probes beside it: two ES modules for
-// Node, built with the workspace's own esbuild (wrangler's), each from its own entry
-// (`runner/runner.ts`, `runner/probes.ts`) in a build of its own, so neither output depends
-// on the other. The probes are given the runner's SHA-256 (`TA_RUNNER_SHA`), so they run
-// only beside the runner they were built with. The pair the deploy looks for names both
-// digests (`pair.ts`).
+// The sandbox Worker's build (`wrangler.jsonc`'s `build.command`): the runner it ships, and the
+// template's probes beside it, two ES modules for Node, built with the workspace's own esbuild
+// (wrangler's), each from its own entry (`runner/runner.ts`, `runner/probes.ts`) in a build of
+// its own, so neither output depends on the other. The probes are given the runner's SHA-256
+// (`TA_RUNNER_SHA`), so they run only beside the runner they were built with. The pair the
+// deploy looks for names both digests (`template/pair.ts`, which names both files).
 //
-//   node sandbox/template/bundle.mjs <out>   writes <out>/runner.mjs and <out>/probes.mjs,
-//                                            and prints each one's SHA-256 and name
+//   node sandbox/build/bundle.mjs <runner> <probes>   writes the runner to <runner> and the
+//                                                      probes to <probes>
 import { createHash } from "node:crypto";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -18,9 +18,9 @@ const platform = join(here, "..", "..");
 const require = createRequire(join(platform, "package.json"));
 const esbuild = require("esbuild");
 
-/** Each bundle's entry, by its output's name. */
-const ENTRIES = Object.freeze({ "runner.mjs": "sandbox/runner/runner.ts",
-                                "probes.mjs": "sandbox/runner/probes.ts" });
+/** Each bundle's entry. */
+const ENTRIES = Object.freeze({ runner: "sandbox/runner/runner.ts",
+                                probes: "sandbox/runner/probes.ts" });
 
 /** One bundle's build: the same options for both, `define` the probes' runner digest. */
 async function one(root, entry, define) {
@@ -52,22 +52,21 @@ async function one(root, entry, define) {
  * bytes, SHA-256 and the source files it was built from.
  */
 export async function build(root = platform) {
-  const runner = await one(root, ENTRIES["runner.mjs"], {});
-  const probes = await one(root, ENTRIES["probes.mjs"],
+  const runner = await one(root, ENTRIES.runner, {});
+  const probes = await one(root, ENTRIES.probes,
                            { TA_RUNNER_SHA: JSON.stringify(runner.sha) });
   return { runner, probes };
 }
 
 if (process.argv[1] !== undefined
     && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  const out = process.argv[2] === undefined ? undefined : resolve(process.argv[2]);
-  if (!out) {
-    throw new Error("bundle.mjs <out dir>");
+  const files = process.argv.slice(2).map((file) => resolve(file));
+  if (files.length !== 2) {
+    throw new Error("bundle.mjs <runner> <probes>");
   }
-  mkdirSync(out, { recursive: true });
   const built = await build();
-  for (const [name, bundle] of [["runner.mjs", built.runner], ["probes.mjs", built.probes]]) {
-    writeFileSync(join(out, name), bundle.bytes);
-    process.stdout.write(`${bundle.sha}  ${name}\n`);
+  for (const [file, bundle] of [[files[0], built.runner], [files[1], built.probes]]) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, bundle.bytes);
   }
 }

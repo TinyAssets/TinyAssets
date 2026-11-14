@@ -34,14 +34,14 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  answerName, doneName, importMac, type ImportMessage, type ImportOp, importMessage, NO_ROWS,
-  rehearsalRun, rowsSum, RUN,
+  answerName, BUNDLE_OWNER, type BundleOwner, bundlePrefix, doneName, type Entry, importMac,
+  type ImportMessage, type ImportOp, importMessage, NO_ROWS, type Paged, pageNumber,
+  rehearsalRun, type Row, rowsSum, RUN,
 } from "../contract/src/import-message";
 import { DEFAULT_TIER } from "../contract/src/control";
 import { objectPrefix } from "../contract/src/files";
 import type { ImportNames } from "../contract/src/import-names";
 
-import type { Entry, Row } from "./build";
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
 import {
   ACCOUNT, API, bundlesIn, cloudflareOf, type Fetcher, type Inputs, pushMessage, queueId,
@@ -163,7 +163,7 @@ export async function listKeys(window: Window, bucket: string, prefix: string,
 /** One message for `staged`, of `op`, MAC'd under the window's key, with its ask. */
 export function askOf(staged: Staged, run: string, op: Exclude<ImportOp, "import">,
                       importKey: string, ask = randomBytes(8).toString("hex")): ImportMessage {
-  return { op, owner: staged.owner, bundle: staged.bundle, prefix: `${run}/${staged.key}`,
+  return { op, owner: staged.owner, bundle: staged.bundle, prefix: bundlePrefix(run, staged.key),
            mac: importMac(importKey, op, staged.owner, staged.bundle), ask };
 }
 
@@ -196,10 +196,13 @@ async function ask(window: Window, queue: string, message: ImportMessage):
 
 /** A bundle's manifest entries and rows, from its folder. */
 function bundleContent(staged: Staged): { entries: Entry[]; rows: Row[] } {
-  const paged = <T>(kind: "manifest" | "rows", key: string): T[] => staged.parts
-    .filter((name) => name.startsWith(`${kind}/`))
-    .sort((a, b) => parseInt(a.slice(kind.length + 1)) - parseInt(b.slice(kind.length + 1)))
-    .flatMap((name) => (JSON.parse(readFileSync(join(staged.dir, name), "utf8")) as
+  const paged = <T>(kind: Paged, key: string): T[] => staged.parts
+    .flatMap((name) => {
+      const n = pageNumber(kind, name);
+      return n === null ? [] : [{ n, name }];
+    })
+    .sort((a, b) => a.n - b.n)
+    .flatMap(({ name }) => (JSON.parse(readFileSync(join(staged.dir, name), "utf8")) as
       Record<string, T[]>)[key]!);
   return { entries: paged<Entry>("manifest", "entries"), rows: paged<Row>("rows", "rows") };
 }
@@ -251,7 +254,7 @@ export async function verify(out: string, run: string, window: Window, recordFil
   const lines: string[] = [];
   let cleanCount = 0;
   for (const [n, staged] of bundles.entries()) {
-    const prefix = `${run}/${staged.key}`;
+    const prefix = bundlePrefix(run, staged.key);
     const done = await getText(window, window.names.staging_bucket, doneName(prefix));
     let found: Differences;
     if (done === null || (JSON.parse(done) as { bundle?: unknown }).bundle !== staged.bundle) {
@@ -309,8 +312,8 @@ export async function admit(out: string, run: string, window: Window, recordFile
                     "admitted (going on without one is the founder's call)");
   }
   for (const staged of bundles) {
-    const owner = JSON.parse(readFileSync(join(staged.dir, "owner.json"), "utf8")) as
-      { admission?: { state?: unknown } };
+    const owner = JSON.parse(readFileSync(join(staged.dir, BUNDLE_OWNER), "utf8")) as
+      Partial<BundleOwner>;
     if (owner.admission?.state !== "admitted" && owner.admission?.state !== "suspended") {
       throw new Error("a bundle's owner is one the old stack never admitted: no owner is admitted");
     }

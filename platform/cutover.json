@@ -1,0 +1,111 @@
+{
+  "about": "The cutover's manifest (untangle B24; d3 §A10): every path the cutover deletes, edits or moves, and every live object it takes down, in its three phases, so the cutover's change is: do what this lists, then delete this file. An entry is a delete (a file or a folder, whole), an edit (a file that stays, less the names it holds and the imports of what goes it makes), a move (a file to a new home, or with names, those of it into the file that keeps them), or a live object (a kind, a name, and the file that names it today). Paths are from the repository root. ci/guards/cutover.test.ts holds it to the tree: every entry exists, every 'deleted at the cutover' marker and every use of the cutover's vocabulary under platform/ and .github/ is in a file listed here, and (the layer table's cutover layer, ci/kit/imports.ts) what is deleted may import itself while nothing that stays imports it but the imports an edit names. Today it lists the import window and the moves wave 2 made into the contract for the importer's sake; the inventory (tasks.md §10 step 3) adds the rest of the cutover.",
+  "phases": {
+    "routes": {
+      "why": "After the admit, before mode routes hands the routes over (tasks.md §9 step 12).",
+      "entries": [
+        { "live": "secret", "name": "IMPORT_KEY", "in": "platform/deploy/checklist.md", "what": "the doors' Worker secret, deleted (npx wrangler secret delete IMPORT_KEY --name tinyassets-doors): a replayed admit is accepted by design" }
+      ]
+    },
+    "cutover": {
+      "why": "The cutover's change, in the window's last step (tasks.md §9 step 15), and the window's objects revoked or deleted as it closes.",
+      "entries": [
+        { "delete": "platform/import", "what": "the importer: the census, the bundle builder, the stage, the window's steps, the host's runner (window.sh, host.py) and their guards" },
+        { "delete": ".github/workflows/import-window.yml", "what": "the window's runner, Import window (manual)" },
+        { "delete": "platform/contract/src/import-message.ts", "what": "the import's messages, its bundle's format and check, its bounds and its rehearsal names" },
+        { "delete": "platform/contract/src/import-names.ts", "what": "the live names the job reaches" },
+        { "delete": "platform/owner/src/import.ts", "what": "the owner object's import doors" },
+        { "delete": "platform/owner/test/import.test.ts", "what": "the import doors' tests" },
+        { "delete": "platform/doors/src/import.ts", "what": "the doors' import consumer" },
+        { "delete": "platform/doors/test/import.test.ts", "what": "the consumer's tests" },
+        { "delete": "platform/doors/test/import-setup.ts", "what": "the consumer's tests' bundle, built by the importer" },
+        { "delete": "platform/cutover.json", "what": "this manifest, once the rest of it is done" },
+        { "delete": "platform/ci/kit/cutover.ts", "what": "the manifest's reader" },
+        { "delete": "platform/ci/guards/cutover.test.ts", "what": "the manifest's guard" },
+
+        { "edit": "platform/package.json", "names": ["\"import\""], "what": "the import workspace" },
+        { "edit": "platform/package-lock.json", "names": ["\"import\""], "what": "the import workspace, by npm install" },
+        { "edit": ".github/workflows/tests.yml", "names": ["npm run test -w import"], "what": "the import leg" },
+        { "edit": "platform/ci/budgets.json", "names": ["import/guards"], "what": "the import guards' budget" },
+        { "edit": "platform/ci/kit/layers.ts", "names": ["the importer", "platform/cutover.json"], "what": "the importer's layer, and the cutover layer's note and reach" },
+        { "edit": "platform/ci/kit/imports.ts", "names": ["cutoverLayer", "isGone"], "imports": ["platform/ci/kit/cutover.ts"], "what": "the cutover layer" },
+        { "edit": "platform/ci/guards/isolation.test.ts", "names": ["platform/import/probe.ts"], "what": "the importer's layer cases" },
+        { "edit": "platform/ci/guards/environment.test.ts", "names": ["import-window.yml"], "what": "the window's workflow among the known production workflows" },
+
+        { "edit": "platform/contract/doors.json", "names": ["importRows", "importFiles", "importFileBegin", "importFileStored", "importFileCommit", "importNotice", "importCheck", "importDiscard"], "what": "the eight import rows" },
+        { "edit": "platform/contract/src/doors.ts", "names": ["\"import\"", "\"discard\""], "what": "the import class and the import and discard callers" },
+        { "edit": "platform/contract/guards/doors.test.ts", "names": ["\"import\"", "\"discard\""], "what": "the import class's and the discard caller's cases" },
+        { "edit": "platform/contract/src/binding.ts", "names": ["ImportBinding", "importBinding", "IMPORT_KEY"], "what": "the binding's import field and the import kind" },
+        { "edit": "platform/contract/src/owner.ts", "names": ["importRows", "importDiscard", "CheckPart"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import doors' types" },
+        { "edit": "platform/contract/src/paths.ts", "names": ["IMPORTED"], "what": "the imported tree's path" },
+        { "edit": "platform/contract/src/files.ts", "names": ["the importer's wipe"], "what": "the importer's wipe, in the object prefix's note" },
+        { "edit": "platform/contract/services.json", "names": ["tinyassets-import"], "what": "the import queue's message" },
+        { "edit": "platform/contract/src/queue-names.ts", "names": ["IMPORTS"], "what": "the import queue's name, by npm run generate once doors/wrangler.jsonc loses it" },
+
+        { "edit": "platform/owner/src/admission.ts", "names": ["IMPORT_PLATFORM_ONLY", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "DISCARDED", "\"import\""], "what": "the import doors' refusals and class" },
+        { "edit": "platform/owner/src/owner-do.ts", "names": ["#discarded", "#discard", "IMPORT_DOORS_ONLY", "\"discard\""], "imports": ["platform/owner/src/import.ts", "platform/contract/src/import-message.ts"], "what": "the import doors, the object's #discarded and the import and discard callers" },
+        { "edit": "platform/owner/src/policy.ts", "names": ["imported("], "what": "Policy.imported" },
+        { "edit": "platform/owner/src/files.ts", "names": ["openUploads", "entriesPage", "chunksPage", "mtimeMs"], "what": "Files.openUploads, Files.entriesPage, Files.chunksPage and the files plane's mtime_ms write option" },
+        { "edit": "platform/owner/src/collections.ts", "names": ["rowsPage"], "what": "Collections.rowsPage" },
+        { "edit": "platform/owner/src/erase.ts", "names": ["discard(", "bare"], "what": "Erasure.discard and its bare wipe" },
+        { "edit": "platform/owner/src/starter-package.ts", "names": ["for the importer"], "what": "the importer, among the package's readers" },
+        { "edit": "platform/owner/guards/admission-caller.test.ts", "names": ["importDiscard"], "what": "the import callers' cases" },
+        { "edit": "platform/owner/guards/policy-boundary.test.ts", "names": ["policy.imported"], "what": "Policy.imported's caller" },
+        { "edit": "platform/owner/guards/memory-counts.test.ts", "names": ["IMPORT_BATCH_BYTES", "IMPORT_HOLD_BYTES"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import call's and the consumer's held bytes" },
+        { "edit": "platform/owner/memory/probe.ts", "names": ["/workspace/imported", "importFileBegin"], "what": "the import upload's memory leg" },
+        { "edit": "platform/owner/test/erasure.test.ts", "names": ["IMPORT_DOORS"], "what": "the import doors' erasure cases" },
+
+        { "edit": "platform/doors/src/index.ts", "names": ["importQueue", "IMPORT_QUEUE"], "imports": ["platform/doors/src/import.ts", "platform/contract/src/import-message.ts"], "what": "the import queue's dispatch" },
+        { "edit": "platform/doors/src/binder.ts", "names": ["bindImport", "rehearsalRun"], "imports": ["platform/contract/src/import-message.ts"], "what": "bindImport and the sign-in refusal of a rehearsal's name" },
+        { "edit": "platform/doors/src/control.ts", "names": ["importTiers"], "what": "importTiers" },
+        { "edit": "platform/doors/src/config.ts", "names": ["nor the import queue"], "what": "the import queue, in the erasure queue's note" },
+        { "edit": "platform/doors/src/file-bytes.ts", "names": ["putImportChunk"], "what": "putImportChunk" },
+        { "edit": "platform/doors/src/env.ts", "names": ["IMPORT_STAGING", "IMPORTS"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import window's bindings" },
+        { "edit": "platform/doors/wrangler.jsonc", "names": ["IMPORT_STAGING", "IMPORTS", "tinyassets-import-dlq"], "what": "IMPORT_STAGING, the IMPORTS producer, the consumer and its dead-letter queue" },
+        { "edit": "platform/doors/vitest.config.ts", "names": ["import-setup"], "what": "the consumer's tests' bundle" },
+        { "edit": "platform/doors/guards/rules.ts", "names": ["IMPORT_WINDOW"], "what": "the import window's bindings" },
+        { "edit": "platform/doors/guards/config.test.ts", "names": ["IMPORT_WINDOW", "IMPORT_QUEUE"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import window's config cases" },
+        { "edit": "platform/doors/guards/binder.test.ts", "names": ["IMPORT_WINDOW"], "what": "the import window's bindings' reach" },
+        { "edit": "platform/doors/test/binder.test.ts", "names": ["a rehearsal's name"], "what": "the sign-in refusal of a rehearsal's name's case" },
+
+        { "edit": "platform/deploy/facts.ts", "names": ["IMPORT_NAMES", "--import"], "imports": ["platform/contract/src/import-names.ts"], "what": "facts.ts --import, the job's live names" },
+        { "edit": "platform/deploy/guards/deploy.test.ts", "names": ["IMPORT_NAMES"], "what": "the job's live names' case" },
+        { "edit": "platform/deploy/checklist.md", "names": ["## The import window's credentials"], "what": "the import window's credentials" },
+        { "edit": "docs/architecture.md", "names": ["`platform/import/`"], "what": "the importer's row" },
+        { "edit": "openspec/changes/clean-sheet-platform/specs/doors/spec.md", "names": ["say nothing of the cutover's import"], "what": "the MCP instructions' silence on the import, which the importer's README explains" },
+        { "edit": "AGENTS.md", "names": ["import-window.yml"], "what": "the window's workflow, named as a reader of CLOUDFLARE_ACCOUNT_ID" },
+
+        { "move": "platform/contract/src/content.ts", "to": "platform/owner/src/content.ts", "what": "the content ids: the owner, its starter and the importer gave the same bytes the same id, and after the importer only the owner names content" },
+        { "move": "platform/contract/src/policy-document.ts", "to": "platform/owner/src/policy-document.ts", "what": "the policy document, the importer its only other reader; EgressMode, which contract/src/sandbox.ts reads, stays in the contract" },
+        { "move": "platform/contract/src/file-defaults.ts", "to": "platform/owner/src/file-defaults.ts", "what": "the files' defaults, read by the policy document and the owner alone" },
+        { "move": "platform/contract/src/owner.ts", "names": ["SUSPENSIONS"], "to": "platform/owner/src/admission.ts", "what": "the suspensions, the doors' consumer and the importer their only other readers" },
+
+        { "live": "queue", "name": "tinyassets-import", "in": "platform/doors/wrangler.jsonc", "what": "the import queue, deleted" },
+        { "live": "queue", "name": "tinyassets-import-dlq", "in": "platform/doors/wrangler.jsonc", "what": "its dead-letter queue, deleted" },
+        { "live": "bucket", "name": "tinyassets-import-staging", "in": "platform/doors/wrangler.jsonc", "what": "the staging bucket, emptied and deleted" },
+        { "live": "secret", "name": "IMPORT_EXCLUSION_LIST", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "secret", "name": "IMPORT_R2_ACCESS_KEY_ID", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "secret", "name": "IMPORT_R2_SECRET_ACCESS_KEY", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "secret", "name": "IMPORT_CLOUDFLARE_API_TOKEN", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "secret", "name": "IMPORT_KEY", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "secret", "name": "IMPORT_DO_TOKEN", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "secret", "name": "IMPORT_RESERVED_IP", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "secret", "name": "IMPORT_SPACES_ACCESS_KEY_ID", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "secret", "name": "IMPORT_SPACES_SECRET_ACCESS_KEY", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "token", "name": "IMPORT_R2_ACCESS_KEY_ID", "in": "platform/deploy/checklist.md", "what": "the R2 token the S3 key pair is of, revoked" },
+        { "live": "token", "name": "IMPORT_CLOUDFLARE_API_TOKEN", "in": "platform/deploy/checklist.md", "what": "the window's Cloudflare API token, revoked" },
+        { "live": "token", "name": "IMPORT_DO_TOKEN", "in": "platform/deploy/checklist.md", "what": "the DigitalOcean token, revoked" },
+        { "live": "token", "name": "IMPORT_SPACES_ACCESS_KEY_ID", "in": "platform/deploy/checklist.md", "what": "the Spaces read key, revoked" },
+        { "live": "address", "name": "IMPORT_RESERVED_IP", "in": "platform/deploy/checklist.md", "what": "the reserved IP, released" },
+        { "live": "droplet", "name": "import-window", "in": "platform/deploy/checklist.md", "what": "every Droplet with the tag, destroyed by clean: none left" }
+      ]
+    },
+    "hold": {
+      "why": "When the 14-day hold ends, on the founder's word (tasks.md §10 step 16).",
+      "entries": [
+        { "edit": "platform/deploy/platform.json", "names": ["final_backup"], "what": "the final backup's bucket, which the kit makes" },
+        { "live": "bucket", "name": "tinyassets-final-backup", "in": "platform/deploy/platform.json", "what": "the off-site copy of the import window's final backup, deleted with the old stack's final backup" }
+      ]
+    }
+  }
+}

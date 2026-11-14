@@ -20,10 +20,11 @@ import { TIERS } from "../../ci/fixtures";
 import { contentIdOf } from "../../contract/src/content";
 import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
-import { type Entry, type Row } from "../build";
 import {
-  buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, pages, PAGE_ROWS,
-  PRIVATE_RECORD,
+  bundlePages, type Entry, IMPORT_BATCH_BYTES, IMPORT_ROWS, type Row,
+} from "../../contract/src/import-message";
+import {
+  buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, PRIVATE_RECORD,
 } from "../bundle";
 import { census } from "../census";
 import { survey } from "../survey";
@@ -498,10 +499,18 @@ describe("the bundle builder", () => {
     expect({ ...dry, dry_run: false }).toEqual(real);
   });
 
-  it("pages at most PAGE_ROWS items and a MiB encoded", () => {
+  it("pages at most IMPORT_ROWS items, each page's list as JSON no larger than a door call takes",
+     () => {
     const small = Array.from({ length: 600 }, (_, i) => ({ i }));
-    expect(pages(small).map((page) => page.length)).toEqual([PAGE_ROWS, PAGE_ROWS, 88]);
+    expect(bundlePages(small).map((page) => page.length)).toEqual([IMPORT_ROWS, IMPORT_ROWS, 88]);
     const large = Array.from({ length: 5 }, () => ({ body: "x".repeat(300_000) }));
-    expect(pages(large).map((page) => page.length)).toEqual([3, 2]);
+    expect(bundlePages(large).map((page) => page.length)).toEqual([3, 2]);
+    // Two rows whose list is IMPORT_BATCH_BYTES as JSON, the import doors' own measure, are one
+    // page; a byte more, and they are two.
+    const pair = (more: number) => [{ body: "x".repeat(524_288) },
+                                     { body: "x".repeat(IMPORT_BATCH_BYTES - 524_313 + more) }];
+    expect(Buffer.byteLength(JSON.stringify(pair(0)))).toBe(IMPORT_BATCH_BYTES);
+    expect(bundlePages(pair(0)).map((page) => page.length)).toEqual([2]);
+    expect(bundlePages(pair(1)).map((page) => page.length)).toEqual([1, 1]);
   });
 });
