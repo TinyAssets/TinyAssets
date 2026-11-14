@@ -17,11 +17,12 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
 import { ERASING } from "../../contract/src/refusal";
 import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
-import { NO_ERASURE } from "../../owner/src/erasure";
+import { NO_ERASURE, PUT_GRACE_MS } from "../../owner/src/erasure";
 import { LEDGER_LIMITS } from "../../owner/src/ledger";
-import { defineAgent } from "../../owner/test/runs-support";
+import { defineAgent, later } from "../../owner/test/runs-support";
 import { failure } from "../../owner/test/support";
 import { QUEUES } from "../../contract/src/queue-names";
+import type { OwnerMessage } from "../../contract/src/queues";
 import { MCP_RESOURCE, now } from "../src/config";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { readOwner, readRoute } from "../src/directory";
@@ -112,20 +113,42 @@ describe("sign-up", () => {
 });
 
 describe("the erasure", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** How many of each owner's erasure messages a test has taken. */
+  const taken = new Map<string, number>();
+
+  /** The messages the object sent its erasure queue since the last taken, once one arrived. */
+  async function sent(who: string): Promise<OwnerMessage[]> {
+    for (let tries = 0; tries < 300; tries++) {
+      const all = await env.ERASURES_SENT.of(who);
+      const from = taken.get(who) ?? 0;
+      if (all.length > from) {
+        taken.set(who, all.length);
+        return all.slice(from);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`no erasure message of ${who} reached the queue`);
+  }
+
   /** The object's erasure queue as the doors would consume it: each message sent, run. */
   async function consume(who: string): Promise<string[]> {
-    const sent = await runInDurableObject(env.OWNER.getByName(who), (instance: OwnerDO) =>
-      instance.erasures.sent.splice(0).map((message) => message.owner));
     const done: string[] = [];
-    for (const named of sent) {
-      done.push(await eraseOutside(doorsEnv, named, () => FAKE_UPSTREAM));
+    for (const message of await sent(who)) {
+      done.push(await eraseOutside(doorsEnv, message.owner, () => FAKE_UPSTREAM));
     }
     return done;
   }
 
-  /** The erasure's job, once its retry is due (the test object's 500 ms). */
+  /**
+   * The erasure's job run once its put grace (a day) is up on the object's clock, a fake
+   * `Date` (the object is hosted in this test Worker, so the clock reaches it).
+   */
   async function finish(who: string): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    later(PUT_GRACE_MS / 1000 + 60);
     await runDurableObjectAlarm(env.OWNER.getByName(who));
   }
 
@@ -181,9 +204,7 @@ describe("the erasure", () => {
     const { who, app } = await owned();
     await appPost("account/erase", app.access_token, app.session, { confirm: "erase my account" });
     // The request is gone and its message lost: the object's own job sends again.
-    await runInDurableObject(env.OWNER.getByName(who), (instance: OwnerDO) => {
-      instance.erasures.sent.splice(0);
-    });
+    await sent(who);
     await finish(who);
     // Not wiped without the outside record: the wipe waits for the doors' confirmation.
     expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "admitted" }]);
@@ -236,12 +257,11 @@ describe("the erasure", () => {
      async () => {
     const { who, app } = await owned();
     await appPost("account/erase", app.access_token, app.session, { confirm: "erase my account" });
-    const sent = await runInDurableObject(env.OWNER.getByName(who), (instance: OwnerDO) =>
-      instance.erasures.sent.splice(0));
+    const messages = await sent(who);
     const failing = { ...FAKE_UPSTREAM, forget: () => Promise.reject(new Error("WorkOS down")) };
     const retried: string[] = [];
     await erasureQueue({ queue: QUEUES.ERASURES, messages: [{
-      id: "m1", timestamp: new Date(), attempts: 1, body: sent[0],
+      id: "m1", timestamp: new Date(), attempts: 1, body: messages[0],
       ack: () => undefined, retry: () => { retried.push("m1"); } }],
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
                        doorsEnv, () => failing);

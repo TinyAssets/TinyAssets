@@ -3,8 +3,8 @@
  * codemode Worker behind `CODEMODE_VM`. On by default, and refused and hidden from the caller's
  * tools once the owner's policy turns `codemode.on` off; served only where the caller's
  * profile holds `code`; one script calls several tools, each the caller's own door,
- * admitted again against its grant and the control record's gates (`SwitchedOwnerDO`, its
- * record flipped mid-script); no tool outside the profile and no capability outside the
+ * admitted again against its grant and the control record's gates (the record flipped while
+ * a call is held at the FILES gate, the object's clock moved by a fake `Date`); no tool outside the profile and no capability outside the
  * grant; a revoked client and another owner's binding refused; a script past its wall time
  * (`CODEMODE_TIMEOUT_MS`, under a clock that moves a second at each reading) stopped, saying
  * which calls landed; output past one answer cut and said so, a value past it refused
@@ -12,7 +12,7 @@
  * (`codemode/test/`).
  */
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import { MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
@@ -20,15 +20,17 @@ import { MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
 import { profileNames } from "../../contract/src/doors";
 import type { Origin } from "../../contract/src/binding";
 import { jsonBytes } from "../../contract/src/encoded";
+import { PLACE_BYTES } from "../../contract/src/limits";
 import {
   CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, CODEMODE_TIMEOUT_MS,
 } from "../src/codemode";
-import type { OwnerDO } from "../src/owner-do";
+import { CONTROL_FRESH_MS } from "../src/control-gate";
 import { PAGE_BYTES } from "../src/pages";
 import { DEFAULT_POLICY_JSON, validate } from "../../contract/src/policy-document";
 import { customTools } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure } from "./support";
+import { later } from "./runs-support";
+import { failure, gateFor, spaceOf } from "./support";
 
 /** The owner turns code mode on or off, and names its own `custom` tools, in its session. */
 async function setPolicy(r: Rig, codemode: boolean, custom?: string[]): Promise<void> {
@@ -57,6 +59,39 @@ const OPEN = OPEN_GATES;
 beforeEach(async () => {
   await writeControl(env.CONTROL, OPEN);
 });
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/**
+ * A script of five board writes by Muse, each one's answer kept, its second's body placed in
+ * R2 and held at the FILES gate. While it is held, the control record turns outside access
+ * off and `meanwhile` runs (the object's clock moved, or not); then the script goes on.
+ */
+async function switchedMidScript(r: Rig, meanwhile: () => void) {
+  await r.stub.outsideAgents(r.bind(MUSE));
+  // A placed body first, so the owner's files namespace (the gate's name) exists.
+  await r.stub.collectionWrite(r.bind(null), { collection: "board", row_id: "first",
+    body: "é".repeat(PLACE_BYTES), expected_etag: "", private: false });
+  const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
+  await files.arm("putChunks", { hold: "before" });
+  const running = r.stub.codeRun(r.bind(MUSE), { script: lines(
+    "const seen = [];",
+    "for (let n = 0; n < 5; n++) {",
+    "  try {",
+    "    await tools.collection_write({ collection: 'board', row_id: 'w' + n,",
+    `      body: n === 1 ? 'é'.repeat(${PLACE_BYTES}) : 'b', expected_etag: '', private: false });`,
+    "    seen.push('ok');",
+    "  } catch (error) { seen.push(error.message); }",
+    "}",
+    "return seen;") });
+  await files.held("putChunks");
+  await writeControl(env.CONTROL, { ...OPEN, outside: "off" });
+  meanwhile();
+  await files.release("putChunks");
+  return running;
+}
 
 describe("the code door", () => {
   it("is on by default, and refused and hidden once the owner turns it off", async () => {
@@ -189,28 +224,18 @@ describe("the code door", () => {
     }
   });
 
-  it("reads the control record's gates again at each of a script's calls", async () => {
-    // The record reads open three times (the door's own check and two calls), then off.
-    const r = await rig(env.SWITCHED as unknown as DurableObjectNamespace<OwnerDO>);
-    await r.stub.outsideAgents(r.bind(MUSE));
-    const result = await r.stub.codeRun(r.bind(MUSE), { script: lines(
-      "const seen = [];",
-      "for (let n = 0; n < 5; n++) {",
-      "  try {",
-      "    await tools.collection_write({ collection: 'board', row_id: 'w' + n, body: 'b',",
-      "      expected_etag: '', private: false });",
-      "    seen.push('ok');",
-      "  } catch (error) { seen.push(error.message); }",
-      "}",
-      "return seen;") });
+  it("reads the control record's gates again at a script's call once its last read is a " +
+     "second old", async () => {
+    // Outside access turned off while the second call is held, and the object's clock moved
+    // past the freshness of its last read: the calls after it read the record again.
+    const r = await rig();
+    const result = await switchedMidScript(r, () => later(CONTROL_FRESH_MS / 1000 + 1));
     expect(result).toMatchObject({ ok: true,
       value: ["ok", "ok", OUTSIDE_OFF, OUTSIDE_OFF, OUTSIDE_OFF] });
     expect(result.landed).toEqual([{ name: "collection_write", status: "ok", count: 2 },
                                    { name: "collection_write", status: "error", count: 3 }]);
     expect((await r.stub.collectionGet(r.bind(null), { collection: "board", row_id: "w2" }))
       .row).toBeNull();
-    // The door's own read and one at each of the five calls.
-    expect(await (env.SWITCHED.getByName(r.owner)).controlReads()).toBe(6);
     // The record off at the start refuses the call itself.
     expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(OUTSIDE_OFF);
@@ -237,19 +262,15 @@ describe("the code door", () => {
 
   it("serves a script's calls from one read of the control record within a second",
      async () => {
-    // Production's freshness: the record reads open three times then off, but a script of
-    // five quick calls reads it once, at its start, and all five land.
-    const r = await rig(env.CACHED as unknown as DurableObjectNamespace<OwnerDO>);
-    await r.stub.outsideAgents(r.bind(MUSE));
-    const result = await r.stub.codeRun(r.bind(MUSE), { script: lines(
-      "for (let n = 0; n < 5; n++) {",
-      "  await tools.collection_write({ collection: 'board', row_id: 'c' + n, body: 'b',",
-      "    expected_etag: '', private: false });",
-      "}",
-      "return 5;") });
-    expect(result).toMatchObject({ ok: true, value: 5,
+    // The same switch with the object's clock still: the read the script began with serves
+    // every call, and all five land; the next script's door reads the record again.
+    const r = await rig();
+    const result = await switchedMidScript(r, () => undefined);
+    expect(result).toMatchObject({ ok: true, value: ["ok", "ok", "ok", "ok", "ok"],
       landed: [{ name: "collection_write", status: "ok", count: 5 }] });
-    expect(await env.CACHED.getByName(r.owner).controlReads()).toBe(1);
+    later(CONTROL_FRESH_MS / 1000 + 1);
+    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+      .message).toBe(OUTSIDE_OFF);
   });
 
   it("cuts output past one answer, saying so, and refuses only a value past it", async () => {

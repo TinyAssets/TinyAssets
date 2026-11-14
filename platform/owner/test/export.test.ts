@@ -7,7 +7,7 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { mint } from "../../files/src/datakey";
 import {
@@ -38,8 +38,12 @@ import {
   digest, exportFrom, generate, type Line, type Owner, owner, replay, standing,
 } from "./generation-support";
 import { MUSE } from "./ledger-support";
+import { erasedWhole } from "./erasure-support";
 import { drainDue, failure, laneAt, sqlIn } from "./support";
-import type { FauxOwnerDO } from "./worker";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /** Tables the schema does not make: Lifecycle's, the runtime's and SQLite's own. */
 const runtimeTable = (name: string) => name === "schema_version" || name.startsWith("sqlite_")
@@ -797,8 +801,7 @@ describe("the nightly manifest", () => {
     const [{ gen }] = await sqlIn(o.stub, "SELECT gen FROM owner_backups") as [{ gen: string }];
     const ns = await nsOf(o);
     expect(await bucket().getManifestRoot(ns, gen)).not.toBeNull();
-    await runInDurableObject(o.stub, (instance: OwnerDO) =>
-      (instance as unknown as FauxOwnerDO).erasure.erase());
+    await erasedWhole(o.stub, o.name, o.session());
     // No manifest, and no object row, holds the owner's wrapped key any more: a chunk the
     // bucket still keeps is unreadable (the files Worker's sealed-object tests hold that).
     expect(await bucket().getManifestRoot(ns, gen)).toBeNull();

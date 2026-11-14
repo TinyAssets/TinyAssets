@@ -13,7 +13,7 @@ import {
   HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "../src/manifest";
 import type { OwnerDO } from "../src/owner-do";
-import type { Binding } from "../../contract/src/binding";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { fileLimits, Policy } from "../src/policy";
@@ -393,11 +393,26 @@ export interface Owner {
   as(caller: string, owner?: string): Binding;
 }
 
-export function ownerObject(): Owner {
+/**
+ * `name`'s object (in `namespace`, the owner's by default), admitted first by the platform's
+ * door, as the doors' sign-in callback admits a new owner at sign-up (`admission.ts`, slice
+ * L): a fresh object is `pending` and refuses every door until then.
+ */
+export async function admittedOwner(name: string,
+                               namespace: DurableObjectNamespace<OwnerDO> = env.OWNER):
+    Promise<Stub> {
+  const stub = namespace.getByName(name);
+  await stub.admissionSet({ owner: name, caller: PLATFORM_CALLER, origin: null },
+                          { admit: true });
+  return stub;
+}
+
+/** A fresh owner's admitted object, and the binder's bindings on it. */
+export async function ownerObject(): Promise<Owner> {
   const name = `owner-${crypto.randomUUID()}`;
   return {
     name,
-    stub: env.OWNER.getByName(name),
+    stub: await admittedOwner(name),
     as: (caller, owner = name) => ({ owner, caller, origin: null, tiers: TIERS }),
   };
 }

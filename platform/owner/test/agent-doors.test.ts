@@ -13,14 +13,14 @@ import { AGENTS_DIR, GOALS_DIR, OWNER_TREES, within } from "../../contract/src/p
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { ALL_SCOPES } from "./runs-support";
-import { failure, TIERS } from "./support";
+import { admittedOwner, failure, TIERS } from "./support";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
 /** An owner of its own, signed in; an outside client admitted by its first verified call. */
 async function rig() {
   const owner = `owner-${crypto.randomUUID()}`;
-  const stub = env.OWNER.getByName(owner);
+  const stub = await admittedOwner(owner);
   const at = signedIn();
   const unbound = (origin: Origin | null): Binding =>
     ({ owner, caller: owner, origin, tiers: TIERS,

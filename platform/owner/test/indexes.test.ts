@@ -25,7 +25,7 @@ const laid = (payload: number, kept: number) => {
 
 describe("the owner-bound guard against the database", () => {
   it("knows every index SQLite makes on its own", async () => {
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const made = state.storage.sql.exec<{ name: string; tbl_name: string }>(
         "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name GLOB " +
@@ -40,7 +40,7 @@ describe("the owner-bound guard against the database", () => {
 
   it("charges a row at the widest names at least what it takes, its indexes with it",
      async () => {
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const charge = () => state.storage.sql.exec<{ rows_charge: number }>(
         "SELECT rows_charge FROM collection_space").one().rows_charge;
@@ -67,7 +67,7 @@ describe("the owner-bound guard against the database", () => {
 
   it("charges a delete's entry at the widest names at least what it takes, its private " +
      "writer with it", async () => {
-    const { stub } = ownerObject();
+    const { stub } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const charge = () => state.storage.sql.exec<{ charge: number }>(
         "SELECT charge FROM collection_space").one().charge;

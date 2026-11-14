@@ -95,9 +95,9 @@ export const OWED: readonly Owed[] = Object.freeze([
   ...imports("B23", "platform/doors/test/e2b-hooks.test.ts",
              ["platform/owner/src/sandbox-time.ts"]),
   ...imports("B23", "platform/doors/test/egress.test.ts", ["platform/owner/test/runs-support.ts"]),
-  ...imports("B23", "platform/doors/test/entry.ts", [
-    "platform/owner/src/owner-do.ts", "platform/owner/test/erasure-fake.ts"]),
-  ...imports("B23", "platform/doors/test/env.d.ts", ["platform/owner/test/fake-sandbox.ts"]),
+  ...imports("B23", "platform/doors/test/entry.ts", ["platform/owner/src/owner-do.ts"]),
+  ...imports("B23", "platform/doors/test/env.d.ts", ["platform/owner/test/fake-sandbox.ts",
+                                                      "platform/owner/test/fake-erasures.ts"]),
   ...imports("B23", "platform/doors/test/events.test.ts", ["platform/owner/src/owner-do.ts"]),
   ...imports("B23", "platform/doors/test/hardening.test.ts", ["platform/owner/src/bodies.ts"]),
   ...imports("B23", "platform/doors/test/runs.test.ts",

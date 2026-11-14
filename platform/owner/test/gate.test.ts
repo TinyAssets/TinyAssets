@@ -10,8 +10,9 @@ import type { OwnerDO } from "../src/owner-do";
 import { failure, ownerObject } from "./support";
 
 /** A gate on a fresh object's storage, with a table of its own to write. */
-function withGate<R>(act: (gate: WriteGate, state: DurableObjectState) => Promise<R>): Promise<R> {
-  return runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
+async function withGate<R>(act: (gate: WriteGate, state: DurableObjectState) => Promise<R>):
+    Promise<R> {
+  return runInDurableObject((await ownerObject()).stub, async (_instance: OwnerDO, state) => {
     state.storage.sql.exec("CREATE TABLE gate_probe (n INTEGER)");
     return act(new WriteGate(state.storage), state);
   });

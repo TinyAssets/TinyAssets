@@ -61,8 +61,8 @@ class Standing extends Usage {
   }
 }
 
-function withUsage<R>(act: (r: Rig) => Promise<R>): Promise<R> {
-  return runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
+async function withUsage<R>(act: (r: Rig) => Promise<R>): Promise<R> {
+  return runInDurableObject((await ownerObject()).stub, async (_instance: OwnerDO, state) => {
     const gate = new WriteGate(state.storage);
     const policy: Rig["policy"] = { generation: 1, caps: {} };
     const make = () => new Standing(gate.storage, () => ({

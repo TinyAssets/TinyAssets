@@ -40,9 +40,38 @@ T1c is split at its natural seams, in three PRs (T1c-a, T1c-b, T1c-c), each gree
     - The second wake stays pending and unclaimed, and is never rung.
     - It fails when the object hands the ledger `() => true`. No test failed on that before (T1b4's R1).
 
+## T1c-b: the erasure, the control record and the rig
+
+1. **What T1c-b builds** (`tasks.md` holds it as T1c-b):
+   - `Internals.erasure`, `eraseRetryMs`, `putGraceMs` and `controlFreshMs` are deleted. `Erasure` reads `PUT_GRACE_MS` and `ERASE_RETRY_MS`, and `ControlGate` reads `CONTROL_FRESH_MS`; neither takes them as parts or parameters.
+   - `FauxOwnerDO`, `SwitchedOwnerDO` and `CachedOwnerDO` are deleted, with their namespaces, `test/admitted.ts` and `test/erasure-fake.ts` (`RecordingErasures`).
+   - The unbound-`ERASURES` throw is gone. `ERASURES` is the config's own queue in the owner suite, consumed by a fake Worker (`test/fake-erasures.ts`, as the sandbox suite's ring is), which records each owner's messages for a test to read through `ERASURES_SENT`.
+   - The doors' entry passes no third constructor argument, and its `erasures` field goes. Its owner object sends to a queue the same fake consumes (`owner-erasures-recorded`), not `tinyassets-erasure`: the doors' config makes the doors Worker that queue's consumer, and the doors' tests run that consumer by hand on what was sent.
+2. **The erasure runs through its doors and its own job** (`test/erasure-support.ts`, research question 2):
+   - begun at `ownerErase`;
+   - its outside record confirmed by the test, as the doors confirm it, once the queue took the object's message (`erasureOutsideDone`);
+   - its put grace (a day) and retry interval (a minute) passed on the object's clock by a fake `Date` (`later`);
+   - its job run by the alarm.
+
+   A crash's state is made by the erasure itself, not by SQL rows: step 1 is its sandboxes' erase refused at the `SANDBOX` gate, and step 2 is its wait for the grace. One SQL write is left, the lost job (`DELETE FROM cf_agents_jobs`) of "resumes at the object's start alone", because that test is about a job that is gone.
+3. **The control record is the config's own `CONTROL`, written by the test** (`code-door.test.ts`).
+   - A script's second call is held at the `FILES` gate (its body placed in R2) while outside access turns off.
+   - With the object's clock moved past `CONTROL_FRESH_MS`, the calls after it read the record again and are refused.
+   - With the clock still, the script's one read serves all five.
+
+   The read counter (`switching`) goes: the tests hold the behaviour, not the count.
+4. **The rig admits by the door** (`support.ts` `admittedOwner`): every rig, `ownerObject` (now async) and `gated` send the platform's admit and await it before the test's first call. `get(idFromName())` stays the way to a pending object.
+5. **`ERASE_CONFIRM` is exported** (`erasure.ts`), so a test erases with the phrase the door checks, not a copy of it.
+6. **Split out of T1c-b, each with its evidence:**
+   - **T1c-b2, the real entry and the starter: decide first.** The one-file starter by a Vite alias cannot stand beside the starter tests as they are.
+     - `starter.test.ts` and `starter-review.test.ts` run a `Starter` built by hand over an owner object's storage at 47 call sites, each with a package of the test's own (`V1`, `V2`, …), which needs an object that carries no package (`starter: null`).
+     - With the null path gone, every object seeds its own package once a door hands it tiers. Its `starter_state` version then stands at or above the test packages' version 1, so a hand-built `V1` pass does nothing, and its receipts sit beside the test package's.
+     - A design is owed before it is built. The one this PR suggests: a new owner's seed is tested on the object's own seed (the carried package, with no alias, in the starter tests' project); updates and reviews are hand-built passes at versions above it, run once that seed has settled; then `Internals`, `test/worker.ts`, `test/namespaces.ts` and `SEEDED` go, and `main` is `src/index.ts`.
+   - **`BackupParts`' `sizes?` and `pool?`: research first, with T1c-c.** The generation harness (`generation-support.ts` `generate`) builds `Backups` by hand, a second copy of the object's wiring, at sizes 64 to 128 times smaller than production's (`SMALL`: 16, 32 and 64 KiB against 1, 4 and 8 MiB) and with a pool of its own. Its multi-burst fixtures would grow as much at production's sizes (1,600 notices would become about 200,000). It is decided with T1c-c's one wiring function, which can build the backups lane as the object does.
+
 ## Owed
 
-- **T1c-b**, as item 2 says.
+- **T1c-b2** (the real entry and the starter) and **`BackupParts`' `sizes?` and `pool?`**, as T1c-b's item 6 says.
 - **T1c-c: `ledger-support.ts` `ledgerParts`, `ledgerOn` and `inLedger`.** They copy the object's wiring of the ledger, and about 70 test reaches use them. `ballast` posts up to 50,000 messages in the ledger to seed production's ceilings, about 9 s a seed; through the doors that would be 50,000 door calls a seed. It is its own PR, after T1c-b (`tasks.md` holds the three lines), and is not built here.
   - **Decided (the coordinator, 2026-11-14):** the object exports its one ledger wiring function, the one it calls to build its ledger from its state and env. The tests call that same function in place of `ledgerParts`, so there is one wiring and no copy.
   - Test seeding is not routed through the doors, and no bulk SQL seeds (it would copy the post path's row shapes, which T1b5 rejected).

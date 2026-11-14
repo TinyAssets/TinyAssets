@@ -31,7 +31,7 @@ import {
   ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
-import { drainDue, failure, gateFor, TIERS } from "./support";
+import { admittedOwner, drainDue, failure, gateFor, TIERS } from "./support";
 import { NETWORK_RETRY_S, type SandboxRun } from "../src/launch";
 import { LANE_CALL_MS } from "../src/schedule";
 import {
@@ -42,7 +42,7 @@ import type { NetworkPlan, SandboxSignin, SandboxStart } from "../../contract/sr
 import { SANDBOX_WAITING } from "../src/sandbox";
 import { bundledSources } from "../../sources/src/catalog";
 import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
-import type { FauxOwnerDO } from "./worker";
+import { erasedWhole } from "./erasure-support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -602,7 +602,7 @@ describe("an egress call", () => {
     expect(await r.sql("SELECT COUNT(*) AS n FROM egress_reservations")).toEqual(before);
     // An owner whose object never opened a lease: refused, and no row of its own written.
     const stranger = `owner-${crypto.randomUUID()}`;
-    const stub = env.OWNER.getByName(stranger);
+    const stub = await admittedOwner(stranger);
     expect((await failure(() => stub.egressOpen(
       { owner: stranger, caller: stranger, origin: null,
         sandbox: { kind: "egress", token: lease.egress, generation: 1 } },
@@ -1224,9 +1224,8 @@ describe("a lease given back (untangle A2, review F5)", () => {
 
 describe("the owner's erasure", () => {
   it("ends every stream, and then every door refuses", async () => {
-    // The faux-model class, whose test hook reaches the erasure's internal path.
     const owner = `owner-${crypto.randomUUID()}`;
-    const stub: DurableObjectStub<FauxOwnerDO> = env.AGENT.getByName(owner);
+    const stub = await admittedOwner(owner);
     const bind = (extra: Partial<Binding> = {}): Binding =>
       ({ owner, caller: owner, origin: null,
          ...("sandbox" in extra ? {} : { tiers: TIERS }), ...extra });
@@ -1249,9 +1248,7 @@ describe("the owner's erasure", () => {
                                       generation: 1, secret: hashed(secretOf(start)) } });
     const open = await stub.egressOpen(sandbox, request(prepared.connection));
     expect(open.ok).toBe(true);
-    await runInDurableObject(stub, async (instance: FauxOwnerDO) => {
-      await instance.erasure.erase();
-    });
+    await erasedWhole(stub, owner, session);
     expect(await ended(open as EgressOpened)).toBe(true);
     expect((await failure(() => stub.egressOpen(sandbox, request(prepared.connection))))
       .message).toMatch(/^owner_erased/);

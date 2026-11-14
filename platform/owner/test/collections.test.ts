@@ -68,7 +68,7 @@ function thrown(act: () => unknown): unknown {
 
 describe("the revision primitive", () => {
   it("a board race has one winner and one conflict carrying the current row", async () => {
-    const o = ownerObject();
+    const o = await ownerObject();
     const { stub, name: alice, as } = o;
     const first = await write(o, alice, { row_id: "task-1", body: '{"lane":"todo"}' });
     const outcomes = await Promise.all([[alice, "doing"], ["muse", "done"]].map(
@@ -88,7 +88,7 @@ describe("the revision primitive", () => {
   });
 
   it("payloads are verbatim and pull follows the sequence", async () => {
-    const o = ownerObject();
+    const o = await ownerObject();
     const { stub, name: alice, as } = o;
     const body = '{ "b": 1,  "a": "café" }';
     const one = await write(o, alice, { row_id: "t1", body });
@@ -105,7 +105,7 @@ describe("the revision primitive", () => {
   });
 
   it("a private row is its writer's own", async () => {
-    const o = ownerObject();
+    const o = await ownerObject();
     const { stub, as } = o;
     const mine = await write(o, "bob", { collection: ROOM, row_id: "p", body: "secret",
                                          private: true });
@@ -123,7 +123,7 @@ describe("the revision primitive", () => {
   });
 
   it("get reads one row by key as pull would show it", async () => {
-    const o = ownerObject();
+    const o = await ownerObject();
     const { stub, as } = o;
     const mine = await write(o, "bob", { collection: ROOM, row_id: "p", body: "secret",
                                          private: true });
@@ -146,7 +146,7 @@ describe("the revision primitive", () => {
   it("bounds the owner's rows by what they take, names and index entries counted",
      { tags: ["large"] }, async () => {
     // Across every collection of one owner; another owner's object is untouched.
-    const { stub, name: alice } = ownerObject();
+    const { stub, name: alice } = await ownerObject();
     const charge = (state: DurableObjectState) => state.storage.sql.exec<{ rows_charge: number }>(
       "SELECT rows_charge FROM collection_space").one().rows_charge;
     const one = await inObject(stub, (store, state) => {
@@ -169,7 +169,7 @@ describe("the revision primitive", () => {
       expect(store.write(alice, alice, "room:a:main", "x", "4321", a.etag, false).revision)
         .toBe(2);
     });
-    const { stub: bobs } = ownerObject();
+    const { stub: bobs } = await ownerObject();
     await inObject(bobs, (store) => {
       expect(store.write("bob", "bob", "room:c:main", "x", "1", "", false).revision).toBe(1);
     });
@@ -178,7 +178,7 @@ describe("the revision primitive", () => {
 
   it("the RPC door carries the binder's caller and a conflict", async () => {
     // The verified caller is the writer; a lost swap is an answer, not a refusal.
-    const o = ownerObject();
+    const o = await ownerObject();
     const { stub, name: alice, as } = o;
     const row = await write(o, "bob", { row_id: "t", body: "1" });
     expect(row.writer).toBe("bob");
@@ -245,7 +245,7 @@ describe("the revision primitive", () => {
 
   it("a seq collision fails loudly and deletes nothing", async () => {
     // A missing high-water mark still numbers past the rows; a clash never replaces one.
-    const { stub, name: alice } = ownerObject();
+    const { stub, name: alice } = await ownerObject();
     await inObject(stub, (store, state) => {
       const put = (on: Collections, rowId: string) =>
         on.write(alice, alice, "board", rowId, rowId, "", false);
@@ -264,7 +264,7 @@ describe("the revision primitive", () => {
   });
 
   it("a clear never moves a reader's cursor back, and only the owner clears", async () => {
-    const { stub, name: alice, as } = ownerObject();
+    const { stub, name: alice, as } = await ownerObject();
     const put = (store: Collections, caller: string, rowId: string) =>
       store.write(alice, caller, ROOM, rowId, "1", "", true);
     await inObject(stub, (store) => {
@@ -289,7 +289,7 @@ describe("the revision primitive", () => {
 
 describe("the primitive's history", () => {
   it("records each write, delete and clear in its transaction", async () => {
-    const o = ownerObject();
+    const o = await ownerObject();
     const { stub, name: alice, as } = o;
     const room = "room:go:main";
     const put = (rowId: string, body: string, etag = "", caller = "bob", op = "write") =>
@@ -319,7 +319,7 @@ describe("the primitive's history", () => {
 
   it("is bounded in bytes, oldest first, and a key with no entry left repeats no revision",
      { tags: ["large"] }, async () => {
-    const { stub, name: alice } = ownerObject();
+    const { stub, name: alice } = await ownerObject();
     const kept = await inFilled(stub, (store, state) => {
       const sql = state.storage.sql;
       const a = store.write(alice, alice, "board", "a", "aaaa", "", false);
@@ -343,7 +343,7 @@ describe("the primitive's history", () => {
      { tags: ["large"] }, async () => {
     // A key erased and never made again leaves one entry; such keys are bounded by the
     // history's charge, and the floor keeps their revisions from repeating.
-    const { stub, name: alice } = ownerObject();
+    const { stub, name: alice } = await ownerObject();
     await inFilled(stub, (store, state) => {
       const count = (table: string, where: string) => state.storage.sql.exec<{ n: number }>(
         `SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).one().n;
@@ -371,7 +371,7 @@ describe("the primitive's history", () => {
   });
 
   it("lets an emptied collection's seq row go, and never takes its cursor back", async () => {
-    const { stub, name: alice, as } = ownerObject();
+    const { stub, name: alice, as } = await ownerObject();
     await inObject(stub, (store, state) => {
       store.write(alice, alice, "room:a:main", "x", "1", "", false);
       store.write(alice, alice, "room:a:main", "y", "2", "", false);
@@ -386,7 +386,7 @@ describe("the primitive's history", () => {
   });
 
   it("keeps every revision its bytes allow, read a page of entries at a time", async () => {
-    const { stub, name: alice } = ownerObject();
+    const { stub, name: alice } = await ownerObject();
     const page = LIMITS.maxPull;
     const bodies = Array.from({ length: page + 2 }, (_, n) => `v${n}`);
     await inObject(stub, (store) => {
@@ -409,7 +409,7 @@ describe("the primitive's history", () => {
   });
 
   it("is visible as its row is", async () => {
-    const o = ownerObject();
+    const o = await ownerObject();
     const { stub, name: alice, as } = o;
     const mine = await write(o, "bob", { collection: ROOM, row_id: "p", body: "secret",
                                          private: true });
@@ -562,7 +562,7 @@ function counters(sql: SqlStorage): Usage {
 describe("the bounds' counters", () => {
   it.each([1, 7, 42, 1009, 65537])("equal a recount after every step (seed %i)",
                                     { tags: ["large"] }, async (seed) => {
-    const { stub, name: owner } = ownerObject();
+    const { stub, name: owner } = await ownerObject();
     const collections = ["board", "room:go:main", "room:go:side"];
     const among = `collection IN (${collections.map((name) => `'${name}'`).join(", ")})`;
     const outcomes = await inFilled(stub, (store, state) => {
@@ -628,7 +628,7 @@ describe("the bounds' counters", () => {
   });
 
   it("are kept by the store alone: a history entry is never changed", async () => {
-    const { stub, name: owner } = ownerObject();
+    const { stub, name: owner } = await ownerObject();
     await inObject(stub, (store, state) => {
       store.write(owner, owner, "board", "t", "v1", "", false);
       expect(() => state.storage.sql.exec("UPDATE collection_history SET body_json = 'x'"))
@@ -640,7 +640,7 @@ describe("the bounds' counters", () => {
 describe("the history keys' migration (untangle H1)", () => {
   it("keys each entry by its change, moves the deletions, ticks nothing, and leaves every " +
      "counter and content reference as a recount finds it", async () => {
-    const { stub, name: owner } = ownerObject();
+    const { stub, name: owner } = await ownerObject();
     const placed = "c".repeat(64);
     const migrated = await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
@@ -726,7 +726,7 @@ describe("the history keys' migration (untangle H1)", () => {
 
 describe("the RPC door's fields", () => {
   it("refuses a field sent as undefined, as the Python door refused None", async () => {
-    const o = ownerObject();
+    const o = await ownerObject();
     const { stub, as } = o;
     const refused = await failure(() => stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t", body: "1", expected_etag: "", private: false,
@@ -736,7 +736,7 @@ describe("the RPC door's fields", () => {
   });
 
   it("refuses a cursor or a limit that is not a whole number in range", async () => {
-    const { stub, as } = ownerObject();
+    const { stub, as } = await ownerObject();
     for (const [after, limit] of [[1.5, 1], [Number.NaN, 1], [2 ** 53, 1], [-1, 1], ["1", 1],
                                   [true, 1], [0, 1.5], [0, Number.POSITIVE_INFINITY], [0, "2"],
                                   [0, 101], [0, 0], [0, null]]) {
@@ -749,7 +749,7 @@ describe("the RPC door's fields", () => {
 
 describe("the RPC door's owner-only erases", () => {
   it("refuses a delete by anyone but the owner, and a stale delete is a conflict", async () => {
-    const o = ownerObject();
+    const o = await ownerObject();
     const { stub, name: alice, as } = o;
     const row = await write(o, "bob", { row_id: "t", body: "1" });
     const refused = await failure(() => stub.collectionDelete(as("bob"), {
