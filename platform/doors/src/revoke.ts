@@ -20,7 +20,7 @@
  */
 import type { GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
-import { type Bound, installationOf, loopback, mcpClient } from "./binder";
+import { type Bound, installationOf, localOrigin, mcpClient } from "./binder";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MCP_RESOURCE } from "./config";
 import type { DoorsEnv } from "./env";
@@ -69,8 +69,7 @@ async function grantsWhere(oauth: OAuthHelpers, owner: string, pageSize: number,
 export async function replaceInstallation(env: DoorsEnv, owner: string, clientId: string,
                                           redirectUri: string,
                                           pageSize: number = GRANT_PAGE): Promise<number> {
-  const url = new URL(redirectUri);
-  if (url.protocol !== "http:" || !loopback(url.hostname)) {
+  if (!localOrigin(new URL(redirectUri))) {
     return 0;
   }
   const installation = installationOf(redirectUri);

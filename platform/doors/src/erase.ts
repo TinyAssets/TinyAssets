@@ -21,10 +21,11 @@
  *   A failure retries the message; the object's job sends it again anyway, so a half-done
  *   erasure always finishes.
  */
+import { FOREIGN_OWNER } from "../../contract/src/ids";
+import { ownerMessage } from "../../contract/src/queues";
 import { refusalOf } from "../../contract/src/refusal";
-import { principal } from "../../contract/src/text";
 
-import { bindPlatformFor, type Bound, FOREIGN } from "./binder";
+import { bindPlatformFor, type Bound } from "./binder";
 import { NOT_CONFIGURED, now } from "./config";
 import type { DoorsEnv } from "./env";
 import { deleteKey, deleteRoute, putOwner } from "./directory";
@@ -54,7 +55,7 @@ export async function eraseOutside(env: DoorsEnv, owner: string, upstream: () =>
     await deleteRoute(env, route);
   }
   await revokeAll(env, owner);
-  if (env.OWNER_ISSUER !== NOT_CONFIGURED && !owner.startsWith(FOREIGN)) {
+  if (env.OWNER_ISSUER !== NOT_CONFIGURED && !owner.startsWith(FOREIGN_OWNER)) {
     await upstream().forget(owner);
   }
   await stub.erasureOutsideDone(binding);
@@ -65,13 +66,9 @@ export async function eraseOutside(env: DoorsEnv, owner: string, upstream: () =>
 export async function erasureQueue(batch: MessageBatch<unknown>, env: DoorsEnv,
                                    upstream: () => Upstream): Promise<void> {
   for (const message of batch.messages) {
-    const body = message.body as { owner?: unknown } | null;
     let owner: string;
     try {
-      if (typeof body !== "object" || body === null || Object.keys(body).join() !== "owner") {
-        throw new Error("out of shape");
-      }
-      owner = principal(body.owner);
+      ({ owner } = ownerMessage(message.body));
     } catch {
       console.error("an erasure message is out of shape; dropped");
       message.ack();

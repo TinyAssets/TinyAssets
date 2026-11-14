@@ -15,7 +15,7 @@ import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 
 import type { DoorsEnv } from "./env";
 import { outsideRead } from "./control";
-import { withTiers } from "./binder";
+import { withAccount } from "./binder";
 import { bearer, failure, jsonObject, mediaType } from "./kit";
 import { profileOf } from "./mcp";
 import { answered, asJson } from "./refused";
@@ -33,7 +33,7 @@ export async function serveApi(request: Request, env: DoorsEnv, sources: Sources
                    { "WWW-Authenticate": "Bearer realm=\"tinyassets-api\"" });
   }
   return answered(asJson, async () => {
-    const held = withTiers(bound, await outsideRead(env, bound.binding.owner), sources);
+    const held = withAccount(bound, await outsideRead(env, bound.binding.owner), sources);
     const { tools } = await profileOf(held);
     const match = TOOL_PATH.exec(new URL(request.url).pathname);
     const tool = match === null ? undefined : tools.find((row) => row.name === match[1]);

@@ -67,7 +67,7 @@
  * Every answer but a socket's upgrade carries `SURFACE_HEADERS` (nosniff, a CSP of none).
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
- *   outside client; the control record's tier numbers ride the binding (`withTiers`).
+ *   outside client; the control record's tier numbers ride the binding (`withAccount`).
  * - `storage`: the owner's one storage number, used and left (`storageUsage`).
  * - `export`: the owner's export manifest (`owner/src/export.ts`), streamed as
  *   newline-delimited JSON (`exportStream`), resumable from any cursor line (it names the
@@ -93,7 +93,7 @@ import { utf8Decoder } from "../../contract/src/text";
 import { answerJson } from "./answers";
 import {
   type Bound, bindKeyRegistration, bindOwner, bindOwnerGrant, bindSignOut, bindTicket,
-  socketRequest, withTiers,
+  socketRequest, withAccount,
 } from "./binder";
 import { FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
 import type { DoorsEnv } from "./env";
@@ -564,7 +564,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   }
   const unread = bindOwner(env, token, session);
   const gate = await ownerRead(env, unread.binding.owner);
-  const owner = withTiers(unread, gate, sources);
+  const owner = withAccount(unread, gate, sources);
   if (route.body === "empty" && !exactKeys(parsed, [])) {
     return failure(400, NO_FIELDS);
   }
