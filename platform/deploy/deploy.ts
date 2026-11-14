@@ -128,9 +128,6 @@ export const E2B_HOOK = Object.freeze({
   /** Its signature secret's one other holder: the doors' copy. */
   secret: Object.freeze({ worker: "doors", name: "E2B_WEBHOOK_SECRET" }),
 });
-// Owed to `import-window.yml`, which imports the kit for the tiers until I1 reads
-// `control.json` with `jq` (B10, `ci/guards/rules.ts`); I1 deletes this line.
-export { DARK_CONTROL };
 /** What the plan job says of a check that needs a production secret. */
 const LATER = "checked by the apply job before any change";
 

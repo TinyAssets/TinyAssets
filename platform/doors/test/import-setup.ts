@@ -10,9 +10,10 @@ import { join } from "node:path";
 
 import type { TestProject } from "vitest/node";
 
+import { TIERS } from "../../ci/fixtures";
 import { buildBundles } from "../../import/bundle";
 import { checkedBundle } from "../../import/stage";
-import { ALICE, fixture, FOUNDER, keyOf, TIERS } from "../../import/guards/fixture";
+import { ALICE, fixture, FOUNDER, keyOf } from "../../import/guards/fixture";
 
 /** One bundle as the tests take it: its owner, key, digest and every file, base64. */
 export interface ImportBundle {

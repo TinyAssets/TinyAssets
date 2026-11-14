@@ -12,9 +12,10 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { TIERS } from "../../ci/fixtures";
 import { mountProblem } from "../backup";
-import { main, tiersOf } from "../cli";
-import { ALICE, BOB, fixture, FOUNDER, keyOf, NEWBIE, TIERS, UIDS } from "./fixture";
+import { main } from "../cli";
+import { ALICE, BOB, fixture, FOUNDER, keyOf, NEWBIE, UIDS } from "./fixture";
 
 const temps: string[] = [];
 afterEach(() => {
@@ -49,12 +50,6 @@ describe("the read-only mount", () => {
       .toBe("is not its own image: its loop device's backing file is another");
     expect(mountProblem(line("/w/mnt/300001", "ro", "xfs", "/dev/sda1"), "/w/mnt/300001", backing,
                         "/w/300001.img")).toMatch(/not its own image/);
-  });
-
-  it("takes the control record's tiers, each with its storage in bytes, or refuses", () => {
-    expect(tiersOf(JSON.stringify({ outside: "off", tiers: TIERS }))).toEqual(TIERS);
-    expect(() => tiersOf(JSON.stringify({ outside: "off" }))).toThrow(/no tiers/);
-    expect(() => tiersOf(JSON.stringify({ tiers: { free: { runs: 5 } } }))).toThrow(/no tiers/);
   });
 });
 
@@ -105,6 +100,18 @@ describe("the job's entry", () => {
                 () => mounted, swapped)).toBe(3);
     expect(JSON.parse(out.slice(-1)[0]!)["problems"])
       .toEqual({ not_mounted: 2, erasure_unread: 2 });
+  });
+
+  it("takes the control record's tiers as the contract parses them, or refuses", () => {
+    const { f, scratch, mounted, backing } = setup();
+    const control = join(scratch, "control.bad.json");
+    const unrun = { storage_bytes: TIERS.free.storage_bytes };
+    for (const record of [{ outside: "off" }, { tiers: { free: TIERS.free } },
+                          { tiers: { ...TIERS, free: unrun } }]) {
+      writeFileSync(control, JSON.stringify(record));
+      expect(() => main(["census", f.work, "--tiers", control, "--table", join(scratch, "t")],
+                        () => mounted, backing)).toThrow(/tier/);
+    }
   });
 
   it("runs the bundle from its arguments, the exclusion list read from its file", () => {

@@ -34,26 +34,19 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  answerName, doneName, IMPORT_QUEUE, importMac, type ImportMessage, type ImportOp,
-  importMessage, NO_ROWS, rehearsalRun, rowsSum, RUN,
+  answerName, doneName, importMac, type ImportMessage, type ImportOp, importMessage, NO_ROWS,
+  rehearsalRun, rowsSum, RUN,
 } from "../contract/src/import-message";
 
-import type { Entry, Row } from "./build";
+import { DEFAULT_TIER, type Entry, type Row } from "./build";
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
 import {
-  ACCOUNT, API, bundlesIn, type Fetcher, type Inputs, pushMessage, queueId, s3Request,
-  type Staged, STAGING_BUCKET,
+  ACCOUNT, API, bundlesIn, type Fetcher, type Inputs, type Names, pushMessage, queueId,
+  s3Request, type Staged,
 } from "./stage";
 
-/** The import queue's dead-letter queue (`doors/wrangler.jsonc`). */
-export const DEAD_LETTERS = `${IMPORT_QUEUE}-dlq`;
-/** The files Worker's bucket, and the prefix of every object of an owner's namespace. */
-export const FILES_BUCKET = "tinyassets-files";
+/** The prefix of every object of an owner's namespace in the files Worker's bucket. */
 export const namespacePrefix = (ns: string) => `o/${ns}/`;
-/** The directory's KV namespace, by its title (`deploy/platform.json`). */
-export const DIRECTORY = "tinyassets-directory";
-/** An owner's tier while it is pending: the schema's default, until the admit sets it. */
-const PENDING_TIER = "free";
 
 /** How a step waits and reads the clock: the process's, or a test's. */
 export interface Clock {
@@ -101,6 +94,7 @@ export function writeRecord(file: string, record: WindowRecord): void {
 
 /** The window's network: its inputs, a fetcher, and the clock. */
 export interface Window {
+  readonly names: Names;
   readonly inputs: Inputs;
   readonly fetcher: Fetcher;
   readonly clock: Clock;
@@ -177,7 +171,7 @@ export function askOf(staged: Staged, run: string, op: Exclude<ImportOp, "import
 async function answered(window: Window, name: string): Promise<Record<string, unknown>> {
   const until = window.clock.now().getTime() + window.clock.waitMs;
   for (;;) {
-    const text = await getText(window, STAGING_BUCKET, name);
+    const text = await getText(window, window.names.staging_bucket, name);
     if (text !== null) {
       return JSON.parse(text) as Record<string, unknown>;
     }
@@ -215,7 +209,8 @@ async function checkPages(window: Window, prefix: string, ask: string, part: str
     Promise<Record<string, unknown>[]> {
   const pages: Record<string, unknown>[] = [];
   for (let page = 0; ; page += 1) {
-    const text = await getText(window, STAGING_BUCKET, answerName(prefix, ask, `${part}-${page}`));
+    const text = await getText(window, window.names.staging_bucket,
+                               answerName(prefix, ask, `${part}-${page}`));
     if (text === null) {
       throw new Error("a check's page is missing from the staging bucket: run verify again");
     }
@@ -251,13 +246,13 @@ export async function verify(out: string, run: string, window: Window, recordFil
                              print: (line: string) => void): Promise<StepSummary> {
   checkRun(window, run);
   const bundles = bundlesIn(out);
-  const queue = await queueId(window.inputs, window.fetcher);
+  const queue = await queueId(window.inputs, window.fetcher, window.names.queue);
   const record = readRecord(recordFile, run);
   const lines: string[] = [];
   let cleanCount = 0;
   for (const [n, staged] of bundles.entries()) {
     const prefix = `${run}/${staged.key}`;
-    const done = await getText(window, STAGING_BUCKET, doneName(prefix));
+    const done = await getText(window, window.names.staging_bucket, doneName(prefix));
     let found: Differences;
     if (done === null || (JSON.parse(done) as { bundle?: unknown }).bundle !== staged.bundle) {
       found = { missing: [], extra: [], different: ["import: not done (no marker)"] };
@@ -278,7 +273,7 @@ export async function verify(out: string, run: string, window: Window, recordFil
           state: answer as unknown as Answers["state"],
         };
         const { entries, rows: bundleRows } = bundleContent(staged);
-        found = differences(expectedOf(entries, bundleRows), answers, PENDING_TIER);
+        found = differences(expectedOf(entries, bundleRows), answers, DEFAULT_TIER);
       }
     }
     const isClean = clean(found);
@@ -325,7 +320,7 @@ export async function admit(out: string, run: string, window: Window, recordFile
     throw new Error(`the dead-letter queue holds ${dead.messages} messages: no owner is ` +
                     "admitted until it is read and empty");
   }
-  const queue = await queueId(window.inputs, window.fetcher);
+  const queue = await queueId(window.inputs, window.fetcher, window.names.queue);
   const lines: string[] = [];
   for (const [n, staged] of bundles.entries()) {
     const answer = await ask(window, queue, askOf(staged, run, "admit", window.inputs.importKey));
@@ -342,9 +337,10 @@ export async function admit(out: string, run: string, window: Window, recordFile
 /** The directory's KV namespace id, by its title. */
 async function directoryId(window: Window): Promise<string> {
   const found = (await api<{ id: string; title: string }[]>(
-    window, "/storage/kv/namespaces?per_page=100")).filter((each) => each.title === DIRECTORY);
+    window, "/storage/kv/namespaces?per_page=100"))
+    .filter((each) => each.title === window.names.directory);
   if (found.length !== 1) {
-    throw new Error(`the account lists no KV namespace ${DIRECTORY}: nothing is done`);
+    throw new Error(`the account lists no KV namespace ${window.names.directory}: nothing is done`);
   }
   return found[0]!.id;
 }
@@ -388,7 +384,7 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
   checkRun(window, run);
   const bundles = bundlesIn(out);
   const record = readRecord(recordFile, run);
-  const queue = await queueId(window.inputs, window.fetcher);
+  const queue = await queueId(window.inputs, window.fetcher, window.names.queue);
   for (const [n, staged] of bundles.entries()) {
     if (record.discarded[staged.key]?.bundle === staged.bundle) {
       continue;  // discarded on an earlier run: its staging may be gone already
@@ -414,18 +410,19 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
     await api(window, `/storage/kv/namespaces/${directory}/bulk/delete`,
               { method: "POST", body: JSON.stringify(records.slice(at, at + 1000)) });
   }
-  for (const key of await listKeys(window, STAGING_BUCKET, `${run}/`)) {
-    await ok(window, s3Request(window.inputs, "DELETE", STAGING_BUCKET, key, {}, null,
+  const staging = window.names.staging_bucket;
+  for (const key of await listKeys(window, staging, `${run}/`)) {
+    await ok(window, s3Request(window.inputs, "DELETE", staging, key, {}, null,
                                window.clock.now()), "a staging delete");
   }
   const namespaces = [...new Set(Object.values(record.discarded)
     .flatMap((each) => each.namespace === null ? [] : [each.namespace]))];
   let objects = 0;
   for (const ns of namespaces) {
-    objects += (await listKeys(window, FILES_BUCKET, namespacePrefix(ns), 1)).length;
+    objects += (await listKeys(window, window.names.files_bucket, namespacePrefix(ns), 1)).length;
   }
   const proof = { records: (await runs()).length,
-                  staged: (await listKeys(window, STAGING_BUCKET, `${run}/`, 1)).length,
+                  staged: (await listKeys(window, staging, `${run}/`, 1)).length,
                   namespaces: namespaces.length, objects };
   print(`the directory lists ${proof.records} rehearsal records of the run, the staging bucket ` +
         `${proof.staged} objects of it, and the files bucket ${proof.objects} objects under ` +
@@ -448,16 +445,17 @@ export interface DeadLetters {
 export async function deadLetters(window: Window, out: string | null, run: string | null,
                                   remove: boolean, print: (line: string) => void):
     Promise<DeadLetters> {
-  const queue = await queueId(window.inputs, window.fetcher, DEAD_LETTERS);
+  const dead = window.names.dead_letter_queue;
+  const queue = await queueId(window.inputs, window.fetcher, dead);
   const consumers = await api<{ type?: string }[]>(window, `/queues/${queue}/consumers`);
   if (consumers.some((consumer) => consumer.type !== "http_pull")) {
-    throw new Error(`${DEAD_LETTERS} has a Worker consumer: it is read by none but this step`);
+    throw new Error(`${dead} has a Worker consumer: it is read by none but this step`);
   }
   if (consumers.length === 0) {
     await api(window, `/queues/${queue}/consumers`, { method: "POST", body: JSON.stringify({
       type: "http_pull", settings: { batch_size: 100, max_retries: 100,
                                      visibility_timeout_ms: 60_000 } }) });
-    print(`${DEAD_LETTERS} had no reader: its HTTP pull consumer is added`);
+    print(`${dead} had no reader: its HTTP pull consumer is added`);
   }
   const ordinals = new Map((out === null ? [] : bundlesIn(out))
     .map((staged, n) => [staged.key, n + 1]));
@@ -503,7 +501,7 @@ export async function deadLetters(window: Window, out: string | null, run: strin
     print(`${label}: ${count} dead-lettered`);
   }
   const messages = Math.max(seen.size, backlog);
-  print(`${DEAD_LETTERS}: ${messages} messages, ${deleted} deleted` +
+  print(`${dead}: ${messages} messages, ${deleted} deleted` +
         (remove ? "" : " (none is deleted without --delete)"));
   return { messages, by, deleted };
 }

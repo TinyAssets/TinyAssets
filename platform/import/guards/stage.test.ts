@@ -4,7 +4,8 @@
  * sent; each uploaded under its run, its index last, signed (SigV4, held to AWS's own worked
  * example); one message an owner, MAC'd under the window's key over its owner and bundle; a
  * dry run that prints what it would send and sends nothing; and nothing printed but counts
- * and ordinals, never a credential, a name or a key.
+ * and ordinals, never a credential, a name or a key. The live names are the deploy kit's, read
+ * from the configs (`deploy/facts.ts`), as the window's `facts.json` hands them to the job.
  */
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -13,11 +14,13 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { TIERS } from "../../ci/fixtures";
 import { macHolds } from "../../contract/src/import-message";
+import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
 import { credentialsFrom, STAGE_INPUTS, stageInputs, stageMain } from "../cli";
-import { type Fetcher, type Inputs, sigV4, stage, STAGING_BUCKET } from "../stage";
-import { ALICE, BOB, fixture, FOUNDER, keyOf, NEWBIE, TIERS } from "./fixture";
+import { type Fetcher, type Inputs, namesOf, sigV4, stage } from "../stage";
+import { ALICE, BOB, fixture, FOUNDER, keyOf, NEWBIE } from "./fixture";
 
 const temps: string[] = [];
 afterEach(() => {
@@ -30,6 +33,15 @@ const INPUTS: Inputs = Object.freeze({
   account: "a".repeat(32), accessKeyId: "AKIDEXAMPLE0000", secretAccessKey: "s3-secret-not-real",
   apiToken: "api-token-not-real", importKey: Buffer.alloc(32, 7).toString("base64url") });
 const SECRETS = [INPUTS.secretAccessKey, INPUTS.apiToken, INPUTS.importKey];
+const NAMES = IMPORT_NAMES;
+
+/** The window's `facts.json`, as its bundle step writes it (`facts.ts --import`). */
+function factsFile(): string {
+  const dir = mkdtempSync(join(tmpdir(), "ta-stage-facts-"));
+  temps.push(dir);
+  writeFileSync(join(dir, "facts.json"), JSON.stringify(IMPORT_NAMES));
+  return join(dir, "facts.json");
+}
 
 /** The builder's bundles of the fixture, in a fresh out folder (a rehearsal's, for its run). */
 function bundled(rehearsal: string | null = null): string {
@@ -54,8 +66,8 @@ function apis(options: { refuse?: string; queues?: unknown[] } = {}) {
     }
     if (request.method === "GET") {
       return Response.json({ success: true, result: options.queues
-        ?? [{ queue_id: "q-other", queue_name: "tinyassets-erasure" },
-            { queue_id: "q-import", queue_name: "tinyassets-import" }] });
+        ?? [{ queue_id: "q-other", queue_name: NAMES.dead_letter_queue },
+            { queue_id: "q-import", queue_name: NAMES.queue }] });
     }
     return request.url.startsWith("https://api.cloudflare.com/")
       ? Response.json({ success: true, result: null }) : new Response(null, { status: 200 });
@@ -85,12 +97,14 @@ describe("the staging step", () => {
     const out = bundled();
     const { calls, fetcher } = apis();
     const lines: string[] = [];
-    const summary = await stage(out, "rehearsal-1", INPUTS, fetcher, (line) => lines.push(line),
+    const summary = await stage(out, "rehearsal-1", NAMES, INPUTS, fetcher,
+                                (line) => lines.push(line),
                                 () => new Date("2026-11-08T12:00:00.000Z"));
     expect(summary).toMatchObject({ dry_run: false, bundles: 3, messages: 3 });
     expect(calls[0]).toMatchObject({ method: "GET", auth: `Bearer ${INPUTS.apiToken}`,
       url: `https://api.cloudflare.com/client/v4/accounts/${INPUTS.account}/queues?per_page=100` });
-    const r2 = `https://${INPUTS.account}.r2.cloudflarestorage.com/${STAGING_BUCKET}/rehearsal-1/`;
+    const r2 = `https://${INPUTS.account}.r2.cloudflarestorage.com/${NAMES.staging_bucket}/` +
+      "rehearsal-1/";
     const messages = calls.filter((call) => call.method === "POST");
     expect(messages.map((call) => call.url)).toEqual(Array(3).fill(
       `https://api.cloudflare.com/client/v4/accounts/${INPUTS.account}/queues/q-import/messages`));
@@ -126,12 +140,12 @@ describe("the staging step", () => {
     const out = bundled();
     const { calls, fetcher } = apis();
     const lines: string[] = [];
-    expect(await stageMain(["stage", out, "--run", "rehearsal-1", "--dry-run"], {},
-                           (line) => lines.push(line), fetcher)).toBe(0);
+    expect(await stageMain(["stage", out, "--run", "rehearsal-1", "--facts", factsFile(),
+                            "--dry-run"], {}, (line) => lines.push(line), fetcher)).toBe(0);
     expect(calls).toEqual([]);
     expect(lines.slice(0, 3)).toEqual([1, 2, 3].map((n) => expect.stringMatching(new RegExp(
-      `^bundle ${n} of 3: [0-9]+ objects, [0-9]+ bytes to ${STAGING_BUCKET}/rehearsal-1/<key>/, ` +
-      "its index last; then 1 message to tinyassets-import$"))));
+      `^bundle ${n} of 3: [0-9]+ objects, [0-9]+ bytes to ${NAMES.staging_bucket}/rehearsal-1/` +
+      `<key>/, its index last; then 1 message to ${NAMES.queue}$`))));
     expect(lines[3]).toMatch(/^in all: [0-9]+ objects, [0-9]+ bytes, 3 messages$/);
     expect(JSON.parse(lines[4]!)).toMatchObject({ dry_run: true, bundles: 3, messages: 3 });
     expect(lines.join("\n")).not.toContain(keyOf(ALICE));
@@ -142,18 +156,19 @@ describe("the staging step", () => {
       .map(([input, name]) => [name, INPUTS[input as keyof Inputs]]));
     const real = bundled();
     const rehearsal = bundled("r9");
+    const facts = ["--facts", factsFile()];
     const { calls, fetcher } = apis();
-    await expect(stageMain(["stage", real, "--run", "r9", "--rehearsal"], env, () => undefined,
-                           fetcher)).rejects.toThrow(/names a real owner/);
-    await expect(stageMain(["stage", rehearsal, "--run", "r9"], env, () => undefined, fetcher))
-      .rejects.toThrow(/names a rehearsal's owner/);
-    await expect(stageMain(["stage", rehearsal, "--run", "r8", "--rehearsal"], env,
+    await expect(stageMain(["stage", real, "--run", "r9", ...facts, "--rehearsal"], env,
+                           () => undefined, fetcher)).rejects.toThrow(/names a real owner/);
+    await expect(stageMain(["stage", rehearsal, "--run", "r9", ...facts], env, () => undefined,
+                           fetcher)).rejects.toThrow(/names a rehearsal's owner/);
+    await expect(stageMain(["stage", rehearsal, "--run", "r8", ...facts, "--rehearsal"], env,
                            () => undefined, fetcher)).rejects.toThrow(/another run's/);
     // Another run's rehearsal names are no window's either: its wipe would never find them.
-    await expect(stageMain(["stage", rehearsal, "--run", "r8"], env, () => undefined, fetcher))
-      .rejects.toThrow(/names a rehearsal's owner/);
+    await expect(stageMain(["stage", rehearsal, "--run", "r8", ...facts], env, () => undefined,
+                           fetcher)).rejects.toThrow(/names a rehearsal's owner/);
     expect(calls).toEqual([]);
-    expect(await stageMain(["stage", rehearsal, "--run", "r9", "--rehearsal"], env,
+    expect(await stageMain(["stage", rehearsal, "--run", "r9", ...facts, "--rehearsal"], env,
                            () => undefined, fetcher)).toBe(0);
     expect(calls.filter((call) => call.method === "POST").length).toBe(3);
   });
@@ -170,7 +185,8 @@ describe("the staging step", () => {
       .toThrow("a staging run takes IMPORT_KEY from its stdin");
     const out = bundled();
     const { calls, fetcher } = apis();
-    expect(await stageMain(["stage", out, "--run", "r1"], env, () => undefined, fetcher)).toBe(0);
+    expect(await stageMain(["stage", out, "--run", "r1", "--facts", factsFile()], env,
+                           () => undefined, fetcher)).toBe(0);
     expect(calls.filter((call) => call.method === "POST").length).toBe(3);
   });
 
@@ -186,7 +202,8 @@ describe("the staging step", () => {
         writeFileSync(join(dir, "chunks", "0".repeat(64)), "x");
       }
       const { calls, fetcher } = apis();
-      await expect(stage(out, "r1", INPUTS, fetcher, () => undefined)).rejects.toThrow(/bundle/);
+      await expect(stage(out, "r1", NAMES, INPUTS, fetcher, () => undefined))
+        .rejects.toThrow(/bundle/);
       expect(calls).toEqual([]);
     }
   });
@@ -194,14 +211,25 @@ describe("the staging step", () => {
   it("stops at the first refusal, and at an account with no import queue", async () => {
     const out = bundled();
     const refused = apis({ refuse: "/bundle.json" });
-    await expect(stage(out, "r1", INPUTS, refused.fetcher, () => undefined))
+    await expect(stage(out, "r1", NAMES, INPUTS, refused.fetcher, () => undefined))
       .rejects.toThrow("bundle 1's upload was refused (403): nothing more is sent");
     expect(refused.calls.filter((call) => call.method === "POST")).toEqual([]);
     const none = apis({ queues: [] });
-    await expect(stage(out, "r1", INPUTS, none.fetcher, () => undefined))
-      .rejects.toThrow(/lists no queue tinyassets-import/);
+    await expect(stage(out, "r1", NAMES, INPUTS, none.fetcher, () => undefined))
+      .rejects.toThrow(`lists no queue ${NAMES.queue} `);
     expect(none.calls.length).toBe(1);
-    await expect(stage(out, "Bad Run", INPUTS, none.fetcher, () => undefined))
+    await expect(stage(out, "Bad Run", NAMES, INPUTS, none.fetcher, () => undefined))
       .rejects.toThrow(/run's id/);
+  });
+});
+
+describe("the job's live names", () => {
+  it("are the deploy kit's, as facts.json hands them, each named, and nothing more", () => {
+    expect(namesOf(JSON.stringify(IMPORT_NAMES))).toEqual(IMPORT_NAMES);
+    const { directory: _directory, ...short } = IMPORT_NAMES;
+    for (const given of [short, { ...IMPORT_NAMES, more: "x" }, { ...IMPORT_NAMES, queue: "" },
+                         { ...IMPORT_NAMES, queue: 7 }, [IMPORT_NAMES]]) {
+      expect(() => namesOf(JSON.stringify(given))).toThrow(/not the import job's names/);
+    }
   });
 });

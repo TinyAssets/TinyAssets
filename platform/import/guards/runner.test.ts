@@ -27,11 +27,13 @@ import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
+import { TIERS } from "../../ci/fixtures";
+import { IMPORT_NAMES } from "../../deploy/facts";
 import { MOUNT_OPTIONS } from "../backup";
 import { STAGE_INPUTS } from "../cli";
 import { checkStores, copyMain, forbidden, released } from "../copy";
 import {
-  ALICE, ARCHIVE, BOB, DORA, ERASED, ERASING, fixture, FOUNDER, keyOf, NEWBIE, TIERS, UIDS,
+  ALICE, ARCHIVE, BOB, DORA, ERASED, ERASING, fixture, FOUNDER, keyOf, NEWBIE, UIDS,
 } from "./fixture";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -43,9 +45,12 @@ const CREDENTIALS = ["CLOUDFLARE_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACC
                      "CLOUDFLARE_API_TOKEN", "IMPORT_KEY"];
 /** The source key's stdin, census's and offsite's first two lines. */
 const SOURCE_KEY = "spaces-id-value\nspaces-secret-value\n";
-/** The primary store's prefix (`window.sh` SOURCE), and the off-site bucket's, as folders. */
+/**
+ * The primary store's prefix (`window.sh` SOURCE), and the off-site bucket's (the final backup's
+ * bucket, read from the configs as `facts.json` hands it to the host), as folders.
+ */
 const SOURCE_PATH = join("tasrc", "workflow-backups-jonnyton-sfo3", "workflow-backups");
-const OFFSITE_PATH = join("taoff", "tinyassets-final-backup", "workflow-backups");
+const OFFSITE_PATH = join("taoff", IMPORT_NAMES.final_backup_bucket, "workflow-backups");
 /** The one Node the fake registry names (`fake-host.sh`). */
 const DIGEST = `node@sha256:${"7a".repeat(32)}`;
 const WORKFLOW = parse(readFileSync(join(REPO, ".github", "workflows", "import-window.yml"),
@@ -60,7 +65,8 @@ let stage: string;
 let bin: string;
 
 beforeAll(() => {
-  // The workflow's own build and stage: the job bundled, the host script, the tiers.
+  // The workflow's own build and stage: the job bundled, the host script, the tiers and the
+  // live names.
   stage = mkdtempSync(join(tmpdir(), "ta-window-stage-"));
   temps.push(stage);
   execFileSync(join(PLATFORM, "node_modules", ".bin", "esbuild"),
@@ -69,6 +75,7 @@ beforeAll(() => {
                 "--log-level=error"]);
   copyFileSync(join(PLATFORM, "import", "window.sh"), join(stage, "window.sh"));
   writeFileSync(join(stage, "control.json"), JSON.stringify({ tiers: TIERS }));
+  writeFileSync(join(stage, "facts.json"), JSON.stringify(IMPORT_NAMES));
   bin = join(stage, "bin");
   mkdirSync(bin);
   chmodSync(join(HERE, "fake-host.sh"), 0o755);
@@ -805,7 +812,8 @@ describe("the off-site copy of the window's final backup, on a fake import host"
     const keys = new Set(calls.slice(from).filter((call) => call.startsWith("rclone-keys")));
     expect([...keys].sort()).toEqual(["rclone-keys TAOFF ", "rclone-keys TAOFF TASRC "]);
     expect(calls.filter((call) => call.startsWith("rclone cat taoff:"))).toEqual(
-      [`rclone cat taoff:tinyassets-final-backup/workflow-backups/platform/${MANIFEST}`]);
+      [`rclone cat taoff:${IMPORT_NAMES.final_backup_bucket}/workflow-backups/platform/` +
+       MANIFEST]);
     expect(calls.join("\n")).not.toMatch(/r2-secret-value|spaces-secret-value/);
     // No key in any file the run leaves, anywhere on the fake host (its work root, its own
     // root, the remotes, the call log) or in the stage.
@@ -849,6 +857,21 @@ describe("the off-site copy of the window's final backup, on a fake import host"
     expect(newer.status).toBe(2);
     expect(newer.out).toContain(
       "refused: the backup remote's newest manifest is not the one this run's copy was made from");
+    expect(existsSync(join(h.remotes, "taoff"))).toBe(false);
+  });
+
+  it("refuses a stage whose facts.json names no final backup's bucket, copying nothing", () => {
+    const h = host();
+    h.window(["census", "o5", "window"]);
+    const facts = join(stage, "facts.json");
+    renameSync(facts, `${facts}.away`);
+    try {
+      const run = h.window(["offsite", "o5", "window"], OFFSITE_KEY);
+      expect(run.status).toBe(2);
+      expect(run.out).toContain("refused: the stage's facts.json names no final-backup bucket");
+    } finally {
+      renameSync(`${facts}.away`, facts);
+    }
     expect(existsSync(join(h.remotes, "taoff"))).toBe(false);
   });
 });
@@ -984,7 +1007,8 @@ describe("the job's credentials, in window.sh's own order", () => {
     temps.push(record);
     for (const step of ["verify", "wipe", "admit"]) {
       const run = spawnSync(process.execPath, [join(stage, "import.mjs"), step, tmpdir(),
-                                               "--run", "r1", "--record", join(record, "r")],
+                                               "--run", "r1", "--facts", join(stage, "facts.json"),
+                                               "--record", join(record, "r")],
                             { input: "not-hex\nb\nc\nd\ne\n", encoding: "utf8",
                               env: { PATH: process.env["PATH"] } });
       expect(run.stderr).toContain("the account is 32 hex");

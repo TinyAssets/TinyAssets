@@ -23,14 +23,29 @@ import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { HEX16 } from "../contract/src/ids";
-import {
-  IMPORT_QUEUE, importMac, type ImportMessage, rehearsalRun, RUN,
-} from "../contract/src/import-message";
+import { importMac, type ImportMessage, rehearsalRun, RUN } from "../contract/src/import-message";
 
 import { FORMAT } from "./bundle";
 
-/** The staging bucket, as the doors bind it (`IMPORT_STAGING`). */
-export const STAGING_BUCKET = "tinyassets-import-staging";
+/**
+ * The live names the job reaches, by what each names: the deploy kit reads each from where it
+ * is written (`deploy/facts.ts`'s `IMPORT_NAMES`, which `stage.test.ts` holds to this list).
+ * The job runs away from this tree and its kit, so the window's bundle step writes them beside
+ * it (`facts.json`), which the job takes by `--facts`.
+ */
+const NAMED = Object.freeze(["staging_bucket", "queue", "dead_letter_queue", "files_bucket",
+                             "directory", "final_backup_bucket"] as const);
+export type Names = Readonly<Record<(typeof NAMED)[number], string>>;
+
+/** The job's names from `facts.json`'s text: each of `NAMED`, a name, and nothing more. */
+export function namesOf(text: string): Names {
+  const given: unknown = JSON.parse(text);
+  if (!plain(given) || Object.keys(given).sort().join() !== [...NAMED].sort().join()
+      || NAMED.some((key) => typeof given[key] !== "string" || given[key] === "")) {
+    throw new Error("the facts file is not the import job's names (deploy/facts.ts --import)");
+  }
+  return given as Names;
+}
 /** Cloudflare's API, and R2's S3 endpoint for an account. */
 export const API = "https://api.cloudflare.com/client/v4";
 const r2Host = (account: string) => `${account}.r2.cloudflarestorage.com`;
@@ -201,14 +216,8 @@ export function s3Request(inputs: Inputs, method: "GET" | "PUT" | "DELETE", buck
                ...(body === null ? {} : { "content-type": "application/octet-stream" }) } });
 }
 
-/** An object's PUT to the staging bucket over R2's S3 API, signed (SigV4) at `now`. */
-export function putObject(inputs: Inputs, name: string, body: Uint8Array, now: Date): Request {
-  return s3Request(inputs, "PUT", STAGING_BUCKET, name, {}, body, now);
-}
-
 /** A queue's id in the account, by its name, from the Queues API's listing. */
-export async function queueId(inputs: Inputs, fetcher: Fetcher, name: string = IMPORT_QUEUE):
-    Promise<string> {
+export async function queueId(inputs: Inputs, fetcher: Fetcher, name: string): Promise<string> {
   const answer = await fetcher(new Request(
     `${API}/accounts/${inputs.account}/queues?per_page=100`,
     { headers: { authorization: `Bearer ${inputs.apiToken}` } }));
@@ -238,11 +247,11 @@ export function messageOf(staged: Staged, run: string, importKey: string): Impor
 }
 
 /** What a run would send, a line a bundle by its ordinal, then the totals: no name, no key. */
-export function plannedLines(bundles: readonly Staged[], run: string): string[] {
+export function plannedLines(bundles: readonly Staged[], run: string, names: Names): string[] {
   return [
     ...bundles.map((staged, n) => `bundle ${n + 1} of ${bundles.length}: ${staged.parts.length} ` +
-      `objects, ${staged.bytes} bytes to ${STAGING_BUCKET}/${run}/<key>/, its index last; ` +
-      `then 1 message to ${IMPORT_QUEUE}`),
+      `objects, ${staged.bytes} bytes to ${names.staging_bucket}/${run}/<key>/, its index last; ` +
+      `then 1 message to ${names.queue}`),
     `in all: ${bundles.reduce((sum, staged) => sum + staged.parts.length, 0)} objects, ` +
     `${bundles.reduce((sum, staged) => sum + staged.bytes, 0)} bytes, ${bundles.length} messages`,
   ];
@@ -253,9 +262,10 @@ export function plannedLines(bundles: readonly Staged[], run: string): string[] 
  * each uploaded under `<run>/<key>/`, its index last, then its message sent; refused loudly at
  * the first answer that is not a success, with nothing more sent.
  */
-export async function stage(out: string, run: string, inputs: Inputs | null, fetcher: Fetcher,
-                            print: (line: string) => void, now: () => Date = () => new Date(),
-                            rehearsal = false): Promise<StageSummary> {
+export async function stage(out: string, run: string, names: Names, inputs: Inputs | null,
+                            fetcher: Fetcher, print: (line: string) => void,
+                            now: () => Date = () => new Date(), rehearsal = false):
+    Promise<StageSummary> {
   if (!RUN.test(run)) {
     throw new Error("a run's id is lowercase letters, digits and dashes, at most 64");
   }
@@ -272,16 +282,17 @@ export async function stage(out: string, run: string, inputs: Inputs | null, fet
     totals.messages += 1;
   }
   if (inputs === null) {
-    plannedLines(bundles, run).forEach((line) => print(line));
+    plannedLines(bundles, run, names).forEach((line) => print(line));
     return { dry_run: true, ...totals };
   }
   if (!ACCOUNT.test(inputs.account)) {
     throw new Error("the account is 32 hex");
   }
-  const queue = await queueId(inputs, fetcher);
+  const queue = await queueId(inputs, fetcher, names.queue);
   for (const [n, staged] of bundles.entries()) {
     for (const name of staged.parts) {
-      const answer = await fetcher(putObject(inputs, `${run}/${staged.key}/${name}`,
+      const answer = await fetcher(s3Request(inputs, "PUT", names.staging_bucket,
+                                             `${run}/${staged.key}/${name}`, {},
                                              readFileSync(join(staged.dir, name)), now()));
       if (!answer.ok) {
         throw new Error(`bundle ${n + 1}'s upload was refused (${answer.status}): ` +

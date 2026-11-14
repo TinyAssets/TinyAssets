@@ -12,16 +12,15 @@
  */
 import { lstatSync, readdirSync } from "node:fs";
 
+import type { Tiers } from "../contract/src/control";
 import { INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { carried } from "../owner/src/starter-package";
 
 import { fileSha256, layout } from "./backup";
-import { type Built, buildTree, type Fit, fitOf, type Tiers } from "./build";
+import { type Built, buildTree, type Fit, fitOf, tierOf } from "./build";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
 import { TAR_MEMBER_MAX } from "./tar";
-
-export type { Tiers } from "./build";
 
 /**
  * The backup copy's own integrity, before anything is read from it (research §4.4): the
@@ -99,7 +98,7 @@ function largestBelow(source: Buffer): number {
  * file past what a tar member can hold in `refused.tar` or `ignored.tar`. So a 40 GiB file
  * is refused by its size, never read.
  */
-export function precheck(owner: Owner, tiers: Tiers): Problem[] {
+export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
   const tree = owner.tree;
   const at = `owner/${owner.key}`;
   const largest = [...tree.carried.map((item) => item.size), ...tree.archived.map((a) => a.size)]
@@ -110,7 +109,7 @@ export function precheck(owner: Owner, tiers: Tiers): Problem[] {
   if (largest > FILE_DEFAULTS.max_file_bytes) {
     problems.push({ code: "over_file_bytes", at });
   }
-  const tier = tiers[owner.plan?.tier ?? "free"];
+  const tier = tiers === null ? undefined : tierOf(owner, tiers);
   if (tier !== undefined && largest > tier.storage_bytes) {
     problems.push({ code: "over_storage", at });
   }
@@ -131,7 +130,7 @@ export function precheck(owner: Owner, tiers: Tiers): Problem[] {
  */
 export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null):
     { built: Built | null; fit: Fit | null; problems: Problem[] } {
-  const first = precheck(owner, tiers ?? {})
+  const first = precheck(owner, tiers)
     .filter((problem) => tiers !== null || problem.code === "over_tar_member");
   if (first.length > 0) {
     return { built: null, fit: null, problems: first };
