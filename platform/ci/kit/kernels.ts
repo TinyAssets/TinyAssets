@@ -131,21 +131,24 @@ export const KERNELS: readonly Kernel[] = Object.freeze([
     under: "platform/", does: comparesKeys },
 ]);
 
-/** How many times `source` does what `kernel` does. */
-function uses(kernel: Kernel, path: string, source: string): number {
-  let count = 0;
+/** How many times `file` does what each of `kernels` does, in one walk of its tree. */
+function uses(kernels: readonly Kernel[], file: ts.SourceFile): number[] {
+  const counts = kernels.map(() => 0);
   const visit = (node: ts.Node): void => {
-    count += kernel.does(node) ? 1 : 0;
+    kernels.forEach((kernel, at) => {
+      counts[at]! += kernel.does(node) ? 1 : 0;
+    });
     ts.forEachChild(node, visit);
   };
-  visit(parse(path, source));
-  return count;
+  visit(file);
+  return counts;
 }
 
 /**
  * Every source of `files` (scripts by path from the repository root) that does a kernel's work
  * outside its home, in a layer the kernel holds: one violation per source and kernel, in the
- * source's workspace.
+ * source's workspace. Each source a kernel holds is parsed and walked once, for every kernel
+ * that holds it.
  */
 export function kernelProblems(files: ReadonlyMap<string, string>): Found[] {
   const named = new Set(LAYERS.map((layer) => layer.name));
@@ -158,18 +161,21 @@ export function kernelProblems(files: ReadonlyMap<string, string>): Found[] {
   const workers = workerFolders();
   const found: Found[] = [];
   for (const [path, source] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
-    const layers = layersOf(path, LAYERS, workers).map((layer) => layer.name);
     const workspace = workspaceOf(path);
-    for (const kernel of KERNELS) {
-      if (workspace === null || path === kernel.home || !path.startsWith(kernel.under)
-          || !kernel.layers.some((name) => layers.includes(name))) {
-        continue;
-      }
-      const count = uses(kernel, path, source);
-      if (count > 0) {
-        found.push({ workspace, what: kernelBreak(path, kernel.name, count) });
-      }
+    if (workspace === null) {
+      continue;
     }
+    const layers = layersOf(path, LAYERS, workers).map((layer) => layer.name);
+    const held = KERNELS.filter((kernel) => path !== kernel.home && path.startsWith(kernel.under)
+      && kernel.layers.some((name) => layers.includes(name)));
+    if (held.length === 0) {
+      continue;
+    }
+    uses(held, parse(path, source)).forEach((count, at) => {
+      if (count > 0) {
+        found.push({ workspace, what: kernelBreak(path, held[at]!.name, count) });
+      }
+    });
   }
   return found;
 }
