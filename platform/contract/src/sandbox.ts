@@ -108,12 +108,24 @@ export interface SandboxStart {
 }
 
 /**
- * The start's answer. A start on the vendor's own sign-in (`credential`
- * `vendor_login_in_sandbox`) first runs the record's `status_argv` inside that sandbox, and
- * answers `{started: false, code: "signin_required"}` when no login is there: a login is
- * never copied between sandboxes, so the owner signs in inside it (the vendor's own flow).
+ * Every code a start (a run's or a sign-in's) answers in place of starting, the closed list:
+ * - `sandbox_waiting`: no room for one more running sandbox (the platform's line, the
+ *   control record's ceiling, or E2B's own refusal), so the job waits until the line rings
+ *   its owner, never refused;
+ * - `signin_required`: a run on the vendor's own sign-in (`credential`
+ *   `vendor_login_in_sandbox`) found no login in its sandbox (the record's `status_argv`, run
+ *   there first): a login is never copied between sandboxes, so the owner signs in inside
+ *   it, by the vendor's own flow;
+ * - `sandbox_unconfigured`: the control record never held the sandbox numbers;
+ * - `sandbox_lost`: a joining job found no sandbox to run in.
  */
-export type Started = { readonly started: true } | { readonly started: false; readonly code: string };
+export const START_CODES = Object.freeze(["sandbox_waiting", "signin_required",
+                                          "sandbox_unconfigured", "sandbox_lost"] as const);
+export type StartCode = (typeof START_CODES)[number];
+
+/** The start's answer: started, or one of the start codes. */
+export type Started = { readonly started: true }
+  | { readonly started: false; readonly code: StartCode };
 
 /**
  * The vendor's own sign-in started in a sandbox (slice SIGNIN; `owner/src/signins.ts`), or

@@ -23,6 +23,7 @@ import {
 } from "../../contract/src/egress";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/migrate";
+import { refusalOf } from "../../contract/src/refusal";
 import { inboxCode, inboxDoc, INBOX, INCOMING, LEASE_FILE, PROTOCOL,
          SPEAKS } from "../runner/protocol";
 import { PROTOCOLS, shapeProblems } from "../runner/test/state-shape";
@@ -1118,12 +1119,9 @@ describe("the runner, by digest", () => {
       await e2b("/script", { state: { live: 1, quiet: false }, protocol });
       const answer = await stub(who).start(who, start({ run: `run_${hex(32, "3")}`,
                                                         tokens: null, network: null }))
-        .then((started) => started, (error: unknown) => String(error));
-      if (SPEAKS.includes(protocol)) {
-        expect(answer).toEqual({ started: true });
-      } else {
-        expect(String(answer)).toMatch(/sandbox_runner_protocol/);
-      }
+        .then((started) => started, (error: unknown) => refusalOf(error)?.code);
+      expect(answer).toEqual(SPEAKS.includes(protocol) ? { started: true }
+        : "sandbox_runner_protocol");
     }
     // Its own runner's protocol, and only the ones either side of it.
     expect(SPEAKS).toContain(PROTOCOL);
@@ -1135,7 +1133,7 @@ describe("the runner, by digest", () => {
     await e2b("/script", { signin: { "claude-code": 0 }, tampered: await runnerDigest() });
     const refused = await stub(who).start(who, start()).then(() => null,
                                                               (error: unknown) => error);
-    expect(String(refused)).toMatch(/^RunnerRefused: sandbox_runner_mismatch: /);
+    expect(refusalOf(refused)?.code).toBe("sandbox_runner_mismatch");
   });
 
   it("looks on when a start adopted another runner under its quiet look", async () => {

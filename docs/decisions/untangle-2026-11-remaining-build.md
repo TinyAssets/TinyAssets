@@ -432,3 +432,24 @@ It builds as its own PR, **C2b**, right after C2.
      - `template/image.ts:47` `NAME`: E2B's template name, an image input.
      - `guards/config.test.ts:74,78-79`: fixtures the guard must refuse.
      - `src/index.ts:2`: a comment.
+
+## S7 as built (2026-11-14)
+
+1. **`START_CODES` is a closed list, as `EGRESS_CODES` is** (`contract/src/sandbox.ts`): `sandbox_waiting`, `signin_required`, `sandbox_unconfigured`, `sandbox_lost`, and `Started.code: StartCode`. The sandbox Worker answers the literals, checked by the type, so it imports no value. The owner's `started()` (`owner/src/sandbox.ts`, lane S's file in S8) holds a code to the list. A code outside it is out of shape, so the start settles `unknown` (`start_lost`), as a start with no answer does.
+2. **The runner's two alerts are contract refusals:** `sandbox_runner_mismatch` and `sandbox_runner_protocol`, each `502`, terminal and named. They are added to `contract/src/refusal.ts` (lane C's file, two codes and their comment), as D2 added `egress_rate`.
+   - The refusal's message is human text with no sandbox id or digest. The founder's alert is still the log line that names both.
+   - The adoption's catch rethrows any refusal (`refusalOf`), where it rethrew `RunnerRefused`.
+3. **`RunnerFailed` was not a refusal** but a runner command's fault. Its one signal, another digest absent (exit 24), is now a value:
+   - `#exec` answers any exit;
+   - `#run` holds it to 0 or 3 (`answered`);
+   - the two callers that know another runner may be gone (the adoption's state look, the quiet look) read `#exec`.
+
+   Intended behaviour is unchanged.
+4. **No renderer.** The sandbox answers on one surface, its RPC entrypoint. A refusal crosses it by workerd's serialization (`contract/src/refusal.ts`'s header), so there is no `sandbox/src/refused.ts` to match `doors/src/refused.ts`.
+5. **The runner bundles `REFUSALS`**, so the two codes change the runner's bundle and the probes' (which pin the runner's digest). The pair check is owed at the dark redeploy. No image change.
+6. **Owed:**
+   - **Lane O (O4):** the owner's copies of the start codes, read from the contract instead:
+     - `owner/src/sandbox.ts:51` `SANDBOX_WAITING` (its file is S8's; its readers are `runs.ts` and `launch.ts`);
+     - `owner/src/runs.ts:124` `SIGNIN_REQUIRED`;
+     - `owner/src/launch.ts:280`'s restated answer type, which should be `Started`.
+   - **Lane D:** `doors/app/app.js:663`'s `"sandbox_waiting"`.
