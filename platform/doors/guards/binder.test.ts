@@ -2,13 +2,10 @@
  * The binder is the only binder (research checklist 1, 6, 17).
  *
  * - `getByName` appears only in `doors/src/binder.ts`, across every Worker's source, but
- *   for the codemode Worker naming its own class's objects (`this.env.CODEMODE`, in
- *   `codemode/src/index.ts` alone: a code mode execution's sandbox, which binds nothing of an
- *   owner) and the sandbox Worker naming its own classes' objects (`this.env.SANDBOXES` and
- *   `this.env.SLOTS`, in `sandbox/src/index.ts` and `control.ts` alone: one owner's
- *   sandboxes' E2B calls, and the platform's line for one more sandbox, neither of which
- *   binds anything of an owner's object), and no source names another way to an object id (`idFromName`,
- *   `idFromString`, `newUniqueId`). The owner's object names no object at all.
+ *   where a Worker names its own classes' objects, each place stated in its own rules
+ *   (`OWN_OBJECTS`, its `guards/rules.ts`: a source and the namespaces it names), and no
+ *   source names another way to an object id (`idFromName`, `idFromString`, `newUniqueId`).
+ *   The owner's object names no object at all.
  * - A `Binding` is built only there: no other doors source writes an object literal with
  *   a `caller`.
  * - Only `session.ts` reads the `Cookie` header, and only `directory.ts` touches the
@@ -27,6 +24,7 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+import { ruleLists } from "../../ci/kit/owed";
 import { envFile, parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const BINDER = "doors/src/binder.ts";
@@ -34,12 +32,16 @@ const BINDER = "doors/src/binder.ts";
 const ENV = envFile("doors");
 /** The owner's object, which names no object. */
 const OWNER_DO = "owner/src/owner-do.ts";
+/**
+ * Where each Worker names its own classes' objects, by source, as its rules state it, and
+ * nothing else: what a source names `getByName` on there.
+ */
+const OWN_OBJECTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ...(await ruleLists<Readonly<Record<string, readonly string[]>>>("OWN_OBJECTS")).entries()]
+  .flatMap(([workspace, own]) => Object.entries(own)
+    .filter(([path]) => path.startsWith(`${workspace}/src/`))));
 /** The codemode Worker's entry, which names its own class's objects and nothing else. */
 const CODEMODE_ENTRY = "codemode/src/index.ts";
-const CODEMODE_OWN = new Set(["this.env.CODEMODE"]);
-/** The sandbox Worker's sources that name its own classes' objects, and nothing else. */
-const SANDBOX_SOURCES = new Set(["sandbox/src/index.ts", "sandbox/src/control.ts"]);
-const SANDBOX_OWN = new Set(["this.env.SANDBOXES", "this.env.SLOTS"]);
 const SESSION = "doors/src/session.ts";
 const DIRECTORY = "doors/src/directory.ts";
 const CONNECT = "doors/src/connect.ts";
@@ -68,8 +70,7 @@ export function binderProblems(fileName: string, source: string): string[] {
     const on = name === "getByName" && ts.isPropertyAccessExpression(node.parent)
       && node.parent.name === node ? node.parent.expression.getText(file) : null;
     if (name === "getByName" && fileName !== BINDER
-        && !(fileName === CODEMODE_ENTRY && on !== null && CODEMODE_OWN.has(on))
-        && !(SANDBOX_SOURCES.has(fileName) && on !== null && SANDBOX_OWN.has(on))) {
+        && !(on !== null && (OWN_OBJECTS.get(fileName) ?? []).includes(on))) {
       report(node, "names getByName outside the binder");
     }
     if (name !== null && OBJECT_IDS.has(name)) {
@@ -127,6 +128,13 @@ describe("binder guard", () => {
     expect(workerSources().get(BINDER)).toContain("getByName");
   });
 
+  it("takes each Worker's own objects from its own rules, for its own sources alone", () => {
+    expect([...OWN_OBJECTS]).toEqual([
+      [CODEMODE_ENTRY, ["this.env.CODEMODE"]],
+      ["sandbox/src/index.ts", ["this.env.SANDBOXES", "this.env.SLOTS"]],
+      ["sandbox/src/control.ts", ["this.env.SANDBOXES", "this.env.SLOTS"]]]);
+  });
+
   it.each([
     ["doors/src/mcp.ts", "export const f = (env: any) => env.OWNER.getByName('alice');"],
     ["doors/src/mcp.ts", "export const f = (env: any) => env.OWNER['getByName']('alice');"],
@@ -152,6 +160,10 @@ describe("binder guard", () => {
     [CODEMODE_ENTRY, "export const f = (env: any) => env.RUNNER.getByName('bob');"],
     [CODEMODE_ENTRY, "class H { env: any; f(n: string) { return this.env.RUNNER.getByName(n); } }"],
     ["codemode/src/codemode.ts", "export const f = (o: any) => o.env.CODEMODE.getByName('bob');"],
+    // Another Worker's own objects, or a Worker's own from a source its rules do not name.
+    [CODEMODE_ENTRY, "class H { env: any; f(n: string) { return this.env.SLOTS.getByName(n); } }"],
+    ["sandbox/src/slots.ts",
+     "class H { env: any; f(n: string) { return this.env.SLOTS.getByName(n); } }"],
   ])("sees, in %s, %s", (fileName, source) => {
     expect(binderProblems(fileName, source)).not.toEqual([]);
   });

@@ -12,13 +12,13 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { bundledRecords, catalogOf } from "../../sources/src/catalog";
-import { sourceRecord } from "../../sources/src/check";
-import { SourceRecordError } from "../../sources/src/schema";
+import { bundledRecords, catalogOf } from "../src/catalog";
+import { sourceRecord } from "../src/check";
+import { SourceRecordError } from "../src/schema";
 
 type Json = Record<string, unknown>;
 const load = (id: string): Json =>
-  JSON.parse(readFileSync(join(PLATFORM, "sources", `${id}.json`), "utf8")) as Json;
+  JSON.parse(readFileSync(join(PLATFORM, "sources", "records", `${id}.json`), "utf8")) as Json;
 const claude = load("claude-code");
 const codex = load("codex");
 const pi = load("pi");

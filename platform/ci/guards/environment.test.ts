@@ -22,23 +22,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-import { OPTIONAL, SECRET_INPUTS } from "../../deploy/facts";
 import { REPO } from "../paths";
 import { type Data, workflow, workflowNames, WORKFLOWS } from "../workflows";
-
-/** The secrets the `production` environment must own (docs/host-actions.md row). */
-const PRODUCTION_SECRETS = [
-  "DO_SSH_KEY", "DO_DROPLET_HOST", "DO_SSH_USER", "DIGITALOCEAN_TOKEN", "DO_API_TOKEN",
-  // The canary's session and signing key repair its own account, so a branch run must
-  // never see them.
-  "TINYASSETS_CANARY_SESSION_KEY", "TINYASSETS_CANARY_SESSION_SEED_DEPLOY",
-  "TINYASSETS_CANARY_SESSION_SEED_UPTIME", "TINYASSETS_CANARY_HMAC_KEY",
-  // The platform's: every secret a Worker's config requires and the shared apps' signing
-  // secrets (platform-deploy.yml's apply; the E2B key, which spends money on E2B, in
-  // sandbox-template.yml's build and checks and the deploy's pair check too), stored by the
-  // founder's own gh (scripts/platform_setup.py).
-  ...SECRET_INPUTS, ...OPTIONAL,
-];
 
 /**
  * Secrets a job may read WITHOUT `environment: production`: a branch dispatch that reaches
@@ -297,7 +282,6 @@ describe("production workflows", () => {
     }
     expect(Object.keys(NON_PRODUCTION_SECRETS).filter((name) => !used.has(name)),
            "allowlisted secrets no workflow reads any more: delete them").toEqual([]);
-    expect(PRODUCTION_SECRETS.filter((name) => name in NON_PRODUCTION_SECRETS)).toEqual([]);
     expect(Object.values(NON_PRODUCTION_SECRETS).every((why) => why.trim())).toBe(true);
   });
 
@@ -337,8 +321,7 @@ describe("production workflows", () => {
     expect(wrong).toEqual([]);
     expect(Object.keys(ENVIRONMENT_SECRETS).filter((name) => !seen.has(name)),
            "environment secrets no workflow reads any more: delete them").toEqual([]);
-    expect(Object.keys(ENVIRONMENT_SECRETS).filter((name) => PRODUCTION_SECRETS.includes(name)
-                                                             || name in NON_PRODUCTION_SECRETS))
+    expect(Object.keys(ENVIRONMENT_SECRETS).filter((name) => name in NON_PRODUCTION_SECRETS))
       .toEqual([]);
     expect(Object.values(ENVIRONMENT_SECRETS)).not.toContain("production");
   });

@@ -3,8 +3,8 @@
  *
  * A Durable Object has one alarm, and the Agents SDK's Lifecycle owns it: its job queue
  * derives the alarm from every queued job, the lanes' and the erasure's, so a source that
- * set, read or cleared the alarm itself would overwrite theirs. So a Worker
- * source:
+ * set, read or cleared the alarm itself would overwrite theirs. So every source the owner
+ * Worker bundles (its own and the contract's it reaches, `closure`):
  * - never names `setAlarm`, `deleteAlarm`, `getAlarm`, Lifecycle's `disableAlarms` or the
  *   storage's `deleteAll` (which takes the queue with it), as an identifier, a property or
  *   a string, and holds no string with `Alarm` in it, so the obvious split spellings fail;
@@ -49,7 +49,8 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { parse, reporter, workerSources } from "../../ci/kit/sources";
+import { closure } from "../../ci/kit/imports";
+import { parse, reporter } from "../../ci/kit/sources";
 
 const BANNED: ReadonlySet<string> = new Set(["setAlarm", "deleteAlarm", "getAlarm",
                                              "disableAlarms", "deleteAll"]);
@@ -59,23 +60,13 @@ const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle", "agents
 const ERASE = "owner/src/erase.ts";
 const GATE = "owner/src/gate.ts";
 /** The banned names each source may still use, as an identifier only. */
-/**
- * The Worker sources that keep their own clock (slice S): the sandbox Worker's own Durable
- * Objects, with no Lifecycle and no owner's data: `SandboxControl`, whose alarm is its
- * sandboxes' look before their runtime ceiling, and `SandboxSlots`, whose alarm rings the
- * platform's line again. Each may set and clear its alarm, by identifier, and its `alarm` is
- * its own.
- */
-const OWN_CLOCKS: ReadonlySet<string> = new Set(["sandbox/src/control.ts",
-                                                 "sandbox/src/slots.ts"]);
-const OWN_CLOCK_NAMES: readonly string[] = Object.freeze(["setAlarm", "deleteAlarm"]);
 const WIPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   [GATE]: Object.freeze(["deleteAll"]),
   [ERASE]: Object.freeze(["disableAlarms"]),
-  // An owner's erasure deletes the sandbox Worker's own state of that owner whole.
-  "sandbox/src/control.ts": Object.freeze(["deleteAll"]),
 });
 const HAND_OFF = "await this.#lifecycle.alarm();";
+/** The owner Worker's sources, by path from `platform/`. */
+const OWNER = () => closure("owner");
 /** The object's source, the one that may have a `fetch` hand-off. */
 const OBJECT = "owner/src/owner-do.ts";
 /** The sockets' reserved methods, each the one statement it may hold. */
@@ -139,9 +130,7 @@ export function alarmReach(fileName: string, source: string): string[] {
   const visit = (node: ts.Node): void => {
     if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node))
         && BANNED.has(node.text) && !((WIPES[fileName] ?? []).includes(node.text)
-                                      && ts.isIdentifier(node))
-        && !(OWN_CLOCKS.has(fileName) && OWN_CLOCK_NAMES.includes(node.text)
-             && ts.isIdentifier(node))) {
+                                      && ts.isIdentifier(node))) {
       report(node, `names ${node.text}, which only Lifecycle calls`);
     } else if ((ts.isStringLiteralLike(node) || ts.isTemplateHead(node)
                 || ts.isTemplateMiddle(node) || ts.isTemplateTail(node))
@@ -185,7 +174,7 @@ export function alarmReach(fileName: string, source: string): string[] {
         report(node, `${member} does more than \`${RESERVED[member]}\``);
       }
     }
-    if (member === "alarm" && !OWN_CLOCKS.has(fileName)) {
+    if (member === "alarm") {
       const body = ts.isMethodDeclaration(node) ? node.body : undefined;
       if (body === undefined || body.statements.length !== 1
           || body.statements[0]!.getText(file) !== HAND_OFF) {
@@ -199,9 +188,10 @@ export function alarmReach(fileName: string, source: string): string[] {
 }
 
 describe("alarm guard", () => {
-  it("finds no alarm reach past Lifecycle in any Worker's source", () => {
-    const sources = workerSources();
-    expect([...sources.keys()]).toContain("owner/src/owner-do.ts");
+  it("finds no alarm reach past Lifecycle in any source the owner Worker bundles", () => {
+    const sources = closure("owner");
+    expect([...sources.keys()]).toEqual(expect.arrayContaining(["owner/src/owner-do.ts",
+                                                                "contract/src/migrate.ts"]));
     expect([...sources].flatMap(([path, source]) => alarmReach(path, source))).toEqual([]);
   });
 
@@ -236,30 +226,30 @@ describe("alarm guard", () => {
     expect(alarmReach(ERASE, "export const k = 'disableAlarms';")).not.toEqual([]);
     expect(alarmReach(ERASE, "export class E { m(s: S) { return s.setAlarm(1); } }"))
       .not.toEqual([]);
-    expect(workerSources().get(ERASE)).toContain("await lifecycle.disableAlarms();");
-    expect(workerSources().get(GATE)).toContain(
+    expect(OWNER().get(ERASE)).toContain("await lifecycle.disableAlarms();");
+    expect(OWNER().get(GATE)).toContain(
       "const wiped = this.#raw.deleteAll();\n" +
       "    const leave = () => this.#raw.transactionSync(() => tombstone(this.#raw.sql));\n" +
       "    leave();\n    return wiped.then(leave);");
   });
 
   it("lets only the object's erasure wiring call the gate's wipe", () => {
-    const callers = [...workerSources()].flatMap(([path, source]) =>
+    const callers = [...OWNER()].flatMap(([path, source]) =>
       [...source.matchAll(/\.wipe\(/g)].map(() => path));
     // The erasure's, and the cutover's discard's (`Erasure.discard`), which leaves no tombstone.
     expect(callers).toEqual(["owner/src/owner-do.ts", "owner/src/owner-do.ts"]);
-    expect(workerSources().get("owner/src/owner-do.ts"))
+    expect(OWNER().get("owner/src/owner-do.ts"))
       .toContain("      wipe: () => this.#gate.wipe(writeTombstone),\n" +
                  "      bare: () => this.#gate.wipe(() => undefined),\n");
   });
 
   it("finds the object's one hand-off", () => {
-    const source = workerSources().get("owner/src/owner-do.ts")!;
+    const source = OWNER().get("owner/src/owner-do.ts")!;
     expect(source).toContain(`override async alarm(): Promise<void> {\n    ${HAND_OFF}\n  }`);
   });
 
   it("finds the sockets' reserved methods, each only a hand-off to Lifecycle", () => {
-    const source = workerSources().get(OBJECT)!;
+    const source = OWNER().get(OBJECT)!;
     for (const body of Object.values(RESERVED)) {
       expect(source).toContain(`
     ${body}
