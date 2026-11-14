@@ -781,9 +781,13 @@ export const egressDoors = Object.freeze({
     if (live) {
       try {
         await o.connections.fresh(r.connection);
-      } catch {
-        // A refresh that failed leaves the credential as it was: the open below refuses it
-        // if it has expired, and uses it while it has not.
+      } catch (error) {
+        // A refresh refused leaves the credential as it was: the open below refuses it if it
+        // has expired, and uses it while it has not. Anything else is thrown.
+        const code = error instanceof Refusal ? error.code : null;
+        if (code !== "credential_refresh_failed" && code !== "credential_expired") {
+          throw error;
+        }
       }
     }
     return o.door(() => {

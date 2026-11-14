@@ -26,3 +26,6 @@ Four owner catches took every error where only a refusal is meant, so a storage 
      - a broken chunk stays a recorded difference;
      - the window's flow (verify, dlq, admit) is unchanged.
    - **Owed, on branch `untangle/check-chunks`:** the FILES method (`files/src/index.ts`, and `ChunkStore` in `contract/src/files.ts`), which are lane V's files (d2 §D). It comes with the one owner change (`import.ts`'s catch removed) and a test that loses the `FILES` answer with the gate's `lose` (#5591's `Control.lose`).
+3. **The review's retro-check found two more, fixed here.**
+   - `owner/src/egress.ts`, `egressOpen`'s refresh catch: only `credential_refresh_failed` or `credential_expired` lets the open go on; a storage fault in the refresh (its lease write, or the rotated tokens' store) is thrown, not dropped with no log.
+   - `files/src/index.ts`, `#put`'s existing-key read: a failed bucket read is its own error, no longer "a chunk key holds bytes this Worker did not verify"; the catch is gone (`openObject`'s null is the only "does not open").
