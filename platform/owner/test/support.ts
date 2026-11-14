@@ -15,7 +15,8 @@ import {
 import type { OwnerDO } from "../src/owner-do";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
-import { PLACE_BYTES } from "../../contract/src/limits";
+import { INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
+import { carried } from "../src/starter-package";
 import { fileLimits, Policy } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
 import { storageFull, storageFullRefusal } from "../src/storage-full";
@@ -420,6 +421,39 @@ export async function seeded(stub: Stub, name: string): Promise<Stub> {
     await drainDue(stub);
   }
   throw new Error(`${name}'s seed did not land`);
+}
+
+/**
+ * What every owner's seed writes, read from the starter package this code carries
+ * (`carried()`), never a literal: its files (path and bytes, inline or placed in R2 past
+ * `INLINE_BYTES`), the directories they make below the workspace, and their totals. A test
+ * that counts files, bytes, listing pages or changes adds this to its own; one that means
+ * "only what I wrote" filters to its own paths (`mine`).
+ */
+export function starterSeed() {
+  const files = carried().files.map((each) => ({ path: each.path,
+                                                 bytes: text(each.text).byteLength }));
+  const dirs = [...new Set(files.flatMap((each) => {
+    const parts = each.path.split("/").slice(1, -1);
+    return parts.slice(1).map((_, n) => `/${parts.slice(0, n + 2).join("/")}`);
+  }))].sort();
+  const placed = files.filter((each) => each.bytes > INLINE_BYTES);
+  return {
+    files, dirs, paths: new Set([...files.map((each) => each.path), ...dirs]),
+    entries: files.length + dirs.length,
+    bytes: files.reduce((sum, each) => sum + each.bytes, 0),
+    inlineBytes: files.filter((each) => each.bytes <= INLINE_BYTES)
+      .reduce((sum, each) => sum + each.bytes, 0),
+    placedBytes: placed.reduce((sum, each) => sum + each.bytes, 0),
+    placed: placed.length,
+    /** Of `paths`, those that are not the seed's: what the test itself wrote. */
+    mine: (paths: Iterable<string>) => [...paths].filter((path) =>
+      !starterPaths().has(path.replace(/\.ta-new$/, ""))),
+  };
+}
+
+function starterPaths(): Set<string> {
+  return new Set(carried().files.map((each) => each.path));
 }
 
 /** `name`'s object, admitted, its seed landed: the rigs' owner (`admitted`, `seeded`). */
