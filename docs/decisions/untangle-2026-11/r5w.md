@@ -19,7 +19,7 @@ R5w is lane R's `restore.wipe`, the step restore owes before anything live can b
    - every door but the restore's refuses, in one place in `#bind`;
    - the platform's admission refuses too, and so does the import.
 
-   In the same unit, every run and stream is ended, as a suspension's prompt stop ends them, and the sockets are closed. The hold is not a suspension: a suspension's reason would be written into the fresh generation, and the owner would be told "abuse" or "billing".
+   In the same unit, every run and stream is ended, as a suspension's prompt stop ends them. The sockets are then closed with the relay's `lost` kind, whose reconnect `restoring` refuses; a close kind of its own is a contract change for the apps, owed (`untangle/r-restore-close`). The hold is not a suspension: a suspension's reason would be written into the fresh generation, and the owner would be told "abuse" or "billing".
 6. **The present state is written first (Fact 13).** After the hold, the pin begins a fresh generation (`Backups.begin`), whatever the owner's change mark says: it must begin after the hold. A generation already under way began before the hold, so it is carried to its end first, and then a new one is begun.
    - The pin drives the manifest lane's pass itself, at most `RESTORE_PASS_MS` a call, as `restoreStep` drives the load. While the record stands, no lane runs.
    - `Backups.run` now takes one pass at a time: a second pass asked meanwhile joins the first.
