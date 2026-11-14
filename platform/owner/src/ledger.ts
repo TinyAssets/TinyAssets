@@ -15,7 +15,7 @@
  *   message id and body hash
  *   returns the original; another hash is a `conflict`. One transaction writes the
  *   message, its body, its recipient, the parent's `replied` state and the recipient's
- *   wake. A reply's time to reply is its own and its parent's `created_at`.
+ *   wake. A reply holds its time to reply (`reply_s`), so no read needs its parent.
  * - The idempotency window: a resend is matched against the messages the ledger holds hot.
  *   A message leaves the hot set only once every recipient has acked it, moved to an
  *   archive segment (`segments.ts`, slice STORE item 2), so a resend is deduplicated at
@@ -660,6 +660,8 @@ type StoredMessage = {
   authority: string | null;
   attended: number;
   line_bytes: number;
+  /** A reply's time to reply, its own `created_at` less its parent's, as it was posted. */
+  reply_s: number | null;
 };
 
 type StoredNative = NativeAgent & { unacked_to_owner: number };
@@ -1636,7 +1638,8 @@ export class Ledger {
         sender_kind: kind, sender_id: sender, client_message_id: cmid, body_sha256: sha,
         parent_id: parentKey, chain_root: parent?.chain_root ?? messageId, chain_depth: depth,
         created_at: now, body_bytes: size, unacked: 0, authority: kept,
-        attended: origin === null ? 1 : 0, line_bytes: 0 };
+        attended: origin === null ? 1 : 0, line_bytes: 0,
+        reply_s: parent === undefined ? null : round3(now - parent.created_at) };
       const lineBytes = mailLineBytes(message, {
         message_id: messageId, room_id: room, body, created_at: now, body_bytes: size,
         content_id: null, filer, meta_bytes: 0 },
@@ -1645,10 +1648,10 @@ export class Ledger {
       sql.exec(
         "INSERT INTO ledger_messages (seq, message_id, command_center_id, room_id, " +
           "sender_kind, sender_id, client_message_id, body_sha256, parent_id, chain_root, " +
-          "chain_depth, created_at, body_bytes, authority, attended, line_bytes) VALUES (?, ?, " +
-          "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "chain_depth, created_at, body_bytes, authority, attended, line_bytes, reply_s) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         seq, messageId, center, room, kind, sender, cmid, sha, parentKey, message.chain_root,
-        depth, now, size, kept, message.attended, lineBytes);
+        depth, now, size, kept, message.attended, lineBytes, message.reply_s);
       sql.exec("INSERT INTO message_bodies (message_id, room_id, body, created_at, " +
                  "body_bytes, content_id, filer, meta_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                messageId, room, contentId === null ? body : "", now, size, contentId, filer,
@@ -2482,11 +2485,9 @@ export class Ledger {
     return this.#storage.transactionSync(() => {
       const reader = this.#reader(origin);
       const cursor = this.#cursor(reader);
-      // A reply's time to reply is its own time less its parent's, while the parent is hot.
-      const rows = sql.exec<StoredMessage & { state: string; parent_at: number | null }>(
-        "SELECT m.*, r.state, p.created_at AS parent_at FROM ledger_recipients r " +
-          "JOIN ledger_messages m ON m.message_id = r.message_id LEFT JOIN ledger_messages p " +
-          "ON p.message_id = m.parent_id WHERE r.agent_id = ? AND r.seq > ? " +
+      const rows = sql.exec<StoredMessage & { state: string }>(
+        "SELECT m.*, r.state FROM ledger_recipients r JOIN ledger_messages m " +
+          "ON m.message_id = r.message_id WHERE r.agent_id = ? AND r.seq > ? " +
           "ORDER BY r.seq LIMIT ?", reader, cursor, limit,
       ).toArray();
       const ids = JSON.stringify(rows.map((r) => r.message_id));
@@ -2521,8 +2522,7 @@ export class Ledger {
           seq: row.seq, message_id: row.message_id, room_id: row.room_id,
           sender_kind: row.sender_kind, sender_id: row.sender_id, parent_id: row.parent_id,
           chain_depth: row.chain_depth, created_at: row.created_at,
-          reply_s: row.parent_at === null ? null : round3(row.created_at - row.parent_at),
-          body: null, integrity,
+          reply_s: row.reply_s, body: null, integrity,
         };
         const comma = messages.length ? 1 : 0;
         const room = pageBytes - used - comma;

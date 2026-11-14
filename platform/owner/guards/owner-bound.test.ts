@@ -423,11 +423,12 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     ledger_messages: { rows: L.maxMessages,
                        bytes: ROW + MESSAGE_ID + 4 * UNIVERSE_CHARS + 4 * ROOM_CHARS + AGENT_ID
                          + 4 * CMID_CHARS + 64 + 4 * PARENT_CHARS + MESSAGE_ID + 7
-                         + AUTHORITY_CHARS + 8 + 8,
+                         + AUTHORITY_CHARS + 8 + 8 + NUMBER,
                        by: "maxMessages (the hot ceiling: acked mail moves to archive " +
                          "segments), each its ids, universe, room, client message id, " +
                          "body hash, parent, authority (visible ASCII), whether a person " +
-                         "sent it and its lines' bytes, at the validators' widest",
+                         "sent it, its lines' bytes and a reply's time to reply, at the " +
+                         "validators' widest",
                        indexes: { sqlite_autoindex_ledger_messages_1: key(MESSAGE_ID),
                                   sqlite_autoindex_ledger_messages_2: key(AGENT_ID,
                                                                           4 * CMID_CHARS),

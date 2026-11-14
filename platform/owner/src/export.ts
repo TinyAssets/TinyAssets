@@ -154,8 +154,8 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     collection_seqs: t("collection seq", "collection"),
     collection_clock: t("only change", "only"),
     // The ledger: agents, messages, their bodies, recipients and readers. A recipient's row
-    // holds when it read its message and why it failed; a reply's time to reply is its own
-    // `created_at` less its parent's; an ack is its reader's row.
+    // holds when it read its message and why it failed; a reply's row, its time to reply
+    // (`reply_s`); an ack is its reader's row.
     outside_agents: t("agent_id command_center_id outside_client outside_family source " +
                       "source_ref display_name delivery_method recipe_id revision " +
                       "disabled_reason created_at max_wakes_per_hour batch_window_s " +
@@ -164,7 +164,8 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     native_agents: t("agent_id agent created_at retired_at unacked_to_owner", "agent_id"),
     ledger_messages: t("seq message_id command_center_id room_id sender_kind sender_id " +
                        "client_message_id body_sha256 parent_id chain_root chain_depth " +
-                       "created_at body_bytes unacked authority attended line_bytes", "seq"),
+                       "created_at body_bytes unacked authority attended line_bytes reply_s",
+                       "seq"),
     message_bodies: t("message_id room_id body created_at body_bytes content_id filer " +
                       "meta_bytes", "message_id"),
     ledger_recipients: t("message_id agent_id seq state changed_at unacked read_at " +

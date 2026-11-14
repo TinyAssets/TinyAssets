@@ -478,6 +478,11 @@ describe("the archive lane", () => {
     expect(chain.root).toBe(first);
     expect(chain.messages.map((m) => [m.message_id, m.body])).toEqual([
       [first, "m 0"], [reply.message_id, "late reply"]]);
+    // The reply holds its exact time to reply, its parent archived: no read needs the parent.
+    const [parentAt, replyAt] = chain.messages.map((m) => m.created_at);
+    const [mine] = (await r.read(null)).messages;
+    expect([mine!.message_id, mine!.reply_s])
+      .toEqual([reply.message_id, Math.round((replyAt! - parentAt!) * 1000) / 1000]);
     // A forged parent id is no parent.
     expect((await failure(() => r.post(MUSE, room, { cmid: "r2", body: "x",
                                                      parent: `msg_${"a".repeat(32)}` })))

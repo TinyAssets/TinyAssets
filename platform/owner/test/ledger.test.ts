@@ -555,19 +555,20 @@ describe("the ledger's binding", () => {
       }
       migrate(state.storage, MIGRATIONS.slice(0, receipts));
       // Three messages to Muse: read twice, failed, and neither; a wake's failure beside them.
+      // The last two reply to the first: one's receipt went, so its time is its parent's.
       for (const [seq, held] of [[1, "replied"], [2, "failed"], [3, "queued"]] as const) {
         sql.exec("INSERT INTO ledger_messages (seq, message_id, command_center_id, room_id, " +
-                   "sender_kind, sender_id, client_message_id, body_sha256, chain_root, " +
-                   "chain_depth, created_at, body_bytes, line_bytes) VALUES (?, ?, '', " +
-                   "'dm:m', 'owner', 'owner', ?, ?, ?, 0, 1, 1, 1)", seq, `m${seq}`, `c${seq}`,
-                 "0".repeat(64), `m${seq}`);
+                   "sender_kind, sender_id, client_message_id, body_sha256, parent_id, " +
+                   "chain_root, chain_depth, created_at, body_bytes, line_bytes) VALUES (?, ?, " +
+                   "'', 'dm:m', 'owner', 'owner', ?, ?, ?, 'm1', 0, ?, 1, 1)", seq, `m${seq}`,
+                 `c${seq}`, "0".repeat(64), seq === 1 ? null : "m1", seq);
         sql.exec("INSERT INTO ledger_recipients (message_id, agent_id, seq, state, " +
                    "changed_at) VALUES (?, 'muse', ?, ?, 1)", `m${seq}`, seq, held);
       }
       for (const [kind, ref, at, detail] of [
         ["read", "m1", 5, "{}"], ["read", "m1", 3, "{}"], ["read", "m1", 4, "{}"],
         ["failed", "m2", 6, '{"reason":"sender_gone"}'], ["failed", "w1", 7, '{"reason":"x"}'],
-        ["ack", "1", 8, "{}"]] as const) {
+        ["ack", "1", 8, "{}"], ["reply", "m3", 9, '{"parent_id":"m1","reply_s":2.5}']] as const) {
         sql.exec("INSERT INTO ledger_receipts (agent_id, kind, ref, at, detail_json) VALUES " +
                    "('muse', ?, ?, ?, ?)", kind, ref, at, detail);
       }
@@ -575,6 +576,8 @@ describe("the ledger's binding", () => {
       return {
         rows: sql.exec("SELECT message_id, read_at, failed_reason FROM ledger_recipients " +
                        "ORDER BY seq").toArray(),
+        replies: sql.exec("SELECT reply_s FROM ledger_messages ORDER BY seq").toArray()
+          .map((m) => m["reply_s"]),
         receipts: sql.exec("SELECT name FROM sqlite_master WHERE name GLOB '*receipts*' AND " +
                            "name NOT GLOB '*policy*' AND name NOT GLOB '*starter*'").toArray(),
       };
@@ -583,6 +586,7 @@ describe("the ledger's binding", () => {
       { message_id: "m1", read_at: 3, failed_reason: null },
       { message_id: "m2", read_at: null, failed_reason: "sender_gone" },
       { message_id: "m3", read_at: null, failed_reason: null }]);
+    expect(moved.replies).toEqual([null, 1, 2.5]);
     expect(moved.receipts).toEqual([]);
   });
 });
