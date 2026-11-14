@@ -104,7 +104,6 @@ export const TEST_OAUTH = Object.freeze({
     client_id: "tinyassets-test",
     client_auth: { method: "none" },
     scope: "models.read",
-    refresh_with: "rfc6749",
     revocation_endpoint: "https://auth.test/revoke",
     issuer: "https://auth.test",
     authorization_response_iss_parameter_supported: true,

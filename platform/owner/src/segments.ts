@@ -705,8 +705,8 @@ export function recordRows(bytes: Uint8Array): [string, Record<string, unknown>]
 
 /** A byte range of a segment's content, as reads of its chunks (each `CHUNK_BYTES`). */
 export function chunkReads(chunks: readonly string[], offset: number, length: number):
-    { sha256: string; offset: number; length: number; verify: true }[] {
-  const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
+    { sha256: string; offset: number; length: number }[] {
+  const reads: { sha256: string; offset: number; length: number }[] = [];
   let at = offset;
   const end = offset + length;
   while (at < end) {
@@ -717,7 +717,7 @@ export function chunkReads(chunks: readonly string[], offset: number, length: nu
     if (sha256 === undefined) {
       throw new Error("a segment's range runs past its content");
     }
-    reads.push({ sha256, offset: within, length: take, verify: true });
+    reads.push({ sha256, offset: within, length: take });
     at += take;
   }
   return reads;

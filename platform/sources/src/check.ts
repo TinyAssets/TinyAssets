@@ -18,7 +18,7 @@ import { RUN_BASICS } from "./run-env";
 import {
   type ApiKeyEnv, type CliSpec, type ConnectMethod, type Engine, type HostedUse, type Install,
   type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential, type Region,
-  type Rfc6749, type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
+  type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
 } from "./schema";
 import type { CredentialKind } from "../../contract/src/sandbox";
 
@@ -118,9 +118,9 @@ function oauthSpec(check: ReturnType<typeof checker>, value: unknown): OAuthSpec
     return check.fail("oauth.protocol is rfc6749 or pkce_user_key_v1");
   }
   const fields = check.keys(value, "oauth", [
-    "protocol", "authorization_endpoint", "token_endpoint", "client_id", "client_auth",
-    "refresh_with"], ["authorize_params", "scope", "revocation_endpoint", "resource",
-                      "issuer", "authorization_response_iss_parameter_supported"]);
+    "protocol", "authorization_endpoint", "token_endpoint", "client_id", "client_auth"],
+    ["authorize_params", "scope", "revocation_endpoint", "resource", "issuer",
+     "authorization_response_iss_parameter_supported"]);
   const issuer = fields["issuer"];
   const iss = fields["authorization_response_iss_parameter_supported"];
   if (issuer !== undefined) {
@@ -137,9 +137,6 @@ function oauthSpec(check: ReturnType<typeof checker>, value: unknown): OAuthSpec
   if (JSON.stringify(fields["client_auth"]) !== JSON.stringify({ method: "none" })) {
     check.fail("oauth.client_auth is {\"method\": \"none\"}: a record holds no secret");
   }
-  // `refresh_with`, like the token endpoint it implies, is the gateway's own check
-  // (`sealedSource` below runs it).
-  const refreshWith = fields["refresh_with"];
   const optional = (key: string, read: (item: unknown) => string) =>
     fields[key] === undefined ? {} : Object.fromEntries([[key, read(fields[key])]]);
   return Object.freeze({
@@ -149,7 +146,6 @@ function oauthSpec(check: ReturnType<typeof checker>, value: unknown): OAuthSpec
     authorize_params: authorizeParams(check, fields["authorize_params"]),
     token_endpoint: check.https(fields["token_endpoint"], "oauth.token_endpoint"),
     client_id: check.text(fields["client_id"], CLIENT_ID, "oauth.client_id"),
-    refresh_with: refreshWith as Rfc6749["refresh_with"],
     ...optional("scope", (item) => check.text(item, SCOPE, "oauth.scope")),
     ...optional("revocation_endpoint",
                 (item) => check.https(item, "oauth.revocation_endpoint")),
@@ -1223,7 +1219,7 @@ export function sealedSource(record: SourceRecord, method: "api_key" | "oauth"):
     upstream, endpoints,
     oauth: {
       client_id: oauth.client_id, client_auth: { method: "none" },
-      token_endpoint: oauth.token_endpoint, refresh_with: oauth.refresh_with,
+      token_endpoint: oauth.token_endpoint,
       ...(oauth.revocation_endpoint === undefined ? {}
         : { revocation_endpoint: oauth.revocation_endpoint }),
       ...(oauth.resource === undefined ? {} : { resource: oauth.resource }),

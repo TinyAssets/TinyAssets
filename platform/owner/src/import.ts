@@ -464,7 +464,7 @@ export const importDoors = Object.freeze({
       for (const chunk of listed.slice(0, CHECK_CHUNKS)) {
         let read: string | null = chunk.sha256;
         try {
-          await o.files.fetch([{ sha256: chunk.sha256, offset: 0, length: 1, verify: true }]);
+          await o.files.fetch([{ sha256: chunk.sha256, offset: 0, length: 1 }]);
         } catch {
           read = null;  // missing from the bucket, not opened by the key, or not its hash
         }

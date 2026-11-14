@@ -37,6 +37,7 @@ import {
   answerName, doneName, IMPORT_QUEUE, importMac, type ImportMessage, type ImportOp,
   importMessage, NO_ROWS, rehearsalRun, rowsSum, RUN,
 } from "../contract/src/import-message";
+import { objectPrefix } from "../contract/src/files";
 
 import type { Entry, Row } from "./build";
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
@@ -47,9 +48,8 @@ import {
 
 /** The import queue's dead-letter queue (`doors/wrangler.jsonc`). */
 export const DEAD_LETTERS = `${IMPORT_QUEUE}-dlq`;
-/** The files Worker's bucket, and the prefix of every object of an owner's namespace. */
+/** The files Worker's bucket. */
 export const FILES_BUCKET = "tinyassets-files";
-export const namespacePrefix = (ns: string) => `o/${ns}/`;
 /** The directory's KV namespace, by its title (`deploy/platform.json`). */
 export const DIRECTORY = "tinyassets-directory";
 /** An owner's tier while it is pending: the schema's default, until the admit sets it. */
@@ -422,7 +422,7 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
     .flatMap((each) => each.namespace === null ? [] : [each.namespace]))];
   let objects = 0;
   for (const ns of namespaces) {
-    objects += (await listKeys(window, FILES_BUCKET, namespacePrefix(ns), 1)).length;
+    objects += (await listKeys(window, FILES_BUCKET, objectPrefix(ns), 1)).length;
   }
   const proof = { records: (await runs()).length,
                   staged: (await listKeys(window, STAGING_BUCKET, `${run}/`, 1)).length,

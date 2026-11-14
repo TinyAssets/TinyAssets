@@ -13,9 +13,15 @@
  * `GATEWAY_CODES`. A metered call's outcome crosses as one JSON line on its own stream
  * (`outcomeLine`, `outcomeOf`), and a blob resealed meanwhile in the gateway's own header
  * (`RESEALED_HEADER`, `egress.ts`).
+ *
+ * Each value one side builds and the gateway reads has its checker beside its type
+ * (`metering`, `doorbellInput`, `ringRequest`), so its builder and its reader hold one rule.
  */
+import { keyed, object, whole } from "./checks";
 import type { EgressScope, Source } from "./egress-scope";
 import type { ModelRecord } from "./model-record";
+import { Refusal } from "./refusal";
+import { AUTH_HEADER } from "./wake-records";
 
 /** A sealed blob and the kid it is under. */
 export interface Sealed {
@@ -73,6 +79,25 @@ export interface Metering {
   readonly tier: string | null;
 }
 
+/** A model id or a tier option's value, as a call names it and a reservation holds it. */
+export const MODEL_NAME = /^[\x21-\x7e]{1,256}$/;
+
+function named(value: unknown): value is string {
+  return typeof value === "string" && MODEL_NAME.test(value);
+}
+
+/** A reservation's metering, checked; anything else is the owner's object's bug (`internal`). */
+export function metering(value: unknown): Metering {
+  if (!keyed(value, "input_bytes,max_output_tokens,model,tier")
+      || !whole(value["input_bytes"], 1) || !whole(value["max_output_tokens"], 1)
+      || !named(value["model"]) || (value["tier"] !== null && !named(value["tier"]))) {
+    throw new Refusal("internal");
+  }
+  return Object.freeze({ input_bytes: value["input_bytes"],
+                         max_output_tokens: value["max_output_tokens"], model: value["model"],
+                         tier: value["tier"] as string | null });
+}
+
 /** How a metered call ended, as the owner's object settles it. */
 export type MeterOutcome =
   | { readonly state: "succeeded"; readonly tokens: number; readonly cost: number;
@@ -117,6 +142,18 @@ export interface DoorbellInput {
   readonly secret: string;
 }
 
+/**
+ * A doorbell input's shape, checked (`invalid_request`); its URL and secret are then held to
+ * its record's own rules where it is sealed.
+ */
+export function doorbellInput(value: unknown): DoorbellInput {
+  if (!keyed(value, "record,secret,url") || typeof value["record"] !== "string"
+      || typeof value["url"] !== "string" || typeof value["secret"] !== "string") {
+    throw new Refusal("invalid_request");
+  }
+  return Object.freeze({ record: value["record"], url: value["url"], secret: value["secret"] });
+}
+
 /** An MCP Events callback, verified by its signed challenge and sealed, or why not. */
 export type DoorbellVerified =
   | { readonly verified: true; readonly sealed: Sealed }
@@ -131,6 +168,25 @@ export interface RingRequest {
   readonly headers: Readonly<Record<string, string>>;
   readonly body: string;
   readonly event_id: string;
+}
+
+/** A wake's own id, as a ring sends it (`webhook-id`). */
+export const EVENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * A ring's request, checked (`invalid_request`): text headers, none of them the auth's,
+ * which the gateway adds; its body; its event id.
+ */
+export function ringRequest(value: unknown): RingRequest {
+  const headers = object(value) ? value["headers"] : undefined;
+  if (!keyed(value, "body,event_id,headers") || typeof value["body"] !== "string"
+      || typeof value["event_id"] !== "string" || !EVENT_ID.test(value["event_id"])
+      || !object(headers) || !Object.entries(headers).every(([name, text]) =>
+        typeof text === "string" && !AUTH_HEADER.test(name))) {
+    throw new Refusal("invalid_request");
+  }
+  return Object.freeze({ headers: Object.freeze({ ...headers as Record<string, string> }),
+                         body: value["body"], event_id: value["event_id"] });
 }
 
 /** The gateway's answer to one ring: the callback's status, or that it was not sent. */
