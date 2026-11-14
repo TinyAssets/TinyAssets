@@ -33,7 +33,7 @@ import { type Config, platformConfigs } from "../../ci/kit/sources";
 import { readWrangler } from "../../ci/wrangler";
 
 import { IMPORT_QUEUE } from "../../contract/src/import-message";
-import { ERASURE_QUEUE } from "../src/config";
+import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
 
 import { CONFIG, IMPORT_WINDOW } from "./rules";
 
@@ -325,13 +325,6 @@ describe("doors Worker config", () => {
   });
 });
 
-/** The queue the Worker at `worker` sends to through its producer `binding`. */
-function produced(worker: string, binding: string): string | undefined {
-  const queues = readWrangler(join(PLATFORM, worker))["queues"] as
-    { producers?: { binding: string; queue: string }[] } | undefined;
-  return queues?.producers?.find((producer) => producer.binding === binding)?.queue;
-}
-
 describe("the doors' three queue consumers", () => {
   it("take the import window's by the name the job sends to, and is its one producer", () => {
     expect(IMPORT_WINDOW.consumer.queue).toBe(IMPORT_QUEUE);
@@ -349,18 +342,10 @@ describe("the doors' three queue consumers", () => {
     }
   });
 
-  it("take erasures by the name the owner sends them under, imports by theirs, and every " +
-     "other batch from the sandbox's ring", () => {
-    // The doors' queue handler takes a batch named ERASURE_QUEUE as erasures and any other as
-    // rings (`src/index.ts`): a name that drifted from the owner's producer would hand every
-    // erasure to the ring handler, so the name is held to the owner's config here.
-    const erasures = produced("owner", "ERASURES");
-    const rings = produced("sandbox", "RING");
-    expect(erasures).toBeDefined();
-    expect(ERASURE_QUEUE).toBe(erasures);
-    expect(rings).not.toBe(erasures);
-    expect(rings).not.toBe(IMPORT_QUEUE);
+  it("are the queues the entry dispatches by name, the producers' (`QUEUES`)", () => {
+    // The entry (`src/index.ts`) takes each batch by its name in `QUEUES`, generated from the
+    // producers' configs, and fails loudly on any other: the doors consume exactly those.
     expect((config["queues"] as { consumers: { queue: string }[] }).consumers
-      .map((consumer) => consumer.queue).sort()).toEqual([erasures, rings, IMPORT_QUEUE].sort());
+      .map((consumer) => consumer.queue).sort()).toEqual(Object.values(QUEUE_NAMES).sort());
   });
 });

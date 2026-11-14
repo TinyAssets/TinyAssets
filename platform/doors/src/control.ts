@@ -5,7 +5,7 @@
  * `MAINTENANCE`), which each door answers as its protocol says (`refused.ts`). An outside
  * call needs the outside gate (`outsideOpen`, fail-closed); the owner's own surfaces the
  * maintenance gate (`ownerOpen`). The record an admitted call was read on rides its binding
- * (`binder.ts`, `withTiers`). A `code` call's script reads the same gates again at each tool
+ * (`binder.ts`, `withAccount`). A `code` call's script reads the same gates again at each tool
  * call, in the object (`owner/src/control-gate.ts`).
  */
 import {
