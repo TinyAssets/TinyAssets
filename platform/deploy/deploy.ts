@@ -103,6 +103,11 @@ import {
   FIRST_PARTY, KEYRINGS, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, ROUTES,
   SECRET_INPUTS, SECRETS, SHARED, WORKERS, ZONE,
 } from "./facts.ts";
+/**
+ * The control record a first deploy writes when there is none: every outside door closed, and
+ * the founder's tier numbers. The founder's data, so a file of its own, which the tests read too.
+ */
+import DARK_CONTROL from "./control.json" with { type: "json" };
 
 const require = createRequire(join(PLATFORM, "package.json"));
 
@@ -123,12 +128,9 @@ export const E2B_HOOK = Object.freeze({
   /** Its signature secret's one other holder: the doors' copy. */
   secret: Object.freeze({ worker: "doors", name: "E2B_WEBHOOK_SECRET" }),
 });
-/** The control record a first deploy writes when there is none: every outside door closed. */
-export const DARK_CONTROL = Object.freeze({
-  outside: "off", ordinary: "canary", canary: [], inbound: false,
-  tiers: { free: { runs: 5, storage_bytes: 25_000_000_000 },
-           paid: { runs: 10, storage_bytes: 250_000_000_000 } },
-});
+// Owed to `import-window.yml`, which imports the kit for the tiers until I1 reads
+// `control.json` with `jq` (B10, `ci/guards/rules.ts`); I1 deletes this line.
+export { DARK_CONTROL };
 /** What the plan job says of a check that needs a production secret. */
 const LATER = "checked by the apply job before any change";
 
