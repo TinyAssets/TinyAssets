@@ -165,11 +165,11 @@ function bounded(world: World): Reach {
 }
 
 /** `act`, any error of it that is not a check's own failure made this check's `code`. */
-async function failingAs<T>(code: number, act: () => Promise<T>, alone = false): Promise<T> {
+async function failingAs<T>(code: number, act: () => Promise<T>): Promise<T> {
   try {
     return await act();
   } catch (error) {
-    throw error instanceof Failure ? error : new Failure(code, (error as Error).message, alone);
+    throw error instanceof Failure ? error : new Failure(code, (error as Error).message);
   }
 }
 
@@ -466,7 +466,7 @@ async function fullRun(world: World, forced: boolean): Promise<string> {
 /** The clock dispatched a run in the last 30 minutes. */
 async function clock(world: World): Promise<string> {
   const listed = await failingAs(14, () => github(bounded(world), "GET", `/actions/workflows/${
-    DISPATCH.workflow}/runs?event=workflow_dispatch&branch=${DISPATCH.ref}&per_page=1`), true);
+    DISPATCH.workflow}/runs?event=workflow_dispatch&branch=${DISPATCH.ref}&per_page=1`));
   const last = ((listed as Json | null)?.["workflow_runs"] as Json[] | undefined)?.[0];
   const at = typeof last?.["created_at"] === "string" ? Date.parse(last["created_at"]) : NaN;
   if (!(world.now().getTime() - at <= CLOCK_MS)) {

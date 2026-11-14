@@ -26,7 +26,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
-import { CAPABILITIES, copy, type Effects, SETTINGS, settings } from "../offsite";
+import { CAPABILITIES, copy, type Effects, NIGHTLY, SETTINGS, settings } from "../offsite";
 
 const BUCKET = "tinyassets-offsite-abcd1234";
 const ACCOUNT = "c".repeat(32);
@@ -300,7 +300,7 @@ describe("the nightly copy", () => {
 
 describe("offsite-copy.yml", () => {
   const flow = workflow("offsite-copy.yml");
-  const { settings: settingsJob, copy: copyJob } = flow.jobs;
+  const { [NIGHTLY.settings]: settingsJob, [NIGHTLY.copy]: copyJob } = flow.jobs;
   const step = (job: typeof flow, name: string) =>
     job.steps.find((each: { name?: string }) => each.name === name);
   const read = step(settingsJob, "Read the copy's settings");
@@ -311,6 +311,11 @@ describe("offsite-copy.yml", () => {
     expect(flow.on.schedule).toEqual([{ cron: "37 5 * * *" }]);
     expect(flow.on).toEqual({ schedule: [{ cron: "37 5 * * *" }], workflow_dispatch: null });
     expect(flow.concurrency).toEqual({ group: "offsite-copy", "cancel-in-progress": false });
+    // The canary reads the nights by these two jobs' names (`watch`), which a `name:` would
+    // replace in GitHub's listing.
+    expect(Object.keys(flow.jobs)).toEqual([NIGHTLY.settings, NIGHTLY.copy]);
+    expect([settingsJob.name, copyJob.name]).toEqual([undefined, undefined]);
+    expect(workflow(NIGHTLY.workflow)).toEqual(flow);
     expect(flow.permissions).toEqual({ contents: "read" });
     expect([settingsJob.environment, copyJob.environment]).toEqual(["production", "production"]);
     expect(settingsJob.outputs).toEqual({ configured: "${{ steps.settings.outputs.configured }}" });
