@@ -12,6 +12,7 @@
  * The queue's and the namespace's names, the build and its rules are the config's own.
  */
 import type { ConfigRules } from "../../ci/kit/config";
+import { kernels, type Owed } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "sandbox",
@@ -40,3 +41,12 @@ export const CONFIG: ConfigRules = Object.freeze({
 const OWN = Object.freeze(["this.env.SANDBOXES", "this.env.SLOTS"]);
 export const OWN_OBJECTS = Object.freeze({ "sandbox/src/index.ts": OWN,
                                            "sandbox/src/control.ts": OWN });
+
+/**
+ * What the sandbox still owes the platform's guards (`ci/kit/owed.ts`): the runner's two
+ * streamed SHA-256s beside the contract's (`ci/kit/kernels.ts`), until lane S's B7 adopts
+ * them.
+ */
+export const OWED: readonly Owed[] = Object.freeze([
+  ...kernels("B7", "SHA-256", { "platform/sandbox/runner/sync.ts": 2 }),
+]);
