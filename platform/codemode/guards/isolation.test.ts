@@ -30,9 +30,10 @@ isolationTests(IMPORTS, {
 });
 
 describe("codemode isolation guards", () => {
-  it("reach only the codemode Worker's own two sources, its env and its contract", () => {
+  it("reach only the codemode Worker's own two sources, its env, its contract and the refusal",
+     () => {
     expect([...closure("codemode").keys()].sort())
       .toEqual(["codemode/src/codemode.ts", "codemode/src/env.ts", "codemode/src/index.ts",
-                "contract/src/codemode.ts"]);
+                "contract/src/codemode.ts", "contract/src/refusal.ts"]);
   });
 });

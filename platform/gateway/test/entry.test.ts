@@ -16,7 +16,8 @@ import { IDLE_CUT_MS } from "../src/forward";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { GATEWAY_POOL_SLOTS, gatewaySlots } from "../src/held";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
-import { open } from "../src/keyring";
+import { doorbellSecret, sealDoorbell } from "../src/doorbell";
+import { open, openValue } from "../src/keyring";
 import { ALICE, ANTHROPIC, OPENAI, sealed } from "./support";
 import type { Metering, Reserve } from "../../contract/src/gateway";
 
@@ -124,6 +125,28 @@ describe("the gateway Worker", () => {
     expect(resealed).toMatchObject({ kid: "k2", version: 2 });
     const opened = await open(env, { ...ALICE, version: 2 }, resealed.blob);
     expect(opened.credential.kind === "api_key" && opened.credential.secret).toBe("sk-old");
+  });
+
+  it("reseals a doorbell's blob under an older kid at the next version, for the sweep",
+     async () => {
+    const old = JSON.parse(env.GATEWAY_KEYRING) as { keys: Record<string, string> };
+    const k1 = { GATEWAY_KEYRING: JSON.stringify({ active: "k1", keys: old.keys }) };
+    const subscription = "sub_" + "a".repeat(32);
+    const bell = { record: "claude_routine_fire", secret: "sk-ant-oat01-" + "x".repeat(40),
+                   url: "https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire" };
+    const { blob, kid } = await sealDoorbell(k1, "alice", subscription, 1, bell);
+    expect(kid).toBe("k1");
+    const resealed = await gateway.resealDoorbell("alice", subscription, 1, blob);
+    expect(resealed).toMatchObject({ kid: "k2", version: 2 });
+    const at = (version: number) => ({ owner: "alice", connection: `wake.${subscription}`,
+                                       version });
+    expect((await openValue(env, at(2), resealed.blob, doorbellSecret)).value)
+      .toEqual((await openValue(env, at(1), blob, doorbellSecret)).value);
+    // A blob presented at a version it was not sealed for, or another subscription's.
+    expect(await rejected(() => gateway.resealDoorbell("alice", subscription, 2, blob)))
+      .toBe("credential_refused");
+    expect(await rejected(() => gateway.resealDoorbell("alice", "sub_" + "b".repeat(32), 1,
+                                                       blob))).toBe("credential_refused");
   });
 
   it("verifies, refreshes and revokes over RPC with fixed codes", async () => {
@@ -545,8 +568,8 @@ describe("the gateway Worker", () => {
       .toEqual(["constructor", "forward"]);
     // The owner's object: its connections' upkeep and its wakes, and no seal or forward.
     expect(Object.getOwnPropertyNames(Gateway.prototype).sort())
-      .toEqual(["constructor", "fetch", "refresh", "reseal", "revokeAtProvider",
-                "ringDoorbell"]);
+      .toEqual(["constructor", "fetch", "refresh", "reseal", "resealDoorbell",
+                "revokeAtProvider", "ringDoorbell"]);
     const { blob } = await connect.seal("alice", "c1", 1, "sk-good", ANTHROPIC);
     expect((await connect.verify("alice", "c1", 1, blob)).models.length).toBeGreaterThan(0);
     expect(await rejected(() => connect.verify("bob", "c1", 1, blob))).toBe("credential_refused");

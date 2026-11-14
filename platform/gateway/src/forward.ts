@@ -39,10 +39,10 @@ import {
   aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, READS, servedPriced,
   tierMultiplier, unpricedOption, valueAt,
 } from "../../contract/src/api-rules";
-import { clamped, learnMeter, meteredRecord, meteredUsage } from "./meter";
+import { clamped, meteredRecord, meteredUsage, Meters } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened } from "./keyring";
 import {
-  gatewaySlots, heldCode, heldDeadlineMs, Hold, raced, weighedBody, weightSlots,
+  gatewaySlots, heldDeadlineMs, Hold, raced, weighedBody, weightSlots,
 } from "./held";
 import { RESEALED_HEADER } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract/src/limits";
@@ -237,7 +237,7 @@ function refusal(code: GatewayCode, resealed?: Resealed): Response {
 
 /**
  * A sandbox's model call, metered (G4), once the owner's object admitted it: held to pi-ai's
- * own model call for the sealed API (`learnMeter`); its slots taken as it arrives
+ * own model call for the sealed API (the call's `Meters`); its slots taken as it arrives
  * (`held.ts`), its body read to its `Content-Length` and parsed once; refused for what no
  * reservation bounds; its model and tier read from that parse and reserved through
  * `reserve`; then its output cap clamped to the reservation's `max_output_tokens`, so what
@@ -264,9 +264,10 @@ type Prepared = { readonly refused: GatewayCode }
  * holds its output; then uploading, `ended` run when its last write is taken. Refused before
  * the reserve for what the reservation cannot bound, so a refused shape is never charged.
  */
-async function prepared(request: Request, length: number, credential: Credential, any: Meter,
-                        path: string, catalog: Catalog, reserve: Reserve, hold: Hold,
-                        signal: AbortSignal, ended: () => void): Promise<Prepared> {
+async function prepared(request: Request, length: number, credential: Credential,
+                        meters: Meters, any: Meter, path: string, catalog: Catalog,
+                        reserve: Reserve, hold: Hold, signal: AbortSignal,
+                        ended: () => void): Promise<Prepared> {
   // The body, read under slots taken as it arrives; then its weight's slots, before the parse.
   let read: Awaited<ReturnType<typeof weighedBody>> | null =
     await weighedBody(request, length, hold, signal);
@@ -298,7 +299,7 @@ async function prepared(request: Request, length: number, credential: Credential
   if (model === null) {
     return { refused: "unknown_model" };
   }
-  const meter = await learnMeter(catalog, credential.upstream, bearer(credential), model);
+  const meter = await meters.of(model);
   if (meter === null || meteredModel(meter, request.method, path, parsed) !== id) {
     return { refused: "unmetered" };
   }
@@ -418,8 +419,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     const { reserve, catalog } = metered;
     // Only pi-ai's own model call for the sealed API is metered; nothing else is read. A throw
     // here sent nothing, so it is `failed` (M3), as every end before the fetch is.
-    const any = await learnMeter(catalog, credential.upstream, bearer(credential))
-      .catch(() => undefined);
+    const meters = new Meters(catalog, credential.upstream, bearer(credential));
+    const any = await meters.any().catch(() => undefined);
     if (any === undefined) {
       return refused("internal", resealed);
     }
@@ -438,13 +439,14 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     const hold = new Hold(gatewaySlots(), bound.owner, cancelled.signal);
     let ready: Prepared;
     try {
-      ready = await prepared(request, Number(declared), credential, any, target.pathname,
-                             catalog, reserve, hold, cancelled.signal, () => hold.release());
+      ready = await prepared(request, Number(declared), credential, meters, any,
+                             target.pathname, catalog, reserve, hold, cancelled.signal,
+                             () => hold.release());
     } catch (error) {
       hold.release();
       // Nothing was sent: the call is `failed`, whatever stopped it (M3).
-      return refused(cancelled.signal.aborted ? "aborted"
-        : heldCode(error) ?? "internal", resealed);
+      return refused(cancelled.signal.aborted ? "aborted" : codeOf(error, "internal"),
+                     resealed);
     }
     if ("refused" in ready) {
       hold.release();
@@ -637,7 +639,7 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
     throw new Refusal(upstreamCode(answer.status));
   }
   return Object.freeze({ models: Object.freeze(modelInfos(catalog, credential.upstream)),
-                         egress: scopeOf(credential, await learnMeter(catalog, credential.upstream,
-                                                                bearer(credential))),
+                         egress: scopeOf(credential, await new Meters(
+                           catalog, credential.upstream, bearer(credential)).any()),
                          ...(resealed === undefined ? {} : { resealed }) });
 }

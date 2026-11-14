@@ -24,12 +24,14 @@
  *   `Retry-After` cross back. A blob that does not open, or a URL its record no longer
  *   admits, is `refused` before any byte; a send that failed after it may have left is
  *   `unknown`.
+ * - `resealDoorbell`: a subscription's blob resealed under the active kid at the next
+ *   version, for the owner's sweep before a kid leaves the ring.
  *
  * Every fetch is the runtime's (`global_fetch_strictly_public`): never the egress
  * interposer's, since no model call's scope is open here.
  */
+import { object } from "../../contract/src/checks";
 import { base64, base64url, fromBase64, hex } from "../../contract/src/envelope";
-import { utf8Decoder } from "../../contract/src/text";
 import { SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { callbackSecret, callbackUrl, kindNamed, type Push } from "../../contract/src/wake-records";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
@@ -37,7 +39,8 @@ import {
   doorbellInput, type DoorbellVerified, type Resealed, type RingAnswer, type RingRequest,
   ringRequest, type Sealed,
 } from "../../contract/src/gateway";
-import { binding, type KeyringEnv, openValue, sealValue } from "./keyring";
+import { boundedJson } from "./answer";
+import { binding, type KeyringEnv, openValue, resealValue, sealValue } from "./keyring";
 
 /** What a doorbell blob holds: where it goes, how it is sent, and its secret. */
 export interface DoorbellSecret {
@@ -48,9 +51,6 @@ export interface DoorbellSecret {
   readonly secret: string;
   readonly sealed_at: number;
 }
-
-/** The refusals a blob that cannot be opened for its subscription is answered with. */
-const UNOPENED: readonly string[] = Object.freeze(["credential_refused", "invalid_binding"]);
 
 /** How a request leaves: the runtime's fetch, or a test's recording one. */
 export type Send = (request: Request) => Promise<Response>;
@@ -117,6 +117,18 @@ export async function sealDoorbell(env: KeyringEnv, owner: string, subscription:
   return sealValue(env, bound(owner, subscription, version), plaintext(input), doorbellSecret);
 }
 
+/**
+ * A subscription's blob, opened at `version` and resealed under the active kid at
+ * `version + 1`, as the connection's `reseal`: the owner's sweep before a kid is retired.
+ * A blob that does not open is `credential_refused`.
+ */
+export async function resealDoorbell(env: KeyringEnv, owner: string, subscription: string,
+                                     version: number, blob: string): Promise<Resealed> {
+  const target = bound(owner, subscription, version);
+  const { value } = await openValue(env, target, blob, doorbellSecret);
+  return resealValue(env, target, value, doorbellSecret);
+}
+
 function random(size: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(size));
 }
@@ -132,38 +144,6 @@ async function signature(keys: readonly string[], id: string, stamp: number,
     return "v1," + base64(new Uint8Array(await crypto.subtle.sign("HMAC", hmac, signed)));
   }));
   return each.join(" ");
-}
-
-/** At most `max` bytes of a body, then its stream released. */
-async function bounded(response: Response, max: number): Promise<Uint8Array | null> {
-  const reader = response.body?.getReader();
-  if (reader === undefined) {
-    return new Uint8Array();
-  }
-  const parts: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      size += value.byteLength;
-      if (size > max) {
-        return null;
-      }
-      parts.push(value);
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  const all = new Uint8Array(size);
-  let at = 0;
-  for (const part of parts) {
-    all.set(part, at);
-    at += part.byteLength;
-  }
-  return all;
 }
 
 /** Whether `a` and `b` are the same bytes, in time that does not depend on where they differ. */
@@ -211,15 +191,9 @@ export async function verifyDoorbell(env: KeyringEnv, owner: string, subscriptio
     await response.body?.cancel().catch(() => undefined);
     return { verified: false, reason: response.status >= 500 ? "http_5xx" : "http_4xx" };
   }
-  const bytes = await bounded(response, ECHO_MAX_BYTES).catch(() => null);
-  let echoed: unknown;
-  try {
-    echoed = bytes === null ? null
-      : (JSON.parse(utf8Decoder("strip").decode(bytes)) as
-         { challenge?: unknown }).challenge;
-  } catch {
-    echoed = null;
-  }
+  // An answer cut while it is read echoes nothing.
+  const answer = await boundedJson(response, ECHO_MAX_BYTES).catch(() => undefined);
+  const echoed = object(answer) ? answer["challenge"] : undefined;
   if (typeof echoed !== "string" || !same(echoed, challenge)) {
     return { verified: false, reason: "challenge_failed" };
   }
@@ -260,9 +234,10 @@ export async function ringDoorbell(env: KeyringEnv, owner: string, subscription:
       }
     }
   } catch (error) {
-    // A blob that does not open, or a binding it was never sealed for, is this wake's own
-    // refusal; anything else (a keyring the config lost) fails the call loudly.
-    if (UNOPENED.includes(refusalOf(error)?.code ?? "")) {
+    // A blob that does not open, or a binding it was never sealed for, refuses the request
+    // (a 4xx), so this wake is refused; anything else (a keyring the config lost) is the
+    // platform's own failure and fails the call loudly.
+    if ((refusalOf(error)?.status ?? 500) < 500) {
       return { state: "refused" };
     }
     throw error;

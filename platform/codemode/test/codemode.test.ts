@@ -12,12 +12,21 @@ import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-c
 import { describe, expect, it } from "vitest";
 
 import type { CodemodeWorker } from "../../contract/src/codemode";
+import { refusalOf } from "../../contract/src/refusal";
 
 type Vm = CodemodeWorker<Parameters<CodemodeRemote["execute"]>[0],
                          Parameters<CodemodeRemote["execute"]>[1]>;
 const VM = (env as unknown as { CODEMODE_VM: Vm }).CODEMODE_VM;
 
 describe("the codemode Worker", () => {
+  it("refuses an execution under no name, as the contract's `invalid`, before any sandbox",
+     async () => {
+    const error = await VM.codemodeExecute("", {} as never, {} as never)
+      .then(() => null, (caught: unknown) => caught);
+    expect([refusalOf(error)?.code, (error as Error).message])
+      .toEqual(["invalid", "a code mode execution is named"]);
+  });
+
   it("stops a script whose VM computes past the budget its request carries, as a timeout",
      async () => {
     const sandbox = new RemoteCodemodeSandbox({

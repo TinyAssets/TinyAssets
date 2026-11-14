@@ -22,6 +22,10 @@ The gateway SHALL seal each credential with AES-256-GCM under a key for that own
 - **WHEN** a blob sealed under kid `k1` is opened after the ring's active kid became `k2`
 - **THEN** it opens, and the gateway also returns it resealed under `k2` at the next version, which opens only at that version
 
+#### Scenario: The sweep before a kid is retired
+- **WHEN** the owner's sweep asks `reseal` for a connection's blob, or `resealDoorbell` for a doorbell subscription's, sealed under `k1` while the active kid is `k2`
+- **THEN** the blob comes back resealed under `k2` at the next version, which opens only at that version, so no blob of either kind is left under `k1`
+
 ### Requirement: A credential reaches only the endpoints sealed with it
 The sealed plaintext SHALL carry the secret together with its source data: the pi-ai provider and API, the base URL, how the secret is sent, and the endpoints (an HTTPS origin, its paths and its methods) it may reach. The gateway SHALL send a secret only to a sealed endpoint, refuse a path holding an encoded separator or dot, never follow a redirect with it, and never send it to a URL a request names.
 
@@ -105,10 +109,10 @@ For a key-exchange source (the Python's `pkce_user_key_v1`, OpenRouter's), `exch
 - **THEN** the call fails with a fixed code, the redirect is never followed, and nothing is sealed
 
 ### Requirement: The doors reach only the connect steps and egress forwarding
-The gateway SHALL serve the doors Worker through two named entrypoints: `ConnectGateway`, which offers only `seal`, `exchange` and `verify`, and `EgressGateway`, which offers only `forward`, metered, for the egress door, once the owner's object admitted the call, reserving it through the door's `reserve`. Refresh, reseal and provider revocation SHALL stay on the entrypoint only the owner Worker binds, which SHALL offer no seal, exchange, verify or forward of its own, so no entrypoint forwards a call unmetered, and whose `fetch` serves no model call (`/v1/messages` went with the in-object loop, ADR-034).
+The gateway SHALL serve the doors Worker through two named entrypoints: `ConnectGateway`, which offers only `seal`, `exchange` and `verify`, and `EgressGateway`, which offers only `forward`, metered, for the egress door, once the owner's object admitted the call, reserving it through the door's `reserve`. Refresh, the reseals (a connection's and a doorbell subscription's) and provider revocation SHALL stay on the entrypoint only the owner Worker binds, which SHALL offer no seal, exchange, verify or forward of its own, so no entrypoint forwards a call unmetered, and whose `fetch` serves no model call (`/v1/messages` went with the in-object loop, ADR-034).
 
 #### Scenario: The doors call a model
-- **WHEN** either doors binding is asked for `fetch`, `refresh`, `reseal` or `revokeAtProvider`, or the connect binding for `forward`
+- **WHEN** either doors binding is asked for `fetch`, `refresh`, `reseal`, `resealDoorbell` or `revokeAtProvider`, or the connect binding for `forward`
 - **THEN** the entrypoint has no such method
 
 ### Requirement: The gateway binds nothing and chooses no owner
