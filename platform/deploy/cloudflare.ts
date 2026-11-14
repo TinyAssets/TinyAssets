@@ -490,9 +490,12 @@ export class Cloudflare {
     const { result } = await this.#send(`pulling from the queue ${queue}`, "POST",
                                         `/accounts/${account}/queues/${queue}/messages/pull`,
                                         { batch_size: batch, visibility_timeout_ms: visibilityMs });
-    const pulled = (result ?? {}) as { message_backlog_count?: unknown;
-                                       messages?: { id?: unknown; body?: unknown;
-                                                    lease_id?: unknown }[] };
+    // An answer with no pull in it is a failed read, never an empty queue.
+    if (typeof result !== "object" || result === null) {
+      throw new Error(`pulling from the queue ${queue} failed (its answer holds no pull)`);
+    }
+    const pulled = result as { message_backlog_count?: unknown;
+                               messages?: { id?: unknown; body?: unknown; lease_id?: unknown }[] };
     const backlog = pulled.message_backlog_count;
     return { backlog: Number.isSafeInteger(backlog) ? backlog as number : 0,
              messages: (pulled.messages ?? []).map((message) => ({

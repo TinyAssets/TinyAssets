@@ -2068,6 +2068,9 @@ describe("the parts of a run", () => {
       .rejects.toThrow(/could not be read/);
     await expect(client(api({})).routes("z")).rejects.toThrow(
       "reading the zone's routes failed (500, [10000])");
+    // A pull whose answer holds no pull is a failed read, never an empty dead-letter queue.
+    await expect(client(api({ "/accounts/a/queues/q/messages/pull": ok(null) }))
+      .pull("a", "q", 100, 60_000)).rejects.toThrow("its answer holds no pull");
   });
 
   it("sends the account's token on every Cloudflare call, and refuses a body that is not " +
