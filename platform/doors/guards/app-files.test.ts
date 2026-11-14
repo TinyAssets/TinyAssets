@@ -2,7 +2,8 @@
  * The owner app's files (`app/`) are exactly what `src/pages.ts` serves, name no other
  * origin, and use no HTML string sink or dynamic evaluation: the pages' CSP refuses those
  * anyway, and this holds the source to it. Each page names its touch icon: the website's one
- * file, which no doors route takes, so the site serves it on this origin.
+ * file, which the site serves on this origin (`identity.test.ts` holds every website file to no
+ * doors route taking it).
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -11,8 +12,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { REPO } from "../../ci/paths";
-import identity from "../../contract/identity.json" with { type: "json" };
-import { routeTakes } from "../../contract/src/identity";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const APP = join(DOORS, "app");
@@ -39,15 +38,13 @@ describe("the owner app's files", () => {
     }
   });
 
-  it("are pages that each name the website's touch icon, which no doors route takes", () => {
+  it("are pages that each name a touch icon the website holds", () => {
     const pages = readdirSync(APP).filter((file) => file.endsWith(".html"));
     expect(pages.length).toBeGreaterThan(0);
     for (const page of pages) {
       const html = readFileSync(join(APP, page), "utf8");
       const href = /<link rel="apple-touch-icon" href="(\/[^"?#]+)">/.exec(html)?.[1];
       expect([page, href]).toEqual([page, expect.any(String)]);
-      expect([href, identity.routes.some((pattern) => routeTakes(pattern, href!))])
-        .toEqual([href, false]);
       expect(existsSync(join(REPO, "WebSite", "site-react", "public", href!)), href).toBe(true);
     }
   });
