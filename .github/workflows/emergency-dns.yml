@@ -58,6 +58,7 @@ permissions:
 
 jobs:
   emergency-dns:
+    environment: production
     name: Run Cloudflare emergency DNS action
     runs-on: ubuntu-latest
     timeout-minutes: 10

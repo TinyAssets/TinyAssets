@@ -11,19 +11,23 @@ name: Deploy Cloudflare Worker
 #   needs SSH keys + a running droplet. Keeping them separate avoids coupling
 #   a fast edge-publish to a slow infra-deploy gate.
 #
-# Token scope required (CLOUDFLARE_API_TOKEN repo secret):
+# Two jobs:
+#   check   - every run: the Worker's unit tests and `wrangler deploy --dry-run`,
+#             which bundles and validates the config with no credential at all
+#             (measured with wrangler 4.154, no token and no login). A pull
+#             request's code never sees a token.
+#   deploy  - push to main, or a dispatch on main without dry_run: in the
+#             main-only `production` environment, which holds
+#             CLOUDFLARE_API_TOKEN. GitHub refuses the job on any other ref
+#             before a step runs (platform/ci/guards/environment.test.ts).
+#
+# Token scope required (CLOUDFLARE_API_TOKEN, a `production` environment secret):
 #   Account → Workers Scripts: Edit
 #   Zone → Workers Routes: Edit    (required for route binding in wrangler.toml)
 #   Zone → Zone: Read              (required for zone lookup by name)
 #
-# Mint a narrow deploy-only API token at:
-#   dash.cloudflare.com/profile/api-tokens → Create Token → Custom Token
-# Add it as a repo secret: Settings → Secrets and variables → Actions →
-#   New repository secret → name: CLOUDFLARE_API_TOKEN
-#
-# CLOUDFLARE_ACCOUNT_ID is also required (no secret for this — it's not
-# sensitive; stored as a repo variable or in wrangler.toml if preferred).
-# Add it as a repo secret too for consistency.
+# CLOUDFLARE_ACCOUNT_ID is an identifier, not a credential; when it is unset the
+# deploy job resolves it from the tinyassets.io zone.
 
 on:
   push:
@@ -54,7 +58,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy-worker:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@latest
+
+      - name: Run Worker unit tests
+        working-directory: deploy/cloudflare-worker
+        run: node --test worker.test.js
+
+      - name: Wrangler dry-run (no credential)
+        working-directory: deploy/cloudflare-worker
+        run: |
+          echo "=== dry-run — validating wrangler config + worker bundle ==="
+          wrangler deploy --dry-run --outdir /tmp/wrangler-out
+          echo "=== dry-run passed ==="
+          ls -lh /tmp/wrangler-out/
+
+  deploy:
+    needs: check
+    if: >
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
+    environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -70,7 +106,6 @@ jobs:
         run: npm install -g wrangler@latest
 
       - name: Verify secrets present
-        if: github.event_name != 'pull_request'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -98,27 +133,7 @@ jobs:
           fi
           echo "CLOUDFLARE_ACCOUNT_ID=${account_id}" >> "${GITHUB_ENV}"
 
-      - name: Run Worker unit tests
-        working-directory: deploy/cloudflare-worker
-        run: node --test worker.test.js
-
-      - name: Wrangler dry-run (PRs and explicit dry-run)
-        if: >
-          github.event_name == 'pull_request' ||
-          (github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true')
-        working-directory: deploy/cloudflare-worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          echo "=== dry-run — validating wrangler config + worker bundle ==="
-          wrangler deploy --dry-run --outdir /tmp/wrangler-out
-          echo "=== dry-run passed ==="
-          ls -lh /tmp/wrangler-out/
-
-      - name: Wrangler live deploy (push to main)
-        if: >
-          github.event_name == 'push' ||
-          (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
+      - name: Wrangler live deploy
         working-directory: deploy/cloudflare-worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -128,17 +143,11 @@ jobs:
           echo "=== deploy complete ==="
 
       - name: Post-deploy canary
-        if: >
-          github.event_name == 'push' ||
-          (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Probe canonical URL after deploy
-        if: >
-          github.event_name == 'push' ||
-          (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
         run: |
           # Browser preflight is answered by this Worker. The full MCP canary
           # asserts the daemon's resource_metadata URL, and deploy-prod swaps
@@ -159,9 +168,6 @@ jobs:
           done
 
       - name: Prove retired routes are ordinary 404s
-        if: >
-          github.event_name == 'push' ||
-          (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
         run: |
           python scripts/probe_retired_mcp_routes.py
 
@@ -180,9 +186,6 @@ jobs:
       # what this workflow owns. `probe_app_surface.py` runs in deploy-prod,
       # after the daemon is current, with rollback authority.
       - name: Prove the public routes are bound to this Worker
-        if: >
-          github.event_name == 'push' ||
-          (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
@@ -194,11 +197,7 @@ jobs:
           {
             echo "### Worker deploy result"
             echo ""
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              echo "- **mode:** dry-run (PR)"
-            else
-              echo "- **mode:** live deploy"
-            fi
+            echo "- **mode:** live deploy"
             echo "- **worker:** tinyassets-mcp-proxy"
             echo "- **ref:** \`${{ github.ref }}\`"
             echo "- **sha:** \`${{ github.sha }}\`"

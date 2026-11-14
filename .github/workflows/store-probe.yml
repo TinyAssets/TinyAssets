@@ -51,6 +51,7 @@ concurrency:
 
 jobs:
   probe:
+    environment: production
     runs-on: ubuntu-latest
     # Install <=10, harness <=15, account <=3, deploy <=15, cases <=150, cleanup <=10,
     # analytics <=10, and the rest.

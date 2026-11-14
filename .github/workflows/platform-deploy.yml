@@ -5,8 +5,8 @@ name: Platform deploy (manual, founder-approved)
 # nothing; `--mode` is a row of the kit's mode table, MODES), in three jobs:
 #   plan   - the mode's plan (`--public`), to the job summary and to the file
 #            `--plan` names, which the run keeps as its artifact `deploy-plan`.
-#            It holds only the Cloudflare token (not a production secret) and
-#            the repo's variables, and changes nothing.
+#            In the main-only `production` environment, it holds only the
+#            Cloudflare token and the repo's variables, and changes nothing.
 #   pair   - (dark, routes) after the plan, in the `production` environment
 #            with the E2B key alone: the sandbox's template and the runner
 #            this commit ships checked together on throwaway sandboxes,
@@ -100,6 +100,7 @@ concurrency:
 
 jobs:
   plan:
+    environment: production
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15

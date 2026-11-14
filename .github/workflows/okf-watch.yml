@@ -50,6 +50,7 @@ env:
 
 jobs:
   watch:
+    environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -158,6 +159,7 @@ jobs:
             --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
 
   cooldown:
+    environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

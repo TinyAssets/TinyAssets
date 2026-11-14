@@ -28,7 +28,7 @@ import {
 } from "../../contract/src/policy-document";
 import { erasuresSent, until } from "./erasure-support";
 import { recorder } from "./runs-support";
-import { failure, TIERS } from "./support";
+import { failure, gateFor, spaceOf, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const BUNDLE = "b".repeat(64);
@@ -427,7 +427,7 @@ describe("the import's check", () => {
       .toEqual([CHECK_CHUNKS, CHECK_CHUNKS, 2]);
   });
 
-  it("reads a chunk the bucket lost, or holds other bytes for, as not read back", async () => {
+  it("reads a chunk the bucket lost as not read back", async () => {
     const { stub, owner } = pending();
     const bytes = big();
     await upload(stub, owner, `${I}/big.bin`, bytes);
@@ -440,6 +440,18 @@ describe("the import's check", () => {
       page.part === "chunks" ? page.chunks : []);
     expect(Object.fromEntries(chunks.map((chunk) => [chunk.sha256, chunk.read])))
       .toEqual({ [first!.sha256]: null, [second!.sha256]: second!.sha256 });
+  });
+
+  it("fails a page whose FILES answer was lost, never reading its chunks as not read back",
+     async () => {
+    const { stub, owner } = pending();
+    await upload(stub, owner, `${I}/big.bin`, big());
+    const files = gateFor(env.FILES_GATE, await spaceOf(stub));
+    await files.arm("checkChunks", { hold: "after" });
+    const checking = failure(() => stub.importCheck(importing(owner), { part: "chunks", page: 0 }));
+    await files.held("checkChunks");
+    await files.lose("checkChunks");
+    expect((await checking).message).toBe("the gate lost checkChunks's answer");
   });
 
   it("is the platform's import binding's alone, while the owner is pending", async () => {

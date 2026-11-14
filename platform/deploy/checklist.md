@@ -66,7 +66,7 @@ What the kit reads, all from the store, never a host:
   canary's key (`deploy/canary.ts`), and the apply job's own `GITHUB_TOKEN` (`actions:
   read`) is what the canary reads the off-account copy's nights with. The workflow's guard
   holds its apply job to that list.
-- The repository secret `CLOUDFLARE_API_TOKEN`. The account is the doors' zone's, read from
+- The `production` secret `CLOUDFLARE_API_TOKEN`. The account is the doors' zone's, read from
   the zone (`Cloudflare.zone`), so no account id is stored.
 - The repository variables `OWNER_ISSUER` and `WORKOS_CLIENT_ID`.
 
@@ -395,9 +395,10 @@ them through the window, and revoke them after it.**
 | `IMPORT_CLOUDFLARE_API_TOKEN` | One account API token (step 5). | Account · Queues · Edit (send to `tinyassets-import`, add and use the HTTP pull consumer of `tinyassets-import-dlq`), Account · Workers KV Storage · Edit (list `tinyassets-directory` and delete a rehearsal's records). The reserved IP only; an end date. |
 | `IMPORT_KEY` | 32 random bytes, base64url (step 6). | The same value as the doors' Worker secret `IMPORT_KEY` |
 
-**Never give one of them a name another job reads.** An environment secret hides the
-repository secret of the same name in every `production` job, so a `production` secret named
-`CLOUDFLARE_API_TOKEN` would hand the import token to the platform deploy's apply job.
+**Never give one of them a name another job reads.** Every `production` job reads its
+secrets by name from the one environment, so an import token stored as
+`CLOUDFLARE_API_TOKEN` would replace the deploy kit's own token in the platform deploy's
+apply job.
 
 The steps, on your own computer, with your own `gh` login. `gh secret set <name> --env
 production` asks for the value and does not show it, so no value enters the chat or a
