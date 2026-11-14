@@ -112,7 +112,8 @@ describe("the code list", () => {
     ["refused", 403, undefined], ["invalid", 400, undefined],
     ["message_body", 400, undefined], ["chunk_deleting", 403, undefined],
     ["file_quota", 403, undefined], ["owner_suspended", 403, undefined],
-    ["storage_full", 507, undefined], ["uploads_open", 409, undefined],
+    ["storage_full", 507, undefined], ["file_index_full", 507, undefined],
+    ["uploads_open", 409, undefined],
     ["file_busy", 409, undefined], ["storage_busy", 503, 30], ["busy", 503, 1],
     ["events_busy", 503, 1], ["events_raced", 503, 1],
     // The platform gates, closed: the doors' 503 and its minute.

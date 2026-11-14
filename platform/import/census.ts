@@ -1,9 +1,9 @@
 /**
  * The census (`import_research.md` §1, slice 1): read-only counts of a backup copy, rule 0
  * held over every store, table and entry (`rules.ts`), and each owner's fit against the new
- * platform's own limits: `FILE_DEFAULTS` (`max_entries`, `max_inline_bytes`,
- * `max_file_bytes`), the stored-path rules (`contract/src/paths.ts`, read by the survey) and
- * the tier's storage from the control record, each counted by the files plane's own rule on
+ * platform's own limits: `FILE_DEFAULTS` (`max_file_bytes`), the stored-path rules
+ * (`contract/src/paths.ts`, read by the survey) and the tier's storage from the control
+ * record, each counted by the files plane's own rule on
  * the tree the bundle builder would make (`build.ts`). Every later choice is made from its
  * numbers.
  *
@@ -94,8 +94,7 @@ function largestBelow(source: Buffer): number {
 
 /**
  * What refuses an owner before its tree is made, read from sizes alone: a file past the
- * platform's largest or the tier's storage, more carried paths than `max_entries`, or a
- * file past what a tar member can hold in `refused.tar` or `ignored.tar`. So a 40 GiB file
+ * platform's largest or the tier's storage, or a file past what a tar member can hold in `refused.tar` or `ignored.tar`. So a 40 GiB file
  * is refused by its size, never read.
  */
 export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
@@ -112,10 +111,6 @@ export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
   const tier = tiers === null ? undefined : tierOf(owner, tiers);
   if (tier !== undefined && largest > tier.storage_bytes) {
     problems.push({ code: "over_storage", at });
-  }
-  if (tree.carried.length + tree.archived.length + carried().files.length
-      > FILE_DEFAULTS.max_entries) {
-    problems.push({ code: "over_entries", at });
   }
   if (Math.max(members(tree.refused), members(tree.ignoredTrees)) > TAR_MEMBER_MAX) {
     problems.push({ code: "over_tar_member", at });
@@ -241,7 +236,6 @@ export function census(copy: Copy, tiers: Tiers): Census {
             collection_rows: sum((owner) => owner.tree.rows.collection),
             body_bytes: sum((owner) => owner.tree.rows.body_bytes) },
     fit: {
-      max_entries: FILE_DEFAULTS.max_entries,
       most_entries: most((fit) => fit.entries),
       most_stored: most((fit) => fit.stored),
     },

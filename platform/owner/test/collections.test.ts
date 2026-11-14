@@ -650,7 +650,7 @@ describe("the history keys' migration (untangle H1)", () => {
           "AND name NOT GLOB 'cf_*'").toArray()) {
         sql.exec(`DROP TABLE "${name}"`);
       }
-      migrate(state.storage, MIGRATIONS.slice(0, -1));
+      migrate(state.storage, MIGRATIONS.slice(0, 6));  // through R5's 6
       // As the code before it left them: `a` written three times; `b` deleted (its entries
       // with it) and made again private; `c` deleted while private; `d`'s body placed.
       sql.exec("INSERT INTO file_contents (content_id, size, inline, refs) VALUES (?, 5000, " +

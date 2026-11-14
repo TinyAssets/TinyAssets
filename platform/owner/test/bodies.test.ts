@@ -318,19 +318,28 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     expect((await stub.fileUsage(as(name))).share.chunk_bytes).toBe(0);
   });
 
-  it("A3: placed history makes room at the tier's storage before a write is refused",
-     async () => {
+  it("A3: placed history is never let go at the tier's storage: the write is refused " +
+     "storage_full and every entry is kept (ADR-036, untangle F1)", async () => {
     const { stub, as, name } = ownerObject();
     const bind = { ...as(name), tiers: tiers(6 * 2 * PLACE_BYTES) };
     let etag = "";
-    for (let n = 0; n < 12; n++) {
-      const done = await stub.collectionWrite(bind, { collection: "board", row_id: "r",
-        body: `${n}`.padEnd(LARGE.length, "é"), expected_etag: etag, private: false }) as
-        { row: { etag: string } };
-      etag = done.row.etag;
+    let refused: Error | null = null;
+    let written = 0;
+    for (let n = 0; n < 12 && refused === null; n++) {
+      try {
+        const done = await stub.collectionWrite(bind, { collection: "board", row_id: "r",
+          body: `${n}`.padEnd(LARGE.length, "é"), expected_etag: etag, private: false }) as
+          { row: { etag: string } };
+        etag = done.row.etag;
+        written++;
+      } catch (error) {
+        refused = error as Error;
+      }
     }
+    expect(refusalOf(refused)?.code).toBe("storage_full");
+    expect(written).toBeGreaterThan(1);
     const [kept] = await sqlIn(stub, "SELECT COUNT(*) AS n FROM collection_history");
-    expect(kept!["n"]).toBeLessThan(12);
+    expect(kept!["n"]).toBe(written);
     expect((await stub.fileUsage(bind)).chunk_bytes).toBeLessThanOrEqual(6 * 2 * PLACE_BYTES);
   });
 

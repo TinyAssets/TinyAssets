@@ -536,8 +536,6 @@ describe("the manifest's queries", () => {
         plan("SELECT version, path FROM file_history WHERE version > ? AND version <= ? " +
                "ORDER BY version LIMIT ?", 0, 10, 10),
         plan("SELECT MIN(prune_after) FROM file_history WHERE prune_after IS NOT NULL"),
-        plan("SELECT version, path FROM file_history WHERE released = 1 " +
-               "ORDER BY prune_after, version LIMIT ?", 10),
         plan("SELECT MIN(gc_after) FROM file_chunks WHERE gc_after IS NOT NULL"),
         plan("SELECT MIN(expires_at) FROM file_intents"),
         plan("SELECT MIN(expires_at) FROM file_temps"),
@@ -546,7 +544,6 @@ describe("the manifest's queries", () => {
     for (const plan of plans) {
       expect(plan).not.toMatch(/SCAN (?!.*USING)|TEMP B-TREE/);
     }
-    expect(plans[6]).toMatch(/USING INDEX file_history_released/);
   });
 
   it("keep every counter equal to a recount", async () => {
@@ -567,6 +564,6 @@ describe("the manifest's queries", () => {
     });
     const [after, recount] = await fileCounters(r.stub);
     expect(after).toEqual(recount);
-    expect(FILE_DEFAULTS.keep_versions).toBe(10);
+    expect(FILE_DEFAULTS.keep_versions).toBeNull();
   });
 });
