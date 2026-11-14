@@ -22,6 +22,7 @@ import {
   keyExchangeSource, type OAuthClient, scope, secret, source, type Source,
 } from "../../contract/src/egress-scope";
 import { boundedJson } from "./answer";
+import { timeout } from "./deadline";
 import { nativeFetch } from "./egress";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 import type { Exchanged, Refreshed, Revoked } from "../../contract/src/gateway";
@@ -97,7 +98,7 @@ async function post(client: OAuthClient, url: string, params: Record<string, str
   }
   try {
     return await nativeFetch(url, { method: "POST", headers, body, redirect: "manual",
-                                    signal: AbortSignal.timeout(TOKEN_DEADLINE_MS) });
+                                    signal: timeout(TOKEN_DEADLINE_MS) });
   } catch {
     throw new Refusal("oauth_unreachable");
   }
@@ -198,7 +199,7 @@ async function keyExchange(env: KeyringEnv, bound: Binding, grant: unknown,
       headers: { accept: "application/json", "accept-encoding": "identity",
                  "content-type": "application/json" },
       body: JSON.stringify({ code, code_verifier: verifier, code_challenge_method: "S256" }),
-      redirect: "manual", signal: AbortSignal.timeout(TOKEN_DEADLINE_MS),
+      redirect: "manual", signal: timeout(TOKEN_DEADLINE_MS),
     });
   } catch {
     throw new Refusal("oauth_unreachable");

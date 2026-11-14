@@ -40,6 +40,7 @@ import {
   ringRequest, type Sealed,
 } from "../../contract/src/gateway";
 import { boundedJson } from "./answer";
+import { timeout } from "./deadline";
 import { binding, type KeyringEnv, openValue, resealValue, sealValue } from "./keyring";
 
 /** What a doorbell blob holds: where it goes, how it is sent, and its secret. */
@@ -174,7 +175,7 @@ export async function verifyDoorbell(env: KeyringEnv, owner: string, subscriptio
   let response: Response;
   try {
     response = await send(new Request(plain.url, {
-      method: "POST", redirect: "manual", signal: AbortSignal.timeout(events.verify_timeout_ms),
+      method: "POST", redirect: "manual", signal: timeout(events.verify_timeout_ms),
       headers: { "Content-Type": "application/json", "webhook-id": id,
                  "webhook-timestamp": String(stamp),
                  "webhook-signature": await signature([plain.secret], id, stamp, body),

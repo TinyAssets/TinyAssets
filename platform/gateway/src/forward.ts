@@ -44,6 +44,7 @@ import { type Binding, type KeyringEnv, open, type Opened } from "./keyring";
 import {
   gatewaySlots, heldDeadlineMs, Hold, raced, weighedBody, weightSlots,
 } from "./held";
+import { timeout } from "./deadline";
 import { RESEALED_HEADER } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract/src/limits";
 
@@ -456,7 +457,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     body = upload.body;
     // Past its deadline, or stopped, the upload ends there.
     held = AbortSignal.any([cancelled.signal,
-                            AbortSignal.timeout(heldDeadlineMs(Number(declared)))]);
+                            timeout(heldDeadlineMs(Number(declared)))]);
     held.addEventListener("abort", () => upload?.stop(), { once: true });
   }
   const headers = new Headers();
@@ -478,7 +479,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     if (metered !== null) {
       headers.delete("content-length");
     }
-    deadline = AbortSignal.timeout(FORWARD_DEADLINE_MS);
+    deadline = timeout(FORWARD_DEADLINE_MS);
     signal = AbortSignal.any([request.signal, deadline, cancelled.signal]);
   } catch {
     // Nothing was sent: the upload's slots go with it (L2), and the call is `failed` (M3).
@@ -629,7 +630,7 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
       headers: new Headers([[credential.upstream.auth.header, authValue(credential)],
                             ["accept", "application/json"]]),
       redirect: "manual",
-      signal: AbortSignal.timeout(VERIFY_DEADLINE_MS),
+      signal: timeout(VERIFY_DEADLINE_MS),
     });
   } catch {
     throw new Refusal("upstream_unreachable");
