@@ -5,7 +5,7 @@ already hurt the project without trying to turn AGENTS.md into a fuzzy semantic
 diff target:
 
 - referenced guard artifacts must exist;
-- `.agents/skills/*/SKILL.md` and `.claude/skills/*/SKILL.md` must match;
+- every file under `.agents/skills/<name>/` and `.claude/skills/<name>/` must match;
 - newly edited provider-specific files must not introduce broad project rules
   that belong in AGENTS.md unless the section is explicitly harness-specific.
 
@@ -203,26 +203,31 @@ def check_required_artifacts(root: Path, paths: list[Path]) -> list[Issue]:
     return issues
 
 
+CANONICAL_SKILLS = ".agents/skills/"
+MIRROR_SKILLS = ".claude/skills/"
+
+
 def check_skill_mirrors(root: Path, paths: list[Path] | None) -> list[Issue]:
+    """Every file in a skill's folder (`<tree><name>/...`) matches its other copy, byte for byte."""
     issues: list[Issue] = []
     pairs: set[tuple[Path, Path]] = set()
 
-    candidates = paths if paths is not None else iter_watched_paths(root)
+    candidates = paths if paths is not None else [
+        path for tree in (CANONICAL_SKILLS, MIRROR_SKILLS)
+        for path in (root / tree).glob("*/**/*") if path.is_file()
+    ]
     for path in candidates:
         rel = relpath(root, path)
-        if rel.startswith(".agents/skills/") and rel.endswith("/SKILL.md"):
-            pairs.add((path, root / rel.replace(".agents/skills/", ".claude/skills/", 1)))
-        elif rel.startswith(".claude/skills/") and rel.endswith("/SKILL.md"):
-            pairs.add((root / rel.replace(".claude/skills/", ".agents/skills/", 1), path))
-
-    if paths is None:
-        for canonical in (root / ".agents" / "skills").glob("*/SKILL.md"):
-            mirror = root / ".claude" / "skills" / canonical.parent.name / "SKILL.md"
-            pairs.add((canonical, mirror))
+        for tree, other in ((CANONICAL_SKILLS, MIRROR_SKILLS), (MIRROR_SKILLS, CANONICAL_SKILLS)):
+            if rel.startswith(tree) and "/" in rel[len(tree):]:
+                twin = root / (other + rel[len(tree):])
+                pairs.add((path, twin) if tree == CANONICAL_SKILLS else (twin, path))
 
     for canonical, mirror in sorted(pairs, key=lambda pair: relpath(root, pair[0])):
         canonical_rel = relpath(root, canonical)
         mirror_rel = relpath(root, mirror)
+        if not canonical.exists() and not mirror.exists():
+            continue
         if not canonical.exists():
             issues.append(
                 Issue(
@@ -243,7 +248,7 @@ def check_skill_mirrors(root: Path, paths: list[Path] | None) -> list[Issue]:
                 )
             )
             continue
-        if read_text(canonical) != read_text(mirror):
+        if canonical.read_bytes() != mirror.read_bytes():
             issues.append(
                 Issue(
                     code="skill-mirror-drift",

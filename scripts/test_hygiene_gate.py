@@ -8,8 +8,8 @@ arXiv 2607.12068):
 
 * **Tampering.** A failing test gets deleted, skipped or its assertions
   loosened inside the feature PR that broke it. Deleting, skipping or
-  weakening a test is legitimate -- but as its OWN change, with a stated
-  reason, given an adversarial review. Not riding along in a feature.
+  weakening a test is legitimate -- with a stated reason the review reads.
+  A stale test never blocks a fix: it changes in the same PR, and says why.
 * **Suppression that never ends.** ``tests/test_wiki_file_bug.py`` skipped
   itself for 144 days behind a guard that looked in the wrong module.
 * **Non-hermetic new tests.** Real sleeps, the real calendar, the network,
@@ -22,14 +22,11 @@ scope guard) and fails when:
 1. **tampering** -- a test that exists at the merge base is removed, has
    fewer assertions, or gains a skip/xfail; or a known-failing entry is
    added -- and the body has no ``Test-Removal: retired|consolidated|wrong --
-   <why>`` line. With that line it still fails if the PR is also a feature
-   (adds lines outside tests/), unless the reason is ``retired``: retiring a
-   behaviour legitimately deletes its code and its tests together.
-   A platform test (``platform/**/*.test.ts``, or a platform file that imports a
-   test runner) is read as text by
-   ``platform_tests.py``: a file that loses cases or expectations, or gains a
-   skip, needs the same line. Only the line: the platform's refactors move and
-   rewrite tests beside their code on purpose;
+   <why>`` line. A platform test (``platform/**/*.test.ts``, or a platform
+   file that imports a test runner) is read as text by ``platform_tests.py``:
+   a file that loses cases or expectations, or gains a skip, needs the same
+   line. Only the line, beside product code too: refactors move and rewrite
+   tests beside their code on purpose;
 2. a **new** skip/xfail that is not an environment guard lacks ``owner=`` and
    one of ``expires=YYYY-MM-DD`` (at most ``MAX_EXPIRY_DAYS`` out) or
    ``runs-in=<where it does run>``;
@@ -87,8 +84,6 @@ REMOVAL_RE = re.compile(
 HERMETIC_OK = "hermetic-ok"
 #: The escape hatch is a COMMENT that gives a reason, not a substring.
 HERMETIC_OK_RE = re.compile(r"#\s*hermetic-ok:\s*\S.{3,}")
-#: Paths whose added lines do not make a PR a "feature".
-NON_FEATURE = ("tests/", "docs/", LEDGER, ".github/heavy-test-files.txt", "openspec/")
 
 
 @dataclass
@@ -105,11 +100,6 @@ class Delta:
     expired: list[Finding] = field(default_factory=list)
     unhermetic: list[Finding] = field(default_factory=list)
     notes: list[Finding] = field(default_factory=list)
-    feature_lines: int = 0
-    product_deleted: int = 0
-    #: Tampering findings that are whole test removals (the only kind
-    #: `Test-Removal: retired` may carry alongside product code).
-    removals_only: bool = True
     new_tests: int = 0
     removed_tests: int = 0
     #: Platform test files holding fewer cases or expectations, or more skips.
@@ -174,17 +164,6 @@ def changed_files(base: str, head: str, root: Path) -> list[tuple[str, str | Non
             new = None if status == "D" else path
         out.append((status[0], old, new))
     return out
-
-
-def line_counts(base: str, head: str, root: Path, path: str) -> tuple[int, int]:
-    """(added, deleted) lines for one path; a binary file counts 1 each way."""
-    raw = _git("diff", "--numstat", base, head, "--", path, root=root)
-    added = deleted = 0
-    for line in raw.splitlines():
-        a, d = (line.split("\t") + ["", ""])[:2]
-        added += int(a) if a.isdigit() else 1
-        deleted += int(d) if d.isdigit() else 1
-    return added, deleted
 
 
 # ---- what a test file holds ---------------------------------------------------
@@ -499,13 +478,6 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
         for claim in sorted(test.ids & retired):
             delta.shape.append(Finding(test.node, f"spec retires an id still named: {claim}"))
 
-    for status, old, new in changes:
-        path = new or old or ""
-        if not path.startswith(NON_FEATURE):
-            added, deleted = line_counts(base, head, root, path)
-            delta.feature_lines += added
-            delta.product_deleted += deleted
-
     test_changes = [
         (old, new)
         for _s, old, new in changes
@@ -552,7 +524,6 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
                 delta.removed_tests += 1
                 delta.tampering.append(Finding(f"{old}::{name}", "test removed"))
             elif a.asserts[name] < b.asserts[name]:
-                delta.removals_only = False
                 delta.tampering.append(
                     Finding(
                         f"{rel}::{name}",
@@ -579,7 +550,6 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
             target = _enclosing(m, a)
             existing = target in b.tests if target else bool(b.tests)
             if existing:
-                delta.removals_only = False
                 delta.tampering.append(
                     Finding(
                         f"{rel}:{m.line}",
@@ -599,7 +569,8 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
                     Finding(
                         f"{rel}:{m.line}",
                         f"`{m.kind}` expired {m.expires} -- this PR touches the file, so revive "
-                        "the test, delete it (its own PR), or re-justify with a new date",
+                        "the test, delete it (a `Test-Removal:` line), or re-justify with a new "
+                        "date",
                     )
                 )
 
@@ -623,7 +594,6 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
     )
     for node, line in after_ledger.items():
         if before_ledger.get(node) != line:
-            delta.removals_only = False
             delta.tampering.append(
                 Finding(node, f"known-failing entry added or changed: {' '.join(map(str, line))}")
             )
@@ -637,29 +607,12 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
 
 def evaluate(delta: Delta, body: str) -> list[str]:
     failures = [f"{f.where} {f.what}" for f in delta.shape]
-    if delta.tampering:
-        listed = "; ".join(f"{f.where} ({f.what})" for f in delta.tampering[:20])
-        reason = REMOVAL_RE.search(body or "")
-        if not reason:
-            failures.append(
-                f"this PR removes, skips or loosens existing tests: {listed}. That is allowed "
-                "only as its own reviewed change: add `Test-Removal: retired|consolidated|wrong "
-                "-- <why>` to the PR body and get an adversarial review."
-            )
-        elif delta.feature_lines and not (
-            reason.group(1).lower() == "retired" and delta.removals_only and delta.product_deleted
-        ):
-            failures.append(
-                f"this PR changes product code (+{delta.feature_lines} lines outside tests/) AND "
-                f"removes, skips or loosens existing tests: {listed}. Split the test change into "
-                "its own PR. Only whole-test removals declared `Test-Removal: retired` may ride "
-                "with product code, and only when the PR also deletes the code they covered."
-            )
-    if delta.platform_tampering and not REMOVAL_RE.search(body or ""):
-        listed = "; ".join(f"{f.where} ({f.what})" for f in delta.platform_tampering[:20])
+    tampered = delta.tampering + delta.platform_tampering
+    if tampered and not REMOVAL_RE.search(body or ""):
+        listed = "; ".join(f"{f.where} ({f.what})" for f in tampered[:20])
         failures.append(
-            f"this PR removes, skips or loosens existing platform tests: {listed}. Say why "
-            "with `Test-Removal: retired|consolidated|wrong -- <why>` in the PR body, so the "
+            f"this PR removes, skips or loosens existing tests: {listed}. Say why with "
+            "`Test-Removal: retired|consolidated|wrong -- <why>` in the PR body, so the "
             "review reads it."
         )
     for f in delta.unexplained_markers:
@@ -694,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
         body = args.body.read_text(encoding="utf-8", errors="replace")
     print(
         f"tests added {delta.new_tests}, removed {delta.removed_tests}, "
-        f"tampering findings {len(delta.tampering)}, product lines added {delta.feature_lines}, "
+        f"tampering findings {len(delta.tampering)}, "
         f"platform test findings {len(delta.platform_tampering)}"
     )
     for n in delta.notes:

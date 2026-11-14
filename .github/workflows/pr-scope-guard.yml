@@ -123,7 +123,7 @@ jobs:
           echo "key=${KEY}" >> "$GITHUB_OUTPUT"
 
       # PR-relative test hygiene: removing, skipping or loosening an existing
-      # test needs a stated reason and its own PR; a new skip needs an owner
+      # test needs a stated reason (`Test-Removal:`); a new skip needs an owner
       # and an end; a new test may not touch the network, real paths or sleep.
       # The trusted base copy of the script reads both trees as text
       # (`git show` + ast.parse); no PR code runs. Nothing here fails on a
@@ -342,9 +342,12 @@ jobs:
               2> "$RUNNER_TEMP/receipt-why.txt"; then
             {
               echo ""
-              echo "**Blocked — no Drain-Review receipt for head \`${HEAD_OID}\`${DIFF_KEY:+ (diff key \`${DIFF_KEY}\`)}.**"
+              echo "**Blocked — no Drain-Review receipt for head \`${HEAD_OID}\`${DIFF_KEY:+ (diff key \`${DIFF_KEY}\`)}, or the body's Untangle check is missing or names no fix for an owed item.**"
               echo ""
-              echo "Every PR needs a current review receipt before it can merge."
+              echo "Every PR needs a current review receipt before it can merge. One that changes"
+              echo "more than prose also needs an **Untangle check** heading in its body, and each"
+              echo "item there that is left, owed or later names its PR (#123), branch or live: wait."
+              echo "The lines quoted below say which."
               echo ""
               sed 's/^/> /' "$RUNNER_TEMP/receipt-why.txt"
               echo ""
@@ -386,7 +389,7 @@ jobs:
               echo "need a new receipt. Any real edit to the code does. A"
               echo "\`Drain-Review-Diff:\` receipt states that hash explicitly."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "scope guard: BLOCKED — no Drain-Review receipt for head ${HEAD_OID}${DIFF_KEY:+ / diff key ${DIFF_KEY}}"
+            echo "scope guard: BLOCKED — no Drain-Review receipt or Untangle check for head ${HEAD_OID}${DIFF_KEY:+ / diff key ${DIFF_KEY}}"
             cat "$RUNNER_TEMP/receipt-why.txt" || true
             exit 1
           fi
