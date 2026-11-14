@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { PLATFORM } from "../paths.ts";
 
 export interface Owed {
-  /** The guard that finds it (`"layers"`, the import-layer table's; `"refusals"`). */
+  /** The guard that finds it (`"layers"`, the import-layer table's; `"refusals"`; `"kernels"`). */
   readonly guard: string;
   /** The violation, exactly as the guard names it. */
   readonly what: string;
@@ -27,7 +27,7 @@ export interface Found {
 }
 
 /** The guards a workspace may owe: each one's test holds `ratchet` over what it finds. */
-export const GUARDS: readonly string[] = Object.freeze(["layers", "refusals"]);
+export const GUARDS: readonly string[] = Object.freeze(["kernels", "layers", "refusals"]);
 
 /** Each entry owed to a guard no test holds, which would never be found stale. */
 export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {
@@ -51,6 +51,23 @@ export function imports(fix: string, from: string, to: readonly string[]): Owed[
  */
 export function refusals(fix: string, from: string, what: readonly string[]): Owed[] {
   return what.map((each) => Object.freeze({ guard: "refusals", what: `${from}: ${each}`, fix }));
+}
+
+/**
+ * The kernel guard's violation (`kernels.ts`): the source `from`, from the repository root,
+ * does `kernel`'s work `count` times outside its home.
+ */
+export const kernelBreak = (from: string, kernel: string, count: number): string =>
+  `${from}: ${kernel} ×${count}`;
+
+/**
+ * What each source owes the kernel guard for `kernel`, until `fix` removes them: the times
+ * it does the kernel's work, by its path from the repository root.
+ */
+export function kernels(fix: string, kernel: string,
+                        counts: Readonly<Record<string, number>>): Owed[] {
+  return Object.entries(counts).map(([from, count]) =>
+    Object.freeze({ guard: "kernels", what: kernelBreak(from, kernel, count), fix }));
 }
 
 /** The file that holds a workspace's `OWED`. */

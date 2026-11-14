@@ -10,6 +10,7 @@
  * (`workers_dev` and `preview_urls` false, no route). No environment may add anything.
  */
 import type { ConfigRules } from "../../ci/kit/config";
+import { kernels, type Owed } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "files",
@@ -21,3 +22,12 @@ export const CONFIG: ConfigRules = Object.freeze({
   secrets: Object.freeze(["FILES_KEYRING"]),
   buckets: Object.freeze(["BLOBS"]),
 });
+
+/**
+ * What the files Worker still owes the platform's guards (`ci/kit/owed.ts`): its Web Crypto
+ * SHA-256 beside the contract's (`ci/kit/kernels.ts`), until lane V's B7 adopts it. The
+ * contract's is `node:crypto`'s, which this Worker's config (no `nodejs_compat`) cannot load.
+ */
+export const OWED: readonly Owed[] = Object.freeze([
+  ...kernels("B7", "SHA-256", { "platform/files/src/index.ts": 1 }),
+]);

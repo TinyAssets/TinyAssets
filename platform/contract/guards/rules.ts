@@ -13,6 +13,7 @@
  *
  */
 import type { ImportRules } from "../../ci/kit/imports";
+import { kernels, type Owed } from "../../ci/kit/owed";
 
 export const IMPORTS: ImportRules = Object.freeze({
   worker: "contract",
@@ -22,3 +23,12 @@ export const IMPORTS: ImportRules = Object.freeze({
     says: "names %s, the runtime's I/O",
   }]),
 });
+
+/**
+ * What the contract still owes the platform's guards (`ci/kit/owed.ts`): the import
+ * message's two SHA-256s beside `digest.ts` (`ci/kit/kernels.ts`), until lane I's B7 adopts
+ * them.
+ */
+export const OWED: readonly Owed[] = Object.freeze([
+  ...kernels("B7", "SHA-256", { "platform/contract/src/import-message.ts": 2 }),
+]);
