@@ -18,7 +18,7 @@ import {
 import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import { MOVE_BYTES, RECORD_TRAILER_BYTES } from "../src/segments";
-import { ballast, counters, DOT, MCP, MUSE, origin, rig } from "./ledger-support";
+import { ballast, counters, DOT, MUSE, origin, registerOn, rig } from "./ledger-support";
 import { failure, starterSeed } from "./support";
 
 const PULL = { command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
@@ -107,13 +107,13 @@ describe("the ledger's bounds", () => {
   it("releases a disabled agent's unacked mail from the unread count, and keeps it",
      async () => {
     const r = await rig();
-    const [muse, dot] = await r.inLedger((ledger: Ledger) => {
-      const a = ledger.register(MUSE, MCP, PULL).agent_id;
+    const [muse, dot] = await r.inLedger((ledger: Ledger, stores) => {
+      const a = registerOn(stores, MUSE, PULL).agent_id;
       for (const n of [1, 2, 3]) {
         ledger.post(null, `dm:${a}`, `c${n}`, `body ${n}`, null);  // never read nor acked
       }
       ledger.disable(a, "gone");
-      const b = ledger.register(DOT, MCP, { ...PULL, display_name: "Dot" }).agent_id;
+      const b = registerOn(stores, DOT, { ...PULL, display_name: "Dot" }).agent_id;
       for (const n of [1, 2, 3]) {
         ledger.post(null, `dm:${b}`, `d${n}`, `body ${n}`, null);
       }
@@ -164,10 +164,10 @@ describe("the ledger's bounds", () => {
 
   it("leaves no row for a deleted agent", async () => {
     const r = await rig();
-    await r.inLedger((ledger: Ledger) => {
-      const muse = ledger.register(MUSE, MCP, RINGS).agent_id;
+    await r.inLedger((ledger: Ledger, stores) => {
+      const muse = registerOn(stores, MUSE, RINGS).agent_id;
       ledger.disable(muse, "paused");
-      ledger.register(MUSE, MCP, RINGS);
+      registerOn(stores, MUSE, RINGS);
       ledger.remove(muse);
     });
     expect(await r.table("ledger_wakes")).toEqual([]);
@@ -176,23 +176,23 @@ describe("the ledger's bounds", () => {
 
   it("caps enabled agents, and registry rows until the owner deletes one", async () => {
     const r = await rig();
-    await r.inLedger((ledger: Ledger) => {
+    await r.inLedger((ledger: Ledger, stores) => {
       // The owner's own agents, its seed's and these, take the reserved mailboxes but one.
       for (let n = 0; n < maxAgents - 1 - starterSeed().agents.length; n++) {
         ledger.appear(`agent-${n}`);
       }
-      const muse = ledger.register(MUSE, MCP, PULL).agent_id;
-      expect(refusal(() => ledger.register(DOT, MCP, PULL)))
+      const muse = registerOn(stores, MUSE, PULL).agent_id;
+      expect(refusal(() => registerOn(stores, DOT, PULL)))
         .toBe("the owner's enabled agents are at their limit");
-      expect(ledger.register(MUSE, MCP, PULL).agent_id).toBe(muse);  // takes no new place
+      expect(registerOn(stores, MUSE, PULL).agent_id).toBe(muse);  // takes no new place
       ledger.disable(muse, "paused");
       // A disabled agent frees its mailbox, but its row stays the registry's.
-      expect(refusal(() => ledger.register(DOT, MCP, PULL)))
+      expect(refusal(() => registerOn(stores, DOT, PULL)))
         .toBe("the owner's agent registry is full; delete a disabled agent to make room");
-      expect(ledger.register(MUSE, MCP, PULL).agent_id).toBe(muse);  // enabled again
+      expect(registerOn(stores, MUSE, PULL).agent_id).toBe(muse);  // enabled again
       ledger.disable(muse, "paused");
       ledger.remove(muse);
-      ledger.register(DOT, MCP, PULL);
+      registerOn(stores, DOT, PULL);
     });
     const [usage, actual] = await counters(r);
     expect([usage, usage["agents"], usage["enabled_agents"]])
@@ -201,8 +201,8 @@ describe("the ledger's bounds", () => {
 
   it("answers a retried ack, and dedupes a resend of what it holds hot", async () => {
     const r = await rig();
-    await r.inLedger((ledger: Ledger) => {
-      const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
+    await r.inLedger((ledger: Ledger, stores) => {
+      const room = `dm:${registerOn(stores, MUSE, PULL).agent_id}`;
       const sent = ledger.post(null, room, "c1", "hello", null);
       expect(ledger.post(null, room, "c1", "hello", null)).toEqual(sent);  // held: the same
       ledger.ack(MUSE, 1);
@@ -215,8 +215,8 @@ describe("the ledger's bounds", () => {
   it("keeps settled wakes for their retention and at most the ceiling", async () => {
     const r = await rig();
     const now = clock();
-    await r.inLedger((ledger: Ledger) => {
-      const muse = ledger.register(MUSE, MCP, RINGS).agent_id;
+    await r.inLedger((ledger: Ledger, stores) => {
+      const muse = registerOn(stores, MUSE, RINGS).agent_id;
       ledger.setWakeLimits(muse, null, 0);
       for (let n = 1; n <= maxSettledWakes + 1; n++) {
         ledger.post(null, `dm:${muse}`, `c${n}`, `body ${n}`, null, now + n);
@@ -271,8 +271,8 @@ describe("the ledger's bounds", () => {
      "off in plain words", { tags: ["large"] }, async () => {
     const r = await rig();
     try {
-      const seen = await r.inLedger((ledger: Ledger) => {
-        ballast(ledger, 4, 6);
+      const seen = await r.inLedger((ledger: Ledger, stores) => {
+        ballast(stores, 4, 6);
         let seed = 7;
         const pick = (n: number) => {  // mulberry32: seeded, so every run is the same run
           seed = (seed + 0x6d2b79f5) | 0;
@@ -305,7 +305,7 @@ describe("the ledger's bounds", () => {
                 ledger.ack(reader, page.messages.at(-1)!.seq);
               }
             } else if (act === 5) {
-              ledger.register(who, MCP, PULL);
+              registerOn(stores, who, PULL);
             } else if (act === 6) {
               ledger.disable(idOf(who), "paused");
             } else if (pick(4) === 0) {

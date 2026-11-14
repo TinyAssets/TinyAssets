@@ -3,39 +3,32 @@
  * the stream replayed last line per key, the owner's rows as they stand, a digest of either
  * to compare, and a harness that runs a generation in the owner's own storage with a writer
  * at every outside call (and, if asked, after every unit), failing one outside call if asked,
- * each pass a fresh lane as a restarted object makes it.
+ * each pass a fresh lane as a restarted object makes it: the object's own (`ownerStores`), at
+ * production's sizes and on the isolate's pool.
  */
 import { createHash } from "node:crypto";
 
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import { Backups, type GenerationSizes } from "../src/backup";
-import {
-  OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
-} from "../src/holds";
-import { SLOT_WAIT_MS } from "../../contract/src/limits";
-import { SlotPool } from "../../contract/src/slots";
-import { ChangeLog } from "../src/changelog";
+import { GENERATION_SIZES } from "../src/backup";
 import { exported } from "../src/export";
 import type { Files } from "../src/files";
 import { WriteGate } from "../src/gate";
-import type { OwnerDO } from "../src/owner-do";
+import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
-import { MIGRATIONS } from "../src/schema";
-import { MCP, MUSE, signedIn } from "./ledger-support";
-import { admittedOwner, drainDue, filesOn, TIERS } from "./support";
-import type { ChunkStore } from "../../contract/src/files";
+import { MCP, MUSE, NO_FILE_CHANGE, signedIn } from "./ledger-support";
+import { admittedOwner, drainDue, filesOn, sqlIn, through, TIERS } from "./support";
 
 export type Line = Record<string, unknown> & { t: string };
 
 /**
- * A generation's sizes under test: pages of 16 KiB, parts of 32 KiB, bursts of 64 KiB, so a
- * fixture of a few hundred KB is cut into the pages, parts, bursts and outside calls a
- * production base of hundreds of MB is. The bound logic is the same at any size.
+ * Notices of a thousand characters enough for a generation's page, and for its burst, at the
+ * sizes every lane cuts at (`GENERATION_SIZES`): each one's line is a little longer, so this
+ * many fill a page or a burst and spill into the next.
  */
-export const SMALL: GenerationSizes = Object.freeze({ page: 16 * 1024, part: 32 * 1024,
-                                                      gather: 64 * 1024 });
+export const PAGE = Math.ceil(GENERATION_SIZES.page / 1_000);
+export const BURST = Math.ceil(GENERATION_SIZES.gather / 1_000);
 /** Rows as a reader keeps them: each table's rows by key, the last line for a key winning. */
 export type Rows = Record<string, Record<string, string>>;
 
@@ -106,28 +99,31 @@ export interface Generated {
   readonly calls: number;
 }
 
+/**
+ * Where a harness's hook acts: a writer's files of the test's own over the owner's storage
+ * (alone: no other module told of its changes), the gate it writes through, and the pass's
+ * stores, the lane's own.
+ */
+export interface At {
+  readonly files: Files;
+  readonly gate: WriteGate;
+  readonly stores: Stores;
+  readonly n: number;
+}
+
 export interface Harness {
   /** At the start of every outside call of the generation, before it is made. */
-  readonly duringCall?: (at: { files: Files; gate: WriteGate; n: number;
-                                kind: "part" | "segment" | "root" }) => Promise<void>;
+  readonly duringCall?: (at: At & { kind: "part" | "segment" | "root" }) => Promise<void>;
   /** After every unit of the generation (`n` counts units, from 100,000). */
-  readonly afterUnit?: (at: { files: Files; gate: WriteGate; n: number }) => Promise<void>;
+  readonly afterUnit?: (at: At) => Promise<void>;
   /** The outside call to fail, by its number, before it is made or after it landed. */
   readonly failAt?: { readonly call: number; readonly when: "before" | "after" };
   /** Begin it and stop, a pass with no time to carry it on, for an export to join. */
   readonly onePass?: boolean;
-  /** Whether the owner is being erased, as the lane asks it (never, unless a test says). */
-  readonly halted?: () => boolean;
-  /** The schema version the lane runs under (the code's, unless a migration is played). */
-  readonly schema?: number;
-  /** Its sizes: `SMALL` unless a test asks for others (production's `GENERATION_SIZES`). */
-  readonly sizes?: GenerationSizes;
-  /**
-   * The pool its bursts take their units of: a pool of the production figures its own unless
-   * a test passes one, so another test's holds in the isolate never refuse its bursts.
-   */
-  readonly pool?: SlotPool;
 }
+
+/** The notices a generation gives the owner (`backup.ts`, `changelog.ts`): its own kinds. */
+const MANIFEST_NOTICES = "type LIKE 'manifest%'";
 
 /**
  * Run a generation of `stub`'s owner (begun, or the one under way), pass after pass, each a
@@ -137,8 +133,11 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     Promise<Generated> {
   return runInDurableObject(stub, async (_instance: OwnerDO, state) => {
     const gate = new WriteGate(state.storage);
-    const log = new ChangeLog(gate.storage);
     const files = filesOn(gate.storage, gate.write);
+    const told = () => state.storage.sql.exec<{ seq: number }>(
+      `SELECT coalesce(max(seq), 0) AS seq FROM owner_notices WHERE ${MANIFEST_NOTICES}`)
+      .one().seq;
+    const before = told();
     // The owner's digest at each E a pass fixes: right after the unit that read the base's
     // last page (its answer names `last`, E), before anything else writes. Only there, so
     // the harness costs one digest a pass, never one a unit.
@@ -150,11 +149,12 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       }
     };
     let calls = 0;
+    let stores: Stores;
     const call = <A extends unknown[], R>(kind: "part" | "segment" | "root",
                                           made: (...args: A) => Promise<R>) =>
       async (...args: A): Promise<R> => {
         const n = ++calls;
-        await harness.duringCall?.({ files, gate, n, kind });
+        await harness.duringCall?.({ files, gate, stores, n, kind });
         if (harness.failAt?.call === n && harness.failAt.when === "before") {
           throw new Error("an outside call failed before it was made");
         }
@@ -164,10 +164,8 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
         }
         return done;
       };
-    const real = env.FILES as ChunkStore;
-    const store: ChunkStore = {
-      ...real,
-      mintKey: (ns) => real.mintKey(ns),
+    const real = env.FILES;
+    const store = through({
       putManifestPart: call("part", (ns, key, gen, part, bytes) =>
         real.putManifestPart(ns, key, gen, part, bytes)),
       putManifestSegment: call("segment", (ns, key, gen, a, b, bytes) => {
@@ -180,26 +178,21 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       }),
       putManifestRoot: call("root", (ns, key, gen, parts, segments, span) =>
         real.putManifestRoot(ns, key, gen, parts, segments, span)),
-      getManifestRoot: (ns, gen) => real.getManifestRoot(ns, gen),
-      deleteManifest: (ns, gen, parts, segments) => real.deleteManifest(ns, gen, parts, segments),
-    };
+    });
     let units = 100_000;
     const quiet = async <T>(unit: () => T): Promise<T> => {
       const value = await gate.quiet(unit);
       note(value);
-      await harness.afterUnit?.({ files, gate, n: ++units });
+      await harness.afterUnit?.({ files, gate, stores, n: ++units });
       return value;
     };
-    const notices: string[] = [];
-    const pool = harness.pool ?? new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
-                                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
-    const lane = () => new Backups({
-      storage: gate.storage, write: quiet, store, log, space: () => files.space(),
-      owner: () => "owner", serves: () => true, schema: harness.schema ?? MIGRATIONS.length,
-      halted: harness.halted ?? (() => false), notice: (type) => notices.push(type),
-      sizes: harness.sizes ?? SMALL,
-      pool,
-    });
+    // The object's own lane, over the gate's units (each noted, then the hook), its outside
+    // calls through `store`, as a restarted object builds it.
+    const lane = () => {
+      stores = ownerStores({ storage: gate.storage, write: gate.write, quiet },
+                           { ...env, FILES: store }, state.id, NO_FILE_CHANGE);
+      return stores.backups;
+    };
     // The one under way, or a new one, begun now (its owner changed since the last).
     if (state.storage.sql.exec("SELECT 1 FROM owner_backups WHERE state = 'writing'")
           .toArray().length === 0) {
@@ -214,18 +207,13 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       // One given up for a migration is followed by a fresh one: it is carried on instead.
       const fresh = row !== undefined ? undefined : state.storage.sql.exec<{ gen: string }>(
         "SELECT gen FROM owner_backups ORDER BY started_at DESC LIMIT 1").toArray()[0];
-      if (fresh !== undefined && notices.length > 0) {
+      if (fresh !== undefined && told() > before) {
         gen = fresh.gen;
         continue;
       }
       if (harness.onePass === true || row === undefined || row.state === "done") {
         break;
       }
-    }
-    // Every unit the lane took is given back, whatever its passes did (a leak would vanish
-    // with a pool of the run's own).
-    if (harness.pool === undefined && pool.state().held !== 0) {
-      throw new Error(`the generation's lane left ${pool.state().held} units of its pool held`);
     }
     const { ns } = await files.space();
     const root = await real.getManifestRoot(ns, gen);
@@ -242,6 +230,9 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
           .map((line) => JSON.parse(line) as Line));
       }
     }
+    const notices = state.storage.sql.exec<{ type: string }>(
+      `SELECT type FROM owner_notices WHERE ${MANIFEST_NOTICES} AND seq > ? ORDER BY seq`,
+      before).toArray().map((row) => row.type);
     return { gen, lines, e: root?.e ?? -1,
              atE: root === null ? undefined : digests.get(root.e), notices, calls };
   });

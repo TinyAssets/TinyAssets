@@ -21,7 +21,7 @@ import {
 } from "../../contract/src/run-events";
 import { TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated } from "./gateway-support";
-import { ledgerOn, MCP, MUSE, signedIn } from "./ledger-support";
+import { MCP, MUSE, signedIn, storesOn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, sandboxOf, scripted, secretOf, startOf, syncOf, TIERS }
   from "./runs-support";
@@ -801,9 +801,11 @@ describe("the runs lane (untangle A2, review F5)", () => {
     // Mail to `main` no run has taken, made in the ledger as a post makes it: the owner's
     // own post is work, which a suspension refuses.
     const due = await r.in((_instance, state) => {
-      const ledger = ledgerOn(state.storage);
-      ledger.post(null, `dm:${nativeId("main")}`, "m-1", "hello", null);
-      return ledger.mailDue(true);
+      const { ledger, gate } = storesOn(state);
+      return gate.write(() => {
+        ledger.post(null, `dm:${nativeId("main")}`, "m-1", "hello", null);
+        return ledger.mailDue(true);
+      });
     });
     expect(due).toBe(true);
     // The schedule set again (the platform's door syncs it): no job for the mail while

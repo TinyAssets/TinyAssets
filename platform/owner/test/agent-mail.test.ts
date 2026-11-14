@@ -21,7 +21,7 @@ import { nativeId } from "../../contract/src/binding";
 import type { Binding } from "../../contract/src/binding";
 import { mailConversation, type RunReceipt, UNATTENDED_REFUSED } from "../src/runs";
 import { gated, type Gated } from "./gateway-support";
-import { MCP, MUSE, rig, signedIn } from "./ledger-support";
+import { MCP, MUSE, registerOn, rig, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf,
          TIERS } from "./runs-support";
 import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
@@ -199,7 +199,7 @@ describe("the ledger's bounds on identities", () => {
     const { maxAgents, maxAgentRows } = LEDGER_LIMITS;
     // The owner's own agents its seed defines hold mailboxes and rows too.
     const seeded = starterSeed().agents;
-    const seen = await r.inLedger((ledger: Ledger) => {
+    const seen = await r.inLedger((ledger: Ledger, stores) => {
       const refused = (act: () => unknown) => {
         try {
           act();
@@ -215,7 +215,7 @@ describe("the ledger's bounds on identities", () => {
       ledger.appear("b");
       const full = refused(() => ledger.appear("c"));
       // Outside agents share the same reserved mailboxes.
-      const outside = refused(() => ledger.register(MUSE, MCP, {
+      const outside = refused(() => registerOn(stores, MUSE, {
         command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
         recipe_id: null }));
       // The registry is full too: each new row forgets the oldest retired one (retired at
@@ -860,14 +860,14 @@ describe("a sender gone (review M2)", () => {
   it("fails its mail no run took: a retired agent's, and a disabled outside agent's",
      async () => {
     const r = await rig();
-    const seen = await r.inLedger((ledger: Ledger) => {
+    const seen = await r.inLedger((ledger: Ledger, stores) => {
       ledger.appear("alice");
       ledger.appear("bob");
       const room = `dm:${[nativeId("alice"), nativeId("bob")].sort().join("+")}`;
       const asked = ledger.post({ native: "alice" }, room, "q", "question", null);
       ledger.retire("alice");
       const afterRetire = ledger.nextMail();
-      const muse = ledger.register(MUSE, MCP, { command_center_id: "alpha",
+      const muse = registerOn(stores, MUSE, { command_center_id: "alpha",
                                                display_name: "Muse", delivery_method: "pull",
                                                recipe_id: null });
       ledger.post(MUSE, `dm:${muse.agent_id}+${nativeId("bob")}`, "m", "hello bob", null);
