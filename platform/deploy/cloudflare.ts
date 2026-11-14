@@ -10,12 +10,11 @@
  *
  * Node runs this file as it is (type stripping), as the kit does.
  */
+import { HEX32 } from "../contract/src/ids.ts";
+
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 const CF_API = "https://api.cloudflare.com/client/v4";
-
-/** A Cloudflare account's id: 32 hex. */
-export const ACCOUNT_ID = /^[0-9a-f]{32}$/;
 
 /** Cloudflare's answer envelope, as every API but a KV value's answers. */
 interface Envelope {
@@ -375,7 +374,7 @@ export class Cloudflare {
     const id = found[0]?.["id"];
     const account = (found[0]?.["account"] as { id?: unknown } | undefined)?.id;
     if (found.length !== 1 || typeof id !== "string" || typeof account !== "string"
-        || !ACCOUNT_ID.test(account)) {
+        || !HEX32.test(account)) {
       throw new Error(`the zone ${name} could not be read (${found.length} found)`);
     }
     return { id, account };

@@ -33,7 +33,8 @@
 import type { Api, AssistantMessageEvent, Context, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 
-import { apiRules, type ApiRules, valueAt } from "../../contract/src/api-rules";
+import { apiRules, type ApiRules } from "../../contract/src/api-rules";
+import { valueAtPath } from "../../contract/src/checks";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
 import { GLOBAL_FETCH_APIS, type Meter, type Upstream } from "../../contract/src/egress-scope";
@@ -222,7 +223,7 @@ export function describes(rules: ApiRules, output: readonly string[], body: unkn
   return rules.outputs.some((path) => path.join("\0") === output.join("\0"))
     && (rules.model === null ? model === null
       : model !== null && model.length === 1 && model[0] === rules.model)
-    && rules.usage.every(([path, value]) => valueAt(body, path) === value);
+    && rules.usage.every(([path, value]) => valueAtPath(body, path) === value);
 }
 
 /** The object at `path` in `body`, made where it is missing or not an object. */
@@ -252,7 +253,8 @@ export function clamped(meter: Meter, body: Record<string, unknown>, cap: number
                    ...(rules?.outputs ?? []).filter((path) =>
                      path.join("\0") !== meter.output_field.join("\0"))];
   for (const [index, path] of aliases.entries()) {
-    const owner = index === 0 ? objectAt(body, path.slice(0, -1)) : valueAt(body, path.slice(0, -1));
+    const owner = index === 0 ? objectAt(body, path.slice(0, -1))
+      : valueAtPath(body, path.slice(0, -1));
     if (typeof owner !== "object" || owner === null || Array.isArray(owner)) {
       continue;
     }
@@ -265,14 +267,14 @@ export function clamped(meter: Meter, body: Record<string, unknown>, cap: number
     at[last] = typeof asked === "number" && Number.isSafeInteger(asked) && asked >= 1
       ? Math.min(asked, cap) : cap;
   }
-  if (rules !== null && (rules.stream === null || valueAt(body, rules.stream) === true)) {
+  if (rules !== null && (rules.stream === null || valueAtPath(body, rules.stream) === true)) {
     for (const [path, value] of rules.usage) {
       objectAt(body, path.slice(0, -1))[path.at(-1)!] = value;
     }
   }
   // An option left to the account's default, which pi-ai cannot price: the priced value.
   for (const { path, default_when_absent: value } of rules?.unpriced ?? []) {
-    if (value !== undefined && valueAt(body, path) === undefined) {
+    if (value !== undefined && valueAtPath(body, path) === undefined) {
       objectAt(body, path.slice(0, -1))[path.at(-1)!] = value;
     }
   }

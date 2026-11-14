@@ -37,8 +37,9 @@ import { codeOf, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
 import {
   aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, READS, servedPriced,
-  tierMultiplier, unpricedOption, valueAt,
+  tierMultiplier, unpricedOption,
 } from "../../contract/src/api-rules";
+import { valueAtPath } from "../../contract/src/checks";
 import { clamped, meteredRecord, meteredUsage, Meters } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened } from "./keyring";
 import {
@@ -315,7 +316,7 @@ async function prepared(request: Request, length: number, credential: Credential
   if (unpricedOption(rules, parsed)) {
     return { refused: "egress_unpriced_option" };
   }
-  const tier = rules.tier === null ? null : valueAt(parsed, [rules.tier.key]) ?? null;
+  const tier = rules.tier === null ? null : valueAtPath(parsed, [rules.tier.key]) ?? null;
   if (tier !== null && (typeof tier !== "string" || !MODEL_NAME.test(tier))) {
     return { refused: "egress_unpriced_option" };
   }

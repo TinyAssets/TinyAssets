@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 
 import { type CutoverLayer, cutoverLayer, type Entry, isGone, LIVE, type Manifest, MANIFEST,
          PHASES } from "../kit/cutover";
+import { keyed, object } from "../../contract/src/checks";
 import { layerProblems, repoScripts } from "../kit/imports";
 import { REPO } from "../paths";
 import { workerFolders } from "../wrangler";
@@ -46,8 +47,6 @@ const REPO_TREE: Tree = {
   },
 };
 
-const plain = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 const words = (value: unknown) => Array.isArray(value) && value.length > 0
   && value.every((each) => typeof each === "string" && each !== "");
 const text = (value: unknown) => typeof value === "string" && value !== "";
@@ -65,20 +64,20 @@ const SHAPES: Readonly<Record<string, Readonly<Record<string, Key>>>> = {
 
 /** How the manifest is out of its shape. */
 function shapeProblems(value: unknown): string[] {
-  if (!plain(value) || Object.keys(value).sort().join() !== "about,phases" || !text(value["about"])
-      || !plain(value["phases"]) || Object.keys(value["phases"]).join() !== PHASES.join()) {
+  if (!keyed(value, ["about", "phases"]) || !text(value["about"])
+      || !object(value["phases"]) || Object.keys(value["phases"]).join() !== PHASES.join()) {
     return [`the manifest is its about and its phases, ${PHASES.join(", ")}, in order`];
   }
   const problems: string[] = [];
   for (const phase of PHASES) {
     const body = value["phases"][phase];
-    if (!plain(body) || Object.keys(body).sort().join() !== "entries,why" || !text(body["why"])
+    if (!keyed(body, ["entries", "why"]) || !text(body["why"])
         || !Array.isArray(body["entries"])) {
       problems.push(`phase ${phase} is its why and its entries`);
       continue;
     }
     body["entries"].forEach((entry: unknown, n: number) => {
-      const action = plain(entry) ? Object.keys(SHAPES).filter((key) => key in entry) : [];
+      const action = object(entry) ? Object.keys(SHAPES).filter((key) => key in entry) : [];
       const shape = action.length === 1 ? SHAPES[action[0]!]! : null;
       if (shape === null || !Object.keys(entry as object).every((key) => key in shape)
           || !Object.entries(shape).every(([key, [needed, valid]]) =>

@@ -84,7 +84,6 @@ import { nextOccurrence, parseCron } from "./cron";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { periods } from "./money";
-import { SANDBOX_WAITING } from "./sandbox";
 import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF, switchedOn } from "./signins";
 import { TIER_RUNS, tierNumbers } from "./tier";
@@ -99,7 +98,9 @@ import { clock } from "./clock";
 import { fittedRun } from "./pages";
 import { placedAs } from "./bodies";
 import { eventsRequest } from "./reports";
-import type { CredentialKind, NetworkPlan, RunConfig } from "../../contract/src/sandbox";
+import {
+  type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING,
+} from "../../contract/src/sandbox";
 
 /**
  * Settled runs kept as receipts, the newest first: an older run's status is gone, never
@@ -115,13 +116,6 @@ export const QUEUE_FULL = `run_inputs_full: ${QUEUE_ROWS} inputs or ${QUEUE_BYTE
   "already; let a run settle first";
 /** An engine's sign-in lapsed: `auto` no longer picks it, and never falls back silently. */
 export const SIGNIN_LAPSED = "signin_lapsed: sign in to this engine again";
-/**
- * The sandbox's answer to a start on an engine's own sign-in where none is signed in inside
- * it (its record's `status_argv`, slice S): the run settles `failed` with it, and the owner
- * is told to sign in inside that sandbox. A login lives in its sandbox and is never copied
- * to another (ADR-031 decision 2).
- */
-export const SIGNIN_REQUIRED = "signin_required";
 export const UNATTENDED_REFUSED = "unattended_refused: no source of this agent may run " +
   "unattended on its record";
 export const NO_SOURCE = "no_source: no connected source can run this agent's engine";

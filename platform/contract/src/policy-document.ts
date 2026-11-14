@@ -14,6 +14,7 @@
  * rule tables and the spend caps are gone: nothing read them (d3 §N6).
  */
 import { actNamed } from "./acts.ts";
+import { canonical } from "./canonical.ts";
 import { keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
 import { actDoors, toolNames } from "./doors.ts";
@@ -316,21 +317,6 @@ export interface PolicyDocument {
   readonly tools?: ToolPolicy;
   readonly egress: { readonly mode: EgressMode;
                      readonly destinations: { readonly host: string; readonly port: number }[] };
-}
-
-/**
- * The Python's `json.dumps(value, sort_keys=True, separators=(",", ":"),
- * ensure_ascii=False)`, for the JSON values a request carries.
- */
-export function canonical(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => (item === undefined ? "null" : canonical(item))).join(",")}]`;
-  }
-  if (object(value)) {
-    return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
 }
 
 /** `_digest`: `sha256:` over the canonical JSON. */

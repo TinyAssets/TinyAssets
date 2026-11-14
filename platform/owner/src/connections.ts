@@ -59,6 +59,7 @@
  * live (pending, active or failed) connections; the newest `maxRevokedKept` revoked ones
  * that hold no blob; `maxFlowRows` flow rows, swept at their expiry.
  */
+import { keyed, object, whole } from "../../contract/src/checks";
 import { CONNECTION_ID, randomHex } from "../../contract/src/ids";
 import { sha256Hex } from "../../contract/src/digest";
 import { createHash, randomBytes } from "node:crypto";
@@ -190,10 +191,6 @@ const CREDENTIAL_EXPIRED = "credential_expired";
 const PROVIDER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const STATE = /^[A-Za-z0-9_-]{43}$/;
 
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 const INVALID_REQUEST = "invalid connection request";
 
 function text(value: unknown, max: number, what: string): string {
@@ -208,10 +205,6 @@ function grammar(value: unknown, pattern: RegExp, what: string): string {
     throw new Refusal("invalid", `invalid ${what}`);
   }
   return value;
-}
-
-function count(value: unknown, max: number): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max;
 }
 
 /**
@@ -395,7 +388,7 @@ export class Connections {
     }
     const expires = r["expires_at"] ?? null;
     if (row.kind === "api_key" ? expires !== null
-      : expires !== null && !count(expires, Number.MAX_SAFE_INTEGER)) {
+      : expires !== null && !whole(expires, 0)) {
       throw new Refusal("invalid",
                         "an OAuth connection's expiry is epoch ms or null; a key has none");
     }
@@ -773,7 +766,7 @@ export class Connections {
     const expires = refreshed.expires_at;
     const ok = object(refreshed) && refreshed.version === version + 1
       && typeof refreshed.kid === "string" && KID.test(refreshed.kid)
-      && (expires === null || count(expires, Number.MAX_SAFE_INTEGER));
+      && (expires === null || whole(expires, 0));
     let blob: string | undefined;
     try {
       blob = ok ? blobOf(refreshed.blob, refreshed.kid) : undefined;
@@ -830,7 +823,7 @@ export class Connections {
    */
   #keepResealed(id: string, version: number, resealed: unknown, nowMs: number,
                 holds: (row: Row) => boolean): boolean {
-    if (!object(resealed) || Object.keys(resealed).sort().join() !== "blob,kid,version"
+    if (!keyed(resealed, ["blob", "kid", "version"])
         || typeof resealed["kid"] !== "string" || !KID.test(resealed["kid"])
         || resealed["version"] !== version + 1) {
       return false;

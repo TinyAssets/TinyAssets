@@ -30,6 +30,7 @@
  * `200`, so its failure budget with its vendor is kept, unless it is for the moment only
  * (`mailbox_full`, a full pool's `busy`), when the app is told to send it again.
  */
+import { keyed, object } from "../../contract/src/checks";
 import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
@@ -48,7 +49,7 @@ import {
   inboundGate, MAINTENANCE, ordinaryAdmits, readControl,
 } from "../../contract/src/control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
-import { answer, boundedBytes, exactKeys, mediaType, randomToken } from "./kit";
+import { answer, boundedBytes, mediaType, randomToken } from "./kit";
 import { answered, asInbound, asShared } from "./refused";
 import type { Sources } from "../../sources/src/schema";
 
@@ -87,7 +88,7 @@ export function sharedApps(declared: unknown = apps): readonly SharedApp[] {
   return list.map((app: Record<string, unknown>) => {
     const { id, endpoint, secret, profile, envelope } = app;
     const fields = envelope as Record<string, unknown> | null;
-    if (!exactKeys(app, ["endpoint", "envelope", "id", "profile", "secret"])
+    if (!keyed(app, ["endpoint", "envelope", "id", "profile", "secret"])
         || typeof id !== "string" || !/^[a-z][a-z0-9_]{0,31}$/.test(id)
         || typeof endpoint !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(endpoint)
         || typeof secret !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(secret)
@@ -125,8 +126,7 @@ function envelopeOf(request: Request, body: Uint8Array): Record<string, unknown>
   try {
     const value: unknown = JSON.parse(utf8Decoder("strip")
       .decode(body));
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-      ? value as Record<string, unknown> : null;
+    return object(value) ? value : null;
   } catch {
     return null;
   }

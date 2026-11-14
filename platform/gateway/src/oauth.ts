@@ -17,7 +17,7 @@
  * nothing from it reaches an error (`failure.ts`).
  */
 import { type Credential, type OAuthGrant } from "./credential";
-import { object } from "../../contract/src/checks";
+import { keyed, object } from "../../contract/src/checks";
 import {
   keyExchangeSource, type OAuthClient, scope, secret, source, type Source,
 } from "../../contract/src/egress-scope";
@@ -140,7 +140,7 @@ function oauthCredential(base: Source, grant: OAuthGrant): Credential {
 
 /** The callback's code, the flow's verifier and its https redirect URI, checked. */
 function authorizationGrant(grant: unknown): { code: string; verifier: string; redirect: URL } {
-  if (!object(grant) || Object.keys(grant).sort().join() !== "code,redirect_uri,verifier"
+  if (!keyed(grant, ["code", "redirect_uri", "verifier"])
       || typeof grant["code"] !== "string" || !CODE.test(grant["code"])
       || typeof grant["verifier"] !== "string" || !VERIFIER.test(grant["verifier"])
       || typeof grant["redirect_uri"] !== "string") {

@@ -15,8 +15,9 @@
  * answer as scripted: a sign-in check by engine, the runner's state (for `state` and
  * `quiet-wait`; `state` with the runner's protocol), `adopt` refused ("no") while the state
  * is live, `prepare` dropping every other runner while nothing lives, and every other
- * command done, answering nothing. An upload can be refused (a full disk), and a command's
- * reply lost after it ran (`lost`).
+ * command done, answering nothing. An upload can be refused (a full disk), a command's
+ * reply lost after it ran (`lost`), and a command held before it runs until the test lets
+ * it go (`hold`, `/release`).
  */
 import { env } from "cloudflare:workers";
 
@@ -73,8 +74,11 @@ interface Script {
   room: number | null;
   /** A runner command that runs, but whose reply envd loses (answered 502 after it ran). */
   lost: string | null;
-  /** A runner command answered only after a wait (what it finds is read after the wait). */
-  slow: { command: string; ms: number } | null;
+  /**
+   * The next run of a runner command, held as it arrives until the test lets it go
+   * (`/release`): what it finds is read then. The state lists it while held (`held`).
+   */
+  hold: string | null;
 }
 
 const fake = {
@@ -85,6 +89,8 @@ const fake = {
   incoming: new Map<string, string>(),
   commands: [] as { sandbox: string; argv: string[]; runner: string | null; user: string }[],
   rings: [] as unknown[],
+  /** The commands held now (`hold`), each let go by `/release` or a reset. */
+  held: [] as { command: string }[],
   script: null as unknown as Script,
   /**
    * The last sandbox id handed out. It counts on across resets, so a look still running from
@@ -101,10 +107,11 @@ function reset(): void {
   fake.incoming.clear();
   fake.commands = [];
   fake.rings = [];
+  fake.held = [];
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
                   full: false, pauseMode: "full", noCount: false, down: 0,
                   refuseResume: false, broken: null, tampered: null, protocol: 1,
-                  room: null, lost: null, slow: null };
+                  room: null, lost: null, hold: null };
 }
 reset();
 
@@ -328,8 +335,14 @@ async function envd(request: Request, url: URL): Promise<Response> {
     // next test's reset (an alarm's look still running from the test before), lands in the
     // discarded log, never in the next test's.
     const log = fake.commands;
-    if (command !== undefined && command === fake.script.slow?.command) {
-      await new Promise((resolve) => setTimeout(resolve, fake.script.slow!.ms));
+    if (command !== undefined && command === fake.script.hold) {
+      // Polled inside this request: workerd wakes no request by a promise another resolves.
+      fake.script.hold = null;
+      const held = { command };
+      fake.held.push(held);
+      while (fake.held.includes(held)) {
+        await scheduler.wait(2);
+      }
     }
     const done = loader(box, raw);
     const argv = done.argv;
@@ -364,6 +377,10 @@ export default {
       if (url.pathname === "/script") {
         Object.assign(fake.script, await request.json());
         return Response.json(fake.script);
+      }
+      if (url.pathname === "/release") {
+        fake.held = [];
+        return Response.json({});
       }
       if (url.pathname === "/age") {
         // A sandbox's running window moved back by `s` seconds: time passing in a test.
@@ -402,7 +419,7 @@ export default {
       return Response.json({ sandboxes: [...fake.sandboxes.values()].map((box) => ({
                                ...box, runners: [...box.runners] })), calls: fake.calls,
                              files: Object.fromEntries(fake.files), commands: fake.commands,
-                             rings: fake.rings });
+                             rings: fake.rings, held: fake.held.map((each) => each.command) });
     }
     return new Response(`the sandbox Worker reached ${url.host}, which is not E2B`,
                         { status: 599 });

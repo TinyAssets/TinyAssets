@@ -18,9 +18,10 @@
  *   from keeps running (probed); the runner's own launch daemonizes anyway, so nothing relies
  *   on that.
  *
- * It imports nothing at run time, so Node's type stripping runs it in the deploy kit by its
- * own name. Every answer outside the documented shape fails loudly, never a guess.
+ * It imports only the contract, each by its own name, so Node's type stripping runs it in the
+ * deploy kit. Every answer outside the documented shape fails loudly, never a guess.
  */
+import { object } from "../../contract/src/checks.ts";
 import type { NetworkDocument } from "../../contract/src/sandbox.ts";
 
 export const E2B_API = "https://api.e2b.app";
@@ -71,10 +72,6 @@ interface Answer {
 }
 
 const SANDBOX_ID = /^[a-z0-9]{1,64}$/;
-
-export function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 export function sandboxId(id: string): string {
   if (!SANDBOX_ID.test(id)) {

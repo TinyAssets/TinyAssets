@@ -15,7 +15,8 @@
  */
 import type { NetworkDocument } from "../../contract/src/sandbox.ts";
 
-import { created, E2bError, E2bTransport, type Handle, object } from "./transport.ts";
+import { object } from "../../contract/src/checks.ts";
+import { created, E2bError, E2bTransport, type Handle } from "./transport.ts";
 
 export class E2bAdmin extends E2bTransport {
   /**

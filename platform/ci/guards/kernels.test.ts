@@ -41,6 +41,18 @@ describe("the kernel guard", () => {
       .toEqual(["owner platform/owner/src/a.ts: Date.now() ×2"]);
   });
 
+  it("counts a source's own tests that a value is an object, and no other type guard", () => {
+    expect(found("platform/doors/src/a.ts", [
+      "function plain(value: unknown): value is Record<string, unknown> { return true; }",
+      "const record = (v: unknown): v is Record< string, unknown > => true;",
+      "function text(value: unknown): value is string { return true; }",
+      "function facts(value: unknown): value is Facts { return true; }",
+    ].join("\n"))).toEqual(["doors platform/doors/src/a.ts: the object test ×2"]);
+    expect(found("platform/contract/src/checks.ts",
+                 "function object(v: unknown): v is Record<string, unknown> { return true; }"))
+      .toEqual([]);
+  });
+
   it("holds each kernel's layers under its folder, and not its home", () => {
     const both = 'createHash("sha256"); Date.now();';
     expect([

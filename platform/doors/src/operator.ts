@@ -29,6 +29,7 @@ import {
   type OperatorMessage, operatorMessage, type OperatorOp, OPERATOR_OPS, OPERATOR_WINDOW_S,
   type Refused,
 } from "../../contract/src/operator-message";
+import { keyed } from "../../contract/src/checks";
 import { parseRing } from "../../contract/src/envelope";
 import type { RestoreBeginRequest, TierRequest } from "../../contract/src/owner";
 import { refusalOf } from "../../contract/src/refusal";
@@ -38,7 +39,6 @@ import { bindPlatformFor } from "./binder";
 import { now } from "./config";
 import type { DoorsEnv } from "./env";
 import { deleteKey, readOwner } from "./directory";
-import { exactKeys } from "./kit";
 import { revokeAll } from "./revoke";
 
 /** An op: what it does to the owner with its args, exactly `OPERATOR_OPS` names, and its result. */
@@ -126,7 +126,7 @@ async function verdict(env: DoorsEnv, message: OperatorMessage):
     return refused("invalid", `the operator channel takes no op ${message.op}`);
   }
   const op = message.op as OperatorOp;
-  if (!exactKeys(message.args, OPERATOR_OPS[op])) {
+  if (!keyed(message.args, OPERATOR_OPS[op])) {
     return refused("invalid", `${op} takes exactly ${
       OPERATOR_OPS[op].join(", ") || "no args"}`);
   }

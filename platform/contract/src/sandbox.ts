@@ -114,6 +114,10 @@ export interface SandboxStart {
                    readonly signin: string };
 }
 
+/** The start codes the owner's object answers by name (`START_CODES`). */
+export const SANDBOX_WAITING = "sandbox_waiting";
+export const SIGNIN_REQUIRED = "signin_required";
+
 /**
  * Every code a start (a run's or a sign-in's) answers in place of starting, the closed list:
  * - `sandbox_waiting`: no room for one more running sandbox (the platform's line, the
@@ -126,7 +130,7 @@ export interface SandboxStart {
  * - `sandbox_unconfigured`: the control record never held the sandbox numbers;
  * - `sandbox_lost`: a joining job found no sandbox to run in.
  */
-export const START_CODES = Object.freeze(["sandbox_waiting", "signin_required",
+export const START_CODES = Object.freeze([SANDBOX_WAITING, SIGNIN_REQUIRED,
                                           "sandbox_unconfigured", "sandbox_lost"] as const);
 export type StartCode = (typeof START_CODES)[number];
 

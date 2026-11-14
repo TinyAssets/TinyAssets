@@ -56,17 +56,6 @@ export function bearer(request: Request): string | null {
   return match === null ? null : match[1]!;
 }
 
-/** Whether `value` is a plain object of every key of `required`, and any of `optional`. */
-export function exactKeys(value: unknown, required: readonly string[],
-                          optional: readonly string[] = []): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const keys = Object.keys(value);
-  return required.every((key) => keys.includes(key))
-    && keys.every((key) => required.includes(key) || optional.includes(key));
-}
-
 /** `bytes` random bytes, base64url, unpadded: a token a URL or a header carries as it is. */
 export function randomToken(bytes: number): string {
   return Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString("base64url");
