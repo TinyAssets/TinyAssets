@@ -42,7 +42,8 @@ import { type Data, workflow, workflowNames, WORKFLOWS } from "../workflows";
  */
 const HARMLESS_SECRETS: Record<string, string> = {
   GITHUB_TOKEN: "per-run token GitHub mints, scoped by `permissions:`; it can do in the " +
-    "repository no more than the pusher whose branch ran it, and a fork's run gets it read-only",
+    "repository no more than the pusher whose branch ran it, and a fork's `pull_request` run " +
+    "gets it read-only (pull_request_target's is not: see its rule below)",
   TINYASSETS_WIKI_CANARY_TOKEN: "bearer for the read-only `canary` service principal; the " +
     "daemon 403s anything beyond get_status / read_graph status " +
     "(docs/reference/environment-variables.md)",
@@ -296,7 +297,9 @@ describe("production workflows", () => {
       reusableCallerProblems(each.workflow, each.name, each.job, each.reasons))).toEqual([]);
   });
 
-  it("a pull_request_target job that holds a secret runs none of the pull request's code", () => {
+  // Every such job, secret or not: a fork's run there still gets a write token, and what it
+  // saves to the Actions cache lands in main's scope, where production jobs restore it.
+  it("a pull_request_target job runs none of the pull request's code", () => {
     const wrong: string[] = [];
     for (const file of workflowNames()) {
       const data = workflow(file);
@@ -304,12 +307,8 @@ describe("production workflows", () => {
         continue;
       }
       for (const [name, job] of Object.entries<Data>(data.jobs ?? {})) {
-        const held = [...secretNames(`${workflowLevelText(data)}\n${strings(job)}`)]
-          .filter((secret) => !(secret.toUpperCase() in HARMLESS_SECRETS));
-        if (held.length || job.secrets === "inherit") {
-          wrong.push(...pullRequestCodeSteps(job)
-            .map((step) => `${file} job \`${name}\`: ${step}`));
-        }
+        wrong.push(...pullRequestCodeSteps(job)
+          .map((step) => `${file} job \`${name}\`: ${step}`));
       }
     }
     expect(wrong, "pull_request_target runs main's YAML with the secrets: never run the PR's " +

@@ -476,9 +476,9 @@ jobs:
       # host comment (escalation ladder in scripts/pushover_page.py).
       #
       # Seeding secrets (host action — not in-workflow):
-      #   gh secret set PUSHOVER_USER_KEY --body "<user key from pushover.net>"
-      #   gh secret set PUSHOVER_APP_TOKEN --body "<app api token>"
-      # Both secrets live at Settings → Secrets and variables → Actions.
+      #   gh secret set PUSHOVER_USER_KEY --env production
+      #   gh secret set PUSHOVER_APP_TOKEN --env production
+      # Both live in the main-only `production` environment (Settings → Environments).
       # When missing, the step no-ops (decision stays intact; send_pushover
       # returns ok=false with a 'missing' error and we still post the marker
       # comment to preserve audit trail).

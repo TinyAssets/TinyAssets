@@ -60,6 +60,6 @@ Python-stack sandbox, filesystem or process-limit work needs
 `scripts/linux_oracle.py`; in `platform/`, `npm run test:root -w sandbox` and
 `npm run test:memory -w owner`. A skip is not a pass. Secrets: `set -a; source
 scripts/load_secrets.sh; set +a`; platform secrets are the GitHub `production`
-environment's (the Cloudflare token is a repository secret; the account id is not a secret:
+environment's (the Cloudflare token among them; the account id is not a secret:
 `import-window.yml` reads the repository variable `CLOUDFLARE_ACCOUNT_ID`, and the deploy kit
 resolves it from the token's zone).
