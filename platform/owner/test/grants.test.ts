@@ -11,7 +11,6 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { GRANT_LIMITS, Grants } from "../src/grants";
-import { Ledger } from "../src/ledger";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
@@ -19,7 +18,7 @@ import type { OwnerDO } from "../src/owner-do";
 import { POLICY_LIMITS, policyDigest } from "../../contract/src/policy-document";
 import { Policy } from "../src/policy";
 import {
-  DOT, ledgerParts, MCP, MUSE, rig, type Rig, signedIn, subscription,
+  DOT, MCP, MUSE, rig, type Rig, signedIn, storesOn, subscription,
 } from "./ledger-support";
 import { failure } from "./support";
 
@@ -275,12 +274,12 @@ describe("an outside client's grant", () => {
     // A client recorded after an agent of it was (as a store change could leave it)
     // still counts that agent, so its row is held, not free.
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage));
-      const [storage, , ...rest] = ledgerParts(state.storage);
-      new Ledger(storage, grants, ...rest).register(DOT, MCP, {
-        command_center_id: "alpha", display_name: "Dot", delivery_method: "pull",
-        recipe_id: null });
-      grants.admit(DOT.client, "mcp", null, clock());
+      const { grants, ledger, gate } = storesOn(state);
+      return gate.write(() => {
+        ledger.register(DOT, MCP, { command_center_id: "alpha", display_name: "Dot",
+                                    delivery_method: "pull", recipe_id: null });
+        grants.admit(DOT.client, "mcp", null, clock());
+      });
     });
     expect((await rows())[DOT.client]).toEqual([0, 1]);
     const [usage] = await r.sql("SELECT owner_clients, free_clients FROM policy_usage");

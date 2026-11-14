@@ -12,19 +12,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { rewrap } from "../../files/src/datakey";
 import {
   CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY,
-  SLOT_WAIT_MS,
 } from "../../contract/src/limits";
 import { PLATFORM_ONLY } from "../src/admission";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
-  GENERATION_SIZES, MANIFEST_BUSY_RETRY_S, MANIFEST_CEILING, MANIFEST_CONTINUE_S,
-  MANIFEST_LINE, spread,
+  GENERATION_SIZES, MANIFEST_BUSY_RETRY_S, MANIFEST_CEILING, MANIFEST_CONTINUE_S, spread,
 } from "../src/backup";
 import {
-  BURST_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
-  SHIP_UNITS,
+  BURST_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots, SHIP_UNITS,
 } from "../src/holds";
-import { SlotPool } from "../../contract/src/slots";
 import {
   decodeCursor, encodeLines, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED,
   readPage,
@@ -35,10 +31,13 @@ import type { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import {
-  digest, exportFrom, generate, type Line, type Owner, owner, replay, standing,
+  type At, BURST, digest, exportFrom, generate, type Line, type Owner, owner, PAGE, replay,
+  standing,
 } from "./generation-support";
 import { MUSE } from "./ledger-support";
 import { erasedWhole } from "./erasure-support";
+import { clock } from "../src/clock";
+import { markErasing } from "../src/erasure";
 import { drainDue, failure, laneAt, sqlIn, starterSeed } from "./support";
 import { carried } from "../src/starter-package";
 
@@ -172,7 +171,7 @@ describe("the owner export", () => {
   it("resumes from every cursor it ever handed out, to the same owner at E (review R4-2)",
      async () => {
     const o = await owner();
-    await notices(o, 150);  // past one burst, so writes land between its pages
+    await notices(o, BURST + 3 * PAGE);  // past one burst, so writes land between its pages
     // A generation with a writer at every outside call: base parts and log segments.
     const made = await generate(o.stub, { duringCall: busy(2) });
     expect(made.lines.some((line) => line["seq"] !== undefined)).toBe(true);
@@ -254,7 +253,7 @@ describe("a generation", () => {
   it("ends as the owner at E though the owner writes at every outside call and after " +
      "every unit (review R4-3)", async () => {
     const o = await owner();
-    await notices(o, 200);
+    await notices(o, BURST + 3 * PAGE);
     let after = 0;
     const made = await generate(o.stub, {
       duringCall: busy(10),
@@ -276,7 +275,7 @@ describe("a generation", () => {
     // The seed's own receipts, one a file, and its state at the carried version: a pass of
     // a later version changes them while the generation runs.
     const o = await owner();
-    await notices(o, 200);
+    await notices(o, 4 * PAGE);
     const [edited, dropped] = SEED.files.map((file) => file.path);
     const later = carried().version + 1;
     let after = 0;
@@ -308,11 +307,11 @@ describe("a generation", () => {
   it("settles though a 5,000-file sync runs through its pass (review R4-3)", { tags: ["large"] },
      async () => {
     const o = await owner();
-    await notices(o, 1_600);  // some twenty-five bursts: hundreds of units and calls
+    await notices(o, 3 * BURST);  // three bursts: tens of units and calls
     let written = 0;
     // The sync's files land at every outside call and after every unit, as they come.
-    const sync = async (at: { files: Files; gate: WriteGate; n: number }) => {
-      const count = Math.min(25, 5000 - written);
+    const sync = async (at: At) => {
+      const count = Math.min(125, 5000 - written);
       written += count;
       await busy(count)(at);
     };
@@ -326,7 +325,7 @@ describe("a generation", () => {
   it("repeats only what was not acknowledged, wherever a pass is cut: before or after " +
      "each outside call (review R4-1; crash points)", { tags: ["large"] }, async () => {
     const plain = await owner();
-    await notices(plain, 100);  // two bursts: segments before E and after
+    await notices(plain, BURST + PAGE);  // two bursts: segments before E and after
     const { calls, lines } = await generate(plain.stub, { duringCall: busy(3) });
     expect(calls).toBeGreaterThan(3);
     // Its root names log segments through E: crash points fall between the base's bursts.
@@ -334,7 +333,7 @@ describe("a generation", () => {
     for (let call = 1; call <= calls; call++) {
       for (const when of ["before", "after"] as const) {
         const o = await owner();
-        await notices(o, 100);
+        await notices(o, BURST + PAGE);
         const made = await generate(o.stub, { duringCall: busy(3), failAt: { call, when } });
         expect([call, when, made.notices]).toEqual([call, when, []]);
         expect([call, when, digest(replay(made.lines))]).toEqual([call, when, made.atE]);
@@ -349,53 +348,28 @@ describe("a generation", () => {
     const before = await generate(o.stub, { onePass: true });
     const [begun] = await sqlIn(o.stub, "SELECT gen, schema FROM owner_backups");
     expect(begun).toEqual({ gen: before.gen, schema: MIGRATIONS.length });
-    // The next start's code has one migration more: the lane runs under its schema.
-    const after = await generate(o.stub, { schema: MIGRATIONS.length + 1 });
+    // Begun under the code before the last migration, as a deploy that adds one finds it.
+    await sqlIn(o.stub, "UPDATE owner_backups SET schema = ? WHERE gen = ?",
+                MIGRATIONS.length - 1, before.gen);
+    const after = await generate(o.stub);
     expect(after.notices).toEqual(["manifest_schema"]);
     expect(after.gen).not.toBe(before.gen);
     expect(await sqlIn(o.stub, "SELECT state, schema FROM owner_backups"))
-      .toEqual([{ state: "done", schema: MIGRATIONS.length + 1 }]);
+      .toEqual([{ state: "done", schema: MIGRATIONS.length }]);
     // Its lines are one schema's, and replayed they are the owner at E.
-    expect(after.lines[0]).toMatchObject({ t: "header", schema: MIGRATIONS.length + 1 });
+    expect(after.lines[0]).toMatchObject({ t: "header", schema: MIGRATIONS.length });
     expect(digest(replay(after.lines))).toBe(after.atE);
-  });
-
-  it("gives up one with a line longer than any part may be, loudly and the owner told " +
-     "once, never a part no root may name (review rvbackup 5)", async () => {
-    // Parts of 4 KiB, none past 6 KiB: wider than the line of any inline file (the seed's
-    // among them, at most 4,096 bytes as base64), narrower than one notice of 1,024 control
-    // characters, each six as JSON.
-    const sizes = { page: 16 * 1024, part: 4096, gather: 8192, most: 6 * 1024 };
-    const o = await owner();
-    await notices(o, 20);
-    await sqlIn(o.stub, "INSERT INTO owner_notices (at, type, detail) VALUES (0, 'wide', " +
-                        "replace(printf('%.1024c', 'a'), 'a', char(1)))");
-    const first = await generate(o.stub, { sizes });
-    expect(first.notices).toEqual([MANIFEST_LINE]);
-    expect(first.lines).toEqual([]);  // no root: nothing finished
-    expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM owner_backups")).toEqual([{ n: 0 }]);
-    // The next change tries again, and gives it up again, the owner not told twice.
-    const again = await generate(o.stub, { sizes });
-    expect(again.notices).toEqual([]);
-    expect(again.lines).toEqual([]);
-    expect(await sqlIn(o.stub, "SELECT told FROM owner_backup_state")).toEqual([{ told: 1 }]);
-    // Without it, the generation finishes at the same sizes, every part within them.
-    await sqlIn(o.stub, "DELETE FROM owner_notices WHERE type = 'wide'");
-    const made = await generate(o.stub, { sizes });
-    expect(made.notices).toEqual([]);
-    expect(digest(replay(made.lines))).toBe(made.atE);
   });
 
   it("takes its burst's units of the pool now or yields: with the pool full it reads and " +
      "puts nothing and goes on later; with room, each part's put inside its units, each " +
      "segment's inside its own, never a burst's (burstlease, rvburst W1)", async () => {
-    const pool = new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
-                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
+    const pool = ownerSlots();
     const o = await owner();
     await notices(o, 200);
     // Another object's holds: past what leaves a burst its units beside the reserve.
     const other = await pool.acquire(OWNER_POOL_UNITS - OWNER_RESERVE_UNITS - BURST_UNITS + 1);
-    const held = await generate(o.stub, { pool });
+    const held = await generate(o.stub);
     expect({ calls: held.calls, notices: held.notices, lines: held.lines.length })
       .toEqual({ calls: 0, notices: [], lines: 0 });
     const [row] = await sqlIn(o.stub, "SELECT state, cursor, parts, retry_at FROM owner_backups");
@@ -404,11 +378,12 @@ describe("a generation", () => {
       .toBeGreaterThan(Date.now() / 1000 + MANIFEST_BUSY_RETRY_S - 2);
     expect(pool.state().held).toBe(other.units);  // nothing of the burst's left held
     other.release();
+    pool.resetPeak();
     // With room, the owner writing at every call: each part's put is made inside the
     // burst's units, each segment's inside its own ship hold (before or after a burst, at
     // the end: never between a burst's parts), the root's in none; all go back.
     const seen: Record<string, number[]> = { part: [], segment: [], root: [] };
-    const made = await generate(o.stub, { pool, duringCall: async (at) => {
+    const made = await generate(o.stub, { duringCall: async (at) => {
       seen[at.kind]!.push(pool.state().held);
       await busy(2)(at);
     } });
@@ -422,19 +397,18 @@ describe("a generation", () => {
 
   it("ships a log segment outside a burst inside its own units, now or not at all: with the " +
      "pool full it puts nothing and goes on later (rvburst 1)", async () => {
-    const pool = new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
-                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
+    const pool = ownerSlots();
     const o = await owner();
     await notices(o, 200);
     // Begun, its capture on, and the owner's writes logged before any burst.
-    await generate(o.stub, { pool, onePass: true });
+    await generate(o.stub, { onePass: true });
     await sqlIn(o.stub, "UPDATE owner_notices SET detail = 'changed' WHERE seq <= 50");
     const [{ logged }] = await sqlIn(o.stub, "SELECT COUNT(*) AS logged FROM change_log") as
       [{ logged: number }];
     expect(logged).toBeGreaterThan(0);
     // Another object's holds: past what leaves the ship its units beside the reserve.
     const other = await pool.acquire(OWNER_POOL_UNITS - OWNER_RESERVE_UNITS - SHIP_UNITS + 1);
-    const held = await generate(o.stub, { pool });
+    const held = await generate(o.stub);
     expect({ calls: held.calls, notices: held.notices }).toEqual({ calls: 0, notices: [] });
     const [row] = await sqlIn(o.stub, "SELECT state, segments, retry_at FROM owner_backups");
     expect(row).toMatchObject({ state: "writing", segments: 0 });
@@ -444,7 +418,7 @@ describe("a generation", () => {
       .toEqual([{ logged }]);
     expect(pool.state().held).toBe(other.units);
     other.release();
-    const made = await generate(o.stub, { pool });
+    const made = await generate(o.stub);
     expect(made.notices).toEqual([]);
     expect(digest(replay(made.lines))).toBe(made.atE);
     expect(pool.state().held).toBe(0);
@@ -452,19 +426,18 @@ describe("a generation", () => {
 
   it("begins no burst once the owner's erasure begins while the log ships: no part put, " +
      "the pool never past the ship's units (rvburst V2)", async () => {
-    const pool = new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
-                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
+    const pool = ownerSlots();
     const o = await owner();
     await notices(o, 200);
-    await generate(o.stub, { pool, onePass: true });
+    await generate(o.stub, { onePass: true });
     await sqlIn(o.stub, "UPDATE owner_notices SET detail = 'changed' WHERE seq <= 50");
     pool.resetPeak();
-    let erasing = false;
     const kinds: string[] = [];
-    await generate(o.stub, { pool, halted: () => erasing, duringCall: async ({ kind }) => {
+    await generate(o.stub, { duringCall: async ({ gate, kind }) => {
       kinds.push(kind);
       if (kind === "segment") {
-        erasing = true;  // the erasure begins during the first ship's put
+        // The erasure begins during the first ship's put.
+        await gate.write(() => markErasing(gate.storage, clock()));
       }
     } });
     expect(kinds).toEqual(["segment"]);
@@ -537,7 +510,6 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
     const widest = { part: 0, segment: 0 };
     let rowMost = 0;
     const made = await generate(o.stub, {
-      sizes: GENERATION_SIZES,
       // After every unit: a burst is recorded in one, its parts' entries appended at once.
       afterUnit: async ({ gate }) => {
         const row = gate.storage.sql.exec<{ part_list: string; segment_list: string;

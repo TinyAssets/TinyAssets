@@ -11,7 +11,6 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { WriteGate } from "../src/gate";
 import {
   HOUR_S, type Ledger, type Outcome, outcome, retryAfter, WAKE_LEASE_S, type WakeTarget,
 } from "../src/ledger";
@@ -20,9 +19,9 @@ import { LANE_CALL_MS } from "../src/schedule";
 import {
   runWakes, WAKE_RETRY_S, type WakeSender, WAKES_PER_ALARM,
 } from "../src/wakes";
-import type { OwnerDO } from "../src/owner-do";
+import type { OwnerDO, Stores } from "../src/owner-do";
 import {
-  DOT, FakeSender, ledgerOn, MCP, MUSE, origin, rig, type Rig, subscription,
+  DOT, FakeSender, MUSE, origin, registerOn, rig, type Rig, storesOn, subscription,
 } from "./ledger-support";
 import { drainDue, failure, faulty, laneJobs } from "./support";
 
@@ -42,13 +41,11 @@ async function wakeStates(r: Rig): Promise<string[]> {
   return (await wakes(r)).map((w) => w["state"] as string);
 }
 
-/** A write gate over the object's storage, as the object's lanes write through. */
-const gateOf = (state: DurableObjectState) => new WriteGate(state.storage).write;
-
-/** A ringing agent with no batch window, registered and tuned in `ledger` itself. */
-function ringing(ledger: Ledger, from = MUSE, perHour: number | null = null): string {
-  const id = ledger.register(from, MCP, RINGS).agent_id;
-  ledger.setWakeLimits(id, perHour, 0);
+/** A ringing agent with no batch window, registered and tuned in the ledger itself. */
+function ringing(stores: Pick<Stores, "grants" | "ledger">, from = MUSE,
+                 perHour: number | null = null): string {
+  const id = registerOn(stores, from, RINGS).agent_id;
+  stores.ledger.setWakeLimits(id, perHour, 0);
   return id;
 }
 
@@ -325,9 +322,9 @@ describe("a claim settles only by its holder", () => {
      async () => {
     const r = await rig();
     const now = clock();
-    await r.inLedger((ledger) => {
-      const muse = ringing(ledger);
-      const dot = ledger.register(DOT, MCP, { ...RINGS, display_name: "Dot" }).agent_id;
+    await r.inLedger((ledger, stores) => {
+      const muse = ringing(stores);
+      const dot = registerOn(stores, DOT, { ...RINGS, display_name: "Dot" }).agent_id;
       ledger.setWakeLimits(dot, null, 60);  // the owner's batch window for Dot
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, now);
       ledger.post(null, `dm:${dot}`, "c2", "hello", null, now);  // its batch window: not due
@@ -366,7 +363,8 @@ describe("a claim settles only by its holder", () => {
           return r.sender.send(target, mark);
         },
       };
-      return runWakes(ledgerOn(state.storage), lapsing, () => now, gateOf(state));
+      const { ledger, gate } = storesOn(state);
+      return runWakes(ledger, lapsing, () => now, gate.write);
     });
     expect([accepted, r.sender.sent]).toEqual([0, []]);  // it never got past its mark
     expect((await wakes(r)).map((w) => [w["state"], w["marked"]])).toEqual([["sending", 0]]);
@@ -378,9 +376,10 @@ describe("a claim settles only by its holder", () => {
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
     const now = clock() + 1;
     // The pass's units: the claim, the mark, then the settle, which fails.
-    const accepted = await runInDurableObject(r.stub, (_i: OwnerDO, state) =>
-      runWakes(ledgerOn(state.storage), r.sender, () => now,
-               faulty(gateOf(state), (n) => n === 3)));
+    const accepted = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      const { ledger, gate } = storesOn(state);
+      return runWakes(ledger, r.sender, () => now, faulty(gate.write, (n) => n === 3));
+    });
     expect([accepted, r.sender.sent.length]).toEqual([0, 1]);
     const [wake] = await wakes(r);
     expect([wake!["state"], wake!["marked"], wake!["due"]])
@@ -390,8 +389,8 @@ describe("a claim settles only by its holder", () => {
   it("lets a stale claim neither mark nor settle after a lapse and a new claim", async () => {
     const r = await rig();
     const t = clock();
-    const marked = await r.inLedger((ledger) => {
-      const muse = ringing(ledger);
+    const marked = await r.inLedger((ledger, stores) => {
+      const muse = ringing(stores);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t);
       const [wake] = ledger.dueOpen(t, 1);
       const stale = ledger.claim(wake!.wake_id, t);
@@ -413,8 +412,8 @@ describe("a claim settles only by its holder", () => {
   it("wakes only the mail its claim covered", async () => {
     const r = await rig();
     const t = clock();
-    await r.inLedger((ledger) => {
-      const muse = ringing(ledger);
+    await r.inLedger((ledger, stores) => {
+      const muse = ringing(stores);
       ledger.post(null, `dm:${muse}`, "c1", "first", null, t);
       const claim = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
       if (claim.outcome !== "claimed") {
@@ -431,8 +430,8 @@ describe("a claim settles only by its holder", () => {
      async () => {
     const r = await rig();
     const t = clock();
-    await r.inLedger((ledger) => {
-      const muse = ringing(ledger);
+    await r.inLedger((ledger, stores) => {
+      const muse = ringing(stores);
       for (const [n, answer] of [[1, { state: "pending" }],
                                  [2, { state: "rate_limited", retry_after: 300 }]] as const) {
         ledger.post(null, `dm:${muse}`, `c${n}`, `body ${n}`, null, t);
@@ -519,8 +518,8 @@ describe("W3 limits", () => {
   it("counts a changed cap afresh", async () => {
     const r = await rig();
     const t = clock();
-    const claims = await r.inLedger((ledger) => {
-      const muse = ringing(ledger, MUSE, 1);
+    const claims = await r.inLedger((ledger, stores) => {
+      const muse = ringing(stores, MUSE, 1);
       ledger.post(null, `dm:${muse}`, "c0", "x", null, t);
       const first = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
       if (first.outcome !== "claimed") {
@@ -549,8 +548,8 @@ describe("the wakes lane of the object's one schedule", () => {
   it("defers a row only later, never before its claim's lease", async () => {
     const r = await rig();
     const t = clock();
-    const due = await r.inLedger((ledger) => {
-      const muse = ringing(ledger);
+    const due = await r.inLedger((ledger, stores) => {
+      const muse = ringing(stores);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
       const [wake] = ledger.dueOpen(t, 1);
       expect(ledger.claim(wake!.wake_id, t).outcome).toBe("claimed");
@@ -564,10 +563,11 @@ describe("the wakes lane of the object's one schedule", () => {
     const r = await rig();
     const t = clock();
     const open = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      const ledger = ledgerOn(state.storage);
-      const muse = ringing(ledger);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
-      expect(await runWakes(ledger, r.sender, () => t, gateOf(state), 16, LANE_CALL_MS,
+      const stores = storesOn(state);
+      const { ledger, gate } = stores;
+      await gate.write(() => ledger.post(null, `dm:${ringing(stores)}`, "c1", "hello", null,
+                                         t - 100));
+      expect(await runWakes(ledger, r.sender, () => t, gate.write, 16, LANE_CALL_MS,
                             Date.now() - 1))
         .toBe(0);
       return ledger.dueOpen(t, 16).length;
@@ -580,20 +580,22 @@ describe("the wakes lane of the object's one schedule", () => {
     const r = await rig();
     const t = clock();
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      const ledger = ledgerOn(state.storage);
+      const stores = storesOn(state);
+      const { ledger, gate } = stores;
       const row = () => state.storage.sql.exec(
         "SELECT state, marked FROM ledger_wakes").one();
-      ledger.post(null, `dm:${ringing(ledger)}`, "c1", "hello", null, t - 100);
+      await gate.write(() => ledger.post(null, `dm:${ringing(stores)}`, "c1", "hello", null,
+                                         t - 100));
       const hanging = new HangingSender();
       const started = Date.now();
-      const accepted = await runWakes(ledger, hanging, () => t, gateOf(state), WAKES_PER_ALARM, 30);
+      const accepted = await runWakes(ledger, hanging, () => t, gate.write, WAKES_PER_ALARM, 30);
       const took = Date.now() - started;
       const late = row();
       hanging.release();  // its answer comes after the pass let it go, and settles nothing
       await new Promise((resolve) => setTimeout(resolve, 20));
       const released = row();
       // Its lease lapses: a byte may have left, so it is unknown, never sent again.
-      await runWakes(ledger, hanging, () => t + WAKE_LEASE_S, gateOf(state), WAKES_PER_ALARM, 30);
+      await runWakes(ledger, hanging, () => t + WAKE_LEASE_S, gate.write, WAKES_PER_ALARM, 30);
       return { accepted, took, late, released, after: row(), sent: hanging.sent.length };
     });
     expect(out.accepted).toBe(0);
@@ -608,21 +610,22 @@ describe("the wakes lane of the object's one schedule", () => {
     const r = await rig();
     const t = clock();
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      const ledger = ledgerOn(state.storage);
-      const muse = ringing(ledger);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
+      const stores = storesOn(state);
+      const { ledger, gate } = stores;
+      await gate.write(() => ledger.post(null, `dm:${ringing(stores)}`, "c1", "hello", null,
+                                         t - 100));
       state.storage.sql.exec("CREATE TRIGGER probe_claim BEFORE UPDATE OF claim_id ON " +
                              "ledger_wakes BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      const sent = await runWakes(ledger, r.sender, () => t, gateOf(state));
+      const sent = await runWakes(ledger, r.sender, () => t, gate.write);
       const after = [sent, ledger.nextDue(t, true)];
       // A lapsed claim whose recovery fails waits the same.
       state.storage.sql.exec("DROP TRIGGER probe_claim");
       const at = t + WAKE_RETRY_S;
       const [wake] = ledger.dueOpen(at, 1);
-      expect(ledger.claim(wake!.wake_id, at).outcome).toBe("claimed");
+      expect(await gate.write(() => ledger.claim(wake!.wake_id, at).outcome)).toBe("claimed");
       state.storage.sql.exec("CREATE TRIGGER probe_settle BEFORE UPDATE OF settled_at ON " +
                              "ledger_wakes BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      await runWakes(ledger, null, () => at + WAKE_LEASE_S, gateOf(state));
+      await runWakes(ledger, null, () => at + WAKE_LEASE_S, gate.write);
       state.storage.sql.exec("DROP TRIGGER probe_settle");
       return [...after, ledger.nextDue(at + WAKE_LEASE_S, false)];
     });
@@ -652,8 +655,8 @@ describe("the wakes lane of the object's one schedule", () => {
      "in the past", async () => {
     const r = await rig();
     const t = clock() - 600;
-    const claimed = await r.inLedger((ledger) => {
-      const ids = Array.from({ length: 17 }, (_, n) => ringing(ledger, origin(n)));
+    const claimed = await r.inLedger((ledger, stores) => {
+      const ids = Array.from({ length: 17 }, (_, n) => ringing(stores, origin(n)));
       for (const id of ids) {
         ledger.post(null, `dm:${id}`, `c-${id}`, "hello", null, t);  // 17 wakes due at t
       }
@@ -686,9 +689,9 @@ describe("the wakes lane of the object's one schedule", () => {
   it("arms for a live lease, and at once for due work, never earlier than now", async () => {
     const r = await rig();
     const t = clock();
-    const times = await r.inLedger((ledger) => {
-      const muse = ringing(ledger);
-      const dot = ringing(ledger, DOT);
+    const times = await r.inLedger((ledger, stores) => {
+      const muse = ringing(stores);
+      const dot = ringing(stores, DOT);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
       ledger.post(null, `dm:${dot}`, "c2", "hello", null, t + 500);
       const empty = ledger.nextDue(t, true);
@@ -708,9 +711,9 @@ describe("the wakes lane of the object's one schedule", () => {
   it("drains more due rows than one pass across passes that rearm at once", async () => {
     const r = await rig();
     const t = clock();
-    await r.inLedger((ledger) => {
+    await r.inLedger((ledger, stores) => {
       for (let n = 0; n < 17; n++) {
-        ledger.post(null, `dm:${ringing(ledger, origin(n))}`, `c${n}`, "hello", null, t);
+        ledger.post(null, `dm:${ringing(stores, origin(n))}`, `c${n}`, "hello", null, t);
       }
     });
     expect(await r.tick(t)).toBe(16);
@@ -722,8 +725,8 @@ describe("the wakes lane of the object's one schedule", () => {
   it("rearms on wake from the schedule as stored", async () => {
     const r = await rig();
     const t = clock();
-    const lease = await r.inLedger((ledger) => {
-      const muse = ringing(ledger);
+    const lease = await r.inLedger((ledger, stores) => {
+      const muse = ringing(stores);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t);
       const claim = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
       expect(claim.outcome).toBe("claimed");
