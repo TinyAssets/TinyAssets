@@ -202,7 +202,7 @@ Each joins the lane named. None blocks its u3 PR.
 2. **S63's `bootId`: an unreadable boot id never matches,** not even another unreadable one. It fails closed, so a sandbox with an unknown boot is treated as a new boot. This rides S2. (The runner's own unreadable boot id is amended by item 8.)
 3. **B7's runner items N23, N30 and N33 go to S2.** No S PR held them (a gap in `d2` §D).
 4. **The `chatgpt.json` and `unwired` deletion (§A8) is its own PR.** It reaches the doors, the owner, the gateway tests, the contract guards and the spec.
-5. **S8** (S13's `lease_id` half: the contract, the owner's call and the RPC) stays a later S PR.
+5. **S8** (S13's `lease_id` half: the contract, the owner's call and the RPC) stays a later S PR (built as S9, #5573).
 6. **The host lock** (`heavy.sh`) now takes whichever slot is free, rather than choosing one by pid parity.
 7. **S2's three choices beside B15's and B7's letter are taken (S2's review, 2026-11-12):**
    - **`N33`: the route probe's captured-body cap is `EGRESS_BODY_MAX`, not `CHUNK_BYTES`.** The cap belongs to the probe's fake gateway, which judges a model call's body as the egress door and the gateway read it; the files plane's chunk size has no reason to move it.
