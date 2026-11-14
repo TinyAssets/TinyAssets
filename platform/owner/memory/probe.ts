@@ -476,7 +476,7 @@ export class LegArchive extends OwnerDO {
 
   constructor(state: DurableObjectState, env: LegEnv) {
     const store = received(env);
-    super(state, { ...env, FILES: store }, { starter: null });
+    super(state, { ...env, FILES: store });
     this.#state = state;
     this.#store = store;
   }

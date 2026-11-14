@@ -58,6 +58,10 @@
       "slowest_ms": 2367,
       "test": "owner/guards/alarm.test.ts > alarm guard finds no alarm reach past Lifecycle in any Worker's source"
     },
+    "owner/seeded": {
+      "slowest_ms": 9438,
+      "test": "owner/test/export.test.ts > a generation ends as the owner at E though the owner writes at every outside call and after every unit (review R4-3)"
+    },
     "owner/workerd": {
       "slowest_ms": 9438,
       "test": "owner/test/export.test.ts > a generation ends as the owner at E though the owner writes at every outside call and after every unit (review R4-3)"

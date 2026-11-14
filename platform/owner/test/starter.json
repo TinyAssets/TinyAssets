@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "files": [
+    { "path": "/workspace/starter.md", "class": "personal",
+      "text": "The one-file starter package the owner suite seeds (vitest.config.ts).\n" }
+  ]
+}

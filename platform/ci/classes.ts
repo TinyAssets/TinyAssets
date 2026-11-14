@@ -41,10 +41,27 @@ interface Budgets {
 /**
  * Each project a workspace may hold, by its name, and the folder its tests are in: a
  * project's budget is `<workspace>/<name>` (`project.ts` makes every project from it, and
- * `budgets.mjs` reads a test's project from its folder).
+ * `budgets.mjs` reads a test's project from its folder). A folder may lie in another's
+ * (`seeded`'s tests, the owner's starter tests on the package the code carries, in its
+ * `workerd` folder): its tests are its own project's alone (`nestedIn`, `projectOf`).
  */
-export const PROJECTS = Object.freeze({ workerd: "test", guards: "guards", runner: "runner" });
+export const PROJECTS = Object.freeze({ workerd: "test", guards: "guards", runner: "runner",
+                                        seeded: "test/seeded" });
 export type ProjectName = keyof typeof PROJECTS;
+
+/** The other projects' folders that lie in `name`'s, whose tests `name`'s project leaves out. */
+export function nestedIn(name: ProjectName): string[] {
+  const own = PROJECTS[name];
+  return Object.values(PROJECTS).filter((folder) => folder.startsWith(`${own}/`));
+}
+
+/** The project whose tests `path` (below its workspace) is among: the deepest folder holding it. */
+export function projectOf(path: string): ProjectName | undefined {
+  const holding = (Object.entries(PROJECTS) as [ProjectName, string][])
+    .filter(([, folder]) => path.startsWith(`${folder}/`))
+    .sort(([, a], [, b]) => b.length - a.length);
+  return holding[0]?.[0];
+}
 
 /** Vitest's default timeout: the small class's, and every budget's floor. */
 export const SMALL_MS = 5_000;

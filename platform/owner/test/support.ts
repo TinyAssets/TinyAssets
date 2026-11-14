@@ -394,14 +394,12 @@ export interface Owner {
 }
 
 /**
- * `name`'s object (in `namespace`, the owner's by default), admitted first by the platform's
- * door, as the doors' sign-in callback admits a new owner at sign-up (`admission.ts`, slice
- * L): a fresh object is `pending` and refuses every door until then.
+ * `name`'s object, admitted first by the platform's door, as the doors' sign-in callback
+ * admits a new owner at sign-up (`admission.ts`, slice L): a fresh object is `pending` and
+ * refuses every door until then.
  */
-export async function admittedOwner(name: string,
-                               namespace: DurableObjectNamespace<OwnerDO> = env.OWNER):
-    Promise<Stub> {
-  const stub = namespace.getByName(name);
+export async function admittedOwner(name: string): Promise<Stub> {
+  const stub = env.OWNER.getByName(name);
   await stub.admissionSet({ owner: name, caller: PLATFORM_CALLER, origin: null },
                           { admit: true });
   return stub;

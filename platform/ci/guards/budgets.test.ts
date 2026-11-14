@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { PROJECTS } from "../classes";
 import { PLATFORM } from "../paths";
 
 interface Row { project: string; test: string; ms: number; large: boolean }
@@ -25,5 +26,16 @@ describe("budgets.mjs", () => {
     expect(measured([report])).toEqual([{ project: "owner/workerd",
                                           test: "owner/test/files.test.ts > files fills",
                                           ms: 1234.5, large: true }]);
+  });
+
+  it("reads a test's project from the deepest project's folder that holds it", () => {
+    const deeper = Object.entries(PROJECTS).find(([, folder]) => folder.includes("/"));
+    expect(deeper).toBeDefined();
+    const [name, folder] = deeper!;
+    const report = { testResults: [{
+      name: `/home/runner/work/TinyAssets/TinyAssets/platform/owner/${folder}/a.test.ts`,
+      assertionResults: [{ status: "passed", duration: 10, fullName: "a", tags: [] }],
+    }] };
+    expect(measured([report]).map((row) => row.project)).toEqual([`owner/${name}`]);
   });
 });

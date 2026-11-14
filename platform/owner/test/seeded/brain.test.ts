@@ -7,19 +7,19 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { CHUNK_BYTES } from "../../contract/src/limits";
-import { APPEND_TRIES, type Entry, UNREAD_CHANGE, UNREAD_WRITE } from "../src/files";
-import type { Origin } from "../../contract/src/binding";
-import type { OwnerDO } from "../src/owner-do";
-import { AGENTS_OWNER_ONLY } from "../src/paths";
-import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, text } from "./support";
+import { CHUNK_BYTES } from "../../../contract/src/limits";
+import { APPEND_TRIES, type Entry, UNREAD_CHANGE, UNREAD_WRITE } from "../../src/files";
+import type { Origin } from "../../../contract/src/binding";
+import type { OwnerDO } from "../../src/owner-do";
+import { AGENTS_OWNER_ONLY } from "../../src/paths";
+import { MUSE, rig, type Rig } from "../ledger-support";
+import { failure, text } from "../support";
 
 const NOTES = "/workspace/notes.md";
 const OTHER: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
 const THIRD: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
-/** An owner whose object carries the starter package, so its seed runs. */
-const seededRig = () => rig(env.SEEDED as unknown as DurableObjectNamespace<OwnerDO>);
+/** An owner whose object seeds the package this code carries, as every owner here does. */
+const seededRig = rig;
 
 function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
   if (!("entry" in answer)) {
