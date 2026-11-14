@@ -1,12 +1,15 @@
 /**
  * The sandbox Worker's config allow-list (slice S), checked by the platform's guard kit
- * (`ci/kit/config.ts`); the owner config guard's entry for `SANDBOX` relies on it.
+ * (`ci/kit/config.ts`); the owner's config guard holds what it binds to the owner's own
+ * allowance for `SANDBOX` (`owner/guards/rules.ts`).
  *
  * Its config binds its own two classes' namespaces, the control record's namespace and the
  * ring queue's producer, and nothing else (no `OWNER`, no service, no bucket, no consumer,
  * no route), carries `global_fetch_strictly_public` and `disable_ctx_exports`, and declares
- * its one secret by name. Its build makes the runner it ships, and the runner alone is
- * imported as data.
+ * its one secret by name. The ring's one consumer, the doors Worker, turns `{owner}` into that
+ * owner's `sandboxRung` (its waiting runs started again through their whole admission) and
+ * nothing else: a ring grants nothing. Its build makes the runner it ships, imported as data.
+ * The queue's and the namespace's names, the build and its rules are the config's own.
  */
 import type { ConfigRules } from "../../ci/kit/config";
 
@@ -21,21 +24,11 @@ export const CONFIG: ConfigRules = Object.freeze({
                                                  "disable_ctx_exports"]) }),
   secrets: Object.freeze(["E2B_API_KEY"]),
   classes: Object.freeze(["SandboxControl", "SandboxSlots"]),
+  objects: Object.freeze(["SANDBOXES", "SLOTS"]),
   /** The template it starts, pinned (`template.test.ts` holds its tag). */
   vars: Object.freeze({ E2B_TEMPLATE: null }),
-  exact: Object.freeze({
-    build: { command: "node build/bundle.mjs dist/runner.mjs dist/probes.mjs" },
-    rules: [{ type: "Data", globs: ["**/dist/runner.mjs"], fallthrough: false }],
-    durable_objects: { bindings: [{ name: "SANDBOXES", class_name: "SandboxControl" },
-                                  { name: "SLOTS", class_name: "SandboxSlots" }] },
-    kv_namespaces: [{ binding: "CONTROL", id: "not-provisioned-control" }],
-    /**
-     * The ring queue's producer, whose one consumer, the doors Worker, turns `{owner}` into
-     * that owner's `sandboxRung` (its waiting runs started again through their whole
-     * admission) and nothing else: a ring grants nothing.
-     */
-    queues: { producers: [{ binding: "RING", queue: "tinyassets-sandbox-ring" }] },
-  }),
+  kv: Object.freeze(["CONTROL"]),
+  queues: Object.freeze({ producers: Object.freeze(["RING"]), consumes: false }),
 });
 
 /**

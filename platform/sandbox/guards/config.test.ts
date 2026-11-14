@@ -1,6 +1,5 @@
 /**
- * The sandbox Worker reaches nothing but E2B (slice S; the owner config guard's `SERVICES`
- * entry for `SANDBOX` relies on it):
+ * The sandbox Worker reaches nothing but E2B (slice S):
  *
  * - its config holds to its allow-list (`rules.ts`), by the platform's config checker;
  * - in its source and the E2B client beside it (`e2b/`, whose transport the Worker ships),
@@ -24,6 +23,9 @@ import { E2B_API, E2B_ENVD } from "../e2b/transport";
 import { CONFIG } from "./rules";
 
 const E2B = "sandbox/e2b/transport.ts";
+/** Its own two namespaces, as its rules allow them, for the probes. */
+const SANDBOXES = Object.freeze({ name: "SANDBOXES", class_name: "SandboxControl" });
+const SLOTS = Object.freeze({ name: "SLOTS", class_name: "SandboxSlots" });
 
 /** The Worker's source and the E2B client's, by path from `platform/`. */
 function sources(): Map<string, string> {
@@ -68,20 +70,21 @@ configTests(CONFIG, {
   refused: ["routes", "route", "services", "r2_buckets", "d1_databases", "env", "unsafe",
             "worker_loaders", "tail_consumers", "dispatch_namespaces"],
   probes: [
-    ["the owner's class", { durable_objects: { bindings: [
-      { name: "SANDBOXES", class_name: "SandboxControl" },
-      { name: "SLOTS", class_name: "SandboxSlots" },
-      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
+    ["another Worker's class", { durable_objects: { bindings: [
+      SANDBOXES, SLOTS, { name: "OWNER", class_name: "OwnerDO", script_name: "other" }] } }],
+    ["its own class by another Worker's name", { durable_objects: { bindings: [
+      { ...SANDBOXES, script_name: "other" }, SLOTS] } }],
+    ["a namespace of a class it does not make", { durable_objects: { bindings: [
+      SANDBOXES, { ...SLOTS, class_name: "Other" }] } }],
     ["a second KV namespace", { kv_namespaces: [{ binding: "CONTROL", id: "not-provisioned-control" },
                                                 { binding: "OAUTH_KV", id: "not-provisioned-oauth" }] }],
-    ["a queue consumer", { queues: { producers: [{ binding: "RING",
-                                                   queue: "tinyassets-sandbox-ring" }],
-                                     consumers: [{ queue: "tinyassets-sandbox-ring" }] } }],
+    ["a queue consumer", { queues: { producers: [{ binding: "RING", queue: "q" }],
+                                     consumers: [{ queue: "q" }] } }],
+    ["a second producer", { queues: { producers: [{ binding: "RING", queue: "q" },
+                                                  { binding: "OUT", queue: "r" }] } }],
     ["no ring", { queues: undefined }],
     ["another var", { vars: { E2B_TEMPLATE: "t", OWNER: "alice" } }],
     ["another secret", { secrets: { required: ["E2B_API_KEY", "ROUTING_MAC_KEY"] } }],
-    ["another build", { build: { command: "node other.mjs" } }],
-    ["the runner not as data", { rules: undefined }],
     ["no strictly-public fetch", { compatibility_flags: ["nodejs_compat", "disable_ctx_exports"] }],
     ["a workers.dev URL", { workers_dev: true }],
   ],

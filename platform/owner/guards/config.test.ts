@@ -4,15 +4,14 @@
  * binds held to the allowance its binding gives, by the platform's rule checks
  * (`ci/kit/config.ts`). It is the only wrangler config in the owner Worker.
  */
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { classProblems, exactProblems, flagProblems, keyProblems, NO_EXPORTS,
+import { classProblems, exactProblems, flagProblems, keyProblems, NO_EXPORTS, patched,
          secretProblems } from "../../ci/kit/config";
-import { PLATFORM } from "../../ci/paths";
 import { type Config, configFiles, platformConfigs, workerSources } from "../../ci/kit/sources";
 import { readWrangler, wranglerKeys } from "../../ci/wrangler";
 
@@ -22,114 +21,89 @@ import { BOUND_KEYS, type Bound, CLASSES, ENV_KEYS, LIMITS, OWNER_QUEUES, RING_Q
 const OWNER = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
 
-const CODEMODE_OWN = SERVICES["CODEMODE_VM"]!.own! as {
-  durable_objects: { bindings: object[] }; classes: readonly string[] };
-const SANDBOX_OWN = SERVICES["SANDBOX"]!.own! as {
-  durable_objects: { bindings: object[] }; classes: readonly string[] };
-const SANDBOX_QUEUES = SERVICES["SANDBOX"]!.queues as { producers: object[] };
-
 function object(value: unknown): value is Config {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Where a kind's bindings sit when the kind nests them: a namespace's, a queue's producers. */
+const NESTED: Readonly<Record<string, string>> = Object.freeze({
+  durable_objects: "bindings", queues: "producers" });
+
 /**
- * Each way a bound Worker's own classes, as its rules state them, could reach another
- * Worker's object: the owner's own invariant, whatever the bound Worker's rules say. Every
- * namespace is of a class the Worker itself makes (no `script_name`, a class among its own),
- * and none of those classes is `OwnerDO`.
+ * The bindings `config` holds of `kind`, or null when they are not a list of bindings (a
+ * nesting kind holding anything beside its list among them: a queue's consumers).
  */
-export function ownProblems(own: NonNullable<Bound["own"]>): string[] {
-  const problems: string[] = [];
-  const objects = own.durable_objects as { bindings?: unknown } | undefined;
-  const bindings = Array.isArray(objects?.bindings) ? objects.bindings as Config[] : null;
-  if (bindings === null || Object.keys(objects ?? {}).join() !== "bindings") {
-    problems.push("its own classes are not a list of namespace bindings");
+function bindingsOf(config: Config, kind: string): Config[] | null {
+  const value = config[kind];
+  const nest = NESTED[kind];
+  const list = nest === undefined ? value
+    : object(value) && Object.keys(value).join() === nest ? value[nest] : null;
+  return Array.isArray(list) && list.every(object) ? list : null;
+}
+
+/** The migration fields that make a class of the Worker's own. */
+const MAKES = Object.freeze(["new_sqlite_classes", "new_classes"]);
+
+/**
+ * Each way a bound Worker's own classes could reach another Worker's object: its migrations
+ * only make classes, every namespace is of a class they make (no `script_name`), and none of
+ * them is `OwnerDO`.
+ */
+export function ownProblems(config: Config): string[] {
+  const steps = config["migrations"];
+  if (!Array.isArray(steps) || !steps.every((step) => object(step)
+      && Object.entries(step).every(([field, value]) => field === "tag"
+                                    || (MAKES.includes(field) && Array.isArray(value))))) {
+    return ["its migrations do other than make classes of its own"];
   }
-  for (const binding of bindings ?? []) {
+  const made = (steps as Config[]).flatMap((step) =>
+    MAKES.flatMap((field) => (step[field] ?? []) as unknown[])).map(String);
+  const problems = made.includes("OwnerDO") ? ["its own classes hold OwnerDO"] : [];
+  for (const binding of bindingsOf(config, "durable_objects") ?? []) {
     if (Object.hasOwn(binding, "script_name")) {
       problems.push(`its namespace ${String(binding["name"])} names another Worker's class`);
-    }
-    if (!own.classes.includes(String(binding["class_name"]))) {
+    } else if (!made.includes(String(binding["class_name"]))) {
       problems.push(`its namespace ${String(binding["name"])} binds ` +
                     `${String(binding["class_name"])}, not a class of its own`);
     }
   }
-  if (own.classes.includes("OwnerDO")) {
-    problems.push("its own classes hold OwnerDO");
-  }
   return problems;
 }
 
-/**
- * Each way a bound Worker's queues, as its rules state them, reach past a ring: the owner's
- * own invariant. It may only produce, and only onto `RING_QUEUES`.
- */
-export function queueProblems(queues: unknown): string[] {
-  const held = queues as { producers?: unknown } | undefined;
-  const producers = Array.isArray(held?.producers) ? held.producers as Config[] : null;
-  if (producers === null || Object.keys(held ?? {}).join() !== "producers") {
-    return ["its queues are other than producers"];
-  }
-  return producers.filter((producer) => !RING_QUEUES.includes(String(producer["queue"])))
+/** Each queue a bound Worker produces onto that is not a ring (`RING_QUEUES`). */
+export function ringProblems(config: Config): string[] {
+  return (bindingsOf(config, "queues") ?? [])
+    .filter((producer) => !RING_QUEUES.includes(String(producer["queue"])))
     .map((producer) => `it produces onto ${String(producer["queue"])}, not a ring`);
 }
 
 /**
- * Each way a bound Worker's config holds more than `allowed` lets it: a key that binds
- * anything else, a count other than the allowed one, or an environment (which could
- * bind anything).
+ * Each way a bound Worker's config reaches further than `allowed` lets it, whatever its own
+ * rules say: a key that binds anything but the kinds allowed, a count other than the one
+ * allowed, a namespace of a class not its own, or a queue that is not a ring.
  */
 export function boundProblems(config: Config, allowed: Bound): string[] {
-  const secrets = allowed.secrets ?? [];
-  const own = allowed.own;
+  const kinds = Object.keys(allowed.bindings);
+  const classes = kinds.includes("durable_objects");
   const problems = Object.keys(config)
-    .filter((key) => !BOUND_KEYS.has(key) && !Object.hasOwn(allowed.bindings, key)
-                     && !(key === "secrets" && secrets.length > 0)
-                     && !(own !== undefined && (key === "durable_objects"
-                                                || key === "migrations"))
-                     && !(key === "limits" && allowed.limits !== undefined)
-                     && !(key === "vars" && allowed.vars !== undefined)
-                     && !(key === "queues" && allowed.queues !== undefined))
-    .map((key) => `${key} is not a binding the owner's ${allowed.service} binding allows`);
-  if (own !== undefined) {
-    problems.push(...ownProblems(own));
-    if (JSON.stringify(config["durable_objects"]) !== JSON.stringify(own.durable_objects)) {
-      problems.push("durable_objects binds other than its own classes");
-    }
-    problems.push(...classProblems(config["migrations"], own.classes));
-  }
-  if (allowed.queues !== undefined) {
-    problems.push(...queueProblems(allowed.queues));
-  }
-  if (allowed.queues !== undefined
-      && JSON.stringify(config["queues"]) !== JSON.stringify(allowed.queues)) {
-    problems.push(`queues are other than ${JSON.stringify(allowed.queues)}`);
-  }
-  if (allowed.limits !== undefined && config["limits"] !== undefined) {
-    problems.push(...exactProblems(config, "limits", allowed.limits));
-  }
-  if (allowed.vars !== undefined && config["vars"] !== undefined
-      && (!object(config["vars"]) || Object.keys(config["vars"]).sort().join()
-          !== [...allowed.vars].sort().join()
-          || !Object.values(config["vars"]).every((value) => typeof value === "string"))) {
-    problems.push(`vars are other than ${allowed.vars.join(", ")}, as text`);
-  }
-  if (config["secrets"] !== undefined && secrets.length > 0) {
-    problems.push(...secretProblems(config["secrets"], secrets));
-  }
-  for (const [key, many] of Object.entries(allowed.bindings)) {
-    const held = config[key];
-    if (!Array.isArray(held) || held.length !== many) {
-      problems.push(`${key} holds other than ${many}`);
+    .filter((key) => !BOUND_KEYS.has(key) && !kinds.includes(key)
+                     && !(key === "migrations" && classes))
+    .map((key) => `${key} is not a binding the owner's ${allowed.worker} binding allows`);
+  for (const [kind, many] of Object.entries(allowed.bindings)) {
+    if (bindingsOf(config, kind)?.length !== many) {
+      problems.push(`${kind} holds other than ${many}`);
     }
   }
-  return problems;
+  if (classes) {
+    problems.push(...ownProblems(config));
+  }
+  return [...problems, ...ringProblems(config)];
 }
 
 /**
- * Each problem with a scope's service bindings: each must be one `SERVICES` allows, to
- * the Worker it names, whose config (`bound`, by Worker name) is in the platform and
- * binds only what that entry allows.
+ * Each problem with a scope's service bindings: each must be one `SERVICES` allows, to the
+ * Worker it names, whose config (`bound`, by Worker folder) is in the platform, is of that
+ * name and binds only what that entry allows.
  */
 function serviceProblems(services: unknown, where: string,
                          bound: ReadonlyMap<string, Config>): string[] {
@@ -143,12 +117,17 @@ function serviceProblems(services: unknown, where: string,
     const { binding, service: name } = service;
     const allowed = typeof binding === "string" && Object.hasOwn(SERVICES, binding)
       ? SERVICES[binding]! : undefined;
-    if (allowed === undefined || allowed.service !== name) {
-      return [`${where}services binds ${String(binding)} to ${String(name)}, not allowed`];
+    if (allowed === undefined) {
+      return [`${where}services binds ${String(binding)}, not allowed`];
     }
-    const target = bound.get(name);
+    const target = bound.get(allowed.worker);
     if (target === undefined) {
-      return [`${where}services binds ${name}, whose config is not in the platform`];
+      return [`${where}services binds ${binding}, whose ${allowed.worker} Worker is not in ` +
+              "the platform"];
+    }
+    if (target["name"] !== name) {
+      return [`${where}services binds ${binding} to ${String(name)}, not the ` +
+              `${allowed.worker} Worker`];
     }
     return boundProblems(target, allowed)
       .map((problem) => `${where}services.${binding}: ${problem}`);
@@ -160,7 +139,7 @@ function serviceProblems(services: unknown, where: string,
  * `CONTROL` id, so it is the namespace that holds the record and nothing else.
  */
 function controlOnly(held: unknown): boolean {
-  const doors = platformConfigs().get("tinyassets-doors")?.["kv_namespaces"];
+  const doors = platformConfigs().get("doors")?.["kv_namespaces"];
   const theirs = Array.isArray(doors)
     ? (doors as Config[]).find((namespace) => namespace["binding"] === "CONTROL") : undefined;
   return theirs !== undefined && JSON.stringify(held)
@@ -289,30 +268,36 @@ const config = readWrangler(OWNER);
 const SOURCES: ReadonlyMap<string, string> = workerSources();
 const OWNER_CONTROL = controlUses(SOURCES);
 
+/** The platform's configs, by Worker folder, the Workers the owner binds among them. */
+const CONFIGS = platformConfigs();
+/** The owner's own binding of each Worker it binds, by binding name, as its config holds it. */
+const BINDING: Readonly<Record<string, Config>> = Object.fromEntries(
+  (config["services"] as Config[]).map((service) => [String(service["binding"]), service]));
+
+/** The owner's problems when it binds `binding` alone, to a Worker whose config is `bound`. */
+function bindingAlone(binding: string, bound: Config): string[] {
+  return configProblems({ ...config, services: [BINDING[binding]!] },
+                        new Map([[SERVICES[binding]!.worker, bound]]));
+}
+
 describe("owner Worker config", () => {
-  it("binds only FILES, to a Worker that binds one bucket, GATEWAY, to one that binds " +
-     "nothing, and CODEMODE_VM, to one that binds its own class, and turns ctx.exports off", () => {
-    expect(configProblems(config, platformConfigs())).toEqual([]);
-    expect(config["compatibility_flags"]).toContain(NO_EXPORTS);
-    expect(config["services"]).toEqual([{ binding: "FILES", service: "tinyassets-files" },
-                                        { binding: "GATEWAY", service: "tinyassets-gateway" },
-                                        { binding: "CODEMODE_VM", service: "tinyassets-codemode" },
-                                        { binding: "SANDBOX", service: "tinyassets-sandbox" }]);
-    expect(config["durable_objects"]).toBeUndefined();
+  it("holds to its rules, each Worker it binds held to the reach its binding allows", () => {
+    expect(configProblems(config, CONFIGS)).toEqual([]);
+    expect(Object.keys(BINDING)).toEqual(Object.keys(SERVICES));
   });
 
   it.each([
     ["a store namespace", { bindings: [{ name: "STORES", class_name: "Store" }] }],
     ["OWNER", { bindings: [{ name: "OWNER", class_name: "OwnerDO" }] }],
     ["another Worker's class", { bindings: [{ name: "X", class_name: "X",
-                                             script_name: "tinyassets-owner" }] }],
+                                             script_name: "other" }] }],
     ["no binding", { bindings: [] }],
     ["an environment's", undefined],
   ])("refuses a Durable Object namespace that is %s", (_what, objects) => {
     const probe = objects === undefined
       ? { ...config, env: { prod: { durable_objects: { bindings: [] } } } }
       : { ...config, durable_objects: objects };
-    expect(configProblems(probe as Config, platformConfigs())).not.toEqual([]);
+    expect(configProblems(probe as Config, CONFIGS)).not.toEqual([]);
   });
 
   it("makes OwnerDO alone, SQLite-backed, and no other class", () => {
@@ -322,47 +307,8 @@ describe("owner Worker config", () => {
                                { tag: "v2", new_sqlite_classes: ["Other"] }],
                               [{ tag: "v1", new_sqlite_classes: ["OwnerDO"],
                                  deleted_classes: ["X"] }]]) {
-      expect(configProblems({ ...config, migrations }, platformConfigs())).not.toEqual([]);
+      expect(configProblems({ ...config, migrations }, CONFIGS)).not.toEqual([]);
     }
-  });
-
-  const gateway = { name: "tinyassets-gateway", main: "src/index.ts",
-                    compatibility_flags: ["nodejs_compat"], workers_dev: false,
-                    secrets: { required: ["GATEWAY_KEYRING"] } };
-  const gatewayBinding = [{ binding: "GATEWAY", service: "tinyassets-gateway" }];
-
-  it("allows GATEWAY to the gateway Worker, which binds nothing and declares its keyring",
-     () => {
-    expect(configProblems({ ...config, services: gatewayBinding },
-                          new Map([["tinyassets-gateway", gateway as Config]]))).toEqual([]);
-  });
-
-  it.each([
-    ["a Durable Object namespace", { durable_objects: { bindings: [
-      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
-    ["a service", { services: [{ binding: "FILES", service: "tinyassets-files" }] }],
-    ["a bucket", { r2_buckets: [{ binding: "B", bucket_name: "b" }] }],
-    ["a KV namespace", { kv_namespaces: [{ binding: "KV", id: "shared" }] }],
-    ["a var", { vars: { OWNER: "alice" } }],
-    ["a second secret", { secrets: { required: ["GATEWAY_KEYRING", "OTHER"] } }],
-    ["a secret of another name", { secrets: { required: ["OTHER"] } }],
-    ["secrets of another shape", { secrets: ["GATEWAY_KEYRING"] }],
-    ["a route", { routes: ["tinyassets.io/gateway/*"] }],
-    ["an environment", { env: { prod: { name: "tinyassets-gateway-prod" } } }],
-  ])("refuses GATEWAY when the gateway Worker holds %s", (_what, extra) => {
-    expect(configProblems({ ...config, services: gatewayBinding },
-                          new Map([["tinyassets-gateway", { ...gateway, ...extra } as Config]])))
-      .not.toEqual([]);
-  });
-
-  it("refuses a secret on a bound Worker other than the one it is allowed", () => {
-    const files = { name: "tinyassets-files", main: "src/index.ts",
-                    r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }],
-                    secrets: { required: ["X"] } };
-    expect(configProblems({ ...config, services: [{ binding: "FILES",
-                                                    service: "tinyassets-files" }] },
-                          new Map([["tinyassets-files", files as Config]])))
-      .toEqual(["services.FILES: secrets declares other than FILES_KEYRING"]);
   });
 
   it("binds one store, the doors' control namespace, and only control-gate.ts reads it",
@@ -373,11 +319,11 @@ describe("owner Worker config", () => {
                                  [{ binding: "CONTROL", id: "not-provisioned-other" }],
                                  [{ binding: "CONTROL", id: "not-provisioned-control" },
                                   { binding: "CACHE", id: "not-provisioned-cache" }]]) {
-      expect(configProblems({ ...config, kv_namespaces }, platformConfigs()))
+      expect(configProblems({ ...config, kv_namespaces }, CONFIGS))
         .toEqual(["kv_namespaces is other than the doors' CONTROL namespace"]);
     }
-    expect(configProblems({ ...config, env: { prod: { kv_namespaces: [] } } },
-                          platformConfigs())).toEqual(["env.prod.kv_namespaces is not an allowed key"]);
+    expect(configProblems({ ...config, env: { prod: { kv_namespaces: [] } } }, CONFIGS))
+      .toEqual(["env.prod.kv_namespaces is not an allowed key"]);
     expect(OWNER_CONTROL).toEqual([
       "owner/src/env.ts: OwnerEnv's CONTROL field",
       "owner/src/owner-do.ts: this.env.CONTROL, handed to new ControlGate"]);
@@ -408,147 +354,28 @@ describe("owner Worker config", () => {
                           { subrequests: 1_000_000, cpu_ms: 1 }, { cpu_ms: 30000 }]) {
       const { limits: _drop, ...rest } = config;
       const probe = limits === undefined ? rest : { ...rest, limits };
-      expect(configProblems(probe, platformConfigs())).toEqual(
+      expect(configProblems(probe, CONFIGS)).toEqual(
         [limits === undefined ? "limits are not set" : `limits are not ${JSON.stringify(LIMITS)}`]);
     }
     expect(configProblems({ ...config, env: { prod: { limits: { subrequests: 50 } } } },
-                          platformConfigs()))
+                          CONFIGS))
       .toEqual([`env.prod.limits are not ${JSON.stringify(LIMITS)}`]);
   });
 
-  it("refuses FILES, GATEWAY, CODEMODE_VM and SANDBOX when their Workers' configs are not in the " +
-     "platform", () => {
-    expect(configProblems(config)).toEqual(
-      ["services binds tinyassets-files, whose config is not in the platform",
-       "services binds tinyassets-gateway, whose config is not in the platform",
-       "services binds tinyassets-codemode, whose config is not in the platform",
-       "services binds tinyassets-sandbox, whose config is not in the platform"]);
-  });
-
-  const sandbox = { name: "tinyassets-sandbox", main: "src/index.ts",
-                    compatibility_flags: ["disable_ctx_exports", "global_fetch_strictly_public"],
-                    workers_dev: false, vars: { E2B_TEMPLATE: "tinyassets-sandbox:s0" },
-                    secrets: { required: ["E2B_API_KEY"] },
-                    kv_namespaces: [{ binding: "CONTROL", id: "control" }],
-                    durable_objects: SANDBOX_OWN.durable_objects,
-                    migrations: [{ tag: "v1", new_sqlite_classes: SANDBOX_OWN.classes }],
-                    queues: SANDBOX_QUEUES };
-  const sandboxBinding = [{ binding: "SANDBOX", service: "tinyassets-sandbox" }];
-
-  it("allows SANDBOX to the sandbox Worker: its own classes, the control record, the ring's " +
-     "producer, its key", () => {
-    expect(configProblems({ ...config, services: sandboxBinding },
-                          new Map([["tinyassets-sandbox", sandbox as Config]]))).toEqual([]);
-  });
-
-  it.each([
-    ["the owner's class", { durable_objects: { bindings: [
-      ...SANDBOX_OWN.durable_objects.bindings,
-      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
-    ["its class as another Worker's", { durable_objects: { bindings: [
-      { name: "SANDBOXES", class_name: "SandboxControl", script_name: "tinyassets-owner" }] } }],
-    ["a second KV namespace", { kv_namespaces: [{ binding: "CONTROL", id: "control" },
-                                                { binding: "OAUTH_KV", id: "oauth" }] }],
-    ["another queue's producer", { queues: { producers: [
-      { binding: "RING", queue: "tinyassets-other" }] } }],
-    ["a queue consumer", { queues: { ...SANDBOX_QUEUES,
-                                     consumers: [{ queue: "tinyassets-sandbox-ring" }] } }],
-    ["no ring", { queues: undefined }],
-    ["a service", { services: [{ binding: "OWNER", service: "tinyassets-owner" }] }],
-    ["a bucket", { r2_buckets: [{ binding: "B", bucket_name: "tinyassets-files" }] }],
-    ["another var", { vars: { E2B_TEMPLATE: "t", OWNER: "alice" } }],
-    ["another secret", { secrets: { required: ["E2B_API_KEY", "ROUTING_MAC_KEY"] } }],
-    ["a Worker Loader", { worker_loaders: [{ binding: "LOADER" }] }],
-    ["a route", { routes: ["tinyassets.io/sandbox/*"] }],
-  ])("refuses SANDBOX when the sandbox Worker holds %s", (_what, extra) => {
-    expect(configProblems({ ...config, services: sandboxBinding },
-                          new Map([["tinyassets-sandbox", { ...sandbox, ...extra } as Config]])))
-      .not.toEqual([]);
-  });
-
-  const codemode = { name: "tinyassets-codemode", main: "src/index.ts",
-                  compatibility_flags: ["disable_ctx_exports"], workers_dev: false,
-                  limits: { cpu_ms: 300_000 },
-                  durable_objects: CODEMODE_OWN.durable_objects,
-                  migrations: [{ tag: "v1", new_sqlite_classes: CODEMODE_OWN.classes }] };
-  const codemodeBinding = [{ binding: "CODEMODE_VM", service: "tinyassets-codemode" }];
-
-  it("allows CODEMODE_VM to the codemode Worker, which binds its own class", () => {
-    expect(configProblems({ ...config, services: codemodeBinding },
-                          new Map([["tinyassets-codemode", codemode as Config]]))).toEqual([]);
-  });
-
-  it.each([
-    ["the owner's class", { durable_objects: { bindings: [
-      ...CODEMODE_OWN.durable_objects.bindings,
-      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
-    ["its sandbox as another Worker's class", { durable_objects: { bindings: [
-      { name: "CODEMODE", class_name: "CodemodeSandbox", script_name: "tinyassets-owner" }] } }],
-    ["no classes", { durable_objects: undefined }],
-    ["a second class made", { migrations: [{ tag: "v1", new_sqlite_classes: [
-      ...CODEMODE_OWN.classes, "Other"] }] }],
-    ["classes made without SQLite",
-     { migrations: [{ tag: "v1", new_classes: CODEMODE_OWN.classes }] }],
-    ["a Worker Loader", { worker_loaders: [{ binding: "LOADER" }] }],
-    ["a service", { services: [{ binding: "OWNER", service: "tinyassets-owner" }] }],
-    ["a bucket", { r2_buckets: [{ binding: "B", bucket_name: "tinyassets-files" }] }],
-    ["a KV namespace", { kv_namespaces: [{ binding: "KV", id: "shared" }] }],
-    ["a var", { vars: { OWNER: "alice" } }],
-    ["a secret", { secrets: { required: ["GATEWAY_KEYRING"] } }],
-    ["other limits", { limits: { cpu_ms: 30_000, subrequests: 10 } }],
-    ["a route", { routes: ["tinyassets.io/hooks/*"] }],
-    ["an environment", { env: { prod: { name: "tinyassets-codemode-prod" } } }],
-  ])("refuses CODEMODE_VM when the codemode Worker holds %s", (_what, extra) => {
-    const probe: Config = { ...codemode, ...extra };
-    for (const [key, value] of Object.entries(extra)) {
-      if (value === undefined) {
-        delete probe[key];
-      }
-    }
-    expect(configProblems({ ...config, services: codemodeBinding },
-                          new Map([["tinyassets-codemode", probe]]))).not.toEqual([]);
+  it("refuses each Worker it binds when that Worker's config is not in the platform", () => {
+    expect(configProblems(config)).toEqual(Object.entries(SERVICES).map(([binding, { worker }]) =>
+      `services binds ${binding}, whose ${worker} Worker is not in the platform`));
   });
 
   it("refuses FILES bound to another platform Worker, even one that binds nothing", () => {
-    const other = { name: "tinyassets-other", main: "src/index.ts" };
-    const services = [{ binding: "FILES", service: "tinyassets-other" }];
-    expect(configProblems({ ...config, services },
-                          new Map([["tinyassets-other", other as Config]])))
-      .toEqual(["services binds FILES to tinyassets-other, not allowed"]);
+    const gateway = String(CONFIGS.get("gateway")!["name"]);
+    expect(configProblems({ ...config, services: [{ binding: "FILES", service: gateway }] },
+                          CONFIGS))
+      .toEqual([`services binds FILES to ${gateway}, not the files Worker`]);
   });
-
-  const files = { name: "tinyassets-files", main: "src/index.ts",
-                  r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }] };
-  it.each([
-    ["a Durable Object namespace", { durable_objects: { bindings: [
-      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
-    ["a service", { services: [{ binding: "OWNER", service: "tinyassets-owner" }] }],
-    ["a queue producer", { queues: { producers: [{ binding: "Q", queue: "q" }] } }],
-    ["a workflow", { workflows: [{ binding: "W", name: "w", class_name: "W",
-                                   script_name: "tinyassets-owner" }] }],
-    ["a dispatch namespace", { dispatch_namespaces: [{ binding: "D", namespace: "d" }] }],
-    ["a Worker loader", { worker_loaders: [{ binding: "LOADER" }] }],
-    ["an unsafe Durable Object binding", { unsafe: { bindings: [{ name: "OWNER",
-      type: "durable_object_namespace", class_name: "OwnerDO" }] } }],
-    ["a tail consumer", { tail_consumers: [{ service: "tinyassets-owner" }] }],
-    ["a shared KV namespace", { kv_namespaces: [{ binding: "KV", id: "shared" }] }],
-    ["a shared D1 database", { d1_databases: [{ binding: "DB", database_id: "shared" }] }],
-    ["a second bucket", { r2_buckets: [...files.r2_buckets,
-                                       { binding: "OTHER", bucket_name: "other" }] }],
-    ["no bucket", { r2_buckets: [] }],
-    ["a var", { vars: { NS: "x" } }],
-    ["a migration", { migrations: [{ tag: "v1", new_sqlite_classes: ["X"] }] }],
-    ["an environment", { env: { prod: { name: "tinyassets-files-prod" } } }],
-  ])("refuses FILES when the files Worker holds %s", (_what, extra) => {
-    expect(configProblems(config, new Map([["tinyassets-files",
-                                            { ...files, ...extra } as Config]])))
-      .not.toEqual([]);
-  });
-
 
   it("is the only wrangler config in the owner Worker", () => {
     expect(configFiles(OWNER)).toEqual([CONFIG]);
-    expect(relative(PLATFORM, OWNER)).toBe("owner");
   });
 
   it("declares OwnerDO a SQLite-backed class", () => {
@@ -580,7 +407,7 @@ describe("owner Worker config", () => {
 
   const base = { name: "tinyassets-owner", main: "src/index.ts",
                  compatibility_flags: ["nodejs_compat", NO_EXPORTS], limits: LIMITS };
-  const bound = new Map([["tinyassets-files", files as Config]]);
+  const bound = new Map([["files", CONFIGS.get("files")!]]);
 
   it.each([
     ["a self-binding", { ...base, durable_objects: { bindings: [
@@ -619,51 +446,103 @@ describe("owner Worker config", () => {
   });
 
   it("allows FILES at top level and in an environment, to a Worker that reaches nothing", () => {
-    const services = [{ binding: "FILES", service: "tinyassets-files" }];
+    const services = [BINDING["FILES"]!];
     expect(configProblems({ ...base, services, env: { prod: { services } } }, bound))
       .toEqual([]);
   });
 });
 
 describe("the owner's own hold on the Workers it binds, whatever their rules say", () => {
-  // Each probe grows a bound Worker's rules (the allowance the owner reads from them) and its
-  // config together, so only the owner's own invariant can refuse it.
-  const codemode = readWrangler(join(PLATFORM, "codemode"));
-  const sandbox = readWrangler(join(PLATFORM, "sandbox"));
-  const grown = (bindings: object[], classes: readonly string[]) => ({
-    config: { ...codemode, durable_objects: { bindings },
-              migrations: [{ tag: "v1", new_sqlite_classes: classes }] } as Config,
-    allowed: { ...SERVICES["CODEMODE_VM"]!, own: { durable_objects: { bindings }, classes } },
-  });
+  // Each probe grows a bound Worker's config as the platform holds it; its own rules are never
+  // read, so only the owner's allowance and invariants can refuse it.
+  const namespace = (name: string, class_name: string, script_name?: string) =>
+    script_name === undefined ? { name, class_name } : { name, class_name, script_name };
+  const ownNamespaces = (worker: string) =>
+    (CONFIGS.get(worker)!["durable_objects"] as { bindings: Config[] }).bindings;
+  const erasure = OWNER_QUEUES.producers[0]!.queue;
+  /** What reaches past every Worker the owner binds, whichever it is. */
+  const everywhere: readonly (readonly [string, Config])[] = [
+    ["a service", { services: [{ binding: "OWNER", service: "other" }] }],
+    ["a namespace of another Worker's class", { durable_objects: { bindings: [
+      namespace("OWNER", "OwnerDO", "other")] } }],
+    ["a queue consumer", { queues: { producers: [], consumers: [{ queue: "q" }] } }],
+    ["a producer onto the erasure queue", { queues: { producers: [
+      { binding: "OUT", queue: erasure }] } }],
+    ["a workflow", { workflows: [{ binding: "W", name: "w", class_name: "W",
+                                   script_name: "other" }] }],
+    ["a dispatch namespace", { dispatch_namespaces: [{ binding: "D", namespace: "d" }] }],
+    ["a Worker loader", { worker_loaders: [{ binding: "LOADER" }] }],
+    ["an unsafe Durable Object binding", { unsafe: { bindings: [{ name: "OWNER",
+      type: "durable_object_namespace", class_name: "OwnerDO" }] } }],
+    ["a tail consumer", { tail_consumers: [{ service: "other" }] }],
+    ["a D1 database", { d1_databases: [{ binding: "DB", database_id: "shared" }] }],
+    ["a route", { routes: ["example.test/*"] }],
+    ["an environment", { env: { prod: { name: "other" } } }],
+  ];
+  /** What reaches past one Worker's allowance alone. */
+  const own: readonly (readonly [string, string, Config])[] = [
+    ["FILES", "a second bucket", { r2_buckets: [
+      ...(CONFIGS.get("files")!["r2_buckets"] as Config[]), { binding: "B", bucket_name: "b" }] }],
+    ["FILES", "no bucket", { r2_buckets: [] }],
+    ["FILES", "a KV namespace", { kv_namespaces: [{ binding: "KV", id: "shared" }] }],
+    ["FILES", "a class of its own with no namespace", { migrations: [
+      { tag: "v1", new_sqlite_classes: ["X"] }] }],
+    ["GATEWAY", "a bucket", { r2_buckets: [{ binding: "B", bucket_name: "b" }] }],
+    ["GATEWAY", "a KV namespace", { kv_namespaces: [{ binding: "KV", id: "shared" }] }],
+    ["CODEMODE_VM", "no namespace", { durable_objects: undefined }],
+    ["CODEMODE_VM", "a second namespace of its own class", { durable_objects: { bindings: [
+      ...ownNamespaces("codemode"), ...ownNamespaces("codemode")] } }],
+    ["CODEMODE_VM", "its namespace as another Worker's class", { durable_objects: { bindings: [
+      { ...ownNamespaces("codemode")[0]!, script_name: "other" }] } }],
+    ["CODEMODE_VM", "a namespace of a class not its own", { durable_objects: { bindings: [
+      namespace("OTHER", "Other")] } }],
+    ["CODEMODE_VM", "OwnerDO among its own classes", {
+      durable_objects: { bindings: [namespace("OWNER", "OwnerDO")] },
+      migrations: [{ tag: "v1", new_sqlite_classes: ["OwnerDO"] }] }],
+    ["CODEMODE_VM", "a class taken from another Worker", { migrations: [
+      ...(CONFIGS.get("codemode")!["migrations"] as Config[]),
+      { tag: "v2", transferred_classes: [{ from: "OwnerDO", from_script: "other",
+                                           to: "CodemodeSandbox" }] }] }],
+    ["CODEMODE_VM", "a bucket", { r2_buckets: [{ binding: "B", bucket_name: "b" }] }],
+    ["CODEMODE_VM", "a KV namespace", { kv_namespaces: [{ binding: "KV", id: "shared" }] }],
+    ["SANDBOX", "a second KV namespace", { kv_namespaces: [
+      ...(CONFIGS.get("sandbox")!["kv_namespaces"] as Config[]), { binding: "KV", id: "x" }] }],
+    ["SANDBOX", "no ring", { queues: undefined }],
+    ["SANDBOX", "a producer onto another queue as well", { queues: { producers: [
+      ...(CONFIGS.get("sandbox")!["queues"] as { producers: Config[] }).producers,
+      { binding: "OUT", queue: "other" }] } }],
+    ["SANDBOX", "a third namespace", { durable_objects: { bindings: [
+      ...ownNamespaces("sandbox"), namespace("OTHER", "SandboxSlots")] } }],
+    ["SANDBOX", "its class as another Worker's", { durable_objects: { bindings: [
+      { ...ownNamespaces("sandbox")[0]!, script_name: "other" },
+      ...ownNamespaces("sandbox").slice(1)] } }],
+    ["SANDBOX", "a bucket", { r2_buckets: [{ binding: "B", bucket_name: "b" }] }],
+  ];
 
   it.each([
-    ["a namespace of another Worker's class", grown([...CODEMODE_OWN.durable_objects.bindings,
-      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }],
-                                                    CODEMODE_OWN.classes)],
-    ["a namespace of a class not its own", grown([...CODEMODE_OWN.durable_objects.bindings,
-      { name: "OTHER", class_name: "Other" }], CODEMODE_OWN.classes)],
-    ["OwnerDO among its own classes", grown([...CODEMODE_OWN.durable_objects.bindings,
-      { name: "OWNER", class_name: "OwnerDO" }], [...CODEMODE_OWN.classes, "OwnerDO"])],
-  ])("refuses CODEMODE_VM when the codemode Worker's rules and config both gain %s",
-     (_what, { config: probe, allowed }) => {
-    expect(boundProblems(probe, allowed)).not.toEqual([]);
+    ...Object.keys(SERVICES).flatMap((binding) =>
+      everywhere.map(([what, extra]) => [binding, what, extra] as const)),
+    ...own,
+  ])("refuses %s when its Worker holds %s", (binding, _what, extra) => {
+    const bound = CONFIGS.get(SERVICES[binding]!.worker)!;
+    expect(boundProblems(bound, SERVICES[binding]!)).toEqual([]);
+    expect(bindingAlone(binding, patched(bound, extra))).not.toEqual([]);
   });
 
-  it.each([
-    ["a queue consumer", { ...SANDBOX_QUEUES, consumers: [{ queue: "tinyassets-sandbox-ring" }] }],
-    ["a producer onto another queue", { producers: [...SANDBOX_QUEUES.producers,
-      { binding: "OUT", queue: "tinyassets-erasure" }] }],
-  ])("refuses SANDBOX when the sandbox Worker's rules and config both gain %s",
-     (_what, queues) => {
-    expect(boundProblems({ ...sandbox, queues }, { ...SERVICES["SANDBOX"]!, queues }))
-      .not.toEqual([]);
+  it("allows what binds nothing, which each Worker's own rules hold", () => {
+    for (const binding of Object.keys(SERVICES)) {
+      const bound = CONFIGS.get(SERVICES[binding]!.worker)!;
+      expect(bindingAlone(binding, patched(bound, { vars: { V: "x" }, limits: { cpu_ms: 1 },
+                                                    secrets: { required: ["S"] } })))
+        .toEqual([]);
+    }
   });
 
   it("holds every Worker it binds today", () => {
     for (const [binding, allowed] of Object.entries(SERVICES)) {
-      const config = platformConfigs().get(allowed.service);
-      expect(config, binding).toBeDefined();
-      expect(boundProblems(config!, allowed), binding).toEqual([]);
+      const bound = CONFIGS.get(allowed.worker);
+      expect(bound, binding).toBeDefined();
+      expect(boundProblems(bound!, allowed), binding).toEqual([]);
     }
   });
 });

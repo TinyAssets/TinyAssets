@@ -8,25 +8,27 @@
  * bindings `SERVICES` names: no Durable Object namespace at all (ADR-034 removed the
  * agent's thread stores), and `OwnerDO` itself is never bound.
  *
- * Each service names one Worker and exactly the binding kinds that Worker's own config may
- * hold, each a kind that reaches no object, service, queue, workflow or other Worker; the
- * rest of what it may hold (its secrets, vars, own classes, limits and queue) is that
- * Worker's own allow-list (its `guards/rules.ts`), held to the owner's own invariants
- * whatever that Worker's rules say (`config.test.ts`'s `ownProblems` and `queueProblems`):
- * no namespace of another Worker's class, never `OwnerDO`, no queue but a ring. The bound
- * Worker's config is checked against that allowance too, so any other binding it gains (a Durable Object, a service, a
- * queue, a workflow, a dispatch namespace, a Worker loader, a tail consumer, a shared store,
- * an unsafe binding) refuses the owner's binding:
- * - `FILES`, the files Worker: its one R2 bucket, its keyring and its cipher var;
- * - `GATEWAY`, the model gateway: no binding at all, and its one secret, the keyring;
- * - `CODEMODE_VM`, the codemode Worker (H0, narrowed to code mode by ADR-034): the namespace of its
- *   own one class, exactly (no `script_name`, so no other Worker's class), made by its
- *   migrations as SQLite, and its `limits` exactly: no `OWNER`, no storage binding and no
- *   Worker Loader, so a script reaches no owner;
- * - `SANDBOX`, the sandbox Worker (slice S): its own classes (one per owner, its E2B calls;
- *   one for the platform's line), the control record's namespace read for its sandbox
- *   numbers alone, the ring queue's producer, and its one secret, the E2B key. It reaches
- *   nothing but E2B and the ring (`sandbox/guards/config.test.ts` reads its every fetch).
+ * Each service names one Worker, by its folder, and the binding kinds that Worker's config
+ * may hold, with how many of each, exactly: the owner's own statement of how far a bound
+ * Worker reaches, whatever that Worker's own rules say. Every other key a bound Worker sets
+ * is one that binds nothing (`BOUND_KEYS`), so any other binding it gains (a service, a
+ * bucket, a store, a queue, a workflow, a dispatch namespace, a Worker loader, a tail
+ * consumer, an unsafe binding, an environment) refuses the owner's binding. What each binding
+ * of those kinds may be is the owner's invariant over every bound Worker (`config.test.ts`'s
+ * `boundProblems`): a namespace only of a class the Worker's own migrations make (no
+ * `script_name`), never `OwnerDO`, by migrations that only make classes; a queue only a
+ * ring's producer (`RING_QUEUES`). What binds nothing (its secrets, vars, limits, flags and
+ * build) is that Worker's own allow-list, its `guards/rules.ts`:
+ * - `FILES`, the files Worker: its one R2 bucket;
+ * - `GATEWAY`, the model gateway: no binding at all;
+ * - `CODEMODE_VM`, the codemode Worker (H0, narrowed to code mode by ADR-034): one namespace
+ *   of its own class, and no `OWNER`, no storage binding and no Worker Loader, so a script
+ *   reaches no owner;
+ * - `SANDBOX`, the sandbox Worker (slice S): two namespaces of its own classes (one per
+ *   owner, its E2B calls; one for the platform's line), one KV namespace (the control
+ *   record's, read for its sandbox numbers alone) and one queue producer, the ring's. It
+ *   reaches nothing but E2B and the ring (`sandbox/guards/config.test.ts` reads its every
+ *   fetch).
  *
  * Its compatibility flags carry `disable_ctx_exports`, so the runtime does not hand the
  * object its own namespaces as `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top
@@ -41,10 +43,6 @@
  * reads the gates again at code mode's calls and reaches no directory entry or other
  * owner's state. Only `control-gate.ts` reads it, by `readControl`, and nothing writes it.
  */
-import { CONFIG as FILES } from "../../files/guards/rules";
-import { CONFIG as GATEWAY } from "../../gateway/guards/rules";
-import { CONFIG as CODEMODE_VM } from "../../codemode/guards/rules";
-import { CONFIG as SANDBOX } from "../../sandbox/guards/rules";
 import type { Exemption } from "../../ci/kit/module-state";
 import { imports, type Owed, refusals } from "../../ci/kit/owed";
 
@@ -83,55 +81,41 @@ export const OWNER_QUEUES = Object.freeze({ producers: Object.freeze([
  */
 export const SECRETS = Object.freeze(["ROUTING_MAC_KEY"]);
 /**
- * The keys a bound Worker may set that bind nothing: among them its own build step and its
- * modules' types (`build`, `rules`: the sandbox Worker's runner, built and imported as data).
+ * The keys a bound Worker may set that bind nothing: its name, entry and runtime, its build
+ * step and its modules' types (`build`, `rules`: the sandbox Worker's runner, built and
+ * imported as data), and its secrets (declared by name), vars and limits.
  */
 export const BOUND_KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls", "build", "rules",
+  "preview_urls", "build", "rules", "secrets", "vars", "limits",
 ]);
 /**
- * The only queues a bound Worker may produce onto, whatever its own rules say: the sandbox
- * line's ring, whose one consumer, the doors Worker, turns `{owner}` into that owner's
- * `sandboxRung` and nothing else.
+ * The only queues a bound Worker may produce onto: the sandbox line's ring, whose one
+ * consumer, the doors Worker, turns `{owner}` into that owner's `sandboxRung` and nothing
+ * else. The owner's own statement, so it is named here: read from the producers' configs (the
+ * generated `QUEUES`), it would follow a producer that moved onto the erasure queue.
  */
 export const RING_QUEUES: readonly string[] = Object.freeze(["tinyassets-sandbox-ring"]);
 
 export interface Bound {
-  /** The Worker the binding names. */
-  readonly service: string;
-  /** The binding kinds its own config may hold, and how many of each, exactly. */
-  readonly bindings: Readonly<Record<string, number>>;
-  /** The secrets its config may declare by name (each binds nothing); none by default. */
-  readonly secrets?: readonly string[];
+  /** The Worker the binding names, by its folder under `platform/`. */
+  readonly worker: string;
   /**
-   * The namespaces of its own classes it may bind, exactly as given (none with a
-   * `script_name`), and the classes its migrations make, SQLite; none by default.
+   * The binding kinds its config may hold, and how many bindings of each, exactly: a
+   * namespace kind (`durable_objects`) also lets its migrations make its own classes, and
+   * `queues` counts its producers.
    */
-  readonly own?: { readonly durable_objects: unknown; readonly classes: readonly string[] };
-  /** Its `limits`, exactly, when it may set any; none by default. */
-  readonly limits?: unknown;
-  /** The plain-text variables it may set, by name exactly (each binds nothing); none. */
-  readonly vars?: readonly string[];
-  /** Its queues, exactly: a producer of a queue whose consumer reaches nothing but a ring. */
-  readonly queues?: unknown;
+  readonly bindings: Readonly<Record<string, number>>;
 }
 
 /** The service bindings the owner Worker may hold, by binding name. */
 export const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
-  FILES: Object.freeze({ service: FILES.name, bindings: Object.freeze({ r2_buckets: 1 }),
-                         secrets: FILES.secrets! }),
-  GATEWAY: Object.freeze({ service: GATEWAY.name, bindings: Object.freeze({}),
-                           secrets: GATEWAY.secrets! }),
-  CODEMODE_VM: Object.freeze({ service: CODEMODE_VM.name, bindings: Object.freeze({}),
-                         own: { durable_objects: CODEMODE_VM.exact!["durable_objects"],
-                                classes: CODEMODE_VM.classes! },
-                         limits: CODEMODE_VM.exact!["limits"] }),
-  SANDBOX: Object.freeze({ service: SANDBOX.name, bindings: Object.freeze({ kv_namespaces: 1 }),
-                           own: { durable_objects: SANDBOX.exact!["durable_objects"],
-                                  classes: SANDBOX.classes! },
-                           vars: Object.keys(SANDBOX.vars!), secrets: SANDBOX.secrets!,
-                           queues: SANDBOX.exact!["queues"] }),
+  FILES: Object.freeze({ worker: "files", bindings: Object.freeze({ r2_buckets: 1 }) }),
+  GATEWAY: Object.freeze({ worker: "gateway", bindings: Object.freeze({}) }),
+  CODEMODE_VM: Object.freeze({ worker: "codemode",
+                               bindings: Object.freeze({ durable_objects: 1 }) }),
+  SANDBOX: Object.freeze({ worker: "sandbox", bindings: Object.freeze({
+    durable_objects: 2, kv_namespaces: 1, queues: 1 }) }),
 });
 
 /**
@@ -139,10 +123,6 @@ export const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
  * (`ci/kit/owed.ts`): another workspace's internals, each until the fix named removes it.
  */
 export const OWED: readonly Owed[] = Object.freeze([
-  // Platform-wide guards in the owner's tree: B8 moves each to its subject.
-  ...imports("B8", "platform/owner/guards/rules.ts", [
-    "platform/files/guards/rules.ts", "platform/gateway/guards/rules.ts",
-    "platform/codemode/guards/rules.ts", "platform/sandbox/guards/rules.ts"]),
   // The egress memory leg, the doors' and the gateway's, in the owner's tree: B23.
   ...imports("B23", "platform/owner/memory/egress-probe.ts", [
     "platform/doors/src/egress.ts", "platform/gateway/src/catalog.ts",

@@ -27,6 +27,8 @@ import { describe, expect, it } from "vitest";
 import { ruleLists } from "../../ci/kit/owed";
 import { envFile, parse, reporter, workerSources } from "../../ci/kit/sources";
 
+import { IMPORT_WINDOW as WINDOW } from "./rules";
+
 const BINDER = "doors/src/binder.ts";
 /** The doors' generated env, which declares every binding and reaches none. */
 const ENV = envFile("doors");
@@ -48,7 +50,7 @@ const CONNECT = "doors/src/connect.ts";
 const EGRESS = "doors/src/egress.ts";
 const FILE_BYTES = "doors/src/file-bytes.ts";
 const IMPORT = "doors/src/import/";
-const IMPORT_WINDOW = new Set(["IMPORT_STAGING", "IMPORTS"]);
+const IMPORT_WINDOW: ReadonlySet<string> = new Set(Object.values(WINDOW));
 /**
  * The generated queue names (`contract/src/queue-names.ts`), keyed by each queue's producer
  * binding: a name read there (`QUEUES.IMPORTS`, the doors' queue dispatch) reaches no binding.
