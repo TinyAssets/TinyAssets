@@ -28,7 +28,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readWrangler } from "../../ci/workers";
 import { E2bAdmin } from "../e2b/admin";
 import { install } from "../e2b/install";
 import { type Handle, runtimeFetch } from "../e2b/transport";
@@ -36,7 +35,7 @@ import { COMMAND, EXIT, LOADER } from "../runner/protocol";
 import type { Plan, PlanSandbox, PlanStep } from "../runner/probes";
 
 import { NAME, spec, stage, tag } from "./image";
-import { type Bundle, bundles, pairTag } from "./pair";
+import { type Bundle, BUNDLES, bundles, pairTag, pinned } from "./pair";
 
 const TEMPLATE = dirname(fileURLToPath(import.meta.url));
 const PASSED = join(TEMPLATE, "passed.json");
@@ -57,12 +56,6 @@ interface Installed {
 
 function log(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
-}
-
-/** The image the sandbox Worker names (`wrangler.jsonc`'s `E2B_TEMPLATE`). */
-export function pinned(): string {
-  return String((readWrangler(join(TEMPLATE, "..")) as { vars: { E2B_TEMPLATE: string } })
-    .vars.E2B_TEMPLATE);
 }
 
 /** A probe's answer: its last JSON line, or why it gave none. */

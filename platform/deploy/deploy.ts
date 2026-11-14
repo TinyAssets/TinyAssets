@@ -93,7 +93,7 @@ import { WRANGLER } from "../ci/workers.ts";
 import { CONTROL_KEY } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
-import { bundles, checksArgv, pairTag, treeImage } from "../sandbox/template/pair.ts";
+import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
 import {
   type BackStep, cfApi, Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback,
   handover, type Kept, type Moved, narrower, type Route, type RouteStep, unlike,
@@ -230,11 +230,6 @@ function made<T>(value: T | undefined, what: string): T {
 /** The run's one E2B client, from its key (`Run.env`): made by the first step that reaches E2B. */
 function e2bOf(run: Run, work: Work): E2bAdmin {
   return work.e2b ??= new E2bAdmin(input(run, "E2B_API_KEY")!, run.io.fetch);
-}
-
-/** The sandbox's pinned E2B template, `name:tag` (its config's `E2B_TEMPLATE`). */
-function template(): string {
-  return String((CONFIGS.get("sandbox")!["vars"] as Json)["E2B_TEMPLATE"]);
 }
 
 /** The plan, printed and written to the job summary. */
@@ -490,7 +485,7 @@ export async function registerRedirect(key: string, apply: boolean, fetcher: Fet
  */
 function shippedPair(exec: Io["exec"]): string {
   const { runner, probes } = bundles(exec);
-  return pairTag(template(), runner.sha, probes.sha);
+  return pairTag(pinned(), runner.sha, probes.sha);
 }
 
 /**
@@ -983,10 +978,10 @@ const upstream = step("upstream", async (run, work) => {
  * follows the template's build) is planned, and refused by an apply.
  */
 const templateBuilt = step("template", async (run, work) => {
-  const pinned = template();
+  const pin = pinned();
   const tree = treeImage(run.io.exec);
-  if (tree !== pinned) {
-    const why = `the pinned template ${pinned} is not this tree's image ${tree}: build it ` +
+  if (tree !== pin) {
+    const why = `the pinned template ${pin} is not this tree's image ${tree}: build it ` +
       "(sandbox-template.yml, build) and pin its passed pair";
     if (run.apply) {
       throw new Error(`${why}; nothing is deployed`);
@@ -994,9 +989,9 @@ const templateBuilt = step("template", async (run, work) => {
     work.plan.push(why);
   }
   if (!secretsReached(run)) {
-    work.plan.push(`E2B's ready build of ${pinned}: ${LATER}`);
-  } else if (!await e2bOf(run, work).ready(pinned)) {
-    throw new Error(`E2B has no ready build of ${pinned}: build it (sandbox-template.yml)`);
+    work.plan.push(`E2B's ready build of ${pin}: ${LATER}`);
+  } else if (!await e2bOf(run, work).ready(pin)) {
+    throw new Error(`E2B has no ready build of ${pin}: build it (sandbox-template.yml)`);
   }
 });
 

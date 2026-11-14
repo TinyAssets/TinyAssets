@@ -1,14 +1,15 @@
 /**
  * The pair the sandbox runs on: the template (the image, `image.ts`), the runner the sandbox
- * Worker ships, and the probes that checked them together (`bundle.mjs`'s two bundles). A
- * pair that passed its standing checks (`checks.ts`) is marked at E2B with its pair tag,
- * which the deploy kit looks for before a deploy (`deploy/deploy.ts`), one lookup. The kit
- * and the checks name the pair by this one module, so the pair the kit looks for names
- * exactly the bytes that were checked.
+ * Worker ships, and the probes that checked them together (the Worker's build,
+ * `build/bundle.mjs`). A pair that passed its standing checks (`checks.ts`) is marked at E2B
+ * with its pair tag, which the deploy kit looks for before a deploy (`deploy/deploy.ts`), one
+ * lookup. The kit and the checks name the pair by this one module, so the pair the kit looks
+ * for names exactly the bytes that were checked. It is the one home of the pinned template
+ * (`pinned`) and of the bundles' file names (`BUNDLES`).
  *
- * It imports nothing but Node's own, so the deploy kit runs it by Node's type stripping. The
+ * Its imports name their `.ts` files, so the deploy kit runs it by Node's type stripping. The
  * template's other tools (`image.ts`, `checks.ts`) import the platform's modules, which
- * resolve as its bundler does (`resolve.mjs`), so they run by `TS_TOOL`.
+ * resolve as its bundler does (`resolve.mjs`), so they run by `tsTool`.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -17,7 +18,21 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { readWrangler } from "../../ci/workers.ts";
+
 const TEMPLATE = dirname(fileURLToPath(import.meta.url));
+const SANDBOX = join(TEMPLATE, "..");
+
+/** The Worker's build, which makes both bundles (`wrangler.jsonc`'s `build.command`). */
+export const BUILD = join(SANDBOX, "build", "bundle.mjs");
+
+/** Each bundle's file name, where a build writes it (`bundles`). */
+export const BUNDLES = Object.freeze({ runner: "runner.mjs", probes: "probes.mjs" });
+
+/** The image the sandbox Worker starts, `name:tag` (`wrangler.jsonc`'s `E2B_TEMPLATE`). */
+export function pinned(): string {
+  return String((readWrangler(SANDBOX) as { vars: { E2B_TEMPLATE: string } }).vars.E2B_TEMPLATE);
+}
 
 /** One bundle as built: its bytes and their SHA-256. */
 export interface Bundle {
@@ -41,19 +56,20 @@ export function checksArgv(mode: "pair" | "build"): string[] {
 
 /**
  * The runner the Worker ships and the probes beside it, as the Worker's build makes them
- * (`bundle.mjs`, its `build.command`), into `out` if given (else a temporary directory,
+ * (`BUILD`), into `out` by their names (`BUNDLES`) if given (else a temporary directory,
  * deleted), by `exec`.
  */
 export function bundles(exec: typeof execFileSync = execFileSync, out?: string):
     { runner: Bundle; probes: Bundle } {
   const dir = out ?? mkdtempSync(join(tmpdir(), "ta-bundles-"));
   try {
-    exec(process.execPath, [join(TEMPLATE, "bundle.mjs"), dir], { stdio: "ignore" });
+    exec(process.execPath, [BUILD, join(dir, BUNDLES.runner), join(dir, BUNDLES.probes)],
+         { stdio: "ignore" });
     const read = (name: string): Bundle => {
       const bytes = readFileSync(join(dir, name));
       return { bytes, sha: createHash("sha256").update(bytes).digest("hex") };
     };
-    return { runner: read("runner.mjs"), probes: read("probes.mjs") };
+    return { runner: read(BUNDLES.runner), probes: read(BUNDLES.probes) };
   } finally {
     if (out === undefined) {
       rmSync(dir, { recursive: true, force: true });

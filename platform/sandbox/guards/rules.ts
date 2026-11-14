@@ -25,7 +25,7 @@ export const CONFIG: ConfigRules = Object.freeze({
   /** The template it starts, pinned (`template.test.ts` holds its tag). */
   vars: Object.freeze({ E2B_TEMPLATE: null }),
   exact: Object.freeze({
-    build: { command: "node template/bundle.mjs dist" },
+    build: { command: "node build/bundle.mjs dist/runner.mjs dist/probes.mjs" },
     rules: [{ type: "Data", globs: ["**/dist/runner.mjs"], fallthrough: false }],
     durable_objects: { bindings: [{ name: "SANDBOXES", class_name: "SandboxControl" },
                                   { name: "SLOTS", class_name: "SandboxSlots" }] },
@@ -47,8 +47,9 @@ export const OWED: readonly Owed[] = Object.freeze([
   // The migration lock, in the owner's guards: B8 moves it to `ci/kit/locks.ts`.
   ...imports("B8", "platform/sandbox/guards/migrations.test.ts",
              ["platform/owner/guards/lock.ts"]),
-  // The template's pin, read through the test kit: B18 gives it one reader in `pair.ts`.
-  ...imports("B18", "platform/sandbox/template/checks.ts", ["platform/ci/workers.ts"]),
+  // The template's pin, read in `pair.ts` alone (B18), through the test kit: B8's
+  // `ci/wrangler.ts` (C5), the config reader alone, is what the template may import.
+  ...imports("B8", "platform/sandbox/template/pair.ts", ["platform/ci/workers.ts"]),
   // The runner's answers as error classes of the Worker's own, each a contract refusal by
   // its code (B2, S7).
   ...refusals("B2", "platform/sandbox/src/control.ts",

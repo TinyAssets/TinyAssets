@@ -46,7 +46,7 @@ import {
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, type RouteRecord,
   secretPlan, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
-import { bundles, pairTag, treeImage } from "../../sandbox/template/pair";
+import { BUNDLES, bundles, pairTag, treeImage } from "../../sandbox/template/pair";
 import {
   boundBy, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS, MADE,
   NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers, ROUTES, SECRET_INPUTS,
@@ -426,8 +426,8 @@ function world(options: WorldOptions = {}) {
                  options_: { env?: Record<string, string> } = {}) => {
     if (String(argv[0]).endsWith("bundle.mjs")) {
       events.push("bundle the runner and the probes");
-      writeFileSync(join(argv[1]!, "runner.mjs"), RUNNER);
-      writeFileSync(join(argv[1]!, "probes.mjs"), PROBE_BUNDLE);
+      writeFileSync(argv[1]!, RUNNER);
+      writeFileSync(argv[2]!, PROBE_BUNDLE);
     } else if (String(argv.at(-1)).endsWith("image.ts")) {
       events.push("the tree's image");
       return `${options.image ?? TEMPLATE}\n`;
@@ -2351,7 +2351,7 @@ describe("platform-deploy.yml", () => {
     const out = mkdtempSync(join(tmpdir(), "ta-plan-"));
     try {
       bundles(execFileSync, out);
-      const plan = JSON.parse(execFileSync(process.execPath, [join(out, "probes.mjs"), "plan"],
+      const plan = JSON.parse(execFileSync(process.execPath, [join(out, BUNDLES.probes), "plan"],
                                            { encoding: "utf8" })) as
         { sandboxes: { timeout_s: number }[] };
       expect(plan.sandboxes).toHaveLength(3);

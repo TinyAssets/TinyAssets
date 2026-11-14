@@ -1,6 +1,6 @@
 /**
- * The runner this Worker ships (`template/bundle.mjs`'s `runner.mjs`, built by the Worker's
- * own build, `build.command` in `wrangler.jsonc`, and imported as data): the bytes every
+ * The runner this Worker ships (built by the Worker's own build, `build/bundle.mjs`, its
+ * `build.command` in `wrangler.jsonc`, and imported as data): the bytes every
  * sandbox runs, and their SHA-256, computed from these bytes. Nothing about the runner is
  * committed or pinned, so nothing can drift from the code that was reviewed and deployed:
  * the digest is what the loader in the template checks before every command. No module

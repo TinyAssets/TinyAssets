@@ -21,16 +21,14 @@ import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { readWrangler } from "../../ci/workers";
 import { workflow } from "../../ci/workflows";
 import { LOADER } from "../runner/protocol";
 import { NAME, tag } from "../template/image";
-import { bundles, checksArgv } from "../template/pair";
+import { bundles, checksArgv, pinned } from "../template/pair";
 
 const ROOT = join(PLATFORM, "..");
 const WORKFLOW = join(ROOT, ".github", "workflows", "sandbox-template.yml");
-const PINNED = (readWrangler(join(PLATFORM, "sandbox")) as { vars: { E2B_TEMPLATE: string } })
-  .vars.E2B_TEMPLATE;
+const PINNED = pinned();
 
 /**
  * E2B as the checks reach it, by `globalThis.fetch`: the alias and tag lookups (`E2B_READY`:
