@@ -126,6 +126,16 @@ export function deployProblems(worker: string, locks: Locks,
   });
 }
 
+/** What `digests` prints for `worker`: the code's digests by lock; else it throws why not. */
+export function deployAnswer(worker: string, locks: Locks,
+                             held: Readonly<Record<string, Lock>>): string {
+  const problems = deployProblems(worker, locks, held);
+  if (problems.length > 0) {
+    throw new Error(problems.join("\n"));
+  }
+  return JSON.stringify(digests(locks));
+}
+
 /** `worker`'s locks, as its `guards/locks.ts` states them. */
 export async function locksOf(worker: string): Promise<Locks> {
   const { LOCKS } = await import(join(PLATFORM, worker, "guards", "locks.ts")) as
@@ -141,12 +151,8 @@ export async function command(argv: readonly string[]): Promise<string> {
   const [verb, worker, commit] = argv;
   if (verb === "digests" && worker !== undefined && argv.length === 2) {
     const locks = await locksOf(worker);
-    const problems = deployProblems(worker, locks, Object.fromEntries(Object.keys(locks)
+    return deployAnswer(worker, locks, Object.fromEntries(Object.keys(locks)
       .map((path) => [path, readLock(path)])));
-    if (problems.length > 0) {
-      throw new Error(problems.join("\n"));
-    }
-    return JSON.stringify(digests(locks));
   }
   if (verb === "pin" && worker !== undefined && commit !== undefined && argv.length === 3) {
     const at = new Date().toISOString();

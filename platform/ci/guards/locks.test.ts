@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { type Migration, migrationDigest as digest } from "../../contract/src/migrate";
-import { deployProblems, digests, type Lock, lockOf, lockProblems, locksOf, pin,
+import { deployAnswer, deployProblems, digests, type Lock, lockOf, lockProblems, locksOf, pin,
          readLock } from "../kit/locks";
 import { PLATFORM, REPO } from "../paths";
 import { workerFolders } from "../wrangler";
@@ -160,6 +160,12 @@ describe("the migration locks' kit", () => {
     }
     expect(deployProblems("w", {}, held(lock)))
       .toEqual(["w states no migration lock: each Worker the deploy holds to locks has one"]);
+    // The command line's answer: the digests when pinned, else a refusal, an unpinned
+    // migration at the end included (main's locks are pinned, so only this holds that).
+    expect(JSON.parse(deployAnswer("w", locks, held(lock)))).toEqual({ "w/a.json": lock.deployed });
+    expect(() => deployAnswer("w", { "w/a.json": [...shipped, ["CREATE TABLE c (z)"]] },
+                              held(lock)))
+      .toThrow(/^the migration lock w\/a\.json pins 2 migrations and the code ships 3/);
   });
 
   it("answers from its command line as the kit does: each Worker's digests when its locks " +
