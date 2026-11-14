@@ -101,8 +101,10 @@ describe("slice STORE's archive (item 2)", () => {
     expect(L.maxUnacked).toBe(L.maxMessages - L.archiveRecords);
     expect(L.archiveRecords).toBe(SEGMENT_MIN_RECORDS);
     // The hot share fits under half beside every other term (the guard's own check), and the
-    // room left is no more than STARTER's and BRAIN's quarters and a little.
-    expect(HALF - total(TERMS)).toBeLessThan(DERIVED_ROOM * 2 * LOG_SHARE + 50e6);
+    // room left is no more than STARTER's and BRAIN's quarters, the term the ledger's receipts
+    // took until untangle 3b deleted them (309.6 MB, held for the files index, d3 §P item 5)
+    // and a little.
+    expect(HALF - total(TERMS)).toBeLessThan(DERIVED_ROOM * 2 * LOG_SHARE + 309.6e6 + 50e6);
   });
 
   it("cuts segments only where both sides hold the least, so ARCHIVE_SEGMENTS_MAX holds " +

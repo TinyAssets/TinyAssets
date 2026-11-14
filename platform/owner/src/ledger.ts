@@ -9,13 +9,13 @@
  *   agent. It registers only from the verified origin the binder passes, as an `api_key`
  *   or an `mcp` source; delivery is `pull` or `mcp_event`. Its wake limits are owner
  *   policy, set by the owner alone and never by a registration. The owner may delete an
- *   agent, which purges its mail, wakes and receipts.
+ *   agent, which purges its mail and wakes.
  * - ROOM_POST: the sender is the binder's origin (none means the owner; a run, its own
  *   agent), never a field. The room is a pair's (below). A resend with the same client
  *   message id and body hash
  *   returns the original; another hash is a `conflict`. One transaction writes the
- *   message, its body, its recipient, the parent's `replied` state, the `reply` receipt
- *   and the recipient's wake.
+ *   message, its body, its recipient, the parent's `replied` state and the recipient's
+ *   wake. A reply's time to reply is its own and its parent's `created_at`.
  * - The idempotency window: a resend is matched against the messages the ledger holds hot.
  *   A message leaves the hot set only once every recipient has acked it, moved to an
  *   archive segment (`segments.ts`, slice STORE item 2), so a resend is deduplicated at
@@ -23,14 +23,16 @@
  *   message. Nothing is ever evicted: an archived message is the owner's until the owner
  *   deletes its agent, and the chain read and a reply find it by its id, which carries its
  *   seq (`orderedId`).
- * - MAILBOX_RECEIPT: a read pages whole messages by bytes, at least one, and marks and
- *   receipts only the ones it returns; an ack never moves back and never passes the
+ * - MAILBOX_RECEIPT: a read pages whole messages by bytes, at least one, and marks read
+ *   (`read_at`) only the ones it returns; an ack never moves back and never passes the
  *   reader's own newest message, and an ack at or behind the cursor is a no-op, so a
  *   retried ack succeeds. A body whose hash no longer matches is withheld.
  * - Wakes (S3b, W3) are data on the object's one schedule (`ledger_wakes`): one open
  *   wake per ringing recipient (`one_open_wake`), claimed under a lease, settled from the
- *   doorbell's answer, and never replayed once a byte may have left. Status comes only
- *   from receipts.
+ *   doorbell's answer, and never replayed once a byte may have left. Each fact lives on
+ *   the row it describes: a message's read time and why it failed on its recipient row
+ *   (which an archive segment holds with it), an ack on its reader's row, a wake's outcome
+ *   on its wake row (`receipt_json`).
  * - What rings is data (`wake-kinds.ts`, slice W): an agent rings when its delivery
  *   method's record has a push (MCP Events, `/fire`, a webhook routine); a `pull` agent
  *   never does, and catches up through the digests on its own schedule. A wake says what
@@ -104,7 +106,9 @@ import {
 import { ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
-import { Refusal, STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
+import {
+  Refusal, type RefusalCode, REFUSALS, STORAGE_BUSY_RETRY_S,
+} from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import {
   agentsPage, bodied, contentsOf, type Cut, fitPage, headChars, heads, headWindow, INBOX_PART,
@@ -140,6 +144,13 @@ const NATIVE_ID = /^ta_[0-9a-f]{16}$/;
  */
 const DUE = "state IN ('queued', 'held_cap') AND agent_id IN (SELECT agent_id FROM " +
   "native_agents)";
+/** Why a mail failed, on its recipient row: the refusal its run met, or its sender gone. */
+type FailedReason = RefusalCode | "sender_gone";
+/** The longest reason a recipient row holds: its message's lines count it (`mailLineBytes`). */
+export function widestReason(): FailedReason {
+  return [...Object.keys(REFUSALS) as RefusalCode[], "sender_gone" as const]
+    .reduce((wide, each) => (each.length > wide.length ? each : wide));
+}
 /** A run's mail is its input: it reads and acks no mailbox. */
 export const RUN_NO_MAILBOX = "run_no_mailbox: a run's mail is its input; it reads and acks " +
   "no mailbox";
@@ -199,10 +210,6 @@ export const MAX_BODY_BYTES = BODY_BYTES_MAX;
 const OPEN = "state IN ('pending', 'rate_limited')";
 /** The states a wake never leaves: its outcome is known, or unknown and never replayed. */
 const SETTLED: readonly string[] = Object.freeze(["sent", "unknown", "failed", "suppressed"]);
-/** The receipt each settled wake leaves; `wake_sent` alone means the outcome is unknown. */
-const WAKE_RECEIPTS: Readonly<Record<string, string>> = Object.freeze({
-  sent: "wake_accepted", rate_limited: "rate_limited", failed: "failed", unknown: "wake_sent",
-});
 const KEY_ID = HEX16;
 const REASON = /^[a-z_]{1,32}$/;
 const SECRETISH = /(ta_key_|bearer|eyJ|sk-|sk_|https?[:/]|token[=:])/i;
@@ -252,9 +259,10 @@ const WAKE_SETTINGS = Object.freeze({
  * so the object holds at most that much of each body, and its bytes in R2 count in the
  * tier's storage; the counts are what the owner-bound guard costs within its half of the
  * 10 GB. The ledger's rows are one message, its body's row and its one recipient (the key
- * holds a message to one), so the messages bound them all. A settled wake's receipt is its
- * record, so the row is kept a week (enough to debug a doorbell) and at most 1,000 of
- * them; an owner's hourly cap reads only its agent's one `wake_tat` column.
+ * holds a message to one), so the messages bound them all. A settled wake's row is its
+ * delivery's record (`receipt_json`), kept a week (enough to debug a doorbell) and at most
+ * 1,000 of them, a chosen retention (`limits-audit.md`): delivery telemetry, never the
+ * owner's mail. An owner's hourly cap reads only its agent's one `wake_tat` column.
  */
 export interface LedgerLimits {
   /** Enabled agents: what the mailboxes are reserved for. */
@@ -275,9 +283,7 @@ export interface LedgerLimits {
   /** A segment's seal: its lines' bytes, or its records (`segments.ts`). */
   readonly archiveBytes: number;
   readonly archiveRecords: number;
-  /** Receipt rows kept, newest first. */
-  readonly maxReceipts: number;
-  /** How long a settled wake row is kept; its receipt is the record. */
+  /** How long a settled wake row is kept. */
   readonly settledWakeRetentionS: number;
   /** Settled wake rows kept, newest first. */
   readonly maxSettledWakes: number;
@@ -300,7 +306,6 @@ export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
   maxUnacked: HOT_MESSAGES - SEGMENT_MIN_RECORDS,
   archiveBytes: SEGMENT_MIN_BYTES,
   archiveRecords: SEGMENT_MIN_RECORDS,
-  maxReceipts: 50_000,
   settledWakeRetentionS: 7 * 24 * HOUR_S,
   maxSettledWakes: 1_000,
   maxRead: 100,
@@ -864,12 +869,24 @@ export function mailRecord(message: Readonly<Record<string, unknown>>,
 
 /**
  * The bytes a new message takes as its segment will hold it (D2): its lines, its body raw
- * (`body_bytes`) and its newline, and its trailer share. Its own `line_bytes` and its body's
- * `meta_bytes` are in its lines, so settled to a fixed point; the body is never copied here.
+ * (`body_bytes`) and its newline, and its trailer share, its recipient's row at the widest
+ * it ends: replied with its read time, or failed for the widest reason.
  */
 function mailLineBytes(message: Readonly<Record<string, unknown>>,
                        body: Readonly<Record<string, unknown>>,
                        recipient: Readonly<Record<string, unknown>>): number {
+  return Math.max(...[{ state: "replied", read_at: recipient["changed_at"] },
+                      { state: "failed", failed_reason: widestReason() }]
+    .map((end) => settledLineBytes(message, body, { ...recipient, ...end })));
+}
+
+/**
+ * A message's lines' bytes with its recipient's row as given. Its own `line_bytes` and its
+ * body's `meta_bytes` are in its lines, so settled to a fixed point; the body is never copied.
+ */
+function settledLineBytes(message: Readonly<Record<string, unknown>>,
+                          body: Readonly<Record<string, unknown>>,
+                          recipient: Readonly<Record<string, unknown>>): number {
   const size = body["body_bytes"] as number;
   const of = (rows: readonly SegmentRow[]): number => rows.reduce((sum, [table, row, raw]) =>
     sum + (raw === undefined ? utf8Bytes(rowLine(table, row))
@@ -1191,8 +1208,9 @@ export class Ledger {
       if (row === undefined) {
         return;
       }
-      sql.exec("UPDATE ledger_recipients SET state = 'failed', changed_at = ? WHERE " +
-                 "agent_id = ? AND state IN ('queued', 'held_cap')", now, row.agent_id);
+      sql.exec("UPDATE ledger_recipients SET state = 'failed', changed_at = ?, " +
+                 "failed_reason = 'agent_retired' WHERE agent_id = ? AND " +
+                 "state IN ('queued', 'held_cap')", now, row.agent_id);
       sql.exec("UPDATE ledger_recipients SET unacked = 0 WHERE agent_id = ? AND unacked = 1",
                row.agent_id);
       this.#failSent(row.agent_id, now);
@@ -1200,17 +1218,14 @@ export class Ledger {
   }
 
   /**
-   * The mail `sender` sent the owner's agents that no run took yet: failed, with a receipt
-   * (its sender retired or disabled, it starts nothing). An index range of its messages.
+   * The mail `sender` sent the owner's agents that no run took yet: failed, its sender gone
+   * (retired or disabled, it starts nothing). An index range of its messages.
    */
   #failSent(sender: string, now: number): void {
-    for (const { message_id: messageId, agent_id: agentId } of this.#sql.exec<
-      { message_id: string; agent_id: string }>(
-      "UPDATE ledger_recipients SET state = 'failed', unacked = 0, changed_at = ? WHERE " +
-        `${DUE} AND message_id IN (SELECT message_id FROM ledger_messages WHERE ` +
-        "sender_id = ?) RETURNING message_id, agent_id", now, sender).toArray()) {
-      this.#receipt(agentId, "failed", messageId, now, { reason: "sender_gone" });
-    }
+    const gone: FailedReason = "sender_gone";
+    this.#sql.exec("UPDATE ledger_recipients SET state = 'failed', unacked = 0, changed_at = ?, " +
+                     `failed_reason = ? WHERE ${DUE} AND message_id IN (SELECT message_id ` +
+                     "FROM ledger_messages WHERE sender_id = ?)", now, gone, sender);
   }
 
   register(origin: Origin | null, source: unknown, request: Registration,
@@ -1327,8 +1342,8 @@ export class Ledger {
 
   /**
    * The owner deletes an agent: every message in its dm room with their bodies and
-   * recipients, its cursor, wakes, subscriptions and receipts, the owner's own read and
-   * reply receipts for those messages, and its registry row. Each step is an index range of
+   * recipients, its cursor, wakes, subscriptions and its registry row. Each step is an index
+   * range of
    * that agent's rows.
    */
   remove(agentId: unknown, now: number = clock()): { agent_id: string; messages: number } {
@@ -1348,9 +1363,6 @@ export class Ledger {
       ).toArray().map((r) => r.message_id);
       const list = JSON.stringify(ids);
       const inList = "IN (SELECT value FROM json_each(?))";
-      sql.exec("DELETE FROM ledger_receipts WHERE agent_id = ?", agentId);
-      sql.exec(`DELETE FROM ledger_receipts WHERE kind IN ('read', 'reply') AND ref ${inList}`,
-               list);
       // Recipients before their messages: their triggers read the message's size.
       sql.exec(`DELETE FROM ledger_recipients WHERE message_id ${inList}`, list);
       sql.exec(`DELETE FROM message_bodies WHERE message_id ${inList}`, list);
@@ -1420,16 +1432,6 @@ export class Ledger {
       throw new Refusal("refused", "this outside identity is not one enabled agent");
     }
     return rows[0]!.agent_id;
-  }
-
-  #receipt(agentId: string, kind: string, ref: string, at: number,
-           detail: Record<string, unknown> = {}): void {
-    const sql = this.#sql;
-    sql.exec("INSERT INTO ledger_receipts (agent_id, kind, ref, at, detail_json) " +
-               "VALUES (?, ?, ?, ?, ?)", agentId, kind, ref, at, canonical(detail));
-    // Newest first: the receipt table holds at most maxReceipts rows.
-    sql.exec("DELETE FROM ledger_receipts WHERE seq <= " +
-               "(SELECT MAX(seq) FROM ledger_receipts) - ?", LEDGER_LIMITS.maxReceipts);
   }
 
   /**
@@ -1660,20 +1662,9 @@ export class Ledger {
           && recipient !== sender) {
         this.#open([to.agent.agent_id], CHANGE_BIT.mail, this.#changes(), now);
       }
-      if (parent !== undefined) {
-        if (!parentArchived) {
-          sql.exec("UPDATE ledger_recipients SET state = 'replied', changed_at = ? " +
-                     "WHERE message_id = ? AND agent_id = ?", now, parentKey, sender);
-        }
-        const read = sql.exec<{ at: number | null }>(
-          "SELECT MIN(at) AS at FROM ledger_receipts WHERE agent_id = ? AND kind = 'read' " +
-            "AND ref = ?", sender, parentKey,
-        ).one().at;
-        this.#receipt(sender, "reply", messageId, now, {
-          parent_id: parentKey,
-          reply_s: round3(now - parent.created_at),
-          read_s: read === null ? null : round3(read - parent.created_at),
-        });
+      if (parent !== undefined && !parentArchived) {
+        sql.exec("UPDATE ledger_recipients SET state = 'replied', changed_at = ? " +
+                   "WHERE message_id = ? AND agent_id = ?", now, parentKey, sender);
       }
       return { message_id: messageId, recipients: [recipient], held: false, paused_reason: "" };
       });
@@ -2370,12 +2361,9 @@ export class Ledger {
    * still holds it, so it is never evicted before the run answers it (`settled`).
    */
   taken(messageId: string, agentId: string, now: number = clock()): void {
-    const sql = this.#sql;
-    if (sql.exec("UPDATE ledger_recipients SET state = 'read', changed_at = ? " +
-                   `WHERE message_id = ? AND agent_id = ? AND ${DUE} RETURNING agent_id`, now,
-                 messageId, agentId).toArray().length === 1) {
-      this.#receipt(agentId, "read", messageId, now);
-    }
+    this.#sql.exec("UPDATE ledger_recipients SET state = 'read', changed_at = ?, read_at = ? " +
+                     `WHERE message_id = ? AND agent_id = ? AND ${DUE}`, now, now, messageId,
+                   agentId);
   }
 
   /**
@@ -2388,13 +2376,11 @@ export class Ledger {
   }
 
   /** In a unit: mail no run may take (its refusal's code), failed and no longer held. */
-  undeliverable(messageId: string, agentId: string, code: string, now: number = clock()): void {
-    const sql = this.#sql;
-    if (sql.exec("UPDATE ledger_recipients SET state = 'failed', unacked = 0, changed_at = ? " +
-                   `WHERE message_id = ? AND agent_id = ? AND ${DUE} RETURNING agent_id`, now,
-                 messageId, agentId).toArray().length === 1) {
-      this.#receipt(agentId, "failed", messageId, now, { reason: code });
-    }
+  undeliverable(messageId: string, agentId: string, code: RefusalCode,
+                now: number = clock()): void {
+    this.#sql.exec("UPDATE ledger_recipients SET state = 'failed', unacked = 0, changed_at = ?, " +
+                     `failed_reason = ? WHERE message_id = ? AND agent_id = ? AND ${DUE}`, now,
+                   code, messageId, agentId);
   }
 
   /** In a unit: mail whose run has to wait for the inputs' queue, held until it has room. */
@@ -2476,7 +2462,7 @@ export class Ledger {
    * wrapping) while they fit, and at least one. A body placed in R2 (ADR-035) is the door's
    * to read first (`placedNext`), handed in `placed` by content id as its window; the page
    * ends before a placed body it was not handed, even its first (an empty page, `more`,
-   * which the door reads again). Only a returned message is marked read and receipted, so
+   * which the door reads again). Only a returned message is marked read (`read_at`), so
    * a held-back one stays unread until a read returns it.
    */
   read(origin: Actor, limit: unknown, maxBytes: unknown = null, padBytes: unknown = 0,
@@ -2496,9 +2482,11 @@ export class Ledger {
     return this.#storage.transactionSync(() => {
       const reader = this.#reader(origin);
       const cursor = this.#cursor(reader);
-      const rows = sql.exec<StoredMessage & { state: string }>(
-        "SELECT m.*, r.state FROM ledger_recipients r JOIN ledger_messages m " +
-          "ON m.message_id = r.message_id WHERE r.agent_id = ? AND r.seq > ? " +
+      // A reply's time to reply is its own time less its parent's, while the parent is hot.
+      const rows = sql.exec<StoredMessage & { state: string; parent_at: number | null }>(
+        "SELECT m.*, r.state, p.created_at AS parent_at FROM ledger_recipients r " +
+          "JOIN ledger_messages m ON m.message_id = r.message_id LEFT JOIN ledger_messages p " +
+          "ON p.message_id = m.parent_id WHERE r.agent_id = ? AND r.seq > ? " +
           "ORDER BY r.seq LIMIT ?", reader, cursor, limit,
       ).toArray();
       const ids = JSON.stringify(rows.map((r) => r.message_id));
@@ -2507,11 +2495,6 @@ export class Ledger {
         "SELECT message_id, body, content_id, body_bytes FROM message_bodies WHERE " +
           "message_id IN (SELECT value FROM json_each(?))", ids,
       ).toArray().map((b) => [b.message_id, b]));
-      // A reply's own receipt already holds its time to reply; show it, never recompute.
-      const replied = new Map(sql.exec<{ ref: string; detail_json: string }>(
-        "SELECT ref, detail_json FROM ledger_receipts WHERE kind = 'reply' AND ref IN " +
-          "(SELECT value FROM json_each(?))", ids,
-      ).toArray().map((r) => [r.ref, JSON.parse(r.detail_json).reply_s as number]));
       const messages: ReadMail[] = [];
       let used = jsonBytes({ reader, cursor, messages: [], more: true });
       let padded = 0;
@@ -2538,7 +2521,8 @@ export class Ledger {
           seq: row.seq, message_id: row.message_id, room_id: row.room_id,
           sender_kind: row.sender_kind, sender_id: row.sender_id, parent_id: row.parent_id,
           chain_depth: row.chain_depth, created_at: row.created_at,
-          reply_s: replied.get(row.message_id) ?? null, body: null, integrity,
+          reply_s: row.parent_at === null ? null : round3(row.created_at - row.parent_at),
+          body: null, integrity,
         };
         const comma = messages.length ? 1 : 0;
         const room = pageBytes - used - comma;
@@ -2558,9 +2542,8 @@ export class Ledger {
         used += comma + fit.bytes;
         messages.push(fit.item);
         if (["queued", "held_cap", "woken"].includes(row.state)) {
-          sql.exec("UPDATE ledger_recipients SET state = 'read', changed_at = ? " +
-                     "WHERE message_id = ? AND agent_id = ?", now, row.message_id, reader);
-          this.#receipt(reader, "read", row.message_id, now);
+          sql.exec("UPDATE ledger_recipients SET state = 'read', changed_at = ?, read_at = ? " +
+                     "WHERE message_id = ? AND agent_id = ?", now, now, row.message_id, reader);
         }
       }
       return { reader, cursor, messages, more: cut || messages.length < rows.length };
@@ -2622,8 +2605,7 @@ export class Ledger {
       const reader = this.#reader(origin);
       const before = this.#cursor(reader);
       // At or behind the cursor is a retry: a no-op success, even after the acked mail
-      // was evicted. Only an ack that moves the cursor leaves a receipt, so repeating
-      // one cannot flood the receipts.
+      // was evicted. The reader's row holds the ack: its cursor and when it last moved.
       if (through <= before) {
         return { reader, through: before };
       }
@@ -2634,7 +2616,6 @@ export class Ledger {
       sql.exec("INSERT INTO ledger_readers (reader, through_seq, acked_at) VALUES (?, ?, ?) " +
                  "ON CONFLICT (reader) DO UPDATE SET through_seq = excluded.through_seq, " +
                  "acked_at = excluded.acked_at", reader, through, now);
-      this.#receipt(reader, "ack", String(through), now);
       // Each newly acked recipient row stops holding its message (an index range of this
       // reader's unacked mail); its triggers free the mailbox and the sender's share.
       sql.exec("UPDATE ledger_recipients SET unacked = 0 WHERE agent_id = ? AND unacked = 1 " +
@@ -3014,7 +2995,7 @@ export class Ledger {
   }
 
   /**
-   * A claimed wake's outcome and its receipt: its messages `woken` once accepted. A
+   * A claimed wake's outcome, on its row: its messages `woken` once accepted. A
    * rate-limited wake waits exactly its `Retry-After` (`retryAfter`).
    *
    * Only the claim that holds the row settles it, so a sender whose lease lapsed cannot
@@ -3034,7 +3015,6 @@ export class Ledger {
         return false;
       }
       let state: string = answer.state;
-      const kind = WAKE_RECEIPTS[state];
       let detail: Record<string, unknown> = { ...answer, through: wake.through_seq };
       delete detail["state"];
       let due = now;
@@ -3068,9 +3048,6 @@ export class Ledger {
             "AND seq <= ? AND state IN ('queued', 'held_cap')",
           now, wake.agent_id, wake.through_seq ?? 0,
         );
-      }
-      if (kind !== undefined) {
-        this.#receipt(wake.agent_id, kind, wakeId, now, detail);
       }
       this.#prune(now);
       return true;

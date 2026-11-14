@@ -44,8 +44,11 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,651,798,214.75 bytes, 46.52% of the 10 GB: 348.2 MB under
+**The worst case that ships is 4,348,560,714.75 bytes, 43.49% of the 10 GB: 651.4 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
+Untangle 3b deleted the ledger's receipts (`ledger_receipts`, 309.6 MB), each fact on the row
+it describes; a recipient row's read time and failure reason take 6.4 MB more, and the room
+freed is held for the files index (d3 §P item 5).
 Slice STORE item 2 took 152.6 MB of the room under half the change log's bound was derived
 from (665.1 MB), within its quarter (166.3 MB, held by the guard): the archive's fence rows
 (`archive_segments`, 151.4 MB at 59,606 rows), its moves and purges, and a message's two byte
@@ -60,8 +63,8 @@ and its kept rows 0.02 MB, `schema_digests` 1.0 MB, `sandbox_days` 0.4 MB), and 
 slice's receipts (`starter_receipts` 360,352 bytes and `starter_state` 837 bytes, 361,189
 together, exported and captured) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
-424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
-46.2 GB; scopes at 512 code points of JSON each 6.8 GB, each past the half.
+424.0 GB; history as rows times revisions 111.4 GB; recipients as messages times agents
+46.1 GB; scopes at 512 code points of JSON each 6.7 GB, each past the half.
 
 **The ceiling is the half, and only the half** (coordinator's ruling, 2026-11-03). The guard
 holds the worst case at or under half the 10 GB. Slice LIM's 500 MB `MARGIN` past it was a
@@ -75,8 +78,8 @@ the rest, 500.8 MB (STARTER's 361,189 bytes, well inside its quarter); the day a
 the shares are decided again.
 
 The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collection_rows`
-604.0 MB, `wake_callbacks` 423.6 MB, `ledger_messages` 399.2 MB, `ledger_receipts` 309.6 MB, `collection_history`
-302.0 MB, `message_bodies` 219.7 MB, `change_log` 164.0 MB, `ledger_recipients` 107.9 MB;
+604.0 MB, `wake_callbacks` 423.6 MB, `ledger_messages` 399.2 MB, `collection_history`
+302.0 MB, `message_bodies` 219.7 MB, `change_log` 164.0 MB, `ledger_recipients` 114.3 MB;
 `connections` 67.8 MB.
 
 ## Summary
@@ -113,7 +116,7 @@ Flagged for the founder:
 
 ## Chosen retentions
 
-Four expiries are not ceilings: each queue or area is bounded by its count or charge in the
+These expiries are not ceilings: each queue or area is bounded by its count or charge in the
 10 GB, and needs no expiry to fit. Each is a retention chosen for what it serves, with its
 reason; none refuses a write.
 
@@ -129,6 +132,10 @@ reason; none refuses a write.
 - `owner/src/policy.ts` `POLICY_LIMITS.proposalTtlS`, 90 days: a pending policy proposal
   waits a quarter for the owner's answer, then expires unanswered, so a stale proposal never
   applies against a policy long since changed.
+- `owner/src/ledger.ts` `LEDGER_LIMITS.settledWakeRetentionS` and `maxSettledWakes`, a week
+  and the newest 1,000 (d3 §P item 6): a settled wake's row (`receipt_json`) is the only
+  record of how its doorbell answered, kept long enough to debug a doorbell. It is delivery
+  telemetry, not the owner's mail, whose facts live on its recipient row and archive with it.
 
 ## The list
 
@@ -189,7 +196,6 @@ reason; none refuses a write.
 | `owner/src/holds.ts` `SHIP_UNITS` | 4 units (16 MiB): `SHIP_BYTES` (13 MiB) in whole units | what one log segment shipped outside a burst holds on the isolate's pool (before a burst, after its parts' record, and the log's last at the generation's end), at its build's most: its one buffer (`SEGMENT_BUFFER_BYTES`, `CHUNK_BYTES`: its stored bytes, which `pending` holds to a part) and one row's text while it is encoded (`SEGMENT_ROW_BYTES`, 3 x 2 x `IMAGE_MAX`: the widest row image's stored text, parsed value and JSON written again, each at two bytes a character once one is past U+00FF), built without holding its lines: SQLite finds each key's last seq (`json_extract` of its key columns), and each kept row's line is read once, alone by its seq, written and encoded straight into one buffer of a part, allocated once (`pending` sizes the span by its lines as written, so it always fits: rvburst W2); taken now or not at all around each segment's build, put and acknowledgement | nothing: refused `busy`, the pass puts nothing and the generation goes on after `MANIFEST_BUSY_RETRY_S`, as a burst refused | technical ceiling | Derived from the constants (`holds.ts`), never picked; one per object at a time, so every object's ship is inside the counted pool. The memory leg measured 9.21 MiB (2026-11-05; 9.83 before each line was read once): a full segment (4,194,289 bytes) holding a connection row at `IMAGE_MAX` with one character past U+00FF and 1,000-character lines of the same mix, its put over RPC, sampled at the wide row's encode and at the build, every checkpoint within the units held; at 2 units the leg fails (10.3 MB past 8 MiB). The build that held every kept line as a string read 11.82 MiB for a segment of the mix alone (review rvburst V1). A ship inside a burst is within the burst's units. |
 | `owner/src/segments.ts` `MOVE_RECORDS`; `owner/src/owner-do.ts` `#archiveRewrite` | 74,933 records; a rewrite pass's neighbours within `MOVE_RECORDS` kept and `MOVE_BYTES` scanned | the records one move holds; what one purge rewrite pass takes in | `MoveTable` refuses past it, loudly (a counted, told failure, never a silent cut); a pass stops taking in neighbours at its bound | technical ceiling | Review N7: a purge's rewrite scans each segment with the purge's filter, so only kept records enter the move's table, and a pass takes in a neighbour only while what it keeps and the neighbour's records fit `MOVE_RECORDS` and the neighbours it scans fit `MOVE_BYTES` (a merge's work). The compaction rule across passes: a pass stopped by its bound while still under the least places what it kept as one small segment; the next pass, finding a segment under the least that is not the only one (derived from the fences alone through the partial index `archive_segments_small`, one entry at most, so a restore keeps it), takes it back as its target and goes on taking in its neighbours, until it holds the least or stands alone. Every pass leaves the archive whole and disjoint (`archive_segments_disjoint`), with at most one segment under the least, only less compacted until the last; the first neighbour always fits, so every pass makes progress. The purges' cursors are no longer moved past the replaced segments' ids (that skipped the segments between them). A pass runs a move whenever mail is due (the hot set past half), a rewrite or not (review N8), so a long purge never holds new mail at `storage_busy`; a rewrite that fails is counted and told at three. Tested at the production segment sizes: nine in ten of a run's mail deleted (each rewrite at most its target and three neighbours, several compacting passes, Dot's mail byte-exact), and 19 in 20 (completes, what is left standing alone). Measured in workerd: the purge of most of the small-record merge's records (16,175 kept) grew the live heap by at most 14.9 MiB in round 5; each pass is now held within its records' units and its own (`MoveHold`). |
 | `owner/src/ledger.ts` `CHAIN_SEGMENTS`; `owner/src/owner-do.ts` `ARCHIVED_WHOLE_BYTES`, `ARCHIVED_HEAD_BYTES` | 8 segments; 64 KiB; 16 KiB | segments one chain page reads; an archived record read in one range; the first read of a larger one's head | the page answers `more`, the next goes on after its last message | technical ceiling | A page's R2 reads bounded within one call. A chain page fits one answer (`RESULT_CHARS`, PR 1) like every read: its archived records are read by the verified ranges they span (a small one whole, a larger one its two head lines, its recipients' lines and its body's window of at most `PAGE_BYTES` from `body_offset`), the windows stopping at `WINDOWS_BYTES` past the first, so no archived body is ever read whole and a cut one reads on by its message id and offset. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxReceipts` | 50,000 | read and reply receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_receipts`, 309.6 MB. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxSettledWakes` | 1,000 | settled wakes kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_wakes`. |
 | `owner/src/ledger.ts` `WAKE_SETTINGS` | 9,007,199,254,740,991 | the owner's cap and batch window | a larger number refused | technical ceiling | JavaScript's largest exact whole number (`Number.MAX_SAFE_INTEGER`): the cap's state is one column whatever its value. |
 | `contract/src/limits.ts` `SUBSCRIPTIONS_PER_AGENT` | 16 an agent | doorbell subscriptions one enabled agent holds | the 17th refused `subscription_limit`; a refresh of one held is no new place | technical ceiling | The 10 GB: guard term `wake_callbacks`, 423.6 MB (8.47% of the budget), its rows at the schema's widest: `maxAgents` (1,000) times 16. Per agent, so no client fills another agent's room, nor the owner's. |

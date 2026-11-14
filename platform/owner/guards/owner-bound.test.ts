@@ -49,7 +49,7 @@ import { describe, expect, it } from "vitest";
 
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { exported } from "../src/export";
-import { LEDGER_LIMITS } from "../src/ledger";
+import { LEDGER_LIMITS, widestReason } from "../src/ledger";
 import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
 import {
   ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, CONNECTION_BLOB_MAX,
@@ -439,19 +439,17 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                       by: "maxMessages, each its room and its body inline up to PLACE_BYTES " +
                         "(a larger one placed in R2) or its content id, and its files scope",
                       indexes: { sqlite_autoindex_message_bodies_1: key(MESSAGE_ID) } },
-    // Its key holds a message to one recipient.
-    ledger_recipients: { rows: L.maxMessages, bytes: ROW + MESSAGE_ID + AGENT_ID,
-                         by: "one a message (the key: message_id)",
+    // Its key holds a message to one recipient, with when it read it or why it failed.
+    ledger_recipients: { rows: L.maxMessages,
+                         bytes: ROW + MESSAGE_ID + AGENT_ID + NUMBER + widestReason().length,
+                         by: "one a message (the key: message_id), its read time or the " +
+                           "widest reason it failed",
                          indexes: { sqlite_autoindex_ledger_recipients_1: key(MESSAGE_ID),
                                     recipients_by_seq: key(AGENT_ID, NUMBER),
                                     recipients_unacked: key(AGENT_ID, NUMBER),
                                     recipients_by_state: key(AGENT_ID, 8) } },
     ledger_readers: { rows: L.maxAgentRows, bytes: ROW + AGENT_ID, by: "one per agent",
                       indexes: { sqlite_autoindex_ledger_readers_1: key(AGENT_ID) } },
-    ledger_receipts: { rows: L.maxReceipts, bytes: ROW + 1 * KIB,
-                       by: "maxReceipts",
-                       indexes: { receipts_by_ref: key(13, 4 * PROPOSAL_ID_CHARS, AGENT_ID),
-                                  receipts_by_agent: key(AGENT_ID) } },
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
                     bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled",
                     indexes: { sqlite_autoindex_ledger_wakes_1: key(40),
@@ -707,15 +705,24 @@ export function ownerTables(schema = `${MIGRATE}\n${SCHEMA}`): string[] {
   return [...tables].sort();
 }
 
-/** The indexes the schema makes and keeps, each with its table: a dropped one is not. */
+/**
+ * The indexes the schema makes and keeps, each with its table: a dropped one is not, nor one
+ * on a dropped table, which SQLite drops with it.
+ */
 function madeIndexes(schema: string = SCHEMA): Map<string, string> {
   const made = new Map<string, string>();
-  for (const [, name, table, dropped] of schema.matchAll(
-    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)|DROP INDEX (?:IF EXISTS )?([a-zA-Z_0-9]+)/g)) {
-    if (dropped === undefined) {
-      made.set(name!, table!);
-    } else {
+  for (const [, name, table, dropped, gone] of schema.matchAll(
+    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)|DROP INDEX (?:IF EXISTS )?([a-zA-Z_0-9]+)|DROP TABLE (?:IF EXISTS )?([a-zA-Z_0-9]+)/g)) {
+    if (name !== undefined) {
+      made.set(name, table!);
+    } else if (dropped !== undefined) {
       made.delete(dropped);
+    } else {
+      for (const [index, on] of made) {
+        if (on === gone) {
+          made.delete(index);
+        }
+      }
     }
   }
   return made;

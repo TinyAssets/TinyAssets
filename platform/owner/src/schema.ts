@@ -2178,4 +2178,35 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE file_space ADD COLUMN retained_days INTEGER",
     "UPDATE file_space SET retain_cursor = '' WHERE EXISTS (SELECT 1 FROM file_history)",
   ]),
+  // 9, after F1's 8 (untangle 3b, `datashapes_research.md`): the ledger's receipts deleted,
+  // each fact on the row it describes. A recipient row holds when its reader read the
+  // message (`read_at`) and why it failed (`failed_reason`), so an archive segment holds
+  // them with the message; a reply's time to reply is its own and its parent's `created_at`;
+  // an ack is its reader's row (`through_seq`, `acked_at`); a wake's outcome its wake row
+  // (`receipt_json`). The receipts' facts are copied first: each recipient's earliest read
+  // and its last failure's reason. The recipients' capture triggers that write rows are made
+  // again with the two columns. A migration ends the generation under way (`backup.ts`).
+  Object.freeze([
+    "DROP TRIGGER ledger_receipts_logged_insert",
+    "DROP TRIGGER ledger_receipts_logged_update",
+    "DROP TRIGGER ledger_receipts_logged_delete",
+    "DROP TRIGGER ledger_recipients_logged_insert",
+    "DROP TRIGGER ledger_recipients_logged_update",
+    "ALTER TABLE ledger_recipients ADD COLUMN read_at REAL",
+    "ALTER TABLE ledger_recipients ADD COLUMN failed_reason TEXT",
+    "UPDATE ledger_recipients SET read_at = (SELECT MIN(c.at) FROM ledger_receipts c WHERE " +
+      "c.kind = 'read' AND c.ref = ledger_recipients.message_id AND " +
+      "c.agent_id = ledger_recipients.agent_id), failed_reason = CASE WHEN state = 'failed' " +
+      "THEN (SELECT json_extract(c.detail_json, '$.reason') FROM ledger_receipts c WHERE " +
+      "c.kind = 'failed' AND c.ref = ledger_recipients.message_id AND " +
+      "c.agent_id = ledger_recipients.agent_id ORDER BY c.seq DESC LIMIT 1) END",
+    "DROP TABLE ledger_receipts",
+    "CREATE TRIGGER ledger_recipients_logged_insert AFTER INSERT ON ledger_recipients WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'ledger_recipients', 'row', json_object('message_id', NEW.message_id, 'agent_id', NEW.agent_id, 'seq', NEW.seq, 'state', NEW.state, 'changed_at', NEW.changed_at, 'unacked', NEW.unacked, 'read_at', NEW.read_at, 'failed_reason', NEW.failed_reason)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER ledger_recipients_logged_update AFTER UPDATE ON ledger_recipients WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'ledger_recipients', 'key', json_array(OLD.message_id, OLD.agent_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.message_id IS NEW.message_id AND OLD.agent_id IS NEW.agent_id); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'ledger_recipients', 'row', json_object('message_id', NEW.message_id, 'agent_id', NEW.agent_id, 'seq', NEW.seq, 'state', NEW.state, 'changed_at', NEW.changed_at, 'unacked', NEW.unacked, 'read_at', NEW.read_at, 'failed_reason', NEW.failed_reason)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+  ]),
 ]);
