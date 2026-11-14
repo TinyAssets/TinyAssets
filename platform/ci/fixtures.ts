@@ -1,20 +1,24 @@
 /**
  * Test fixtures more than one workspace uses, in Node and in workerd alike: the founder's
  * tier numbers and the control records the tests write, keyrings, and the model sources the
- * gateway's fake upstream answers for. Its runtime imports are the sealed envelope and the
- * control record's module, by their file names, which import only by file name too, so
- * Node's type stripping runs both (`doors/test/app.e2e.mjs` and the owner's memory leg
- * import this file so).
+ * gateway's fake upstream answers for. Its runtime imports are the sealed envelope, the
+ * control record's module and the dark record, by their file names, which import only by file
+ * name too, so Node's type stripping runs them (`doors/test/app.e2e.mjs` and the owner's
+ * memory leg import this file so).
  */
 import { CONTROL_KEY } from "../contract/src/control.ts";
 import type { Source } from "../contract/src/egress-scope";
 import { base64, fromBase64, KEY_BYTES, ringText } from "../contract/src/envelope.ts";
+import dark from "../deploy/control.json" with { type: "json" };
 
-/** The founder's tier numbers (ADR-034 decision 8), as the control record holds them. */
-export const TIERS = Object.freeze({
-  free: Object.freeze({ runs: 5, storage_bytes: 25_000_000_000 }),
-  paid: Object.freeze({ runs: 10, storage_bytes: 250_000_000_000 }),
-});
+/**
+ * The control record a first deploy writes when there is none (`deploy/control.json`): every
+ * outside door closed, no canary owner, and the founder's tier numbers.
+ */
+export const DARK = Object.freeze(dark);
+
+/** The founder's tier numbers (ADR-034 decision 8), as the dark control record holds them. */
+export const TIERS = Object.freeze(dark.tiers);
 
 /**
  * How long a test waits for a call to reach a gate (`ci/gate.ts` `GateControl.held`): well
@@ -29,14 +33,6 @@ export const OPEN_GATES = Object.freeze({ outside: "on", ordinary: "all", canary
 
 /** The control record with every door open, and the founder's tiers. */
 export const OPEN = Object.freeze({ ...OPEN_GATES, tiers: TIERS });
-
-/**
- * The control record a first deploy writes when there is none (`deploy/deploy.ts`'s
- * `DARK_CONTROL`, which its guard holds equal): every outside door closed, no canary owner,
- * and the founder's tiers.
- */
-export const DARK = Object.freeze({ outside: "off", ordinary: "canary", canary: [],
-                                    inbound: false, tiers: TIERS });
 
 /**
  * The control record written to its namespace (`store`), as the founder writes it: a string

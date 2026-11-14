@@ -350,7 +350,7 @@ The listings, and the other working files this log names (`*_research.md`, `*_re
 
 **Files:** `deploy/{deploy,facts}.ts`, `deploy/control.json` (new), `ci/fixtures.ts`, `.github/workflows/import-window.yml`, `import/{cli,stage,window,build,census,bundle}.ts`, `import/window.sh` (the final-backup name, read from `facts.json`), `import/guards/{fixture,window.test,stage.test}.ts`, `sandbox/vitest.config.ts`, `owner/test/{files-quota,storage-full}.test.ts`, `owner/memory/probe.ts`.
 
-**Guard:** the literal guard over every folder.
+**Guard:** the literal guard over every folder. It lands with the last of B10's adopters to merge (I1, O4 or S6), with an `owed` entry and its reason for any literal left then (X1, 2026-11-14).
 
 **Proof:**
 - `plan` is identical across the harness;

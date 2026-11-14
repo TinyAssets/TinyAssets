@@ -320,7 +320,29 @@ Each joins the lane named. None blocks its u3 PR.
 
 Every known-wrong data shape is fixed before the cutover imports real data: a fix is free on a dark platform and a live migration after it. So none is deferred to "live migration later". Each one names its lane PR; R4's §10 step 20 points here.
 
-**Item 3, collection history: the order adopted from `history_keys_research.md`** (the coordinator, 2026-11-12; beside #5524's item 3, the second to land merges them): H1, the history keys (`untangle/h1-history-keys`); then S1, the stream extraction into `owner/src/stream.ts`, after T1b4, receipts and rooms; then H2, the erasures stream; then H3, the history stream, which owes §3.4's check: a deletion can cost more than its row (a 2,048-byte caller name deleting a 1-byte writer's row charges 4,096 against the row's 743, H1's body), so H3 bounds the deleter's name or takes the factor into the guard's term. Conversations (item 4) and F2 follow, on S1's module.
+**Decided from `datashapes_research.md`** (the coordinator, 2026-11-12; the research adopted whole, in its order):
+1. **Receipts:** each fact moves onto the recipient row and `ledger_receipts` is deleted. After T1b4.
+2. **Rooms:** a `rooms` table and room members, with opaque room ids. Lane O, after T1c and before S4.
+3. **Collection history**, in the order `history_keys_research.md` adopted (it answered the
+   first build's four findings, stopped under Fact 14):
+   - H1, the history keys: merged (#5538, owner migration 7);
+   - S1, the stream extraction into `owner/src/stream.ts`: the segment and lane code out of the
+     ledger, no behaviour change, and a migration widening the segment tables' stream checks.
+     After T1b4, receipts and rooms;
+   - H2, the erasures stream;
+   - H3, the history stream. It owes §3.4's check: a deletion can cost more than its row (a
+     2,048-byte caller name deleting a 1-byte writer's row charges 4,096 against the row's 743,
+     H1's body), so H3 bounds the deleter's name or takes the factor into the guard's term.
+   Items 4 and F2 build on S1's module.
+4. **Conversations:** ids carry their order key, and idle conversations move to segments. On S1's module.
+5. **Files:**
+   - F1: retention off by default, one recorded byte ceiling, `#fit`'s silent prune deleted, and the latency probe's workflow, scripts and branch deleted. After R5's P-shape.
+   - F2: file versions move to segments, with mark-and-sweep. After R1 and item 3.
+   - F3: the live index's R2 level, later. Whether F3 comes before the cutover is still an open founder question; the recommendation is no.
+6. **Deliberate retentions**, each recorded with its reason in `limits-audit.md` unless a reader needs older facts:
+   - `RUNS_KEPT`: a settled run's results live on in its mail reply and its transcript, so the row is only a receipt;
+   - the policy and egress receipts: a recent audit window, while each decision's effect lives in the policy document and the run;
+   - the settled wakes' week and 1,000: delivery telemetry for debugging the doorbell, not the owner's data.
 
 
 ## §Q. The questions buried in `tasks.md` (from R4's review, 2026-11-12)
