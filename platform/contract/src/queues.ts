@@ -4,8 +4,9 @@
  * and the owner's erasure (`ERASURES`, which the doors take to make the erasure's outside
  * record). Each queue's name is its producer's config's (`queue-names.ts`, generated).
  */
-import { Refusal } from "./refusal";
-import { principal } from "./text";
+import { keyed } from "./checks.ts";
+import { Refusal } from "./refusal.ts";
+import { principal } from "./text.ts";
 
 export interface OwnerMessage {
   readonly owner: string;
@@ -17,9 +18,8 @@ export interface OwnerMessage {
  * of shape, never guessing at it.
  */
 export function ownerMessage(body: unknown): OwnerMessage {
-  if (typeof body !== "object" || body === null || Array.isArray(body)
-      || Object.keys(body).join() !== "owner") {
+  if (!keyed(body, ["owner"])) {
     throw new Refusal("invalid", "an owner message is exactly its owner");
   }
-  return Object.freeze({ owner: principal((body as { owner: unknown }).owner) });
+  return Object.freeze({ owner: principal(body["owner"]) });
 }

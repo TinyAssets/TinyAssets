@@ -91,7 +91,8 @@ import { appList, connectUrl, type Vendor } from "../../contract/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
 import { may } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
-import { canonical, plain, policyDigest } from "../../contract/src/policy-document";
+import { keyed } from "../../contract/src/checks";
+import { canonical, policyDigest } from "../../contract/src/policy-document";
 import type { Policy } from "./policy";
 import { codePoints, utf8Bytes } from "../../contract/src/text";
 import type {
@@ -222,7 +223,7 @@ function authority(mode: string, held: readonly Scope[], profile: string): strin
  */
 export function scopes(value: unknown): Scope[] {
   if (!Array.isArray(value) || value.some((scope) =>
-    !plain(scope) || Object.keys(scope).sort().join() !== "agent,capability,universe"
+    !keyed(scope, ["agent", "capability", "universe"])
     || Object.values(scope).some((v) => typeof v !== "string" || !v || v === "*"
                                         || codePoints(v) > 512))) {
     throw new Refusal("invalid", "outside scopes require exact universe, agent and capability");

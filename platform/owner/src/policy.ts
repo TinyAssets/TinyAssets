@@ -75,10 +75,10 @@
  * Every change runs in one `transactionSync`, so a refusal leaves nothing behind.
  */
 import { FILE_DEFAULTS, type FileDefaults } from "../../contract/src/file-defaults";
+import { keyed, object, whole } from "../../contract/src/checks";
 import {
-  canonical, CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, keys, MODEL_DEFAULTS,
-  plain, policyDigest, type PolicyDocument, POLICY_LIMITS, type SourceCeilings,
-  validate, whole,
+  canonical, CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, MODEL_DEFAULTS, policyDigest,
+  type PolicyDocument, POLICY_LIMITS, type SourceCeilings, validate,
 } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
@@ -201,7 +201,7 @@ function cardId(value: unknown): value is string {
 
 /** `expected_generation`: the policy generation the owner's change was made against. */
 function expected(value: unknown): number {
-  if (!whole(value) || value < 1) {
+  if (!whole(value, 1)) {
     throw new Refusal("invalid", "expected policy generation required");
   }
   return value;
@@ -322,7 +322,7 @@ export class Policy {
         proposal: unknown, now: number): PolicyState {
     validate(document);
     const generation = expected(expectedGeneration);
-    if (proposal !== null && (!plain(proposal) || !keys(proposal, ["request_id", "digest"])
+    if (proposal !== null && (!keyed(proposal, ["request_id", "digest"])
                               || !cardId(proposal["request_id"])
                               || !cardId(proposal["digest"]))) {
       throw new Refusal("invalid", "invalid proposal apply");
@@ -340,7 +340,7 @@ export class Policy {
           proposal["request_id"] as string, now - POLICY_LIMITS.proposalTtlS,
         ).toArray()[0];
         const change: unknown = held === undefined ? {} : JSON.parse(held.document);
-        if (held === undefined || held.digest !== proposal["digest"] || !plain(change)
+        if (held === undefined || held.digest !== proposal["digest"] || !object(change)
             || change["type"] !== "policy_proposal"
             || canonical(change["policy"]) !== canonical(document)
             || change["expected_generation"] !== generation) {
@@ -413,7 +413,7 @@ export class Policy {
    */
   propose(change: unknown, requestId: unknown, proposer: string, now: number):
       { request_digest: string; generation: number } {
-    if (!plain(change) || codePoints(canonical(change)) > POLICY_LIMITS.maxChange) {
+    if (!object(change) || codePoints(canonical(change)) > POLICY_LIMITS.maxChange) {
       throw new Refusal("invalid", "invalid policy proposal");
     }
     if (requestId !== null && !cardId(requestId)) {
@@ -466,7 +466,7 @@ export class Policy {
    * the owner was shown; it is marked applied here.
    */
   applyKeyRequest(proposal: unknown, scopes: unknown, now: number): void {
-    if (!plain(proposal) || !keys(proposal, ["request_id", "digest"])
+    if (!keyed(proposal, ["request_id", "digest"])
         || !cardId(proposal["request_id"]) || !cardId(proposal["digest"])) {
       throw new Refusal("invalid", "invalid proposal apply");
     }
@@ -476,7 +476,7 @@ export class Policy {
       proposal["request_id"] as string, now - POLICY_LIMITS.proposalTtlS,
     ).toArray()[0];
     const change: unknown = held === undefined ? {} : JSON.parse(held.document);
-    if (held === undefined || held.digest !== proposal["digest"] || !plain(change)
+    if (held === undefined || held.digest !== proposal["digest"] || !object(change)
         || change["type"] !== "api_key_request"
         || canonical(change["scopes"]) !== canonical(scopes)) {
       throw new Refusal("refused", "proposal is not the pending card shown");

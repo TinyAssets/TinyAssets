@@ -184,6 +184,17 @@ describe("putChunks", () => {
       .toBe("a chunk key holds bytes this Worker did not verify");
   });
 
+  it("lets a failed read of an existing key out as itself, never as bytes it did not verify",
+     async () => {
+    const body = bytes("lost read");
+    const space = ns();
+    const lost = service({ put: async () => null,
+                           get: async () => { throw new Error("the bucket read was lost"); } } as
+      unknown as R2Bucket);
+    expect((await failure(async () => lost.putChunks(space, await keyOf(space), [{
+      sha256: await sha(body), bytes: body }]))).message).toBe("the bucket read was lost");
+  });
+
   it.each([
     ["an empty chunk", new Uint8Array(0)],
     ["a chunk past 4 MiB", new Uint8Array(CHUNK_BYTES + 1)],

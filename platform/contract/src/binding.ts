@@ -4,11 +4,12 @@
  * request field; and what the inbound door answers the binder. The doors make it and the
  * owner's object reads it (`owner/src/owner-do.ts`), so it is the contract's.
  */
-import type { Vendor } from "./apps";
-import { sha256Hex } from "./digest";
-import { HEX16, HEX32, HEX64, RUN_ID } from "./ids";
-import { Refusal, type RefusalCode } from "./refusal";
-import { principal } from "./text";
+import type { Vendor } from "./apps.ts";
+import { keyed, object, whole } from "./checks.ts";
+import { sha256Hex } from "./digest.ts";
+import { HEX16, HEX32, HEX64, RUN_ID } from "./ids.ts";
+import { Refusal, type RefusalCode } from "./refusal.ts";
+import { principal } from "./text.ts";
 
 /**
  * The reserved caller only the platform's admin path sends (the binder's `bindPlatformFor`, the
@@ -172,15 +173,7 @@ function invalid(kind: string): never {
 /** `value` as a plain object whose keys are all `required` and some of `optional`. */
 function fields(value: unknown, kind: string, required: readonly string[],
                 optional: readonly string[] = []): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return invalid(kind);
-  }
-  const keys = Object.keys(value);
-  if (required.some((key) => !keys.includes(key))
-      || keys.some((key) => !required.includes(key) && !optional.includes(key))) {
-    return invalid(kind);
-  }
-  return value as Record<string, unknown>;
+  return keyed(value, required, optional) ? value : invalid(kind);
 }
 
 function hex(value: unknown, grammar: RegExp, kind: string): string {
@@ -188,9 +181,8 @@ function hex(value: unknown, grammar: RegExp, kind: string): string {
 }
 
 /** A whole number from `min`: seconds, a generation, a revision. */
-function whole(value: unknown, min: number, kind: string): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= min ? value
-    : invalid(kind);
+function integer(value: unknown, min: number, kind: string): number {
+  return whole(value, min) ? value : invalid(kind);
 }
 
 function text(value: unknown, kind: string): string {
@@ -247,10 +239,10 @@ export function accountBinding(value: unknown): AccountBinding {
     origin: given["origin"] === null ? null : origin(given["origin"], kind),
     ...(has("source") ? { source: source(given["source"], kind) } : {}),
     ...(has("authenticated_at")
-      ? { authenticated_at: whole(given["authenticated_at"], 0, kind) } : {}),
+      ? { authenticated_at: integer(given["authenticated_at"], 0, kind) } : {}),
     ...(has("session") ? { session: text(given["session"], kind) } : {}),
     ...(has("grant") ? { grant: text(given["grant"], kind) } : {}),
-    ...(has("expires_at") ? { expires_at: whole(given["expires_at"], 0, kind) } : {}),
+    ...(has("expires_at") ? { expires_at: integer(given["expires_at"], 0, kind) } : {}),
     ...(has("vendor") ? { vendor: vendor(given["vendor"], kind) } : {}),
     ...(has("tiers") ? { tiers: given["tiers"] } : {}),
     ...(has("signins") ? { signins: given["signins"] } : {}),
@@ -270,7 +262,7 @@ export function sessionBinding(value: unknown): SessionBinding {
  */
 export function sandboxToken(value: unknown): SandboxToken {
   const kind = "sandbox";
-  if (typeof value === "object" && value !== null && "egress" in value) {
+  if (object(value) && "egress" in value) {
     const given = fields(value, kind, ["kind", "token", "egress"]);
     return given["kind"] === "sync"
       ? Object.freeze({ kind: "sync", token: hex(given["token"], HEX64, kind),
@@ -282,7 +274,7 @@ export function sandboxToken(value: unknown): SandboxToken {
     return invalid(kind);
   }
   const token = hex(given["token"], HEX64, kind);
-  const generation = whole(given["generation"], 1, kind);
+  const generation = integer(given["generation"], 1, kind);
   return Object.freeze("secret" in given
     ? { kind: "egress", token, generation, secret: hex(given["secret"], HEX64, kind) }
     : "runner" in given
@@ -321,7 +313,7 @@ export function inboundBinding(value: unknown): InboundBinding {
   return Object.freeze({
     owner, caller: owner, origin: null,
     inbound: Object.freeze({ binding: hex(binding, HEX32, kind),
-                             revision: whole(revision, 1, kind) }),
+                             revision: integer(revision, 1, kind) }),
     ...("tiers" in given ? { tiers: given["tiers"] } : {}),
     ...("signins" in given ? { signins: given["signins"] } : {}),
   });

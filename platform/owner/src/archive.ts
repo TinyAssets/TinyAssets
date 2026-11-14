@@ -484,8 +484,11 @@ export class Archive {
     try {
       const start = this.#ledger.chainStart(parentId);
       return "archived" in start ? { id: parentId, seq: start.archived } : null;
-    } catch {
-      return null;  // not one the object gave: the post refuses it as no parent
+    } catch (error) {
+      if (error instanceof Refusal && error.code === "refused") {
+        return null;  // not one the object gave: the post refuses it as no parent
+      }
+      throw error;
     }
   }
 

@@ -482,6 +482,18 @@ describe("an egress call", () => {
     expect(await version()).toBe(2);
   });
 
+  it("opens past only a refused refresh: a refresh whose write fails throws", async () => {
+    const r = await gated();
+    const connection = await r.connectOAuth(OAUTH, Date.now() + 60_000);
+    const lease = await leased(r);
+    // The refresh's lease write fails, as a storage fault would.
+    await r.sql("CREATE TRIGGER probe BEFORE UPDATE ON connections BEGIN " +
+                  "SELECT RAISE(ABORT, 'probe'); END");
+    const failed = await failure(() => r.stub.egressOpen(
+      lease.as(), request(connection, { path: "/v1/responses", model: OPENAI_MODEL })));
+    expect(failed.message).toMatch(/probe/);
+  });
+
   it("is held to the open calls the tier's runs give, and to no rate a minute",
      async () => {
     const r = await gated();

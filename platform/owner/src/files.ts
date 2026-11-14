@@ -2190,8 +2190,11 @@ export class Files {
     return this.#change(null, (now) => {
       try {
         this.#fenced(leaseId, epoch, now);
-      } catch {
-        return { released: false };
+      } catch (error) {
+        if (error instanceof Refusal && error.code === "sync_fenced") {
+          return { released: false };
+        }
+        throw error;
       }
       this.#sql.exec("DELETE FROM sandbox_leases WHERE lease_id = ?", leaseId);
       this.#endUploads(leaseId as string);

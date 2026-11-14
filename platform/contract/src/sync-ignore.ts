@@ -31,7 +31,7 @@
  * `LIST_BYTES`. A line past either ceiling is not applied (its files go on syncing), and is
  * said, in file order.
  */
-import { utf8Bytes } from "./text";
+import { utf8Bytes } from "./text.ts";
 
 export const SYNC_IGNORE = "/workspace/.ta/sync-ignore";
 /** The rule file from `/workspace`, which no line ever keeps out. */

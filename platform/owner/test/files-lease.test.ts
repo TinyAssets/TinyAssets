@@ -68,6 +68,16 @@ describe("the sync lease", () => {
     expect(second.lease_id).not.toBe(first.lease_id);
   });
 
+  it("takes only a fenced lease as given back already: a lease read that fails throws",
+     async () => {
+    const r = await rig();
+    const lease = await acquire(r);
+    // The read itself fails, as a storage fault would.
+    await r.sql("ALTER TABLE sandbox_leases RENAME TO sandbox_leases_gone");
+    const failed = await failure(() => release(r, lease));
+    expect(failed.message).toMatch(/no such table: sandbox_leases/);
+  });
+
   it("has an epoch that only rises", async () => {
     const r = await rig();
     await acquire(r);

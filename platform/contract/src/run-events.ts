@@ -14,7 +14,7 @@
  * conversation's session id (`init`), the run's result text (`final_text`, the last match,
  * or every match joined where the matcher says `accumulate`) and its first error.
  */
-import { Refusal } from "./refusal";
+import { Refusal } from "./refusal.ts";
 
 /**
  * One event matcher, as a source record's `engine.events` holds it: an event whose fields at

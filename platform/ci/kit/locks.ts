@@ -28,6 +28,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { keyed } from "../../contract/src/checks.ts";
+import { HEX64 } from "../../contract/src/ids.ts";
 import { type Migration, migrationDigest } from "../../contract/src/migrate.ts";
 import { PLATFORM } from "../paths.ts";
 
@@ -71,16 +73,14 @@ export function pin(migrations: readonly Migration[], lock: Lock, commit: string
 
 /** `text`, a lock's file at `path`, held to its shape. */
 export function lockOf(text: string, path: string): Lock {
-  const lock = JSON.parse(text) as Lock | null;
-  const marked = (first: unknown) => first === null
-    || (typeof first === "object" && Object.keys(first).sort().join() === "at,commit");
-  if (typeof lock !== "object" || lock === null || Array.isArray(lock)
-      || Object.keys(lock).sort().join() !== "deployed,first_deploy"
-      || !marked(lock.first_deploy) || !Array.isArray(lock.deployed)
-      || lock.deployed.some((each) => typeof each !== "string" || !/^[0-9a-f]{64}$/.test(each))) {
+  const lock: unknown = JSON.parse(text);
+  if (!keyed(lock, ["deployed", "first_deploy"])
+      || (lock["first_deploy"] !== null && !keyed(lock["first_deploy"], ["at", "commit"]))
+      || !Array.isArray(lock["deployed"])
+      || lock["deployed"].some((each) => typeof each !== "string" || !HEX64.test(each))) {
     throw new Error(`${path} is out of shape`);
   }
-  return lock;
+  return lock as unknown as Lock;
 }
 
 /** The lock at `path` (from `platform/`). */

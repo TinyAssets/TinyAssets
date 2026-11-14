@@ -17,8 +17,8 @@
  * owner's object holds every model a connection serves to (`owner/src/connections.ts`): one
  * checker, so a record the gateway lists is one the object commits.
  */
-import { count, shape } from "./checks";
-import { Refusal } from "./refusal";
+import { count, shape } from "./checks.ts";
+import { Refusal } from "./refusal.ts";
 
 /** pi-ai's thinking levels (`ModelThinkingLevel`). */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";

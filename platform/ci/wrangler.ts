@@ -9,6 +9,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
+import { object } from "../contract/src/checks.ts";
 import { PLATFORM } from "./paths.ts";
 
 /** A Worker's config, as untyped data: each reader reads it field by field. */
@@ -64,7 +65,7 @@ export function parseWrangler(text: string, fileName = "wrangler.jsonc"): Config
   } catch (error) {
     throw new Error(`${fileName}: ${(error as Error).message}`);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+  if (!object(parsed)) {
     throw new Error(`${fileName}: a config is an object`);
   }
   return parsed as Config;

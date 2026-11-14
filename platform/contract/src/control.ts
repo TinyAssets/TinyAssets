@@ -21,7 +21,7 @@
  * depends on it.
  */
 
-// By file name, so the deploy kit runs it in Node as it is (`deploy/deploy.ts`).
+import { keyed, object, whole } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 import { principal, SOURCE_ID } from "./text.ts";
 
@@ -136,26 +136,17 @@ const CONTROL_OPTIONAL: readonly string[] = Object.freeze([
   "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling",
   "sandbox_renewal_window_s", "scratch_retention_days", "signins"]);
 
-function plain(value: unknown, keys: string): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    && Object.keys(value).sort().join() === keys;
-}
-
-function positive(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
-}
-
 /** The tier numbers exactly, or `invalid`. */
 export function parseTiers(value: unknown): Tiers {
-  if (!plain(value, "free,paid")) {
+  if (!keyed(value, ["free", "paid"])) {
     throw new Refusal("invalid", "the tier record names free and paid");
   }
   const numbers = (tier: unknown): TierNumbers => {
-    if (!plain(tier, "runs,storage_bytes")) {
+    if (!keyed(tier, ["runs", "storage_bytes"])) {
       throw new Refusal("invalid", "a tier is its runs and its storage_bytes");
     }
     const { runs, storage_bytes: bytes } = tier;
-    if (!positive(runs) || runs > RUNS_CEILING || !positive(bytes) || bytes > TIER_STORAGE_MAX) {
+    if (!whole(runs, 1, RUNS_CEILING) || !whole(bytes, 1, TIER_STORAGE_MAX)) {
       throw new Refusal("invalid", `a tier's runs are 1 to ${RUNS_CEILING}, its storage whole ` +
                                    `bytes up to ${TIER_STORAGE_MAX}`);
     }
@@ -167,7 +158,7 @@ export function parseTiers(value: unknown): Tiers {
 /** The sandbox's three numbers checked: positive whole numbers, the window under the ceiling. */
 export function sandboxCeilings(runtime: unknown, concurrency: unknown,
                                 window: unknown): SandboxCeilings {
-  if (!positive(runtime) || !positive(concurrency) || !positive(window) || window >= runtime) {
+  if (!whole(runtime, 1) || !whole(concurrency, 1) || !whole(window, 1) || window >= runtime) {
     throw new Error("the sandbox numbers are positive whole numbers, the renewal window " +
                     "shorter than the runtime ceiling");
   }
@@ -177,25 +168,17 @@ export function sandboxCeilings(runtime: unknown, concurrency: unknown,
 
 /** The record parsed exactly, or null when it is anything else. */
 export function parseControl(value: unknown): Control | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!keyed(value, CONTROL_KEYS, CONTROL_OPTIONAL)) {
     return null;
   }
-  const keys = Object.keys(value);
-  if (!CONTROL_KEYS.every((key) => keys.includes(key))
-      || !keys.every((key) => CONTROL_KEYS.includes(key) || CONTROL_OPTIONAL.includes(key))) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const { outside, ordinary, canary, inbound, tiers, signins } = record;
-  if (signins !== undefined && (typeof signins !== "object" || signins === null
-                                || Array.isArray(signins)
-                                || !Object.entries(signins).every(([id, on]) =>
+  const { outside, ordinary, canary, inbound, tiers, signins } = value;
+  if (signins !== undefined && (!object(signins) || !Object.entries(signins).every(([id, on]) =>
                                   SOURCE_ID.test(id) && typeof on === "boolean"))) {
     return null;
   }
-  const sandbox = SANDBOX_KEYS.map((key) => record[key]);
-  const retention = record["scratch_retention_days"];
-  if ((retention !== undefined && !positive(retention))
+  const sandbox = SANDBOX_KEYS.map((key) => value[key]);
+  const retention = value["scratch_retention_days"];
+  if ((retention !== undefined && !whole(retention, 1))
       || (outside !== "on" && outside !== "off")
       || (ordinary !== "all" && ordinary !== "canary" && ordinary !== "none")
       || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY

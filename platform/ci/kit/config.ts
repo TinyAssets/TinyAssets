@@ -15,6 +15,7 @@ import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+import { keyed, object } from "../../contract/src/checks.ts";
 import { readWrangler, wranglerKeys } from "../wrangler.ts";
 import { PLATFORM } from "../paths.ts";
 import { type Config, configFiles, parse } from "./sources.ts";
@@ -76,10 +77,6 @@ export interface ConfigRules {
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-function object(value: unknown): value is Config {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Each key of `scope` (at `where`, e.g. `env.prod.`) not in `allowed`. */
 export function keyProblems(scope: Config, allowed: Iterable<string>, where = ""): string[] {
   const keys = new Set(allowed);
@@ -131,7 +128,7 @@ export function secretProblems(secrets: unknown, names: readonly string[], where
 function varProblems(vars: unknown,
                      allowed: Readonly<Record<string, readonly string[] | null>>): string[] {
   const names = Object.keys(allowed).sort();
-  const fits = object(vars) && same(Object.keys(vars).sort(), names)
+  const fits = keyed(vars, names)
     && names.every((name) => typeof vars[name] === "string"
                              && (allowed[name] === null || allowed[name]!.includes(vars[name])));
   return fits ? [] : [`vars are exactly ${Object.entries(allowed).map(([name, values]) =>
@@ -141,8 +138,7 @@ function varProblems(vars: unknown,
 /** How `buckets` holds other than exactly `bindings`, each a binding and a bucket name. */
 function bucketProblems(buckets: unknown, bindings: readonly string[]): string[] {
   const fits = Array.isArray(buckets) && buckets.length === bindings.length
-    && buckets.every((bucket, i) => object(bucket)
-      && same(Object.keys(bucket).sort(), ["binding", "bucket_name"])
+    && buckets.every((bucket, i) => keyed(bucket, ["binding", "bucket_name"])
       && bucket["binding"] === bindings[i] && typeof bucket["bucket_name"] === "string");
   return fits ? [] : [`r2_buckets is exactly ${bindings.join(", ")}`];
 }
@@ -154,7 +150,7 @@ function bucketProblems(buckets: unknown, bindings: readonly string[]): string[]
 function kvProblems(namespaces: unknown, bindings: readonly string[]): string[] {
   const fits = Array.isArray(namespaces) && namespaces.length === bindings.length
     && same(namespaces.map((n: Config) => n["binding"]).sort(), [...bindings].sort())
-    && namespaces.every((n: unknown) => object(n) && same(Object.keys(n).sort(), ["binding", "id"])
+    && namespaces.every((n: unknown) => keyed(n, ["binding", "id"])
                                         && /^not-provisioned-[a-z]+$/.test(String(n["id"])))
     && new Set(namespaces.map((n: Config) => n["id"])).size === namespaces.length;
   return fits ? [] : [`kv_namespaces are exactly ${bindings.join(", ")}, distinct placeholders`];
@@ -164,14 +160,14 @@ function kvProblems(namespaces: unknown, bindings: readonly string[]): string[] 
 function named(list: unknown, names: readonly string[], keys: readonly string[],
                field: string): list is Config[] {
   return Array.isArray(list) && list.length === names.length
-    && list.every((each, i) => object(each) && same(Object.keys(each).sort(), keys)
+    && list.every((each, i) => keyed(each, keys)
                                && each[field] === names[i]);
 }
 
 /** How `objects` binds other than exactly `bindings`, each to one of `classes`. */
 function objectProblems(objects: unknown, bindings: readonly string[],
                         classes: readonly string[]): string[] {
-  const fits = object(objects) && same(Object.keys(objects), ["bindings"])
+  const fits = keyed(objects, ["bindings"])
     && named(objects["bindings"], bindings, ["class_name", "name"], "name")
     && objects["bindings"].every((binding) => classes.includes(String(binding["class_name"])));
   return fits ? [] : [`durable_objects binds exactly ${bindings.join(", ")}, each a class of ` +
@@ -181,7 +177,7 @@ function objectProblems(objects: unknown, bindings: readonly string[],
 /** How `queues` holds other than `rule`'s producers, and consumers only where it consumes. */
 function queueProblems(queues: unknown, rule: NonNullable<ConfigRules["queues"]>): string[] {
   const parts = rule.consumes ? ["consumers", "producers"] : ["producers"];
-  const fits = object(queues) && same(Object.keys(queues).sort(), parts)
+  const fits = keyed(queues, parts)
     && named(queues["producers"], rule.producers, ["binding", "queue"], "binding")
     && queues["producers"].every((producer) => typeof producer["queue"] === "string")
     && (!rule.consumes || (Array.isArray(queues["consumers"]) && queues["consumers"]

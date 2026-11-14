@@ -5,7 +5,7 @@
  * (`catalog.ts`). Its gateway part is the gateway's own check (`contract/src/egress-scope.ts`),
  * and `sealedSource` is what the doors hand the gateway to seal.
  */
-import { object } from "../../contract/src/checks";
+import { object, whole } from "../../contract/src/checks";
 import { RUN_HEADER } from "../../contract/src/egress";
 import {
   ID as PROVIDER, keyExchangeSource, type Source, source as gatewaySource,
@@ -947,7 +947,7 @@ function instructionsSpec(check: ReturnType<typeof checker>, value: unknown): In
                "agent's directory");
   }
   const max = fields["max_bytes"];
-  if (max !== undefined && (!Number.isSafeInteger(max) || (max as number) < 1)) {
+  if (max !== undefined && !whole(max, 1)) {
     check.fail("cli.instructions.max_bytes is a whole number from 1");
   }
   if (fields["setting"] !== undefined && runFilePath(fields["setting"]) === null) {
@@ -1052,8 +1052,7 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
     argv(fields["logout_argv"], "cli.login.logout_argv", 16);
   }
   const expires = check.keys(fields["expires"], "cli.login.expires", ["s", "citation"]);
-  if (typeof expires["s"] !== "number" || !Number.isSafeInteger(expires["s"])
-      || expires["s"] < 1) {
+  if (!whole(expires["s"], 1)) {
     check.fail("cli.login.expires.s is the vendor's code's lifetime, whole seconds");
   }
   check.text(expires["citation"], CITATION, "cli.login.expires.citation");
