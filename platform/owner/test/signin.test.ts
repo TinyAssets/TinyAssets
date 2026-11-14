@@ -250,6 +250,17 @@ describe("a sign-in", () => {
     expect((await failure(() => r.stub.socketTicket(r.bind({ grant: "g-1", expires_at: Date.now() / 1000 + 600 }),
                                      { conversation_id: `si_${"0".repeat(32)}` }))).message).toBeTruthy();
   });
+
+  it("refuses a socket only for a sign-in it does not hold: a sign-in read that fails throws",
+     async () => {
+    const r = await gated();
+    const { id } = await r.stub.signinStart(r.bind(), { engine: "claude-code" }) as { id: string };
+    // The read itself fails, as a storage fault would.
+    await r.sql("ALTER TABLE sandbox_signins RENAME TO sandbox_signins_gone");
+    const failed = await failure(() => r.stub.socketTicket(
+      r.bind({ grant: "g-1", expires_at: Date.now() / 1000 + 600 }), { conversation_id: id }));
+    expect(failed.message).toMatch(/no such table: sandbox_signins/);
+  });
 });
 
 /** A sign-in of `engine` begun, its runner's binding, and its first frames posted. */

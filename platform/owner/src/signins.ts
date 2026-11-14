@@ -399,8 +399,11 @@ export function signinOwned(o: OwnerState, id: unknown): boolean {
   try {
     o.signins.get(id);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error instanceof Refusal && error.code === "refused") {
+      return false;
+    }
+    throw error;
   }
 }
 
