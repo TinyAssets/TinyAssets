@@ -44,8 +44,9 @@
  * "absent". So:
  * - a namespace, bucket or queue is created only when its listing answered and lacks it;
  * - a secret is set only on a Worker whose secret listing answered and lacks it, or that the
- *   API says does not exist yet; the kit never makes a secret's value (`keyring-new` makes a
- *   first keyring, `scripts/platform_setup.py` stores one). A held one is never replaced
+ *   account's Workers listing lacks (whether a Worker exists is that listing's word alone);
+ *   the kit never makes a secret's value (`keyring-new` makes a first keyring,
+ *   `scripts/platform_setup.py` stores one). A held one is never replaced
  *   unless `--rotate` names it, a keyring only by adding a key; Cloudflare never shows a held
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
@@ -94,8 +95,8 @@ import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, treeImage } from "../sandbox/template/pair.ts";
 import {
-  type BackStep, cfApi, Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback,
-  handover, type Kept, type Moved, narrower, type Route, type RouteStep, unlike,
+  Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback, handover, type Kept,
+  type Moved, narrower, type Route, type RouteChange, unlike,
 } from "./cloudflare.ts";
 import {
   AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
@@ -179,12 +180,12 @@ export interface Work {
   /** E2B's listing of the lifecycle hook: null when it holds none. */
   hook?: Json | null;
   redirect?: "present" | "missing" | "registered";
-  routes?: RouteStep[];
+  routes?: RouteChange[];
   /** The zone's routes as the route plan read them, before any change. */
   table?: Route[];
   /** The route record `handback` reads, and its handback on the zone as it stands. */
   record?: RouteRecord;
-  back?: BackStep[];
+  back?: RouteChange[];
   /** Where the run's route record is kept, its key in the control namespace. */
   recordAt?: { namespace: string; key: string };
   /** The handback's other changes: the egress domains to detach, the hook to disable. */
@@ -195,7 +196,9 @@ export interface Work {
   unmade?: Set<string>;
   out?: string;
   paths?: Record<string, string>;
-  held?: Record<string, string[] | null>;
+  /** The account's Workers, by name, as its listing answered before any deploy. */
+  deployed?: string[];
+  held?: Record<string, string[]>;
   setting?: { worker: string; name: string }[];
   /** The run ends here: a plan says what it would change, and stops. */
   done?: boolean;
@@ -511,10 +514,10 @@ export function keyring(text: string | undefined, name: string): Ring {
 /**
  * What to set: each Worker's missing secrets, and those `rotate` names (the shared routing
  * key on both or neither; a keyring only as an addition). `held` is each Worker's listing,
- * null for a Worker the API says does not exist. A webhook made this run (`hookCreated`)
+ * empty for a Worker the account's Workers listing lacks. A webhook made this run (`hookCreated`)
  * takes production's secret, so the doors take it too.
  */
-export function secretPlan(held: Readonly<Record<string, readonly string[] | null>>,
+export function secretPlan(held: Readonly<Record<string, readonly string[]>>,
                            rotate: ReadonlySet<string>,
                            values: ((name: string) => string | undefined) | null,
                            hookCreated = false):
@@ -569,12 +572,6 @@ export function wranglerFor(run: Run, account: string): Wrangler {
     }
     return String(result.stdout);
   };
-}
-
-/** Whether a wrangler listing names `name` as a whole word (never a longer name holding it). */
-export function listed(output: string, name: string): boolean {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[\\s│|:])${escaped}($|[\\s│|])`, "m").test(output);
 }
 
 /** The version id `wrangler versions upload` prints, or a throw. */
@@ -633,7 +630,7 @@ export function deployedConfig(worker: string, ids: Readonly<Record<string, stri
  * left when the doors hold it already. A path another Worker (or no Worker) serves, by the
  * same, a narrower or a wider pattern, stops it: the probe takes only paths nothing serves.
  */
-export function probeSteps(routes: readonly Route[]): RouteStep[] {
+export function probeSteps(routes: readonly Route[]): RouteChange[] {
   const served = routes.filter((route) => route.script !== DOORS && PROBE_ROUTES.some(
     (pattern) => route.pattern === pattern || narrower(route.pattern, pattern)
       || narrower(pattern, route.pattern)));
@@ -765,7 +762,7 @@ function recordId(run: Run): string {
  * egress domain's Worker `domain` and E2B's `hook` as listed.
  */
 function routeRecord(run: Run, zoneId: string, table: readonly Route[],
-                     steps: readonly RouteStep[], domain: string | null,
+                     steps: readonly RouteChange[], domain: string | null,
                      hook: Json | null): RouteRecord {
   return {
     kind: RECORD_KIND, zone: ZONE, zone_id: zoneId, run: recordId(run),
@@ -897,7 +894,7 @@ const locks = step("locks", (run, work) => {
 
 /** The zone and its account, which Cloudflare's client and wrangler are given. */
 const zone = step("zone", async (run, work) => {
-  const cloudflare = new Cloudflare(cfApi(input(run, "CLOUDFLARE_API_TOKEN")!, run.io.fetch));
+  const cloudflare = new Cloudflare(input(run, "CLOUDFLARE_API_TOKEN")!, run.io.fetch);
   const { id, account } = await cloudflare.zone(ZONE);
   maskInLog(account, run.env, run.io.log);
   Object.assign(work, { cloudflare, zone: id, account, wrangler: wranglerFor(run, account) });
@@ -1068,12 +1065,7 @@ const namespaces = step("namespaces", async (run, work) => {
     }
     work.plan.push(`create the KV namespace ${title} (${binding})`);
     if (run.apply) {
-      made(work.wrangler, "wrangler")(["kv", "namespace", "create", title]);
-      const made_ = (await cloudflare.namespaces(account)).get(title);
-      if (made_ === undefined) {
-        throw new Error(`the KV namespace ${title} was not made`);
-      }
-      work.ids[binding] = made_;
+      work.ids[binding] = await cloudflare.makeNamespace(account, title);
     } else {
       // A planned config names the namespace it would be made as.
       work.ids[binding] = `planned-${title}`;
@@ -1082,30 +1074,33 @@ const namespaces = step("namespaces", async (run, work) => {
   }
 });
 
-/** Storage wrangler lists and makes: its listing command, its noun and its make command. */
-function storage(name: string, list: string[], noun: string, create: (made: string) => string[],
-                 names: readonly string[]): Step {
-  return step(name, (run, work) => {
-    const wrangler = made(work.wrangler, "wrangler");
-    for (const each of names) {
-      // `wrangler` throws on a failed listing: a failure is never "absent".
-      if (listed(wrangler(list), each)) {
-        continue;
-      }
+/** Storage of one kind, `names` each made when the account's listing (`list`) lacks it. */
+function storage(name: string, noun: string, names: readonly string[],
+                 list: (cloudflare: Cloudflare, account: string) => Promise<ReadonlySet<string>>,
+                 make: (cloudflare: Cloudflare, account: string, made: string) => Promise<void>):
+    Step {
+  return step(name, async (run, work) => {
+    const cloudflare = made(work.cloudflare, "Cloudflare");
+    const account = made(work.account, "the account");
+    const held = await list(cloudflare, account);
+    for (const each of names.filter((one) => !held.has(one))) {
       work.plan.push(`create the ${noun} ${each}`);
       if (run.apply) {
-        wrangler(create(each));
+        await make(cloudflare, account, each);
       }
     }
   });
 }
 
 /** The R2 buckets the configs bind. */
-const buckets = storage("buckets", ["r2", "bucket", "list"], "R2 bucket",
-                        (bucket) => ["r2", "bucket", "create", bucket], BUCKETS);
+const buckets = storage("buckets", "R2 bucket", BUCKETS,
+                        async (cloudflare, account) => new Set(await cloudflare.buckets(account)),
+                        (cloudflare, account, bucket) => cloudflare.makeBucket(account, bucket));
 /** The queues the configs send to. */
-const queues = storage("queues", ["queues", "list"], "queue",
-                       (queue) => ["queues", "create", queue], QUEUES);
+const queues = storage("queues", "queue", QUEUES,
+                       async (cloudflare, account) => new Set((await cloudflare.queues(account))
+                         .keys()),
+                       (cloudflare, account, queue) => cloudflare.makeQueue(account, queue));
 
 /** Reached only when every listing answered: a token without the scope stopped above. */
 const listings = step("listings", (_run, work) => {
@@ -1128,10 +1123,13 @@ const staged = step("staged", (_run, work) => {
 /** Each Worker's missing secrets (and the rotated), first: `secrets.required` refuses a deploy. */
 const secrets = step("secrets", async (run, work) => {
   const cloudflare = made(work.cloudflare, "Cloudflare");
+  const account = made(work.account, "the account");
+  const deployed = await cloudflare.workers(account);
+  work.deployed = deployed;
   work.held = {};
   for (const worker of Object.keys(SECRETS)) {
-    work.held[worker] = await cloudflare.secrets(made(work.account, "the account"),
-                                                 NAMES[worker]!);
+    work.held[worker] = deployed.includes(NAMES[worker]!)
+      ? await cloudflare.secrets(account, NAMES[worker]!) : [];
   }
   work.setting = secretPlan(work.held, run.rotate,
                             secretsReached(run) ? (name) => input(run, name) : null,
@@ -1154,21 +1152,17 @@ const secrets = step("secrets", async (run, work) => {
 });
 
 /**
- * Each Worker deployed, bound first, touching no route. A first deploy (the API says the
- * Worker does not exist) is `wrangler deploy`; later ones are Cloudflare's staged path,
+ * Each Worker deployed, bound first, touching no route. A first deploy (the account's Workers
+ * listing lacks it) is `wrangler deploy`; later ones are Cloudflare's staged path,
  * `versions upload` then `versions deploy` at 100%, which leaves the Worker's routes as they
  * are. Wrangler 4.154 refuses a versions upload with a pending Durable Object migration:
  * `--migrate <worker>` deploys it whole.
  */
 const workers = step("workers", async (run, work) => {
   const wrangler = made(work.wrangler, "wrangler");
-  const held = made(work.held, "the secret listings");
+  const deployed = made(work.deployed, "the Workers listing");
   for (const worker of WORKERS) {
-    // Whether it exists: its secret listing's answer (null when the API says it does not).
-    const exists = (worker in held ? held[worker]
-      : await made(work.cloudflare, "Cloudflare").secrets(made(work.account, "the account"),
-                                                          NAMES[worker]!)) !== null;
-    const whole = !exists || run.migrate.has(worker);
+    const whole = !deployed.includes(NAMES[worker]!) || run.migrate.has(worker);
     work.plan.push(`${whole ? "deploy" : "upload and deploy a version of"} ${NAMES[worker]}, ` +
                    "touching no route");
     if (run.apply) {
@@ -1184,14 +1178,14 @@ const workers = step("workers", async (run, work) => {
 });
 
 /**
- * Each retired Worker the account still holds (its Workers listing), deleted with its
- * Durable Objects once every Worker is deployed, so nothing of this tree binds it.
+ * Each retired Worker the account holds (its Workers listing), deleted with its Durable
+ * Objects once every Worker is deployed, so nothing of this tree binds it.
  */
 const retired = step("retired", async (run, work) => {
   const cloudflare = made(work.cloudflare, "Cloudflare");
   const account = made(work.account, "the account");
-  const held = await cloudflare.workers(account);
-  for (const name of RETIRED.filter((each) => held.includes(each))) {
+  const deployed = made(work.deployed, "the Workers listing");
+  for (const name of RETIRED.filter((each) => deployed.includes(each))) {
     work.plan.push(`delete the retired Worker ${name} and its Durable Objects (no Worker ` +
                    "of this tree binds it)");
     if (run.apply) {
@@ -1245,7 +1239,8 @@ const handOver = step("hand over", async (run, work) => {
   const steps = made(work.routes, "the route plan");
   work.plan.push(...steps.map((each) => describeStep(each, DOORS)));
   if (run.apply) {
-    await made(work.cloudflare, "Cloudflare").handOver(made(work.zone, "the zone"), DOORS, steps);
+    await made(work.cloudflare, "Cloudflare").reroute(made(work.zone, "the zone"), steps,
+                                                      (each) => describeStep(each, DOORS));
   }
 });
 
@@ -1326,8 +1321,8 @@ const probeInputs = step("probe inputs", (run) => {
 
 /** The doors are deployed: a dark run came first. */
 const doorsDeployed = step("doors deployed", async (_run, work) => {
-  if (await made(work.cloudflare, "Cloudflare").secrets(made(work.account, "the account"), DOORS)
-      === null) {
+  if (!(await made(work.cloudflare, "Cloudflare").workers(made(work.account, "the account")))
+    .includes(DOORS)) {
     throw new Error(`${DOORS} is not deployed: the probe runs after a dark run`);
   }
   work.plan.push(`${DOORS} is deployed`);
@@ -1383,7 +1378,8 @@ const probeHandOver = step("probe hand over", async (run, work) => {
   work.plan.push(...(steps.length === 0 ? [`${DOORS} holds ${PROBE_ROUTES.join(" and ")} already`]
     : steps.map((each) => describeStep(each, DOORS))));
   if (run.apply) {
-    await made(work.cloudflare, "Cloudflare").handOver(made(work.zone, "the zone"), DOORS, steps);
+    await made(work.cloudflare, "Cloudflare").reroute(made(work.zone, "the zone"), steps,
+                                                      (each) => describeStep(each, DOORS));
   }
 });
 
@@ -1535,7 +1531,8 @@ const handBack = step("hand back", async (run, work) => {
       await made(work.cloudflare, "Cloudflare").detach(made(work.account, "the account"),
                                                        domain.id, record.domain.hostname);
     }
-    await made(work.cloudflare, "Cloudflare").handBack(made(work.zone, "the zone"), steps);
+    await made(work.cloudflare, "Cloudflare").reroute(made(work.zone, "the zone"), steps,
+                                                      describeBack);
     // The address records the attach made, only those and only as recorded, if the detach
     // left them.
     for (const left of await createdLeft(work)) {
