@@ -147,7 +147,8 @@ describe("a rename", () => {
     await mkdir(r, `${W}/src/empty`);
     const [space] = await sqlIn(r.stub, "SELECT ns, data_key FROM file_space");
     const chunks = async () => SEED.mine(
-      await sqlIn(r.stub, "SELECT sha256, refs FROM file_chunks"), (row) => row["sha256"] as string);
+      await sqlIn(r.stub, "SELECT sha256, refs FROM file_chunks"),
+      (row) => row["sha256"] as string);
     const before = await chunks();
     const moved = entryOf(await rename(r, `${W}/src`, `${W}/dst`));
     expect(moved).toMatchObject({ path: `${W}/dst`, kind: "dir" });
