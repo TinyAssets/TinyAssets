@@ -123,7 +123,9 @@ export function narrower(narrow: string, wide: string): boolean {
  * The handover of `patterns` to `script`, in order: each pattern another route holds moved
  * in place (`PUT`), each missing one added (`POST`), and after each, every other route's
  * narrower pattern deleted, so its paths fall to `script` with no gap. A wider pattern of
- * another Worker is left: `script`'s narrower one already takes its own paths from it.
+ * another Worker is left as it is, and a narrower one of `script` under it may take nothing:
+ * Cloudflare's known issue "Route specificity" sends `x/*` URLs to another Worker's `x*`. So
+ * `patterns` name such a base whole, and it moves in place.
  */
 export function handover(routes: readonly Route[], script: string,
                          patterns: readonly string[]): RouteChange[] {

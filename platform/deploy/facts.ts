@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/wrangler.ts";
 import identity from "../contract/identity.json" with { type: "json" };
+import { routeTakes } from "../contract/src/identity.ts";
 import type { ImportNames } from "../contract/src/import-names.ts";
 import platform from "./platform.json" with { type: "json" };
 
@@ -231,18 +232,13 @@ export const KEYRINGS: readonly string[] = Object.freeze(
 export const AUTHORIZE = `${ORIGIN}${identity.signin.authorize}`;
 export const CALLBACK = `${ORIGIN}${identity.signin.callback}`;
 
-/** Whether the route `pattern` takes the URL `url` (host and path, no scheme). */
-export function takes(pattern: string, url: string): boolean {
-  return pattern.endsWith("*") ? url.startsWith(pattern.slice(0, -1)) : url === pattern;
-}
-
 /**
  * The sign-in probe's routes (mode `probe`): the routes that take the sign-in's own two paths,
  * which no Worker serves before the cutover, so handing them to the doors early serves no
  * user.
  */
 export const PROBE_ROUTES: readonly string[] = Object.freeze(ROUTES.filter((pattern) =>
-  [AUTHORIZE, CALLBACK].some((url) => takes(pattern, url.slice("https://".length)))));
+  [AUTHORIZE, CALLBACK].some((url) => routeTakes(pattern, url.slice("https://".length)))));
 /** The doors' own app's sign-in: its client, redirect and resource. */
 export const FIRST_PARTY = Object.freeze({
   client: `${ORIGIN}${identity.first_party.client}`,

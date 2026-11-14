@@ -26,7 +26,7 @@ export const metadata: Metadata = {
       { url: markAsset("/favicon.ico"), sizes: "16x16 32x32 48x48" },
       { url: markAsset("/icon.svg"), type: "image/svg+xml" },
     ],
-    apple: markAsset("/apple-touch-icon.png"),
+    apple: markAsset("/icons/apple-touch-icon.png"),
   },
   openGraph: {
     siteName: legal.brand,

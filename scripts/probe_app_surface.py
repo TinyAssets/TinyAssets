@@ -11,9 +11,6 @@ green tests and a green daemon cannot see:
   `/app?subscribed=1` (the Stripe return) match nothing and land on the website
   origin. The app shell loads; sign-in and billing are dark. No unit test can
   see this -- route-pattern semantics live at the edge.
-* the `/app*` wildcard that fixes the above also captures apex assets whose path
-  merely starts with `app`, e.g. `/apple-touch-icon.png`, which the Worker has
-  to hand back to the website origin.
 * `/mcp/app` still answering -> the move did not happen; installed shells keep
   working and nobody notices the split brain until the old path is pulled.
 * `/app/*` API routes reachable anonymously -> the app left the `/mcp/` prefix
@@ -42,10 +39,6 @@ from typing import Protocol
 #: "our app answered" from "the website origin answered 200 with a landing page"
 #: — a status code alone cannot tell those apart.
 APP_BUILD_HEADER = "X-TinyAssets-Build"
-
-#: An apex asset the website really serves whose path starts with "app". It is
-#: the live witness for the route-shape hazard, so it is probed, not assumed.
-APEX_APP_PREFIXED_ASSET = "/apple-touch-icon.png"
 
 #: One app API route, picked because it is pure-read and identity-gated: an
 #: anonymous 401 proves the boundary moved with the app.
@@ -243,25 +236,7 @@ def verify_app_surface(
                     "app is still being served from the retired path"
                 )
 
-        # 4. An apex asset whose name starts with "app" still reaches the site.
-        asset = check("GET", APEX_APP_PREFIXED_ASSET)
-        if asset is None:
-            return failures
-        if asset.error is not None:
-            failures.append(f"GET {APEX_APP_PREFIXED_ASSET}: transport={asset.error}")
-        elif asset.status != 200:
-            failures.append(
-                f"GET {APEX_APP_PREFIXED_ASSET}: status={asset.status} (expected 200 "
-                "from the website origin; the app route is bound too widely — use "
-                "tinyassets.io/app + tinyassets.io/app/* , never tinyassets.io/app*)"
-            )
-        elif asset.header(APP_BUILD_HEADER) is not None:
-            failures.append(
-                f"GET {APEX_APP_PREFIXED_ASSET}: served by the daemon "
-                f"({APP_BUILD_HEADER} present) — the Worker route is too wide"
-            )
-
-        # 5. The auth boundary moved with the app.
+        # 4. The auth boundary moved with the app.
         api = check("GET", APP_API_PATH)
         if api is None:
             return failures

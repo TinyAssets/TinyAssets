@@ -48,7 +48,7 @@ test("every committed mark matches the canonical generator receipt", () => {
   const requiredSurfaces = [
     "WebSite/site-react/public/favicon.ico",
     "WebSite/site-react/public/icon.svg",
-    "WebSite/site-react/public/apple-touch-icon.png",
+    "WebSite/site-react/public/icons/apple-touch-icon.png",
     "WebSite/site-react/public/site.webmanifest",
     "tinyassets/desktop/app.ico",
     "assets/brand/tinyassets-app.ico",
@@ -84,7 +84,7 @@ test("browser and manifest icon URLs carry the generated mark version", () => {
   assert.match(layout, /manifest: markAsset\("\/site\.webmanifest"\)/);
   assert.match(layout, /url: markAsset\("\/favicon\.ico"\)/);
   assert.match(layout, /url: markAsset\("\/icon\.svg"\)/);
-  assert.match(layout, /apple: markAsset\("\/apple-touch-icon\.png"\)/);
+  assert.match(layout, /apple: markAsset\("\/icons\/apple-touch-icon\.png"\)/);
 
   const webmanifest = JSON.parse(
     readFileSync(resolve(siteRoot, "public/site.webmanifest"), "utf8"),
