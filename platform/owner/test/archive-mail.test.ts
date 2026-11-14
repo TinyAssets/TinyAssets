@@ -18,8 +18,8 @@ import { describe, expect, it, onTestFinished } from "vitest";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
 import { refusalOf, STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
-import { SLOT_WAIT_MS } from "../../contract/src/limits";
-import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
+import { PLACE_BYTES, SLOT_WAIT_MS } from "../../contract/src/limits";
+import { LEDGER_LIMITS, type Ledger, mailParts, mailRecord } from "../src/ledger";
 import { nativeId } from "../../contract/src/binding";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
@@ -441,6 +441,17 @@ describe("a message's counted bytes", () => {
       return id;
     });
     await exact(failed);
+    // A placed body's record, as the move streams it (`mailParts`), holds no content id.
+    const placed = (await r.post(null, `dm:${muse}`, { body: "p".repeat(PLACE_BYTES + 1),
+                                                       cmid: "p" })).message_id;
+    const of = (table: string) => sqlIn(r.stub, `SELECT * FROM ${table} WHERE message_id = ?`,
+                                        placed);
+    const [message] = await of("ledger_messages");
+    const [body] = await of("message_bodies");
+    const parts = mailParts(message!, body!, await of("ledger_recipients"));
+    expect(body!["content_id"]).not.toBeNull();
+    expect(message!["line_bytes"]).toBe(parts.head.byteLength + (body!["body_bytes"] as number)
+                                        + parts.tail.byteLength + RECORD_TRAILER_BYTES);
   });
 });
 

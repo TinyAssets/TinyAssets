@@ -869,13 +869,15 @@ export function mailRecord(message: Readonly<Record<string, unknown>>,
  * its lines, its body raw (`body_bytes`) and its newline, and its trailer share. Counted
  * again each time its recipient row changes (`Ledger.#restate`), so the count is exact. Its
  * own `line_bytes` and its body's `meta_bytes` are in its lines, so settled to a fixed point;
- * the body is never copied.
+ * the body is never copied. Its body's row as the record holds it (`mailParts`): with no
+ * content id, since the record holds a placed body's bytes too.
  */
 function mailLineBytes(message: Readonly<Record<string, unknown>>,
                        body: Readonly<Record<string, unknown>>,
                        recipients: readonly Readonly<Record<string, unknown>>[]): number {
   const size = body["body_bytes"] as number;
-  const [[, own], [, stored], ...held] = mailRecord(message, body, recipients, []).rows as
+  const [[, own], [, stored], ...held] = mailRecord(message, { ...body, content_id: null },
+                                                    recipients, []).rows as
     [SegmentRow, SegmentRow, ...SegmentRow[]];
   const fixed = held.reduce((sum, [table, row]) => sum + utf8Bytes(rowLine(table, row)), 0)
     + size + 1 + RECORD_TRAILER_BYTES;
