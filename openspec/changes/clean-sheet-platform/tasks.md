@@ -329,13 +329,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B2: `owner/src/wakes.ts`'s swallowed doorbell open failure surfaces, rather than settling
     the wake `unknown` (Fact 8; d3 §I).
   - A later S PR: S13's `lease_id` half (d3 §L5).
-  - A later S PR: a slot reserved again (`#lookAt`, `#renew`) deletes its stale owed row
-    first, so a renewal's fresh hold is never given back (d3 §L9), with a gate in front of
-    `SLOTS` (`ci/gate.ts`), used by both slot tests, in place of the prototype patch at
-    `sandbox/test/sandbox.test.ts:797`. The kit cannot front `SLOTS` yet, so its design is
-    researched first: the line's object lives in the test Worker itself, which the plugin
-    names (a gate fronts an object by its Worker's name), the suite runs inside that object
-    (`runInDurableObject`), and `SandboxSlots` has no interface for `methodsOf`.
   - Lane S: `sandbox/runner/sync-ignore.test.ts` tagged `large`, and the budgets re-derived with
     `node ci/budgets.mjs` (d3 §I): the large from the Vitest reports the `platform-sizes` legs
     upload, the runner's medium from a local `test:root` report (`platform-tests` uploads none).
@@ -446,14 +439,22 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The two app stores' dashboards checked for anything we must follow up (a review in
   flight, an auto-release, a testing-track deadline, a policy form); the founder's sign-in
   (d3 §F2).
-- [ ] The data shapes already known to be wrong, fixed before real data (d3 §P, list3 P48),
-  each researched first (Fact 14) and given its lane PR: room ids moved off member-encoding
-  (`dm:a+b`) onto a rooms table with members, moving the mail threads and conversations keyed
-  by `chain_root` (S4's migration); the files index (shards or R2 trees), after the latency
-  probe's option B, which needs a token with Workers R2 Storage: Edit (the probe's workflow
-  and scripts removed after it); and ADR-036's four silent losses: collection history's
-  `maxHistoryCharge` pruning, the ledger's newest-50,000 receipts, `CONVERSATIONS_KEPT`
-  forgetting the oldest idle conversation's resume id, and file versions, with the index.
+- [ ] The data shapes already known to be wrong, fixed before real data, as decided in d3 §P
+  (list3 P48), each in its own lane PR:
+  - receipts onto the recipient row, deleting `ledger_receipts`, after T1b4;
+  - rooms and room members with opaque ids, in lane O after T1c and before S4;
+  - collection history (§P item 3): H1 merged (#5538); S1, the stream extraction into
+    `owner/src/stream.ts`, after T1b4, receipts and rooms; H2, the erasures stream; H3, the
+    history stream, bounding the deleter's name or taking the factor into the guard's term;
+  - conversation ids carrying the order key, idle conversations to segments, after T1b4 and
+    on S1's stream module (§P item 3);
+  - files: F1 (retention off by default, one recorded byte ceiling, `#fit`'s silent prune
+    deleted, the latency probe's workflow, scripts and branch deleted) after R5's P-shape; F2
+    (file versions to segments, with mark-and-sweep) after R1 and §P item 3; F3 (the live
+    index's R2 level) later, and whether it comes before the cutover is an open founder
+    question;
+  - `RUNS_KEPT`, the policy and egress receipts, and the settled wakes' week and 1,000
+    recorded in `limits-audit.md` as deliberate retentions, each with its reason (§P item 6).
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 

@@ -435,6 +435,16 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("INSERT INTO owed (sandbox_id) VALUES (?) ON CONFLICT DO NOTHING", sandboxId);
   }
 
+  /**
+   * `sandboxId`'s slot held in the line (`reserve`) across a pause and resume. A give-back
+   * still owed for it (one the line refused) is dropped before the hold, so no give-back lets
+   * the hold go: the sandbox's slot is owed again only once it runs again or is gone.
+   */
+  async #hold(sandboxId: string): Promise<void> {
+    this.#sql.exec("DELETE FROM owed WHERE sandbox_id = ?", sandboxId);
+    await this.#slots().reserve(sandboxId);
+  }
+
   /** Every slot owed given back to the line, each kept owed until it is: the first refusal thrown. */
   async #giveBack(): Promise<void> {
     const slots = this.#slots();
@@ -1248,7 +1258,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       // Paused while a lease runs in it (a renewal cut short, or E2B's own timeout): resumed,
       // its slot its own, held in the line until it runs. E2B refusing is retried, backing
       // off, and is the founder's alert.
-      await this.#slots().reserve(found.sandboxID);
+      await this.#hold(found.sandboxID);
       try {
         if (await this.#resume(row, found, null, ceilings) === null) {
           this.#forget(row.authority);
@@ -1335,7 +1345,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       Promise<void> {
     const e2b = this.#e2b();
     await this.#run(handle, [COMMAND.renewWait, String(Date.now())]);
-    await this.#slots().reserve(handle.sandboxID);
+    await this.#hold(handle.sandboxID);
     this.#sql.exec("UPDATE sandboxes SET renewing = 1 WHERE authority = ?", row.authority);
     const paused = await this.#pause(handle.sandboxID, endAt);
     if (paused === "gone") {

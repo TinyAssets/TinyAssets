@@ -14,7 +14,7 @@
  * Worker's at the first start that finds nothing living.
  */
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import {
@@ -28,7 +28,7 @@ import { inboxCode, inboxDoc, INBOX, INCOMING, LEASE_FILE, PROTOCOL,
 import { PROTOCOLS, shapeProblems } from "../runner/test/state-shape";
 import { runnerBytes, runnerDigest } from "../src/runner-bytes";
 import { CONTROL_MIGRATIONS, SLOTS_MIGRATIONS } from "../src/schema";
-import { SandboxSlots, SLOTS } from "../src/slots";
+import { SLOTS } from "../src/slots";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 const OPEN = OPEN_GATES;
@@ -97,12 +97,25 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
   };
 }
 
-const owner = () => `user_${crypto.randomUUID().replace(/-/g, "")}`;
+/** Each owner a test made, so it leaves the line after the test. */
+const made: string[] = [];
+const owner = () => {
+  const who = `user_${crypto.randomUUID().replace(/-/g, "")}`;
+  made.push(who);
+  return who;
+};
 const stub = (who: string) => env.SANDBOXES.getByName(who);
-/** How the line stands: its owners in order, read from the object's own table. */
-const line = () => runInDurableObject(env.SLOTS.getByName(SLOTS), (_instance, state) =>
-  state.storage.sql.exec<{ owner: string }>("SELECT owner FROM waiting ORDER BY seq").toArray()
-    .map((row) => row.owner));
+/** The platform's line, through its gate. */
+const slots = () => env.SLOTS.getByName(SLOTS);
+/** Whether `who` may try now: the first in line, or no one waits. */
+const turn = async (who: string) => (await slots().turn(who)).turn;
+/** The slots renewals hold in the line. */
+const reserved = async () => (await slots().turn("nobody")).reserved;
+/** The line refusing a call, as an unreachable object does. */
+const LINE_UNREACHABLE = { code: "line_unreachable", message: "the line is unreachable" };
+/** The give-backs the line was asked to take, taken from the gate's record. */
+const unreserves = async () => (await env.SLOTS_GATE.seen(SLOTS))
+  .filter((call) => call.method === "unreserve");
 const alarmOf = (who: string) => runInDurableObject(stub(who), (_instance, state) =>
   state.storage.getAlarm());
 
@@ -139,9 +152,13 @@ async function armedAfter(act: () => Promise<unknown>, read: () => Promise<numbe
 beforeEach(async () => {
   await e2b("/reset", {});
   await control({ ...OPEN, ...NUMBERS });
-  for (const who of await line()) {
-    await env.SLOTS.getByName(SLOTS).leave(who);
+});
+
+afterEach(async () => {
+  for (const who of made.splice(0)) {
+    await slots().leave(who);
   }
+  await env.SLOTS_GATE.disarm();
 });
 
 describe("a start", () => {
@@ -391,19 +408,19 @@ describe("the platform's line", () => {
     const who = owner();
     expect(await stub(who).start(who, start())).toEqual({ started: false, code: "sandbox_waiting" });
     expect((await seen()).sandboxes).toHaveLength(0);
-    expect(await line()).toEqual([who]);
+    expect([await turn(who), await turn("nobody")]).toEqual([true, false]);
     // Raised in the record, no deploy: the same start goes, and leaves the line.
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 4 });
     await e2b("/script", { signin: { "claude-code": 0 } });
     expect(await stub(who).start(who, start())).toEqual({ started: true });
-    expect(await line()).toEqual([]);
+    expect(await turn("nobody")).toBe(true);
   });
 
   it("makes a run wait when E2B itself refuses for room", async () => {
     await e2b("/script", { full: true });
     const who = owner();
     expect(await stub(who).start(who, start())).toEqual({ started: false, code: "sandbox_waiting" });
-    expect(await line()).toEqual([who]);
+    expect([await turn(who), await turn("nobody")]).toEqual([true, false]);
   });
 
   it("tries the create when E2B gives no count, and waits only on its refusal (M-4)",
@@ -427,13 +444,13 @@ describe("the platform's line", () => {
     // Room now, but the first in line has not had its turn.
     expect(await stub(second).start(second, start())).toEqual({ started: false,
                                                                 code: "sandbox_waiting" });
-    expect(await line()).toEqual([first, second]);
+    expect([await turn(first), await turn(second)]).toEqual([true, false]);
     expect(await stub(first).start(first, start())).toEqual({ started: true });
     // The first took its sandbox and left; the next is rung.
-    expect(await line()).toEqual([second]);
+    expect([await turn(second), await turn("nobody")]).toEqual([true, false]);
     await rung(second);
     expect(await stub(second).start(second, start())).toEqual({ started: true });
-    expect(await line()).toEqual([]);
+    expect(await turn("nobody")).toBe(true);
   });
 
   it("rings the first in line when a sandbox of the platform pauses", async () => {
@@ -450,22 +467,18 @@ describe("the platform's line", () => {
   });
 
   it("rings the first in line again, backing off, while no free is seen", async () => {
-    await e2b("/script", { full: true });
+    const line = env.LINE.getByName(crypto.randomUUID());
     const waiter = owner();
-    const began = Date.now();
-    await stub(waiter).start(waiter, start());
-    const slots = env.SLOTS.getByName(SLOTS);
-    const lineAlarm = () => runInDurableObject(slots, (_i, state) => state.storage.getAlarm());
-    const first = await lineAlarm();
-    expect(first!).toBeGreaterThanOrEqual(began + LEASE_TTL_S * 1000);  // LEASE_TTL_S first
-    expect(first!).toBeLessThanOrEqual(Date.now() + LEASE_TTL_S * 1000);
+    const lineAlarm = () => runInDurableObject(line, (_i, state) => state.storage.getAlarm());
+    await armedAfter(() => line.wait(waiter, CEILING), lineAlarm,  // LEASE_TTL_S first
+                     LEASE_TTL_S * 1000);
     await armedAfter(async () => {  // then doubled
-      await runDurableObjectAlarm(slots);
+      await runDurableObjectAlarm(line);
       await rung(waiter);
     }, lineAlarm, 2 * LEASE_TTL_S * 1000);
     // The owner with nothing waiting leaves; the line is empty and unarmed.
-    await slots.leave(waiter);
-    expect(await runInDurableObject(slots, (_i, state) => state.storage.getAlarm())).toBeNull();
+    await line.leave(waiter);
+    expect(await lineAlarm()).toBeNull();
   });
 
   it("does not count a run that joins a sandbox already running", async () => {
@@ -763,7 +776,7 @@ describe("the look before the runtime ceiling", () => {
     await e2b("/script", { others: 1, refuseResume: true });
     await runDurableObjectAlarm(stub(who));
     expect((await seen()).sandboxes[0]!.state).toBe("paused");
-    expect((await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved).toBe(1);
+    expect(await reserved()).toBe(1);
     const creates = (await seen()).calls.filter((call) => call.path === "/v2/sandboxes"
                                                 && call.method === "POST").length;
     const waiter = owner();
@@ -775,8 +788,38 @@ describe("the look before the runtime ceiling", () => {
     await e2b("/script", { refuseResume: false });
     await runDurableObjectAlarm(stub(who));
     expect((await seen()).sandboxes.find((box) => box.id === id)!.state).toBe("running");
-    expect((await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved).toBe(0);
+    expect(await reserved()).toBe(0);
     await rung(waiter);
+  });
+
+  it("keeps a renewal's fresh hold though a give-back the line refused left its slot owed " +
+     "(d3 L9)", async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
+    const who = owner();
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+    await e2b("/script", { others: 1 });
+    // The renewal's resume lands, and the line refuses its give-back twice: the resume's own,
+    // and the look's after it. The sandbox runs, its slot still owed.
+    await env.SLOTS_GATE.arm({ method: "unreserve", refuse: LINE_UNREACHABLE, times: 2 });
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes[0]!.state).toBe("running");
+    expect(await unreserves()).toHaveLength(2);
+    expect(await reserved()).toBe(1);
+    // Its next renewal holds the slot again, and its resume is refused for room: the hold is
+    // the paused sandbox's own, and the slot owed before it is not given back over it.
+    await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+    await e2b("/script", { refuseResume: true });
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes[0]!.state).toBe("paused");
+    expect(await reserved()).toBe(1);
+    // The resume goes: the slot is given back.
+    await e2b("/script", { refuseResume: false });
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes[0]!.state).toBe("running");
+    expect(await reserved()).toBe(0);
   });
 
   it("gives a gone renewal's slot back to the line at the next look when the line failed " +
@@ -790,27 +833,15 @@ describe("the look before the runtime ceiling", () => {
     // The renewal's pause lands and its resume is refused: its slot held in the line.
     await e2b("/script", { others: 1, refuseResume: true });
     await runDurableObjectAlarm(stub(who));
-    const reserved = async () => (await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved;
     expect(await reserved()).toBe(1);
     // Its sandbox is gone from E2B, and the line refuses the first give-back.
     await e2b("/gone", { id });
-    const unreserve = SandboxSlots.prototype.unreserve;
-    let refused = 0;
-    SandboxSlots.prototype.unreserve = async function (this: SandboxSlots, sandboxId: string) {
-      if (refused === 0) {
-        refused += 1;
-        throw new Error("the line is unreachable");
-      }
-      return unreserve.call(this, sandboxId);
-    };
-    try {
-      await runDurableObjectAlarm(stub(who));  // the sandbox forgotten; its give-back refused
-      expect(refused).toBe(1);
-      await runDurableObjectAlarm(stub(who));  // asked again: the line takes it
-      expect(await reserved()).toBe(0);
-    } finally {
-      SandboxSlots.prototype.unreserve = unreserve;
-    }
+    await env.SLOTS_GATE.arm({ method: "unreserve", refuse: LINE_UNREACHABLE });
+    await runDurableObjectAlarm(stub(who));  // the sandbox forgotten; its give-back refused
+    expect(await unreserves()).toHaveLength(1);
+    expect(await reserved()).toBe(1);
+    await runDurableObjectAlarm(stub(who));  // asked again: the line takes it
+    expect(await reserved()).toBe(0);
   });
 
   it("gives a gone renewal's slot back to the line though another sandbox's look fails",
@@ -829,7 +860,6 @@ describe("the look before the runtime ceiling", () => {
     await e2b("/age", { id, s: CEILING - WINDOW + 5 });
     await e2b("/script", { others: 1, refuseResume: true });
     await runDurableObjectAlarm(stub(who));
-    const reserved = async () => (await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved;
     expect(await reserved()).toBe(1);
     // The renewal's sandbox gone; the other's runner speaks a protocol this Worker does
     // not, so every look fails after it forgets the gone one.
@@ -841,7 +871,7 @@ describe("the look before the runtime ceiling", () => {
   });
 
   /** A renewal's slot held in the line, its sandbox then gone from E2B unseen. */
-  async function heldThenGone(who: string): Promise<() => Promise<number>> {
+  async function heldThenGone(who: string): Promise<void> {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     await stub(who).start(who, start());
@@ -849,16 +879,14 @@ describe("the look before the runtime ceiling", () => {
     await e2b("/age", { id, s: CEILING - WINDOW + 5 });
     await e2b("/script", { others: 1, refuseResume: true });
     await runDurableObjectAlarm(stub(who));
-    const reserved = async () => (await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved;
     expect(await reserved()).toBe(1);
     await e2b("/gone", { id });
-    return reserved;
   }
 
   it("arms the look at once while a slot is owed, so one a release forgot is given back",
      async () => {
     const who = owner();
-    const reserved = await heldThenGone(who);
+    await heldThenGone(who);
     // The release finds the sandbox gone: forgotten, its slot owed, and no row left to look at.
     expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: false });
     // The look armed at once takes it to the line, with no one running the alarm by hand.
@@ -871,16 +899,9 @@ describe("the look before the runtime ceiling", () => {
 
   it("gives back every slot owed before an erasure deletes the object's storage", async () => {
     const who = owner();
-    const reserved = await heldThenGone(who);
-    const unreserve = SandboxSlots.prototype.unreserve;
-    SandboxSlots.prototype.unreserve = async function () {
-      throw new Error("the line is unreachable");
-    };
-    try {
-      await runDurableObjectAlarm(stub(who));  // forgotten; its give-back refused, still owed
-    } finally {
-      SandboxSlots.prototype.unreserve = unreserve;
-    }
+    await heldThenGone(who);
+    await env.SLOTS_GATE.arm({ method: "unreserve", refuse: LINE_UNREACHABLE });
+    await runDurableObjectAlarm(stub(who));  // forgotten; its give-back refused, still owed
     expect(await reserved()).toBe(1);
     await stub(who).erase(who);
     expect(await reserved()).toBe(0);
@@ -1206,7 +1227,7 @@ describe("a sign-in", () => {
     const who = owner();
     expect(await stub(who).signin(who, signin() as never)).toEqual({ started: false,
                                                                      code: "sandbox_waiting" });
-    expect(await line()).toEqual([who]);
+    expect([await turn(who), await turn("nobody")]).toEqual([true, false]);
   });
 
   it("refuses a sign-in that is not one: its id, a region the record lacks, plain HTTP", async () => {
@@ -1247,7 +1268,7 @@ describe("an erasure", () => {
     const left = (await seen()).sandboxes;
     expect(left.map((box) => box.id)).not.toContain(stray["id"]);
     expect(left).toHaveLength(1);  // the other owner's alone
-    expect(await line()).not.toContain(who);
+    expect(await turn("nobody")).toBe(true);  // it left the line; the other never waited
     expect(await runInDurableObject(stub(who), (_i, state) => state.storage.sql
       .exec("SELECT COUNT(*) AS n FROM sandboxes").one().n)).toBe(0);
     expect(await alarmOf(who)).toBeNull();
@@ -1269,7 +1290,9 @@ describe("the schema (S25)", () => {
                       ...CONTROL_MIGRATIONS.slice(1)];
       expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_CHANGED);
     });
-    await runInDurableObject(env.SLOTS.getByName(SLOTS), (_instance, state) => {
+    const line = env.LINE.getByName(SLOTS);
+    await line.turn("nobody");
+    await runInDurableObject(line, (_instance, state) => {
       expect(kept(state)).toEqual(digests(SLOTS_MIGRATIONS));
     });
     // An erasure deletes the storage whole, and the schema is made again from its migrations.
