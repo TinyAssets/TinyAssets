@@ -342,16 +342,22 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     test of the purge queue's ceiling (`ledger.ts` `remove`, `maxAgentRows` purges waiting),
     which none holds today (`b23_research.md` question 3), and one that a lone straggler makes
     the lane due (no test fails today if `Ledger.archiveDue` asks `archiveDue` no straggler).
-  - [ ] T1c: the real entry: `main: src/index.ts`, `Internals` and the test classes deleted,
-    the unbound-`ERASURES` throw gone (`owner-do.ts:767-768`; the generated `OwnerEnv` already
-    types it required, C2b) with its queue's fake consumer, the `FILES` and `GATEWAY` gates, the
-    erasure and control record under a fake `Date`, the one-file starter by a Vite alias, the
-    rig admitting by the door, the doors' entry with no third constructor argument, and
-    `BackupParts`' test-only `sizes?` and `pool?` gone; the owner suite's lease clock under the
-    fake `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`) (list 6, item 6j);
-    the object's `admitted` held by a test (no test fails today if the object passes the ledger
+  - [ ] T1c-a: the `FILES` and `GATEWAY` gates, with `GatedOwnerDO`, `RungOwnerDO`,
+    `ArchivingOwnerDO`, `DivergingOwnerDO`, `PurgingOwnerDO`, `Internals.chainStep` and
+    `Internals.archiveBetweenPasses` deleted; the owner suite's lease clock under the fake
+    `Date`, not moved by SQL (`egress.test.ts`'s `lease_expires = 1`) (list 6, item 6j); the
+    object's `admitted` held by a test (no test fails today if the object passes the ledger
     `() => true`: a suspension between a wakes pass's claims, the `GATEWAY` gate holding its
-    send); `ledger-support.ts` `ledgerParts`, a copy of the object's wiring, deleted.
+    send) (`docs/decisions/untangle-2026-11/t1c.md`).
+  - [ ] T1c-b: the real entry: `main: src/index.ts`, `Internals` and the test classes left
+    deleted, the unbound-`ERASURES` throw gone (`owner-do.ts`; the generated `OwnerEnv` already
+    types it required, C2b) with its queue's fake consumer, the erasure and control record
+    under a fake `Date`, the one-file starter by a Vite alias, the rig admitting by the door,
+    the doors' entry with no third constructor argument, and `BackupParts`' test-only `sizes?`
+    and `pool?` gone.
+  - [ ] T1c-c, research first (Fact 14): `ledger-support.ts` `ledgerParts`, a copy of the
+    object's wiring, deleted, with how a test seeds production's hot ceiling without it
+    (`t1c.md`, owed).
   - [ ] T1d: the owner memory probe driven through the doors, with `LegArchive#ledger`, its
     copy of the object's wiring, deleted.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required

@@ -92,10 +92,10 @@ describe("the files gate", () => {
     expect(await e.FILES.getChunks(s.ns, s.key, read))
       .toEqual(await e.REAL_FILES.getChunks(s.ns, s.key, read));
     expect(await e.FILES_GATE.seen()).toEqual([
-      { method: "getChunks", name: null, args: [s.ns, s.key, read] }]);
+      { method: "getChunks", name: s.ns, args: [s.ns, s.key, read] }]);
     const bytes = new TextEncoder().encode("another");
     await e.FILES.putChunks(s.ns, s.key, [{ sha256: await sha256(bytes), bytes }]);
-    expect(await e.FILES_GATE.seen()).toEqual([{ method: "putChunks", name: null, args: [
+    expect(await e.FILES_GATE.seen()).toEqual([{ method: "putChunks", name: s.ns, args: [
       s.ns, s.key, [{ sha256: await sha256(bytes), bytes: { bytes: bytes.length } }]] }]);
   });
 
@@ -106,7 +106,7 @@ describe("the files gate", () => {
       const reading = e.FILES.getChunks(s.ns, s.key, [{ sha256: s.hash }]);
       const read = watched(reading);
       const held = await e.FILES_GATE.held(HELD_WAIT_MS);
-      expect(held).toEqual([{ id: expect.any(Number), method: "getChunks", name: null, at }]);
+      expect(held).toEqual([{ id: expect.any(Number), method: "getChunks", name: s.ns, at }]);
       await e.FILES.mintKey(fresh());
       expect(read.settled()).toBe(false);
       await e.FILES_GATE.release(held[0]!.id);
@@ -163,13 +163,27 @@ describe("the files gate", () => {
 
   it("refuses an arming that would never act", async () => {
     const never = [{ method: "getChunks" }, { method: "getChunks", hold: "during" },
-                   { method: "getChunks", hold: "before", corrupt: true },
-                   { method: "getChunks", name: "an-object", hold: "before" }];
+                   { method: "getChunks", hold: "before", corrupt: true }];
     for (const arm of never) {
       expect(await outcome(() => e.FILES_GATE.arm(arm as never)))
         .toMatchObject({ message: expect.stringMatching(/^an arming holds|never act$/) });
     }
     expect(await e.FILES_GATE.held()).toEqual([]);
+  });
+
+  it("acts on one namespace's calls alone when armed by its name, and records each's",
+     async () => {
+    const [a, b] = [await space(), await space()];
+    await e.FILES_GATE.seen();
+    const refusal = { code: "busy", message: "busy: the files Worker is full" };
+    await e.FILES_GATE.arm({ method: "getChunks", name: a.ns, refuse: refusal });
+    const read = (s: typeof a) => outcome(() => e.FILES.getChunks(s.ns, s.key,
+                                                                  [{ sha256: s.hash }]));
+    expect(await read(b)).toEqual({ answered: [b.bytes] });
+    expect(await read(a)).toEqual({ name: "Refusal", ...refusal });
+    expect(await read(a)).toEqual({ answered: [a.bytes] });
+    expect((await e.FILES_GATE.seen(a.ns)).map((call) => call.name)).toEqual([a.ns, a.ns]);
+    expect((await e.FILES_GATE.seen()).map((call) => call.name)).toEqual([b.ns]);
   });
 
   it("is as it started once disarmed: no arming, no held call, an empty record", async () => {

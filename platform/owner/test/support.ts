@@ -20,6 +20,8 @@ import { fileLimits, Policy } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
 import { storageFull, storageFullRefusal } from "../src/storage-full";
 import type { ChunkStore } from "../../contract/src/files";
+import type { GateControl } from "../../ci/gate";
+import type { Arm, Crossed, Held } from "../../ci/gate-worker";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -189,6 +191,55 @@ export function alarmOf(stub: DurableObjectStub<OwnerDO>): Promise<number | null
 }
 
 export { sqlIn };
+
+/** What one arming does: hold a call before or after it, change its bytes, or refuse it. */
+type Act = Omit<Arm, "method" | "name" | "times">;
+
+/**
+ * One name's calls at a gate (`ci/gate.ts`): an owner's at the GATEWAY gate, its namespace's
+ * at the FILES gate (each call is named by its first argument). It arms the gate for that
+ * name alone, waits for and lets go its held calls, and keeps every call that crossed
+ * (`calls`, oldest first), so no other owner's lane meets a test's arming.
+ */
+export function gateFor(gate: GateControl, name: string) {
+  const crossed: Crossed[] = [];
+  const mine = async (method?: string): Promise<Held[]> => (await gate.held())
+    .filter((call) => call.name === name && (method === undefined || call.method === method));
+  return {
+    arm: (method: string, act: Act, times = 1) =>
+      gate.arm({ ...act, method, name, times } as Arm),
+    /** The held calls of `method` (any when absent), once one is held; loud when none is. */
+    held: async (method?: string): Promise<Held[]> => {
+      for (let tries = 0; tries < 400; tries++) {
+        const held = await mine(method);
+        if (held.length > 0) {
+          return held;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error(`no ${method ?? "call"} of ${name} was held at the gate`);
+    },
+    /** Every held call of `method` (any when absent) let go. */
+    release: async (method?: string): Promise<void> => {
+      for (const call of await mine(method)) {
+        await gate.release(call.id);
+      }
+    },
+    calls: async (): Promise<Crossed[]> => {
+      crossed.push(...await gate.seen(name));
+      return crossed;
+    },
+  };
+}
+
+/** The namespace the owner's object keeps its files under (`file_space`), the FILES gate's name. */
+export async function spaceOf(stub: DurableObjectStub<OwnerDO>): Promise<string> {
+  const [space] = await sqlIn(stub, "SELECT ns FROM file_space");
+  if (space === undefined) {
+    throw new Error("the owner's object has no files namespace yet");
+  }
+  return space["ns"] as string;
+}
 
 /** The tables of `stub`'s own database whose names begin `prefix`. */
 export async function tablesIn(stub: DurableObjectStub<OwnerDO>, prefix: string):

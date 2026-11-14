@@ -1,6 +1,6 @@
 /**
- * The owner object with its gateway calls watched (`GatedOwnerDO`), and the calls a binder
- * makes to connect a model source: prepare in the owner's session, seal or exchange with
+ * An owner with its gateway calls in reach at the GATEWAY gate (`gateFor`), and the calls a
+ * binder makes to connect a model source: prepare in the owner's session, seal or exchange with
  * the real gateway Worker run beside the tests, then commit. The source records are the
  * gateway tests' own, so every sandbox call the egress door forwards reaches the gateway's
  * fake upstream in the provider's own wire format.
@@ -16,8 +16,8 @@ import { seal } from "../../gateway/src/keyring";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Binding } from "../../contract/src/binding";
 import { signedIn } from "./ledger-support";
-import { EVERY_SIGNIN, TIERS } from "./support";
-import type { GatedOwnerDO } from "./worker";
+import { EVERY_SIGNIN, gateFor, TIERS } from "./support";
+import type { OwnerDO } from "../src/owner-do";
 
 export { ANTHROPIC, OPENAI };
 
@@ -73,10 +73,13 @@ export async function sealedAs(kid: "k1" | "k2", owner: string, connection: stri
   return (await seal(keyring(kid), { owner, connection, version }, plaintext)).blob;
 }
 
-/** A fresh owner on the gated class, signed in once, and a binder's calls on its object. */
+/**
+ * A fresh owner, signed in once, a binder's calls on its object, and its calls at the GATEWAY
+ * gate (`gateway`: armed, held and read back for this owner alone).
+ */
 export async function gated() {
   const name = `owner-${crypto.randomUUID()}`;
-  const stub: DurableObjectStub<GatedOwnerDO> = env.GATED.getByName(name);
+  const stub: DurableObjectStub<OwnerDO> = env.OWNER.getByName(name);
   const bind = (extra: Partial<Binding> = {}): Binding =>
     ({ owner: name, caller: name, origin: null,
        ...("sandbox" in extra ? {} : { tiers: TIERS, signins: EVERY_SIGNIN }), ...extra });
@@ -114,10 +117,11 @@ export async function gated() {
 
   return {
     name, stub, bind, session, cookie, connect, connectOAuth,
-    in: <R>(act: (instance: GatedOwnerDO, state: DurableObjectState) => R | Promise<R>) =>
+    gateway: gateFor(env.GATEWAY_GATE, name),
+    in: <R>(act: (instance: OwnerDO, state: DurableObjectState) => R | Promise<R>) =>
       runInDurableObject(stub, act),
     sql: (statement: string, ...params: SqlStorageValue[]) =>
-      runInDurableObject(stub, (_instance: GatedOwnerDO, state) =>
+      runInDurableObject(stub, (_instance: OwnerDO, state) =>
         state.storage.sql.exec<Record<string, SqlStorageValue>>(statement, ...params).toArray()),
   };
 }

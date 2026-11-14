@@ -6,5 +6,6 @@ import { env } from "cloudflare:workers";
 import { afterEach } from "vitest";
 
 afterEach(async () => {
-  await env.SANDBOX_GATE.disarm();
+  await Promise.all([env.SANDBOX_GATE.disarm(), env.FILES_GATE.disarm(),
+                     env.GATEWAY_GATE.disarm()]);
 });

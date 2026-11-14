@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 
 import { env } from "cloudflare:workers";
+import { vi } from "vitest";
 
 import { verifyToken } from "../../contract/src/routing-mac";
 import { egressDoor, egressTokenOf } from "../../contract/src/egress";
@@ -15,12 +16,27 @@ import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { RunReceipt } from "../src/runs";
 import { HELD_WAIT_MS } from "../../ci/fixtures";
+import { LEASE_TTL_S } from "../../contract/src/limits";
 import type { Recorded, Script } from "./fake-sandbox";
 
 import { TIERS } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 export { TIERS };
+
+/**
+ * The object's clock moved on `seconds` (a lease's life and one, by default: every sandbox
+ * lease lapses, as when its runner stops beating), by a fake `Date`, which the object reads
+ * as the test does; the test makes the clock real again after it (`vi.useRealTimers`).
+ */
+export function later(seconds = LEASE_TTL_S + 1): void {
+  const now = Date.now() + seconds * 1000;
+  if (vi.isFakeTimers()) {
+    vi.setSystemTime(now);
+  } else {
+    vi.useFakeTimers({ toFake: ["Date"], now });
+  }
+}
 
 /** Every scope a run can hold. */
 export const ALL_SCOPES = Object.freeze(["read_graph", "write_graph", "propose_policy",

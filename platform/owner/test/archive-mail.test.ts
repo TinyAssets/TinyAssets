@@ -23,7 +23,6 @@ import { LEDGER_LIMITS, type Ledger, mailParts, mailRecord } from "../src/ledger
 import { nativeId } from "../../contract/src/binding";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
-import type { ArchivingOwnerDO } from "./worker";
 import { parseTiers, TIER_STORAGE_MAX } from "../../contract/src/control";
 import {
   type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_RECORDS,
@@ -37,9 +36,8 @@ import type { ChunkStore } from "../../contract/src/files";
 import { digest, generate, replay } from "./generation-support";
 import { ballast, DOT, ledgerOn, MCP, MUSE, origin, rig } from "./ledger-support";
 import { referenceSegment, storedContent, streamed } from "./segment-support";
-import { drainDue, failure, sqlIn } from "./support";
+import { drainDue, failure, gateFor, spaceOf, sqlIn } from "./support";
 
-const ARCHIVING = env.ARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
 const EVE: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
 const { maxAgentRows, maxMessages, maxUnacked } = LEDGER_LIMITS;
 const MIB = 1024 * 1024;
@@ -48,13 +46,13 @@ type Rig = Awaited<ReturnType<typeof rig>>;
 type Seeded = Rig & { readonly ballast: string };
 
 /**
- * A fresh owner (on `namespace`) at production's ceilings, its ballast agent's
+ * A fresh owner at production's ceilings, its ballast agent's
  * `maxUnacked - room` messages hot and unread (`ballast`): the test's own `room + 1`th hot
  * message takes the hot set past half, where the `archive` lane moves acked mail, and `room`
  * more may wait unread. Its storage is let go as the test ends (`letGo`).
  */
-async function seeded(namespace = ARCHIVING, room = 4): Promise<Seeded> {
-  const r = await rig(namespace);
+async function seeded(room = 4): Promise<Seeded> {
+  const r = await rig();
   const agent = await r.inLedger((ledger: Ledger) =>
     ballast(ledger, room, maxMessages - maxUnacked + room));
   onTestFinished(() => r.letGo());
@@ -115,6 +113,60 @@ async function settle(r: Rig): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("the archive lane did not settle");
+}
+
+/** An archive move as it landed: its stream, the segments it replaced, the records it wrote. */
+interface Move {
+  readonly stream: string;
+  readonly replaced: number;
+  readonly records: number;
+}
+
+/**
+ * Each archive move of the owner's from now on, in order, once the watch is stopped (the
+ * function it answers). Every move sends its segments' chunks through FILES before the unit
+ * that names them, so the FILES gate holds each upload (`putChunks`) of the owner's
+ * namespace while the move's row (`archive_moves`, its stream and intent) and the fences are
+ * read, then lets it go: the fences' change from one move's first upload to the next one's
+ * (or to the end) is the first move's commit.
+ */
+async function watchMoves(r: Rig): Promise<() => Promise<Move[]>> {
+  type Fence = { segment: number; records: number };
+  const ns = await spaceOf(r.stub);
+  const fenced = () => sqlIn(r.stub, "SELECT segment, records FROM archive_segments") as
+    Promise<Fence[]>;
+  await env.FILES_GATE.arm({ method: "putChunks", name: ns, hold: "before", times: 1_000_000 });
+  const seen: { intent: string; stream: string; fences: Fence[] }[] = [];
+  let stopped = false;
+  const watching = (async () => {
+    while (!stopped) {
+      for (const call of (await env.FILES_GATE.held()).filter((held) => held.name === ns)) {
+        const [move] = await sqlIn(r.stub, "SELECT stream, intent_id FROM archive_moves " +
+                                           "ORDER BY started_at DESC");
+        if (move !== undefined && move["intent_id"] !== seen.at(-1)?.intent) {
+          seen.push({ intent: move["intent_id"] as string, stream: move["stream"] as string,
+                      fences: await fenced() });
+        }
+        await env.FILES_GATE.release(call.id);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+  })();
+  return async () => {
+    stopped = true;
+    await watching;
+    await env.FILES_GATE.disarm();
+    const end = await fenced();
+    return seen.map((move, i) => {
+      const after = seen[i + 1]?.fences ?? end;
+      const was = new Set(move.fences.map((fence) => fence.segment));
+      const now = new Set(after.map((fence) => fence.segment));
+      return { stream: move.stream,
+               replaced: move.fences.filter((fence) => !now.has(fence.segment)).length,
+               records: after.filter((fence) => !was.has(fence.segment))
+                 .reduce((sum, fence) => sum + fence.records, 0) };
+    });
+  };
 }
 
 /** A message's seq, by its id. */
@@ -563,33 +615,52 @@ describe("the archive lane", () => {
   it("finds a chain's mail that the lane moves between its fences and its hot unit (N9)",
      async () => {
     const r = await seeded();
-    const held = r.stub as unknown as DurableObjectStub<ArchivingOwnerDO>;
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
-    // A chain of four, each a reply to the last, the owner and the muse in turn, unread so
-    // none can move yet (the unread ceiling's last room); then its read held before its hot
-    // unit.
+    // A chain of eight, each a reply to the last, the owner and the muse in turn: its first
+    // four read, acked and moved with a body at the cap, so the read has an archived part;
+    // its last four unread, so none can move yet (the unread ceiling's last room).
     const chain: string[] = [];
-    for (let i = 0; i < 4; i++) {
+    const reply = async (i: number) => {
       chain.push((await r.post(i % 2 === 0 ? null : MUSE, room, {
         cmid: `c${i}`, body: `chain ${i}`, parent: chain.at(-1) ?? null })).message_id);
-    }
-    expect(await sqlIn(r.stub, "SELECT * FROM archive_segments")).toEqual([]);
-    await held.holdChain("hot");
-    const reading = r.stub.mailChain(r.bind(null), { message_id: chain[0]!, limit: 50 });
-    try {
-      await held.chainHeld();
-      // There: the chain read and acked, a body at the cap past half the hot ceiling, and
-      // the lane moves the chain out of the hot rows into a segment the held read never saw.
+    };
+    const readAll = async () => {
       await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
       await r.ack(null, (await r.read(null)).messages.at(-1)!.seq);
+    };
+    for (let i = 0; i < 4; i++) {
+      await reply(i);
+    }
+    await readAll();
+    await sealed(r, MUSE, room);
+    await settle(r);
+    for (let i = 4; i < 8; i++) {
+      await reply(i);
+    }
+    const hot = async () => new Set((await sqlIn(r.stub, "SELECT message_id FROM " +
+      "ledger_messages")).map((row) => row["message_id"] as string));
+    const before = await hot();
+    expect(chain.map((id) => before.has(id))).toEqual([false, false, false, false,
+                                                     true, true, true, true]);
+    // The read, named by a hot message of the chain (so its root is not read from a segment
+    // first), held at the FILES gate once its first archived read has answered: its fences
+    // taken, its hot unit not yet.
+    const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
+    await files.arm("getChunks", { hold: "after" });
+    const reading = r.stub.mailChain(r.bind(null), { message_id: chain[4]!, limit: 50 });
+    try {
+      await files.held("getChunks");
+      // There: the chain's last four read and acked, a body at the cap past half the hot
+      // ceiling, and the lane moves them out of the hot rows into a segment the held read
+      // never saw.
+      await readAll();
       await sealed(r, MUSE, room);
       await settle(r);
-      const hot = new Set((await sqlIn(r.stub, "SELECT message_id FROM ledger_messages"))
-        .map((row) => row["message_id"] as string));
-      expect(chain.filter((id) => !hot.has(id)).length).toBeGreaterThan(0);
+      const still = await hot();
+      expect(chain.slice(4).filter((id) => !still.has(id)).length).toBeGreaterThan(0);
     } finally {
-      await held.releaseChain();
+      await files.release("getChunks");
     }
     const page = await reading;
     expect([page.messages.map((m) => [m.message_id, m.body]), page.more]).toEqual([
@@ -603,8 +674,7 @@ describe("the archive lane", () => {
 
   it("reads a still chain while stragglers merge into its segment, replacing it, never " +
      "failing inside (N10)", { tags: ["large"] }, async () => {
-    const r = await seeded(ARCHIVING, 30);
-    const held = r.stub as unknown as DurableObjectStub<ArchivingOwnerDO>;
+    const r = await seeded(30);
     const muse = await r.register(MUSE);
     const eve = await r.register(EVE, "Eve");
     // Eve's mail first, unread: each acked later is a straggler, below the muse's segment.
@@ -626,6 +696,11 @@ describe("the archive lane", () => {
     await settle(r);
     await sentAndAcked(r, MUSE, `dm:${muse}`, STRAGGLERS + 5, "past");
     const last = await seqOf(r, chain.at(-1)!);
+    // The chain's last reply, from the owner, unread and hot: the read is named by it, so its
+    // root is not read from a segment first, and its first read from the files plane is the
+    // first of its archived part, just past the unit that took its fences.
+    chain.push((await r.post(null, `dm:${muse}`, { cmid: "m12", body: "muse 12",
+                                                   parent: chain.at(-1)! })).message_id);
     // Eve acks her oldest, and the lane runs at once: the straggler merges into the muse's
     // segment, which the merge replaces.
     let acked = 0;
@@ -637,7 +712,8 @@ describe("the archive lane", () => {
       await drainDue(r.stub);
     };
     const read = async () => {
-      const page = await r.stub.mailChain(r.bind(null), { message_id: chain[0]!, limit: 50 });
+      const page = await r.stub.mailChain(r.bind(null), { message_id: chain.at(-1)!,
+                                                          limit: 50 });
       expect(page.messages.map((m) => [m.message_id, m.body]))
         .toEqual(chain.map((id, i) => [id, `muse ${i}`]));
     };
@@ -660,15 +736,16 @@ describe("the archive lane", () => {
     // Then the rest, each read held just past the unit that took its fences while one
     // straggler merges.
     let replaced = 0;
+    const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
     while (acked < STRAGGLERS) {
       const before = await museSegments();
-      await held.holdChain("fenced");
+      await files.arm("getChunks", { hold: "before" });
       const reading = read();
       try {
-        await held.chainHeld();
+        await files.held("getChunks");
         await churn();
       } finally {
-        await held.releaseChain();
+        await files.release("getChunks");
       }
       await reading;
       replaced += before === await museSegments() ? 0 : 1;
@@ -680,7 +757,7 @@ describe("the archive lane", () => {
   it("holds its move's units on the isolate's pool; refused busy at once, the lane holds " +
      "with no failure counted, tells the owner once at the hot ceiling, and moves once there " +
      "is room (round 11, Lows A and B)", { tags: ["large"] }, async () => {
-    const r = await rig(ARCHIVING);
+    const r = await rig();
     onTestFinished(() => r.letGo());
     const muse = await r.register(MUSE);
     // Three short of the hot ceiling, a segment's worth of it acked, three unread to spare.
@@ -775,7 +852,7 @@ describe("the archive lane", () => {
   });
 
   it("aborts a move whose batch changed between its units, the mail kept hot", async () => {
-    const r = await rig(ARCHIVING);
+    const r = await rig();
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
     // A body at the cap, acked: a seal's worth to pick (the hot set far from half, so no
@@ -1031,7 +1108,7 @@ describe("segments never overlap in key range (review H1)", () => {
 describe("a merge's byte budget (reviews N1 and N3)", () => {
   it("merges large late-acked mail a budget at a pass, never all at once, every message kept",
      { tags: ["large"] }, async () => {
-    const r = await seeded(ARCHIVING, 8);
+    const r = await seeded(8);
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
     // Five messages near 7 MiB each to Muse, left unread; Dot's mail after them moves.
@@ -1085,7 +1162,7 @@ describe("a merge's byte budget (reviews N1 and N3)", () => {
 describe("an export across a move (review H2)", () => {
   it("replays exactly the owner at E by v3's reading: segments' rows after the log",
      async () => {
-    const r = await rig(ARCHIVING);
+    const r = await rig();
     onTestFinished(() => r.letGo());
     const muse = await r.register(MUSE);
     // Acked mail of bodies as large as the object keeps inline, past a seal's worth.
@@ -1211,7 +1288,7 @@ describe("a body of control characters (review N3)", () => {
 describe("the worst merge (review N3)", () => {
   it("merges a straggler into pack's largest piece, every body control characters, intact",
      { tags: ["large"] }, async () => {
-    const r = await seeded(ARCHIVING, 8);
+    const r = await seeded(8);
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
     const near = "\u0001".repeat(8 * MIB - 100 * 1024);  // short of the least: no cut beside it
@@ -1333,9 +1410,13 @@ describe("the archive lane's failures (review N3)", () => {
 
   it("refuse a move whose second pass differs from its first, loudly, by the chunk's hash",
      async () => {
-    const r = await seeded(env.DIVERGING as unknown as DurableObjectNamespace<OwnerDO>);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     const { cap } = await unsealed(r, muse, "a");
+    // Every segment chunk a move sends has a byte changed in flight, so the bytes R2 is sent
+    // are not the ones the move's first pass hashed.
+    await gateFor(env.FILES_GATE, await spaceOf(r.stub))
+      .arm("putChunks", { corrupt: true }, 1_000);
     await r.stub.mailboxAck(r.bind(MUSE), { through: cap });  // rings the schedule
     for (let pass = 0; pass < 4; pass++) {
       await passAgain(r);
@@ -1466,7 +1547,7 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
    * each acked at once, then the lane settled: a run of real-sized segments (8 MiB each).
    */
   const build = async (n: number, every: number, size: number) => {
-    const r = await seeded(env.PURGING as unknown as DurableObjectNamespace<OwnerDO>);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
     const kept = new Map<string, string>();
@@ -1490,11 +1571,11 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
   };
   /**
    * Delete Muse, then run the lane until it has nothing left to do, checking the archive
-   * whole after each run; the rewrites each move made, as it saw itself between its passes.
+   * whole after each run; the rewrites, each as it landed (`watchMoves`).
    */
   const purge = async (r: Rig, muse: string) => {
     const before = await fences(r);
-    await sqlIn(r.stub, "DELETE FROM test_moves");
+    const stop = await watchMoves(r);
     await r.stub.deleteAgent(r.session(null), { agent_id: muse });
 
     for (let i = 0; i < 60; i++) {
@@ -1512,9 +1593,7 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
         break;
       }
     }
-    const passes = (await sqlIn(r.stub, "SELECT replaced, records FROM test_moves WHERE " +
-                                        "stream = 'rewrite'")) as { replaced: number;
-                                                                  records: number }[];
+    const passes = (await stop()).filter((move) => move.stream === "rewrite");
     return { before, passes, after: await fences(r) };
   };
 
@@ -1554,7 +1633,7 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
 
 describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve)", () => {
   it("keeps pace: a pass moves mail whenever it is due, a rewrite or not", { tags: ["large"] }, async () => {
-    const r = await seeded(env.PURGING as unknown as DurableObjectNamespace<OwnerDO>);
+    const r = await seeded();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
     const eve = await r.register(EVE, "Eve");
@@ -1575,7 +1654,7 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
     }
     expect((await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_segments"))[0]!["n"])
       .toBeGreaterThan(15);
-    await sqlIn(r.stub, "DELETE FROM test_moves");
+    const stop = await watchMoves(r);
     // Muse deleted, Eve's message acked (a straggler, so mail is due) and Dot's small mail,
     // acked, past half the hot ceiling, in one unit of the ledger, which rings no lane; then
     // one post rings it, so its first pass finds both the purge and mail due.
@@ -1622,8 +1701,7 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
       }
     }
     await purged;
-    const moves = (await sqlIn(r.stub, "SELECT stream FROM test_moves ORDER BY rowid"))
-      .map((move) => (move["stream"] === "mail" ? "M" : "r")).join("");
+    const moves = (await stop()).map((move) => (move.stream === "mail" ? "M" : "r")).join("");
     // The first pass rewrote and moved: mail did not wait for the purge's rewrites.
     expect(moves.indexOf("M")).toBe(1);
     expect(moves.lastIndexOf("r")).toBeGreaterThan(1);
@@ -1667,7 +1745,7 @@ describe("a full owner's archive (review M1)", () => {
 
   it("makes a post at the hot ceiling storage_full, the one wall, when a move cannot land",
      { tags: ["large"] }, async () => {
-    const r = await rig(ARCHIVING);
+    const r = await rig();
     onTestFinished(() => r.letGo());
     // The hot set at its ceiling, a segment's worth of it acked, four unread to spare.
     const agent = await r.inLedger((ledger: Ledger) => ballast(ledger, 4, 0));
