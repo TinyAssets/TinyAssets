@@ -39,7 +39,7 @@
  *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
  *   passed. It limits nothing: the founder's cost view.
  */
-import type { Started } from "../../contract/src/sandbox";
+import { START_CODES, type Started } from "../../contract/src/sandbox";
 
 /**
  * The start's answer when the E2B team runs as many sandboxes as its plan allows (the
@@ -50,16 +50,16 @@ import type { Started } from "../../contract/src/sandbox";
  */
 export const SANDBOX_WAITING = "sandbox_waiting";
 
-/** A start's answer, checked: a refusal's code is a fixed code, never prose. */
+/** A start's answer, checked: a refusal's code is one of the contract's start codes. */
 export function started(value: unknown): Started {
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     const answer = value as Record<string, unknown>;
     if (answer["started"] === true && Object.keys(answer).length === 1) {
       return { started: true };
     }
-    if (answer["started"] === false && typeof answer["code"] === "string"
-        && /^[a-z][a-z0-9_]{0,63}$/.test(answer["code"]) && Object.keys(answer).length === 2) {
-      return { started: false, code: answer["code"] };
+    const code = START_CODES.find((each) => each === answer["code"]);
+    if (answer["started"] === false && code !== undefined && Object.keys(answer).length === 2) {
+      return { started: false, code };
     }
   }
   throw new Error("the sandbox's start answered out of shape");

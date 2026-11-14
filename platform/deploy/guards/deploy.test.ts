@@ -39,11 +39,13 @@ import { APP_RESOURCE } from "../../contract/src/identity";
 import { CONTROL_KEY, outsideOpen, ownerOpen, parseControl } from "../../contract/src/control";
 import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
 import { E2bAdmin } from "../../sandbox/e2b/admin";
-import { type CfAnswer, cfApi, Cloudflare, handback, handover, type Route } from "../cloudflare";
+import {
+  Cloudflare, describeStep, handback, handover, type Route,
+} from "../cloudflare";
 import {
   admitsNobody, authorizeCheck, authorizeLink, deployedConfig,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
-  lifecycleHook, listed, lockRefusal, maskInLog, MIGRATED, type Mode, MODES, parse,
+  lifecycleHook, lockRefusal, maskInLog, MIGRATED, type Mode, MODES, parse,
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, type RouteRecord,
   secretPlan, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
@@ -80,6 +82,22 @@ const RUNNER = "the runner";
 const PROBE_BUNDLE = "the probes";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const PAIR = pairTag(TEMPLATE, sha(RUNNER), sha(PROBE_BUNDLE));
+
+/** A Cloudflare answer, as a fake gives it: its status and its JSON body. */
+interface CfAnswer {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+const CF_API = "https://api.cloudflare.com/client/v4";
+
+/** The client over a fake answering each call by its path from `/client/v4`. */
+function client(call: (path: string, init?: RequestInit) => Promise<CfAnswer>): Cloudflare {
+  return new Cloudflare("cf-token", async (url, init) => {
+    const { status, body } = await call(url.slice(CF_API.length), init);
+    return Response.json(body, { status });
+  });
+}
 
 /** A Cloudflare API that answers each path with the answer `answers` names, or a 500. */
 function api(answers: Record<string, CfAnswer | Error>) {
@@ -133,6 +151,8 @@ interface WorldOptions {
   readonly lockRefused?: string;
   /** A wrangler command that fails. */
   readonly failing?: string;
+  /** A Cloudflare listing the API refuses (500), by its path from the account. */
+  readonly refusingListing?: string;
   /** KV keys whose write Cloudflare refuses. */
   readonly refusing?: string;
   /** The Worker the egress host's custom domain serves already. */
@@ -214,8 +234,39 @@ function world(options: WorldOptions = {}) {
   ];
   const ATTACHED = { id: "dns-egress", type: "AAAA", name: EGRESS_DOMAIN, content: "100::" };
   let made = 0;
+  /** The account's R2 buckets and queues, and what the run made, in order. */
+  const buckets = new Set(options.listed?.buckets ?? (held ? BUCKETS : []));
+  const queues = new Set(options.listed?.queues ?? (held ? QUEUES : []));
+  const created: string[] = [];
   const json = (body: unknown, status = 200) => Response.json(body, { status });
   const cf = (path: string, method: string, body: string | undefined): Response => {
+    const account = `/accounts/${ACCOUNT}`;
+    if (options.refusingListing !== undefined && method === "GET"
+        && path.startsWith(`${account}/${options.refusingListing}`)) {
+      return json({ success: false, errors: [{ code: 10000 }] }, 500);
+    }
+    const given = method === "POST" ? JSON.parse(body!) as Record<string, string> : {};
+    if (path === `${account}/storage/kv/namespaces` && method === "POST") {
+      created.push(`KV namespace ${given["title"]}`);
+      namespaces.set(given["title"]!, `made-${given["title"]}`);
+      return json({ success: true, result: { id: `made-${given["title"]}` } });
+    }
+    if (path === `${account}/r2/buckets`) {
+      if (method === "POST") {
+        created.push(`R2 bucket ${given["name"]}`);
+        buckets.add(given["name"]!);
+      }
+      return json({ success: true, result: method === "POST" ? {}
+        : { buckets: [...buckets].map((name) => ({ name })) } });
+    }
+    if (path === `${account}/queues`) {
+      if (method === "POST") {
+        created.push(`queue ${given["queue_name"]}`);
+        queues.add(given["queue_name"]!);
+      }
+      return json({ success: true, result: method === "POST" ? {}
+        : [...queues].map((name, n) => ({ queue_id: `q${n + 1}`, queue_name: name })) });
+    }
     if (path === `/zones?name=${ZONE}`) {
       return json({ success: true, result: [{ id: "z", account: { id: ACCOUNT } }] });
     }
@@ -378,9 +429,6 @@ function world(options: WorldOptions = {}) {
         secretsPut[`${basename(join(argv[argv.length - 1]!, ".."))}:${args[2]}`] =
           options_.input ?? "";
       }
-      if (args[0] === "kv") {
-        namespaces.set(args[3]!, `made-${args[3]}`);
-      }
       if (args[0] === "triggers") {
         if (killed()) {
           return { status: 1, stdout: "", stderr: "the run was killed" };
@@ -393,13 +441,8 @@ function world(options: WorldOptions = {}) {
           }
         }
       }
-      const buckets = options.listed?.buckets ?? (held ? BUCKETS : []);
-      const queues = options.listed?.queues ?? (held ? QUEUES : []);
-      const stdout = args[1] === "bucket" && args[2] === "list"
-        ? buckets.map((bucket) => `name:  ${bucket}\n`).join("")
-        : args[0] === "queues" && args[1] === "list"
-          ? queues.map((queue, n) => `│ q${n + 1} │ ${queue} │\n`).join("") : args[1] === "upload"
-            ? "Worker Version ID: 0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n" : "";
+      const stdout = args[1] === "upload"
+        ? "Worker Version ID: 0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n" : "";
       return { status: 0, stdout, stderr: "" };
     }
     if (command === "python3") {
@@ -444,7 +487,7 @@ function world(options: WorldOptions = {}) {
   };
   const io: Io = { fetch: fetcher, spawn, exec, log, now: () => NOW };
   return { io, events, logs, secretsPut, routes, hooks, accounts, kv, tables, kill, domains,
-           inert, dns };
+           inert, dns, created };
 }
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
@@ -653,14 +696,14 @@ describe("a dark run", () => {
       "the tree's image", "e2b GET /templates/t1/tags/exists", "bundle the runner and the probes",
       "e2b GET /templates/t1/tags/exists",
       "e2b GET /events/webhooks", "workos GET redirect_uris", "workos POST redirect_uris",
-      "workos authorize", "cf GET /accounts", "wrangler kv namespace create",
-      "wrangler r2 bucket create tinyassets-files", "wrangler queues create tinyassets-sandbox-ring",
-      "wrangler queues create tinyassets-erasure", "wrangler secret put ROUTING_MAC_KEY",
+      "workos authorize", "cf GET /accounts", `cf POST /accounts/${ACCOUNT}/storage/kv/namespaces`,
+      `cf POST /accounts/${ACCOUNT}/r2/buckets`, `cf POST /accounts/${ACCOUNT}/queues`,
+      `cf POST /accounts/${ACCOUNT}/queues`, "wrangler secret put ROUTING_MAC_KEY",
       "wrangler deploy --config files/", "wrangler deploy --config doors/", "cf PUT /accounts",
       "e2b POST /events/webhooks", "log Changed:", "python3 cutover_handles_canary.py --side auto",
       "log H2's probes wait"]);
     const first = w.events.findIndex((event) =>
-      /^(wrangler [a-z ]*create|wrangler secret|cf PUT)/.test(event));
+      /^(cf POST|wrangler secret|cf PUT)/.test(event));
     expect(at[11]).toBeLessThan(first);
     // The webhook is registered disabled, with the doors' secret, after the doors hold it.
     expect(w.events[at[21]!]).toContain('"enabled":false');
@@ -819,11 +862,10 @@ describe("a dark run", () => {
 
   it("makes the import window's queue, dead-letter queue and bucket, each only when its " +
      "listing lacks it, in a fresh, a held and a partial account", async () => {
-    const WINDOW = ["r2 bucket create tinyassets-import-staging",
-                    "queues create tinyassets-import", "queues create tinyassets-import-dlq"];
-    const made = (w: ReturnType<typeof world>) => w.events
-      .filter((event) => /^wrangler (r2 bucket|queues) create /.test(event))
-      .map((event) => event.slice("wrangler ".length));
+    const WINDOW = ["R2 bucket tinyassets-import-staging", "queue tinyassets-import",
+                    "queue tinyassets-import-dlq"];
+    const made = (w: ReturnType<typeof world>) => w.created
+      .filter((each) => !each.startsWith("KV namespace"));
     expect(BUCKETS).toEqual(["tinyassets-files", "tinyassets-import-staging",
                              "tinyassets-final-backup"]);
     expect(QUEUES).toEqual(["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
@@ -840,8 +882,8 @@ describe("a dark run", () => {
       buckets: ["tinyassets-files", "tinyassets-final-backup"],
       queues: ["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import"] } });
     const work = await runMode(partial, "dark", ["--yes"]);
-    expect(made(partial)).toEqual(["r2 bucket create tinyassets-import-staging",
-                                   "queues create tinyassets-import-dlq"]);
+    expect(made(partial)).toEqual(["R2 bucket tinyassets-import-staging",
+                                   "queue tinyassets-import-dlq"]);
     expect(work.plan).toEqual(expect.arrayContaining([
       "create the R2 bucket tinyassets-import-staging", "create the queue tinyassets-import-dlq"]));
     expect(work.plan).not.toContain("create the queue tinyassets-import");
@@ -849,15 +891,14 @@ describe("a dark run", () => {
 
   it("makes the off-site copy's bucket, which no Worker binds, only when its listing lacks it",
      async () => {
-    const made = (w: ReturnType<typeof world>) => w.events
-      .filter((event) => /^wrangler r2 bucket create /.test(event))
-      .map((event) => event.slice("wrangler ".length));
+    const made = (w: ReturnType<typeof world>) => w.created
+      .filter((each) => each.startsWith("R2 bucket"));
     expect([...CONFIGS.values()].flatMap((config) =>
       ((config["r2_buckets"] ?? []) as { bucket_name: string }[]).map((each) => each.bucket_name)))
       .not.toContain("tinyassets-final-backup");
     const fresh = world();
     await runMode(fresh, "dark", ["--yes"]);
-    expect(made(fresh)).toContain("r2 bucket create tinyassets-final-backup");
+    expect(made(fresh)).toContain("R2 bucket tinyassets-final-backup");
     const held = world({ held: true });
     await runMode(held, "dark", ["--yes"]);
     expect(made(held)).toEqual([]);
@@ -866,7 +907,7 @@ describe("a dark run", () => {
       queues: ["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
                "tinyassets-import-dlq"] } });
     const work = await runMode(lacking, "dark", ["--yes"]);
-    expect(made(lacking)).toEqual(["r2 bucket create tinyassets-final-backup"]);
+    expect(made(lacking)).toEqual(["R2 bucket tinyassets-final-backup"]);
     expect(work.plan).toContain("create the R2 bucket tinyassets-final-backup");
     // The plan job lists it and makes nothing.
     const plan = world({ held: true, listed: {
@@ -878,11 +919,37 @@ describe("a dark run", () => {
     expect(planned.plan).toContain("create the R2 bucket tinyassets-final-backup");
   });
 
-  it("stops on a failed wrangler listing, never reading it as absent", async () => {
-    const w = world({ failing: "r2 bucket list" });
-    await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
-      "wrangler r2 bucket list failed (exit 1): the API refused it");
-    expect(w.events.some((event) => event.includes("create tinyassets-files"))).toBe(false);
+  it("stops on a failed bucket or queue listing, never reading it as absent", async () => {
+    for (const [listing, what] of [["r2/buckets", "R2 buckets"], ["queues", "queues"]] as const) {
+      const w = world({ refusingListing: listing });
+      await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
+        `listing the ${what} failed (500, [10000])`);
+      expect(w.created.filter((each) => each.startsWith(listing === "queues" ? "queue"
+        : "R2 bucket"))).toEqual([]);
+    }
+  });
+
+  it("reads whether a Worker exists from the account's Workers listing, never its secrets",
+     async () => {
+    // A fresh account: every Worker deployed whole, and no secret listing read.
+    const fresh = world();
+    await runMode(fresh, "dark", ["--yes"]);
+    expect(fresh.events.filter((event) => event.endsWith("/secrets"))).toEqual([]);
+    expect(fresh.events.filter((event) => event.startsWith("wrangler deploy")).length)
+      .toBe(WORKERS.length);
+    // A held one: each listed Worker's secrets read, each deployed as a version.
+    const held = world({ held: true });
+    await runMode(held, "dark", ["--yes"]);
+    expect(held.events.filter((event) => event.endsWith("/secrets"))).toEqual(
+      Object.keys(SECRETS).map((worker) =>
+        `cf GET /accounts/${ACCOUNT}/workers/scripts/${NAMES[worker]}/secrets`));
+    expect(held.events.filter((event) => event.startsWith("wrangler deploy"))).toEqual([]);
+    // A listing that fails stops the run before any secret or Worker.
+    const refused = world({ held: true, refusingListing: "workers/scripts" });
+    await expect(runMode(refused, "dark", ["--yes"])).rejects.toThrow(
+      "the Workers listing failed (500, [10000])");
+    expect(refused.events.some((event) => /^wrangler (secret|deploy|versions)/.test(event)))
+      .toBe(false);
   });
 
   it("stops when the pair has not passed, and plans only the pair job's check without --yes",
@@ -951,7 +1018,7 @@ const CONTROL_NS = `ns-${NAMESPACES["CONTROL"]}`;
 const RECORD_AT = `/accounts/${ACCOUNT}/storage/kv/namespaces/${CONTROL_NS}/values/${
   encodeURIComponent(KEY)}`;
 /** What changes the account, WorkOS, E2B or the zone: every write the kit can make. */
-const CHANGE = /^(wrangler (kv namespace create|r2 bucket create|queues create|secret put|deploy|versions upload|versions deploy|triggers deploy)|cf (PUT|POST|DELETE) |e2b (POST|PATCH)|workos POST)/;
+const CHANGE = /^(wrangler (secret put|deploy|versions upload|versions deploy|triggers deploy)|cf (PUT|POST|DELETE) |e2b (POST|PATCH)|workos POST)/;
 const ROUTE_CHANGE = /^cf (PUT|POST|DELETE) \/zones\/z\/workers\/routes/;
 
 /** A zone's routes as a record keeps them, by pattern: ids aside. */
@@ -1221,7 +1288,6 @@ describe("a handback run", () => {
     const route = good.routes[0]!;
     const added = good.moved.find((each) => each.method === "POST")!;
     for (const [bad, why] of [
-      ["not json", "is not a route record"],
       [{ ...good, kind: "other" }, "is not a route record"],
       [{ ...good, zone: "example.com" }, "is of another zone"],
       [{ ...good, zone_id: "y" }, "is of another zone"],
@@ -1244,12 +1310,18 @@ describe("a handback run", () => {
       [{ ...good, hook: { url: E2B_HOOK.url, present: false, enabled: true } },
        "holds no lifecycle webhook in shape"],
     ] as const) {
-      w.kv.set(`${CONTROL_NS}/${KEY}`, typeof bad === "string" ? bad : JSON.stringify(bad));
+      w.kv.set(`${CONTROL_NS}/${KEY}`, JSON.stringify(bad));
       const at = w.events.length;
       await expect(runMode(w, "handback", ["--yes", "--record", "7001"]), why).rejects.toThrow(
         `the record ${KEY} ${why}`);
       expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
     }
+    // One that is not JSON stops it too: never read as an empty record.
+    w.kv.set(`${CONTROL_NS}/${KEY}`, "not json");
+    const at = w.events.length;
+    await expect(runMode(w, "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
+      `/values/${encodeURIComponent(KEY)} with a body that is not JSON (200)`);
+    expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
   });
 
   it("leaves the custom domain and the hook where the record has them already the doors'",
@@ -1422,7 +1494,7 @@ describe("a handback run", () => {
     const from = w.events.length;
     await expect(runMode(w, "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
       `add the route ${pattern} back for tinyassets-mcp-proxy failed (400, [10020]); the steps ` +
-      "before it are done, the rest are not: run the handback again");
+      "before it are done, the rest are not: run it again for the rest");
     const ran = w.events.slice(from);
     const refused = ran.indexOf(`cf POST /zones/z/workers/routes`, ran.indexOf(
       "cf POST /zones/z/workers/routes") + 1);
@@ -1767,33 +1839,32 @@ describe("the parts of a run", () => {
      "done", async () => {
     const listing = "/accounts/a/workers/scripts";
     const script = "/accounts/a/workers/scripts/tinyassets-old";
-    expect(await new Cloudflare(api({ [listing]: ok([{ id: "tinyassets-old" }, { id: "x" }]) }))
+    expect(await client(api({ [listing]: ok([{ id: "tinyassets-old" }, { id: "x" }]) }))
       .workers("a")).toEqual(["tinyassets-old", "x"]);
     const deleted = api({ [script]: ok(null) });
-    await new Cloudflare(deleted).deleteWorker("a", "tinyassets-old");
+    await client(deleted).deleteWorker("a", "tinyassets-old");
     expect(deleted.calls).toEqual([`DELETE ${script}`]);
     for (const answer of [
       { status: 500, body: {} }, { status: 403, body: { success: false, errors: [{ code: 10000 }] } },
       { status: 200, body: { success: false } },
     ] as CfAnswer[]) {
-      await expect(new Cloudflare(api({ [listing]: answer })).workers("a"))
+      await expect(client(api({ [listing]: answer })).workers("a"))
         .rejects.toThrow(/the Workers listing failed/);
-      await expect(new Cloudflare(api({ [script]: answer })).deleteWorker("a", "tinyassets-old"))
+      await expect(client(api({ [script]: answer })).deleteWorker("a", "tinyassets-old"))
         .rejects.toThrow(/deleting the Worker tinyassets-old failed/);
     }
-    await expect(new Cloudflare(api({ [listing]: ok({}) })).workers("a"))
+    await expect(client(api({ [listing]: ok({}) })).workers("a"))
       .rejects.toThrow(/the Workers listing failed/);
   });
 
-  it("never reads a failed secret listing as no secrets", async () => {
+  it("never reads a failed secret listing as no secrets, a missing Worker's neither", async () => {
     const path = "/accounts/a/workers/scripts/tinyassets-doors/secrets";
-    const cf = (answers: Record<string, CfAnswer | Error>) => new Cloudflare(api(answers));
+    const cf = (answers: Record<string, CfAnswer | Error>) => client(api(answers));
     expect(await cf({ [path]: ok([{ name: "WORKOS_API_KEY", type: "secret_text" }]) })
       .secrets("a", "tinyassets-doors")).toEqual(["WORKOS_API_KEY"]);
-    expect(await cf({ [path]: { status: 404, body: { success: false, errors: [{ code: 10007 }] } } })
-      .secrets("a", "tinyassets-doors")).toBeNull();
     for (const answer of [
       { status: 500, body: {} }, { status: 403, body: { success: false, errors: [{ code: 10000 }] } },
+      { status: 404, body: { success: false, errors: [{ code: 10007 }] } },
       { status: 404, body: { success: false, errors: [{ code: 7003 }] } },
       { status: 200, body: { success: false } }, { status: 200, body: { success: true } },
     ] as CfAnswer[]) {
@@ -1806,7 +1877,7 @@ describe("the parts of a run", () => {
 
   it("calls the control record absent only when the API answers it is", async () => {
     const path = "/accounts/a/storage/kv/namespaces/n/values/c%3Acontrol";
-    const cf = (answer: CfAnswer) => new Cloudflare(api({ [path]: answer }));
+    const cf = (answer: CfAnswer) => client(api({ [path]: answer }));
     expect(await cf({ status: 200, body: { ordinary: "none" } } as CfAnswer)
       .value("a", "n", CONTROL_KEY)).toEqual({ ordinary: "none" });
     expect(await cf({ status: 404, body: { success: false, errors: [{ code: 10009 }] } })
@@ -1815,30 +1886,72 @@ describe("the parts of a run", () => {
                           { status: 401, body: { errors: [{ code: 10000 }] } }] as CfAnswer[]) {
       await expect(cf(answer).value("a", "n", CONTROL_KEY)).rejects.toThrow(/failed/);
     }
+    // A stored value that is not JSON is no record: it throws, never reads as `{}`.
+    const text = new Cloudflare("cf-token", async () => new Response("not json"));
+    await expect(text.value("a", "n", CONTROL_KEY)).rejects.toThrow(
+      "Cloudflare answered GET /accounts/a/storage/kv/namespaces/n/values/c%3Acontrol with a " +
+      "body that is not JSON (200)");
   });
 
-  it("never reads a failed namespace or wrangler listing as absent", async () => {
-    const page = (n: number) => `/accounts/a/storage/kv/namespaces?per_page=100&page=${n}`;
-    const full = Array.from({ length: 100 }, (_, i) => ({ id: `i${i}`, title: `t${i}` }));
-    const found = await new Cloudflare(api({ [page(1)]: ok(full),
-                                             [page(2)]: ok([{ id: "x", title: "tinyassets-control" }]) }))
-      .namespaces("a");
-    expect(found.get("tinyassets-control")).toBe("x");
-    await expect(new Cloudflare(api({ [page(1)]: ok(full) })).namespaces("a"))
-      .rejects.toThrow(/failed/);
-    expect(listed("tinyassets-files-old\nother", "tinyassets-files")).toBe(false);
-    expect(listed("name:           tinyassets-files\n", "tinyassets-files")).toBe(true);
-    expect(listed("│ q1 │ tinyassets-sandbox-ring │ 0 │", "tinyassets-sandbox-ring")).toBe(true);
+  it("reads every listing past its first 100, by page or by cursor, and makes by REST",
+     async () => {
+    const rows = (n: number, from = 0) => Array.from({ length: n }, (_, i) => i + from);
+    // By page number while page * per_page is short of total_count: KV namespaces, queues.
+    const paged = (path: string, row: (i: number) => Json) => {
+      const total = 150;
+      return Object.fromEntries([1, 2].map((page) => [
+        `${path}${page === 1 ? "" : `${path.includes("?") ? "&" : "?"}page=${page}`}`,
+        { status: 200, body: { success: true, result: rows(page === 1 ? 100 : 50, (page - 1) * 100)
+          .map(row), result_info: { page, per_page: 100, count: page === 1 ? 100 : 50,
+                                    total_count: total } } }]));
+    };
+    const kv = paged("/accounts/a/storage/kv/namespaces?per_page=100",
+                     (i) => ({ id: `i${i}`, title: `t${i}` }));
+    const namespaces = await client(api(kv)).namespaces("a");
+    expect([namespaces.size, namespaces.get("t149")]).toEqual([150, "i149"]);
+    const queues = await client(api(paged("/accounts/a/queues",
+                                          (i) => ({ queue_id: `q${i}`, queue_name: `n${i}` }))))
+      .queues("a");
+    expect([queues.size, queues.get("n120")]).toEqual([150, "q120"]);
+    // By cursor while it answers one: R2 buckets (`{ buckets }`), a namespace's keys.
+    const cursored = (path: string, page: (rows: Json[]) => unknown, row: (i: number) => Json) => ({
+      [path]: { status: 200, body: { success: true, result: page(rows(100).map(row)),
+                                     result_info: { cursor: "c/2", per_page: 100 } } },
+      [`${path}${path.includes("?") ? "&" : "?"}cursor=c%2F2`]: {
+        status: 200, body: { success: true, result: page(rows(30, 100).map(row)),
+                             result_info: { cursor: "", per_page: 100 } } } });
+    expect((await client(api(cursored("/accounts/a/r2/buckets", (buckets) => ({ buckets }),
+                                      (i) => ({ name: `b${i}` })))).buckets("a")).length)
+      .toBe(130);
+    expect((await client(api(cursored("/accounts/a/storage/kv/namespaces/n/keys?prefix=o%3A",
+                                      (keys) => keys, (i) => ({ name: `o:${i}` }))))
+      .keys("a", "n", "o:")).at(-1)).toBe("o:129");
+    // A failed later page fails the listing: never its first page read as the whole.
+    const first = Object.entries(kv)[0]!;
+    await expect(client(api(Object.fromEntries([first]))).namespaces("a"))
+      .rejects.toThrow("listing the KV namespaces failed (500, [10000])");
+    // Each make is one POST, its answer checked; a namespace's id is its answer's.
+    const made = api({ "/accounts/a/storage/kv/namespaces": ok({ id: "k1" }),
+                       "/accounts/a/r2/buckets": ok({ name: "b" }),
+                       "/accounts/a/queues": ok({ queue_id: "q" }) });
+    expect(await client(made).makeNamespace("a", "t")).toBe("k1");
+    await client(made).makeBucket("a", "b");
+    await client(made).makeQueue("a", "q");
+    expect(made.calls).toEqual(["POST /accounts/a/storage/kv/namespaces",
+                                "POST /accounts/a/r2/buckets", "POST /accounts/a/queues"]);
+    await expect(client(api({})).makeBucket("a", "b"))
+      .rejects.toThrow("making the R2 bucket b failed (500, [10000])");
     // Wrangler's runner throws on any non-zero exit, with its stderr alone.
-    const w = world({ failing: "queues list" });
+    const w = world({ failing: "versions upload" });
     const run = wranglerFor(parse(["--mode", "dark"], ENV, w.io), ACCOUNT);
-    expect(() => run(["queues", "list"])).toThrow("wrangler queues list failed (exit 1): the API refused it");
+    expect(() => run(["versions", "upload"]))
+      .toThrow("wrangler versions upload failed (exit 1): the API refused it");
   });
 
   it("hands each route from the old proxy to the doors one at a time, no path unserved " +
      "(review D3)", async () => {
     const fake = zoneApi(LIVE);
-    const cloudflare = new Cloudflare(fake);
+    const cloudflare = client(fake);
     const { id: zone, account } = await cloudflare.zone(ZONE);
     expect(account).toBe("a".repeat(32));
     const steps = handover(await cloudflare.routes(zone), DOORS, ROUTES);
@@ -1851,7 +1964,7 @@ describe("the parts of a run", () => {
                 "tinyassets.io/.well-known/oauth-authorization-server*"]);
     const added = steps.findIndex((each) => each.pattern === "tinyassets.io/.well-known/oauth-*");
     expect(steps.findIndex((each) => each.method === "DELETE")).toBeGreaterThan(added);
-    await cloudflare.handOver(zone, DOORS, steps);
+    await cloudflare.reroute(zone, steps, (each) => describeStep(each, DOORS));
     for (const path of PROBES.slice(0, 10)) {
       expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
     }
@@ -1865,10 +1978,11 @@ describe("the parts of a run", () => {
      async () => {
     expect(PROBE_ROUTES.every((pattern) => ROUTES.includes(pattern))).toBe(true);
     const fake = zoneApi(LIVE);
-    const cloudflare = new Cloudflare(fake);
+    const cloudflare = client(fake);
     const steps = probeSteps(await cloudflare.routes("z"));
-    expect(steps).toEqual(PROBE_ROUTES.map((pattern) => ({ method: "POST", pattern })));
-    await cloudflare.handOver("z", DOORS, steps);
+    expect(steps).toEqual(PROBE_ROUTES.map((pattern) => ({ method: "POST", pattern,
+                                                           script: DOORS })));
+    await cloudflare.reroute("z", steps, (each) => describeStep(each, DOORS));
     // Only the sign-in's paths move: every other path is served as before.
     for (const path of PROBES) {
       const doors = path === "tinyassets.io/authorize" || path === "tinyassets.io/oauth/token";
@@ -1880,7 +1994,7 @@ describe("the parts of a run", () => {
     const after = handover([...fake.table.values()], DOORS, ROUTES);
     expect(after).toEqual(handover(LIVE, DOORS, ROUTES)
       .filter((each) => !PROBE_ROUTES.includes(each.pattern)));
-    await cloudflare.handOver("z", DOORS, after);
+    await cloudflare.reroute("z", after, (each) => describeStep(each, DOORS));
     for (const path of PROBES.slice(0, 10)) {
       expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
     }
@@ -1935,32 +2049,37 @@ describe("the parts of a run", () => {
 
   it("stops the handover at a refused change, saying what is done", async () => {
     const fake = zoneApi(LIVE, "PUT /zones/z/workers/routes/r1");
-    const cloudflare = new Cloudflare(fake);
+    const cloudflare = client(fake);
     const steps = handover(await cloudflare.routes("z"), DOORS, ROUTES);
-    await expect(cloudflare.handOver("z", DOORS, steps)).rejects.toThrow(/the steps before it/);
+    await expect(cloudflare.reroute("z", steps, (each) => describeStep(each, DOORS)))
+      .rejects.toThrow("move the route tinyassets.io/mcp* from tinyassets-mcp-proxy to " +
+                       `${DOORS} failed (500, [10000]); the steps before it are done, the rest ` +
+                       "are not: run it again for the rest");
     expect(fake.calls.filter((call) => call.startsWith("DELETE"))).toEqual([]);
-    await expect(new Cloudflare(api({})).zone(ZONE)).rejects.toThrow(/could not be read/);
+    await expect(client(api({})).zone(ZONE)).rejects.toThrow(
+      "reading the zone tinyassets.io failed (500, [10000])");
     // The account is the zone's own: one zone, with its account, or the kit stops.
-    const zones = (result: unknown) => new Cloudflare(api({ "/zones?name=tinyassets.io": ok(result) }));
+    const zones = (result: unknown) => client(api({ "/zones?name=tinyassets.io": ok(result) }));
     await expect(zones([{ id: "z" }]).zone(ZONE)).rejects.toThrow(/could not be read/);
     await expect(zones([{ id: "z", account: { id: "a".repeat(32) } },
                         { id: "y", account: { id: "b".repeat(32) } }]).zone(ZONE))
       .rejects.toThrow(/2 found/);
     await expect(zones([{ id: "z", account: { id: "../x" } }]).zone(ZONE))
       .rejects.toThrow(/could not be read/);
-    await expect(new Cloudflare(api({})).routes("z")).rejects.toThrow(/could not be read/);
+    await expect(client(api({})).routes("z")).rejects.toThrow(
+      "reading the zone's routes failed (500, [10000])");
   });
 
-  it("sends the account's token on every Cloudflare call, and reads a body that is not JSON " +
-     "as none", async () => {
+  it("sends the account's token on every Cloudflare call, and refuses a body that is not " +
+     "JSON", async () => {
     const sent: { url: string; headers: unknown }[] = [];
-    const call = cfApi("cf-token", async (url, init) => {
+    const cloudflare = new Cloudflare("cf-token", async (url, init) => {
       sent.push({ url, headers: init?.headers });
       return new Response("not json", { status: 502 });
     });
-    expect(await call("/zones?name=x", { headers: { "Content-Type": "application/json" } }))
-      .toEqual({ status: 502, body: {} });
-    expect(sent).toEqual([{ url: "https://api.cloudflare.com/client/v4/zones?name=x",
+    await expect(cloudflare.makeQueue("a", "q")).rejects.toThrow(
+      "Cloudflare answered POST /accounts/a/queues with a body that is not JSON (502)");
+    expect(sent).toEqual([{ url: "https://api.cloudflare.com/client/v4/accounts/a/queues",
                             headers: { Authorization: "Bearer cf-token",
                                        "Content-Type": "application/json" } }]);
   });

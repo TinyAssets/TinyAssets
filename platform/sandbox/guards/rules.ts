@@ -9,7 +9,6 @@
  * imported as data.
  */
 import type { ConfigRules } from "../../ci/kit/config";
-import { type Owed, refusals } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "sandbox",
@@ -48,14 +47,3 @@ export const CONFIG: ConfigRules = Object.freeze({
 const OWN = Object.freeze(["this.env.SANDBOXES", "this.env.SLOTS"]);
 export const OWN_OBJECTS = Object.freeze({ "sandbox/src/index.ts": OWN,
                                            "sandbox/src/control.ts": OWN });
-
-/**
- * What the sandbox still owes the platform's guards (`ci/kit/owed.ts`), each until the fix
- * named removes it.
- */
-export const OWED: readonly Owed[] = Object.freeze([
-  // The runner's answers as error classes of the Worker's own, each a contract refusal by
-  // its code (B2, S7).
-  ...refusals("B2", "platform/sandbox/src/control.ts",
-              ["class RunnerFailed extends Error", "class RunnerRefused extends Error"]),
-]);
