@@ -27,6 +27,7 @@ import { DEFAULT_POLICY_DIGEST, policyDigest } from "../../contract/src/policy-d
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { cut } from "../../contract/src/content";
 import { objectPrefix } from "../../contract/src/files";
+import { QUEUES } from "../../contract/src/queue-names";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
 import { windowMain } from "../cli";
@@ -178,7 +179,7 @@ function world(bundles: readonly Staged[]) {
     }
     const path = url.pathname.replace(`/client/v4/accounts/${INPUTS.account}`, "");
     if (path === "/queues") {
-      return ok([{ queue_id: "q-import", queue_name: NAMES.queue },
+      return ok([{ queue_id: "q-import", queue_name: QUEUES.IMPORTS },
                  { queue_id: "q-dead", queue_name: NAMES.dead_letter_queue }]);
     }
     if (path === "/queues/q-import/messages") {

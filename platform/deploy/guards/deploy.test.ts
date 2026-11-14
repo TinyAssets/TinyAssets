@@ -625,8 +625,8 @@ describe("the deploy kit's facts", () => {
     expect([printed.status, printed.stderr]).toEqual([0, ""]);
     const names = JSON.parse(printed.stdout) as Record<string, string>;
     expect(names).toEqual(IMPORT_NAMES);
-    const { queue, dead_letter_queue: deadLetters, directory, ...buckets } = names;
-    expect([queue, deadLetters].filter((name) => !QUEUES.includes(name!))).toEqual([]);
+    const { dead_letter_queue: deadLetters, directory, ...buckets } = names;
+    expect(QUEUES).toContain(deadLetters);
     expect(Object.values(NAMESPACES)).toContain(directory);
     expect(Object.values(buckets).filter((name) => !BUCKETS.includes(name))).toEqual([]);
     expect(new Set(Object.values(names)).size).toBe(Object.keys(names).length);
@@ -2068,6 +2068,9 @@ describe("the parts of a run", () => {
       .rejects.toThrow(/could not be read/);
     await expect(client(api({})).routes("z")).rejects.toThrow(
       "reading the zone's routes failed (500, [10000])");
+    // A pull whose answer holds no pull is a failed read, never an empty dead-letter queue.
+    await expect(client(api({ "/accounts/a/queues/q/messages/pull": ok(null) }))
+      .pull("a", "q", 100, 60_000)).rejects.toThrow("its answer holds no pull");
   });
 
   it("sends the account's token on every Cloudflare call, and refuses a body that is not " +
