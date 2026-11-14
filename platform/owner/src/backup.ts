@@ -30,7 +30,10 @@
  *   passed `LOG_BYTES` (an R2 outage), its objects are deleted, the owner is told once, and
  *   the lane waits for the owner's next change. The owner's writes always land.
  * - **Kept.** The newest finished generation, the one being written, and each an open export
- *   pins (`owner_exports`, `EXPORT_LIFE_S`); every other is deleted from R2, root first.
+ *   pins (`owner_exports`, `EXPORT_LIFE_S`); and, while the newest's log is past `LOG_BYTES`
+ *   (which a restore refuses to stage, `restore.ts`), the latest older one whose log is within
+ *   it (`fallback`), so a generation a restore can load always stands. Every other is deleted
+ *   from R2, root first.
  * - **Erasure.** The generations carry the owner's wrapped key, so the erasure's prefix
  *   delete takes them with the chunks, and the mark has already halted this lane.
  *
@@ -40,14 +43,16 @@
 import { randomHex } from "../../contract/src/ids";
 import { createHash } from "node:crypto";
 
-import { CHUNK_BYTES, MANIFEST_PARTS, SLOT_WAIT_MS } from "../../contract/src/limits";
+import {
+  CHUNK_BYTES, LOG_BYTES, MANIFEST_PARTS, SLOT_WAIT_MS,
+} from "../../contract/src/limits";
 import type { ChangeLog } from "./changelog";
 import {
   chunkLine, type Cursor, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES,
   type Lines,
   readPage,
 } from "./export";
-import type { ChunkStore } from "../../contract/src/files";
+import type { ChunkStore, ManifestRoot } from "../../contract/src/files";
 import type { ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
@@ -216,6 +221,8 @@ type GenerationRow = {
   readonly started_at: number;
   readonly finished_at: number | null;
   readonly retry_at: number | null;
+  /** A finished generation's log through E, in bytes: its segments' sizes. */
+  readonly log_bytes: number;
 };
 
 /** A generation's object an export reads at an index: a part, a segment, its end, or none yet. */
@@ -241,6 +248,19 @@ function segmentsOf(list: string): { a: number; b: number; sha256: string; size:
     const [a, b] = span!.split("-");
     return { a: Number(a), b: Number(b), sha256: sha256!, size: Number(size) };
   });
+}
+
+/**
+ * The finished generation kept behind the newest while the newest's log is past `LOG_BYTES`,
+ * which a restore refuses to stage (`restore.ts`): the latest older one whose log is within
+ * it, so a generation a restore can load always stands; null while the newest's is within it.
+ */
+function fallback(done: readonly GenerationRow[]): string | null {
+  const newest = done.at(-1);
+  if (newest === undefined || newest.log_bytes <= LOG_BYTES) {
+    return null;
+  }
+  return done.slice(0, -1).reverse().find((row) => row.log_bytes <= LOG_BYTES)?.gen ?? null;
 }
 
 /** What the manifest lane runs on. */
@@ -308,10 +328,10 @@ export class Backups {
 
   /** The finished generations, oldest first. A read. */
   manifests(): { gen: string; day: string; parts: number; segments: number;
-                 started_at: number; finished_at: number }[] {
+                 started_at: number; finished_at: number; log_bytes: number }[] {
     return this.#rows().filter((row) => row.state === "done").map((row) => ({
       gen: row.gen, day: row.day, parts: row.parts, segments: row.segments,
-      started_at: row.started_at, finished_at: row.finished_at! }));
+      started_at: row.started_at, finished_at: row.finished_at!, log_bytes: row.log_bytes }));
   }
 
   /** When the lane next has work, in seconds, never before `now`; null before any owner. */
@@ -326,8 +346,10 @@ export class Backups {
       return retry(writing.retry_at);
     }
     const done = rows.filter((row) => row.state === "done");
-    // A superseded generation goes once no export pins it.
-    const older = done.slice(0, -1).map((row) => this.#pinned(row.gen, now) ?? now);
+    // A superseded generation goes once no export pins it, but the restore's fallback.
+    const kept = fallback(done);
+    const older = done.slice(0, -1).filter((row) => row.gen !== kept)
+      .map((row) => this.#pinned(row.gen, now) ?? now);
     const prune = older.length === 0 ? null : retry(Math.min(...older));
     const nightly = done.length > 0 && !this.#changed() ? null
       : Math.max(now, dayStart(done.at(-1)?.day ?? manifestDay(now)) + DAY_S
@@ -381,6 +403,23 @@ export class Backups {
       : row.state === "done" ? null : { kind: "pending" };
   }
 
+  /**
+   * In a unit: the generation a restore read this object from (`restore.ts`), recorded as its
+   * newest finished one, as its root lists it: kept, read by an export, and superseded by the
+   * next one as any is.
+   */
+  adopt(root: ManifestRoot): void {
+    const at = root.at / 1000;
+    this.#sql.exec(
+      "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, segments, " +
+        "segment_list, bytes, s, schema, e, ended_at, started_at, finished_at, log_bytes) " +
+        "VALUES (?, ?, 'done', ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?)", root.gen,
+      manifestDay(at), ENDED, root.parts.length, root.segments.length,
+      [...root.parts, ...root.segments].reduce((sum, object) => sum + object.size, 0), root.s,
+      this.#parts.schema, root.e, at, at, at,
+      root.segments.reduce((sum, segment) => sum + segment.size, 0));
+  }
+
   /** Whether generation `gen` is finished (its root holds its lists). A read. */
   finished(gen: string): boolean {
     return this.#rows().some((row) => row.gen === gen && row.state === "done");
@@ -432,8 +471,9 @@ export class Backups {
   async #prune(until: number): Promise<boolean> {
     const done = this.#rows().filter((row) => row.state === "done");
     const now = Date.now() / 1000;
+    const kept = fallback(done);
     for (const old of done.slice(0, -1)) {
-      if (this.#pinned(old.gen, now) !== null) {
+      if (old.gen === kept || this.#pinned(old.gen, now) !== null) {
         continue;
       }
       if (Date.now() >= until || this.#parts.halted()) {
@@ -507,12 +547,13 @@ export class Backups {
     if (tail.length > 0) {
       await this.#parts.store.deleteManifest(ns, gen, 0, tail);  // no root is put yet
     }
-    await this.#parts.store.putManifestRoot(ns, key, gen, partsOf(row.part_list),
-                                            segments.filter((segment) => segment.b <= row.e!),
+    const logged = segments.filter((segment) => segment.b <= row.e!);
+    await this.#parts.store.putManifestRoot(ns, key, gen, partsOf(row.part_list), logged,
                                             { s: row.s, e: row.e! });
     await this.#write(() => this.#parts.storage.transactionSync(() => {
       this.#sql.exec("UPDATE owner_backups SET state = 'done', finished_at = ?, part_list = " +
-                       "'', segment_list = '' WHERE gen = ?", Date.now() / 1000, gen);
+                       "'', segment_list = '', log_bytes = ? WHERE gen = ?", Date.now() / 1000,
+                     logged.reduce((sum, segment) => sum + segment.size, 0), gen);
       this.#sql.exec("UPDATE owner_backup_state SET told = 0");
       this.#parts.log.stop();
     }));

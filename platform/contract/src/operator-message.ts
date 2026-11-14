@@ -56,6 +56,9 @@ export const OPERATOR_OPS = Object.freeze({
   "owner.suspend": Object.freeze(["reason"] as const),
   "owner.lift": Object.freeze(["reason"] as const),
   "owner.admit": Object.freeze([] as const),
+  "restore.source": Object.freeze([] as const),
+  "restore.begin": Object.freeze(["namespace", "gen"] as const),
+  "restore.step": Object.freeze([] as const),
 } satisfies Record<string, readonly string[]>);
 export type OperatorOp = keyof typeof OPERATOR_OPS;
 

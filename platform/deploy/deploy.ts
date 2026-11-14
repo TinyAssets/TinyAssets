@@ -39,6 +39,9 @@
  *   and the write read back.
  * - `owner` (the operator path): `--act`'s op asked of the doors for `--owner` through the
  *   operator channel, and their answer said.
+ * - `restore` (the operator path): `--owner`'s restore from `--generation` through the
+ *   operator channel, begun, stepped until done and the owner admitted; with no
+ *   `--generation`, the owner's namespace and finished generations, as its object holds them.
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -46,6 +49,11 @@
  * job's, in the main-only `production` environment, with that environment's secrets, never a
  * host's (Direction 8). With neither, a mode checks and plans with the secrets it is given,
  * and changes nothing. The Cloudflare account is the zone's (`Cloudflare.zone`).
+ *
+ * The apply job runs the plan it was approved on (`Plan`). The plan job writes its plan to
+ * the file `--plan` names, which the workflow hands the apply job as the run's artifact. Before
+ * any change, the apply job makes the plan job's plan again from the live state and stops,
+ * naming each difference, unless it is that file's plan, of this same run.
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
  * "absent". So:
@@ -101,7 +109,10 @@ import { WRANGLER } from "../ci/wrangler.ts";
 // runs them here.
 import { closedToAll, CONTROL_KEY, parseControl } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
-import { argsText, OPERATOR_KEYRING } from "../contract/src/operator-message.ts";
+import {
+  argsText, OPERATOR_KEYRING, type OperatorArgs,
+} from "../contract/src/operator-message.ts";
+import type { RestoreAnswer } from "../contract/src/owner.ts";
 import { principal } from "../contract/src/text.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
@@ -117,7 +128,8 @@ import {
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
-  type Act, askOperator, controlEdits, differences, type Edit, edited, ownerAct,
+  type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
+  ownerAct, RESTORE_LOSES, restoreFrom,
 } from "./operator.ts";
 /**
  * The control record a first deploy writes when there is none: every outside door closed, and
@@ -166,7 +178,7 @@ export const IO: Io = Object.freeze({
 });
 
 export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback" | "control"
-  | "owner";
+  | "owner" | "restore";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -177,6 +189,13 @@ export interface Run {
   readonly apply: boolean;
   readonly rotate: ReadonlySet<string>;
   readonly migrate: ReadonlySet<string>;
+  /**
+   * `--plan`: the plan's file, which the plan job (`--public`) writes and the apply job
+   * (`--yes`) is held to.
+   */
+  readonly plan: string | null;
+  /** The workflow run this is (`actions.ts` `runOf`), read once, as the run began. */
+  readonly job: JobRun;
   /** `--record`: the id of the route record `handback` hands back. */
   readonly record: string | null;
   /** `--set`: `control`'s edits of the control record, in order. */
@@ -186,6 +205,8 @@ export interface Run {
   /** `--owner` and `--act`: the owner `owner` asks the doors an op of, and the op. */
   readonly owner: string | null;
   readonly act: Act | null;
+  /** `--generation`: the generation `restore` restores `--owner` from; none asks its source. */
+  readonly generation: Generation | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly io: Io;
@@ -307,10 +328,13 @@ function reporterOf(run: Run, plan: string[]): Reporter {
   });
 }
 
-/** The plan as the run reports it: printed, and added to the job's summary. */
+/**
+ * The plan as the run reports it, under the run's id, which no line holds: printed, and added
+ * to the job's summary.
+ */
 function report({ summarize: add }: Reporter, plan: readonly string[], run: Run): void {
-  const text = `${run.apply ? "Changed" : "Would change"}:\n${plan.map((line) => `- ${line}`)
-    .join("\n")}`;
+  const text = `Run ${run.job.id} ${run.apply ? "changed" : "would change"}:\n${plan.map((line) =>
+    `- ${line}`).join("\n")}`;
   run.io.log(text);
   add(`${text}\n`);
 }
@@ -952,7 +976,10 @@ const zone = step<never, "cloudflare" | "zone" | "account" | "wrangler">(async (
 const upstream = step<never, "upstream">(async ({ run, say }) => {
   const values = await upstreamFrom(input(run, "OWNER_ISSUER"), input(run, "WORKOS_CLIENT_ID"),
                                     run.io.fetch);
-  say(`set the doors' OWNER_ISSUER to ${values.issuer}, held to its discovery`);
+  const { client_id: client, jwks_uri: jwks } = values.record as { client_id: string;
+                                                                   jwks_uri: string };
+  say(`set the doors' OWNER_ISSUER to ${values.issuer}, held to its discovery, and their ` +
+      `UPSTREAM to the WorkOS client ${client} and the JWKS ${jwks}`);
   return { upstream: values };
 });
 
@@ -1067,9 +1094,7 @@ type Recording = "cloudflare" | "zone" | "account" | "table" | "changes";
 async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Values, Recording>,
                           hook: Json | null | undefined): Promise<Pick<Values, "kept">> {
   const domain = await egressBefore(got);
-  const job = runOf(run.env, run.io.now());
-  const { id } = job;
-  const key = `${RECORD_PREFIX}${id}`;
+  const key = `${RECORD_PREFIX}${run.job.id}`;
   const title = NAMESPACES["CONTROL"]!;
   const namespace = await controlNamespace(got.cloudflare, got.account);
   if (namespace === undefined) {
@@ -1077,15 +1102,16 @@ async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Value
       throw new Error(`routes keeps its route record in ${title}, which a dark run makes: run ` +
                       "dark first; nothing is changed");
     }
-    say(`record the zone's routes as ${key}: ${title} is not made yet, so the apply job stops ` +
-        "until a dark run makes it");
+    say(`record the zone's routes as this run's route record: ${title} is not made yet, so the ` +
+        "apply job stops until a dark run makes it");
     return { kept: null };
   }
   const held = await got.cloudflare.value(got.account, namespace, key);
   if (held !== undefined) {
     const record = recordOf(held, key, got.zone);
-    say(`keep the route record ${key} as attempt ${record.attempt ?? "-"} wrote it at ` +
-        `${record.at}, before its first change: hand back with --mode handback --record ${id}`);
+    say(`keep this run's route record as attempt ${record.attempt ?? "-"} wrote it at ` +
+        `${record.at}, before its first change: hand back with --mode handback --record ` +
+        "<this run's id>");
     return { kept: { record, namespace, key } };
   }
   // Doors on more of their routes than the probe's: an earlier routes run moved them.
@@ -1096,7 +1122,8 @@ async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Value
     : hook["enabled"] === true ? "enabled" : "disabled";
   say(`record the zone's ${got.table.length} routes and the handover's ${got.changes.length} ` +
       `changes, the egress domain (${domain ?? "none"}) and E2B's lifecycle webhook (${word}) ` +
-      `as ${key} in ${title}, before any change: hand back with --mode handback --record ${id}${
+      `as this run's route record in ${title}, before any change: hand back with --mode ` +
+      `handback --record <this run's id>${
         earlier.length === 0 ? "" : `; ${DOORS} holds ${earlier.join(", ")} already: the ` +
         "record of the routes run that moved them is the one to hand back, and it covers this " +
         "run's changes too"}`);
@@ -1104,7 +1131,8 @@ async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Value
   if (!run.apply || hook === undefined) {
     return { kept: null };
   }
-  const record = routeRecord(job, run.io.now(), got.zone, got.table, got.changes, domain, hook);
+  const record = routeRecord(run.job, run.io.now(), got.zone, got.table, got.changes, domain,
+                             hook);
   const status = await got.cloudflare.put(got.account, namespace, key, record);
   if (status !== 200) {
     throw new Error(`writing the route record ${key} failed (${status}): nothing is changed`);
@@ -1343,11 +1371,12 @@ const controlEdit = step<"cloudflare" | "account">(async ({ run, say }, got) => 
     say("the control record stands as asked: no difference");
     return;
   }
-  const kept = `${KEPT_PREFIX}${runOf(run.env, run.io.now()).id}`;
+  const kept = `${KEPT_PREFIX}${run.job.id}`;
   say(...changes.map((change) => `set the control record's ${change}`),
       ...closedToAll(control) ? ["the record then admits no owner: closed to all"] : [],
       held === undefined ? "keep no previous record: there is none"
-        : `keep the previous record's bytes as ${kept} in ${title}, to put back with --replace`);
+        : `keep the previous record's bytes in ${title} under this run's id, to put back with ` +
+          "--replace");
   if (!run.apply) {
     return;
   }
@@ -1364,6 +1393,19 @@ const controlEdit = step<"cloudflare" | "account">(async ({ run, say }, got) => 
   say("read the control record back: it is the one written");
 });
 
+/** `op` on `owner` with `args` asked of the doors through the operator channel: its result. */
+async function asked(run: Run, got: Pick<Values, "cloudflare" | "account">, op: string,
+                     owner: string, args: OperatorArgs): Promise<unknown> {
+  const answer = await askOperator(got.cloudflare, got.account,
+                                   keyring(input(run, OPERATOR_KEYRING), OPERATOR_KEYRING), op,
+                                   owner, args, run.io);
+  if ("refused" in answer) {
+    throw new Error(`the doors refused ${op} for ${owner} (${answer.refused.code}): ${
+      answer.refused.message}`);
+  }
+  return answer.result;
+}
+
 /**
  * Mode `owner`: `--act`'s op asked of the doors for `--owner` through the operator channel,
  * and their answer said; a refusal stops the run, named. The plan job only plans it.
@@ -1375,14 +1417,49 @@ const ownerAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   if (!run.apply) {
     return;
   }
-  const answer = await askOperator(got.cloudflare, got.account,
-                                   keyring(input(run, OPERATOR_KEYRING), OPERATOR_KEYRING), op,
-                                   owner, args, run.io);
-  if ("refused" in answer) {
-    throw new Error(`the doors refused ${op} for ${owner} (${answer.refused.code}): ${
-      answer.refused.message}`);
+  say(`the doors answered ${op} for ${owner}: ${
+    JSON.stringify(await asked(run, got, op, owner, args))}`);
+});
+
+/**
+ * Mode `restore` (`owner/src/restore.ts`): with no `--generation`, `restore.source` asked for
+ * `--owner` and its answer said; with one, the restore begun from it, stepped until done, and
+ * the owner admitted (`owner.admit`: the object first, then the directory). A refusal or a
+ * failed check stops the run, named, and the owner is not admitted. The plan job only plans it.
+ */
+const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const owner = run.owner!;
+  const from = run.generation;
+  if (from === null) {
+    say(`ask the doors restore.source for ${owner}, through the operator channel`);
+    if (run.apply) {
+      say(`the doors answered restore.source for ${owner}: ${
+        JSON.stringify(await asked(run, got, "restore.source", owner, {}))}`);
+    }
+    return;
   }
-  say(`the doors answered ${op} for ${owner}: ${JSON.stringify(answer.result)}`);
+  say(`restore ${owner} from generation ${from.gen} of namespace ${from.namespace}, into its ` +
+      "own object only while it is pending and empty, then admit it, through the operator " +
+      `channel: ${RESTORE_LOSES}`);
+  if (!run.apply) {
+    return;
+  }
+  await asked(run, got, "restore.begin", owner, { namespace: from.namespace, gen: from.gen });
+  for (;;) {
+    const at = await asked(run, got, "restore.step", owner, {}) as RestoreAnswer;
+    if (at.step === "failed") {
+      throw new Error(`the restore of ${owner} failed its check, and the owner is not ` +
+                      `admitted: ${at.failed}`);
+    }
+    if (at.done) {
+      say(`restored ${owner} from ${at.gen}: ${at.rows} rows, ${at.chunks} chunks read back, ` +
+          `the owner ${at.state} as at the generation`);
+      break;
+    }
+    say(`the restore of ${owner} is at its ${at.step} step`);
+  }
+  say(`the doors answered owner.admit for ${owner}: ${
+    JSON.stringify(await asked(run, got, "owner.admit", owner, {}))}`);
 });
 
 /**
@@ -1799,6 +1876,7 @@ const HANDBACK = Steps.none.then(zone).then(recordRead).then(e2b).then(hookListe
 /** The operator path's modes: the same steps for the plan job, which applies nothing. */
 const CONTROL = Steps.none.then(zone).then(controlEdit).list;
 const OWNER = Steps.none.then(zone).then(ownerAsk).list;
+const RESTORE = Steps.none.then(zone).then(restoreAsk).list;
 
 /** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
@@ -1862,7 +1940,113 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     deploys: false, applies: true, own: ["--owner", "--act"],
     steps: { public: OWNER, secrets: OWNER }, report: { unchanged: NOTHING, after: [] },
   },
+  restore: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
+    deploys: false, applies: true, own: ["--owner", "--generation"],
+    steps: { public: RESTORE, secrets: RESTORE }, report: { unchanged: NOTHING, after: [] },
+  },
 });
+
+// --- The plan ---------------------------------------------------------------------------
+
+/** What a run asks, as `parse` reads it: its mode and its options. */
+interface Asked {
+  readonly mode: Mode;
+  readonly rotate: readonly string[];
+  readonly migrate: readonly string[];
+  readonly record: string | null;
+  readonly edits: readonly Edit[];
+  readonly replace: unknown;
+  readonly owner: string | null;
+  readonly act: Act | null;
+}
+
+/**
+ * A run's plan, the one its plan job shows and its apply job is held to: what the dispatch
+ * asked (the founder's dispatch is the approval, `checklist.md`), and each line the row's
+ * plan-job steps report. Each line is made from what its step read live and from this tree
+ * alone, so the plan job and the apply job of one run plan the same over the same live state.
+ * The run's id and the clock are in no line: the report's heading names the run, and the plan
+ * file holds it beside the plan.
+ */
+interface Plan {
+  readonly asked: Asked;
+  readonly lines: readonly string[];
+}
+
+/** The plan file: the plan, and the run whose plan job wrote it. */
+interface PlanFile {
+  readonly kind: typeof PLAN_KIND;
+  readonly run: string;
+  readonly plan: Plan;
+}
+
+const PLAN_KIND = "tinyassets-plan";
+
+function askedOf(run: Run): Asked {
+  return { mode: run.mode, rotate: [...run.rotate].sort(), migrate: [...run.migrate].sort(),
+           record: run.record, edits: run.edits, replace: run.replace, owner: run.owner,
+           act: run.act };
+}
+
+/** Each difference of `live` from the `approved` plan, named: none when they are one plan. */
+function planDifferences(approved: Plan, live: Plan): string[] {
+  const asked = approved.asked as unknown as Readonly<Record<string, unknown>>;
+  const now = live.asked as unknown as Readonly<Record<string, unknown>>;
+  const differences = [...new Set([...Object.keys(asked), ...Object.keys(now)])]
+    .filter((name) => JSON.stringify(asked[name]) !== JSON.stringify(now[name]))
+    .map((name) => `the dispatch's ${name} was ${JSON.stringify(asked[name])}, and is ${
+      JSON.stringify(now[name])}`);
+  differences.push(
+    ...approved.lines.filter((line) => !live.lines.includes(line))
+      .map((line) => `approved, and not planned now: ${line}`),
+    ...live.lines.filter((line) => !approved.lines.includes(line))
+      .map((line) => `planned now, and never approved: ${line}`));
+  if (differences.length === 0 && JSON.stringify(approved.lines) !== JSON.stringify(live.lines)) {
+    differences.push("the approved lines, planned now in another order or number");
+  }
+  return differences;
+}
+
+/** The plan file `file` holds, in shape: missing, unreadable or out of shape, it throws. */
+function planFile(file: string): PlanFile {
+  let held: unknown;
+  try {
+    held = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    throw new Error(`there is no plan at ${file}: the apply job applies only the plan its run's ` +
+                    "plan job wrote (--public --plan); nothing is changed");
+  }
+  const { kind, run, plan } = (held ?? {}) as Partial<Record<keyof PlanFile, unknown>>;
+  const { asked, lines } = (plan ?? {}) as Partial<Record<keyof Plan, unknown>>;
+  if (kind !== PLAN_KIND || typeof run !== "string" || typeof asked !== "object"
+      || asked === null || !Array.isArray(lines)
+      || !lines.every((line) => typeof line === "string")) {
+    throw new Error(`${file} is not a plan the plan job wrote; nothing is changed`);
+  }
+  return held as PlanFile;
+}
+
+/**
+ * The apply job's hold, before any change: the plan job's plan, made again from the live
+ * state, is the one the plan job of this same run wrote to `run.plan`. Anything else stops it,
+ * each difference named.
+ */
+async function approved(row: Row, run: Run, ctx: Context): Promise<void> {
+  const planJob: Run = Object.freeze({ ...run, reach: "public", apply: false });
+  const live: Plan = { asked: askedOf(run), lines: await stepsOf(row, planJob, ctx.scratch) };
+  const file = planFile(run.plan!);
+  if (file.run !== run.job.id) {
+    throw new Error(`the plan at ${run.plan} is run ${file.run}'s, not this run's (${
+      run.job.id}): the apply job applies only its own run's plan; nothing is changed`);
+  }
+  const differences = planDifferences(file.plan, live);
+  if (differences.length > 0) {
+    throw new Error(`the live state no longer plans what was approved, so nothing is changed: ${
+      differences.join("; ")}. Dispatch the mode again for a new plan`);
+  }
+  ctx.say("the plan job's plan, made again from the live state, is the one approved");
+}
 
 // --- The keyring tools ------------------------------------------------------------------
 
@@ -1912,6 +2096,8 @@ const OWN = Object.freeze({
                         "place of the live one", needed: false },
   "--owner": { names: "the owner principal the op is asked for", needed: true },
   "--act": { names: "the op asked of the doors", needed: true },
+  "--generation": { names: "the generation to restore from, <namespace>/<gen> as " +
+                           "restore.source answers them", needed: false },
 });
 export type Own = keyof typeof OWN;
 
@@ -1940,6 +2126,12 @@ function ownValue(name: Own, text: string): unknown {
       }
     case "--act":
       return ownerAct(text);
+    case "--generation":
+      try {
+        return restoreFrom(text);
+      } catch {
+        throw refused();
+      }
   }
 }
 
@@ -1974,11 +2166,13 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
   }
   const run: Run = Object.freeze({
     mode: mode as Mode, reach: argv.includes("--public") ? "public" : "secrets",
-    apply: argv.includes("--yes"), rotate: names(argv, "--rotate"),
+    apply: argv.includes("--yes"), plan: option(argv, "--plan") || null,
+    job: runOf(env, io.now()), rotate: names(argv, "--rotate"),
     migrate: names(argv, "--migrate"), record: (own["--record"] as string | undefined) ?? null,
     edits: (own["--set"] as Edit[] | undefined) ?? [], replace: own["--replace"],
     owner: (own["--owner"] as string | undefined) ?? null,
-    act: (own["--act"] as Act | undefined) ?? null, env, io });
+    act: (own["--act"] as Act | undefined) ?? null,
+    generation: (own["--generation"] as Generation | undefined) ?? null, env, io });
   if (row.report !== null) {
     if (run.apply && run.reach === "public") {
       throw new Error("--public is the plan job's: it never changes anything");
@@ -1995,6 +2189,14 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
     if (!row.deploys && (run.rotate.size > 0 || run.migrate.size > 0)) {
       throw new Error(`mode ${mode} deploys nothing: it takes no --rotate or --migrate`);
     }
+  }
+  if (run.apply && run.plan === null) {
+    throw new Error("--yes applies the plan it was approved on: --plan names the file its run's " +
+                    "plan job wrote");
+  }
+  if (!run.apply && run.reach === "secrets" && run.plan !== null) {
+    throw new Error("--plan is the plan job's file (--public writes it) and the apply job's " +
+                    "(--yes is held to it)");
   }
   return run;
 }
@@ -2017,10 +2219,21 @@ function given({ inputs }: Row, run: Run): void {
   }
 }
 
+/** The lines `row`'s steps for `run` report, run in order, each given what the ones before made. */
+async function stepsOf(row: Row, run: Run, scratch: () => string): Promise<string[]> {
+  const lines: string[] = [];
+  const ctx: Context = { ...reporterOf(run, lines), run, scratch };
+  const values: Partial<Values> = {};
+  for (const each of row.steps[run.reach]) {
+    Object.assign(values, await each.run(ctx, values as Pick<Values, never>));
+  }
+  return lines;
+}
+
 /**
- * Runs the row's steps in order, each given the values the ones before it made, then reports
- * its plan; an applied run then runs what follows its report. What the run wrote outside the
- * checkout is removed at its end.
+ * Runs the row's steps, then reports its plan: the plan job's written to `--plan`, the apply
+ * job's held to that one first (`approved`). An applied run then runs what follows its report.
+ * What the run wrote outside the checkout is removed at its end.
  */
 export async function perform(run: Run): Promise<{ readonly plan: readonly string[] }> {
   const row = MODES[run.mode];
@@ -2032,9 +2245,14 @@ export async function perform(run: Run): Promise<{ readonly plan: readonly strin
   };
   try {
     given(row, run);
-    const values: Partial<Values> = {};
-    for (const each of row.steps[run.reach]) {
-      Object.assign(values, await each.run(ctx, values as Pick<Values, never>));
+    if (run.apply) {
+      await approved(row, run, ctx);
+    }
+    plan.push(...await stepsOf(row, run, ctx.scratch));
+    if (!run.apply && run.plan !== null) {
+      const file: PlanFile = { kind: PLAN_KIND, run: run.job.id,
+                               plan: { asked: askedOf(run), lines: plan } };
+      writeFileSync(run.plan, `${JSON.stringify(file, null, 2)}\n`);
     }
     if (row.report !== null) {
       report(ctx, plan, run);

@@ -30,15 +30,16 @@ import {
   type Refused,
 } from "../../contract/src/operator-message";
 import { parseRing } from "../../contract/src/envelope";
-import type { TierRequest } from "../../contract/src/owner";
+import type { RestoreBeginRequest, TierRequest } from "../../contract/src/owner";
 import { refusalOf } from "../../contract/src/refusal";
 
 import { admit } from "./authorize";
 import { bindPlatformFor } from "./binder";
 import { now } from "./config";
 import type { DoorsEnv } from "./env";
-import { readOwner } from "./directory";
+import { deleteKey, readOwner } from "./directory";
 import { exactKeys } from "./kit";
+import { revokeAll } from "./revoke";
 
 /** An op: what it does to the owner with its args, exactly `OPERATOR_OPS` names, and its result. */
 type Op = (env: DoorsEnv, owner: string, args: OperatorArgs) => Promise<unknown>;
@@ -62,6 +63,27 @@ const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
   "owner.suspend": (env, owner, args) => suspension(env, owner, args, true),
   "owner.lift": (env, owner, args) => suspension(env, owner, args, false),
   "owner.admit": (env, owner) => admit(env, owner),
+  "restore.source": (env, owner) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.restoreSource(binding);
+  },
+  "restore.begin": (env, owner, args) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.restoreBegin(binding, args as unknown as RestoreBeginRequest);
+  },
+  // Once done, the fence's outside half (`owner/src/restore.ts`): the restored owner's API keys
+  // out of the directory, and every OAuth grant it gave revoked, as the erasure's are.
+  "restore.step": async (env, owner) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    const step = await stub.restoreStep(binding);
+    if (step.done) {
+      for (const keyId of step.keys) {
+        await deleteKey(env, keyId);
+      }
+      await revokeAll(env, owner);
+    }
+    return step;
+  },
 });
 
 /** A put that only makes: null when the key is already there. */

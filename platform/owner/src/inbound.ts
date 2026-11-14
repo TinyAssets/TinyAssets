@@ -246,6 +246,16 @@ export class Inbound {
     return shown(this.#row(row.binding_id)!);
   }
 
+  /**
+   * In a unit: every binding disabled at a new revision, so no route the directory holds for
+   * one reaches it: a restore's fence (`restore.ts`), whose bindings' routes and secrets were
+   * never in the backup. The owner makes new ones.
+   */
+  disableAll(now: number): void {
+    this.#storage.sql.exec("UPDATE inbound_bindings SET enabled = 0, revision = revision + 1, " +
+                             "changed_at = ?", Math.floor(now));
+  }
+
   /** In a unit: the binding gone; its route, for the doors to delete. */
   revoke(request: unknown): { binding_id: string; route: string | null } {
     const id = bindingId((request as { binding_id?: unknown } | null)?.binding_id);

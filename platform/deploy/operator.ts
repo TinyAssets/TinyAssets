@@ -7,6 +7,9 @@
  *   `controlEdits`) apply to the live record, or to the whole record `--replace` gives in its
  *   place (`edited`), and the result is written only if `parseControl`, the parser every
  *   reader uses, takes it; the plan is each field's difference (`differences`).
+ * - **`restore`** asks the doors `restore.source` for an owner, or, given a generation
+ *   (`--generation`, `restoreFrom`), its restore from it (`owner/src/restore.ts`): begun,
+ *   stepped until done, then the owner admitted, each op through the operator channel.
  * - **`owner`** asks the doors one op of `OPERATOR_OPS` (`--act`, `ownerAct`) through the
  *   operator channel (`contract/src/operator-message.ts`): a message MAC'd under
  *   `OPERATOR_KEYRING`'s active kid and put on the operator queue (`QUEUES.OPERATOR`) over the
@@ -18,6 +21,7 @@
  * Node runs this file as it is (type stripping), as the kit does.
  */
 import type { Ring } from "../contract/src/envelope.ts";
+import { HEX16, HEX32 } from "../contract/src/ids.ts";
 import {
   answerKey, type OperatorAnswer, operatorAnswer, type OperatorArgs, type OperatorOp,
   OPERATOR_OPS, signOperator,
@@ -165,6 +169,28 @@ export function ownerAct(text: string): Act {
   return Object.freeze({ op: op as OperatorOp, args: Object.freeze(
     names.length === 0 ? {} : { [names[0]!]: text.slice(at + 1) }) });
 }
+
+// --- Mode `restore` ---------------------------------------------------------------------
+
+/** A generation to restore from: its namespace and id, as `restore.source` answers them. */
+export interface Generation {
+  readonly namespace: string;
+  readonly gen: string;
+}
+
+/** `--generation`'s generation: `<namespace>/<gen>`, 32 and 16 lowercase hex characters. */
+export function restoreFrom(text: string): Generation {
+  const [namespace, gen, ...more] = text.split("/");
+  if (more.length > 0 || !HEX32.test(namespace ?? "") || !HEX16.test(gen ?? "")) {
+    throw new Error(`--generation ${text} is not <namespace>/<gen>`);
+  }
+  return Object.freeze({ namespace: namespace!, gen: gen! });
+}
+
+/** What an owner loses at a restore (`operator_research.md` §3.3), which its plan says. */
+export const RESTORE_LOSES = "the owner loses its sessions (it signs in again), every agent's " +
+  "grant (each authorizes again), its API keys and inbound URLs (it makes new ones), its model " +
+  "connections (it connects them again), and anything written after the generation";
 
 /** How often the kit reads the bucket for an answer, and how long it waits for one. */
 export const POLL_MS = 2_000;

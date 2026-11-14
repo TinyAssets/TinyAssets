@@ -19,7 +19,11 @@
  * One module names every table to read it, never to write it: the owner export
  * (`export.ts`, slice P), which reads everything the owner holds for the owner alone. Its
  * source is held to SQL that only reads (`READ_ONLY`): no statement but `SELECT`, and no
- * policy module imported.
+ * policy module imported. One names every table to load it: the restore (`restore.ts`, lane
+ * R), which loads a generation into a pending, empty owner for the platform's reserved caller
+ * alone. It names them as data, in its load table, and its SQL names no guarded table: a
+ * table's own statements take the table from the load table (`${load.table}`), and every
+ * other change (its fence, its allocators) is the owning module's (`LOADER`).
  *
  * The doors' handlers sit in their modules and reach these stores through the state the
  * object hands them (`OwnerState`), so the import lists alone no longer hold who widens
@@ -40,12 +44,14 @@ import { posix } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { type CallerKind, doorRow } from "../../contract/src/doors";
+import { type CallerKind, doorRow, doorTable } from "../../contract/src/doors";
 import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
 /** The owner export: it names tables only to read them (held below). */
 const READ_ONLY = "owner/src/export.ts";
+/** The restore: it names tables only in its load table, to load them (held below). */
+const LOADER = "owner/src/restore.ts";
 /** SQL that writes or changes a table, as a statement's first word. */
 const WRITES = /\b(?:INSERT|UPDATE|DELETE|REPLACE|UPSERT|CREATE|DROP|ALTER|PRAGMA|ATTACH|VACUUM)\b/;
 const SCHEMA = "owner/src/schema.ts";
@@ -120,7 +126,8 @@ const WIDENS: Readonly<Record<string, readonly CallerKind[]>> = Object.freeze({
  */
 const OTHERS: ReadonlySet<string> = new Set([
   "grants.apps", "grants.full", "grants.list", "grants.live", "grants.name", "grants.reads",
-  "grants.standing", "grants.revoke", "grants.forgetKey", "grants.forgetRevoked",
+  "grants.standing", "grants.revoke", "grants.revokeAll", "grants.forgetKey",
+  "grants.forgetRevoked",
   "grants.evictRevoked",
   "keys.forgotten", "keys.ids", "keys.list", "keys.revoked",
   "policy.codemode", "policy.customTools", "policy.egressGeneration", "policy.held",
@@ -323,7 +330,8 @@ export function reach(sources: Map<string, string>): Record<string, string[]> {
       }
     }
     for (const table of Object.keys(TABLES)) {
-      if (path !== READ_ONLY && new RegExp(`\\b${table}\\b`).test(source)) {
+      if (path !== READ_ONLY && path !== LOADER
+          && new RegExp(`\\b${table}\\b`).test(source)) {
         (found[table] ??= []).push(path);
       }
     }
@@ -346,6 +354,19 @@ describe("policy-boundary guard", () => {
     expect(literals.filter((literal) => WRITES.test(literal))).toEqual([]);
     expect(Object.keys(MODULES).filter((module) => importer(module).test(source))).toEqual([]);
     expect(WRITES.test('"UPDATE owner_policy SET x = 1"')).toBe(true);
+  });
+
+  it("holds the restore to loading: no SQL naming a guarded table, no policy module, its " +
+     "doors the platform's alone", () => {
+    const source = workerSources().get(LOADER)!;
+    const literals = [...source.matchAll(/"[^"\n]*"|`[^`]*`/g)].map((match) => match[0]);
+    const guarded = [...Object.keys(TABLES), ...Object.keys(SQL_TABLES)];
+    expect(guarded.filter((table) => literals.some((literal) => sqlNaming(table).test(literal))))
+      .toEqual([]);
+    expect(Object.keys(MODULES).filter((module) => importer(module).test(source))).toEqual([]);
+    expect(doorTable().filter((row) => row.handler === "restore")
+      .map((row) => row.caller)).toEqual(["reserved", "reserved", "reserved"]);
+    expect(sqlNaming("owner_keys").test('"SELECT key_id FROM owner_keys"')).toBe(true);
   });
 
   it("lets only the object reach the session and grant modules, and each table its own",

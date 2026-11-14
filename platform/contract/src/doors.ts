@@ -106,7 +106,8 @@ export type Gate = (typeof GATES)[number];
 /** The owner modules whose state the doors' handlers read and write. */
 export const HANDLERS = Object.freeze(["admission", "codemode", "collections", "connections",
   "egress", "erasure", "export", "files", "grants", "import", "inbound", "keys", "ledger",
-  "notices", "policy", "registrations", "relay", "runs", "sandbox-time", "sessions", "signins",
+  "notices", "policy", "registrations", "relay", "restore", "runs", "sandbox-time", "sessions",
+  "signins",
   "starter", "tier", "usage"] as const);
 export type Handler = (typeof HANDLERS)[number];
 

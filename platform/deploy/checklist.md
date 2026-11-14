@@ -4,12 +4,16 @@ The kit is `platform/deploy/deploy.ts`. It runs from the manual workflow **Platf
 (manual, founder-approved)** (`.github/workflows/platform-deploy.yml`), on `main` only, in
 three jobs:
 
-1. **`plan`** prints what the run would change to the job summary. It holds only the
-   Cloudflare token and the repo's variables, and changes nothing.
+1. **`plan`** prints what the run would change to the job summary, under the run's id, and
+   keeps the same plan as the run's artifact `deploy-plan`. It holds only the Cloudflare
+   token and the repo's variables, and changes nothing.
 2. **`pair`** (modes `dark` and `routes`) checks the pinned E2B template with the runner this
    commit ships, unless E2B already holds their pair's tag (`deploy.ts --mode pair`: three
    throwaway sandboxes, up to about 50 minutes, the E2B key alone).
-3. **`apply`** runs the mode with `--yes`, in the main-only `production` environment.
+3. **`apply`** runs the mode with `--yes`, in the main-only `production` environment, held
+   to that plan: before any change it makes the plan job's plan again from the live state,
+   and stops, naming each difference, if anything changed between the jobs (the dispatch,
+   a repository variable, or the account's state). It applies only its own run's plan.
 
 Starting a run with a mode other than `plan` is the approval. Do not add a required reviewer
 to `production`: the uptime canary, the DR drill, deploy-prod and the host installs run there
@@ -211,8 +215,11 @@ It never counts as "absent".
   - whether E2B's lifecycle webhook was held, and enabled.
 
   It also holds the zone, the run id and the time, and no secret. The job summary names its
-  id (the run's) and holds a copy. If the record cannot be written, the run stops with
-  nothing changed. A re-run attempt of the same run keeps its first attempt's record.
+  id (the run's, which heads the plan) and holds a copy. If the record cannot be written, the
+  run stops with nothing changed. A re-run attempt of the same run keeps its first attempt's
+  record. Re-run all its jobs, not the apply job alone: once an attempt has changed
+  anything, the live state no longer plans what the first plan job showed, and the apply job
+  stops before any change.
 
   `routes` also stops before any change while `egress.tinyassets.io` is another Worker's
   custom domain or holds an address record (A, AAAA or CNAME). Run from the workflow,

@@ -67,11 +67,13 @@ type Rig = Awaited<ReturnType<typeof rig>>;
 
 /** The cutover's import doors: the platform's, refusing an owner's binding before its state. */
 const IMPORT_DOORS = doorTable().filter((row) => row.class === "import").map((row) => row.door);
+/** The platform's admission-class doors (admission, tier, rewrap, reseal, erasure, restore). */
+const ADMISSION_DOORS = doorTable().filter((row) => row.class === "admission")
+  .map((row) => row.door);
 /** Every door of the object's, but the platform's. */
 const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
-  .filter((door) => !["constructor", "alarm", "admissionSet", "tierSet", "fetch",
-                      "webSocketMessage", "webSocketClose", "webSocketError",
-                      "sandboxRung", "sandboxBilled", "dataKeyRewrap", "gatewayReseal", "erasureOutside", "erasureOutsideDone",
+  .filter((door) => !["constructor", "alarm", "fetch", "webSocketMessage", "webSocketClose",
+                      "webSocketError", "sandboxRung", "sandboxBilled", ...ADMISSION_DOORS,
                       ...IMPORT_DOORS].includes(door));
 const call = (r: Rig, door: string, binding: Binding) =>
   (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(

@@ -707,6 +707,21 @@ export class Collections {
   }
 
   /**
+   * In a unit, once a restore has loaded the rows (`restore.ts`): the floors past every
+   * revision and seq they name, so none is given again, and the change feed's floor at the
+   * clock, so every reader's cursor is behind it and reads again whole.
+   */
+  restored(): void {
+    this.#sql.exec(
+      "UPDATE collection_space SET revision_floor = max(revision_floor, coalesce((SELECT " +
+        "max(revision) FROM collection_erasures), 0), coalesce((SELECT max(revision) FROM " +
+        "collection_history), 0), coalesce((SELECT max(revision) FROM collection_rows), 0)), " +
+        "seq_floor = max(seq_floor, coalesce((SELECT max(seq) FROM collection_seqs), 0), " +
+        "coalesce((SELECT max(seq) FROM collection_rows), 0)), erasure_floor = " +
+        "max(erasure_floor, (SELECT change FROM collection_clock))");
+  }
+
+  /**
    * The collection's high-water seq: never below a stored row's, never lowered by a
    * clear.
    */
