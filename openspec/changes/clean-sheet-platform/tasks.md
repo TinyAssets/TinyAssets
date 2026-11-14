@@ -312,8 +312,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
     depth (Fact 15; the coordinator, 2026-11-12, below).
-  - B2: `owner/src/wakes.ts`'s swallowed doorbell open failure surfaces, rather than settling
-    the wake `unknown` (Fact 8; d3 §I).
+  - B2: `owner/src/wakes.ts`'s lost ring answer surfaces: the wake still settles `unknown` (a
+    byte may have left), with `answer_lost` on its row and the cause in the log (Fact 8; d3 §I;
+    `docs/decisions/untangle-2026-11/wakes-lost.md`).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
