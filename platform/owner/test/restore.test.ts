@@ -10,11 +10,14 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import { migrate } from "../../contract/src/migrate";
 import { INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import type { RestoreAnswer, RestoreHold } from "../../contract/src/owner";
+import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
 import { exported, NOT_EXPORTED } from "../src/export";
 import type { OwnerDO } from "../src/owner-do";
 import { loadOrder, RESTORING, SEEDED } from "../src/restore";
+import { MIGRATIONS } from "../src/schema";
 
 const LOAD = loadOrder();
 import { erasedWhole } from "./erasure-support";
@@ -22,7 +25,9 @@ import {
   BURST, digest, type Generated, generate, type Owner, owner, PAGE, standing,
 } from "./generation-support";
 import { MUSE, registerOn } from "./ledger-support";
-import { drainDue, failure, gateFor, laneJobs, sqlIn, storesOn, TIERS } from "./support";
+import {
+  drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, sqlIn, storesOn, TIERS,
+} from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const W = "/workspace";
@@ -213,6 +218,8 @@ describe("a restore", () => {
     // Once done, the operator's admit is answered: the owner as the restore left it.
     expect(await stub.admissionSet(platform(o.name), { admit: true }))
       .toEqual({ state: "admitted", reasons: [] });
+    // The generation it read is this object's newest: none restorable is told from here on.
+    expect(await sqlIn(stub, "SELECT lost FROM owner_backup_state")).toEqual([{ lost: 0 }]);
     expect(await rowsOf(stub, FENCED)).toBe(rows);
     expect(await countersOf(stub)).toEqual(counters);
     expect(await stub.storageUsage(o.bind())).toEqual(usage);
@@ -320,6 +327,111 @@ describe("a restore", () => {
                                                 gen: first.gen });
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: first.gen });
     expect(await rowsOf(stub)).toBe(first.atE);
+  });
+
+  it("lets the fallback go a day before plain collection could reach a chunk it names, and " +
+     "tells the owner none can be restored", async () => {
+    const o = await owner();
+    await shapedFiles(o);
+    const first = await generate(o.stub);
+    await o.stub.fileWrite(o.bind(), { path: `${W}/later.txt`, expected_etag: null,
+                                       content: "later" });
+    const second = await generate(o.stub, { afterUnit: async ({ gate }) => {
+      await gate.write(() => gate.storage.sql.exec(
+        "UPDATE owner_backups SET log_bytes = ? WHERE state = 'done' AND gen != ?",
+        LOG_BYTES + 1, first.gen));
+    } });
+    await drainDue(o.stub);
+    // Nothing changed since the newest began, so no later generation takes the fallback's
+    // place; and a give-up's notice was given since (review F1), which must not silence this.
+    await sqlIn(o.stub, "UPDATE owner_backups SET changed_at = NULL WHERE gen = ?", second.gen);
+    await sqlIn(o.stub, "UPDATE owner_backup_state SET told = 1");
+    const [kept] = await sqlIn(o.stub, "SELECT changed_at FROM owner_backups WHERE gen = ?",
+                               first.gen);
+    const ends = (kept!["changed_at"] as number) + RESTORABLE_LIFE_S;
+    const restorable = async () => (await o.stub.restoreSource(platform(o.name))).generations
+      .map((each) => [each.gen, each.restorable]);
+    // The lane's next night finds no change: its only work left is the fallback's end.
+    vi.useFakeTimers({ toFake: ["Date"], now: (await laneAt(o.stub, "manifest"))! * 1000 });
+    await drainDue(o.stub);
+    expect(await laneAt(o.stub, "manifest")).toBeCloseTo(ends, 0);
+    vi.setSystemTime((ends - 60) * 1000);
+    expect(await restorable()).toEqual([[first.gen, true], [second.gen, false]]);
+    // At its end: offered no more and refused a pin, then pruned, and the owner told.
+    vi.setSystemTime(ends * 1000);
+    expect(await restorable()).toEqual([[first.gen, false], [second.gen, false]]);
+    expect((await failure(() => o.stub.restorePin(platform(o.name), { gen: first.gen })))
+      .code).toBe("refused");
+    await drainDue(o.stub);
+    expect(await restorable()).toEqual([[second.gen, false]]);
+    expect(await sqlIn(o.stub, "SELECT type FROM owner_notices WHERE type = ?",
+                       MANIFEST_UNRESTORABLE)).toEqual([{ type: MANIFEST_UNRESTORABLE }]);
+  });
+
+  it("tries a given-up generation again the next night, and lets a stale newest go once the " +
+     "change it lacks is RESTORABLE_LIFE_S old", async () => {
+    const o = await owner();
+    await o.stub.fileWrite(o.bind(), { path: `${W}/gone.txt`, expected_etag: null,
+                                       content: "to be deleted" });
+    const newest = await generate(o.stub);
+    // Three days on, the owner deletes a file, and the generation begun for it is given up
+    // (its log overflowed, as in an R2 outage), with nothing written during it.
+    const start = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: start + 3 * 86_400_000 });
+    await o.stub.fileRemove(o.bind(), { path: `${W}/gone.txt`, expected_etag: null,
+                                        recursive: false });
+    const lost = await generate(o.stub, { duringCall: async ({ gate, n }) => {
+      if (n === 1) {
+        await gate.quiet(() => gate.storage.sql.exec("UPDATE log_capture SET overflow = 1"));
+      }
+    } });
+    expect(lost.notices).toEqual(["manifest_log_overflow"]);
+    await drainDue(o.stub);
+    const restorable = async () => (await o.stub.restoreSource(platform(o.name))).generations
+      .map((each) => [each.gen, each.restorable]);
+    // Tried again the next night after the one given up began, never at once.
+    const today = Math.floor(Date.now() / 86_400_000);
+    expect(await laneAt(o.stub, "manifest")).toBeGreaterThanOrEqual((today + 1) * 86_400);
+    expect(await restorable()).toEqual([[newest.gen, true]]);
+    // Every try since failed: once the change it lacks is RESTORABLE_LIFE_S old, the newest is
+    // offered no more, and the lane deletes it with what it holds of the deleted file.
+    const [row] = await sqlIn(o.stub, "SELECT changed_at FROM owner_backups WHERE gen = ?",
+                              newest.gen);
+    vi.setSystemTime(((row!["changed_at"] as number) + RESTORABLE_LIFE_S) * 1000);
+    expect(await restorable()).toEqual([[newest.gen, false]]);
+    expect((await failure(() => o.stub.restorePin(platform(o.name), { gen: newest.gen })))
+      .code).toBe("refused");
+    await drainDue(o.stub);
+    expect(await sqlIn(o.stub, "SELECT gen FROM owner_backups WHERE gen = ?", newest.gen))
+      .toEqual([]);
+  });
+
+  it("maps each generation of migration 12 as changed from its start, but the newest of an " +
+     "owner with no change marked, none being written and no give-up told since", async () => {
+    for (const told of [0, 1]) {
+      const { stub } = await ownerObject();
+      const marks = await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+        const sql = state.storage.sql;
+        for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+            "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+            "AND name NOT GLOB 'cf_*'").toArray()) {
+          sql.exec(`DROP TABLE "${name}"`);
+        }
+        migrate(state.storage, MIGRATIONS.slice(0, 11));
+        for (const at of [100, 200]) {
+          sql.exec("INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
+                     "bytes, s, schema, started_at, finished_at, seq) VALUES (?, '20261101', " +
+                     "'done', 'ended', 0, '', 0, 1, 11, ?, ?, ?)", String(at).padStart(16, "0"),
+                   at, at, at);
+        }
+        sql.exec("UPDATE owner_backup_state SET changed = 0, told = ?", told);
+        migrate(state.storage, MIGRATIONS);
+        return sql.exec("SELECT changed_at FROM owner_backups ORDER BY seq").toArray()
+          .map((row) => row["changed_at"]);
+      });
+      // A give-up told since the newest finished was begun for a change the newest lacks.
+      expect(marks).toEqual([100, told === 1 ? 200 : null]);
+    }
   });
 
   it("keeps the owner's admission as it stood at E: a suspension holds", async () => {

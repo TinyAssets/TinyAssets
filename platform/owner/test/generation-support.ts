@@ -195,7 +195,8 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     // The one under way, or a new one, begun now (its owner changed since the last).
     if (state.storage.sql.exec("SELECT 1 FROM owner_backups WHERE state = 'writing'")
           .toArray().length === 0) {
-      await gate.write(() => gate.storage.sql.exec("UPDATE owner_backup_state SET changed = 1"));
+      await gate.write(() => gate.storage.sql.exec(
+        "UPDATE owner_backups SET changed_at = ? WHERE changed_at IS NULL", Date.now() / 1000));
     }
     let gen = await gate.quiet(() => lane().forExport(Date.now() / 1000));
     for (let pass = 0; pass < 40; pass++) {

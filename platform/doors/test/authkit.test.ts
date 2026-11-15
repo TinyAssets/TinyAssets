@@ -6,21 +6,23 @@
  * signature; and the rest of the checks (`sid` required, a user's token, one key per `kid`,
  * the key's own `alg` and `use`, algorithm, time), the authorize URL's exact parameters, the
  * exchange's exact body sent to `api.workos.com` and never through a redirect, the record's
- * grammar (the secret's one origin among it), the
+ * grammar (`contract/src/signin.ts`, the secret's one origin among it), the
  * half-configured Worker, and the identity's deletion. An `auth_time` past the 600 s window
  * is the callback's to refuse (`oauth.test.ts`, "older than ten minutes").
  */
 import { describe, expect, it } from "vitest";
 
-import { now, UPSTREAM_CALLBACK } from "../src/config";
+import { now } from "../src/config";
+import { UPSTREAM_CALLBACK } from "../../contract/src/identity";
+import { upstreamConfig, type UpstreamConfig } from "../../contract/src/signin";
 import type { DoorsEnv } from "../src/env";
 import { upstreamOf } from "../src/index";
-import { oidcUpstream, upstreamConfig, type UpstreamConfig, verifiedAccessToken } from "../src/oidc";
+import { oidcUpstream, verifiedAccessToken } from "../src/oidc";
 import { UNWIRED } from "../src/upstream";
 import { doorsEnv } from "./support";
 
 const ISSUER = "https://auth.tinyassets.test";
-/** The one origin the secret may go to (`oidc.ts`); every fetch here is a fake. */
+/** The one origin the secret may go to (`contract/src/signin.ts`); every fetch here is a fake. */
 const API = "https://api.workos.com";
 const CONFIG: UpstreamConfig = upstreamConfig(JSON.stringify({
   client_id: "client_01TEST",

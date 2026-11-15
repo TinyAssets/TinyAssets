@@ -584,8 +584,11 @@ export class Files {
   readonly #storage: OwnerStorage;
   readonly #store: ChunkStore;
   readonly #limits: () => FileLimits;
-  /** When (s) the newest finished nightly manifest began, or null: what it names is kept. */
-  readonly #manifested: () => number | null;
+  /**
+   * When (s) the oldest generation kept began, or null for none to protect (`Backups`'
+   * `protectsSince`): garbage let go since may be one's, so it is kept.
+   */
+  readonly #protectsSince: () => number | null;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
   /** The `FILES` puts in flight on this instance, which the erasure waits for. */
@@ -614,9 +617,9 @@ export class Files {
   #heldBack: HeldBack | null = null;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write, full: Full, changed: Changed, manifested: () => number | null) {
+              write: Write, full: Full, changed: Changed, protectsSince: () => number | null) {
     this.#storage = storage;
-    this.#manifested = manifested;
+    this.#protectsSince = protectsSince;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
@@ -2467,11 +2470,11 @@ export class Files {
 
   /**
    * The latest `gc_after` (exclusive) a garbage chunk may have to be collected early: let go
-   * before the newest finished manifest began, so that manifest never named it (a chunk
-   * live when it began is named by it). Infinity with no manifest kept.
+   * before the oldest generation kept began, so no generation kept names it (a chunk live
+   * when one began is named by it). Infinity with none to protect.
    */
   #earlyBefore(): number {
-    const began = this.#manifested();
+    const began = this.#protectsSince();
     return began === null ? Infinity : began + GC_GRACE_S;
   }
 
@@ -2496,7 +2499,7 @@ export class Files {
    * `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work; and at once, a retention
    * change still to apply, or garbage past the owner's storage figure that it may collect
    * early. Garbage waiting on a failed delete's retry is due at that retry, never at once,
-   * and garbage the newest manifest names is never collected early. The `files` lane's.
+   * and garbage a generation kept names is never collected early. The `files` lane's.
    */
   next(now: number): number | null {
     if (this.#reretaining(this.#space(), this.#limits())
@@ -2558,8 +2561,8 @@ export class Files {
         "SELECT sha256, size, state FROM file_chunks WHERE gc_after IS NOT NULL AND " +
           "gc_after <= ? ORDER BY gc_after, sha256 LIMIT ?", now, DELETE_BATCH).toArray();
       const found = rows.map((row) => row.sha256);
-      // Garbage past the owner's figure, oldest first, as far as covers it: due now; none the
-      // newest manifest names.
+      // Garbage past the owner's figure, oldest first, as far as covers it: due now; none a
+      // generation kept names.
       let over = this.#garbageOver() - rows.filter((row) => row.state === "garbage")
         .reduce((sum, row) => sum + row.size, 0);
       const before = this.#earlyBefore();

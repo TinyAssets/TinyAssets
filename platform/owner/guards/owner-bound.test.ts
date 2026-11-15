@@ -616,9 +616,9 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // Slice P: the generations (`backup.ts`): the one being written, its cursor and its lists
     // of at most MANIFEST_PARTS base parts and log segments together; and the newest finished
     // and each one an open export pins, their lists cleared (their roots hold them).
-    owner_backups: { rows: 1, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * SEGMENT_ENTRY + 17 * 8,
+    owner_backups: { rows: 1, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * SEGMENT_ENTRY + 18 * 8,
                      by: "the generation being written, its cursor and its lists" },
-    owner_backups_kept: { rows: 3 + EXPORTS_OPEN, bytes: ROW + 16 + 8 + 6 + 18 * 8,
+    owner_backups_kept: { rows: 3 + EXPORTS_OPEN, bytes: ROW + 16 + 8 + 6 + 19 * 8,
                           tables: [],
                           by: "the newest finished generation, the one a restore falls back " +
                             "to while the newest's log is past LOG_BYTES, the one a " +
@@ -633,8 +633,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                     by: "a log of at most LOG_BYTES, each line with its key, and one past it" },
     // Slice P: the sandbox meter (`sandbox-time.ts`).
     sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
-    owner_backup_state: { rows: 1, bytes: ROW + 2 * 8,
-                          by: "one row: changed since the manifest, and told" },
+    owner_backup_state: { rows: 1, bytes: ROW + 3 * 8,
+                          by: "one row: when the last generation began, told, and lost" },
     owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 16 + 2 * 8,
                      by: "EXPORTS_OPEN, each its id, opening, end and generation" },
     // The change log (`changelog.ts`, review R4): its capture's one row, and its unshipped

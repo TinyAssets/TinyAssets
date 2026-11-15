@@ -96,9 +96,9 @@ import {
   type Bound, bindKeyRegistration, bindOwner, bindOwnerGrant, bindSignOut, bindTicket,
   socketRequest, withAccount,
 } from "./binder";
-import { FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
+import { FIRST_PARTY_CLIENTS } from "./config";
 import type { DoorsEnv } from "./env";
-import { APP_RESOURCE } from "../../contract/src/identity";
+import { APP_RESOURCE, MCP_RESOURCE } from "../../contract/src/identity";
 import type { ControlRead } from "../../contract/src/control";
 import type { JsonBody } from "../../contract/src/owner";
 import { ownerRead } from "./control";

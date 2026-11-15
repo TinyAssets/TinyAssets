@@ -193,7 +193,7 @@ import { priced, Usage as ModelUsage, usageDoors, type UsageReceipt } from "./us
 import { migrate } from "../../contract/src/migrate";
 import { Archive } from "./archive";
 import { MIGRATIONS } from "./schema";
-import { Backups, MANIFEST_PROTECT_S } from "./backup";
+import { Backups } from "./backup";
 import { OpenExports } from "./open-exports";
 import { ChangeLog } from "./changelog";
 import { ControlGate } from "./control-gate";
@@ -400,13 +400,8 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
       ledger, policy, notices, grants, files,
       agentsAt: (epoch, most) => agentsAt(storage, epoch, most),
     }, path, present, now, change),
-    // Garbage the newest finished generation names is never collected early, while it is
-    // a recovery point (finished within MANIFEST_PROTECT_S).
-    () => {
-      const newest = backups.manifests().at(-1);
-      return newest === undefined || newest.finished_at < clock() - MANIFEST_PROTECT_S
-        ? null : newest.started_at;
-    });
+    // Garbage a generation kept names is never collected early.
+    () => backups.protectsSince(clock()));
   const bodies = new Bodies(files, storage, write);
   // An outside writer's share of the collections is the owner's own `client_share`.
   const collections = new Collections(storage, bodies.adopt,

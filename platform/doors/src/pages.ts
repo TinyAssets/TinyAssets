@@ -4,8 +4,8 @@
  * the owner surface `/app/api/*` they call. Decided in the app slice: the doors, not the
  * website's static export, serve `/app`, because
  * - the session cookie is `__Host-`, Strict, and rides only same-origin JSON posts to
- *   `/app/api` (`session.ts`), and the sign-in and connect return pages (`WEB_REDIRECT`,
- *   `CONNECTED_PAGE`) are the doors' own constants;
+ *   `/app/api` (`session.ts`), and the sign-in and connect return pages are the doors' own
+ *   public paths (`identity.json`'s `first_party.redirect` and `connected`);
  * - every page here needs response headers a static host cannot set: `Referrer-Policy:
  *   no-referrer` and a strict CSP with no inline script (the export's runtime injects inline
  *   scripts), `frame-ancestors 'none'` among them;
@@ -17,14 +17,15 @@
  * script, style, font or image (`CSP`), and no inline script, so the return pages' own first
  * script is the first to run (it clears the code from the address bar before anything else).
  */
-import { PUBLIC_HOST } from "./config";
+import { ZONE } from "../../contract/src/egress";
+import { APP_PATH, CONNECTED_PATH, SIGNED_IN_PATH } from "./config";
 import type { DoorsEnv } from "./env";
 
 /** The pages, by path: each is its file. */
 const PAGES: Readonly<Record<string, string>> = Object.freeze({
-  "/app": "index.html",
-  "/app/signed-in": "signed-in.html",
-  "/app/connected": "connected.html",
+  [APP_PATH]: "index.html",
+  [SIGNED_IN_PATH]: "signed-in.html",
+  [CONNECTED_PATH]: "connected.html",
 });
 
 /** The pages' own scripts and style, under `/app/static/`. */
@@ -37,15 +38,14 @@ const STATIC: Readonly<Record<string, string>> = Object.freeze({
   "app.css": "text/css; charset=utf-8",
 });
 
-const APP_PREFIX = "/app";
-const STATIC_PREFIX = "/app/static/";
+const STATIC_PREFIX = `${APP_PATH}/static/`;
 
 /**
  * The strict CSP: this origin's own scripts, style and socket, nothing inline, nothing
  * framed, no form posts, and the DOM's script sinks closed (Trusted Types with no policy).
  */
 export const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
-  `connect-src 'self' wss://${PUBLIC_HOST}; base-uri 'none'; form-action 'none'; ` +
+  `connect-src 'self' wss://${ZONE}; base-uri 'none'; form-action 'none'; ` +
   "frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
 
 const HEADERS: Readonly<Record<string, string>> = Object.freeze({
@@ -64,7 +64,7 @@ function answer(status: number, body: BodyInit | null, type: string, extra: Head
 
 /** Whether `path` is the app's: `/app` or under it, but never the owner surface. */
 export function appPath(path: string): boolean {
-  return path === APP_PREFIX || path.startsWith(`${APP_PREFIX}/`);
+  return path === APP_PATH || path.startsWith(`${APP_PATH}/`);
 }
 
 /** The app page or file for `request`, from `ASSETS`, with the pages' headers. */

@@ -16,16 +16,15 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { MCP_RESOURCE, ORIGIN } from "../contract/src/identity.ts";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Where the starter's shared skills land in an owner's files. */
 const SKILLS = "/workspace/.agents/skills/";
 const STARTER = JSON.parse(readFileSync(join(HERE, "..", "starter", "manifest.json"), "utf8"));
-// The doors' public identity: the origin, the MCP door the plugins connect to, and the
-// site's legal page.
+// The site's legal page, from the doors' public identity.
 const IDENTITY = JSON.parse(readFileSync(join(HERE, "..", "contract", "identity.json"),
                                          "utf8"));
-const ORIGIN = `https://${IDENTITY.host}`;
-const SERVER = `${ORIGIN}${IDENTITY.mcp}`;
 const LEGAL = `${ORIGIN}${IDENTITY.legal}`;
 /** The doors' copy of the onboarding steps, by its path under this directory. */
 const ONBOARDING = join("..", "doors", "onboarding.json");
@@ -105,7 +104,7 @@ function plugins() {
   });
   out["chatgpt/mcp.json"] = json({
     $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-    mcpServers: { [NAME]: { type: "streamable-http", url: SERVER,
+    mcpServers: { [NAME]: { type: "streamable-http", url: MCP_RESOURCE,
                             extensions: { "com.openai": { auth: { type: "oauth" } } } } },
   });
   out["claude/.claude-plugin/plugin.json"] = json({
@@ -114,7 +113,7 @@ function plugins() {
     privacyPolicyUrl: LEGAL,
     termsOfServiceUrl: LEGAL,
   });
-  out["claude/.mcp.json"] = json({ mcpServers: { [NAME]: { type: "http", url: SERVER } } });
+  out["claude/.mcp.json"] = json({ mcpServers: { [NAME]: { type: "http", url: MCP_RESOURCE } } });
   out[ONBOARDING] = json({
     about: "Made by platform/plugins/build.mjs from the starter's onboarding skill: its " +
       "steps' bold leads. Edit the skill and run the build, never this file.",

@@ -288,10 +288,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - D4: `import.ts:4` cites `doors/src/import.ts`, now `doors/src/import/` (comments pass).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
-  - B13's sign-in half (`x4.md`): `contract/src/signin.ts`, `connected` and the app's page
-    paths, with `deploy/guards/rules.ts:9-10`'s owed `deploy.test.ts` edge into the doors.
-  - Lane X, owed: `doors/src/oidc.ts:138` `unbase64url` is `fromBase64url`, and `:161`
-    `bounded` the doors kit's (D1); `deploy/deploy.ts:510` `bundles(exec)` (S6's N39).
+  - Lane X, owed: `doors/src/oidc.ts:53` `unbase64url` is `fromBase64url`, and `:76`
+    `bounded` the doors kit's (D1); `deploy/deploy.ts:508` `bundles(exec)` (S6's N39).
   - V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`).
   - B14's keyring half, owed (`x5.md` item 10): `scripts/platform_setup.py` calling the kit's
     `keyring-new` in place of its own `make_keyring`. X5 left it, since it would make the
@@ -335,6 +333,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     collects early only garbage the newest generation does not name, so the fallback a
     restore loads can lose a chunk and its restore fails at its chunks step (`r5w.md`
     item 11).
+  - [ ] A generation's restorability by what a restore stages: `log_bytes` counts every image
+    the log appended, but a restore stages only the last per key, so an owner rewriting hot
+    rows (`model_spend`, `runs`, `collection_clock`) during a base pass is refused a
+    generation that would fit; the capture keeps the staged size, an owner migration
+    (`r-fallback-chunks.md` item 5, `untangle/r-log-staged-bytes`).
   - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
     `facet-probe.md` Q8 never sampled it).
