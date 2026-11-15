@@ -91,6 +91,27 @@ export interface StandingGrant {
   readonly scopes: readonly Scope[];
 }
 
+/**
+ * One of the owner's AI apps as any of its agents sees it (`agents_list`): an `apps.json`
+ * app, whether a live MCP grant names it (`connections` of them, the latest used at
+ * `last_used`), whether a CIMD host verified one, and where its connect step is; or
+ * (`id` null) the connected clients no app matched.
+ */
+export interface ConnectedApp {
+  readonly id: string | null;
+  readonly name: string;
+  readonly connected: boolean;
+  readonly connections: number;
+  readonly verified: boolean;
+  /**
+   * When one of its clients last called, ISO 8601 (to `GRANT_LIMITS.seenIntervalS`), or null:
+   * an app long unused may have been disconnected in its own app, which TinyAssets is not
+   * told, so an agent asks before taking it as connected.
+   */
+  readonly last_used: string | null;
+  readonly connect_url: string | null;
+}
+
 /** The grant a call is admitted under (`grants.ts`). */
 export interface Grant extends StandingGrant {
   readonly mode: "full" | "scoped" | "revoked";

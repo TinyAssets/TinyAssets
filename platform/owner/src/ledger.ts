@@ -128,8 +128,12 @@ import {
 } from "../../contract/src/wake-records";
 import { COMMAND_CENTER_MAX, SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { type Change, CHANGES, type Follows, follows } from "../../contract/src/wake-kinds";
-import type { Account, Call, Door } from "./door";
-import type { OwnerState } from "./owner-do";
+import type { Archive } from "./archive";
+import type { ConnectedApp } from "./authority";
+import type { Bodies } from "./bodies";
+import type { Collections } from "./collections";
+import type { Account, Call, Door, DoorUnits, LiveSession, ObjectReads } from "./door";
+import type { FileReaction } from "./files";
 import type { Heads } from "./pages";
 import type { Events } from "../../contract/src/wake-records";
 import type { Resealed } from "../../contract/src/gateway";
@@ -485,6 +489,9 @@ interface Registration {
   readonly delivery_method: unknown;
   readonly recipe_id: unknown;
 }
+
+/** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
+const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
 
 export interface Posted {
   readonly message_id: string;
@@ -1109,6 +1116,22 @@ export class Ledger {
     }
     return row;
   }
+
+  /**
+   * The agents' own files' reaction (`FileReaction`, the files' table): each agent is a
+   * ledger identity while its `agent.json` exists (slice ID).
+   */
+  readonly agentFiles: FileReaction = (path, present, now) => {
+    const agent = AGENT_FILE.exec(path)?.[1];
+    if (agent === undefined) {
+      return;
+    }
+    if (present) {
+      this.appear(agent, now);
+    } else {
+      this.retire(agent, now);
+    }
+  };
 
   /**
    * In the file change's unit: `agent`'s `agent.json` appeared, so it is an identity, made
@@ -3206,13 +3229,37 @@ function parentMoved(): Refusal {
 
 // -- THE DOORS: the `ledger` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`LedgerDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `ledger` doors reach: the ledger; the archive's reads of archived mail; the
+ * bodies placed and reread; the collections a room's change tells; the owner's connected
+ * apps; and, in the owner's session, the policy change of an agent's wake limits and the held
+ * registration an agent registers from.
+ */
+export interface LedgerDoorNeeds extends Pick<DoorUnits, "door" | "sync">,
+                                         Pick<ObjectReads, "storage"> {
+  readonly ledger: Ledger;
+  readonly archive: Pick<Archive, "archived" | "archivedParent" | "chain">;
+  readonly bodies: Pick<Bodies, "placing" | "rereadingPage">;
+  readonly collections: Pick<Collections, "changed">;
+  readonly grants: { apps(): ConnectedApp[] };
+  readonly policy: {
+    changed(session: LiveSession, expectedGeneration: unknown, kind: "wake_limits",
+            request: unknown, rule: string, now: number): number;
+  };
+  readonly registrations: {
+    take(session: LiveSession, cardId: unknown, shown: unknown, now: number):
+        { readonly origin: Origin; readonly source: Source;
+          readonly request: Readonly<Record<string, unknown>> };
+  };
+}
 
 /** The agents a caller sees, a page of them (`outsideAgents`). */
-function agentsListed(o: OwnerState, { account, r }: Call):
-    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ReturnType<OwnerState["grants"]["apps"]>; next?: string } {
+function agentsListed(o: LedgerDoorNeeds, { account, r }: Call):
+    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: string } {
   const own = account.origin === null && account.run === null;
   let natives = o.ledger.natives(own);
   const grant = account.grant;
@@ -3241,7 +3288,7 @@ function agentsListed(o: OwnerState, { account, r }: Call):
  * A post's caller checked, in each of its units: the first places nothing for a post the
  * checks refuse, and the second commits only what they still allow.
  */
-function poster(o: OwnerState, call: Call):
+function poster(o: LedgerDoorNeeds, call: Call):
     { actor: Actor; authority: MailAuthority | null } {
   const actor = actorOf(call.account);
   const authority = mailAuthority(call);
@@ -3306,7 +3353,7 @@ export const ledgerDoors = Object.freeze({
    * row only to its writer. Its mail part is a mailbox read, so a run is refused it
    * (`run_no_mailbox`, slice ID), as at `mailboxRead`; a run reads the board's digest.
    */
-  async inboxDigest(o: OwnerState, door: Door<InboxDigestRequest>):
+  async inboxDigest(o: LedgerDoorNeeds, door: Door<InboxDigestRequest>):
       Promise<{ mail: MailPage; rooms: Heads }> {
     // Its placed bodies (ADR-035), mail and rows, are read from R2 between its units, as a
     // mailbox read's; the read's unit marks only the mail it returns. One answer holds
@@ -3337,7 +3384,7 @@ export const ledgerDoors = Object.freeze({
    * a placed body it was not handed (one that arrived between), which a further read of
    * the bodies picks up.
    */
-  async mailboxRead(o: OwnerState, door: Door<ReadRequest>): Promise<MailPage> {
+  async mailboxRead(o: LedgerDoorNeeds, door: Door<ReadRequest>): Promise<MailPage> {
     return o.bodies.rereadingPage(() => {
       const { account, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
@@ -3351,7 +3398,7 @@ export const ledgerDoors = Object.freeze({
                                bodyOffset(r["body_offset"]), PAGE_BYTES, r["message_id"] ?? null);
     }, (page) => page.messages.length === 0 && page.more);
   },
-  mailboxAck(o: OwnerState, { account, r }: Call<AckRequest>): { reader: string; through: number } {
+  mailboxAck(o: LedgerDoorNeeds, { account, r }: Call<AckRequest>): { reader: string; through: number } {
     return o.ledger.ack(account.origin, r["through"]);
   },
   /**
@@ -3362,7 +3409,7 @@ export const ledgerDoors = Object.freeze({
    * lane, which this door's unit rings), so its caller holds `converse` there too, as a
    * `converse` call would.
    */
-  async roomPost(o: OwnerState, door: Door<PostRequest>): Promise<Posted> {
+  async roomPost(o: LedgerDoorNeeds, door: Door<PostRequest>): Promise<Posted> {
     // A parent archived (acked, moved to a segment) is read from R2 before the units: its
     // seq, from its id, in the gate; then its record, outside. One the lane moved after the
     // gate found it hot is read so in a post again (review N10's Low), never refused as no
@@ -3426,8 +3473,8 @@ export const ledgerDoors = Object.freeze({
    * agents and the apps, in that order, each by its stable key, while they fit; when some
    * are left, `next` is where the next page starts, for `after` on the next read.
    */
-  async outsideAgents(o: OwnerState, door: Door<AgentsRequest>):
-      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ReturnType<OwnerState["grants"]["apps"]>;
+  async outsideAgents(o: LedgerDoorNeeds, door: Door<AgentsRequest>):
+      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
                 next?: string }> {
     return o.door(() => agentsListed(o, door.check()));
   },
@@ -3436,7 +3483,7 @@ export const ledgerDoors = Object.freeze({
    * row where the ledger reads them, and changed like any policy write: in the owner's
    * session, against the policy generation, receipted.
    */
-  policyWakeLimits(o: OwnerState, { session, r }: Call<WakeLimitsRequest, "session">):
+  policyWakeLimits(o: LedgerDoorNeeds, { session, r }: Call<WakeLimitsRequest, "session">):
       { agent: Agent; generation: number } {
     return o.storage.transactionSync(() => {
       const agent = o.ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
@@ -3456,7 +3503,7 @@ export const ledgerDoors = Object.freeze({
    * (`origin`, re-derived from the key id): the one door an outside origin reaches
    * together with the owner's session.
    */
-  registerAgent(o: OwnerState, { account: { origin }, session, r, binding }:
+  registerAgent(o: LedgerDoorNeeds, { account: { origin }, session, r, binding }:
                   Call<Registration | CardApply, "session">): Agent {
     if (origin === null) {
       return o.storage.transactionSync(() => {
@@ -3471,7 +3518,7 @@ export const ledgerDoors = Object.freeze({
    * The owner disables any agent in its session. An outside client cannot reach it: it
    * holds no owner session, and its call never carries one.
    */
-  disableAgent(o: OwnerState, { account: { origin }, r }: Call<DisableRequest>): Agent {
+  disableAgent(o: LedgerDoorNeeds, { account: { origin }, r }: Call<DisableRequest>): Agent {
     return o.ledger.disable(r["agent_id"], r["reason"], origin);
   },
   /**
@@ -3482,7 +3529,7 @@ export const ledgerDoors = Object.freeze({
    * what it follows. A repeat refreshes it. The object never sees the token; a refusal's
    * receipt holds only its request's digest.
    */
-  agentDoorbell(o: OwnerState, { r }: Call<AgentDoorbellRequest>):
+  agentDoorbell(o: LedgerDoorNeeds, { r }: Call<AgentDoorbellRequest>):
       { agent_id: string; subscription_id: string } {
     const stored = o.ledger.subscribe(null, {
       subscription_id: r["subscription_id"] as string, agent_id: r["agent_id"] as string,
@@ -3493,18 +3540,18 @@ export const ledgerDoors = Object.freeze({
     return { agent_id: stored.agent_id, subscription_id: r["subscription_id"] as string };
   },
   /** Only the owner itself, in its session, ends a doorbell it pasted, by its id. */
-  agentDoorbellEnd(o: OwnerState, { r }: Call<UnsubscribeRequest>): { unsubscribed: boolean } {
+  agentDoorbellEnd(o: LedgerDoorNeeds, { r }: Call<UnsubscribeRequest>): { unsubscribed: boolean } {
     return ({ unsubscribed: o.ledger.unsubscribe(null, r["subscription_id"]) });
   },
   /** Only the owner itself, in its session, deletes an agent. */
-  deleteAgent(o: OwnerState, { r }: Call<AgentRequest>): { agent_id: string; messages: number } {
+  deleteAgent(o: LedgerDoorNeeds, { r }: Call<AgentRequest>): { agent_id: string; messages: number } {
     return o.ledger.remove(r["agent_id"]);
   },
   /**
    * The owner's view of a mail chain (agents' mail to each other included), from any of its
    * messages, such as the mail a run's receipt names: oldest first, after `after`.
    */
-  async mailChain(o: OwnerState, door: Door<ChainRequest>):
+  async mailChain(o: LedgerDoorNeeds, door: Door<ChainRequest>):
       Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
     const { r } = await o.door(() => door.check());
     return o.archive.chain(door, r);
@@ -3516,7 +3563,7 @@ export const ledgerDoors = Object.freeze({
    * byte), only its one enabled subscribing agent's there, where it holds `read_graph`; a
    * caller with none is refused.
    */
-  wakeEvents(o: OwnerState, { account, held, request: commandCenter }: Call<string | undefined>):
+  wakeEvents(o: LedgerDoorNeeds, { account, held, request: commandCenter }: Call<string | undefined>):
       { events: Events[] } {
     const grant = account.grant;
     if (account.origin === null || account.run !== null || grant === null) {
@@ -3546,7 +3593,7 @@ export const ledgerDoors = Object.freeze({
    * The subscription is stored under the id the door derived, its lifetime as granted. The
    * answer never holds the callback.
    */
-  wakeSubscribe(o: OwnerState, { account, r, held }: Call<SubscribeRequest>):
+  wakeSubscribe(o: LedgerDoorNeeds, { account, r, held }: Call<SubscribeRequest>):
       { subscription_id: string; agent_id: string; expires_at: number | null } {
     if (account.origin === null || account.run !== null) {
       throw new Refusal("refused", "only an agent's own client subscribes its doorbell");
@@ -3573,7 +3620,7 @@ export const ledgerDoors = Object.freeze({
    * The caller that holds a subscription ends it (MCP Events `events/unsubscribe`), by the
    * id the door derived; repeating it is harmless. A run is refused.
    */
-  wakeUnsubscribe(o: OwnerState, { account, r }: Call<UnsubscribeRequest>):
+  wakeUnsubscribe(o: LedgerDoorNeeds, { account, r }: Call<UnsubscribeRequest>):
       { unsubscribed: boolean } {
     if (account.origin === null || account.run !== null) {
       throw new Refusal("refused", "only the client that holds a subscription ends it");
