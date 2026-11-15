@@ -37,6 +37,7 @@ import { sha256, sha256Stream } from "../../contract/src/digest";
 
 import { CHUNK_BYTES } from "../../contract/src/limits";
 import type { ChunkRef } from "./files";
+import { joined } from "./bytes";
 
 /**
  * A segment is sealed once its records' own bytes reach this (never their trailer shares,
@@ -641,17 +642,6 @@ export async function lineAt(content: Content, offset: number, most: number,
  */
 export function streamChunks(sha256s: readonly string[]): ChunkRef[] {
   return sha256s.map((sha256) => ({ sha256, size: CHUNK_BYTES }));
-}
-
-/** Byte arrays joined into one. */
-export function joined(parts: readonly Uint8Array[]): Uint8Array {
-  const whole = new Uint8Array(lengthOf(parts));
-  let at = 0;
-  for (const part of parts) {
-    whole.set(part, at);
-    at += part.byteLength;
-  }
-  return whole;
 }
 
 /** A trailer's line, parsed and checked. */

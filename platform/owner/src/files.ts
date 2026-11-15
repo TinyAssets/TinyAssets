@@ -121,7 +121,7 @@ import {
   words,
 } from "./file-search";
 import { windowEnd } from "./bodies";
-import { joined } from "./segments";
+import { joined } from "./bytes";
 import { clock, inTime } from "./clock";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { slotted } from "../../contract/src/slots";
