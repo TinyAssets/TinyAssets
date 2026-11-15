@@ -87,7 +87,8 @@ export function through(overrides: Partial<ChunkStore>): ChunkStore {
       files.getManifestPart(ns, key, gen, part, sha256),
     getManifestSegment: (ns, key, gen, a, b, sha256) =>
       files.getManifestSegment(ns, key, gen, a, b, sha256),
-    deleteManifest: (ns, gen, parts, segments) => files.deleteManifest(ns, gen, parts, segments),
+    deleteSegments: (ns, gen, segments) => files.deleteSegments(ns, gen, segments),
+    sweepManifests: (ns, keep, cursor) => files.sweepManifests(ns, keep, cursor),
     ...overrides,
   };
 }

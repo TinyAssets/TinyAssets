@@ -187,7 +187,8 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
   async getManifestRoot(): Promise<never> { throw new Error("not in the leg"); }
   async getManifestPart(): Promise<never> { throw new Error("not in the leg"); }
   async getManifestSegment(): Promise<never> { throw new Error("not in the leg"); }
-  async deleteManifest(): Promise<never> { throw new Error("not in the leg"); }
+  async deleteSegments(): Promise<never> { throw new Error("not in the leg"); }
+  async sweepManifests(): Promise<never> { throw new Error("not in the leg"); }
 }
 
 /**
@@ -229,18 +230,19 @@ function received(env: LegEnv): ChunkStore {
       store.getManifestPart(ns, key, gen, part, sha256),
     getManifestSegment: (ns, key, gen, a, b, sha256) =>
       store.getManifestSegment(ns, key, gen, a, b, sha256),
-    deleteManifest: (ns, gen, parts, segments) => store.deleteManifest(ns, gen, parts, segments),
+    deleteSegments: (ns, gen, segments) => store.deleteSegments(ns, gen, segments),
+    sweepManifests: (ns, keep, cursor) => store.sweepManifests(ns, keep, cursor),
   };
 }
 
 /**
- * A generation's root calls, answered in the owner isolate with nothing kept: no case reads a
- * root back, so the burst's and the ship's measure their own puts alone.
+ * A generation's root and delete calls, answered in the owner isolate with nothing kept: no
+ * case reads a root back, so the burst's and the ship's measure their own puts alone.
  */
-const ROOTLESS: Pick<ChunkStore, "putManifestRoot" | "getManifestRoot" | "deleteManifest"> = {
+const ROOTLESS: Pick<ChunkStore, "putManifestRoot" | "deleteSegments" | "sweepManifests"> = {
   putManifestRoot: async () => {},
-  getManifestRoot: async () => null,
-  deleteManifest: async () => {},
+  deleteSegments: async () => {},
+  sweepManifests: async () => ({ deleted: 0, cursor: null }),
 };
 
 /**
