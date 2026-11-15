@@ -11,7 +11,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
 import { rewrap } from "../../files/src/datakey";
-import { manifestKey } from "../../files/src/keys";
 import {
   CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, LOG_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY,
 } from "../../contract/src/limits";
@@ -836,9 +835,9 @@ describe("the sweep of generations no row names", () => {
         }
       } });
     expect(given.notices).toEqual(["manifest_log_overflow"]);
-    expect(left).toEqual([manifestKey(ns, lost!, 0)]);
+    expect(left).toEqual(["0"]);
     expect(await objectsOf(ns, lost!)).toEqual([]);
-    expect(await objectsOf(ns, kept.gen)).toContain(manifestKey(ns, kept.gen));
+    expect(await objectsOf(ns, kept.gen)).toContain("root");
     expect(await sweepState(o)).toEqual([{ sweep: 0, sweep_retry: null }]);
   });
 
@@ -886,9 +885,9 @@ describe("the sweep of generations no row names", () => {
         }
       } });
     expect(seen!.get(orphan)).toEqual([]);
-    expect(seen!.get(writing!)).toEqual([manifestKey(ns, writing!, 0)]);
+    expect(seen!.get(writing!)).toEqual(["0"]);
     for (const gen of [exported.gen, fallback.gen, newest.gen]) {
-      expect([gen, seen!.get(gen)]).toEqual([gen, expect.arrayContaining([manifestKey(ns, gen)])]);
+      expect([gen, seen!.get(gen)]).toEqual([gen, expect.arrayContaining(["root"])]);
     }
     expect(await sweepState(o)).toEqual([{ sweep: 0, sweep_retry: null }]);
   });
@@ -933,7 +932,7 @@ describe("the sweep of generations no row names", () => {
     expect([meanwhile.sweep, meanwhile.next]).toEqual([2, meanwhile.now]);
     const settled = await pass(() => env.FILES);
     expect([settled.sweep, settled.sweep_retry]).toEqual([0, null]);
-    expect(await objectsOf(ns, kept.gen)).toContain(manifestKey(ns, kept.gen));
+    expect(await objectsOf(ns, kept.gen)).toContain("root");
   });
 
   it("stops, still owed, at a restore's hold begun while it runs: a wipe between its pages " +
@@ -965,7 +964,7 @@ describe("the sweep of generations no row names", () => {
     expect(pages).toBe(1);
     for (const gen of [pinned.gen, fresh]) {
       expect([gen, await objectsOf(ns, gen)]).toEqual([gen, expect.arrayContaining([
-        manifestKey(ns, gen)])]);
+        "root"])]);
     }
   });
 });

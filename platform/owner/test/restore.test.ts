@@ -25,7 +25,6 @@ import { erasedWhole } from "./erasure-support";
 import {
   BURST, digest, type Generated, generate, objectsOf, type Owner, owner, PAGE, standing,
 } from "./generation-support";
-import { manifestKey } from "../../files/src/keys";
 import { MUSE, registerOn } from "./ledger-support";
 import {
   drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, storesOn, TIERS,
@@ -846,13 +845,13 @@ describe("a restore into a live owner", () => {
     const hold = await pinnedTo(o.stub, o.name, gen.gen);
     const stub = await wipedWith(o.stub, o.name, hold.confirm!);
     // Held: no lane runs, and only the record names the pin's generation, the undo.
-    expect(await objectsOf(ns, hold.fresh!)).toContain(manifestKey(ns, hold.fresh!));
+    expect(await objectsOf(ns, hold.fresh!)).toContain("root");
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
     await stub.admissionSet(platform(o.name), { admit: true });
     await drainDue(stub);
     expect(await objectsOf(ns, hold.fresh!)).toEqual([]);
-    expect(await objectsOf(ns, gen.gen)).toContain(manifestKey(ns, gen.gen));
+    expect(await objectsOf(ns, gen.gen)).toContain("root");
     expect(await sqlIn(stub, "SELECT sweep FROM owner_backup_state")).toEqual([{ sweep: 0 }]);
   });
 

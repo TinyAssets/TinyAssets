@@ -18,16 +18,33 @@ import type { Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
 import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
-import { manifestKey } from "../../files/src/keys";
+import { objectPrefix } from "../../contract/src/files";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { admittedOwner, drainDue, storesOn, through, TIERS } from "./support";
 
 export type Line = Record<string, unknown> & { t: string };
 
-/** The keys R2 holds of generation `gen` in namespace `ns`: its root and its objects. */
+/**
+ * What R2 holds of generation `gen` in namespace `ns`, each by its place in the generation:
+ * `root`, or the rest of its key after the generation's id (a part's `0`, a segment's
+ * `l/0-3`). Read from the namespace's keys (`objectPrefix`), not the files Worker's layout.
+ */
 export async function objectsOf(ns: string, gen: string): Promise<string[]> {
-  return (await env.BLOBS.list({ prefix: manifestKey(ns, gen) })).objects
-    .map((object) => object.key);
+  const held: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.BLOBS.list({ prefix: objectPrefix(ns),
+                                        ...(cursor === undefined ? {} : { cursor }) });
+    for (const { key } of page.objects) {
+      const steps = key.split("/");
+      const at = steps.indexOf(gen);
+      if (at >= 0) {
+        held.push(steps.slice(at + 1).join("/") || "root");
+      }
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor !== undefined);
+  return held;
 }
 
 /**
