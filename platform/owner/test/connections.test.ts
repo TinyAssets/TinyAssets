@@ -619,6 +619,8 @@ describe("the refresh lease", () => {
     const [secret] = await secrets(r, connection);
     expect(answers.map((answer) => answer.ok && answer.blob)).toEqual(Array(4).fill(
       secret!["blob"]));
+    // And it is the refresh's, sealed for version 2.
+    expect(await opensRetired(r.name, connection, 2, secret!["blob"] as string)).toBe(true);
     // Fresh now: the next calls refresh nothing.
     await calls(r, 2);
     expect((await r.gateway.calls()).map((call) => call.method)
@@ -912,8 +914,9 @@ describe("a blob resealed under the active kid", () => {
     await settled(r, binding, [slow]);
     const rows = await secrets(r, connection);
     expect(rows.map((row) => [row["version"], row["kid"]])).toEqual([[2, "k2"]]);
-    // The refresh's blob, not the reseal's.
+    // The refresh's blob, sealed for version 2, not the reseal's.
     expect(rows[0]!["blob"]).toBe(refreshed.ok && refreshed.blob);
+    expect(await opensRetired(r.name, connection, 2, rows[0]!["blob"] as string)).toBe(true);
   });
 
   it("is dropped while a refresh holds the lease", async () => {
