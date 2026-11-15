@@ -17,6 +17,16 @@ const ROUTING_KEY = randomBytes(32).toString("base64url");
 const KEYRING = keyring("k2", ["k1", "k2"]);
 /** The files Worker's data keys' ring, made fresh for each run: rotated, `k1` the older kid. */
 const FILES_RING = keyring("k2", ["k1", "k2"]);
+/**
+ * `ring` with its older kid `k1` active, as a Worker still sealing under it mid-rotation; and
+ * `ring` once `k1` is retired from it, the active `k2` alone.
+ */
+const older = (ring: string) => keyring("k1", ["k1", "k2"], keysOf(ring));
+const retired = (ring: string) => keyring("k2", ["k2"], keysOf(ring));
+const keysOf = (ring: string) => (JSON.parse(ring) as { keys: Record<string, string> }).keys;
+/** The gateway's and the files Worker's names, as their configs give them. */
+const GATEWAY = workerConfig(join(PLATFORM, "gateway")).name;
+const FILES = workerConfig(join(PLATFORM, "files")).name;
 /** The sandbox Worker the owner's object reaches in these tests: a fake, by its file. */
 const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
 /** The gate in front of it, `SANDBOX`. */
@@ -44,24 +54,28 @@ const FAKE_UPSTREAM = join(PLATFORM, "gateway", "test", "fake-upstream.ts");
  * call at the gate through SANDBOX_GATE, both bound to the test Worker alone. The real sandbox
  * Worker is tested against a fake E2B in its own package (`sandbox/test`). ERASURES is the
  * config's queue, consumed by a fake Worker (`test/fake-erasures.ts`) a test reads through
- * ERASURES_SENT. TEST_KEYRING is the gateway's keyring, so a test can seal under an older kid,
- * and FILES_TEST_RING the files Worker's, so a test can wrap a data key under its older kid;
- * every fetch of the gateway and the tests reaches the gateway's fake outside world
- * (`gateway/test/fake-upstream.ts`). ROUTING_MAC_KEY is the config's one secret, the sandbox
- * tokens' routing key. The test Worker and each Worker beside it have every binding their
- * configs give them (`main`, `auxiliary`), and a test states only their secrets and what it
- * changes; nothing is read from the host (`pool`). A test admits each owner it names by the
- * platform's door, as sign-up does, and waits for its seed (slice L, `test/support.ts`
- * `admittedOwner`).
+ * ERASURES_SENT. CONNECT_OLDER and FILES_OLDER are the gateway's connect steps and the files
+ * Worker on the same rings with the older kid `k1` active, as a Worker still sealing under it
+ * mid-rotation, so a test seals a credential or wraps a data key under `k1` through their own
+ * front doors; GATEWAY_RETIRED is the gateway once `k1` is retired from its ring, so a test
+ * sees a blob open without it. Every fetch of the gateway and the tests reaches the gateway's
+ * fake outside world (`gateway/test/fake-upstream.ts`). ROUTING_MAC_KEY is the config's one
+ * secret, the sandbox tokens' routing key. The test Worker and each Worker beside it have
+ * every binding their configs give them (`main`, `auxiliary`), and a test states only their
+ * secrets and what it changes; nothing is read from the host (`pool`). A test admits each
+ * owner it names by the platform's door, as sign-up does, and waits for its seed (slice L,
+ * `test/support.ts` `admittedOwner`).
  */
 const OWNER = async () => main(join(PLATFORM, "owner"), {
   durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
-  bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING, ROUTING_MAC_KEY: ROUTING_KEY },
-  // The files Worker's bucket, test-only: a test changes a chunk's bytes under its key, as
-  // storage failing would, and sees a verified read refuse them.
+  bindings: { ROUTING_MAC_KEY: ROUTING_KEY },
+  // The files Worker's bucket, test-only: a test copies, deletes or plants its objects, as a
+  // lost or restored bucket would hold them.
   r2Buckets: ["BLOBS"],
-  serviceBindings: { CONNECT: { name: workerConfig(join(PLATFORM, "gateway")).name,
-                                entrypoint: "ConnectGateway" },
+  serviceBindings: { CONNECT: { name: GATEWAY, entrypoint: "ConnectGateway" },
+                     CONNECT_OLDER: { name: `${GATEWAY}-older`, entrypoint: "ConnectGateway" },
+                     GATEWAY_RETIRED: `${GATEWAY}-retired`,
+                     FILES_OLDER: `${FILES}-older`,
                      SANDBOX: SANDBOX_GATE, SANDBOX_GATE: control(SANDBOX_GATE),
                      FILES: FILES_GATE, FILES_GATE: control(FILES_GATE),
                      GATEWAY: GATEWAY_GATE, GATEWAY_GATE: control(GATEWAY_GATE),
@@ -71,8 +85,12 @@ const OWNER = async () => main(join(PLATFORM, "owner"), {
   outboundService: fakeConfig(FAKE_UPSTREAM).name,
   workers: [
     await auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: FILES_RING } }),
-    await auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: KEYRING },
-                                                 outboundService: fakeConfig(FAKE_UPSTREAM).name }),
+    await auxiliary(join(PLATFORM, "files"), { name: `${FILES}-older`,
+                                               bindings: { FILES_KEYRING: older(FILES_RING) } }),
+    ...await Promise.all([[GATEWAY, KEYRING], [`${GATEWAY}-older`, older(KEYRING)],
+                          [`${GATEWAY}-retired`, retired(KEYRING)]].map(([name, ring]) =>
+      auxiliary(join(PLATFORM, "gateway"), { name, bindings: { GATEWAY_KEYRING: ring },
+                                             outboundService: fakeConfig(FAKE_UPSTREAM).name }))),
     await auxiliary(join(PLATFORM, "codemode"), {}),
     gate(SANDBOX_GATE, methodsOf(join(PLATFORM, "contract", "src", "sandbox.ts"),
                                  "SandboxService"), { fake: FAKE_SANDBOX }),

@@ -1,23 +1,19 @@
 /**
  * The owner's holds of large data (`holds.ts`, ADR-037): a hold takes the isolate's units
  * only while its bytes are in hand, weighted by what it holds, so a co-tenant's small read
- * never waits behind edits (review M1); and a ranged read is verified against its whole
- * chunk end to end, a tampered chunk failing loudly (review L3).
+ * never waits behind edits (review M1); and a ranged read of a chunk the files Worker refuses
+ * fails loudly (review L3).
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { sqlIn } from "../../ci/workerd";
-import { sealObject } from "../../contract/src/envelope";
-import { chunkName, unwrap } from "../../files/src/datakey";
-import { chunkKey } from "../../files/src/keys";
 import { planEdit, type Source } from "../src/edit";
 import {
   EDIT_MAKE_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots,
 } from "../src/holds";
 import { owner } from "./generation-support";
 import { MUSE, rig } from "./ledger-support";
-import { failure, inFiles } from "./support";
+import { failure, gateFor, spaceOf } from "./support";
 
 const MIB = 1024 * 1024;
 
@@ -102,22 +98,17 @@ describe("the owner's holds", () => {
     expect(steps).toBe(chunks.length + (chunks.length - changed));
   });
 
-  it("fails a ranged read loudly when its chunk's bytes are changed in R2", async () => {
+  it("fails a ranged read loudly when the files Worker refuses its changed chunk", async () => {
     const o = await owner();
     const path = "/workspace/tampered.md";
     const content = "0123456789".repeat(1000);
     await o.stub.fileWrite(o.bind(), { path, expected_etag: null, content });
     expect((await o.stub.fileText(o.bind(), { path, offset: 5000, max_bytes: 10 })).text)
       .toBe("0123456789");
-    const [row] = await sqlIn(o.stub, "SELECT c.sha256 FROM file_entries e JOIN " +
-      "file_content_chunks c ON c.content_id = e.content_id WHERE e.name = ?", "tampered.md");
-    const space = await inFiles(o.stub, (files) => files.space());
-    // Sealed as the files Worker seals, so it opens: the bytes, not the key, changed.
-    const dataKey = await unwrap(env.FILES_TEST_RING, space.ns, space.key);
-    const name = await chunkName(dataKey, row!["sha256"] as string);
-    await env.BLOBS.put(chunkKey(space.ns, name), await sealObject(
-      dataKey, chunkKey(space.ns, name),
-      new TextEncoder().encode(content.replace("0123456789", "0123456780"))));
+    // The files Worker reads a range's whole chunk and rechecks its hash, refusing one whose
+    // bytes changed in R2 (`files/test/chunks.test.ts`, review L7): its refusal, at the gate.
+    await gateFor(env.FILES_GATE, await spaceOf(o.stub)).arm("getChunks", { refuse: {
+      name: "Error", code: "internal", message: "a chunk's bytes no longer match its hash" } });
     expect((await failure(() => o.stub.fileText(o.bind(), { path, offset: 5000,
                                                               max_bytes: 10 }))).message)
       .toMatch(/a chunk's bytes no longer match its hash/);

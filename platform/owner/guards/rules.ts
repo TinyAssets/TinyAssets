@@ -138,16 +138,4 @@ export const OWED: readonly Owed[] = Object.freeze([
     "platform/doors/src/egress.ts", "platform/gateway/src/catalog.ts",
     "platform/gateway/src/held.ts", "platform/gateway/src/keyring.ts",
     "platform/gateway/src/meter.ts", "platform/gateway/src/index.ts"]),
-  // Tests on the other Workers' internals, not their front doors: B23.
-  ...imports("B23", "platform/owner/test/connections.test.ts", [
-    "platform/gateway/src/credential.ts", "platform/gateway/src/catalog.ts",
-    "platform/gateway/src/keyring.ts"]),
-  ...imports("B23", "platform/owner/test/export.test.ts",
-             ["platform/files/src/datakey.ts", "platform/files/src/index.ts"]),
-  ...imports("B23", "platform/owner/test/gateway-support.ts",
-             ["platform/gateway/src/credential.ts", "platform/gateway/src/keyring.ts"]),
-  ...imports("B23", "platform/owner/test/holds.test.ts",
-             ["platform/files/src/datakey.ts", "platform/files/src/keys.ts"]),
-  ...imports("B23", "platform/owner/test/runs-authority.test.ts",
-             ["platform/doors/src/binder.ts"]),
 ]);

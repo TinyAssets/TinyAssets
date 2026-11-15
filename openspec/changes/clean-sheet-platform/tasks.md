@@ -314,6 +314,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (d3 §K1, §K2).
   - [x] T1, the owner's tests at production's numbers through the object's one wiring, twelve
     PRs, T1a to T1e (#5515 to #5588; `t1c.md`).
+    - [x] T1's last edges: the owner tests' five B23 entries in `owner/guards/rules.ts`
+      (connections, export, gateway-support, holds, runs-authority), each through its Worker's
+      front door (`t1-owner-edges.md`).
   - T2, the doors' tests through the owner's front door, two PRs (`t2.md`):
     - [x] T2a: the owner an auxiliary Worker behind the owner gate, every reach into its object
       gone, and the doors' test `OWNER` (C2b) typed as the doors' env types it; 13 of the 20
