@@ -984,6 +984,18 @@ describe("the owner's database bound", () => {
       .toFixed(1)}% of ${DATABASE_BYTES})`);
   });
 
+  it("is the worst case limits-audit.md states, so the doc's copy of it cannot go stale", () => {
+    const bytes = worstCase();
+    const audit = readFileSync(join(PLATFORM, "..", "openspec", "changes", "clean-sheet-platform",
+                                    "limits-audit.md"), "utf8");
+    const stated = /The worst case that ships is ([\d,.]+) bytes, ([\d.]+)% of the 10 GB: ([\d.]+) MB under\s+half/
+      .exec(audit);
+    expect(stated, "limits-audit.md states the worst case that ships").not.toBeNull();
+    expect([Number(stated![1]!.replaceAll(",", "")), stated![2], stated![3]]).toEqual([
+      bytes, (bytes / DATABASE_BYTES * 100).toFixed(2),
+      ((SHARE * DATABASE_BYTES - bytes) / 1e6).toFixed(1)]);
+  });
+
   it("counts every row as SQLite lays it out, at worst fill, its overflow in whole pages",
      () => {
     // A small row's share of its page, at a third full; a spilled one's overflow whole.
