@@ -113,9 +113,15 @@ import { WRANGLER } from "../ci/wrangler.ts";
 import { closedToAll, CONTROL_KEY, parseControl } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import {
+  APP_RESOURCE, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
+} from "../contract/src/identity.ts";
+import {
   argsText, OPERATOR_KEYRING, type OperatorArgs,
 } from "../contract/src/operator-message.ts";
 import type { RestoreAnswer, RestoreHold, RestoreSource } from "../contract/src/owner.ts";
+import {
+  authorizeUrl, SECRET_ORIGIN, SIGN_IN_MAX_AGE_S, type UpstreamConfig, upstreamConfig,
+} from "../contract/src/signin.ts";
 import { principal } from "../contract/src/text.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
@@ -125,8 +131,8 @@ import {
   type LockRule, type Moved, narrower, type Route, type RouteChange, unlike,
 } from "./cloudflare.ts";
 import {
-  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CALLBACK, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
-  FIRST_PARTY, IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES,
+  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
+  IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES,
   RETIRED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS, ZONE,
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
@@ -143,7 +149,6 @@ import DARK_CONTROL from "./control.json" with { type: "json" };
 type Json = Record<string, unknown>;
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
-const WORKOS_API = "https://api.workos.com";
 /**
  * E2B's sandbox lifecycle webhook, the doors' one E2B hook (`doors/src/e2b-hooks.ts`), its
  * API read in e2b-dev/infra's `spec/openapi.yml` (2026-11-04).
@@ -234,7 +239,10 @@ export interface Values {
   readonly e2b: E2bAdmin;
   /** E2B's listing of the lifecycle hook: null when it holds none. */
   readonly hook: Json | null;
-  /** Whether WorkOS is known to list `CALLBACK`: never in the plan job, which cannot list it. */
+  /**
+   * Whether WorkOS is known to list `UPSTREAM_CALLBACK`: never in the plan job, which cannot
+   * list it.
+   */
   readonly listed: boolean;
   /** The zone's routes as the route plan read them, before any change. */
   readonly table: readonly Route[];
@@ -364,16 +372,18 @@ export function lockRefusal(worker: string, run: Run): string | null {
 /** The doors' upstream: the issuer, and its `UPSTREAM` record. */
 export interface UpstreamValues {
   readonly issuer: string;
-  readonly record: Json;
+  readonly record: UpstreamConfig;
 }
 
 /**
- * The doors' `UPSTREAM` record, which the doors' own parser accepts: User Management's
- * sign-in for the environment's client (ADR-032), its authorize and authenticate endpoints
- * fixed WorkOS URLs, and the JWKS the owner issuer's discovery names, that discovery held
- * to `issuer` exactly (an absent or non-https `jwks_uri` is unknown, and unknown stops the
- * kit). The access token's expected `iss` is derived here alone (`token_issuer`); a wrong
- * one is the sign-in probe's 502, which names the issuer the token carries.
+ * The doors' `UPSTREAM` record, held to the parser the doors read it with
+ * (`contract/src/signin.ts`), so a record the doors would refuse stops the kit before any
+ * deploy: User Management's sign-in for the environment's client (ADR-032), its authorize
+ * and authenticate endpoints fixed WorkOS URLs, and the JWKS the owner issuer's discovery
+ * names, that discovery held to `issuer` exactly (an absent or non-https `jwks_uri` is
+ * unknown, and unknown stops the kit). The access token's expected `iss` is derived here
+ * alone (`token_issuer`); a wrong one is the sign-in probe's 502, which names the issuer the
+ * token carries.
  */
 export async function upstreamFrom(issuer: string | undefined, clientId: string | undefined,
                                    fetcher: Fetch): Promise<UpstreamValues> {
@@ -401,34 +411,15 @@ export async function upstreamFrom(issuer: string | undefined, clientId: string 
   if (typeof jwks !== "string" || !/^https:\/\/\S+$/.test(jwks)) {
     throw new Error("the issuer's discovery names no https jwks_uri: unknown");
   }
-  // The doors' parser (`upstreamConfig`) accepts this record: the kit's tests hold it so.
   const record = { client_id: clientId,
-                   authorization_endpoint: `${WORKOS_API}/user_management/authorize`,
-                   token_endpoint: `${WORKOS_API}/user_management/authenticate`,
+                   authorization_endpoint: `${SECRET_ORIGIN}/user_management/authorize`,
+                   token_endpoint: `${SECRET_ORIGIN}/user_management/authenticate`,
                    jwks_uri: jwks,
                    // WorkOS's docs and SDK fixtures (research, 2026-11-06); the probe proves it.
-                   token_issuer: `${WORKOS_API}/user_management/${clientId}`,
-                   user_delete: `${WORKOS_API}/user_management/users/{sub}`,
+                   token_issuer: `${SECRET_ORIGIN}/user_management/${clientId}`,
+                   user_delete: `${SECRET_ORIGIN}/user_management/users/{sub}`,
                    authorize_params: { provider: "authkit" } };
-  return { issuer, record };
-}
-
-/**
- * The authorize URL the doors build from `upstream` (`doors/src/oidc.ts` `authorizeUrl`),
- * for `state` and `challenge` and `CALLBACK`.
- */
-export function authorizeLink(upstream: UpstreamValues, state: string, challenge: string):
-    string {
-  const record = upstream.record as { authorization_endpoint: string; client_id: string;
-                                      authorize_params?: Record<string, string> };
-  const url = new URL(record.authorization_endpoint);
-  for (const [name, value] of Object.entries({
-    ...record.authorize_params, response_type: "code", client_id: record.client_id,
-    redirect_uri: CALLBACK, state, code_challenge: challenge, code_challenge_method: "S256",
-    max_age: "0" })) {
-    url.searchParams.set(name, value);
-  }
-  return url.href;
+  return { issuer, record: upstreamConfig(JSON.stringify(record)) };
 }
 
 /** Where WorkOS sends a browser whose `redirect_uri` the client does not list. */
@@ -436,20 +427,21 @@ const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
 
 /**
  * The early sign-in check, before any person signs in: a `GET` of the WorkOS authorize URL
- * the doors build (`authorizeLink`, User Management's; never the doors' own `/authorize`)
+ * the doors build (`authorizeUrl`, User Management's; never the doors' own `/authorize`)
  * with a throwaway state and S256 challenge (its verifier dropped, so no code it could end
  * in is redeemable), which must answer a 302 to the owner issuer's host, AuthKit's sign-in
  * page. A refused client or redirect (`error.workos.com/sso/client-id-invalid`,
  * `…/redirect-uri-invalid`, an `error=` answer) stops the kit, naming where it was sent.
  *
- * `unlisted`: `CALLBACK` is not known to be on the client's list yet (the plan job cannot
+ * `unlisted`: `UPSTREAM_CALLBACK` is not known to be on the client's list yet (the plan job cannot
  * list it, and a run without `--yes` leaves it missing), so a `redirect-uri-invalid` answer
  * is reported as `dark`'s to register, not a stop; every other refusal still stops.
  */
 export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean,
                                      fetcher: Fetch): Promise<string> {
   const { state, challenge } = throwaway();
-  const link = authorizeLink(upstream, state, challenge);
+  const link = authorizeUrl(upstream.record, { state, code_challenge: challenge,
+                                              redirect_uri: UPSTREAM_CALLBACK });
   const answer = await fetcher(link, { redirect: "manual" });
   const location = answer.headers.get("Location");
   if (answer.status !== 302 || location === null) {
@@ -464,23 +456,26 @@ export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean
   }
   const host = new URL(upstream.issuer).host;
   if (unlisted && `${to.origin}${to.pathname}` === REDIRECT_UNLISTED) {
-    return `WorkOS's authorize does not take ${CALLBACK} yet: dark registers it, then ` +
-           "checks the client and it again";
+    return `WorkOS's authorize does not take ${UPSTREAM_CALLBACK} yet: dark registers it, ` +
+           "then checks the client and it again";
   }
   if (to.protocol !== "https:" || to.host !== host || to.searchParams.has("error")
       || /error/i.test(to.pathname)) {
-    throw new Error(`WorkOS's authorize refused the doors' client or ${CALLBACK}: it sent ` +
-                    `the browser to ${to.origin}${to.pathname}, not ${host}'s sign-in`);
+    throw new Error(`WorkOS's authorize refused the doors' client or ${UPSTREAM_CALLBACK}: it ` +
+                    `sent the browser to ${to.origin}${to.pathname}, not ${host}'s sign-in`);
   }
-  return `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser ` +
-         `to ${host}'s sign-in`;
+  return `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the ` +
+         `browser to ${host}'s sign-in`;
 }
 
-/** The WorkOS redirect URI `CALLBACK`, registered when missing: GET, then POST; never a delete. */
+/**
+ * The WorkOS redirect URI `UPSTREAM_CALLBACK`, registered when missing: GET, then POST; never
+ * a delete.
+ */
 export async function registerRedirect(key: string, apply: boolean, fetcher: Fetch):
     Promise<"present" | "missing" | "registered"> {
   const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
-  const listed = await fetcher(`${WORKOS_API}/user_management/redirect_uris`, { headers });
+  const listed = await fetcher(`${SECRET_ORIGIN}/user_management/redirect_uris`, { headers });
   if (listed.status !== 200) {
     throw new Error(`WorkOS listed its redirect URIs with ${listed.status}`);
   }
@@ -488,14 +483,14 @@ export async function registerRedirect(key: string, apply: boolean, fetcher: Fet
   if (!Array.isArray(data)) {
     throw new Error("WorkOS's redirect URI listing holds no list");
   }
-  if (data.some((row) => (row as Json | null)?.["uri"] === CALLBACK)) {
+  if (data.some((row) => (row as Json | null)?.["uri"] === UPSTREAM_CALLBACK)) {
     return "present";
   }
   if (!apply) {
     return "missing";
   }
-  const made = await fetcher(`${WORKOS_API}/user_management/redirect_uris`, {
-    method: "POST", headers, body: JSON.stringify({ uri: CALLBACK }) });
+  const made = await fetcher(`${SECRET_ORIGIN}/user_management/redirect_uris`, {
+    method: "POST", headers, body: JSON.stringify({ uri: UPSTREAM_CALLBACK }) });
   if (made.status !== 200 && made.status !== 201) {
     throw new Error(`WorkOS refused the redirect URI with ${made.status}`);
   }
@@ -765,9 +760,9 @@ export function probeSteps(routes: readonly Route[]): RouteChange[] {
 export function probeLink(): string {
   const { state, challenge } = throwaway();
   const query = new URLSearchParams({
-    response_type: "code", client_id: FIRST_PARTY.client, redirect_uri: FIRST_PARTY.redirect,
+    response_type: "code", client_id: WEB_CLIENT, redirect_uri: WEB_REDIRECT,
     state, code_challenge: challenge, code_challenge_method: "S256",
-    resource: FIRST_PARTY.resource });
+    resource: APP_RESOURCE });
   return `${AUTHORIZE}?${query}`;
 }
 
@@ -783,7 +778,7 @@ export function throwaway(): { state: string; challenge: string } {
 
 /** What the probe's sign-in shows, read from where the browser ends. */
 export const PROBE_SIGNS = [
-  `Pass: the browser's address begins ${FIRST_PARTY.redirect}?error=temporarily_unavailable ` +
+  `Pass: the browser's address begins ${WEB_REDIRECT}?error=temporarily_unavailable ` +
   "(more follows it; the page itself is the old app's and reads as a sign-in error, " +
   "which is expected): the closed gate refused the sign-in after every " +
   "check passed, and no owner was made. The doors' client and API key were taken at User " +
@@ -793,12 +788,13 @@ export const PROBE_SIGNS = [
   "app's client document.",
   "Fail, at error.workos.com or another error page before or after the sign-in: WorkOS " +
   "refused the doors' client or the callback.",
-  `Fail, at ${CALLBACK}: a 502 page naming the check that failed (the token endpoint's ` +
+  `Fail, at ${UPSTREAM_CALLBACK}: a 502 page naming the check that failed (the token endpoint's ` +
   "status and error code, auth_time, client_id...), the same line in the doors' log. On " +
   "issuer, it names the iss the token carries: that value becomes upstreamFrom's " +
   "token_issuer.",
-  `Fail, at ${FIRST_PARTY.redirect}?error=access_denied ("sign in again"): auth_time is more ` +
-  "than 600 s old or ahead of the clock, so max_age=0 did not force a fresh sign-in.",
+  `Fail, at ${WEB_REDIRECT}?error=access_denied ("sign in again"): auth_time is more than ` +
+  `${SIGN_IN_MAX_AGE_S} s old or ahead of the clock, so max_age=0 did not force a fresh ` +
+  "sign-in.",
 ].join("\n");
 
 // --- The route record -------------------------------------------------------------------
@@ -979,8 +975,7 @@ const zone = step<never, "cloudflare" | "zone" | "account" | "wrangler">(async (
 const upstream = step<never, "upstream">(async ({ run, say }) => {
   const values = await upstreamFrom(input(run, "OWNER_ISSUER"), input(run, "WORKOS_CLIENT_ID"),
                                     run.io.fetch);
-  const { client_id: client, jwks_uri: jwks } = values.record as { client_id: string;
-                                                                   jwks_uri: string };
+  const { client_id: client, jwks_uri: jwks } = values.record;
   say(`set the doors' OWNER_ISSUER to ${values.issuer}, held to its discovery, and their ` +
       `UPSTREAM to the WorkOS client ${client} and the JWKS ${jwks}`);
   return { upstream: values };
@@ -1049,12 +1044,12 @@ const hookListed = step<"e2b", "hook">(async (_ctx, { e2b: admin }) => ({
  */
 const redirect = step<never, "listed">(async ({ run, say }) => {
   const state = await registerRedirect(input(run, "WORKOS_API_KEY")!, run.apply, run.io.fetch);
-  say(`WorkOS redirect URI ${CALLBACK}: ${state}`);
+  say(`WorkOS redirect URI ${UPSTREAM_CALLBACK}: ${state}`);
   return { listed: state !== "missing" };
 });
 
 const redirectLater = step<never, "listed">(({ say }) => {
-  say(`WorkOS redirect URI ${CALLBACK}: ${LATER}`);
+  say(`WorkOS redirect URI ${UPSTREAM_CALLBACK}: ${LATER}`);
   return { listed: false };
 });
 
@@ -1613,13 +1608,13 @@ const gatesClosed = step<"cloudflare" | "account">(async ({ say }, got) => {
 /** WorkOS lists the callback, as a dark run registers it. */
 const callbackListed = step(async ({ run, say }) => {
   if (await registerRedirect(input(run, "WORKOS_API_KEY")!, false, run.io.fetch) !== "present") {
-    throw new Error(`WorkOS lists no ${CALLBACK}: run dark first, which registers it`);
+    throw new Error(`WorkOS lists no ${UPSTREAM_CALLBACK}: run dark first, which registers it`);
   }
-  say(`WorkOS lists ${CALLBACK}, as a dark run registers it`);
+  say(`WorkOS lists ${UPSTREAM_CALLBACK}, as a dark run registers it`);
 });
 
 const callbackLater = step(({ say }) => {
-  say(`WorkOS lists ${CALLBACK}, as a dark run registers it: ${LATER}`);
+  say(`WorkOS lists ${UPSTREAM_CALLBACK}, as a dark run registers it: ${LATER}`);
 });
 
 /** The probe's handover, from the zone's routes as they stand. */
@@ -1628,7 +1623,7 @@ const probePlan = step<"cloudflare" | "zone", "changes">(async (_ctx, got) => ({
 
 /**
  * The early sign-in check, before a route moves, on the run that moves them: WorkOS takes the
- * client and CALLBACK, which it lists, so a redirect-uri-invalid answer stops the probe.
+ * client and UPSTREAM_CALLBACK, which it lists, so a redirect-uri-invalid answer stops the probe.
  */
 const probeAuthorize = step(async ({ run, say }) => {
   if (run.apply) {

@@ -41,9 +41,10 @@ import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
 import { bindMcp, withAccount } from "./binder";
 import {
-  AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, E2B_HOOK_PATH, INBOUND_PATH,
-  MCP_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK_PATH, WEB_CLIENT, WEB_REDIRECT,
+  AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, E2B_HOOK_PATH, INBOUND_PATH, MCP_PATH,
+  UPSTREAM_CALLBACK_PATH,
 } from "./config";
+import { ORIGIN, WEB_CLIENT, WEB_REDIRECT } from "../../contract/src/identity";
 import type { DoorsEnv } from "./env";
 import { EGRESS_ORIGIN } from "../../contract/src/egress";
 import { outsideRead } from "./control";
@@ -64,7 +65,7 @@ function notFound(): Response {
 /** The first-party app's metadata document, at its own `client_id` URL. */
 function webClient(): Response {
   return Response.json({
-    client_id: WEB_CLIENT, client_name: "TinyAssets", client_uri: PUBLIC_ORIGIN,
+    client_id: WEB_CLIENT, client_name: "TinyAssets", client_uri: ORIGIN,
     redirect_uris: [WEB_REDIRECT], token_endpoint_auth_method: "none",
     grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
   }, { headers: { "Cache-Control": "public, max-age=3600" } });
@@ -115,7 +116,7 @@ async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   if (url.origin === EGRESS_ORIGIN) {
     return serveEgress(withoutCookie(request), env, ctx);
   }
-  if (url.origin !== PUBLIC_ORIGIN) {
+  if (url.origin !== ORIGIN) {
     return notFound();
   }
   const path = url.pathname;

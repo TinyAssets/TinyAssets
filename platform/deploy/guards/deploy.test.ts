@@ -31,11 +31,11 @@ import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { deployProblems, locksOf, migrated, readLock } from "../../ci/kit/locks";
 import { WRANGLER, workerFolders } from "../../ci/wrangler";
+import identity from "../../contract/identity.json" with { type: "json" };
 import { type Domain, openBlob, parseRing, sealBlob } from "../../contract/src/envelope";
 import {
-  AUTHORIZE_PATH, E2B_HOOK_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
-} from "../../doors/src/config";
-import { APP_RESOURCE, routeTakes } from "../../contract/src/identity";
+  APP_RESOURCE, ORIGIN, routeTakes, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
+} from "../../contract/src/identity";
 import {
   answerKey, answerOf, macHolds, type OperatorMessage, operatorMessage,
 } from "../../contract/src/operator-message";
@@ -43,14 +43,13 @@ import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
 import {
   closedToAll, CONTROL_KEY, outsideOpen, ownerOpen, parseControl,
 } from "../../contract/src/control";
-import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
 import { E2bAdmin } from "../../sandbox/e2b/admin";
 import { annotate, maskLine, output, runLink, runOf, summarize } from "../actions";
 import {
   Cloudflare, describeStep, handback, handover, type Route,
 } from "../cloudflare";
 import {
-  authorizeCheck, authorizeLink, deployedConfig,
+  authorizeCheck, deployedConfig,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
   lifecycleHook, lockRefusal, type Mode, MODES, parse,
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, routedConfig,
@@ -58,7 +57,7 @@ import {
 } from "../deploy";
 import { BUNDLES, bundles, pairTag, treeImage } from "../../sandbox/template/pair";
 import {
-  boundBy, BUCKET_LOCKS, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS,
+  boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS,
   MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers,
   ROUTES,
   SECRET_INPUTS, SECRETS, WORKERS, ZONE,
@@ -448,7 +447,7 @@ function world(options: WorldOptions = {}) {
     if (at.pathname === "/user_management/redirect_uris") {
       events.push(`workos ${method} redirect_uris`);
       return method === "POST" ? json({}, 201)
-        : json({ data: held || options.probed === true ? [{ uri: CALLBACK }] : [] });
+        : json({ data: held || options.probed === true ? [{ uri: UPSTREAM_CALLBACK }] : [] });
     }
     if (at.host === "api.e2b.app") {
       expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe(E2B_KEY);
@@ -1050,7 +1049,7 @@ describe("a dark run", () => {
       .toEqual([`E2B's ready build of ${TEMPLATE}: checked by the apply job before any change`,
                 `the pair ${PAIR} passed its standing checks: checked by the apply job before ` +
                 "any change",
-                `WorkOS redirect URI ${CALLBACK}: checked by the apply job before any change`,
+                `WorkOS redirect URI ${UPSTREAM_CALLBACK}: checked by the apply job before any change`,
                 `E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job before any change`]);
     // With none held, the control record is planned, and the hook's word comes after it, last.
     const fresh = await runMode(world(), "dark", ["--public"], PUBLIC);
@@ -1242,7 +1241,7 @@ describe("a routes run", () => {
     expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
     for (const path of ["tinyassets.io/mcp", "tinyassets.io/api/x", "tinyassets.io/oauth/token",
                         "tinyassets.io/.well-known/oauth-protected-resource/mcp",
-                        `tinyassets.io${E2B_HOOK_PATH}`]) {
+                        `tinyassets.io${identity.hook}`]) {
       expect([path, servedBy(w.routes.values(), path)]).toEqual([path, DOORS]);
     }
   });
@@ -1887,7 +1886,7 @@ describe("a probe run", () => {
     expect(work.plan.slice(-2)).toEqual(PROBE_ROUTES.map((pattern) =>
       `add the route ${pattern} for ${DOORS}`));
     expect(w.logs.at(-1)!.startsWith(
-      `\nSign in once, in a browser, at:\n${PUBLIC_ORIGIN}${AUTHORIZE_PATH}?`)).toBe(true);
+      `\nSign in once, in a browser, at:\n${ORIGIN}${identity.signin.authorize}?`)).toBe(true);
     expect(w.logs.at(-1)).toContain(PROBE_SIGNS);
     // The old stack still serves /mcp: the canary holds whichever side answers.
     expect(w.events).toContain("node canary.ts");
@@ -1957,7 +1956,6 @@ describe("the parts of a run", () => {
       token_issuer: "https://api.workos.com/user_management/c",
       user_delete: "https://api.workos.com/user_management/users/{sub}",
       authorize_params: { provider: "authkit" } });
-    expect(() => upstreamConfig(JSON.stringify(made.record))).not.toThrow();
     await expect(upstreamFrom("https://auth.test", "c",
                               discovery({ ...good, issuer: "https://auth.test/" })))
       .rejects.toThrow(/not OWNER_ISSUER/);
@@ -1978,11 +1976,10 @@ describe("the parts of a run", () => {
       .rejects.toThrow(/jwks_uri: unknown/);
   });
 
-  it("builds the authorize URL the doors build, for the early sign-in check", () => {
-    const doors = oidcUpstream(UPSTREAM.issuer, upstreamConfig(JSON.stringify(UPSTREAM.record)),
-                               "k");
-    expect(authorizeLink(UPSTREAM, "s1", "c1")).toBe(doors.authorizeUrl({
-      state: "s1", code_challenge: "c1", redirect_uri: UPSTREAM_CALLBACK }));
+  it("stops on a record the doors would refuse at every sign-in", async () => {
+    await expect(upstreamFrom("https://auth.test", "c",
+                              discovery({ ...good, jwks_uri: "https://auth.test/j?v=1" })))
+      .rejects.toThrow("UPSTREAM's jwks_uri is an https URL");
   });
 
   it("checks, before any sign-in, that WorkOS's authorize sends the browser to AuthKit's " +
@@ -2002,9 +1999,12 @@ describe("the parts of a run", () => {
     expect(sent[0]!.init?.redirect).toBe("manual");
     expect(`${asked.origin}${asked.pathname}`)
       .toBe("https://api.workos.com/user_management/authorize");
-    expect(asked.href).toBe(authorizeLink(UPSTREAM, asked.searchParams.get("state")!,
-                                          asked.searchParams.get("code_challenge")!));
-    expect(asked.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const { state, code_challenge: challenge, ...rest } = Object.fromEntries(asked.searchParams);
+    expect(rest).toEqual({ provider: "authkit", response_type: "code", client_id: "c",
+                           redirect_uri: UPSTREAM_CALLBACK, code_challenge_method: "S256",
+                           max_age: "0" });
+    expect(state).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
     await authorizeCheck(UPSTREAM, false, answering(302, "https://auth.test/bootstrap"));
     expect(new URL(sent[1]!.url).searchParams.get("state"))
       .not.toBe(asked.searchParams.get("state"));
@@ -2046,10 +2046,10 @@ describe("the parts of a run", () => {
     const calls: string[] = [];
     const workos = (uris: string[]) => async (url: string, init?: RequestInit) => {
       calls.push(`${init?.method ?? "GET"} ${url}`);
-      return init?.method === "POST" ? Response.json({ uri: CALLBACK }, { status: 201 })
+      return init?.method === "POST" ? Response.json({ uri: UPSTREAM_CALLBACK }, { status: 201 })
         : Response.json({ data: uris.map((uri) => ({ uri })) });
     };
-    expect(await registerRedirect("k", true, workos([CALLBACK, "https://other.test/cb"])))
+    expect(await registerRedirect("k", true, workos([UPSTREAM_CALLBACK, "https://other.test/cb"])))
       .toBe("present");
     expect(await registerRedirect("k", false, workos(["https://other.test/cb"]))).toBe("missing");
     expect(await registerRedirect("k", true, workos(["https://other.test/cb"])))
@@ -2297,7 +2297,7 @@ describe("the parts of a run", () => {
 
   it("prints the doors' own first-party sign-in, a fresh S256 challenge each run", () => {
     const link = new URL(probeLink());
-    expect(`${link.origin}${link.pathname}`).toBe(`${PUBLIC_ORIGIN}${AUTHORIZE_PATH}`);
+    expect(`${link.origin}${link.pathname}`).toBe(`${ORIGIN}${identity.signin.authorize}`);
     const { code_challenge: challenge, state, ...rest } = Object.fromEntries(link.searchParams);
     expect(rest).toEqual({ response_type: "code", client_id: WEB_CLIENT,
                            redirect_uri: WEB_REDIRECT, code_challenge_method: "S256",
@@ -2306,7 +2306,7 @@ describe("the parts of a run", () => {
     expect(state).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(new URL(probeLink()).searchParams.get("code_challenge")).not.toBe(challenge);
     expect(PROBE_SIGNS).toContain(`${WEB_REDIRECT}?error=temporarily_unavailable`);
-    expect(PROBE_SIGNS).toContain(CALLBACK);
+    expect(PROBE_SIGNS).toContain(UPSTREAM_CALLBACK);
   });
 
   it("stops the handover at a refused change, saying what is done", async () => {
@@ -2499,7 +2499,7 @@ describe("E2B's lifecycle webhook", () => {
                                     { id: "b", url: E2B_HOOK.url }]).e2b))
       .rejects.toThrow(/holds 2 webhooks/);
     // A route hands the hook's path to the doors.
-    expect(ROUTES.some((pattern) => routeTakes(pattern, `${ZONE}${E2B_HOOK_PATH}`))).toBe(true);
+    expect(ROUTES.some((pattern) => routeTakes(pattern, `${ZONE}${identity.hook}`))).toBe(true);
   });
 
   it("changes its secret only with the doors' copy: both or neither", async () => {
@@ -3390,8 +3390,8 @@ const DARK_FRESH = [
   "the migration locks pin every migration the owner and sandbox Workers ship",
   ISSUED,
   `the pair ${PAIR} passed its standing checks in this E2B team`,
-  `WorkOS redirect URI ${CALLBACK}: registered`,
-  `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser to ` +
+  `WorkOS redirect URI ${UPSTREAM_CALLBACK}: registered`,
+  `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the browser to ` +
   "auth.test's sign-in",
   ...Object.entries(NAMESPACES).map(([binding, title]) =>
     `create the KV namespace ${title} (${binding})`),
@@ -3423,8 +3423,8 @@ const ROUTES_HELD = [
   "domain (none) and E2B's lifecycle webhook (disabled) as this run's route record in " +
   "tinyassets-control, before any change: hand back with --mode handback --record " +
   "<this run's id>",
-  `WorkOS redirect URI ${CALLBACK}: present`,
-  `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser to ` +
+  `WorkOS redirect URI ${UPSTREAM_CALLBACK}: present`,
+  `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the browser to ` +
   "auth.test's sign-in",
   ...WORKERS.map((worker) => `upload and deploy a version of ${NAMES[worker]}, touching no route`),
   ...["mcp*", "api*", "app*"].map((path) =>

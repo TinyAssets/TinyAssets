@@ -226,11 +226,11 @@ describe("the import layers", () => {
       "platform/sources/src/probe.ts imports node:fs"]],
     ["the kits and the runner reaching their own guards and tests, and the probes the Worker", {
       "platform/ci/probe.ts": 'import "./guards/fixtures/helper";',
-      "platform/deploy/probe.ts": 'import "./guards/rules";',
+      "platform/deploy/probe.ts": 'import "./guards/canary.test";',
       "platform/sandbox/runner/probe.ts": 'import "./test/harness";',
       "platform/sandbox/runner/probes.ts": 'import "../src/control";' },
      ["platform/ci/probe.ts imports platform/ci/guards/fixtures/helper.ts",
-      "platform/deploy/probe.ts imports platform/deploy/guards/rules.ts",
+      "platform/deploy/probe.ts imports platform/deploy/guards/canary.test.ts",
       "platform/sandbox/runner/probe.ts imports platform/sandbox/runner/test/harness.ts",
       "platform/sandbox/runner/probes.ts imports platform/sandbox/src/control.ts"]],
     ["the sandbox Worker reaching the E2B tools' calls, and E2B's client a Worker or a package", {

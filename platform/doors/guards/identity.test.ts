@@ -65,7 +65,8 @@ describe("the doors' public identity", () => {
   it("hands the doors, at the cutover, every path the outside world reaches them by", () => {
     for (const path of [identity.mcp, identity.signin.authorize, identity.signin.callback,
                         identity.first_party.client, identity.first_party.redirect,
-                        identity.first_party.resource, identity.hook]) {
+                        identity.first_party.resource, identity.connect_callback,
+                        identity.connected, identity.hook]) {
       expect([path, taken(path)]).toEqual([path, true]);
     }
   });

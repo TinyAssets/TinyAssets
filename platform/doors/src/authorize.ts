@@ -47,11 +47,11 @@ import { type Vendor, vendorOf } from "../../contract/src/apps";
 import { sha256 } from "../../contract/src/digest";
 import { AUTHORIZE_BODY_MAX } from "../../contract/src/limits";
 import {
-  CLOCK_MARGIN_S, FIRST_PARTY_CLIENTS, MCP_RESOURCE, now,
-  PUBLIC_HOST, SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
+  CLOCK_MARGIN_S, FIRST_PARTY_CLIENTS, MCP_RESOURCE, now, PUBLIC_HOST, SCOPES,
 } from "./config";
 import type { DoorsEnv } from "./env";
-import { APP_RESOURCE } from "../../contract/src/identity";
+import { APP_RESOURCE, UPSTREAM_CALLBACK } from "../../contract/src/identity";
+import { SIGN_IN_MAX_AGE_S } from "../../contract/src/signin";
 import { outsideRead, ownerRead } from "./control";
 import { putOwner, readOwner } from "./directory";
 import { Refusal } from "../../contract/src/refusal";

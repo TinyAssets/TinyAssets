@@ -1,5 +1,5 @@
 /**
- * The doors Worker's fixed facts: its one public origin, the OAuth issuer and resources,
+ * The doors Worker's fixed facts: the public identity's paths, the OAuth issuer and resources,
  * the first-party clients, and the environment it binds (`wrangler.jsonc`, held by
  * `guards/config.test.ts`).
  *
@@ -8,30 +8,31 @@
  * origin's; `egress`, the sandbox's door, a custom domain of this Worker; `routes`, the
  * route patterns the doors take at the cutover, each from the origin; the MCP door
  * (`mcp`); where a sign-in starts and where the upstream returns it (`signin`); the doors'
- * own app's client document, redirect and resource (`first_party`); E2B's lifecycle
- * webhook (`hook`). The contract's `ZONE` and `EGRESS_HOST` (`contract/src/egress.ts`) read
- * `host` and `egress`, and the runner the sandbox template ships is built from that module, so
- * a change to either takes a new template pair.
+ * own app's client document, redirect and resource (`first_party`); where a model source's
+ * OAuth flow returns (`connect_callback`) and the app's page that finishes it (`connected`);
+ * E2B's lifecycle webhook (`hook`). The URLs the deploy kit reads too are the contract's
+ * (`contract/src/identity.ts`). The contract's `ZONE` and `EGRESS_HOST`
+ * (`contract/src/egress.ts`) read `host` and `egress`, and the runner the sandbox template
+ * ships is built from that module, so a change to the file takes a new template pair.
  */
 import identity from "../../contract/identity.json" with { type: "json" };
+import { ORIGIN, WEB_CLIENT } from "../../contract/src/identity";
 
 import type { DoorsEnv } from "./env";
 
 // Each fact of the identity is read as text (a template), so this module holds strings
 // alone, never the shared file object (`ci/kit/module-state.ts`).
-/** The one configured public origin; the Capacitor WebView loads it too. */
+/** The public origin's host. */
 export const PUBLIC_HOST = `${identity.host}`;
-export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`;
 /** The authorization server's RFC 8414 issuer: our own, not the identity vendor's. */
-export const ISSUER = PUBLIC_ORIGIN;
+export const ISSUER = ORIGIN;
 /** The MCP door's path, and the outside resource MCP clients' tokens are bound to. */
 export const MCP_PATH = `${identity.mcp}`;
-export const MCP_RESOURCE = `${PUBLIC_ORIGIN}${MCP_PATH}`;
+export const MCP_RESOURCE = `${ORIGIN}${MCP_PATH}`;
 /** Where a sign-in starts. */
 export const AUTHORIZE_PATH = `${identity.signin.authorize}`;
 /** Where the upstream sign-in returns the browser. */
 export const UPSTREAM_CALLBACK_PATH = `${identity.signin.callback}`;
-export const UPSTREAM_CALLBACK = `${PUBLIC_ORIGIN}${UPSTREAM_CALLBACK_PATH}`;
 /** E2B's sandbox lifecycle webhook's path (`e2b-hooks.ts`). */
 export const E2B_HOOK_PATH = `${identity.hook}`;
 /**
@@ -39,18 +40,18 @@ export const E2B_HOOK_PATH = `${identity.hook}`;
  * source, which sends no `state`, returns to it with the flow's state as one more path
  * segment.
  */
-export const CONNECT_CALLBACK_PATH = "/oauth/connect/callback";
-export const CONNECT_CALLBACK = `${PUBLIC_ORIGIN}${CONNECT_CALLBACK_PATH}`;
+export const CONNECT_CALLBACK_PATH = `${identity.connect_callback}`;
+export const CONNECT_CALLBACK = `${ORIGIN}${CONNECT_CALLBACK_PATH}`;
+/** The owner app's pages (`pages.ts`): the app, the sign-in's return and a connect's end. */
+export const APP_PATH = `${identity.first_party.resource}`;
+export const SIGNED_IN_PATH = `${identity.first_party.redirect}`;
+export const CONNECTED_PATH = `${identity.connected}`;
 /**
  * The owner app's page that finishes a connect: the callback hands it the code and
  * state in the URL fragment, which no server sees, and the page posts them back with the
  * owner's token and session (the callback's navigation carries neither).
  */
-export const CONNECTED_PAGE = `${PUBLIC_ORIGIN}/app/connected`;
-/** The first-party app's Client ID Metadata Document, served by this Worker. */
-export const WEB_CLIENT = `${PUBLIC_ORIGIN}${identity.first_party.client}`;
-/** Where the first-party app finishes its sign-in. */
-export const WEB_REDIRECT = `${PUBLIC_ORIGIN}${identity.first_party.redirect}`;
+export const CONNECTED_PAGE = `${ORIGIN}${CONNECTED_PATH}`;
 /**
  * The first-party clients: the only clients a token for `APP_RESOURCE` is issued to or
  * accepted from. Each is a CIMD URL on our own origin, so the list needs no registry row
@@ -64,11 +65,7 @@ export const SCOPES: readonly string[] = Object.freeze(["offline_access"]);
 export const ACCESS_TOKEN_TTL_S = 3_600;
 export const REFRESH_TOKEN_TTL_S = 30 * 86_400;
 
-/**
- * How old an upstream sign-in may be when the doors take it: the object opens a session
- * only for one at most this old, and a forced fresh sign-in is at most ten minutes long.
- */
-export const SIGN_IN_MAX_AGE_S = 600;
+/** How far a token's times may run from the clock. */
 export const CLOCK_MARGIN_S = 5;
 
 /**

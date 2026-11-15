@@ -18,7 +18,7 @@ import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/wrangler.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import { CLOCK_SECRETS } from "../contract/src/canary.ts";
-import { routeTakes } from "../contract/src/identity.ts";
+import { ORIGIN, routeTakes, UPSTREAM_CALLBACK } from "../contract/src/identity.ts";
 import type { ImportNames } from "../contract/src/import-names.ts";
 import platform from "./platform.json" with { type: "json" };
 
@@ -181,9 +181,8 @@ export const IDENTITY = (() => {
 /** The doors Worker, which serves the identity: the routes are handed to it. */
 export const DOORS = NAMES[IDENTITY]!;
 
-/** The zone and origin the doors serve (`identity.json`). */
+/** The zone the doors serve (`identity.json`). */
 export const ZONE = identity.host;
-export const ORIGIN = `https://${ZONE}`;
 /** The doors' public routes (mode `routes`, the cutover's), on the zone. */
 export const ROUTES: readonly string[] = Object.freeze(
   identity.routes.map((path) => `${ZONE}${path}`));
@@ -234,9 +233,8 @@ export const MADE: Readonly<Record<string, string>> = Object.freeze(platform.mad
 export const KEYRINGS: readonly string[] = Object.freeze(
   Object.keys(MADE).filter((name) => MADE[name] === "keyring"));
 
-/** Where a sign-in starts, and where the upstream returns it. */
+/** Where a sign-in starts. */
 export const AUTHORIZE = `${ORIGIN}${identity.signin.authorize}`;
-export const CALLBACK = `${ORIGIN}${identity.signin.callback}`;
 
 /**
  * The sign-in probe's routes (mode `probe`): the routes that take the sign-in's own two paths,
@@ -244,13 +242,8 @@ export const CALLBACK = `${ORIGIN}${identity.signin.callback}`;
  * user.
  */
 export const PROBE_ROUTES: readonly string[] = Object.freeze(ROUTES.filter((pattern) =>
-  [AUTHORIZE, CALLBACK].some((url) => routeTakes(pattern, url.slice("https://".length)))));
-/** The doors' own app's sign-in: its client, redirect and resource. */
-export const FIRST_PARTY = Object.freeze({
-  client: `${ORIGIN}${identity.first_party.client}`,
-  redirect: `${ORIGIN}${identity.first_party.redirect}`,
-  resource: `${ORIGIN}${identity.first_party.resource}`,
-});
+  [AUTHORIZE, UPSTREAM_CALLBACK].some((url) =>
+    routeTakes(pattern, url.slice("https://".length)))));
 /** The URL E2B's lifecycle webhook is sent to: the doors' hook. */
 export const E2B_HOOK_URL = `${ORIGIN}${identity.hook}`;
 

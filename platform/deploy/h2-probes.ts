@@ -22,7 +22,7 @@
  */
 import { fileURLToPath } from "node:url";
 
-import { ORIGIN } from "./facts.ts";
+import { ORIGIN } from "../contract/src/identity.ts";
 
 /** The probe owners' keys the probes need, by the names the workflow's apply job sets. */
 export const INPUTS = Object.freeze({ a: "TA_PROBE_KEY", b: "TA_PROBE_KEY_B",

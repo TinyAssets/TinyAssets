@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OwnerDO } from "../../owner/src/owner-do";
 import { CONNECT_CALLBACK, CONNECTED_PAGE, now } from "../src/config";
+import { ORIGIN } from "../../contract/src/identity";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import type { DoorsEnv } from "../src/env";
 import { serve } from "../src/doors";
@@ -24,7 +25,7 @@ import { TEST_OAUTH } from "./entry";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 import { mintKeyFor } from "./keys";
 import {
-  call, connect, doorsEnv, NAVIGATE, OPEN, ORIGIN, registerClient, serveFirstPartyDocument,
+  call, connect, doorsEnv, NAVIGATE, OPEN, registerClient, serveFirstPartyDocument,
   setControl, signInApp, url,
 } from "./support";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";

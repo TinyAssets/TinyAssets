@@ -43,7 +43,8 @@ import { Refusal } from "../../contract/src/refusal";
 import apps from "../shared-apps.json" with { type: "json" };
 
 import { bindInbound, type Bound, withAccount } from "./binder";
-import { INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN } from "./config";
+import { INBOUND_PATH, namedSecret, now } from "./config";
+import { ORIGIN } from "../../contract/src/identity";
 import type { DoorsEnv } from "./env";
 import {
   inboundGate, MAINTENANCE, ordinaryAdmits, readControl,
@@ -278,7 +279,7 @@ export const HOOK_ROUTES: Readonly<Record<string, (env: DoorsEnv, bound: Bound,
     const made = await stub.inboundCreate(binding, { ...request, kind: "capability",
                                                      route });
     await putRoute(env, made.route, { o: binding.owner, b: made.binding_id, r: made.revision });
-    return { ...made, url: `${PUBLIC_ORIGIN}${INBOUND_PATH}${token}` };
+    return { ...made, url: `${ORIGIN}${INBOUND_PATH}${token}` };
   },
   "hooks/set": async (env, { binding, stub }, request) => {
     const set = await stub.inboundSet(binding, request);

@@ -18,7 +18,8 @@ import { TOKEN } from "../actions";
 import { alarm, LABEL, pageDue } from "../alarm";
 import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, type World }
   from "../canary";
-import { CALLBACK, E2B_HOOK_URL, EGRESS_DOMAIN, FIRST_PARTY, ORIGIN } from "../facts";
+import { APP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT } from "../../contract/src/identity";
+import { E2B_HOOK_URL, EGRESS_DOMAIN } from "../facts";
 import { NIGHTLY } from "../offsite";
 
 type Json = Record<string, unknown>;
@@ -108,17 +109,17 @@ function world(p: Platform, env: Record<string, string> = KEYED): World & { sent
       }
       if (url.startsWith(`${ORIGIN}/authorize?`)) {
         return new Response(null, { status: 302, headers: { Location: `${WORKOS_AUTHORIZE}?${
-          new URLSearchParams({ client_id: "client_test", redirect_uri: CALLBACK })}` } });
+          new URLSearchParams({ client_id: "client_test", redirect_uri: UPSTREAM_CALLBACK })}` } });
       }
       if (url.startsWith(`${WORKOS_AUTHORIZE}?`)) {
         return new Response(null, { status: 302, headers: { Location: `${ISSUER}/sign-in` } });
       }
-      if (url.startsWith(FIRST_PARTY.resource)) {
+      if (url.startsWith(APP_RESOURCE)) {
         return new Response("<!doctype html>", { headers: { "Content-Type": "text/html",
                                                             "Content-Security-Policy": "x" } });
       }
-      if (url === FIRST_PARTY.client) {
-        return json({ client_id: FIRST_PARTY.client });
+      if (url === WEB_CLIENT) {
+        return json({ client_id: WEB_CLIENT });
       }
       if (url === `https://${EGRESS_DOMAIN}/`) {
         return json({ error: { code: "not_found", message: "not found" } }, 404);
