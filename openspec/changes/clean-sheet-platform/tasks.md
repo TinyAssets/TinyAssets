@@ -309,7 +309,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       B23 entries in `doors/guards/rules.ts`.
     - T2b (`untangle/t2b`): the doors' real entry (`d2:N49`, `N50`, `N53`) and with it T1c-b's
       `owner-erasures-recorded` queue; the last seven B23 entries (the owner's constants and
-      its fakes' types the doors' tests read); `d2:N52`, `N84`, `N85` and `N89`.
+      its fakes' types the doors' tests read); the table doors' answers typed from the contract,
+      not by hand (`ownDoor<T>`); `d2:N52`, `N84`, `N85` and `N89`.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real

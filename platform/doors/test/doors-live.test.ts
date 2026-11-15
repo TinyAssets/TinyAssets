@@ -597,6 +597,9 @@ describe("/hooks/inbound, a capability URL", () => {
     const changed = await appPost("hooks/set", app.access_token, app.session,
                                   { binding_id, expected_revision: 1, enabled: true });
     expect(await changed.json()).toMatchObject({ revision: 2 });
+    // The change moved the directory's entry to its revision, which the object takes.
+    expect(await readRoute(doorsEnv, route)).toMatchObject({ r: 2 });
+    expect((await call(event(hookUrl, "s0"))).status).toBe(202);
     await env.DIRECTORY.put(route, JSON.stringify(stale));
     const withdrawn = await call(event(hookUrl, "s1"));
     expect(withdrawn.status).toBe(404);
