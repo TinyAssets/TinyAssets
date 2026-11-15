@@ -49,7 +49,7 @@ import { CHUNK_BYTES, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { chunkedId, cut } from "../../contract/src/content";
 import type { OwnerEnv } from "../src/env";
 import { OwnerDO, ownerStores, type Stores } from "../src/owner-do";
-import { PAGE_BYTES } from "../src/pages";
+import { PAGE_BYTES } from "../src/bodies";
 import {
   MIN_RECORD_BYTES, MOVE_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, RECORD_TRAILER_BYTES,
   SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES,

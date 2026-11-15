@@ -39,7 +39,7 @@ import { sha256 } from "../../contract/src/digest";
 
 import { clock, clockMs } from "./clock";
 import type { OwnerStorage, Write } from "./gate";
-import type { Call, Door, OwnerState } from "./owner-do";
+import type { Call, Door, DoorUnits, ObjectReads } from "./door";
 import { keyed, whole } from "../../contract/src/checks";
 import type { BilledEvent } from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
@@ -358,9 +358,14 @@ function billedEvent(value: unknown): BilledEvent {
 
 // -- THE DOORS: the `sandbox-time` rows' handlers (`contract/doors.json`) -------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`SandboxTimeDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/** What the `sandbox-time` doors reach: the meter, and whether the owner is gone. */
+export interface SandboxTimeDoorNeeds extends Pick<DoorUnits, "door">, Pick<ObjectReads, "gone"> {
+  readonly sandboxTime: SandboxTime;
+}
 
 /** The `sandbox-time` doors' handlers, by door. */
 export const sandboxTimeDoors = Object.freeze({
@@ -371,7 +376,8 @@ export const sandboxTimeDoors = Object.freeze({
    * an execution, inside the window its event's time allows. An erased or erasing owner
    * counts nothing.
    */
-  async sandboxBilled(o: OwnerState, door: Door<BilledEvent>): Promise<{ counted: boolean }> {
+  async sandboxBilled(o: SandboxTimeDoorNeeds, door: Door<BilledEvent>):
+      Promise<{ counted: boolean }> {
     if (o.gone()) {
       return { counted: false };
     }
@@ -379,7 +385,7 @@ export const sandboxTimeDoors = Object.freeze({
     return o.door(() => ({ counted: o.sandboxTime.billed(checked, clockMs()) }));
   },
   /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
-  sandboxDays(o: OwnerState, { request }: Call<{ days?: number }>): {
+  sandboxDays(o: SandboxTimeDoorNeeds, { request }: Call<{ days?: number }>): {
     days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;
             gb_seconds: number; unverified_executions: number }[] } {
     const days = request?.days ?? 31;

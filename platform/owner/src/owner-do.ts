@@ -36,8 +36,9 @@
  * but its doors: the door table (`contract/doors.json`) defines them on its prototype when
  * the class loads, one a row, none a name RPC reserves. The object is their router and holds
  * their state: each door's method hands its row's runner (`#call`: the bind, the account, the
- * scope and the fields) the handler in the module its row names (`<module>Doors.<door>`),
- * which the runner hands the object's state (`OwnerState`). Its
+ * scope and the fields, `door.ts`) the handler in the module its row names
+ * (`<module>Doors.<door>`), which the runner hands the object's state (`OwnerState`), as what
+ * the module declares its doors reach (`<Module>DoorNeeds`), where it declares it. Its
  * runs are launched and delivered by `launch.ts`. Its timed work is the one
  * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
  * object's single physical alarm, beside the erasure's job. The object is a plain Durable
@@ -110,7 +111,10 @@ import { DurableObject } from "cloudflare:workers";
 import {
   doorProblems, doorRow, type DoorRow, doorTable, fields, takesRequest,
 } from "../../contract/src/doors";
-import type { DoorMethods, DoorRows } from "./door-map";
+import type { DoorMethods } from "./door-map";
+import type {
+  Account, Bound, Call, Door, DoorsOf, DoorUnits, Module, ObjectReads, Readable, Units,
+} from "./door";
 import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
@@ -119,7 +123,7 @@ import {
   ownerTier, PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import {
-  agentId, AUTHORITY_CHANGED, MAIN_AGENT, may, NOT_GRANTED, OWNER, type Stamped,
+  agentId, AUTHORITY_CHANGED, type Grant, MAIN_AGENT, may, NOT_GRANTED, OWNER, type Scope,
 } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
 import { agentsAt, RUN_ENDED, Runs, runsDoors } from "./runs";
@@ -127,11 +131,10 @@ import { PostGate } from "../../contract/src/run-events";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
 import { Keys, keysDoors } from "./keys";
-import { bindingId, Inbound, inboundDoors, type InboundRow } from "./inbound";
+import { bindingId, Inbound, inboundDoors } from "./inbound";
 import { keepTiers, keptTiers, PLATFORM_TIER_ONLY, tierDoors } from "./tier";
 import type { TierName } from "../../contract/src/control";
-import { Bodies, type Located, type Placed, type Placing, type Window } from "./bodies";
-import { PAGE_BYTES, type Shown, type Wants } from "./pages";
+import { Bodies } from "./bodies";
 import { Collections, collectionsDoors } from "./collections";
 import { Connections, connectionsDoors } from "./connections";
 import type { RingAnswer } from "../../contract/src/gateway";
@@ -140,14 +143,14 @@ import {
   fileChanged, Files, filesDoors, type SandboxLease, type SyncCommitRequest, SYNC_FENCED,
 } from "./files";
 import { type OwnerStorage, WriteGate } from "./gate";
-import { type Grant, Grants, grantsDoors, type Scope } from "./grants";
+import { Grants, grantsDoors } from "./grants";
 import { codemodeDoors } from "./codemode";
 import {
-  Ledger, ledgerDoors, outsideOrigin, READ_TRIES, registrant, RUN_NO_MAILBOX,
+  Ledger, ledgerDoors, outsideOrigin, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock } from "./clock";
 import type { OwnerEnv } from "./env";
-import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { Notices, noticesDoors } from "./notices";
 import { importDoors } from "./import";
 import { Erasure } from "./erase";
@@ -165,7 +168,7 @@ import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner";
 import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
-import { signinOwned, Signins, signinsDoors, switchedOn } from "./signins";
+import { Signins, signinsDoors, switchedOn } from "./signins";
 import { Starter, starterDoors } from "./starter";
 import { carried } from "./starter-package";
 import { priced, Usage as ModelUsage, usageDoors } from "./usage";
@@ -179,9 +182,9 @@ import { ControlGate } from "./control-gate";
 import { storageFull, storageFullRefusal } from "./storage-full";
 import { Doorbell, type WakeSender } from "./wakes";
 
-/** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
-/** Why a restore's wipe resets the instance (`OwnerState.reset`). */
+/** Why a restore's wipe resets the instance (`ObjectReads.reset`). */
 const RESET = "the object was wiped for a restore; its next call starts it afresh";
+/** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
 const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
 const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
 
@@ -203,20 +206,6 @@ export interface GrantRequest {
   readonly profile?: string;
 }
 
-/** What a call is bound to: its owner and caller, its outside client and that client's grant. */
-export interface Account {
-  readonly owner: string;
-  readonly caller: string;
-  readonly origin: Origin | null;
-  readonly grant: Grant | null;
-  /**
-   * A run's call: its grant's run, scopes and agent, every door held to the scopes and the
-   * ledger acting as the agent; null otherwise.
-   */
-  readonly run: { readonly id: string; readonly scopes: readonly string[];
-                  readonly agent: string; readonly stamp: Stamped | null } | null;
-}
-
 /**
  * Who else an account door serves. `visitors`: another owner may call, as itself (the
  * collection doors). `registering`: an outside origin may come with the owner's session
@@ -225,19 +214,6 @@ export interface Account {
 interface Serves {
   readonly visitors?: boolean;
   readonly registering?: boolean;
-}
-
-/**
- * A call as its door's row bound it (`contract/doors.json`): its account, and what a sandbox,
- * runner or inbound door's binding names (the lease's readable set, the lease, the route's
- * binding), or that the platform's erasure door found the owner already erased.
- */
-export interface Bound {
-  readonly account: Account;
-  readonly readable: Readable | null;
-  readonly lease: SandboxLease | null;
-  readonly route: InboundRow | null;
-  readonly erased: boolean;
 }
 
 /**
@@ -259,60 +235,6 @@ function bound(owner: string, caller: string): Bound {
            lease: null, route: null, erased: false };
 }
 
-/**
- * A door's call once its row's every step held: bound, its request's fields (`r`), a session
- * door's live session, a run door's place (its universe and agent), and, for a door whose
- * handler names the place its capability is held at, that check (`held`).
- */
-export interface Call<R = unknown> extends Bound {
-  /** The binding the call came with, as the binder handed it. */
-  readonly binding: Binding;
-  /** The request as the binder handed it (`r` is its fields, as the row held them). */
-  readonly request: R;
-  readonly r: Record<string, unknown>;
-  readonly session: string;
-  readonly universe: string | null;
-  readonly agent: string;
-  held(place: unknown): void;
-}
-
-/** A door whose handler makes its own units: its call, checked again in each. */
-export interface Door<R = unknown> {
-  /** The binding the call came with, and its request, as the binder handed them. */
-  readonly binding: Binding;
-  readonly request: R;
-  /** Every step of the row, in the unit it is called in. */
-  check(): Call<R>;
-  /** `act` on the checked call; a session door's refusal receipted. */
-  within<T>(act: (call: Call<R>) => T): T;
-  /** The bind and account steps alone. */
-  bound(): Account;
-  /** Every step but the fields: the caller's authority, whatever it asks. */
-  authorized(): void;
-}
-
-/** A door of the table, by name (`door-map.ts`, written from it). */
-export type DoorName = keyof DoorRows;
-/** A module that holds doors' handlers, as the rows name it. */
-export type Module = DoorRows[DoorName]["module"];
-/** Who a door takes (its row's `caller`): what its call's account step proved. */
-export type CallerOf<D extends DoorName> = DoorRows[D]["caller"];
-/** How a door's handler runs in the write gate (its row's `gate`). */
-export type GateOf<D extends DoorName> = DoorRows[D]["gate"];
-/** The doors whose rows name module `M`. */
-type DoorsIn<M extends Module> =
-  { [D in DoorName]: DoorRows[D]["module"] extends M ? D : never }[DoorName];
-/**
- * A door's handler, handed `N` (its first parameter: what it may reach) and, by its row's
- * gate, the door that checks its call in each unit it makes, or the call checked in one unit
- * of that gate. Its request is its own (`never` here, so any request type fits), held to the
- * row's fields by the runner.
- */
-export type HandlerOf<D extends DoorName, N> = GateOf<D> extends "units"
-  ? (o: N, door: Door<never>) => Promise<unknown> : (o: N, call: Call<never>) => unknown;
-/** The handlers of module `M`'s doors, each handed `N`: one per row that names `M`. */
-export type DoorsOf<M extends Module, N> = { readonly [D in DoorsIn<M>]: HandlerOf<D, N> };
-
 /** What a run door needs where its agent acts: to start work, or (null) to read or cancel it. */
 type RunNeed = "converse" | "run_graph" | null;
 
@@ -324,19 +246,6 @@ export const SANDBOX_ONLY = "a sandbox door takes its own sandbox token only";
 /** The refusal of a sandbox binding for an owner whose object never opened a lease. */
 export const NO_SANDBOX = "no sandbox lease was opened for this owner";
 /**
- * What a sync door's caller may read: its lease, the readable set's own name (null for the
- * owner's sandbox, `*` for all of the owner's files), and the test of a path.
- */
-export interface Readable {
-  readonly lease: string;
-  readonly scope: string | null;
-  readonly test: (path: string) => boolean;
-}
-
-/** How many times a placed body begins again past a chunk the sweep is deleting. */
-const PLACE_TRIES = 5;
-
-/**
  * A run's own MCP door never converses: work between agents is mail (ADR-034 decision 11).
  * It may launch, schedule, read and cancel runs (the founder, 2026-11-03: every agent of an
  * owner may do what any other of the owner's agents may), held to its grant.
@@ -344,15 +253,13 @@ const PLACE_TRIES = 5;
 export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail, never " +
   "converse";
 
-/** What the stores are built over: the object's write gate, its storage view and its units. */
-export type Units = Pick<WriteGate, "storage" | "write" | "quiet">;
-
 /**
  * The object's stores, as it wires them over its gate's units, from its env and its id: the
- * owner's policy, notices, change log, files, placed bodies, collections, grants, ledger and
- * nightly manifest (`backup.ts`). The object builds its own with this, once; a test builds
- * the same over an object's own storage to reach a store directly. A file change tells the
- * owner's other modules through these stores (`fileChanged`), so every builder's tells them.
+ * owner's policy, notices, change log, files, placed bodies, collections, grants, ledger,
+ * nightly manifest (`backup.ts`) and archive (`archive.ts`). The object builds its own with
+ * this, once; a test builds the same over an object's own storage to reach a store directly.
+ * A file change tells the owner's other modules through these stores (`fileChanged`), so
+ * every builder's tells them.
  */
 export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
   const { storage, write } = units;
@@ -389,7 +296,8 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
     pinned: () => pinned(storage),
     notice: (type, detail) => notices.add(type, detail, clock()),
   });
-  return { policy, notices, log, files, bodies, collections, grants, ledger, backups };
+  const archive = new Archive({ door: write, ledger, files, bodies, notices });
+  return { policy, notices, log, files, bodies, collections, grants, ledger, backups, archive };
 }
 
 /** The object's stores (`ownerStores`). */
@@ -398,16 +306,12 @@ export type Stores = ReturnType<typeof ownerStores>;
 /**
  * The object's state, as its modules are handed it: its doors' handlers, each in the module
  * its row names (`contract/doors.json`), and the run launcher (`launch.ts`). Its stores; its
- * gate's units; and what only the object reads or decides: the owner's admission and tier
- * (`admission.ts`, which only the object imports), and the scope a caller is held to where
- * it acts, as the runner holds it. Only the object makes it (`#stateOf`), so a module
- * reaches these through the object's runner.
+ * gate's units and its reads (`door.ts`); and what only the object reads or decides: the
+ * owner's admission and tier (`admission.ts`, which only the object imports). Only the object
+ * makes it (`#stateOf`), so a module reaches these through the object's runner. A module that
+ * declares its handlers' reach (`<Module>DoorNeeds`) is handed it as that.
  */
-export interface OwnerState {
-  readonly env: OwnerEnv;
-  readonly storage: OwnerStorage;
-  /** The owner this object is named by; refused when it has none. */
-  owner(): string;
+export interface OwnerState extends DoorUnits, ObjectReads {
   readonly collections: Collections;
   readonly policy: Policy;
   readonly grants: Grants;
@@ -436,35 +340,6 @@ export interface OwnerState {
   readonly erasure: Erasure;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly posts: PostGate;
-  /** A synchronous body as one unit of the write gate. */
-  door<T>(act: () => T): Promise<T>;
-  /** A unit that marks nothing changed (`gate.ts`). */
-  quiet<T>(act: () => T): Promise<T>;
-  /** A unit, then the one schedule synced from the rows it changed. */
-  synced<T>(act: () => T): Promise<T>;
-  /** A changing file door's unit, then the schedule synced whatever came of it. */
-  filing<T>(act: () => T): Promise<T>;
-  /** A write door with a body: placed in R2 past `PLACE_BYTES` (`#placing`). */
-  placing<T>(prepare: () => { body: unknown; writer: string } | { done: T },
-             act: (placed: Placed | null) => T,
-             options?: { synced?: boolean; shown?: Shown<T> }): Promise<T>;
-  /** A read whose unit marks what it returns, its placed bodies read between (`#rereading`). */
-  rereading<T, B>(locate: () => readonly string[], read: (bodies: B) => T,
-                  again: (value: T) => boolean,
-                  fetch: (located: Located) => Promise<B>): Promise<T>;
-  /** `rereading` for a page: its bodies' windows. */
-  rereadingPage<T>(locate: () => Wants, read: (windows: ReadonlyMap<string, Window>) => T,
-                   again: (value: T) => boolean): Promise<T>;
-  /** A read door's unit, then its rows' placed bodies' windows read from R2. */
-  reading<T, U = T>(unit: () => { value: T } & Wants,
-                    fill: (value: T, windows: ReadonlyMap<string, Window>) => U,
-                    synced?: boolean): Promise<U>;
-  /** A door's caller checked in a unit, then a new owner's starter seed awaited. */
-  seededFor(door: Door): Promise<void>;
-  /** The one schedule synced from the rows units changed. */
-  sync(): Promise<void>;
-  /** The platform's gates as this object reads them (`control-gate.ts`). */
-  control(): ControlGate;
   /** The owner's own admission for `door`, as a binding check reads it, for internal calls. */
   admitted(door: DoorClass): void;
   /** The owner's `require_work` refusal, or null while it is admitted. */
@@ -473,37 +348,16 @@ export interface OwnerState {
   tier(): TierName;
   /** The platform's setting of the owner's tier (`admission.ts`). */
   setTier(request: unknown): { tier: TierName };
-  /** Whether the owner is erased or being erased: its doors with no binding do nothing. */
-  gone(): boolean;
-  /**
-   * The cutover's discard of the owner (`import.ts`'s `importDiscard`): every R2 object and
-   * the whole database deleted, no tombstone; the namespace it deleted.
-   */
-  discard(): Promise<string | null>;
-  /**
-   * The instance reset once what it wrote is durable, as a crash resets it, so the next call
-   * starts a fresh one: a restore's wipe (`restore.ts`), which nothing the instance holds in
-   * memory may outlive. The call that asks it ends with the reset.
-   */
-  reset(): Promise<never>;
   /** The owner's admission as its row holds it (`admission.ts`): a read. */
   admission(): Admission;
-  /** The tier numbers a door's binding handed, kept for the runs the lane starts. */
-  keepTiers(binding: Binding): void;
-  /** `capability` held where `account` acts, as the runner's scope step holds it. */
-  scope(account: Account, capability: RunCapability, center?: unknown, agent?: string): void;
-  /** Where a scoped client acts: the command center its one enabled agent is registered in. */
-  universe(account: Account): string | null;
-  /** The account `binding` binds to at `door`'s row, as the runner binds it there. */
-  accountAt(door: string, binding: Binding): Account;
-  /** `door` called by its row and handler, as any call of it is (code mode). */
-  invoke(door: string, binding: Binding, request: unknown): Promise<unknown>;
 }
 
 /**
  * Each module's door handlers (`<module>Doors`), by the module its rows name: `tsc` holds
  * that every module a row names is here, and that each handler of its rows is, typed by its
- * gate and handed the object's state; the class's loop finds each row's own (`handlerOf`).
+ * gate and handed the object's state, which holds what each module's `DoorNeeds` declares
+ * (a handler's first parameter is contravariant); the class's loop finds each row's own
+ * (`handlerOf`).
  */
 const HANDLERS = Object.freeze({
   admission: admissionDoors, codemode: codemodeDoors, collections: collectionsDoors,
@@ -551,8 +405,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   readonly #backups: Backups;
   /** The exports open, each named for a week (`open-exports.ts`). */
   readonly #exports: OpenExports;
-  /** The change log a generation captures (`changelog.ts`). */
-  readonly #log: ChangeLog;
   /** Sandbox time, per run and per day (`sandbox-time.ts`). */
   readonly #sandboxTime: SandboxTime;
   /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
@@ -619,13 +471,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     const stores = ownerStores(this.#gate, env, ctx.id);
     this.#policy = stores.policy;
     this.#notices = stores.notices;
-    this.#log = stores.log;
     this.#files = stores.files;
     this.#bodies = stores.bodies;
     this.#collections = stores.collections;
     this.#grants = stores.grants;
     this.#ledger = stores.ledger;
     this.#backups = stores.backups;
+    this.#archive = stores.archive;
     this.#exports = new OpenExports(storage);
     this.#sessions = new Sessions(storage);
     this.#registrations = new Registrations(storage, this.#grants);
@@ -717,13 +569,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         this.#door(() => this.#socketAdmit(binding, conversation, ticket)),
       check: (state) => this.#door(() => this.#socketCheck(state)),
       // A sign-in's socket gets its own tail on attach, as a conversation's gets its runs'.
-      live: (conversation) => this.#door(() => signinOwned(this.#state, conversation) ? [conversation]
+      live: (conversation) => this.#door(() => this.#signins.owned(conversation) ? [conversation]
         : this.#runs.liveIn(conversation)),
-    });
-    this.#archive = new Archive({
-      storage, door: (act) => this.#door(act), ledger: this.#ledger, files: this.#files,
-      bodies: this.#bodies, notices: this.#notices,
-      rereadingPage: (locate, read, again) => this.#rereadingPage(locate, read, again),
     });
     // The lanes of the one schedule, each its module's own (`Lane`): its key is its job's
     // durable id. Each pass is handed its wall-clock end (`until`) and passes it on, so no
@@ -844,22 +691,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       quiet: <T>(act: () => T) => object.#quiet(act),
       synced: <T>(act: () => T) => object.#synced(act),
       filing: <T>(act: () => T) => object.#filing(act),
-      placing: <T>(prepare: () => { body: unknown; writer: string } | { done: T },
-                   act: (placed: Placed | null) => T,
-                   options?: { synced?: boolean; shown?: Shown<T> }) =>
-        object.#placing(prepare, act, options),
-      rereading: <T, B>(locate: () => readonly string[], read: (bodies: B) => T,
-                        again: (value: T) => boolean,
-                        fetch: (located: Located) => Promise<B>) =>
-        object.#rereading(locate, read, again, fetch),
-      rereadingPage: <T>(locate: () => Wants,
-                         read: (windows: ReadonlyMap<string, Window>) => T,
-                         again: (value: T) => boolean) =>
-        object.#rereadingPage(locate, read, again),
-      reading: <T, U = T>(unit: () => { value: T } & Wants,
-                          fill: (value: T, windows: ReadonlyMap<string, Window>) => U,
-                          synced?: boolean) => object.#reading(unit, fill, synced),
-      seededFor: (door: Door) => object.#seededFor(door),
       sync: () => object.#schedule.sync(),
       control: () => object.#control(),
       admitted: (door: DoorClass) => object.#admitted(door),
@@ -875,10 +706,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         throw new Error(RESET);
       },
       admission: () => admission(storage),
-      keepTiers: (binding: Binding) => keepTiers(storage, binding.tiers, clock()),
-      scope: (account: Account, capability: RunCapability, center?: unknown, agent?: string) =>
-        object.#scope(account, capability, center, agent),
-      universe: (account: Account) => object.#universe(account),
       accountAt: (door: string, binding: Binding) =>
         object.#within(doorRow(door), binding, undefined, ({ account }) => account),
       invoke: (door: string, binding: Binding, request: unknown) => {
@@ -952,16 +779,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       return this.#runAccount(binding, door);
     }
     const { owner, caller } = this.#bind(binding, door);
-    // The tier's numbers, as the binder read them from the control record: kept for the
-    // files byte quota and the lane's runs (written only when they changed).
-    const unread = keptTiers(this.#storage) === null;
-    keepTiers(this.#storage, binding.tiers, clock());
-    // The switched-on sign-ins, likewise: kept for the lane's runs (written only when changed).
+    // The switched-on sign-ins, as the binder read them from the control record: kept for
+    // the lane's runs (written only when they changed).
     switchedOn(this.#storage, binding.signins, clock());
-    if (unread && keptTiers(this.#storage) !== null && this.#starter.version() === 0) {
-      // The first numbers a new owner's door hands: its seed, which waited for them, is due.
-      queueMicrotask(() => void this.#schedule.sync());
-    }
     if (!("origin" in binding)) {
       throw new Refusal("invalid", "invalid outside origin");
     }
@@ -1109,7 +929,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
           this.#scoped(row, account, null);
         },
       };
-      return Promise.resolve(handler(this.#state, door as never));
+      if (row.seeded !== true) {
+        return Promise.resolve(handler(this.#state, door as never));
+      }
+      // A new owner's starter seed, awaited before a door touches the files or lists the
+      // agents, after the caller's authority is checked in a unit: an outside agent's first
+      // `fetch` of `/workspace/USER.md` or `agents_list` finds the seeded profile and `main`
+      // however soon after sign-up it comes, and its first write lands beside the seeded
+      // files, never before them (autoconnect_research.md §2.1).
+      return this.#door(() => door.authorized()).then(() => this.#launcher.seeded())
+        .then(() => handler(this.#state, door as never));
     }
     const unit = () => this.#within(row, binding, asked,
                                     (call) => handler(this.#state, call as never));
@@ -1244,10 +1073,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         return bound(owner, caller);
       }
       case "import": {
-        // The platform's import, while the owner is pending (`import.ts`): the tier numbers it
-        // carries kept, as an account door keeps them, for the files plane's quota.
+        // The platform's import, while the owner is pending (`import.ts`).
         const { owner, caller } = this.#bind(binding, "import");
-        keepTiers(this.#storage, binding.tiers, clock());
         return bound(owner, caller);
       }
       case "discard": {
@@ -1283,7 +1110,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       r = this.#fields(row, request, account);
     }
     return { ...held, binding, request, r, session, universe: place.universe, agent: place.agent,
-             held: (where) => this.#scope(account, row.capability!, where) };
+             held: (where) => this.#scope(account, row.capability!, where),
+             scope: (capability, center, agent) => this.#scope(account, capability, center, agent),
+             universeOf: () => this.#universe(account) };
   }
 
   /** A row's guard: a check of its caller after the account (`contract/src/doors.ts`). */
@@ -1528,6 +1357,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     } else if (stored !== undefined && stored.owner !== owner) {
       throw new Refusal("refused", "this object belongs to another owner");
     }
+    // The tier's numbers, as the binder read them from the control record (an account's,
+    // an inbound event's and the import's bindings carry them): kept for the files byte
+    // quota and the lane's runs, written only when they changed.
+    const unread = keptTiers(this.#storage) === null;
+    keepTiers(this.#storage, binding.tiers, clock());
+    if (unread && keptTiers(this.#storage) !== null && this.#starter.version() === 0) {
+      // The first numbers a new owner's door hands: its seed, which waited for them, is due.
+      queueMicrotask(() => void this.#schedule.sync());
+    }
     return { owner, caller };
   }
 
@@ -1589,118 +1427,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
   }
 
-  /**
-   * A write door with a body (ADR-035). Its first unit checks its caller and request
-   * (`prepare`, the body and the writer it is placed as); a body its row keeps is written
-   * in that same unit (`act`). A body past `PLACE_BYTES` is begun there instead, sent to R2,
-   * and written in a second unit, which checks the caller again and adopts it; its upload
-   * is released after, whatever the unit did (none once adopted).
-   */
-  async #placing<T>(prepare: () => { body: unknown; writer: string } | { done: T },
-                    act: (placed: Placed | null) => T,
-                    options: { synced?: boolean; shown?: Shown<T> } = {}): Promise<T> {
-    const shown = options.shown;
-    const located = (value: T) => ({ value, located: this.#bodies.locate(
-      shown === undefined ? [] : shown.contents(value)) });
-    // A body whose chunk the sweep is deleting this moment begins again once the delete
-    // lands (review rvlim L5), a few times, then the refusal stands.
-    let first: { done: { value: T; located: Located } } | { placing: Placing } | undefined;
-    // Whose files scope the write's bodies count in: the tier's one storage number holds
-    // them, inline or placed, retention making room first (`Files.held`).
-    let writer = OWNER;
-    for (let tries = 1; first === undefined; tries++) {
-      try {
-        first = await this.#door(():
-            { done: { value: T; located: Located } } | { placing: Placing } => {
-          const prepared = prepare();
-          if ("done" in prepared) {
-            return { done: located(prepared.done) };
-          }
-          writer = prepared.writer;
-          const placing = this.#bodies.begin(prepared.body as string, prepared.writer);
-          return placing === null ? { done: located(this.#files.held(writer, () => act(null))) }
-            : { placing };
-        });
-      } catch (error) {
-        if (!(error instanceof Refusal) || error.code !== "chunk_deleting"
-            || tries >= PLACE_TRIES) {
-          throw error;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 100 * tries));
-      }
-    }
-    let done: { value: T; located: Located };
-    if ("done" in first) {
-      done = first.done;
-    } else {
-      const placed = await this.#bodies.send(first.placing);
-      try {
-        done = await this.#door(() => located(this.#files.held(writer, () => act(placed))));
-      } finally {
-        await this.#bodies.release(placed);
-      }
-    }
-    if (options.synced === true) {
-      await this.#schedule.sync();
-    }
-    // A conflict's current row, placed, is read back as a read door reads it.
-    return shown === undefined || done.located.size === 0 ? done.value
-      : shown.fill(done.value, await this.#bodies.windows(done.located, () => PAGE_BYTES));
-  }
-
-  /**
-   * A read door whose unit marks what it returns (a mailbox read, ADR-035): the placed
-   * bodies it would return located in a unit of their own (`locate`, its caller checked),
-   * read from R2 (`fetch`: windows for a page, or whole for a run's input), then its unit (`read`, the caller checked again) handed them; it reads again, a
-   * few times at most, while `again` says mail between put an unread placed body first.
-   */
-  async #rereading<T, B>(locate: () => readonly string[], read: (bodies: B) => T,
-                         again: (value: T) => boolean,
-                         fetch: (located: Located) => Promise<B>): Promise<T> {
-    for (let tries = 0; ; tries++) {
-      const located = await this.#door(() => this.#bodies.locate(locate()));
-      const bodies = await fetch(located);
-      const value = await this.#door(() => read(bodies));
-      if (!again(value) || tries >= READ_TRIES) {
-        return value;
-      }
-    }
-  }
-
-  /**
-   * `#rereading` for a page: its bodies' windows (`Wants`: each at most `maxOf` bytes, from
-   * `offsetOf`).
-   */
-  #rereadingPage<T>(locate: () => Wants, read: (windows: ReadonlyMap<string, Window>) => T,
-                    again: (value: T) => boolean): Promise<T> {
-    let wants: Wants = { contents: [] };
-    return this.#rereading(() => {
-      wants = locate();
-      return wants.contents;
-    }, read, again, (located) => this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES),
-                                                      wants.offsetOf));
-  }
-
-  /**
-   * A read door's unit, then the windows of the placed bodies its rows name read from R2
-   * (ADR-035), and handed to `fill`, which fits the page to
-   * one answer: `unit` returns its result and the content ids it names, located in the same
-   * unit, so each is the content its row named.
-   */
-  async #reading<T, U = T>(unit: () => { value: T } & Wants,
-                           fill: (value: T, windows: ReadonlyMap<string, Window>) => U,
-                           synced = false): Promise<U> {
-    const { value, located, wants } = await this.#door(() => {
-      const read = unit();
-      return { value: read.value, located: this.#bodies.locate(read.contents), wants: read };
-    });
-    if (synced) {
-      await this.#schedule.sync();  // a delete that rang an agent's doorbell (`ring`, `collections.ts`)
-    }
-    return fill(value, located.size === 0 ? new Map()
-      : await this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES), wants.offsetOf));
-  }
-
   /** A changing file door: its unit, then the one schedule synced whatever came of it. */
   async #filing<T>(act: () => T): Promise<T> {
     try {
@@ -1708,18 +1434,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     } finally {
       await this.#schedule.sync();
     }
-  }
-
-  /**
-   * A new owner's starter seed, awaited before a door touches the files or lists the agents,
-   * after the caller's authority is checked in a unit (`Door.authorized`): an outside agent's first
-   * `fetch` of `/workspace/USER.md` or `agents_list` finds the seeded profile and `main`
-   * however soon after sign-up it comes, and its first write lands beside the seeded files,
-   * never before them (autoconnect_research.md §2.1).
-   */
-  async #seededFor(door: Door): Promise<void> {
-    await this.#door(() => door.authorized());
-    await this.#launcher.seeded();
   }
 
   /**
@@ -1780,7 +1494,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       throw new Refusal("invalid", "an app socket carries no session");
     }
     const ticket = this.#tickets.consume(hash, conversation, clock());
-    if (!this.#runs.owns(conversation, null) && !signinOwned(this.#state, conversation)) {
+    if (!this.#runs.owns(conversation, null) && !this.#signins.owned(conversation)) {
       throw new Refusal("ticket_refused", TICKET_REFUSED);
     }
     return { v: 1, owner: account.owner, conversation, grant: ticket.grant,

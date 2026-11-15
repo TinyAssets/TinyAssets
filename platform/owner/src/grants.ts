@@ -89,16 +89,15 @@ import { SCOPES_JSON_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { appList, connectUrl, type Vendor } from "../../contract/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
-import { may } from "./authority";
+import { type Grant, may, type Scope } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import { keyed } from "../../contract/src/checks";
 import { canonical } from "../../contract/src/canonical";
 import { policyDigest } from "../../contract/src/policy-document";
 import type { Policy } from "./policy";
 import { codePoints, utf8Bytes } from "../../contract/src/text";
-import type {
-  Call, GrantRequest, OwnerState,
-} from "./owner-do";
+import type { Call } from "./door";
+import type { GrantRequest, OwnerState } from "./owner-do";
 import { clock } from "./clock";
 
 const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
@@ -132,21 +131,6 @@ export const GRANT_LIMITS: GrantLimits = Object.freeze({
   seenIntervalS: 60,
   revokeClockMarginS: 5,
 });
-
-export interface Scope {
-  readonly universe: string;
-  readonly agent: string;
-  readonly capability: string;
-}
-
-/** The grant a call is admitted under. */
-export interface Grant {
-  readonly mode: "full" | "scoped" | "revoked";
-  readonly scopes: Scope[];
-  readonly generation: number;
-  /** The tool profile the client is served (`directory` or `custom`). */
-  readonly profile: ProfileName;
-}
 
 export type Client = {
   readonly client: string;

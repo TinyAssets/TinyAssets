@@ -20,8 +20,9 @@
  * makes (ADR-034 decision 6).
  */
 import type { RunCapability } from "../../contract/src/capabilities";
+import type { ProfileName } from "../../contract/src/doors";
 import { Refusal } from "../../contract/src/refusal";
-import type { Account } from "./owner-do";
+import type { Account } from "./door";
 import { sha256Hex } from "../../contract/src/digest";
 
 
@@ -78,7 +79,7 @@ export function agentId(value: unknown): string {
 }
 
 /** A capability where work acts: a scoped grant's triple. */
-interface Triple {
+export interface Scope {
   readonly universe: string;
   readonly agent: string;
   readonly capability: string;
@@ -87,7 +88,16 @@ interface Triple {
 /** A grant, as a check reads it: its mode, and a scoped grant's triples. */
 export interface StandingGrant {
   readonly mode: string;
-  readonly scopes: readonly Triple[];
+  readonly scopes: readonly Scope[];
+}
+
+/** The grant a call is admitted under (`grants.ts`). */
+export interface Grant extends StandingGrant {
+  readonly mode: "full" | "scoped" | "revoked";
+  readonly scopes: Scope[];
+  readonly generation: number;
+  /** The tool profile the client is served (`directory` or `custom`). */
+  readonly profile: ProfileName;
 }
 
 /** What holds capabilities: a grant, or a run's own scopes (its grant's, at admission). */

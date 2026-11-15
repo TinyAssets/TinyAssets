@@ -57,13 +57,13 @@ import {
   BINDING_HEADER, CONVERSATION_HEADER, SHAPE_HEADERS, SOCKET_FAILED, SOCKET_URL, SOCKET_VERSION,
   TICKET_HEADER, TICKET_REFUSED,
 } from "../../contract/src/socket-shape";
-import type {
-  Call, Door, OwnerState,
-} from "./owner-do";
+import type { Call, Door, DoorUnits, ObjectReads } from "./door";
+import type { OwnerEnv } from "./env";
+import type { Runs } from "./runs";
+import type { Signins } from "./signins";
 import { Tickets } from "./tickets";
 import { clock, clockMs } from "./clock";
 import { mintToken } from "../../contract/src/routing-mac";
-import { signinOwned } from "./signins";
 
 type Connection = Parameters<NonNullable<WebSocketHandlers["onConnect"]>>[0];
 
@@ -425,9 +425,21 @@ export interface ConversationRequest {
 
 // -- THE DOORS: the `relay` rows' handlers (`contract/doors.json`) --------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`RelayDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `relay` doors reach: the sockets, the tickets, which conversations are the
+ * owner's (its runs' and its sign-ins'), and the key a ticket is minted under.
+ */
+export interface RelayDoorNeeds extends Pick<DoorUnits, "door">, Pick<ObjectReads, "owner"> {
+  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
+  readonly relay: Relay;
+  readonly tickets: Pick<Tickets, "mint" | "endGrant">;
+  readonly runs: Pick<Runs, "owns">;
+  readonly signins: Pick<Signins, "owned">;
+}
 
 /** The `relay` doors' handlers, by door. */
 export const relayDoors = Object.freeze({
@@ -438,10 +450,10 @@ export const relayDoors = Object.freeze({
    * `binding.expires_at`, the binder's from the verified token). Only its secret's SHA-256
    * is kept. The ticket, once.
    */
-  socketTicket(o: OwnerState, { r, binding }: Call<ConversationRequest>):
+  socketTicket(o: RelayDoorNeeds, { r, binding }: Call<ConversationRequest>):
       { ticket: string; conversation_id: string; expires_at: number } {
     const conversation = r["conversation_id"];
-    if (!o.runs.owns(conversation, null) && !signinOwned(o, conversation)) {
+    if (!o.runs.owns(conversation, null) && !o.signins.owned(conversation)) {
       throw new Refusal("ticket_refused", TICKET_REFUSED);
     }
     const grant = binding.grant;
@@ -464,7 +476,8 @@ export const relayDoors = Object.freeze({
    * outstanding tickets forgotten and its app sockets closed `signed_out`, every other
    * device's left open. The doors tell it before they revoke the grant.
    */
-  async socketsEnd(o: OwnerState, door: Door<undefined>): Promise<{ grant: string; ended: true }> {
+  async socketsEnd(o: RelayDoorNeeds, door: Door<undefined>):
+      Promise<{ grant: string; ended: true }> {
     const grant = await o.door(() => {
       door.check();
       const held = door.binding.grant;
