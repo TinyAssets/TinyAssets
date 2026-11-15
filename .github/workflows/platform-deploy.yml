@@ -86,7 +86,7 @@ on:
         default: ''
         type: string
       act:
-        description: 'owner: tier=<tier> | suspend=<reason> | lift=<reason> | admit'
+        description: 'owner: state | tier=<tier> | suspend=<reason> | lift=<reason> | admit'
         required: false
         default: ''
         type: string

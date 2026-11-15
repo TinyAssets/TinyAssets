@@ -220,8 +220,13 @@ export const RESTORING = "this owner is held for a restore, under way or failed 
  * (`refuseRestoring`). A read.
  */
 export function restoring(storage: OwnerStorage): boolean {
+  return holdingStep(storage) !== null;
+}
+
+/** The step of the restore that holds the owner (`restoring`), or null when none does. A read. */
+export function holdingStep(storage: OwnerStorage): Step | null {
   const held = record(storage.sql);
-  return held !== null && held.step !== "done";
+  return held === null || held.step === "done" ? null : held.step;
 }
 
 /**

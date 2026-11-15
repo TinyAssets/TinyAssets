@@ -53,6 +53,7 @@ export const OPERATOR_WINDOW_S = 600;
  * the kit's modes ask them (`deploy/operator.ts`). An op's values are its owner door's to check.
  */
 export const OPERATOR_OPS = Object.freeze({
+  "owner.state": Object.freeze([] as const),
   "owner.tier": Object.freeze(["tier"] as const),
   "owner.suspend": Object.freeze(["reason"] as const),
   "owner.lift": Object.freeze(["reason"] as const),

@@ -94,8 +94,9 @@
  * The owner's admission (`admission.ts`) is checked in the same binding check: a suspended
  * owner's every door refuses, and so do the lanes with `require_work` semantics (the
  * `wakes` lane's claim). Only the platform, as the reserved `PLATFORM_CALLER`, sets it, at
- * `admissionSet`, the one door that caller reaches but its tier, erasure and key doors, and,
- * with an import binding while the owner is `pending`, the cutover's import doors (`import.ts`).
+ * `admissionSet`, the one door that caller reaches but its state, tier, erasure, key and
+ * restore doors, and, with an import binding while the owner is `pending`, the cutover's
+ * import doors (`import.ts`).
  */
 import { keyed } from "../../contract/src/checks";
 import { HEX64 } from "../../contract/src/ids";
@@ -181,8 +182,8 @@ import type {
   AdmissionRequest, BeatRequest, BilledEvent, BindingRequest, ConnectionCommitRequest,
   ConnectionPrepareRequest, ConnectionRequest, EgressOpened, EgressRefusal, EgressReserved,
   EraseRequest, FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors,
-  RestoreAnswer, RestoreBeginRequest, RestoreHold, RestorePinRequest, RestoreSource,
-  RestoreWipeRequest, SigninEventsRequest, TierRequest,
+  OwnerStateAnswer, RestoreAnswer, RestoreBeginRequest, RestoreHold, RestorePinRequest,
+  RestoreSource, RestoreWipeRequest, SigninEventsRequest, TierRequest,
 } from "../../contract/src/owner";
 import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
@@ -1928,6 +1929,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    */
   async admissionSet(binding: Binding, request: AdmissionRequest): Promise<Admission> {
     return this.#units("admissionSet", binding, request, admissionDoors.admissionSet);
+  }
+
+  /**
+   * The owner's state as the platform reads it (`admission.ts`; the operator's `owner.state`):
+   * names, codes and counts, never content; taken only from the reserved `PLATFORM_CALLER`.
+   */
+  ownerState(binding: Binding): Promise<OwnerStateAnswer> {
+    return this.#units("ownerState", binding, undefined, admissionDoors.ownerState);
   }
 
   /**
