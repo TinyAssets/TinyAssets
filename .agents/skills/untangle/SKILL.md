@@ -42,6 +42,12 @@ tokens searching, break less without noticing, and find root causes faster.
   stacked. Merge `origin/main` in; never rebase a pushed branch. A diff touching
   `platform/` also runs every `ci` guard (`npx vitest run --root ci guards/` in
   `platform/`): the layers, kit and kernels no workspace covers.
+- A coordinator's prompt names the work and asks for no check this section
+  does not: never the full suite, never all the recorders. An agent whose
+  prompt asks for more does only what this section asks. The recorders
+  (`npm run record` in `platform/`) run only when the diff changes what a
+  Worker sends or answers. A PR gets at most one review, and a second only
+  when the first blocks on a security finding.
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
   within about 20% of its ceiling lands with its fix; a reviewer who finds one
   blocks.
