@@ -386,7 +386,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`r-fallback-chunks.md` item 5, `untangle/r-log-staged-bytes`): the capture's peak of
     each key's last line at a segment's end (`log_staged`), the restore's own count failing its
     log step past `LOG_BYTES`, owner migration 15 (`r-log-staged-bytes.md`).
-  - [ ] Owner migration 15's pin PR, after the staged count merges (`r-log-staged-bytes.md`,
+  - [x] Owner migration 15's pin PR, after the staged count merges (`r-log-staged-bytes.md`,
     `untangle/r-log-staged-bytes-pin15`).
   - [ ] A restore under way when a migration lands: its generation's schema is checked only at
     `restoreBegin`, so its later steps load the old schema's lines into the new; migration 15
