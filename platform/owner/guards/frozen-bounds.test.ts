@@ -205,12 +205,12 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  * - 1024 a stamp's (three tables), a binding's profile and the tier record, the same;
  * A number inside a name (`sha256`) is no number: only one standing alone is counted.
  * - 16 a generation's id (a generation's row, and a restore's twice over: its own and the
- *   one its pin wrote, in migrations 10 and 11), a key id and a readable id,
+ *   one its pin wrote, in migrations 10, 11 and 14), a key id and a readable id,
  *   35 a sign-in's id (`si_` and 32 hex)
  *   and 36 a subscription's (`sub_` and 32 hex): ids' lengths, which their grammars hold;
  *   36 also a collection deletion's four numbers in its charge (`collection_erasures`).
  */
-const SHARED: Values = Object.freeze({ 16: 7, 35: 1, 36: 11, 64: 282, 256: 8, 1024: 5,
+const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 11, 64: 282, 256: 8, 1024: 5,
                                        4096: 252 });
 
 /**

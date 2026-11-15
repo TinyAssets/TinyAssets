@@ -249,6 +249,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   platform_signins: "the platform's served sign-in records as last read, not the owner's",
   owner_restore: "a restore under way, or the record of the one that made this object",
   restore_rows: "a restore's staged rows, the generation's own, deleted once loaded",
+  restore_filter: "a restore's filter of its chunk rows' names, deleted once swept",
 });
 
 /** The exported tables' names, in order. */

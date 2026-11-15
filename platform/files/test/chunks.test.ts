@@ -428,6 +428,83 @@ describe("deleteChunks", () => {
   });
 });
 
+describe("a restore's sweep: chunkNames, listChunks, deleteListed", () => {
+  /** `count` chunk keys of `space` put straight into the bucket, as no row of its names them. */
+  async function orphans(space: string, count: number): Promise<string[]> {
+    const names = await Promise.all(Array.from({ length: count },
+                                               (_, at) => sha(bytes(`${space} ${at}`))));
+    await Promise.all(names.map((name) => env.BLOBS.put(chunkKey(space, name), "x")));
+    return names.sort();
+  }
+
+  it("names each chunk by the name putChunks stored it under, with no bucket call", async () => {
+    const space = ns();
+    const bodies = [bytes("one"), bytes("two")];
+    await put(space, ...bodies);
+    const hashes = await Promise.all(bodies.map(sha));
+    const names = await service().chunkNames(space, await keyOf(space), hashes);
+    expect(names.map((name) => chunkKey(space, name)))
+      .toEqual(await Promise.all(hashes.map((hash) => named(space, hash))));
+    // A hash never put is named all the same: the name is the key's, not the bucket's.
+    const quiet = { list: () => { throw new Error("listed"); },
+                    get: () => { throw new Error("read"); } } as unknown as R2Bucket;
+    expect(await service(quiet).chunkNames(space, await keyOf(space), ["e".repeat(64)]))
+      .toHaveLength(1);
+  });
+
+  it.each([
+    ["no chunks", []],
+    ["too many chunks", Array.from({ length: DELETE_BATCH + 1 },
+                                    (_, i) => i.toString(16).padStart(64, "0"))],
+    ["a repeated chunk", ["a".repeat(64), "a".repeat(64)]],
+    ["not a list", "a".repeat(64)],
+  ])("refuses a lookup of %s", async (_what, hashes) => {
+    const space = ns();
+    expect((await failure(async () => service().chunkNames(space, await keyOf(space),
+                                                           hashes as string[]))).message)
+      .toBe(`a lookup names 1 to ${DELETE_BATCH} distinct chunks`);
+  });
+
+  it("refuses a lookup of a malformed hash, or under no key of the namespace", async () => {
+    const space = ns();
+    expect((await failure(async () => service().chunkNames(space, await keyOf(space),
+                                                           ["a".repeat(64), "nope"]))).message)
+      .toBe("a chunk hash is 64 lowercase hex characters");
+    expect(await refused(async () => service().chunkNames(space, await keyOf(ns()),
+                                                          ["a".repeat(64)])))
+      .toBe("data_key_refused");
+  });
+
+  it("lists a namespace's chunk names a page at a time after a name, and no other's", async () => {
+    const [space, other] = [ns(), ns()];
+    const names = await orphans(space, DELETE_BATCH + 5);
+    await orphans(other, 3);
+    const first = await service().listChunks(space, null);
+    expect([first.names.length, first.more]).toEqual([DELETE_BATCH, true]);
+    const second = await service().listChunks(space, first.names.at(-1)!);
+    expect([second.names.length, second.more]).toEqual([5, false]);
+    expect([...first.names, ...second.names]).toEqual(names);
+    expect(await refused(() => service().listChunks(space, "not a name"))).toBe("invalid");
+  });
+
+  it("deletes only the listed names of the named namespace, refusing a bad list first",
+     async () => {
+    const [space, other] = [ns(), ns()];
+    const names = await orphans(space, 3);
+    const theirs = await orphans(other, 1);
+    expect(await service().deleteListed(space, [names[0]!, theirs[0]!]))
+      .toEqual({ deleted: 2 });
+    expect(await keys(space)).toEqual(names.slice(1).map((name) => chunkKey(space, name)));
+    expect(await keys(other)).toHaveLength(1);
+    for (const bad of [[], [names[1]!, "nope"], [names[1]!, names[1]!],
+                       Array.from({ length: DELETE_BATCH + 1 },
+                                  (_, i) => i.toString(16).padStart(64, "0"))]) {
+      expect(await refused(() => service().deleteListed(space, bad))).toBe("invalid");
+    }
+    expect(await keys(space)).toHaveLength(2);
+  });
+});
+
 describe("data keys", () => {
   it("seals every chunk under its owner's key at its own R2 key, and refuses a call with none",
      async () => {

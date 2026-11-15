@@ -12,10 +12,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { sqlIn } from "../../ci/workerd";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { migrate } from "../../contract/src/migrate";
-import { INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
+import { sha256Hex } from "../../contract/src/digest";
+import { GET_READS } from "../../contract/src/files";
+import { HELD_WAIT_MS } from "../../ci/fixtures";
+import { DELETE_BATCH, INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import type { RestoreAnswer, RestoreHold } from "../../contract/src/owner";
 import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
 import { exported, NOT_EXPORTED } from "../src/export";
+import { CHUNK_ROW_BYTES, CHUNK_ROW_CHARGE } from "../src/manifest";
+import { addNames, emptyFilter, FILTER_BYTES } from "../src/names-filter";
 import type { OwnerDO } from "../src/owner-do";
 import { loadOrder, RESTORING, SEEDED } from "../src/restore";
 import { MIGRATIONS } from "../src/schema";
@@ -225,9 +230,11 @@ describe("a restore", () => {
     expect(await countersOf(stub)).toEqual(counters);
     expect(await stub.storageUsage(o.bind())).toEqual(usage);
     // Every chunk a content names was checked as stored, and nothing was put to R2 or deleted
-    // from it but by the lane's sweep once done, which keeps the generation restored.
+    // from it but by the lane's sweep once done, which keeps the generation restored: the
+    // restore's own sweep named its rows' chunks and listed the namespace, and found none
+    // to delete.
     const crossed = (await files.calls()).slice(earlier);
-    expect(crossed.filter((call) => !/^(?:get|check)/.test(call.method)
+    expect(crossed.filter((call) => !/^(?:get|check|chunkNames|listChunks)/.test(call.method)
       && !(call.method === "sweepManifests"
            && (call.args as [string, string[]])[1].includes(gen.gen)))).toEqual([]);
     const named = await sqlIn(stub, "SELECT DISTINCT sha256 FROM file_content_chunks");
@@ -868,5 +875,258 @@ describe("a restore into a live owner", () => {
     expect((await failure(() => stub.dataKeyRewrap(platform(o.name)))).code).toBe("restoring");
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
     expect(await stub.dataKeyRewrap(platform(o.name))).toEqual({ rewrapped: false, roots: 1 });
+  });
+});
+
+/** What the bucket finds of each of `hashes` under `stub`'s namespace and key. */
+async function bucketed(stub: Stub, hashes: readonly string[]): Promise<string[]> {
+  const [space] = await sqlIn(stub, "SELECT ns, data_key FROM file_space");
+  const found: string[] = [];
+  for (let at = 0; at < hashes.length; at += GET_READS) {
+    found.push(...await env.FILES.checkChunks(space!["ns"] as string,
+                                              space!["data_key"] as string,
+                                              hashes.slice(at, at + GET_READS)));
+  }
+  return found;
+}
+
+/** The filter of `stub`'s chunk rows' names, made afresh from its rows as `names` makes it. */
+async function filterFrom(stub: Stub): Promise<Uint8Array> {
+  const [space] = await sqlIn(stub, "SELECT ns, data_key FROM file_space");
+  const hashes = (await sqlIn(stub, "SELECT sha256 FROM file_chunks ORDER BY sha256"))
+    .map((row) => row["sha256"] as string);
+  const filter = emptyFilter();
+  for (let at = 0; at < hashes.length; at += DELETE_BATCH) {
+    addNames(filter, await env.FILES.chunkNames(space!["ns"] as string,
+                                                space!["data_key"] as string,
+                                                hashes.slice(at, at + DELETE_BATCH)));
+  }
+  return filter;
+}
+
+/** The restore's filter as its row holds it. */
+async function filterHeld(stub: Stub): Promise<Uint8Array> {
+  const [row] = await sqlIn(stub, "SELECT bits FROM restore_filter");
+  return new Uint8Array(row!["bits"] as ArrayBuffer);
+}
+
+/** `count` garbage chunk rows, no file's, put into `stub`'s object: rows with no bytes. */
+const garbageRows = (stub: Stub, count: number) => sqlIn(stub,
+  "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) INSERT INTO " +
+    "file_chunks (sha256, size, state, stored, refs, holds, gc_after) SELECT " +
+    "printf('%064x', i), 1, 'garbage', 1, 0, 0, 1e12 FROM n", count);
+
+/**
+ * The restore stepped, in the background, until the files Worker is asked `method`, held
+ * there; the steps' end, once let go.
+ */
+async function heldAt(stub: Stub, name: string, files: ReturnType<typeof gateFor>,
+                      method: string): Promise<{ cut: Promise<unknown> }> {
+  await files.arm(method, { hold: "before" });
+  const cut = stepped(stub, name).catch(() => null);
+  await files.held(method);
+  return { cut };
+}
+
+describe("a restore's sweep of the chunks no row names", () => {
+  it("deletes a chunk put after E, and keeps every chunk a row names: a live file's, an " +
+     "upload's held at E, and a deleted one's an open export reads, which revives", async () => {
+    const o = await owner();
+    const [a, g, u, b] = [11, 12, 13, 14].map((seed) => filled(INLINE_BYTES + 100 * seed, seed));
+    const write = (path: string, content: Uint8Array) =>
+      o.stub.fileWrite(o.bind(), { path, expected_etag: null, content });
+    await write(`${W}/a.bin`, a!);
+    const made = await write(`${W}/g.bin`, g!) as { entry: { etag: string } };
+    await generate(o.stub);
+    // An export opened on that generation, which names g's chunk; g then deleted and its
+    // versions purged, so at E its chunk is a garbage row in its grace.
+    await o.stub.ownerExport(o.session(), { cursor: null });
+    await o.stub.fileRemove(o.bind(), { path: `${W}/g.bin`, expected_etag: made.entry.etag,
+                                        recursive: false });
+    await o.stub.fileHistoryPurge(o.bind(), { path: `${W}/g.bin` });
+    // An upload held at E, its chunk not yet sent.
+    const [ha, hg, hu, hb] = [a!, g!, u!, b!].map((bytes) => sha256Hex(bytes));
+    const intent = await o.stub.fileUploadBegin(o.bind(), { size: u!.byteLength, chunks: [hu!] });
+    expect(await sqlIn(o.stub, "SELECT sha256, state FROM file_chunks WHERE sha256 IN (?, ?) " +
+                               "ORDER BY state", hg!, hu!))
+      .toEqual([{ sha256: hg, state: "garbage" }, { sha256: hu, state: "uploading" }]);
+    const gen = await generate(o.stub);
+    // After E: the upload's chunk put, and a file written.
+    await o.stub.fileUploadChunks(o.bind(), { intent_id: intent.intent_id,
+                                              chunks: [{ sha256: hu!, bytes: u! }] });
+    await write(`${W}/b.bin`, b!);
+    const all = [ha!, hg!, hu!, hb!];
+    expect(await bucketed(o.stub, all)).toEqual(["stored", "stored", "stored", "stored"]);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const ns = space!["ns"] as string;
+    const files = gateFor(env.FILES_GATE, ns);
+    const hold = await pinnedTo(o.stub, o.name, gen.gen);
+    const stub = await wipedWith(o.stub, o.name, hold.confirm!);
+    const earlier = (await files.calls()).length;
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
+    expect(await bucketed(stub, all)).toEqual(["stored", "stored", "stored", "missing"]);
+    // One delete, of the one chunk no row names, and the filter gone with the staged rows.
+    expect((await files.calls()).slice(earlier).filter((call) => call.method === "deleteListed")
+      .map((call) => (call.args as [string, string[]])[1].length)).toEqual([1]);
+    expect(await sqlIn(stub, "SELECT count(*) AS n FROM restore_filter")).toEqual([{ n: 0 }]);
+    // The deleted file revives by an upload that need send nothing: its chunk is stored.
+    await stub.admissionSet(platform(o.name), { admit: true });
+    expect((await stub.fileUploadBegin(o.bind(), { size: g!.byteLength, chunks: [hg!] }))
+      .missing).toEqual([]);
+  });
+
+  it("fails at names, deleting nothing, when the generation holds no admission a restore " +
+     "admits", async () => {
+    const { o, gen, ns } = await source();
+    const stub = await lose(o);
+    const files = gateFor(env.FILES_GATE, ns);
+    const earlier = (await files.calls()).length;
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    const { cut } = await heldAt(stub, o.name, files, "checkChunks");
+    await sqlIn(stub, "UPDATE owner_restore SET held = ?",
+                JSON.stringify({ owner_admission: { state: "pending", reasons: "[]" } }));
+    await files.release("checkChunks");
+    await cut;
+    expect(await stub.restoreStep(platform(o.name))).toEqual({
+      step: "failed", done: false, failed: "the generation holds the owner's admission at E as " +
+        "pending: a restore admits only an admitted or suspended one" });
+    expect((await files.calls()).slice(earlier).filter((call) => !/^(?:get|check)/.test(
+      call.method))).toEqual([]);
+  });
+
+  it("goes on from its cursor after a crash between pages of names, setting the bits a run " +
+     "with none sets, and holds the filter in one row of its derived size", async () => {
+    const { o, gen, ns } = await source();
+    const stub = await lose(o);
+    const files = gateFor(env.FILES_GATE, ns);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    // Rows past one names unit's 10,000, so names takes two pages.
+    let { cut } = await heldAt(stub, o.name, files, "checkChunks");
+    await garbageRows(stub, 10_500);
+    // The first page's ten calls let through, and the second page's first held: a crash then.
+    await files.arm("chunkNames", { hold: "before" }, 11);
+    await files.release("checkChunks");
+    for (let call = 0; call < 10; call++) {
+      await files.held("chunkNames");
+      await files.release("chunkNames");
+    }
+    await files.held("chunkNames");
+    const [mid] = await sqlIn(stub, "SELECT step, after FROM owner_restore");
+    const hashes = (await sqlIn(stub, "SELECT sha256 FROM file_chunks ORDER BY sha256 LIMIT 10000"))
+      .map((row) => row["sha256"] as string);
+    expect(mid).toEqual({ step: "names", after: hashes.at(-1) });
+    await reset(stub);
+    await files.release("chunkNames");
+    await cut;
+    const again = env.OWNER.getByName(o.name);
+    ({ cut } = await heldAt(again, o.name, files, "listChunks"));
+    expect(Buffer.from(await filterHeld(again)).equals(Buffer.from(await filterFrom(again))))
+      .toBe(true);
+    expect(await sqlIn(again, `SELECT length(bits) AS n, ${CHUNK_ROW_BYTES()} AS charge FROM ` +
+                              "restore_filter")).toEqual([{ n: FILTER_BYTES(), charge:
+                                                             CHUNK_ROW_CHARGE() }]);
+    await files.release("listChunks");
+    await cut;
+    expect((await stepped(again, o.name)).at(-1)).toMatchObject({ step: "done" });
+    const named = (await sqlIn(again, "SELECT DISTINCT sha256 FROM file_content_chunks"))
+      .map((row) => row["sha256"] as string);
+    expect(new Set(await bucketed(again, named))).toEqual(new Set(["stored"]));
+  });
+
+  it("ends the same after a crash between names and sweep and one mid-sweep, deleting each " +
+     "unnamed chunk once, a page at a time", async () => {
+    const { o, gen, ns } = await source();
+    const stub = await lose(o);
+    // Unnamed chunks past one listed page, put straight into the bucket.
+    const orphans = Array.from({ length: 1_200 }, (_, n) => sha256Hex(`orphan ${n}`));
+    await Promise.all(orphans.map((name) => env.BLOBS.put(`o/${ns}/c/${name}`, "x")));
+    const files = gateFor(env.FILES_GATE, ns);
+    const earlier = (await files.calls()).length;
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    // A crash with names done and the sweep not begun.
+    let { cut } = await heldAt(stub, o.name, files, "listChunks");
+    expect(await sqlIn(stub, "SELECT step, after FROM owner_restore"))
+      .toEqual([{ step: "sweep", after: null }]);
+    await reset(stub);
+    await files.release("listChunks");
+    await cut;
+    // A crash mid-sweep: the second page's delete landed, its answer lost.
+    let again = env.OWNER.getByName(o.name);
+    await files.arm("deleteListed", { hold: "after" }, 2);
+    cut = stepped(again, o.name).catch(() => null);
+    await files.held("deleteListed");
+    await files.release("deleteListed");
+    await files.held("deleteListed");
+    await files.lose("deleteListed");
+    await cut;
+    again = env.OWNER.getByName(o.name);
+    expect((await stepped(again, o.name)).at(-1)).toMatchObject({ step: "done" });
+    const crossed = (await files.calls()).slice(earlier);
+    const deleted = crossed.filter((call) => call.method === "deleteListed")
+      .flatMap((call) => (call.args as [string, string[]])[1]);
+    expect([deleted.length, new Set(deleted).size]).toEqual([orphans.length, orphans.length]);
+    expect(new Set(deleted)).toEqual(new Set(orphans));
+    // Pages: the sweep listed from a name past the first page.
+    expect(crossed.filter((call) => call.method === "listChunks")
+      .some((call) => (call.args as [string, string | null])[1] !== null)).toBe(true);
+    const named = (await sqlIn(again, "SELECT DISTINCT sha256 FROM file_content_chunks"))
+      .map((row) => row["sha256"] as string);
+    expect(new Set(await bucketed(again, named))).toEqual(new Set(["stored"]));
+  });
+
+  it("holds clear while a second call's sweep delete is in flight, so none lands after done",
+     async () => {
+    const { o, gen, ns } = await source();
+    const stub = await lose(o);
+    const orphans = Array.from({ length: 3 }, (_, n) => sha256Hex(`orphan ${n}`));
+    await Promise.all(orphans.map((name) => env.BLOBS.put(`o/${ns}/c/${name}`, "x")));
+    const files = gateFor(env.FILES_GATE, ns);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    // One call held at its sweep page's delete; a second on the same page goes on to clear.
+    const { cut } = await heldAt(stub, o.name, files, "listChunks");
+    await files.arm("deleteListed", { hold: "before" });
+    await files.release("listChunks");
+    await files.held("deleteListed");
+    const second = stub.restoreStep(platform(o.name));
+    // The record shows the second call past its sweep (read until it moves, a liveness bound
+    // only), and the gate still holds the first call's delete: both events.
+    const step = async () => (await sqlIn(stub, "SELECT step FROM owner_restore"))[0]!["step"];
+    for (let waited = 0; waited < HELD_WAIT_MS && await step() === "sweep"; waited += 5) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(await step()).toBe("clear");
+    expect(await files.held("deleteListed")).toHaveLength(1);
+    // After the gate's own answer, every other pending task has run: the second call is
+    // still pending, as its race against an already-resolved marker shows.
+    const PENDING = Symbol("pending");
+    expect(await Promise.race([second, Promise.resolve(PENDING)])).toBe(PENDING);
+    await files.release("deleteListed");
+    expect(await second).toMatchObject({ step: "done" });
+    await cut;
+    const left = (await env.BLOBS.list({ prefix: `o/${ns}/c/` })).objects.map((each) => each.key);
+    expect(orphans.filter((name) => left.includes(`o/${ns}/c/${name}`))).toEqual([]);
+  });
+
+  it("maps a record of migration 13 unchanged through migration 14", async () => {
+    const { stub } = await ownerObject();
+    const mapped = await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+          "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+          "AND name NOT GLOB 'cf_*'").toArray()) {
+        sql.exec(`DROP TABLE "${name}"`);
+      }
+      migrate(state.storage, MIGRATIONS.slice(0, 13));
+      sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, after, held, spans, fresh, " +
+                 "since) VALUES (1, ?, ?, 'clear', 7, NULL, '{}', '[]', ?, 5)", "a".repeat(32),
+               "b".repeat(16), "c".repeat(16));
+      const before = sql.exec("SELECT * FROM owner_restore").toArray();
+      migrate(state.storage, MIGRATIONS);
+      return { before, after: sql.exec("SELECT * FROM owner_restore").toArray(),
+               filters: sql.exec("SELECT count(*) AS n FROM restore_filter").one().n };
+    });
+    expect(mapped.after).toEqual(mapped.before);
+    expect(mapped.filters).toBe(0);
   });
 });

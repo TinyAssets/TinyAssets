@@ -152,7 +152,7 @@ export interface RestoreBeginRequest {
  */
 export type RestoreAnswer =
   | { readonly step: "pinned" | "wiped" | "index" | "log" | "apply" | "check" | "chunks"
-                     | "clear";
+                     | "names" | "sweep" | "clear";
       readonly done: false }
   | { readonly step: "failed"; readonly done: false; readonly failed: string }
   | { readonly step: "done"; readonly done: true; readonly gen: string;

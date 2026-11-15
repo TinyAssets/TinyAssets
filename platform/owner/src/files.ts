@@ -92,7 +92,7 @@ import {
 import { letGo, planEdit } from "./edit";
 import { type Facts, FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage, Write } from "./gate";
-import { CLIENT_WRITER, CLIENTS, OWNER_SCOPE } from "./manifest";
+import { CLIENT_WRITER, CLIENTS, INDEX_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
 import { refuseErasing } from "./erasure";
 import { refuseRestoring } from "./restore";
@@ -138,15 +138,6 @@ export const FILE_QUOTA = "file_quota" satisfies RefusalCode;
 export const FILE_SHARE = "file_share" satisfies RefusalCode;
 export const FILE_INDEX_FULL = "file_index_full" satisfies RefusalCode;
 const FILE_TOO_LARGE = `${FILE_QUOTA}: the file is larger than the owner's file size quota`;
-/**
- * The file index's ceiling: the most the index takes in the owner's object, in the bytes its
- * rows are charged as SQLite lays them out (`manifest_bytes`, each small file's inline bytes
- * in its content's row). The files plane's one technical ceiling (`limits-audit.md`): the
- * object's 10 GB, of which the owner-bound guard gives the index this at `WORST_FILL`
- * (1,208 MB, its largest term). It is no setting, and no upgrade raises it: past it a change
- * is refused (`file_index_full`) and room comes only from deleting files or old versions.
- */
-export const INDEX_BYTES = 512 * 1024 ** 2;
 /** The refusal at the index's ceiling, in plain words: what is full, and what frees it. */
 const INDEX_FULL = `${FILE_INDEX_FULL}: your file index is full: it holds as many files and ` +
   "versions as one owner's index can. Delete files or old versions of files you no longer " +
@@ -597,8 +588,11 @@ export class Files {
   readonly #protectsSince: () => number | null;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
-  /** The `FILES` puts in flight on this instance, which the erasure waits for. */
-  readonly #puts = new Set<Promise<unknown>>();
+  /**
+   * The `FILES` writes in flight on this instance (its puts, and a restore sweep's deletes),
+   * which the erasure and a restore's `clear` wait for (`settled`).
+   */
+  readonly #writes = new Set<Promise<unknown>>();
   /**
    * Told of each workspace path a change makes or takes away, in that change's own unit:
    * what follows a path (an agent's ledger identity its `agent.json`). A refusal refuses
@@ -1022,6 +1016,38 @@ export class Files {
     return this.#reads(sha256s, (ns, key, batch) => this.#store.checkChunks(ns, key, batch));
   }
 
+  /** Each chunk's name in the bucket, in order (`FILES.chunkNames`), `DELETE_BATCH` a call. */
+  async names(sha256s: readonly string[]): Promise<string[]> {
+    if (sha256s.length === 0) {
+      return [];
+    }
+    const { ns, key } = await this.space();
+    const out: string[] = [];
+    for (let at = 0; at < sha256s.length; at += DELETE_BATCH) {
+      out.push(...await this.#store.chunkNames(ns, key, sha256s.slice(at, at + DELETE_BATCH)));
+    }
+    return out;
+  }
+
+  /**
+   * A restore's sweep's delete of the chunks `names` names (`FILES.deleteListed`), held in
+   * flight until it ends (`#sent`), so the restore's `clear` waits for it: a delete another
+   * call of this instance issued never lands after `done` (`restore.ts`).
+   */
+  sweep(ns: string, names: string[]): Promise<{ deleted: number }> {
+    return this.#sent(this.#store.deleteListed(ns, names));
+  }
+
+  /** `write`, a `FILES` write, held among this instance's in flight until it ends. */
+  async #sent<T>(write: Promise<T>): Promise<T> {
+    this.#writes.add(write);
+    try {
+      return await write;
+    } finally {
+      this.#writes.delete(write);
+    }
+  }
+
   /** `read`'s answers to `items` in order, `GET_READS` items a call under the owner's key. */
   async #reads<I, O>(items: readonly I[],
                      read: (ns: string, key: string, batch: I[]) => Promise<O[]>): Promise<O[]> {
@@ -1413,14 +1439,8 @@ export class Files {
       return this.ns();
     });
     const { key } = await this.space();
-    const put = this.#store.putChunks(ns, key,
-                                      chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
-    this.#puts.add(put);
-    try {
-      await put;
-    } finally {
-      this.#puts.delete(put);
-    }
+    await this.#sent(this.#store.putChunks(ns, key,
+                                           chunks.map(({ sha256, bytes }) => ({ sha256, bytes }))));
     await this.#write(() => this.#recordStored(new Set(chunks.map(({ sha256 }) => sha256)),
                                                intentId));
   }
@@ -1495,6 +1515,16 @@ export class Files {
       "SELECT DISTINCT c.sha256, k.size FROM file_content_chunks c JOIN file_chunks k " +
         "ON k.sha256 = c.sha256 ORDER BY c.sha256 LIMIT ? OFFSET ?", limit, offset)
       .toArray();
+  }
+
+  /**
+   * A read for a restore's sweep (`restore.ts`): `limit` of the hashes of every chunk row, in
+   * any state, after the hash `after` (null: from the first), in order.
+   */
+  chunksAfter(after: string | null, limit: number): string[] {
+    return this.#sql.exec<{ sha256: string }>(
+      "SELECT sha256 FROM file_chunks WHERE sha256 > ? ORDER BY sha256 LIMIT ?", after ?? "",
+      limit).toArray().map((row) => row.sha256);
   }
 
   /**
@@ -2636,10 +2666,10 @@ export class Files {
     return this.#space().ns;
   }
 
-  /** Once every `FILES` put this instance has in flight has landed or failed. */
+  /** Once every `FILES` write this instance has in flight has landed or failed. */
   async settled(): Promise<void> {
-    while (this.#puts.size > 0) {
-      await Promise.allSettled([...this.#puts]);
+    while (this.#writes.size > 0) {
+      await Promise.allSettled([...this.#writes]);
     }
   }
 
