@@ -51,7 +51,8 @@ export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMA
  * called), and pinned by the deploy (`migrations.json`); the migrations guard holds every
  * pinned one to its digest, and the append-only lock guard holds the lock itself to the base
  * branch's (`ci/guards/locks.test.ts`). A new migration that spells a bound adds
- * it to the frozen bounds and its line to the frozen-bounds guard.
+ * it to the frozen bounds and its line to the frozen-bounds guard, and every new migration
+ * says how a generation from before it is brought forward (`FORWARD`).
  */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
@@ -2363,4 +2364,76 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "what it staged was never measured; wipe it and restore again' WHERE step IN ('log', " +
       "'apply', 'check', 'chunks', 'names', 'sweep', 'clear')",
   ]),
+  // 16 (lane R, `restore.ts`; `untangle-2026-11/r-restore-schema.md`): a restore's record keeps
+  // the object's schema when it was begun (`schema`), so a restore a migration lands under is
+  // failed at its next piece, and its generation's (`source`), which the generation it adopts
+  // keeps. A restore under way is recorded as begun at 15, so its next piece fails it.
+  Object.freeze([
+    "ALTER TABLE owner_restore ADD COLUMN schema INTEGER CHECK (schema IS NULL OR schema >= 1)",
+    "ALTER TABLE owner_restore ADD COLUMN source INTEGER CHECK (source IS NULL OR source >= 1)",
+    "UPDATE owner_restore SET schema = 15 WHERE step IN ('index', 'log', 'apply', 'check', " +
+      "'chunks', 'names', 'sweep', 'clear')",
+  ]),
 ]);
+
+/**
+ * Why no generation from before migration 9 can be brought forward: neither migration 7's nor
+ * 9's writes to an exported table are a function of what a generation holds.
+ */
+const UNREPLAYABLE = "before a restore could bring a generation forward: migration 7 re-keys " +
+  "collection history by insertion order and migration 9 reads other tables' rows, neither of " +
+  "which a generation holds";
+
+/**
+ * How a generation of an older schema is brought forward across each migration, one entry a
+ * migration in `MIGRATIONS`' order (`restore.ts`; `untangle-2026-11/r-restore-schema.md`):
+ * null where the migration changes no exported table (`export.ts` `exported`), so each line
+ * of the schema before is the same line after it; else why no generation from before it can
+ * be brought forward, in the words a restore refuses it with. The migrations guard holds one
+ * entry a migration, and a null one's text to naming no exported table
+ * (`guards/migrations.test.ts`). A migration that changes an exported table declares a form
+ * that brings each line forward alone, built in its own PR; declaring one refused after the
+ * cutover strands every owner's kept generations, which is the founder's call.
+ */
+export const FORWARD: readonly (string | null)[] = Object.freeze([
+  UNREPLAYABLE,  // 1
+  UNREPLAYABLE,  // 2
+  UNREPLAYABLE,  // 3
+  UNREPLAYABLE,  // 4
+  UNREPLAYABLE,  // 5
+  UNREPLAYABLE,  // 6
+  UNREPLAYABLE,  // 7
+  UNREPLAYABLE,  // 8
+  UNREPLAYABLE,  // 9
+  null,  // 10
+  null,  // 11
+  null,  // 12
+  null,  // 13
+  null,  // 14
+  null,  // 15
+  null,  // 16
+]);
+
+/**
+ * Why a generation of schema `schema` (its header's) can't be brought forward to this code's,
+ * or null when it can: one newer than this code's, or one a migration since it refuses
+ * (`FORWARD`), named by its number.
+ */
+export function unforwardable(schema: unknown): string | null {
+  const now = MIGRATIONS.length;
+  if (typeof schema !== "number" || !Number.isInteger(schema) || schema < 1) {
+    return `the generation names no schema (${String(schema)})`;
+  }
+  if (schema > now) {
+    return `the generation is of schema ${schema}, this object's is ${now}: code older than ` +
+      "its data never loads it";
+  }
+  for (let migration = now; migration > schema; migration--) {
+    const refused = FORWARD[migration - 1];
+    if (refused !== null) {
+      return `the generation is of schema ${schema}: migration ${migration} cannot bring it ` +
+        `forward, as it came ${refused}`;
+    }
+  }
+  return null;
+}

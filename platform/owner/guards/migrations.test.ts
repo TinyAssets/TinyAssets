@@ -2,11 +2,13 @@
  * The owner's migrations held to their lock, `owner/migrations.json` (`ci/kit/locks.ts`,
  * which says what a lock holds and how a deploy pins it).
  */
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import { exported } from "../src/export";
 import type { Migration } from "../../contract/src/migrate";
-import { MIGRATIONS } from "../src/schema";
+import { FORWARD, MIGRATIONS, unforwardable } from "../src/schema";
 import { holdLocks } from "../../ci/kit/locks";
 import { workerSources } from "../../ci/kit/sources";
 import { LOCKS } from "./locks";
@@ -81,5 +83,36 @@ describe("no REPLACE against an exported table (review L5-2)", () => {
     // A table not exported may: the applied migrations' digests are the start's own check.
     expect(at('sql.exec("INSERT OR REPLACE INTO schema_digests (version) VALUES (?)")'))
       .toEqual([]);
+  });
+});
+
+/**
+ * The export's shape (`exported`: each table's columns, key and omitted ones) and the schema
+ * it is of. A shape is one schema's: changed with no migration, two generations of one schema
+ * would read two ways. Pinned again, with its count, at each new migration.
+ */
+const EXPORT_SHAPE = { schema: 16, sha256:
+  "15f28c74a9c665073bd86deed1f6f4556e0cb3df9f5937298e24bb47074d97bf" };
+
+describe("every migration says how a generation from before it is brought forward", () => {
+  it("one entry a migration, null only where its text names no exported table", () => {
+    expect(FORWARD).toHaveLength(MIGRATIONS.length);
+    const tables = Object.keys(exported());
+    const named = MIGRATIONS.flatMap((migration, at) => FORWARD[at] !== null ? []
+      : tables.filter((table) => migration.some((sql) => new RegExp(`\\b${table}\\b`).test(sql)))
+        .map((table) => `migration ${at + 1} names ${table}`));
+    expect(named).toEqual([]);
+  });
+
+  it("brings a generation forward from schema 9 on, and none before it or newer than the code",
+     () => {
+    const schemas = Array.from({ length: MIGRATIONS.length + 1 }, (_, at) => at + 1);
+    expect(schemas.filter((schema) => unforwardable(schema) === null))
+      .toEqual(schemas.filter((schema) => schema >= 9 && schema <= MIGRATIONS.length));
+  });
+
+  it("holds the export's shape to the schema it is of", () => {
+    expect({ schema: MIGRATIONS.length, sha256: createHash("sha256")
+      .update(JSON.stringify(exported())).digest("hex") }).toEqual(EXPORT_SHAPE);
   });
 });

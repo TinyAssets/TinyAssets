@@ -79,6 +79,7 @@ import type { ChunkStore, ManifestRoot } from "../../contract/src/files";
 import type { ChunkSpace } from "./files";
 import { type OwnerStorage, unitsNow, type Write } from "./gate";
 import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
+import { MIGRATIONS, unforwardable } from "./schema";
 import { isSlotBusy } from "../../contract/src/slots";
 
 /** The hours of the night owners' manifests spread over, from the day's start in UTC. */
@@ -308,11 +309,12 @@ function wholeAt(row: GenerationRow, now: number): boolean {
 }
 
 /**
- * Whether finished generation `row` can be restored at `now`: whole, and what a restore stages
- * of its log within `LOG_BYTES` (`restore.ts`).
+ * Whether finished generation `row` can be restored at `now`: whole, what a restore stages of
+ * its log within `LOG_BYTES`, and of a schema a restore brings forward (`restore.ts`,
+ * `unforwardable`).
  */
 function restorableAt(row: GenerationRow, now: number): boolean {
-  return row.staged <= LOG_BYTES && wholeAt(row, now);
+  return row.staged <= LOG_BYTES && wholeAt(row, now) && unforwardable(row.schema) === null;
 }
 
 /**
@@ -341,7 +343,6 @@ interface BackupParts {
   readonly owner: () => string;
   /** Whether the object serves its owner yet (its first door ran): none before, nothing to keep. */
   readonly serves: () => boolean;
-  readonly schema: number;
   /** Whether the owner is being erased: a pass under way stops before its next put. */
   readonly halted: () => boolean;
   /** The generation a restore holds (`restore.ts`), which no prune deletes; null for none. */
@@ -559,9 +560,10 @@ export class Backups {
   /**
    * In a unit: the generation a restore read this object from (`restore.ts`), recorded as its
    * newest finished one, as its root lists it, with what the restore staged of its log at its
-   * most (`staged`): kept, read by an export, and superseded by the next one as any is.
+   * most (`staged`) and its own schema (its header's, which may be older than the object's):
+   * kept, read by an export, and superseded by the next one as any is.
    */
-  adopt(root: ManifestRoot, staged: number): void {
+  adopt(root: ManifestRoot, staged: number, schema: number): void {
     const at = root.at / 1000;
     this.#sql.exec(
       "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, segments, " +
@@ -569,7 +571,7 @@ export class Backups {
         `VALUES (?, ?, 'done', ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ${NEXT_SEQ})`, root.gen,
       manifestDay(at), ENDED, root.parts.length, root.segments.length,
       [...root.parts, ...root.segments].reduce((sum, object) => sum + object.size, 0), root.s,
-      this.#parts.schema, root.e, at, at, at, staged);
+      schema, root.e, at, at, at, staged);
     // A generation finished here: from now on, none restorable is told (`#tellUnrestorable`).
     this.#sql.exec("UPDATE owner_backup_state SET lost = coalesce(lost, 0)");
     // Its namespace holds every generation the object had before it was lost or wiped, and
@@ -736,7 +738,7 @@ export class Backups {
       "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, bytes, s, " +
         `schema, started_at, seq) VALUES (?, ?, 'writing', NULL, 0, '', 0, ?, ?, ?, ${NEXT_SEQ})`,
       gen,
-      manifestDay(now), s, this.#parts.schema, now);
+      manifestDay(now), s, MIGRATIONS.length, now);
     return gen;
   }
 
@@ -891,7 +893,7 @@ export class Backups {
     const log = this.#parts.log;
     const page = await this.#write(() => {
       const read = readPage(this.#sql, decodeCursor(cursor),
-                            { schema: this.#parts.schema, owner: this.#parts.owner(),
+                            { schema: MIGRATIONS.length, owner: this.#parts.owner(),
                               at: clockMs(), gen: at.gen, s: at.s },
                             Number.MAX_SAFE_INTEGER, GENERATION_SIZES.page);
       return { read, last: read.next === null ? log.state().last : null, at: clockMs() };
@@ -916,7 +918,7 @@ export class Backups {
   async #carry(row: GenerationRow, until: number): Promise<boolean> {
     const { ns, key } = await this.#parts.space();
     const log = this.#parts.log;
-    if (row.schema !== this.#parts.schema) {
+    if (row.schema !== MIGRATIONS.length) {
       // A migration ran while it was under way: its base and log are the old schema's, so it
       // is given up, loudly, and a fresh one begun under the new (review L5-2).
       await this.#abandon(row, MANIFEST_SCHEMA);
