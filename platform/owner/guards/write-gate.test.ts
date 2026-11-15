@@ -11,13 +11,14 @@
  *   (untangle B4), hands its row's handler to the one runner (`#call`), which runs it in a
  *   unit of the row's gate (`#door`, `#quiet`, `#synced`, `#filing`), or, for a row whose
  *   handler makes its own units (`units`), hands it the door, and that handler's first
- *   statement returns or awaits a unit of the state it is handed (`o.door`, `o.synced`,
- *   `o.filing`, `o.seededFor`, `o.quiet`, ...). Those are the gate (`#door` is
- *   `this.#gate.write`, `#quiet` its `quiet`, the others call `#door`; `#seededFor`, a file
- *   door's caller checked in a unit before it waits for a new owner's seed, slice BRAIN). A
- *   door's handler is in the module its row names (`contract/doors.json`'s `handler`:
- *   `<module>Doors.<door>`, untangle A2), handed the object's state, whose gate members are
- *   those helpers;
+ *   statement (or its `try`'s first) returns or awaits a unit of what it is handed
+ *   (`o.door`, `o.synced`, `o.filing`, `o.quiet`, the bodies' placement, ...). Those are the
+ *   gate (`#door` is `this.#gate.write`, `#quiet` its `quiet`, the others call `#door`; the
+ *   bodies' placement writes through the gate's `write`, `bodies.ts`). A row whose door waits
+ *   for a new owner's seed (`seeded`, slice BRAIN) has its caller checked in a unit before
+ *   the wait, by the runner. A door's handler is in the module its row names
+ *   (`contract/doors.json`'s `handler`: `<module>Doors.<door>`, untangle A2), handed the
+ *   object's parts, whose gate members are those helpers;
  * - the object names `ctx.storage` once, to make the gate, and its modules are handed the
  *   gate's view, and no other source names a `ctx.storage`; no source builds a SQLite
  *   adapter (`DurableObjectSqliteDatabase`) over the owner's storage, and no source opens an
@@ -47,14 +48,17 @@ import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
 const GATE = "owner/src/gate.ts";
+const BODIES = "owner/src/bodies.ts";
 /** The gate's own helpers in the object, and what each must call. */
-const UNIT_HELPERS = Object.freeze(["door", "synced", "filing", "placing", "reading", "rereading",
-                            "rereadingPage", "quiet", "seededFor"]);
+const UNIT_HELPERS = Object.freeze(["door", "synced", "filing", "quiet"]);
+/** The bodies' placement, each a unit of the gate's `write` and the R2 calls between. */
+const PLACEMENT = Object.freeze(["placing", "reading", "rereading", "rereadingPage"]);
 /**
- * The object's gate helpers, as its doors' handlers call them through the state they are
- * handed (`OwnerState`, whose members are those helpers: held below).
+ * The gate helpers, as the doors' handlers call them through the parts they are handed (the
+ * object's, whose members are those helpers: held below; and its bodies').
  */
-const ENTRIES: ReadonlySet<string> = new Set(UNIT_HELPERS.map((name) => `o.${name}`));
+const ENTRIES: ReadonlySet<string> = new Set([...UNIT_HELPERS.map((name) => `o.${name}`),
+                                              ...PLACEMENT.map((name) => `o.bodies.${name}`)]);
 /** The calls whose arrow argument is a unit. */
 const UNITS =
   /(^|\.)(#?write|unit|#?door|#?synced|#?filing|#?placing|#?reading|#?rereading|#?quiet)$/;
@@ -238,9 +242,10 @@ export function ungatedHandlers(
     return expression !== undefined && ts.isCallExpression(expression)
       && ENTRIES.has(expression.expression.getText());
   };
-  // A statement that begins in the gate: it returns, or awaits, a unit.
+  // A statement that begins in the gate: it returns, or awaits, a unit, or its `try` does.
   const begins = (first: ts.Statement | undefined): boolean => first !== undefined
-    && ((ts.isReturnStatement(first) && entered(first.expression))
+    && ((ts.isTryStatement(first) && begins(first.tryBlock.statements[0]))
+        || (ts.isReturnStatement(first) && entered(first.expression))
         || (ts.isExpressionStatement(first) && ts.isAwaitExpression(first.expression)
             && entered(first.expression))
         || (ts.isVariableStatement(first)
@@ -257,10 +262,10 @@ export function ungatedHandlers(
  * posts' count, and the env's bindings (R2, the sandbox's service).
  */
 const NOT_STORED: ReadonlySet<string> = new Set(["relay", "posts", "env"]);
-/** Each gate helper of the state, and which of its arguments run in its unit. */
+/** Each gate helper of the parts, and which of its arguments run in its unit. */
 const UNIT_ARGUMENTS: Readonly<Record<string, readonly number[]>> = Object.freeze({
-  door: [0], quiet: [0], synced: [0], filing: [0], placing: [0, 1], reading: [0],
-  rereading: [0, 1], rereadingPage: [0, 1],
+  door: [0], quiet: [0], synced: [0], filing: [0], "bodies.placing": [0, 1],
+  "bodies.reading": [0], "bodies.rereading": [0, 1], "bodies.rereadingPage": [0, 1],
 });
 /**
  * The stores' members a handler may call outside a unit: each makes its own units, or
@@ -278,8 +283,10 @@ const OWN_UNITS: ReadonlySet<string> = new Set([
   "launcher.readAgent", "launcher.settledWithin",
   // A restore sweep's delete, R2 alone, and the wait for this instance's R2 writes in flight.
   "files.sweep", "files.settled",
-  // A placed body sent to R2 before its unit, and released after it.
-  "bodies.send", "bodies.release",
+  // A placed body sent to R2 before its unit, and released after it; the placement, each
+  // step a unit of its own (its arguments are its units', `UNIT_ARGUMENTS`).
+  "bodies.send", "bodies.release", "bodies.placing", "bodies.reading", "bodies.rereading",
+  "bodies.rereadingPage",
   // An export's page: its generation's rows read once its own unit read the export.
   "backups.finished", "backups.object",
 ]);
@@ -318,11 +325,11 @@ export function strayCalls(fileName: string, source: string): string[] {
   /** Whether `fn` is an argument its call runs in a unit: `root.door(() => …)`. */
   const unitArgument = (fn: ts.Node, root: string): boolean => {
     const call = fn.parent;
-    if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)
-        || call.expression.expression.getText(file) !== root) {
+    const callee = ts.isCallExpression(call) ? call.expression.getText(file) : "";
+    if (!ts.isCallExpression(call) || !callee.startsWith(`${root}.`)) {
       return false;
     }
-    const units = UNIT_ARGUMENTS[call.expression.name.text];
+    const units = UNIT_ARGUMENTS[callee.slice(root.length + 1)];
     return units !== undefined && units.includes(call.arguments.indexOf(fn as ts.Expression));
   };
   const followed = new Set<ts.Node>();
@@ -398,16 +405,15 @@ export function strayCalls(fileName: string, source: string): string[] {
   return problems;
 }
 
-/** The bodies of `OwnerDO`'s gate helpers, by name. */
+/** The bodies of `OwnerDO`'s gate helpers, or of `Bodies`' placement, by name. */
 function helpers(source: string): Record<string, string> {
   const file = parse("owner-do.ts", source);
   const found: Record<string, string> = {};
   const visit = (node: ts.Node): void => {
-    if (ts.isMethodDeclaration(node) && ts.isPrivateIdentifier(node.name)
-        && ["#door", "#synced", "#filing", "#placing", "#reading", "#rereading",
-            "#rereadingPage", "#quiet", "#call", "#stateOf",
-            "#seededFor"].includes(node.name.text)) {
-      found[node.name.text] = node.body?.getText(file) ?? "";
+    if (ts.isMethodDeclaration(node)
+        && ["#door", "#synced", "#filing", "#quiet", "#call", "#stateOf",
+            ...PLACEMENT].includes(node.name.getText(file))) {
+      found[node.name.getText(file)] = node.body?.getText(file) ?? "";
     }
     ts.forEachChild(node, visit);
   };
@@ -454,7 +460,9 @@ const HANDLERS = "export const filesDoors = Object.freeze({\n" +
   "  async fileGated(o: S, door: D) {\n" +
   "    const r = await o.door(() => 1);\n    return o.files.fetch(r);\n  },\n" +
   "  async fileFiled(o: S, door: D) { return o.filing(() => 1); },\n" +
-  "  async fileSeeded(o: S, door: D) { await o.seededFor(door); return o.door(() => 1); },\n" +
+  "  async filePlaced(o: S, door: D) {\n" +
+  "    try { return await o.bodies.placing(() => 1, () => 2); } finally { await o.sync(); }\n" +
+  "  },\n" +
   "  async fileChecked(o: S, door: D) { door.check(); return o.door(() => 1); },\n" +
   "});";
 
@@ -475,15 +483,20 @@ describe("write-gate guard", () => {
     expect(bodies["#quiet"]).toBe("{\n    return this.#gate.quiet(act);\n  }");
     expect(bodies["#synced"]).toContain("await this.#door(act)");
     expect(bodies["#filing"]).toContain("await this.#door(act)");
-    expect(bodies["#seededFor"]).toMatch(/^\{\n    await this\.#door\(/);
+    // A seeded row's caller is checked in a unit before its door waits for the seed.
+    expect(bodies["#call"]).toContain(
+      "return this.#door(() => door.authorized()).then(() => this.#launcher.seeded())");
     // The doors with a body (ADR-035): each begins in a unit, and every step that writes is
     // one, the R2 calls between them.
-    expect(bodies["#placing"]).toContain("first = await this.#door(");
-    expect(bodies["#placing"]).toContain(
-      "done = await this.#door(() => located(this.#files.held(writer, () => act(placed))));");
-    expect(bodies["#reading"]).toContain("const { value, located, wants } = await this.#door(");
-    expect(bodies["#rereading"]).toContain("const located = await this.#door(");
-    expect(bodies["#rereading"]).toContain("const value = await this.#door(() => read(bodies));");
+    const placement = helpers(sources.get(BODIES)!);
+    expect(placement["placing"]).toContain("first = await this.#write(");
+    expect(placement["placing"]).toContain(
+      "done = await this.#write(() => located(this.#files.held(writer, () => act(placed))));");
+    expect(placement["reading"]).toContain("const { value, located, wants } = await this.#write(");
+    expect(placement["rereading"]).toContain("const located = await this.#write(");
+    expect(placement["rereading"]).toContain(
+      "const value = await this.#write(() => read(bodies));");
+    expect(placement["rereadingPage"]).toContain("return this.rereading(");
     // The handlers' gate members are the object's helpers.
     const state = bodies["#stateOf"]!;
     for (const name of UNIT_HELPERS) {
@@ -518,7 +531,7 @@ describe("write-gate guard", () => {
      "const xDoors = Object.freeze({ async d(o: S, door: D) { const f = () => " +
        "o.ledger.settled(1, 2); await o.door(() => 1); f(); } });", 1],
     ["a read door's fill, which runs after its unit",
-     "const xDoors = Object.freeze({ async d(o: S, door: D) { return o.reading(() => 1, " +
+     "const xDoors = Object.freeze({ async d(o: S, door: D) { return o.bodies.reading(() => 1, " +
        "(value) => o.ledger.settled(value, 2)); } });", 1],
     ["a write in a unit, an awaited outside call and the sockets' own",
      "const xDoors = Object.freeze({ async d(o: S, door: D) { await o.door(() => { " +
@@ -565,7 +578,7 @@ describe("write-gate guard", () => {
   it.each([
     ["a units handler that awaits a unit first", "fileGated", "units", "account"],
     ["a units handler that returns a unit", "fileFiled", "units", "account"],
-    ["a units handler that awaits its seed first", "fileSeeded", "units", "account"],
+    ["a units handler whose try returns a placement first", "filePlaced", "units", "account"],
     ["a handler the runner runs in a unit of its gate", "fileRead", "door", "account"],
     ["a door that takes no binding", "fileRead", "units", "none"],
   ])("allows a gated door: %s", (_what, door, gate, caller) => {

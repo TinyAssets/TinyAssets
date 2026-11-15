@@ -26,10 +26,10 @@ import {
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { sha256Hex } from "../../contract/src/digest";
 import { clockMs } from "./clock";
-import { PAGE_BYTES } from "./pages";
+import { PAGE_BYTES } from "./bodies";
 
 import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
-import type { Account, Call, Door, OwnerState } from "./owner-do";
+import type { Account, Call, Door, DoorUnits, ObjectReads } from "./door";
 import type { Binding } from "../../contract/src/binding";
 import type { Gate } from "./control-gate";
 import type { ProfileName } from "../../contract/src/doors";
@@ -241,16 +241,27 @@ async function runScript(parts: ScriptParts): Promise<CodeResult> {
 
 // -- THE DOORS: the `codemode` rows' handlers (`contract/doors.json`) -----------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`CodemodeDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `codemode` doors reach: the owner's policy's code mode and custom tools
+ * (`policy.ts`, which only the object imports), the platform's gates, the codemode Worker,
+ * and each tool's own door, called as any call of it is.
+ */
+export interface CodemodeDoorNeeds extends Pick<DoorUnits, "door">,
+  Pick<ObjectReads, "control" | "accountAt" | "invoke"> {
+  readonly env: Pick<OwnerEnv, "CODEMODE_VM">;
+  readonly policy: { codemode(): boolean; customTools(): readonly string[] };
+}
 
 /**
  * The tools a caller is served: a run's, the `run` profile; an outside client's, its grant's
  * (`custom`: the owner's policy's choice); the owner's own, `custom`. `code` only while the
  * owner's policy turns code mode on.
  */
-function profile(o: OwnerState, account: Account):
+function profile(o: CodemodeDoorNeeds, account: Account):
     { profile: ProfileName; tools: readonly string[] } {
   const profile: ProfileName = account.run !== null ? "run"
     : account.grant?.profile ?? "custom";
@@ -260,7 +271,7 @@ function profile(o: OwnerState, account: Account):
 }
 
 /** One tool call of a script: rechecked as `codeRun` says, then the tool's own door. */
-async function scripted(o: OwnerState, binding: Binding, tool: Tool, args: unknown,
+async function scripted(o: CodemodeDoorNeeds, binding: Binding, tool: Tool, args: unknown,
                         gate: () => Promise<string | null>): Promise<unknown> {
   try {
     const closed = await gate();
@@ -302,7 +313,7 @@ export const codemodeDoors = Object.freeze({
    * reaches the script as an error with its reason; anything else as `internal error`,
    * logged here in full.
    */
-  async codeRun(o: OwnerState, door: Door<CodeRequest>): Promise<CodeResult> {
+  async codeRun(o: CodemodeDoorNeeds, door: Door<CodeRequest>): Promise<CodeResult> {
     const { owner, script, tools, gate } = await o.door(() => {
       const { account, r } = door.check();
       if (typeof r["script"] !== "string" || r["script"].trim() === "") {
@@ -336,7 +347,7 @@ export const codemodeDoors = Object.freeze({
    * profile; an outside client's, its grant's (`custom`: the owner's policy's choice); the
    * owner's own, `custom`. `code` only while the owner's policy turns code mode on.
    */
-  toolProfile(o: OwnerState, { account }: Call<undefined>):
+  toolProfile(o: CodemodeDoorNeeds, { account }: Call<undefined>):
       { profile: ProfileName; tools: readonly string[] } {
     return profile(o, account);
   },

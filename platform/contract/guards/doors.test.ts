@@ -51,6 +51,7 @@ describe("the door table", () => {
     ["an unknown caller", changed("fileStat", { caller: "anyone" })],
     ["an unknown gate", changed("fileStat", { gate: "later" })],
     ["an unknown guard", changed("fileStat", { guard: "maybe" })],
+    ["a seed awaited at a door run in one unit", changed("fileStat", { seeded: true })],
     ["no handler module", without("fileStat", "handler")],
     ["a handler that is no module's name", changed("fileStat", { handler: "../files" })],
     ["a door a name RPC reserves", changed("fileStat", { door: "alarm" })],

@@ -94,7 +94,8 @@ import type {
 import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
-import type { Call, Door, OwnerState } from "./owner-do";
+import type { Call, Door, DoorUnits } from "./door";
+import type { Runs } from "./runs";
 import { clock, clockMs } from "./clock";
 
 
@@ -751,9 +752,23 @@ export class Egress {
 
 // -- THE DOORS: the `egress` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`EgressDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `egress` doors reach: the sandbox's egress, the run grant a lease's call is held
+ * to, and its connection's credential, refreshed and resealed (`connections.ts`, which only
+ * the object imports).
+ */
+export interface EgressDoorNeeds extends Pick<DoorUnits, "door"> {
+  readonly egress: Egress;
+  readonly runs: Pick<Runs, "grantFor">;
+  readonly connections: {
+    fresh(id: string): Promise<void>;
+    resealed(id: string, version: number, resealed: unknown, nowMs: number): boolean;
+  };
+}
 //
 // The sandbox holds one lease, the file sync lease (`files.ts`): its id is the claim
 // token and its epoch the fencing number, for the sync commits and the egress alike, and
@@ -769,7 +784,7 @@ export const egressDoors = Object.freeze({
    * reservation and end signal, or its refusal's fixed code and receipt. An OAuth
    * credential about to expire is refreshed first, as a model call's is.
    */
-  async egressOpen(o: OwnerState, door: Door<unknown>): Promise<EgressOpened | EgressRefusal> {
+  async egressOpen(o: EgressDoorNeeds, door: Door<unknown>): Promise<EgressOpened | EgressRefusal> {
     const { r, live } = await o.door(() => {
       door.check();
       const checked = egressRequest(door.request);
@@ -803,7 +818,7 @@ export const egressDoors = Object.freeze({
    * the egress door once its one parse of the body read the model and tier: its metering, or
    * its refusal's fixed code and receipt. Held to the egress binding that opened the call.
    */
-  egressReserve(o: OwnerState, { binding, request }: Call<unknown>):
+  egressReserve(o: EgressDoorNeeds, { binding, request }: Call<unknown>):
       EgressReserved | EgressRefusal {
     return o.egress.reserve(sandboxBinding(binding.sandbox), reserveRequest(request),
                               clock());
@@ -812,7 +827,7 @@ export const egressDoors = Object.freeze({
    * A streaming call's beat from its door (`EGRESS_BEAT_S`): the open reservation its egress
    * token opened is still its door's, so it is not settled lost.
    */
-  egressBeat(o: OwnerState, { binding, request }: Call<{ reservation: string }>):
+  egressBeat(o: EgressDoorNeeds, { binding, request }: Call<{ reservation: string }>):
       { beat: boolean } {
     return { beat: o.egress.beat(sandboxBinding(binding.sandbox), request?.reservation,
                                    clock()) };
@@ -822,7 +837,7 @@ export const egressDoors = Object.freeze({
    * and the bytes it streamed; a blob the gateway resealed meanwhile is kept by the
    * connection's compare-and-swap.
    */
-  egressSettle(o: OwnerState, { binding, request }: Call<Record<string, unknown>>):
+  egressSettle(o: EgressDoorNeeds, { binding, request }: Call<Record<string, unknown>>):
       { settled: boolean } {
     const { resealed, ...rest } = request ?? {};
     const settled = o.egress.settle(sandboxBinding(binding.sandbox),
@@ -842,7 +857,7 @@ export const egressDoors = Object.freeze({
     return { settled: settled.settled };
   },
   /** The owner's newest egress receipts: what the sandbox asked, and how each ended. */
-  egressReceipts(o: OwnerState, _call: Call<undefined>): { receipts: EgressReceipt[] } {
+  egressReceipts(o: EgressDoorNeeds, _call: Call<undefined>): { receipts: EgressReceipt[] } {
     return { receipts: o.egress.receipts() };
   },
 });

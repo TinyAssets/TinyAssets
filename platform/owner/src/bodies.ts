@@ -20,11 +20,15 @@
  * A read locates the rows' contents in its own unit, then reads the bodies from `FILES`,
  * each chunk rechecked against its hash, outside any unit: a body a later write let go stays
  * in R2 for its grace, so a read that raced the write still finds it.
+ *
+ * A door with a body is placed, read or reread here (`placing`, `reading`, `rereading`,
+ * `rereadingPage`), each step a unit of the gate's `write` and the R2 calls between; a door
+ * that rings an agent syncs the schedule itself, after.
  */
 import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 
-import { RESULT_CHARS } from "../../contract/src/encoded";
+import { FIT_SLACK, RESULT_CHARS } from "../../contract/src/encoded";
 import { Refusal } from "../../contract/src/refusal";
 import type { Files } from "./files";
 import { streamChunks } from "./segments";
@@ -32,6 +36,8 @@ import type { OwnerStorage, Write } from "./gate";
 import { bodyUnits, ownerSlots, WINDOW_UNITS } from "./holds";
 import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { slotted } from "../../contract/src/slots";
+import { OWNER } from "./authority";
+import type { Shown, Wants } from "./pages";
 
 
 /**
@@ -48,6 +54,18 @@ export const BODY_BYTES_MAX = 2 * CHUNK_BYTES;
  * window of each placed body's first chunk, stay within two chunks (`BATCH_BYTES`).
  */
 export const READ_PAGE_BYTES = 2 * CHUNK_BYTES;
+
+/** The bytes a page fits its items to: the answer, less what its last fields may add. */
+export const PAGE_BYTES = RESULT_CHARS - FIT_SLACK;
+
+/** How many times a placed body begins again past a chunk the sweep is deleting. */
+const PLACE_TRIES = 5;
+
+/**
+ * How often a mailbox read reads its placed bodies again when mail that came between its
+ * read of them and its unit put an unread placed body first (ADR-035).
+ */
+export const READ_TRIES = 3;
 
 /**
  * The window of `bytes` from `offset`, at most `max` bytes, cut back to a UTF-8 character
@@ -250,6 +268,111 @@ export class Bodies {
     if (place !== null) {
       await this.#write(() => this.#files.abort(place.intent_id));
     }
+  }
+
+  /**
+   * A write door with a body (ADR-035). Its first unit checks its caller and request
+   * (`prepare`, the body and the writer it is placed as); a body its row keeps is written
+   * in that same unit (`act`). A body past `PLACE_BYTES` is begun there instead, sent to R2,
+   * and written in a second unit, which checks the caller again and adopts it; its upload
+   * is released after, whatever the unit did (none once adopted). A conflict's current row,
+   * placed, is read back as a read door reads it (`shown`).
+   */
+  async placing<T>(prepare: () => { body: unknown; writer: string } | { done: T },
+                   act: (placed: Placed | null) => T, shown?: Shown<T>): Promise<T> {
+    const located = (value: T) => ({ value, located: this.locate(
+      shown === undefined ? [] : shown.contents(value)) });
+    // A body whose chunk the sweep is deleting this moment begins again once the delete
+    // lands (review rvlim L5), a few times, then the refusal stands.
+    let first: { done: { value: T; located: Located } } | { placing: Placing } | undefined;
+    // Whose files scope the write's bodies count in: the tier's one storage number holds
+    // them, inline or placed, retention making room first (`Files.held`).
+    let writer = OWNER;
+    for (let tries = 1; first === undefined; tries++) {
+      try {
+        first = await this.#write(():
+            { done: { value: T; located: Located } } | { placing: Placing } => {
+          const prepared = prepare();
+          if ("done" in prepared) {
+            return { done: located(prepared.done) };
+          }
+          writer = prepared.writer;
+          const placing = this.begin(prepared.body as string, prepared.writer);
+          return placing === null ? { done: located(this.#files.held(writer, () => act(null))) }
+            : { placing };
+        });
+      } catch (error) {
+        if (!(error instanceof Refusal) || error.code !== "chunk_deleting"
+            || tries >= PLACE_TRIES) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100 * tries));
+      }
+    }
+    let done: { value: T; located: Located };
+    if ("done" in first) {
+      done = first.done;
+    } else {
+      const placed = await this.send(first.placing);
+      try {
+        done = await this.#write(() => located(this.#files.held(writer, () => act(placed))));
+      } finally {
+        await this.release(placed);
+      }
+    }
+    return shown === undefined || done.located.size === 0 ? done.value
+      : shown.fill(done.value, await this.windows(done.located, () => PAGE_BYTES));
+  }
+
+  /**
+   * A read door whose unit marks what it returns (a mailbox read, ADR-035): the placed
+   * bodies it would return located in a unit of their own (`locate`, its caller checked),
+   * read from R2 (`fetch`: windows for a page, or whole for a run's input), then its unit
+   * (`read`, the caller checked again) handed them; it reads again, a few times at most,
+   * while `again` says mail between put an unread placed body first.
+   */
+  async rereading<T, B>(locate: () => readonly string[], read: (bodies: B) => T,
+                        again: (value: T) => boolean,
+                        fetch: (located: Located) => Promise<B>): Promise<T> {
+    for (let tries = 0; ; tries++) {
+      const located = await this.#write(() => this.locate(locate()));
+      const bodies = await fetch(located);
+      const value = await this.#write(() => read(bodies));
+      if (!again(value) || tries >= READ_TRIES) {
+        return value;
+      }
+    }
+  }
+
+  /**
+   * `rereading` for a page: its bodies' windows (`Wants`: each at most `maxOf` bytes, from
+   * `offsetOf`).
+   */
+  rereadingPage<T>(locate: () => Wants, read: (windows: ReadonlyMap<string, Window>) => T,
+                   again: (value: T) => boolean): Promise<T> {
+    let wants: Wants = { contents: [] };
+    return this.rereading(() => {
+      wants = locate();
+      return wants.contents;
+    }, read, again, (located) => this.windows(located, wants.maxOf ?? (() => PAGE_BYTES),
+                                              wants.offsetOf));
+  }
+
+  /**
+   * A read door's unit, then the windows of the placed bodies its rows name read from R2
+   * (ADR-035), and handed to `fill`, which fits the page to one answer: `unit` returns its
+   * result and the content ids it names, located in the same unit, so each is the content
+   * its row named.
+   */
+  async reading<T, U = T>(unit: () => { value: T } & Wants,
+                          fill: (value: T, windows: ReadonlyMap<string, Window>) => U):
+      Promise<U> {
+    const { value, located, wants } = await this.#write(() => {
+      const read = unit();
+      return { value: read.value, located: this.locate(read.contents), wants: read };
+    });
+    return fill(value, located.size === 0 ? new Map()
+      : await this.windows(located, wants.maxOf ?? (() => PAGE_BYTES), wants.offsetOf));
   }
 
   /**

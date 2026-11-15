@@ -10,13 +10,10 @@
  * thousands of escaped characters, say) is refused, told (`result_too_large`), never cut
  * silently.
  */
-import { type Window, inlineWindow } from "./bodies";
+import { inlineWindow, PAGE_BYTES, type Window } from "./bodies";
 import type { Changed, Changes, Row } from "./collections";
-import { FIT_SLACK, fitted, jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
+import { fitted, jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { Refusal } from "../../contract/src/refusal";
-
-/** The bytes a page fits its items to: the answer, less what its last fields may add. */
-export const PAGE_BYTES = RESULT_CHARS - FIT_SLACK;
 
 export const RESULT_TOO_LARGE = `result_too_large: this item's fields alone pass the ${
   RESULT_CHARS} characters one answer holds`;

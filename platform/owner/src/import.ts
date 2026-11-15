@@ -67,7 +67,8 @@ import { utf8Bytes } from "../../contract/src/text";
 import { clock } from "./clock";
 import { checkBody } from "./collections";
 import { OWNER } from "./authority";
-import type { Call, Door, OwnerState } from "./owner-do";
+import type { Call, Door } from "./door";
+import type { OwnerState } from "./owner-do";
 
 /** The imported rows' history op, and the notice's type. */
 const IMPORT_OP = "import";
@@ -333,17 +334,22 @@ export const importDoors = Object.freeze({
         written += set ? 1 : 0;
         continue;
       }
-      const wrote = await o.placing((): { body: unknown; writer: string } | { done: boolean } => {
-        const { account } = door.check();
-        return rowThere(o, account.owner, row) ? { done: false }
-          : { body: row.body, writer: OWNER };
-      }, (placed) => {
-        const { account } = door.check();
-        o.collections.write(account.owner, account.owner, row.collection, row.row_id, row.body,
-                            "", row.private === 1, IMPORT_OP, placed, OWNER);
-        return true;
-      }, { synced: true });
-      written += wrote ? 1 : 0;
+      try {
+        const wrote = await o.bodies.placing(
+          (): { body: unknown; writer: string } | { done: boolean } => {
+            const { account } = door.check();
+            return rowThere(o, account.owner, row) ? { done: false }
+              : { body: row.body, writer: OWNER };
+          }, (placed) => {
+            const { account } = door.check();
+            o.collections.write(account.owner, account.owner, row.collection, row.row_id,
+                                row.body, "", row.private === 1, IMPORT_OP, placed, OWNER);
+            return true;
+          });
+        written += wrote ? 1 : 0;
+      } finally {
+        await o.sync();
+      }
     }
     return { written, skipped: rows.length - written };
   },

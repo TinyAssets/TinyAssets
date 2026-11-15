@@ -32,9 +32,8 @@ import { parseTiers, TIER_NAMES, type TierName, type Tiers } from "../../contrac
 import type { TierRequest } from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
-import type {
-  Call, OwnerState,
-} from "./owner-do";
+import type { Call } from "./door";
+import type { OwnerState } from "./owner-do";
 
 /** No tier numbers were handed to this owner's object: no run is admitted without them. */
 export const TIER_UNREAD = "tier_unread: the platform's tier numbers are not known here";

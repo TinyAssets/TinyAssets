@@ -25,7 +25,7 @@ import {
   CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, CODEMODE_TIMEOUT_MS,
 } from "../src/codemode";
 import { CONTROL_FRESH_MS } from "../src/control-gate";
-import { PAGE_BYTES } from "../src/pages";
+import { PAGE_BYTES } from "../src/bodies";
 import { DEFAULT_POLICY_JSON, validate } from "../../contract/src/policy-document";
 import { customTools } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";

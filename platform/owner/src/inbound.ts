@@ -40,9 +40,9 @@ import { Refusal } from "../../contract/src/refusal";
 import { INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
-import type {
-  Call, Door, OwnerState,
-} from "./owner-do";
+import type { Bodies, Placed } from "./bodies";
+import type { Call, Door, DoorUnits } from "./door";
+import type { Notices } from "./notices";
 import type { InboundAnswer } from "../../contract/src/binding";
 import type {
   BindingRequest, InboundCreateRequest, InboundSetRequest,
@@ -318,16 +318,34 @@ export interface InboundEvent {
 
 // -- THE DOORS: the `inbound` rows' handlers (`contract/doors.json`) ------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`InboundDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `inbound` doors reach: the bindings, the owner's mail to an agent (the ledger's,
+ * which only its own modules import: as the ledger's methods the doors call), its placed
+ * body, and the owner's notices.
+ */
+export interface InboundDoorNeeds extends Pick<DoorUnits, "sync"> {
+  readonly inbound: Inbound;
+  readonly bodies: Pick<Bodies, "placing">;
+  readonly ledger: {
+    prepare(origin: null, roomId: string, clientMessageId: string, body: string,
+            parentId: null): { readonly message_id: string } | null;
+    post(origin: null, roomId: string, clientMessageId: string, body: string, parentId: null,
+         now: number, authority: null, placed: Placed | null, filer: string):
+      { readonly message_id: string };
+  };
+  readonly notices: Pick<Notices, "add">;
+}
 
 /**
  * An inbound event checked in its unit (its route's binding at the route's revision,
  * enabled, as the call bound it): an owner-held proof on the raw bytes, and its mail's
  * room, key and envelope; or the no-op a tripped breaker answers.
  */
-function inboundEvent(o: OwnerState, { route, r }: Call, now: number):
+function inboundEvent({ route, r }: Call, now: number):
     { done: InboundAnswer }
     | { row: Row; room: string; cmid: string; envelope: string } {
   const row = route!;
@@ -369,7 +387,8 @@ function inboundEvent(o: OwnerState, { route, r }: Call, now: number):
  * older mail moves out (`storage_busy`) is retried and counts nothing; the rest are the
  * event's own refusals.
  */
-function inboundRefused(o: OwnerState, row: Row, error: unknown, now: number): InboundAnswer {
+function inboundRefused(o: InboundDoorNeeds, row: Row, error: unknown,
+                        now: number): InboundAnswer {
   const refused = error instanceof Refusal ? error.code : null;
   // The hot ceiling, clearing by itself or held by a full storage until the owner frees
   // space (the ledger's wall, marked `ceiling`): the event is sent again, never lost.
@@ -402,7 +421,7 @@ function inboundRefused(o: OwnerState, row: Row, error: unknown, now: number): I
 /** The `inbound` doors' handlers, by door. */
 export const inboundDoors = Object.freeze({
   /** The owner's inbound bindings, never a secret. */
-  inboundList(o: OwnerState, _call: Call<undefined>): { bindings: InboundBinding[] } {
+  inboundList(o: InboundDoorNeeds, _call: Call<undefined>): { bindings: InboundBinding[] } {
     return { bindings: o.inbound.list() };
   },
   /**
@@ -410,15 +429,15 @@ export const inboundDoors = Object.freeze({
    * route the token's hash), with an owner-held proof if the owner adds one; or a shared
    * app's installation, which only its install flow (owed) may name.
    */
-  inboundCreate(o: OwnerState, { request }: Call<InboundCreateRequest>): InboundBinding {
+  inboundCreate(o: InboundDoorNeeds, { request }: Call<InboundCreateRequest>): InboundBinding {
     return o.inbound.create(created(request), clock());
   },
   /** The owner's change of a binding, in its session, against its revision. */
-  inboundSet(o: OwnerState, { request }: Call<InboundSetRequest>): InboundBinding {
+  inboundSet(o: InboundDoorNeeds, { request }: Call<InboundSetRequest>): InboundBinding {
     return o.inbound.set(request, clock());
   },
   /** A binding withdrawn, a narrowing the owner's account makes without a session. */
-  inboundRevoke(o: OwnerState, { request }: Call<BindingRequest>):
+  inboundRevoke(o: InboundDoorNeeds, { request }: Call<BindingRequest>):
       { binding_id: string; route: string | null } {
     return o.inbound.revoke(request);
   },
@@ -430,38 +449,41 @@ export const inboundDoors = Object.freeze({
    * app's event refused for a full mailbox counts toward its breaker; once tripped, its
    * events are a no-op until the owner changes the binding.
    */
-  async inboundAccept(o: OwnerState, door: Door<InboundEvent>): Promise<InboundAnswer> {
-    return o.placing((): {
-        body: unknown; writer: string } | { done: InboundAnswer } => {
-      const now = clock();
-      const event = inboundEvent(o, door.check(), now);
-      if ("done" in event) {
-        return event;
-      }
-      try {
-        const resend = o.ledger.prepare(null, event.room, event.cmid, event.envelope, null);
-        if (resend !== null) {
-          return { done: { state: "admitted", receipt: resend.message_id, deduped: true } };
+  async inboundAccept(o: InboundDoorNeeds, door: Door<InboundEvent>): Promise<InboundAnswer> {
+    try {
+      return await o.bodies.placing((): {
+          body: unknown; writer: string } | { done: InboundAnswer } => {
+        const now = clock();
+        const event = inboundEvent(door.check(), now);
+        if ("done" in event) {
+          return event;
         }
-      } catch (error) {
-        return { done: inboundRefused(o, event.row, error, now) };
-      }
-      return { body: event.envelope, writer: OWNER };
-    }, (placed) => {
-      const now = clock();
-      const event = inboundEvent(o, door.check(), now);
-      if ("done" in event) {
-        return event.done;
-      }
-      o.keepTiers(door.binding);
-      try {
-        const posted = o.ledger.post(null, event.room, event.cmid, event.envelope, null,
-                                         now, null, placed, OWNER);
-        o.inbound.succeeded(event.row);
-        return { state: "admitted", receipt: posted.message_id, deduped: false };
-      } catch (error) {
-        return inboundRefused(o, event.row, error, now);
-      }
-    }, { synced: true });
+        try {
+          const resend = o.ledger.prepare(null, event.room, event.cmid, event.envelope, null);
+          if (resend !== null) {
+            return { done: { state: "admitted", receipt: resend.message_id, deduped: true } };
+          }
+        } catch (error) {
+          return { done: inboundRefused(o, event.row, error, now) };
+        }
+        return { body: event.envelope, writer: OWNER };
+      }, (placed) => {
+        const now = clock();
+        const event = inboundEvent(door.check(), now);
+        if ("done" in event) {
+          return event.done;
+        }
+        try {
+          const posted = o.ledger.post(null, event.room, event.cmid, event.envelope, null,
+                                       now, null, placed, OWNER);
+          o.inbound.succeeded(event.row);
+          return { state: "admitted", receipt: posted.message_id, deduped: false };
+        } catch (error) {
+          return inboundRefused(o, event.row, error, now);
+        }
+      });
+    } finally {
+      await o.sync();  // the run the mail starts
+    }
   },
 });

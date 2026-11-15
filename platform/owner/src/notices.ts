@@ -10,7 +10,7 @@
  */
 import { NOTICE_DETAIL } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
-import type { Call, OwnerState } from "./owner-do";
+import type { Call } from "./door";
 
 /** The newest notices kept; an older one goes as a new one comes. */
 export const NOTICES_KEPT = 1000;
@@ -55,14 +55,19 @@ export class Notices {
 
 // -- THE DOORS: the `notices` rows' handlers (`contract/doors.json`) ------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`NoticesDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/** What the `notices` doors reach: the notices. */
+export interface NoticesDoorNeeds {
+  readonly notices: Notices;
+}
 
 /** The `notices` doors' handlers, by door. */
 export const noticesDoors = Object.freeze({
   /** The owner's notices, newest first (`notices.ts`). */
-  noticeList(o: OwnerState, _call: Call<undefined>): { notices: Notice[] } {
+  noticeList(o: NoticesDoorNeeds, _call: Call<undefined>): { notices: Notice[] } {
     return { notices: o.notices.list() };
   },
 });

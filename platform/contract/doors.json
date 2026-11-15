@@ -101,7 +101,7 @@
     },
     {
       "door": "outsideAgents", "class": "read", "caller": "account", "capability": null,
-      "handler": "ledger", "gate": "units",
+      "handler": "ledger", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid collection request", "required": {},
         "optional": {
@@ -284,7 +284,7 @@
     },
     {
       "door": "fileList", "class": "read", "caller": "reader", "capability": "read_files",
-      "handler": "files", "gate": "units",
+      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -304,7 +304,7 @@
     },
     {
       "door": "fileText", "class": "read", "caller": "account", "capability": "read_files",
-      "handler": "files", "gate": "units",
+      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -323,7 +323,7 @@
     },
     {
       "door": "fileSearch", "class": "read", "caller": "account", "capability": "read_files",
-      "handler": "files", "gate": "units",
+      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": { "query": { "type": "string", "description": "The words to look for" } },
@@ -339,7 +339,7 @@
     },
     {
       "door": "fileFetch", "class": "read", "caller": "account", "capability": "read_files",
-      "handler": "files", "gate": "units",
+      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -356,7 +356,7 @@
     {
       "door": "fileAppend", "class": "work", "caller": "account", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "units",
+      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -374,7 +374,7 @@
     {
       "door": "fileWrite", "class": "work", "caller": "account", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "units",
+      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -395,7 +395,7 @@
     {
       "door": "fileEdit", "class": "work", "caller": "account", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "units",
+      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": {

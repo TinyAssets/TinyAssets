@@ -93,7 +93,7 @@
  */
 import { apiKeyOrigin, nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
-import type { Binding, Origin, Source } from "../../contract/src/binding";
+import type { Origin, Source } from "../../contract/src/binding";
 import { codePoints, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 import { canonical } from "../../contract/src/canonical";
@@ -103,7 +103,8 @@ import { Buffer } from "node:buffer";
 
 import { AGENT_DIR, filerOf, may, NOT_GRANTED, OWNER, scopeOf } from "./authority";
 import {
-  type Adopt, adopted, BODY_BYTES_MAX, bodyOffset, inlineWindow, type Placed, type Window,
+  type Adopt, adopted, BODY_BYTES_MAX, bodyOffset, inlineWindow, PAGE_BYTES, type Placed,
+  READ_TRIES, type Window,
 } from "./bodies";
 import { ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
@@ -113,8 +114,8 @@ import {
 } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import {
-  agentsPage, bodied, contentsOf, type Cut, fitPage, headChars, heads, headWindow, INBOX_PART,
-  PAGE_BYTES, asIs,
+  agentsPage, asIs, bodied, contentsOf, type Cut, fitPage, headChars, heads, headWindow,
+  INBOX_PART,
 } from "./pages";
 import {
   bloomHas, bloomOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
@@ -127,9 +128,8 @@ import {
 } from "../../contract/src/wake-records";
 import { COMMAND_CENTER_MAX, SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { type Change, CHANGES, type Follows, follows } from "../../contract/src/wake-kinds";
-import type {
-  Account, Call, Door, OwnerState, RegisterRequest,
-} from "./owner-do";
+import type { Account, Call, Door } from "./door";
+import type { OwnerState, RegisterRequest } from "./owner-do";
 import type { Heads } from "./pages";
 import type { Events } from "../../contract/src/wake-records";
 import type { Resealed } from "../../contract/src/gateway";
@@ -3186,12 +3186,6 @@ export interface AgentDoorbellRequest {
 }
 
 /**
- * How often a mailbox read reads its placed bodies again when mail that came between its
- * read of them and its unit put an unread placed body first (ADR-035).
- */
-export const READ_TRIES = 3;
-
-/**
  * A read of the archive that the lane's moves and rewrites changed under each of its
  * `READ_TRIES`: retried soon, never an internal error (reviews N9 and N10).
  */
@@ -3243,39 +3237,22 @@ function agentsListed(o: OwnerState, { account, r }: Call):
 }
 
 /**
- * A post held at the hot ceiling (`storage_busy`) rings the schedule, so the lane moves.
- * (When the archive cannot move for the storage figure, the ledger answers the one wall
- * itself, `storage_full`: `Ledger.#roomForOne`, the same for every poster.)
- */
-async function busyRings<T>(o: OwnerState, act: () => Promise<T>): Promise<T> {
-  try {
-    return await act();
-  } catch (error) {
-    if (error instanceof Refusal && error.code === "storage_busy") {
-      await o.sync();
-    }
-    throw error;
-  }
-}
-
-/**
  * A post's caller checked, in each of its units: the first places nothing for a post the
  * checks refuse, and the second commits only what they still allow.
  */
-function poster(o: OwnerState, { account, r, binding }: Call):
+function poster(o: OwnerState, call: Call):
     { actor: Actor; authority: MailAuthority | null } {
-  const actor = actorOf(o, account);
-  const authority = mailAuthority(o, binding, account);
-  const to = o.ledger.recipient(actor, r["room_id"]);
+  const actor = actorOf(call.account);
+  const authority = mailAuthority(call);
+  const to = o.ledger.recipient(actor, call.r["room_id"]);
   if (to.native !== null) {
-    mailsAgent(o, account, authority, to.native);
-    o.keepTiers(binding);
+    mailsAgent(call, authority, to.native);
   }
   return { actor, authority };
 }
 
 /** Who a caller is in the ledger: a run, its agent; else the owner or the outside client. */
-function actorOf(o: OwnerState, account: Account): Actor {
+function actorOf(account: Account): Actor {
   return account.run !== null ? { native: account.run.agent } : account.origin;
 }
 
@@ -3284,7 +3261,7 @@ function actorOf(o: OwnerState, account: Account): Actor {
  * or an owner-started run's), else the client's grant at its generation, as the binding
  * verified it or the run's stamp holds it, and where a scoped grant acts.
  */
-function mailAuthority(o: OwnerState, binding: Binding, account: Account): MailAuthority | null {
+function mailAuthority({ account, binding, universeOf }: Call): MailAuthority | null {
   if (account.run !== null) {
     const stamp = account.run.stamp;
     return stamp === null || account.origin === null ? null
@@ -3297,7 +3274,7 @@ function mailAuthority(o: OwnerState, binding: Binding, account: Account): MailA
   return { client: account.origin.client, family: account.origin.family,
            generation: account.grant.generation,
            authenticated_at: binding.authenticated_at ?? null,
-           universe: o.universe(account) };
+           universe: universeOf() };
 }
 
 /**
@@ -3305,10 +3282,10 @@ function mailAuthority(o: OwnerState, binding: Binding, account: Account): MailA
  * a client's scoped grant (a run's stamp's too) holds `converse` for that agent where it
  * acts. The owner's own work may.
  */
-function mailsAgent(o: OwnerState, account: Account, authority: MailAuthority | null,
+function mailsAgent({ account, scope }: Call, authority: MailAuthority | null,
                     agent: string): void {
   if (account.run !== null) {
-    o.scope(account, "converse");
+    scope("converse");
   }
   if (authority === null || account.grant?.mode !== "scoped") {
     return;
@@ -3333,7 +3310,7 @@ export const ledgerDoors = Object.freeze({
     // Its placed bodies (ADR-035), mail and rows, are read from R2 between its units, as a
     // mailbox read's; the read's unit marks only the mail it returns. One answer holds
     // both: each part fits half of it (`INBOX_PART`, `pages.ts`), so neither starves.
-    const { mail, rooms, windows, chars } = await o.rereadingPage(() => {
+    const { mail, rooms, windows, chars } = await o.bodies.rereadingPage(() => {
       const { account, r } = door.check();
       const chars = headChars(r["head_chars"]);
       const mail = new Set(o.ledger.placedNext(account.origin, r["limit"], INBOX_PART)
@@ -3360,7 +3337,7 @@ export const ledgerDoors = Object.freeze({
    * the bodies picks up.
    */
   async mailboxRead(o: OwnerState, door: Door<ReadRequest>): Promise<MailPage> {
-    return o.rereadingPage(() => {
+    return o.bodies.rereadingPage(() => {
       const { account, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
       const next = o.ledger.placedNext(account.origin, r["limit"]);
@@ -3406,8 +3383,7 @@ export const ledgerDoors = Object.freeze({
         }
       };
       try {
-        return await busyRings(o, () => o.placing((): { body: unknown; writer: string }
-                                                            | { done: Posted } => {
+        return await o.bodies.placing((): { body: unknown; writer: string } | { done: Posted } => {
           const call = door.check();
           const { r, account } = call;
           const { actor } = poster(o, call);
@@ -3425,12 +3401,18 @@ export const ledgerDoors = Object.freeze({
           return o.ledger.post(actor, r["room_id"], r["client_message_id"], r["body"],
                                    r["parent_id"], clock(), authority, placed,
                                    filerOf(account), archived);
-        }, { synced: true }));
+        });
       } catch (error) {
         const moved = error instanceof Refusal && error.code === "archive_changed";
         if (!moved || tries + 1 >= READ_TRIES) {
           throw moved ? archiveMoving() : error;
         }
+      } finally {
+        // The schedule synced whatever came of it: a post that rang an agent, or one held at
+        // the hot ceiling (`storage_busy`), which rings the lane so it moves. (When the archive
+        // cannot move for the storage figure, the ledger answers the one wall itself,
+        // `storage_full`: `Ledger.#roomForOne`, the same for every poster.)
+        await o.sync();
       }
     }
   },
@@ -3446,7 +3428,6 @@ export const ledgerDoors = Object.freeze({
   async outsideAgents(o: OwnerState, door: Door<AgentsRequest>):
       Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ReturnType<OwnerState["grants"]["apps"]>;
                 next?: string }> {
-    await o.seededFor(door);
     return o.door(() => agentsListed(o, door.check()));
   },
   /**

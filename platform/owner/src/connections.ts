@@ -84,9 +84,9 @@ import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
 import { LANE_CALL_MS } from "./schedule";
 import { printable, SOURCE_ID, utf8Bytes } from "../../contract/src/text";
-import type {
-  Call, Door, OwnerState,
-} from "./owner-do";
+import type { Call, Door, DoorUnits } from "./door";
+import type { Egress } from "./egress";
+import type { Doorbell } from "./wakes";
 import { clock, clockMs, inTime } from "./clock";
 
 interface ConnectionLimits {
@@ -982,9 +982,19 @@ export class Connections {
 
 // -- THE DOORS: the `connections` rows' handlers (`contract/doors.json`) --------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`ConnectionsDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `connections` doors reach: the connections, the sandbox egress a revoke ends,
+ * and the doorbell subscriptions a kid's sweep reseals.
+ */
+export interface ConnectionsDoorNeeds extends Pick<DoorUnits, "door" | "synced"> {
+  readonly connections: Connections;
+  readonly egress: Pick<Egress, "end">;
+  readonly doorbell: Pick<Doorbell, "reseal">;
+}
 //
 // Each door is the owner's own, in its live session: an outside client's call carries
 // no session and is refused, with a refusal receipt. The binder seals and exchanges with
@@ -993,18 +1003,20 @@ export class Connections {
 /** The `connections` doors' handlers, by door. */
 export const connectionsDoors = Object.freeze({
   /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
-  connectionPrepare(o: OwnerState, { session, request }: Call<ConnectionPrepareRequest>): Prepared {
+  connectionPrepare(o: ConnectionsDoorNeeds,
+                    { session, request }: Call<ConnectionPrepareRequest>): Prepared {
     return o.connections.prepare(session, request, clock());
   },
   /** The sealed blob the gateway returned, and the models its setup check listed. */
-  connectionCommit(o: OwnerState, { request }: Call<ConnectionCommitRequest>): ConnectionView {
+  connectionCommit(o: ConnectionsDoorNeeds, { request }: Call<ConnectionCommitRequest>):
+      ConnectionView {
     return o.connections.commit(request, clock());
   },
   /**
    * A connection unusable at once; its credential deleted here, and at its provider. Its
    * sandbox egress streams end once the revoke committed.
    */
-  async connectionRevoke(o: OwnerState, door: Door<ConnectionRequest>):
+  async connectionRevoke(o: ConnectionsDoorNeeds, door: Door<ConnectionRequest>):
       Promise<{ connection: string; revoked: boolean; provider_revoke: boolean }> {
     const revoked = await o.synced(() => door.within(() =>
       o.connections.revoke(door.request, clock())));
@@ -1018,16 +1030,17 @@ export const connectionsDoors = Object.freeze({
    * nothing else reseals it. The platform sweeps again until none is left, and only then
    * retires the kid.
    */
-  async gatewayReseal(o: OwnerState, door: Door<undefined>): Promise<ResealAnswer> {
+  async gatewayReseal(o: ConnectionsDoorNeeds, door: Door<undefined>): Promise<ResealAnswer> {
     await o.door(() => door.check());
     return resealAnswer([...await o.connections.reseal(), ...await o.doorbell.reseal()]);
   },
   /** Every connection, newest first, never its blob. */
-  connectionList(o: OwnerState, _call: Call<undefined>): { connections: ConnectionView[] } {
+  connectionList(o: ConnectionsDoorNeeds, _call: Call<undefined>):
+      { connections: ConnectionView[] } {
     return ({ connections: o.connections.list() });
   },
   /** The callback's state, in the session that began the flow: its verifier, used up. */
-  flowFinish(o: OwnerState, { session, request }: Call<FlowFinishRequest>):
+  flowFinish(o: ConnectionsDoorNeeds, { session, request }: Call<FlowFinishRequest>):
       { connection: string; version: number; verifier: string; redirect_uri: string;
                 source: string } {
     return o.connections.flowFinish(session, request, clock());

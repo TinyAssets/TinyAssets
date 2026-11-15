@@ -25,9 +25,8 @@ import { KEY_NAME_MAX, MAX_KEYS } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
-import type {
-  Call, GrantRequest, OwnerState,
-} from "./owner-do";
+import type { Call } from "./door";
+import type { GrantRequest, OwnerState } from "./owner-do";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "./clock";
 

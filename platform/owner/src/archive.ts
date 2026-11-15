@@ -15,14 +15,15 @@ import {
 } from "../../contract/src/slots";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";
 
-import { type Bodies, bodyOffset, type Window, WINDOWS_BYTES } from "./bodies";
-import { PAGE_BYTES, type Wants } from "./pages";
+import {
+  type Bodies, bodyOffset, PAGE_BYTES, READ_TRIES, type Window, WINDOWS_BYTES,
+} from "./bodies";
 import { Refusal } from "../../contract/src/refusal";
 import type { Files } from "./files";
-import { type OwnerStorage, unitsNow } from "./gate";
+import { unitsNow } from "./gate";
 import {
  archivedHead, type ArchivedMail, archivedMail, archivedRecipients, archiveMoving,
- type ChainMail, type Fence, keptRecord, Ledger, type MailParts, READ_TRIES, recordHead,
+ type ChainMail, type Fence, keptRecord, Ledger, type MailParts, recordHead,
 } from "./ledger";
 import { clock } from "./clock";
 import { OWNER } from "./authority";
@@ -219,17 +220,12 @@ function archiveFailing(said: string | null): string {
 
 /** What the archive works through: the object's gate and stores. */
 interface ArchiveParts {
-  readonly storage: OwnerStorage;
   /** One unit of the object's write gate (`gate.ts`). */
   readonly door: <T>(act: () => T) => Promise<T>;
   readonly ledger: Ledger;
   readonly files: Files;
   readonly bodies: Bodies;
   readonly notices: Notices;
-  /** A page read as the object reads one (`OwnerDO`'s, its placed bodies' windows). */
-  readonly rereadingPage: <T>(locate: () => Wants,
-                              read: (windows: ReadonlyMap<string, Window>) => T,
-                              again: (value: T) => boolean) => Promise<T>;
 }
 
 /** A chain read's call (`mailChain`), checked again in each of its units. */
@@ -238,22 +234,18 @@ interface ChainDoor {
 }
 
 export class Archive {
-  readonly #storage: OwnerStorage;
   readonly #door: <T>(act: () => T) => Promise<T>;
   readonly #ledger: Ledger;
   readonly #files: Files;
   readonly #bodies: Bodies;
   readonly #notices: Notices;
-  readonly #rereadingPage: ArchiveParts["rereadingPage"];
 
   constructor(parts: ArchiveParts) {
-    this.#storage = parts.storage;
     this.#door = parts.door;
     this.#ledger = parts.ledger;
     this.#files = parts.files;
     this.#bodies = parts.bodies;
     this.#notices = parts.notices;
-    this.#rereadingPage = parts.rereadingPage;
   }
 
   /** The owner's read of a mail chain, its call checked in each unit (`mailChain`). */
@@ -351,7 +343,7 @@ export class Archive {
     const page = (windows: ReadonlyMap<string, Window>) => this.#ledger.chain(
       r["message_id"], after, r["limit"], windows, offset, r["body_message_id"] ?? null,
       archived);
-    return this.#rereadingPage(() => {
+    return this.#bodies.rereadingPage(() => {
       door.check();
       const read = page(new Map());
       return { contents: read.placed,

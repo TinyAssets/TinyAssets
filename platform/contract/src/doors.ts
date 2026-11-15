@@ -167,13 +167,18 @@ export interface DoorRow {
    */
   readonly handler: string;
   readonly gate: Gate;
+  /**
+   * A new owner's starter seed awaited before the handler, once the caller's authority holds
+   * in a unit: a door that touches the files or lists the agents (a `units` row).
+   */
+  readonly seeded?: true;
   readonly args: DoorArgs;
   readonly tool?: ToolInfo;
 }
 
 const ROW_KEYS = Object.freeze(["door", "class", "caller", "action", "rule", "receipt",
   "registering", "closed", "live", "guard", "capability", "scope", "agent", "fieldsFirst",
-  "act", "handler", "gate", "args", "tool"]);
+  "act", "handler", "gate", "seeded", "args", "tool"]);
 const TOOL_KEYS = Object.freeze(["name", "title", "description", "destructiveHint",
   "idempotentHint", "openWorldHint", "readOnlyHint"]);
 
@@ -281,6 +286,9 @@ export function doorProblems(rows: unknown): string[] {
     }
     if (!one(GATES, row["gate"])) {
       say("no gate");
+    }
+    if (row["seeded"] !== undefined && (row["seeded"] !== true || row["gate"] !== "units")) {
+      say("a seeded door's handler makes its own units");
     }
     if (!("args" in row)) {
       say("no argument schema");

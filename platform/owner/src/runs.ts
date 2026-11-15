@@ -88,9 +88,8 @@ import { SIGNIN_OFF, switchedOn } from "./signins";
 import { TIER_RUNS, tierNumbers } from "./tier";
 import type { TierName, Tiers } from "../../contract/src/control";
 import { utf8Bytes } from "../../contract/src/text";
-import type {
-  Account, Call, Door, OwnerState,
-} from "./owner-do";
+import type { Account, Call, Door } from "./door";
+import type { OwnerState } from "./owner-do";
 import type { Binding, Origin } from "../../contract/src/binding";
 import type { Placed } from "./bodies";
 import { clock } from "./clock";

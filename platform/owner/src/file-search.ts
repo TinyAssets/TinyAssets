@@ -25,7 +25,7 @@
  */
 import { utf8Decoder } from "../../contract/src/text";
 import { escapedBytes, fitted, jsonBytes } from "../../contract/src/encoded";
-import { PAGE_BYTES } from "./pages";
+import { PAGE_BYTES } from "./bodies";
 import { nameOf } from "../../contract/src/paths";
 
 /**

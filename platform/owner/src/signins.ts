@@ -42,9 +42,8 @@ import {
 import { OWNER } from "./authority";
 import type { OwnerStorage } from "./gate";
 import { isPrintable } from "../../contract/src/text";
-import type {
-  Call, Door, OwnerState,
-} from "./owner-do";
+import type { Call, Door } from "./door";
+import type { OwnerState } from "./owner-do";
 import { signinUrls } from "../../contract/src/egress";
 import { FRAME_VERSION } from "../../contract/src/run-events";
 import { started, vendorHosts } from "./sandbox";
@@ -159,6 +158,11 @@ export class Signins {
       throw new Refusal("refused", NO_SIGNIN);
     }
     return row;
+  }
+
+  /** Whether `id` is a live sign-in's: an app socket may watch it (the owner's own). A read. */
+  owned(id: unknown): boolean {
+    return this.#row(id) !== undefined;
   }
 
   /** Every live sign-in, newest first. A read. */
@@ -390,22 +394,6 @@ export interface SigninRequest {
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
-
-/** Whether `id` is a live sign-in's: an app socket may watch it (the owner's own). A read. */
-export function signinOwned(o: OwnerState, id: unknown): boolean {
-  if (typeof id !== "string" || !SIGNIN_ID.test(id)) {
-    return false;
-  }
-  try {
-    o.signins.get(id);
-    return true;
-  } catch (error) {
-    if (error instanceof Refusal && error.code === "refused") {
-      return false;
-    }
-    throw error;
-  }
-}
 
 /** The `signins` doors' handlers, by door. */
 export const signinsDoors = Object.freeze({

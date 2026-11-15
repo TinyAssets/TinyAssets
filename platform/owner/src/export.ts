@@ -72,7 +72,11 @@
 import { HEX16 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { CURSOR_CHARS } from "../../contract/src/limits";
-import type { Call, Door, OwnerState } from "./owner-do";
+import type { Backups } from "./backup";
+import type { Call, Door, DoorUnits } from "./door";
+import type { OwnerEnv } from "./env";
+import type { Files } from "./files";
+import type { OpenExports } from "./open-exports";
 import { clock } from "./clock";
 
 const EXPORT_FORMAT = "tinyassets-export";
@@ -479,9 +483,20 @@ export function endLine(at: number, seq: number): string {
 
 // -- THE DOORS: the `export` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`ExportDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `export` doors reach: the exports open, the generations they read, the files
+ * plane's chunks and the bucket's manifests.
+ */
+export interface ExportDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "sync"> {
+  readonly env: Pick<OwnerEnv, "FILES">;
+  readonly openExports: Pick<OpenExports, "open" | "named" | "end">;
+  readonly backups: Pick<Backups, "forExport" | "finished" | "object">;
+  readonly files: Pick<Files, "space" | "storedChunks" | "fetch">;
+}
 
 /** The `export` doors' handlers, by door. */
 export const exportDoors = Object.freeze({
@@ -495,7 +510,7 @@ export const exportDoors = Object.freeze({
    * session cookie reaches it. A `read` door, so a billing suspension still lets the owner
    * take its data; its writes (the export's own rows) are quiet: they mark nothing changed.
    */
-  async ownerExport(o: OwnerState, door: Door<{ cursor?: string | null; export_id?: string }>):
+  async ownerExport(o: ExportDoorNeeds, door: Door<{ cursor?: string | null; export_id?: string }>):
       Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
     const asked = await o.quiet(() => {
       door.check();
@@ -542,7 +557,7 @@ export const exportDoors = Object.freeze({
    * still stores is served (live, or garbage in its grace), however the owner changed since;
    * one gone from the bucket is refused (`CHUNK_GONE`). The owner's alone.
    */
-  async exportChunks(o: OwnerState, door: Door<{ export_id: string; sha256s: string[] }>):
+  async exportChunks(o: ExportDoorNeeds, door: Door<{ export_id: string; sha256s: string[] }>):
       Promise<{ chunks: { sha256: string; data: string }[] }> {
     const wanted = await o.door(() => {
       door.check();
@@ -559,7 +574,7 @@ export const exportDoors = Object.freeze({
       sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
   },
   /** An export ended: its id names it no longer. */
-  exportEnd(o: OwnerState, { request }: Call<{ export_id: string }>): { ended: boolean } {
+  exportEnd(o: ExportDoorNeeds, { request }: Call<{ export_id: string }>): { ended: boolean } {
     return { ended: o.openExports.end(request?.export_id) };
   },
 });

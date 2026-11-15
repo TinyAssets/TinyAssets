@@ -45,7 +45,7 @@ import { type Content, type Files, lostSwap } from "./files";
 import { clock } from "./clock";
 import { OWNER } from "./authority";
 import type { OwnerStorage, Write } from "./gate";
-import type { Call, OwnerState } from "./owner-do";
+import type { Call } from "./door";
 import { NEWER, type StarterClass, type StarterFile, type StarterPackage } from "./starter-package";
 
 /** How long a pass that failed waits before it is tried again. */
@@ -485,9 +485,14 @@ export class Starter {
 
 // -- THE DOORS: the `starter` rows' handlers (`contract/doors.json`) ------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`StarterDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/** What the `starter` doors reach: the starter package's receipts. */
+export interface StarterDoorNeeds {
+  readonly starter: Starter;
+}
 
 /** The `starter` doors' handlers, by door. */
 export const starterDoors = Object.freeze({
@@ -496,7 +501,7 @@ export const starterDoors = Object.freeze({
    * whether it stands as installed, edited, deleted or proposed; with the version the owner's
    * files were last reconciled to and the version this code carries.
    */
-  starterReceipts(o: OwnerState, _call: Call<undefined>):
+  starterReceipts(o: StarterDoorNeeds, _call: Call<undefined>):
       { version: number; carried: number; receipts: Receipt[] } {
     return { version: o.starter.version(), carried: o.starter.carried(),
            receipts: o.starter.receipts() };
