@@ -903,34 +903,39 @@ test("the app refuses to be framed", { timeout: 30_000 }, async () => {
 test("no cross-site post changes anything (CSRF)", { timeout: 60_000 }, async () => {
   const policy = await api("policy");
   const generation = policy.body.generation;
-  const evil = await context.newPage();
-  await evil.route("https://evil.test/**", (route) => route.fulfill({ status: 200,
-    contentType: "text/html", body: "<p>hi</p>" }));
-  await evil.goto("https://evil.test/");
-  const body = JSON.stringify({ expected_generation: generation,
-                                policy: { ...policy.body.policy, codemode: { on: true } } });
-  await evil.evaluate(async ([origin, b]) => {
-    for (const init of [
-      { mode: "no-cors", credentials: "include", headers: { "Content-Type": "text/plain" } },
-      { mode: "cors", credentials: "include", headers: { "Content-Type": "application/json" } }]) {
-      await fetch(`${origin}/app/api/policy/write`, { method: "POST", body: b, ...init })
-        .catch(() => undefined);
-    }
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.enctype = "text/plain";
-    form.action = `${origin}/app/api/policy/write`;
-    const input = document.createElement("input");
-    input.name = b.slice(0, -1);
-    input.value = "}";
-    form.append(input);
-    document.body.append(form);
-    form.submit();
-  }, [ORIGIN, body]);
-  // The form's post, the last of the three, answered and shown: then the policy is read.
-  await evil.waitForURL(`${ORIGIN}/app/api/policy/write`);
-  await evil.close();
-  assert.equal((await api("policy")).body.generation, generation);
+  // A cross-site page, and a sibling host: that one is same-site, so the Strict cookie rides
+  // its posts and only the doors' own check (`sessionOf`) refuses them.
+  for (const attacker of ["https://evil.test", "https://evil.tinyassets.io"]) {
+    const evil = await context.newPage();
+    await evil.route(`${attacker}/**`, (route) => route.fulfill({ status: 200,
+      contentType: "text/html", body: "<p>hi</p>" }));
+    await evil.goto(`${attacker}/`);
+    const body = JSON.stringify({ expected_generation: generation,
+                                  policy: { ...policy.body.policy, codemode: { on: true } } });
+    await evil.evaluate(async ([origin, b]) => {
+      for (const init of [
+        { mode: "no-cors", credentials: "include", headers: { "Content-Type": "text/plain" } },
+        { mode: "cors", credentials: "include",
+          headers: { "Content-Type": "application/json" } }]) {
+        await fetch(`${origin}/app/api/policy/write`, { method: "POST", body: b, ...init })
+          .catch(() => undefined);
+      }
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.enctype = "text/plain";
+      form.action = `${origin}/app/api/policy/write`;
+      const input = document.createElement("input");
+      input.name = b.slice(0, -1);
+      input.value = "}";
+      form.append(input);
+      document.body.append(form);
+      form.submit();
+    }, [ORIGIN, body]);
+    // The form's post, the last of the three, answered and shown: then the policy is read.
+    await evil.waitForURL(`${ORIGIN}/app/api/policy/write`);
+    await evil.close();
+    assert.equal((await api("policy")).body.generation, generation, attacker);
+  }
 });
 
 test("the return pages exchange no stranger's code and send no one off-site", { timeout: 60_000 },
