@@ -413,11 +413,19 @@ export function ownBinding(owner: string): Binding {
 }
 
 /**
- * `owner`'s door `door` called with its own binding (`ownBinding`), as the doors call a
- * table door (`callDoor`): its answer, as the door's row says it is.
+ * `owner`'s door `door` called with `binding`, as the doors call a table door (`callDoor`):
+ * its answer, as the door's row says it is, or its refusal. Awaited here, so a refusal is
+ * this promise's alone: a test that asserted on the stub's own promise would leave a
+ * rejected pipelined property of it unhandled.
  */
-export async function ownDoor<T>(owner: string, door: string, request?: unknown): Promise<T> {
-  return await callDoor(doorsEnv.OWNER.getByName(owner), ownBinding(owner), door, request) as T;
+export async function doorAs<T>(owner: string, binding: Binding, door: string,
+                                request?: unknown): Promise<T> {
+  return await callDoor(doorsEnv.OWNER.getByName(owner), binding, door, request) as T;
+}
+
+/** `owner`'s door `door` called with its own binding (`ownBinding`, `doorAs`). */
+export function ownDoor<T>(owner: string, door: string, request?: unknown): Promise<T> {
+  return doorAs<T>(owner, ownBinding(owner), door, request);
 }
 
 /** `owner`'s grants, as its `grantList` door answers them to its own binding. */

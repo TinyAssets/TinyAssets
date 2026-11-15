@@ -33,7 +33,8 @@ import { keyring, writeControl } from "../../ci/fixtures";
 import { slotBusy } from "../../contract/src/slots";
 import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
 import {
- admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorsEnv, held,
+ admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorAs, doorsEnv,
+ held,
  NAVIGATE, OPEN,
  grantsOf, ownDoor, refresh, refuseOnce, registerClient, serveFirstPartyDocument, setControl,
  signInApp,
@@ -79,8 +80,7 @@ describe("sign-up", () => {
      async () => {
     const who = owner();
     // Any getByName makes an object; made is never admitted.
-    const fresh = doorsEnv.OWNER.get(doorsEnv.OWNER.idFromName(who));
-    await expect(fresh.grantList(ownerBinding(who))).rejects.toThrow(OWNER_UNADMITTED);
+    await expect(ownDoor(who, "grantList")).rejects.toThrow(OWNER_UNADMITTED);
     expect(await readOwner(doorsEnv, who)).toBeNull();
     const app = await signInApp({ owner: who });
     expect(await readOwner(doorsEnv, who)).toEqual({ s: "admitted", t: expect.any(Number) });
@@ -108,8 +108,8 @@ describe("sign-up", () => {
   it("is refused for an admit the platform's reserved caller sends at any other door", async () => {
     const who = owner();
     await signInApp({ owner: who });
-    await expect(doorsEnv.OWNER.getByName(who).grantList(
-      { owner: who, caller: PLATFORM_CALLER, origin: null })).rejects.toThrow(/reaches no owner door/);
+    await expect(doorAs(who, { owner: who, caller: PLATFORM_CALLER, origin: null }, "grantList"))
+      .rejects.toThrow(/reaches no owner door/);
   });
 });
 
@@ -192,8 +192,7 @@ describe("the erasure", () => {
     FORGOTTEN.length = 0;
     await begin(who, app);
     // The mark first: every door refuses from the answer on, and no outside record is in.
-    await expect(doorsEnv.OWNER.getByName(who).grantList(ownerBinding(who)))
-      .rejects.toMatchObject({ message: ERASING });
+    await expect(ownDoor(who, "grantList")).rejects.toMatchObject({ message: ERASING });
     expect(await crossed(who, "erasureOutsideDone")).toEqual([]);
     // The queue's message, consumed: the outside record, then the confirmation (the job may
     // send it more than once; each after the first finds the work done).
@@ -331,8 +330,8 @@ describe("the erasure", () => {
       "an operator message is out of shape; dropped"]);
     logged.mockRestore();
     // The owner's own binding at the platform's door.
-    await expect(doorsEnv.OWNER.getByName(who).erasureBegin(
-      ownerBinding(who), { confirm: eraseWords(who) })).rejects.toMatchObject({ message: PLATFORM_ONLY });
+    await expect(ownDoor(who, "erasureBegin", { confirm: eraseWords(who) }))
+      .rejects.toMatchObject({ message: PLATFORM_ONLY });
     // A name the platform never signed up, with its own words: never barred.
     expect((await operated(other, "owner.erase", { confirm: eraseWords(other) }))
       .answer?.["refused"]).toEqual({
@@ -362,8 +361,7 @@ describe("the erasure", () => {
     const { who } = await owned();
     expect((await operated(who, "owner.state", {})).answer).toMatchObject({
       result: { state: "admitted", restore: null } });
-    await expect(doorsEnv.OWNER.getByName(who).ownerState(ownerBinding(who)))
-      .rejects.toMatchObject({ message: PLATFORM_ONLY });
+    await expect(ownDoor(who, "ownerState")).rejects.toMatchObject({ message: PLATFORM_ONLY });
     await BEGINS[1][1](who);
     expect((await operated(who, "owner.state", {})).answer?.["refused"])
       .toMatchObject({ code: "erasing" });
@@ -636,11 +634,10 @@ describe("/hooks/inbound, a capability URL", () => {
   it("is refused at every door but inboundAccept, and inboundAccept refuses any other binding",
      async () => {
     const { who, binding_id } = await hooked();
-    const stub = doorsEnv.OWNER.getByName(who);
     const inbound = { owner: who, caller: who, origin: null,
                       inbound: { binding: binding_id, revision: 1 } };
-    await expect(stub.grantList(inbound)).rejects.toThrow(/inbound door alone/);
-    await expect(stub.inboundAccept(ownerBinding(who), {
+    await expect(doorAs(who, inbound, "grantList")).rejects.toThrow(/inbound door alone/);
+    await expect(ownDoor(who, "inboundAccept", {
       event_id: "x", event_at: now(), body: new Uint8Array(1), headers: {} }))
       .rejects.toThrow(/inbound event's route alone/);
   });
