@@ -88,7 +88,7 @@ export interface Binding {
    */
   readonly run?: string;
   /**
-   * The tier numbers of the platform's control record (`tier.ts`), as the binder read them
+   * The tier numbers of the platform's control record (`admission.ts`), as the binder read them
    * for a run door: never a request field, and never the owner's tier, which is the
    * object's own row.
    */

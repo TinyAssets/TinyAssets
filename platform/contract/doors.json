@@ -1117,11 +1117,11 @@
     },
     {
       "door": "tierSet", "class": "admission", "caller": "reserved", "action": "tier",
-      "capability": null, "handler": "tier", "gate": "door", "args": "loose"
+      "capability": null, "handler": "admission", "gate": "door", "args": "loose"
     },
     {
       "door": "tierRead", "class": "read", "caller": "owner", "action": "read its tier",
-      "capability": null, "handler": "tier", "gate": "door", "args": "none"
+      "capability": null, "handler": "admission", "gate": "door", "args": "none"
     },
     {
       "door": "restoreSource", "class": "admission", "caller": "reserved", "action": "admission",

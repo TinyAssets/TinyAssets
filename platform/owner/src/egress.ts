@@ -32,7 +32,7 @@
  *   body length (`egress_unmetered`, `egress_length_required`): the run's caps are always
  *   set, so a call that cannot be metered is never sent;
  * - at most `openPerRun` open at once for each of the tier's simultaneous runs
- *   (`egress_rate`; the tier's numbers as kept, `tier.ts`): each open call is a row the
+ *   (`egress_rate`; the tier's numbers as kept, `admission.ts`): each open call is a row the
  *   owner-bound guard costs;
  * - and a model call's API has the rules the gateway meters it by (`egress_unmetered`).
  *   Then one open row, uncharged, the blob at its version and the stream's end signal. A
@@ -236,7 +236,7 @@ interface EgressDeps {
     string | null | undefined;
   /** `run`'s requests, tokens and cost so far (its `runs` row). */
   readonly runUsage: (run: string) => { requests: number; tokens: number; cost: number };
-  /** The owner's tier's simultaneous runs, as last handed (`tier.ts`); null if none are. */
+  /** The owner's tier's simultaneous runs, as last handed (`admission.ts`); null if none are. */
   readonly tierRuns: () => number | null;
   readonly generation: () => number;
   /**
