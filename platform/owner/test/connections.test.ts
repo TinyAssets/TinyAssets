@@ -7,7 +7,6 @@
  * and the plaintext key never in the object.
  */
 import { evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
-import { isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
@@ -15,23 +14,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { secretOf, until } from "../../ci/workerd";
 import { verifyToken } from "../../contract/src/routing-mac";
-import { type Credential } from "../../gateway/src/credential";
 import { supportedApis } from "../../contract/src/api-rules";
 import type { Source } from "../../contract/src/egress-scope";
-import { recordOf } from "../../gateway/src/catalog";
-import { open } from "../../gateway/src/keyring";
 import { PLATFORM_ONLY } from "../src/admission";
 import { CONNECTION_LIMITS } from "../src/connections";
 import { MODELS_JSON_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
+import type { Resealed } from "../../contract/src/gateway";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import { egressTokenOf, generationOf } from "../../contract/src/egress";
 import { hashed, ownerRun } from "./runs-support";
 import {
-  ANTHROPIC, catalog, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT, scopeOf, sealedAs,
+  ANTHROPIC, catalog, type Gated, gated, keySealed, OAUTH, OPENAI, opensRetired, REDIRECT, scopeOf,
+  tokensSealed,
 } from "./gateway-support";
 
 afterEach(() => {
@@ -332,11 +330,11 @@ describe("an OAuth flow", () => {
     const [listed] = (await r.stub.connectionList(r.session())).connections;
     expect(listed).toMatchObject({ connection, kind: "oauth2", status: "active", version: 1 });
     expect(listed!.expires_at).toBeGreaterThan(Date.now());
+    // The tokens are in the blob alone: the gateway refreshes from it, and no row holds them.
     const [secret] = await secrets(r, connection);
-    const opened = await open(keyring("k2"), { owner: r.name, connection, version: 1 },
-                              secret!["blob"]);
-    expect(opened.credential.kind === "oauth2" && opened.credential.oauth.refresh).toBe("rt-1");
-    expect(JSON.stringify(await r.sql("SELECT * FROM connections"))).not.toContain("rt-1");
+    expect(await env.GATEWAY.refresh(r.name, connection, 1, secret!["blob"] as string))
+      .toMatchObject({ version: 2 });
+    expect(JSON.stringify(await r.sql("SELECT * FROM connections"))).not.toMatch(/rt-1|at-1/);
   });
 });
 
@@ -380,10 +378,7 @@ describe("a revoke", () => {
     const prepared = await r.stub.connectionPrepare(r.session(), {
       source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
       revocable: true, redirect_uri: REDIRECT });
-    const plaintext: Credential = {
-      kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
-      oauth: { ...OAUTH.oauth!, access: "at-down", refresh: "rt-down", expires_at: null } };
-    const blob = await sealedAs("k2", r.name, prepared.connection, 1, plaintext);
+    const blob = await tokensSealed("k2", r.name, prepared.connection, "rt-down");
     await r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                  blob, kid: "k2", models: [],
                                                  expires_at: null, egress: await scopeOf(OAUTH) });
@@ -412,9 +407,7 @@ describe("a credential its provider cannot be asked to revoke", () => {
     const prepared = await r.stub.connectionPrepare(r.session(), {
       source: "openrouter_user_models_v1", kind: "oauth2", display_name: "Bought",
       provider: "anthropic", revocable, redirect_uri: REDIRECT });
-    const blob = await sealedAs("k2", r.name, prepared.connection, 1, {
-      kind: "api_key", secret: "sk-bought", upstream: ANTHROPIC.upstream,
-      endpoints: ANTHROPIC.endpoints, sealed_at: 1 });
+    const blob = await keySealed("k2", r.name, prepared.connection, "sk-bought");
     return { connection: prepared.connection, blob };
   }
 
@@ -450,9 +443,7 @@ describe("an issued credential whose setup check failed", () => {
     const prepared = await r.stub.connectionPrepare(r.session(), {
       source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
       revocable: true, redirect_uri: REDIRECT });
-    const blob = await sealedAs("k2", r.name, prepared.connection, 1, {
-      kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
-      oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: null } });
+    const blob = await tokensSealed("k2", r.name, prepared.connection, "rt-1");
     const view = await r.stub.connectionCommit(r.session(), {
       connection: prepared.connection, version: 1, blob, kid: "k2", models: [],
       expires_at: null, failed: "upstream_timeout" });
@@ -472,9 +463,7 @@ describe("an issued credential whose setup check failed", () => {
     const prepared = await r.stub.connectionPrepare(r.session(), {
       source: "openrouter_user_models_v1", kind: "oauth2", display_name: "Bought",
       provider: "anthropic", revocable: false, redirect_uri: REDIRECT });
-    const blob = await sealedAs("k2", r.name, prepared.connection, 1, {
-      kind: "api_key", secret: "sk-bought", upstream: ANTHROPIC.upstream,
-      endpoints: ANTHROPIC.endpoints, sealed_at: 1 });
+    const blob = await keySealed("k2", r.name, prepared.connection, "sk-bought");
     expect(await r.stub.connectionCommit(r.session(), {
       connection: prepared.connection, version: 1, blob, kid: "k2", models: [],
       expires_at: null, failed: "deadline" }))
@@ -499,9 +488,7 @@ describe("an issued credential whose setup check failed", () => {
       [oauth.connection, { failed: "Not A Code", models: [] }],
       [key.connection, { failed: "deadline", models: [] }],
     ] as const) {
-      const blob = await sealedAs("k2", r.name, connection, 1, {
-        kind: "api_key", secret: "sk-x", upstream: ANTHROPIC.upstream,
-        endpoints: ANTHROPIC.endpoints, sealed_at: 1 });
+      const blob = await keySealed("k2", r.name, connection, "sk-x");
       expect((await failure(() => r.stub.connectionCommit(r.session(), {
         connection, version: 1, blob, kid: "k2", ...extra } as never))).message)
         .toBe("a failed setup commits an issued credential, its code and no models");
@@ -599,9 +586,8 @@ describe("a provider revoke and a refresh in flight", () => {
       source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
       revocable: true, redirect_uri: REDIRECT });
     const { revocation_endpoint: _none, ...oauth } = OAUTH.oauth!;
-    const blob = await sealedAs("k2", r.name, prepared.connection, 1, {
-      kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
-      oauth: { ...oauth, access: "at-1", refresh: "rt-1", expires_at: null } });
+    const blob = await tokensSealed("k2", r.name, prepared.connection, "rt-1",
+                                    { ...OAUTH, oauth });
     await r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                  blob, kid: "k2", models: [],
                                                  expires_at: null, egress: await scopeOf(OAUTH) });
@@ -631,9 +617,10 @@ describe("the refresh lease", () => {
     expect(row).toMatchObject({ version: 2, lease_id: null, lease_until: null });
     expect(row!["expires_at"]).toBeGreaterThan(Date.now() + 1_000_000);
     const [secret] = await secrets(r, connection);
-    const opened = await open(keyring("k2"), { owner: r.name, connection, version: 2 },
-                              secret!["blob"]);
-    expect(opened.credential.kind === "oauth2" && opened.credential.oauth.refresh).toBe("rt-2");
+    expect(answers.map((answer) => answer.ok && answer.blob)).toEqual(Array(4).fill(
+      secret!["blob"]));
+    // And it is the refresh's, sealed for version 2.
+    expect(await opensRetired(r.name, connection, 2, secret!["blob"] as string)).toBe(true);
     // Fresh now: the next calls refresh nothing.
     await calls(r, 2);
     expect((await r.gateway.calls()).map((call) => call.method)
@@ -656,11 +643,7 @@ describe("the refresh lease", () => {
     const prepared = await r.stub.connectionPrepare(r.session(), {
       source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
       revocable: true, redirect_uri: REDIRECT });
-    const plaintext: Credential = {
-      kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
-      oauth: { ...OAUTH.oauth!, access: "at-dead", refresh: "rt-dead",
-               expires_at: Date.now() + 60_000 } };
-    const blob = await sealedAs("k2", r.name, prepared.connection, 1, plaintext);
+    const blob = await tokensSealed("k2", r.name, prepared.connection, "rt-dead");
     await r.stub.connectionCommit(r.session(), {
       connection: prepared.connection, version: 1, blob, kid: "k2",
       models: await catalog(OPENAI), expires_at: Date.now() + 60_000, egress: await scopeOf(OAUTH) });
@@ -711,9 +694,8 @@ describe("a credential", () => {
     const soon = Date.now() + 60_000;
     await r.stub.connectionCommit(r.session(), {
       connection, version: 1, kid: "k2", models: await catalog(OPENAI), expires_at: soon,
-      egress: await scopeOf(OAUTH), blob: await sealedAs("k2", r.name, connection, 1, {
-        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
-        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-lapsed", expires_at: soon } }) });
+      egress: await scopeOf(OAUTH),
+      blob: await tokensSealed("k2", r.name, connection, "rt-lapsed") });
     await r.gateway.arm("refresh", { hold: "after" });
     const calling = calls(r, 1);
     await r.gateway.held("refresh");
@@ -725,6 +707,29 @@ describe("a credential", () => {
       .toEqual([{ state: "refused", code: "egress_connection_refused" }]);
   });
 });
+
+/**
+ * Every model record the gateway's setup check lists from pi-ai's built-in catalogs, as an
+ * owner is handed them: each catalog asked by its provider and an API the gateway runs
+ * (`catalog`). The gateway lists a catalog by those two, whatever its base URL, so each is
+ * asked at one.
+ */
+function servedRecords(): Promise<{ name: string; models: ModelRecord[] }[]> {
+  SERVED ??= Promise.all([...new Set(builtinProviders().flatMap((provider) =>
+    provider.getModels().filter((model) => supportedApis().includes(model.api))
+      .map((model) => `${provider.id} ${model.api}`)))].map(async (served) => {
+    const [provider, api] = served.split(" ") as [string, string];
+    const models = await catalog({
+      upstream: { provider, api, base_url: "https://catalog.test/v1",
+                  auth: { header: "authorization", scheme: "Bearer" } },
+      endpoints: [{ origin: "https://catalog.test", paths: ["/v1/*"], methods: ["GET", "POST"] }],
+    });
+    return { name: `${provider}.${api}`, models };
+  }));
+  return SERVED;
+}
+
+let SERVED: ReturnType<typeof servedRecords> | undefined;
 
 describe("the largest built-in catalog", () => {
   it("connects, found by a scan of pi-ai's providers", async () => {
@@ -753,9 +758,8 @@ describe("the largest built-in catalog", () => {
     const listed = await catalog(record);
     expect(listed).toHaveLength(largest!.count);
     // `maxModels` of the largest record of any built-in catalog fit within the JSON bound.
-    const largestRecord = Math.max(...builtinProviders().flatMap((provider) =>
-      provider.getModels().filter((model) => isModelType(model, "chat"))
-        .map((model) => JSON.stringify(recordOf(model)).length)));
+    const largestRecord = Math.max(...(await servedRecords()).flatMap(({ models }) =>
+      models.map((model) => JSON.stringify(model).length)));
     expect(largestRecord * CONNECTION_LIMITS.maxModels).toBeLessThanOrEqual(MODELS_JSON_MAX);
     expect(JSON.stringify(listed)).toContain("thinkingLevelMap");
     const r = await gated();
@@ -782,10 +786,8 @@ describe("a connected model's record", () => {
   }
 
   it("is kept whole for every model of every built-in catalog", async () => {
-    const records = builtinProviders().flatMap((provider) => provider.getModels()
-      .filter((model) => isModelType(model, "chat")).map((model, i) => ({
-        ...JSON.parse(JSON.stringify(recordOf(model))) as ModelRecord,
-        id: `${provider.id}.${i}` })));
+    const records = (await servedRecords()).flatMap(({ name, models }) =>
+      models.map((model, i) => ({ ...model, id: `${name}.${i}` })));
     expect(records.length).toBeGreaterThan(CONNECTION_LIMITS.maxModels);
     const r = await gated();
     for (let at = 0; at < records.length; at += CONNECTION_LIMITS.maxModels) {
@@ -796,9 +798,7 @@ describe("a connected model's record", () => {
   });
 
   it("keeps maxModels of the largest built-in record", async () => {
-    const largest = builtinProviders().flatMap((provider) => provider.getModels()
-      .filter((model) => isModelType(model, "chat"))
-      .map((model) => JSON.parse(JSON.stringify(recordOf(model))) as ModelRecord))
+    const largest = (await servedRecords()).flatMap(({ models }) => models)
       .reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
     const models = Array.from({ length: CONNECTION_LIMITS.maxModels }, (_, i) =>
       ({ ...largest, id: `${largest.id.slice(0, 190)}.${String(i).padStart(4, "0")}` }));
@@ -849,9 +849,7 @@ describe("a blob resealed under the active kid", () => {
     const prepared = await r.stub.connectionPrepare(r.session(), {
       source: "anthropic", kind: "api_key", display_name: "Old", provider: "anthropic",
       revocable: false });
-    const blob = await sealedAs("k1", r.name, prepared.connection, 1, {
-      kind: "api_key", secret: "sk-old", upstream: ANTHROPIC.upstream,
-      endpoints: ANTHROPIC.endpoints, sealed_at: 1 });
+    const blob = await keySealed("k1", r.name, prepared.connection, "sk-old");
     await r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                  blob, kid: "k1",
                                                  models: await catalog(ANTHROPIC),
@@ -859,8 +857,9 @@ describe("a blob resealed under the active kid", () => {
     return prepared.connection;
   }
 
-  /** Each admitted call settled, the blob the gateway resealed from it handed back. */
+  /** Each admitted call settled with the blob the gateway resealed from it; those reseals. */
   async function settled(r: Gated, binding: Binding, answers: (EgressOpened | EgressRefusal)[]) {
+    const handed: Resealed[] = [];
     for (const answer of answers) {
       if (!answer.ok) {
         throw new Error(`refused ${answer.code}`);
@@ -870,7 +869,9 @@ describe("a blob resealed under the active kid", () => {
       await r.stub.egressSettle(binding, { reservation: answer.reservation, outcome: "complete",
                                            status: 200, bytes: 1, spend: { state: "failed" },
                                            resealed });
+      handed.push(resealed);
     }
+    return handed;
   }
 
   it("is stored by compare-and-swap: concurrent reseals keep one, at the next version",
@@ -881,12 +882,10 @@ describe("a blob resealed under the active kid", () => {
     const answers = await Promise.all([1, 2, 3].map(() =>
       r.stub.egressOpen(binding, listing(connection))));
     expect(answers.map((answer) => answer.ok && answer.version)).toEqual([1, 1, 1]);
-    await settled(r, binding, answers);
+    const resealed = await settled(r, binding, answers);
     const rows = await secrets(r, connection);
     expect(rows.map((row) => [row["version"], row["kid"]])).toEqual([[2, "k2"]]);
-    const opened = await open(keyring("k2"), { owner: r.name, connection, version: 2 },
-                              rows[0]!["blob"]);
-    expect(opened.credential.kind === "api_key" && opened.credential.secret).toBe("sk-old");
+    expect(resealed.map((each) => each.blob)).toContain(rows[0]!["blob"]);
     expect((await r.sql("SELECT version FROM connections"))[0]!["version"]).toBe(2);
     // The next call carries the resealed blob.
     expect((await r.stub.egressOpen(binding, listing(connection)))).toMatchObject({
@@ -900,9 +899,7 @@ describe("a blob resealed under the active kid", () => {
       revocable: true, redirect_uri: REDIRECT });
     const connection = prepared.connection;
     const far = Date.now() + 86_400_000;
-    const blob = await sealedAs("k1", r.name, connection, 1, {
-      kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
-      oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: far } });
+    const blob = await tokensSealed("k1", r.name, connection, "rt-1");
     await r.stub.connectionCommit(r.session(), { connection, version: 1, blob, kid: "k1",
                                                  models: await catalog(OPENAI), expires_at: far,
                                                  egress: await scopeOf(OAUTH) });
@@ -912,14 +909,14 @@ describe("a blob resealed under the active kid", () => {
     expect(slow).toMatchObject({ ok: true, version: 1 });
     // The token nears expiry, and another call refreshes it to version 2.
     await r.sql("UPDATE connections SET expires_at = ?", Date.now() + 60_000);
-    expect(await r.stub.egressOpen(binding, listing(connection)))
-      .toMatchObject({ ok: true, version: 2 });
+    const refreshed = await r.stub.egressOpen(binding, listing(connection));
+    expect(refreshed).toMatchObject({ ok: true, version: 2 });
     await settled(r, binding, [slow]);
     const rows = await secrets(r, connection);
     expect(rows.map((row) => [row["version"], row["kid"]])).toEqual([[2, "k2"]]);
-    const kept = await open(keyring("k2"), { owner: r.name, connection, version: 2 },
-                            rows[0]!["blob"]);
-    expect(kept.credential.kind === "oauth2" && kept.credential.oauth.refresh).toBe("rt-2");
+    // The refresh's blob, sealed for version 2, not the reseal's.
+    expect(rows[0]!["blob"]).toBe(refreshed.ok && refreshed.blob);
+    expect(await opensRetired(r.name, connection, 2, rows[0]!["blob"] as string)).toBe(true);
   });
 
   it("is dropped while a refresh holds the lease", async () => {
@@ -948,9 +945,8 @@ describe("the platform's reseal sweep", () => {
       revocable: false });
     await r.stub.connectionCommit(r.session(), {
       connection, version: 1, kid, models: await catalog(ANTHROPIC),
-      egress: await scopeOf(ANTHROPIC), blob: await sealedAs(kid, r.name, connection, 1, {
-        kind: "api_key", secret: `sk-${kid}`, upstream: ANTHROPIC.upstream,
-        endpoints: ANTHROPIC.endpoints, sealed_at: 1 }) });
+      egress: await scopeOf(ANTHROPIC), blob: await keySealed(kid, r.name, connection,
+                                                              `sk-${kid}`) });
     return connection;
   };
 
@@ -965,9 +961,7 @@ describe("the platform's reseal sweep", () => {
       .sort((a, b) => (String(a[0]) < String(b[0]) ? -1 : 1));
     expect(await kids(r)).toEqual(swept);
     const [row] = await secrets(r, idle);
-    const opened = await open(keyring("k2"), { owner: r.name, connection: idle, version: 2 },
-                              row!["blob"]);
-    expect(opened.credential.kind === "api_key" && opened.credential.secret).toBe("sk-k1");
+    expect(await opensRetired(r.name, idle, 2, row!["blob"] as string)).toBe(true);
     // Nothing is left under the older kid: a second sweep reseals nothing.
     expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 0, kid: "k2" });
     expect(await kids(r)).toEqual(swept);
@@ -1004,9 +998,7 @@ describe("the platform's reseal sweep", () => {
     const far = Date.now() + 86_400_000;
     await r.stub.connectionCommit(r.session(), {
       connection, version: 1, kid: "k1", models: await catalog(OPENAI), expires_at: far,
-      egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
-        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
-        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: far } }) });
+      egress: await scopeOf(OAUTH), blob: await tokensSealed("k1", r.name, connection, "rt-1") });
     await r.gateway.arm("revokeAtProvider", { hold: "before" });
     await r.stub.connectionRevoke(r.session(), { connection });
     // The lane sends the revoke of version 1, held, and the sweep reseals meanwhile.
@@ -1035,9 +1027,7 @@ describe("the platform's reseal sweep", () => {
     const soon = Date.now() + 60_000;
     await r.stub.connectionCommit(r.session(), {
       connection, version: 1, kid: "k1", models: await catalog(OPENAI), expires_at: soon,
-      egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
-        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
-        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: soon } }) });
+      egress: await scopeOf(OAUTH), blob: await tokensSealed("k1", r.name, connection, "rt-1") });
     await r.gateway.arm("refresh", { hold: "before" });
     // The lane's provider revoke is held, so the kept blob stays for the sweep.
     await r.gateway.arm("revokeAtProvider", { hold: "before" });
@@ -1053,10 +1043,9 @@ describe("the platform's reseal sweep", () => {
     await r.gateway.release("refresh");
     await calling;
     await until(async () => (await kids(r))[0]?.[1] === 2, "the refreshed tokens to be kept");
+    // The refresh's tokens, at version 2 under the active kid: the sweep resealed none.
     const [row] = await secrets(r, connection);
-    const opened = await open(keyring("k2"), { owner: r.name, connection, version: 2 },
-                              row!["blob"]);
-    expect(opened.credential.kind === "oauth2" && opened.credential.oauth.refresh).toBe("rt-2");
+    expect(await opensRetired(r.name, connection, 2, row!["blob"] as string)).toBe(true);
     await r.gateway.release("revokeAtProvider");
   });
 
@@ -1069,9 +1058,7 @@ describe("the platform's reseal sweep", () => {
     const far = Date.now() + 86_400_000;
     await r.stub.connectionCommit(r.session(), {
       connection, version: 1, kid: "k1", models: await catalog(OPENAI), expires_at: far,
-      egress: await scopeOf(OAUTH), blob: await sealedAs("k1", r.name, connection, 1, {
-        kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
-        oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: far } }) });
+      egress: await scopeOf(OAUTH), blob: await tokensSealed("k1", r.name, connection, "rt-1") });
     await r.gateway.arm("reseal", { hold: "after" });
     await r.gateway.arm("revokeAtProvider", { hold: "before" });
     await r.stub.connectionRevoke(r.session(), { connection });

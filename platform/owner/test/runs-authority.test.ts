@@ -8,9 +8,11 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { socketRequest } from "../../doors/src/binder";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { type Binding, nativeId, PLATFORM_CALLER } from "../../contract/src/binding";
+import {
+  BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
+} from "../../contract/src/socket-shape";
 import { AGENT_DISABLED } from "../src/agent-file";
 import { AGENT_CHANGED } from "../src/launch";
 import { Files } from "../src/files";
@@ -911,11 +913,12 @@ describe("the reviewer's untested cases (review M-6)", () => {
       r.bind({ grant: "grant-1", expires_at: Math.floor(Date.now() / 1000) + 600 }),
       { conversation_id: run.conversation_id });
     const hash = verifyToken(env.ROUTING_MAC_KEY, "socket", minted.ticket)!.hash;
-    // An admitted client's own binding, as the binder would build it: refused, the ticket
-    // left unspent.
+    // An admitted client's own binding, in the upgrade the binder sends the object
+    // (`socket-shape.ts`): refused, the ticket left unspent.
     const client = await fullClient(r);
-    const refused = await r.stub.fetch(socketRequest(
-      { binding: client, stub: r.stub as never }, run.conversation_id, hash));
+    const refused = await r.stub.fetch(new Request(SOCKET_URL, { headers: {
+      Upgrade: "websocket", [BINDING_HEADER]: JSON.stringify(client),
+      [CONVERSATION_HEADER]: run.conversation_id, [TICKET_HEADER]: hash } }));
     expect(refused.status).not.toBe(101);
     expect(await r.sql("SELECT COUNT(*) AS n FROM socket_tickets")).toEqual([{ n: 1 }]);
   });

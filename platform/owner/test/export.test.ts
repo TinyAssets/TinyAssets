@@ -10,7 +10,6 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
-import { rewrap } from "../../files/src/datakey";
 import {
   CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, LOG_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY,
 } from "../../contract/src/limits";
@@ -27,7 +26,6 @@ import {
   decodeCursor, encodeLines, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED,
   readPage,
 } from "../src/export";
-import type FilesService from "../../files/src/index";
 import type { ChunkStore } from "../../contract/src/files";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
@@ -51,10 +49,6 @@ afterEach(() => {
 /** Tables the schema does not make: Lifecycle's, the runtime's and SQLite's own. */
 const runtimeTable = (name: string) => name === "schema_version" || name.startsWith("sqlite_")
   || name.startsWith("_cf_") || name.startsWith("cf_agents_");
-
-/** The files Worker's manifest reads, which only a recovery and these tests make. */
-const bucket = () => env.FILES as unknown as Pick<FilesService, "getManifestRoot" |
-                                                                  "getManifestPart">;
 
 const W = "/workspace";
 /** What every owner's seed holds before a test writes (`starterSeed`). */
@@ -647,7 +641,7 @@ describe("an open export", () => {
     const made = await generate(o.stub);
     expect(made.gen).not.toBe(gen);
     const ns = await nsOf(o);
-    expect(await bucket().getManifestRoot(ns, gen)).not.toBeNull();
+    expect(await env.FILES.getManifestRoot(ns, gen)).not.toBeNull();
     const again = await exportFrom(o, old.cursors[0]!, old.exportId);
     expect(again.lines).toEqual(old.lines.slice(old.lines.length - again.lines.length));
     // Its life over, the old generation goes at the lane's next look.
@@ -655,8 +649,8 @@ describe("an open export", () => {
                 old.exportId);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });
     await drainDue(o.stub);
-    expect(await bucket().getManifestRoot(ns, gen)).toBeNull();
-    expect(await bucket().getManifestRoot(ns, made.gen)).not.toBeNull();
+    expect(await env.FILES.getManifestRoot(ns, gen)).toBeNull();
+    expect(await env.FILES.getManifestRoot(ns, made.gen)).not.toBeNull();
   });
 });
 
@@ -684,10 +678,10 @@ describe("the nightly manifest", () => {
     // The root names its parts and carries the wrapped key; the parts read under it.
     const [space] = await sqlIn(o.stub, "SELECT ns, data_key FROM file_space");
     const [ns, key] = [space!["ns"] as string, space!["data_key"] as string];
-    const root = (await bucket().getManifestRoot(ns, gen))!;
+    const root = (await env.FILES.getManifestRoot(ns, gen))!;
     expect(root).toMatchObject({ format: "tinyassets-manifest", gen, key });
     const parts: Uint8Array[] = await Promise.all(root.parts.map((part, index) =>
-      bucket().getManifestPart(ns, root.key, gen, index, part.sha256)));
+      env.FILES.getManifestPart(ns, root.key, gen, index, part.sha256)));
     const lines: Line[] = Buffer.concat(parts).toString("utf8").trimEnd().split("\n")
       .map((line: string) => JSON.parse(line) as Line);
     expect(lines[0]).toMatchObject({ t: "header", owner: o.name, gen });
@@ -745,12 +739,7 @@ describe("the nightly manifest", () => {
      "its kid is the one the object's key is under; a key or a root the ring refuses is left " +
      "and the rest wrapped all the same", async () => {
     const o = await owner();
-    const ring = JSON.parse(env.FILES_TEST_RING) as { keys: Record<string, string> };
-    const older = JSON.stringify({ active: "k1", keys: ring.keys });
-    const [held] = await sqlIn(o.stub, "SELECT ns, data_key FROM file_space");
-    const ns = held!["ns"] as string;
-    await sqlIn(o.stub, "UPDATE file_space SET data_key = ?",
-                await rewrap(older, ns, held!["data_key"]));
+    await olderKey(o);
     await write(o, `${W}/kept.bin`, filled(INLINE_BYTES + 10, 12));
     await sqlIn(o.stub, LAST_YEARS);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });
@@ -776,14 +765,7 @@ describe("the nightly manifest", () => {
   it("is wrapped again, with the object's key, by a rotation's sweep, an idle owner's too " +
      "(review M4)", async () => {
     const o = await owner();
-    // The owner's key, which its seed's files are under, as a wrap before a rotation left
-    // it: under the files ring's older kid.
-    const ring = JSON.parse(env.FILES_TEST_RING) as { keys: Record<string, string> };
-    const older = JSON.stringify({ active: "k1", keys: ring.keys });
-    const [held] = await sqlIn(o.stub, "SELECT ns, data_key FROM file_space");
-    const ns = held!["ns"] as string;
-    await sqlIn(o.stub, "UPDATE file_space SET data_key = ?",
-                await rewrap(older, ns, held!["data_key"]));
+    const ns = await olderKey(o);
     const body = filled(INLINE_BYTES + 10, 11);
     await write(o, `${W}/kept.bin`, body);
     await sqlIn(o.stub, LAST_YEARS);
@@ -791,7 +773,7 @@ describe("the nightly manifest", () => {
     await drainDue(o.stub);
     const [{ gen }] = await sqlIn(o.stub, "SELECT gen FROM owner_backups") as [{ gen: string }];
     // A pass under the older kid's key writes its root under the active kid all the same.
-    expect((await bucket().getManifestRoot(ns, gen))!.key.startsWith("v1.k2.")).toBe(true);
+    expect((await env.FILES.getManifestRoot(ns, gen))!.key.startsWith("v1.k2.")).toBe(true);
     // Idle since: no lane runs for it. The platform's sweep, and only the platform's, wraps
     // the object's own copy again; the root is found and kept under the active kid.
     expect(await laneAt(o.stub, "manifest")).toBeNull();
@@ -817,11 +799,11 @@ describe("the nightly manifest", () => {
     await drainDue(o.stub);
     const [{ gen }] = await sqlIn(o.stub, "SELECT gen FROM owner_backups") as [{ gen: string }];
     const ns = await nsOf(o);
-    expect(await bucket().getManifestRoot(ns, gen)).not.toBeNull();
+    expect(await env.FILES.getManifestRoot(ns, gen)).not.toBeNull();
     await erasedWhole(o.stub, o.name, o.session());
     // No manifest, and no object row, holds the owner's wrapped key any more: a chunk the
     // bucket still keeps is unreadable (the files Worker's sealed-object tests hold that).
-    expect(await bucket().getManifestRoot(ns, gen)).toBeNull();
+    expect(await env.FILES.getManifestRoot(ns, gen)).toBeNull();
     expect(await sqlIn(o.stub, "SELECT name FROM sqlite_master WHERE name = 'file_space'"))
       .toEqual([]);
   });
@@ -832,6 +814,18 @@ const spaceOf = async (o: Owner) => {
   const [row] = await sqlIn(o.stub, "SELECT ns, data_key FROM file_space");
   return { ns: row!["ns"] as string, key: row!["data_key"] as string };
 };
+
+/**
+ * The owner's key, which its seed's files are under, as a wrap before a rotation left it:
+ * wrapped again under the older kid `k1` by the files Worker on a ring with `k1` active.
+ * Its namespace.
+ */
+async function olderKey(o: Owner): Promise<string> {
+  const { ns, key } = await spaceOf(o);
+  await sqlIn(o.stub, "UPDATE file_space SET data_key = ?",
+              (await env.FILES_OLDER.rewrapKey(ns, key)).key);
+  return ns;
+}
 
 /** A generation put as a pass puts one, a part and its root, that no row of the object names. */
 async function unnamed(ns: string, key: string, gen: string): Promise<void> {

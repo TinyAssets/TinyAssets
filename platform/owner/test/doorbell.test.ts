@@ -33,7 +33,7 @@ import {
 import { writeControl } from "../../ci/fixtures";
 import { clockAt, failure, gateFor, storesOn } from "./support";
 import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
-import { opensRetired, underOlderKid } from "./gateway-support";
+import { connectAt, doorbellOpensRetired } from "./gateway-support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -127,7 +127,7 @@ function write(r: Rig, collection: string, rowId: string, caller = r.bind(null),
 /**
  * An agent's client's MCP Events subscription, as the MCP door makes it: its id derived,
  * its callback sealed by the gateway (as `verifyDoorbell` seals it once verified), or by the
- * gateway's own code under the older kid `k1`, as one sealed before a rotation.
+ * gateway on its ring with the older kid `k1` active, as one sealed before a rotation.
  */
 async function subscribed(r: Rung, from: Origin = MUSE, follows: { board?: boolean; rooms?: string[] }
                             = {}, path = "chat", ttlMs: number | null = null,
@@ -136,10 +136,8 @@ async function subscribed(r: Rung, from: Origin = MUSE, follows: { board?: boole
   const args = { command_center_id: "alpha", board: follows.board ?? false,
                  rooms: follows.rooms ?? [] };
   const id = subscriptionId(from.client, url, EVENT, args);
-  const current = await env.CONNECT.sealDoorbell(r.owner, id, 1,
-                                                 { record: "chatgpt_mcp_events", url, secret: WHSEC });
-  const sealed = older ? { blob: await underOlderKid(r.owner, `wake.${id}`, 1, current.blob),
-                           kid: "k1" } : current;
+  const sealed = await connectAt(older ? "k1" : "k2").sealDoorbell(
+    r.owner, id, 1, { record: "chatgpt_mcp_events", url, secret: WHSEC });
   await r.stub.wakeSubscribe(r.bind(from), {
     subscription_id: id, name: EVENT, arguments: args, blob: sealed.blob, kid: sealed.kid,
     version: 1, expires_at: ttlMs === null ? null : clock() + ttlMs / 1000 });
@@ -850,8 +848,8 @@ describe("a gateway key rotation's sweep of the doorbell", () => {
     await r.post(null, `dm:${muse}`, { body: "hello" });
     const [asked] = await rings(r, 1);
     // What the object sent the gateway to ring opens once `k1` is retired from the ring.
-    const opens = await opensRetired(r.owner, `wake.${asked!.subscription}`, asked!.version,
-                                     asked!.blob);
+    const opens = await doorbellOpensRetired(r.owner, asked!.subscription, asked!.version,
+                                             asked!.blob);
     expect([swept, asked!.previous, opens, (await received(r)).length])
       .toEqual([{ resealed: 1, left: 0, kid: "k2" }, null, true, 1]);
     expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 0, kid: "k2" });
