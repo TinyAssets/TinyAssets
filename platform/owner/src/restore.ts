@@ -720,8 +720,8 @@ export const restoreDoors = Object.freeze({
       const held = record(o.storage.sql);
       const begun = held !== null && !["pinned", "wiped", "done", "failed"].includes(held.step);
       return { namespace: o.files.storedNamespace(),
-               generations: o.backups.manifests().map(({ gen, finished_at, log_bytes }) =>
-                 ({ gen, finished_at, restorable: log_bytes <= LOG_BYTES })),
+               generations: o.backups.manifests().map(({ gen, finished_at }) =>
+                 ({ gen, finished_at, restorable: o.backups.restorable(gen, clock()) })),
                state: o.admission().state, begins: begun || emptiness(o) === null,
                restore: held === null ? null
                  : { step: held.step, gen: held.gen, fresh: held.fresh, since: held.since } };
@@ -838,8 +838,7 @@ export const restoreDoors = Object.freeze({
         throw refused(`the owner is ${state}: a pin holds a live owner, and a pending one is ` +
                       "restored into with none");
       }
-      const kept = o.backups.manifests().find((each) => each.gen === gen);
-      if (kept === undefined || kept.log_bytes > LOG_BYTES) {
+      if (!o.backups.restorable(gen, clock())) {
         throw refused(`generation ${gen} is not one of the owner's finished generations a ` +
                       "restore can load: restore.source names them");
       }
