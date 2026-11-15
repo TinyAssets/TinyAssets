@@ -270,9 +270,15 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 - [ ] The wave-2 lanes (d2 §D): lane O (O1–O5) is left, unblocked since C3 and C4 merged; the
   merged lanes' owed items and d3 §A's changes:
-  - B3 after T1, on the cleaned constructors (d3 §A2, §K1), as `o1_research.md`'s option (b′):
+  - [ ] B3 after T1, on the cleaned constructors (d3 §A2, §K1), as `o1_research.md`'s option (b′):
     per-module `DoorNeeds`, four widening proofs, `untangle/o1` to `o1d`
     (`docs/decisions/untangle-2026-11/o2.md`, "B3's shape").
+    - [x] `untangle/o1`: `door.ts`, the placement in `Bodies`, `Archive` in `ownerStores`, the
+      row step `seeded`, the tiers kept at the bind, `call.scope`, the leaf modules on
+      `DoorNeeds` (`untangle-2026-11/o1.md`).
+    - [ ] `untangle/o1b`: the four proofs, the policy stores, the guard cut.
+    - [ ] `untangle/o1c`: files, collections, ledger, import.
+    - [ ] `untangle/o1d`: runs, launch, signins, restore; `OwnerState` deleted.
   - [x] B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2). Built in O2 (`untangle-2026-11/o2.md`).
@@ -308,8 +314,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (d3 §K1, §K2).
   - [x] T1, the owner's tests at production's numbers through the object's one wiring, twelve
     PRs, T1a to T1e (#5515 to #5588; `t1c.md`).
-  - T2, unblocked since D3 merged: the 17 B23 entries in `doors/guards/rules.ts`, the doors'
-    test `OWNER` (C2b) and T1c-b's `owner-erasures-recorded` queue.
+  - T2, the doors' tests through the owner's front door, two PRs (`t2.md`):
+    - [x] T2a: the owner an auxiliary Worker behind the owner gate, every reach into its object
+      gone, and the doors' test `OWNER` (C2b) typed as the doors' env types it; 13 of the 20
+      B23 entries in `doors/guards/rules.ts`.
+    - T2b (`untangle/t2b`): the doors' real entry (`d2:N49`, `N50`, `N53`) and with it T1c-b's
+      `owner-erasures-recorded` queue; the last seven B23 entries (the owner's constants and
+      its fakes' types the doors' tests read); the table doors' answers typed from the contract,
+      not by hand (`ownDoor<T>`); `d2:N52`, `N84`, `N85` and `N89`.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real

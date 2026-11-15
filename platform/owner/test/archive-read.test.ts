@@ -12,13 +12,12 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
-import { BODY_BYTES_MAX } from "../src/bodies";
+import { BODY_BYTES_MAX, READ_TRIES } from "../src/bodies";
 import { RESULT_CHARS } from "../../contract/src/encoded";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { refusalOf } from "../../contract/src/refusal";
-import { type Ledger, READ_TRIES } from "../src/ledger";
+import type { Ledger } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
-import { Archive } from "../src/archive";
 import { makeChunk, parseTrailer, planSegment, recordRows } from "../src/segments";
 import { exported } from "../src/export";
 import type { ChunkStore } from "../../contract/src/files";
@@ -67,8 +66,7 @@ describe("the archive lane", () => {
      async () => {
     const r = await rig();
     const failed = await failure(() => runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const archive = new Archive({ ledger: storesOn(state).ledger } as
-        ConstructorParameters<typeof Archive>[0]);
+      const { archive } = storesOn(state);
       expect(archive.archivedParent({ parent_id: "not-a-message" })).toBeNull();
       // The read itself fails, as a storage fault would.
       state.storage.sql.exec("ALTER TABLE ledger_messages RENAME TO ledger_messages_gone");

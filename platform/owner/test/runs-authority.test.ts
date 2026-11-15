@@ -24,8 +24,9 @@ import { TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
-  runnerBinding, runnerSandbox, sandboxOf, scripted, secretOf, startOf, syncOf, TIERS }
+  runnerBinding, runnerSandbox, sandboxOf, scripted, startOf, syncOf, TIERS }
   from "./runs-support";
+import { secretOf } from "../../ci/workerd";
 import { drainDue, failure, laneAt, storesOn } from "./support";
 
 afterEach(() => {

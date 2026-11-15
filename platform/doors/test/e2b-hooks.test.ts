@@ -16,8 +16,8 @@ import { lifecycleEvent, signed } from "../src/e2b-hooks";
 import { HOOK_BODY_MAX } from "../../contract/src/limits";
 import { openRoute, sealRoute } from "../../contract/src/routing-mac";
 import {
-  admitOwner, appPost, call, doorsEnv, OPEN, recorded, serveFirstPartyDocument, setControl,
-  signInApp, url,
+  admitOwner, appPost, call, doorsEnv, OPEN, ownDoor, recorded, serveFirstPartyDocument,
+  setControl, signInApp, url,
 } from "./support";
 import type { SandboxSignin } from "../../contract/src/sandbox";
 
@@ -30,6 +30,20 @@ function signature(body: string, secret = SECRET): string {
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+/** One day of the owner's sandbox time, as its `sandboxDays` door answers it. */
+interface Day {
+  readonly day: string;
+  readonly seconds: number;
+  readonly billed_seconds: number;
+  readonly vcpu_seconds: number;
+  readonly gb_seconds: number;
+}
+
+/** `who`'s sandbox days, as its `sandboxDays` door answers its own binding. */
+function daysOf(who: string): Promise<{ days: Day[] }> {
+  return ownDoor<{ days: Day[] }>(who, "sandboxDays", {});
 }
 
 /** An owner the platform admitted, whose object answers its doors. */
@@ -74,8 +88,7 @@ describe("E2B's lifecycle webhook", () => {
     // E2B retries a delivery: the same event is counted once.
     expect(await (await deliver(body)).json()).toEqual({ counted: false });
     // Split across the UTC days it ran: a minute before midnight, a minute after.
-    const { days } = await env.OWNER.getByName(who).sandboxDays(
-      { owner: who, caller: who, origin: null }, {});
+    const { days } = await daysOf(who);
     expect(days).toEqual([
       { day: "20261103", seconds: 0, billed_seconds: 60, vcpu_seconds: 120, gb_seconds: 60,
         unverified_executions: 0 },
@@ -94,8 +107,7 @@ describe("E2B's lifecycle webhook", () => {
                      event_data: { ...paused.event_data, kill_reason: "request" } };
     expect(await (await deliver(JSON.stringify(paused))).json()).toEqual({ counted: true });
     expect(await (await deliver(JSON.stringify(killed))).json()).toEqual({ counted: false });
-    const { days } = await env.OWNER.getByName(who).sandboxDays(
-      { owner: who, caller: who, origin: null }, {});
+    const { days } = await daysOf(who);
     // 60 s ran; 60 s counted.
     expect(days.reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(60);
   });
@@ -117,8 +129,7 @@ describe("E2B's lifecycle webhook", () => {
         .toEqual({ counted: true });
     }
     expect(await (await deliver(kept)).json()).toEqual({ counted: false });
-    const { days } = await env.OWNER.getByName(who).sandboxDays(
-      { owner: who, caller: who, origin: null }, {});
+    const { days } = await daysOf(who);
     expect(days.reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(6 * 120);
     // An event with no time, or no execution id, is out of shape.
     const { timestamp: _t, ...untimed } = event(who);
@@ -208,8 +219,7 @@ describe("E2B's lifecycle webhook", () => {
       const paused = event(who);
       paused.event_data.sandbox_metadata = { ta_route: asked!.route };
       expect(await (await deliver(JSON.stringify(paused))).json()).toEqual({ counted: true });
-      const { days } = await env.OWNER.getByName(who).sandboxDays(
-        { owner: who, caller: who, origin: null }, {});
+      const { days } = await daysOf(who);
       expect(days.reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(120);
     } finally {
       restore();

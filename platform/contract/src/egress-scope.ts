@@ -12,7 +12,7 @@
  * is `invalid_source`, the gateway's fixed code.
  */
 import { apiRules, declaredApi } from "./api-rules.ts";
-import { count, list, shape, text, valueAtPath } from "./checks.ts";
+import { list, shape, text, valueAtPath } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 import { checkedRecord, type ModelRecord } from "./model-record.ts";
 

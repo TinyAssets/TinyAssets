@@ -28,9 +28,8 @@ import { Refusal } from "../../contract/src/refusal";
 import { CARD_REQUEST_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
-import type {
-  Call, OwnerState, RegisterRequest,
-} from "./owner-do";
+import type { Call } from "./door";
+import type { OwnerState, RegisterRequest } from "./owner-do";
 import type { Source } from "../../contract/src/binding";
 import { clock } from "./clock";
 

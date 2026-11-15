@@ -1,18 +1,17 @@
 /**
  * The owner app's browser tests' Worker (`app.e2e.mjs`): the doors' test entry (the fake
- * upstream sign-in, the bundled records and the test OAuth source, the real `OwnerDO`, its
- * SANDBOX the owner's fake sandbox Worker), plus one door for the harness alone, on an
- * origin the doors never serve: `https://e2e.internal/starts/<owner>`, the starts that
- * owner's object asked of the fake, so the harness can play the runner and post a run's
- * events; and
+ * upstream sign-in, the bundled records and the test OAuth source), its OWNER the owner
+ * Worker beside it, whose SANDBOX is the owner suite's fake sandbox Worker, plus one door for
+ * the harness alone, on an origin the doors never serve: `https://e2e.internal/starts/<owner>`,
+ * the starts that owner's object asked of the fake, so the harness can play the runner and
+ * post a run's events; and
  * `/signins/<owner>`, the sign-ins it asked and the codes the owner pasted back; and
  * `/starter/<owner>`, its starter seed as the owner reads it: the version reconciled, its
  * agents, whether the starter's own files are there, and each failure it was told.
  */
 import type { DoorsEnv } from "../src/env";
-import worker, { OwnerDO } from "./entry";
-
-export { OwnerDO };
+import { callDoor } from "../src/tools";
+import worker from "./entry";
 
 const HARNESS = "https://e2e.internal";
 /** The starter's files the harness looks for: the profile, the map and main's definition. */
@@ -32,18 +31,23 @@ export default {
     }
     if (url.origin === HARNESS && url.pathname.startsWith("/starter/")) {
       const name = url.pathname.slice("/starter/".length);
-      const owner = (env.OWNER as unknown as DurableObjectNamespace<OwnerDO>).getByName(name);
+      const owner = env.OWNER.getByName(name);
       const binding = { owner: name, caller: name, origin: null };
+      // Each door's answer, as its row says it is.
+      const door = <T>(called: string, asked?: unknown) =>
+        callDoor(owner, binding, called, asked) as Promise<T>;
       const files: Record<string, boolean> = {};
       for (const path of SEEDED) {
-        files[path] = (await owner.fileStat(binding, { path })).entry !== null;
+        files[path] = (await door<{ entry: unknown }>("fileStat", { path })).entry !== null;
       }
       return Response.json({
-        version: (await owner.starterReceipts(binding)).version,
-        agents: (await owner.outsideAgents(binding)).owner_agents.map((agent) => agent.agent),
+        version: (await door<{ version: number }>("starterReceipts")).version,
+        agents: (await door<{ owner_agents: { agent: string }[] }>("outsideAgents", {}))
+          .owner_agents.map((agent) => agent.agent),
         files,
-        failed: (await owner.noticeList(binding)).notices
-          .filter((notice) => notice.type === "starter_failed").map((notice) => notice.detail),
+        failed: (await door<{ notices: { type: string; detail: unknown }[] }>("noticeList"))
+          .notices.filter((notice) => notice.type === "starter_failed")
+          .map((notice) => notice.detail),
       });
     }
     return worker.fetch(request, env, ctx);

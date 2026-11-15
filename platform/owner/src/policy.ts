@@ -85,9 +85,8 @@ import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { profileNames } from "../../contract/src/doors";
 import { codePoints } from "../../contract/src/text";
-import type {
-  Call, Door, OwnerState,
-} from "./owner-do";
+import type { Call, Door } from "./door";
+import type { OwnerState } from "./owner-do";
 import { clock } from "./clock";
 import { OWNER } from "./authority";
 

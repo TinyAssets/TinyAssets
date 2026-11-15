@@ -930,6 +930,8 @@ describe("a restore into a live owner", () => {
       .toBe("restoring");
     const hold = await pinnedTo(o.stub, o.name, gen.gen);
     expect(hold.fresh).not.toBe(gen.gen);
+    // The platform's own read of the owner's state says why it is held.
+    expect(await o.stub.ownerState(platform(o.name))).toMatchObject({ restore: "pinned" });
     expect(hold.confirm).toBe(`wipe-${o.name}-${hold.fresh}`);
     // Both kept: the pinned one past the fresh one's finish, which pruned every other.
     expect((await o.stub.restoreSource(platform(o.name))).generations.map((each) => each.gen))

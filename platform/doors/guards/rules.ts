@@ -118,24 +118,14 @@ export const CONFIG: ConfigRules = Object.freeze({
  * workspace's internals, each until the fix named removes the reach.
  */
 export const OWED: readonly Owed[] = Object.freeze([
-  // Tests on the owner's internals, not its front door: B23.
-  ...imports("B23", "platform/doors/test/api-keys.test.ts", ["platform/owner/src/grants.ts"]),
-  ...imports("B23", "platform/doors/test/app-routes.test.ts", ["platform/owner/src/owner-do.ts"]),
-  ...imports("B23", "platform/doors/test/env.d.ts", ["platform/owner/src/owner-do.ts"]),
-  ...imports("B23", "platform/doors/test/connect.test.ts", ["platform/owner/src/owner-do.ts"]),
+  // The owner's constants and its fakes' read-back types, which the doors' tests read from the
+  // owner's own folder: B23's second part (`untangle/t2b`) moves what both sides read.
   ...imports("B23", "platform/doors/test/doors-live.test.ts", [
-    "platform/owner/src/admission.ts", "platform/owner/src/inbound.ts",
-    "platform/owner/src/erasure.ts", "platform/owner/src/ledger.ts",
-    "platform/owner/test/runs-support.ts", "platform/owner/test/support.ts"]),
+    "platform/owner/src/admission.ts", "platform/owner/src/erasure.ts"]),
   ...imports("B23", "platform/doors/test/e2b-hooks.test.ts",
              ["platform/owner/src/sandbox-time.ts"]),
-  ...imports("B23", "platform/doors/test/egress.test.ts", ["platform/owner/test/runs-support.ts"]),
-  ...imports("B23", "platform/doors/test/entry.ts", ["platform/owner/src/owner-do.ts"]),
   ...imports("B23", "platform/doors/test/env.d.ts", ["platform/owner/test/fake-sandbox.ts",
                                                       "platform/owner/test/fake-erasures.ts"]),
-  ...imports("B23", "platform/doors/test/events.test.ts", ["platform/owner/src/owner-do.ts"]),
   ...imports("B23", "platform/doors/test/hardening.test.ts", ["platform/owner/src/bodies.ts"]),
-  ...imports("B23", "platform/doors/test/runs.test.ts",
-             ["platform/owner/test/runs-support.ts", "platform/owner/src/runs.ts"]),
-  ...imports("B23", "platform/doors/test/sync.test.ts", ["platform/owner/test/runs-support.ts"]),
+  ...imports("B23", "platform/doors/test/runs.test.ts", ["platform/owner/src/runs.ts"]),
 ]);

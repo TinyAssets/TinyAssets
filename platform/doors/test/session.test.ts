@@ -9,7 +9,7 @@ import { SESSION_TTL_S } from "../../contract/src/limits";
 import { authorizationServer } from "../src/oauth";
 import { sessionOf, withoutCookie } from "../src/session";
 import {
-  appPost, authorizeUrl, call, connect, doorsEnv, legacyPost, OPEN, pkce, reached,
+  appPost, authorizeUrl, call, connect, doorsEnv, legacyPost, OPEN, pkce, reached, unseen,
   registerClient, rpcBody, serveFirstPartyDocument, setControl, signInApp, tokenCall, url,
   answerOf,
 } from "./support";
@@ -134,6 +134,7 @@ describe("the owner surface", () => {
   it("refuses an MCP token 403, before any object call", async () => {
     const alice = owner();
     const tokens = await connect(await registerClient(), { owner: alice });
+    await unseen(alice);
     const response = await appPost("keys", tokens.access_token, COOKIE,
                                    { name: "k", scopes: [] });
     expect(response.status).toBe(403);

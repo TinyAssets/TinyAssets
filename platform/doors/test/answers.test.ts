@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RESULT_CHARS } from "../../contract/src/encoded";
 import { resultText } from "../src/answers";
 import {
-  answerOf, connect, legacyTool, OPEN, registerClient, setControl, sqlIn,
+  answerOf, connect, legacyTool, OPEN, registerClient, setControl,
 } from "./support";
 
 beforeEach(async () => {
@@ -40,7 +40,8 @@ describe("a tool's answer", () => {
     const answer = answerOf(result) as { row: Record<string, unknown> };
     expect(answer.row).toMatchObject({ row_id: "big", revision: 1, body_bytes: 60_000 });
     expect(answer.row).not.toHaveProperty("body");
-    expect(await sqlIn(who, "SELECT row_id, body_bytes FROM collection_rows WHERE " +
-                            "row_id = 'big'")).toEqual([{ row_id: "big", body_bytes: 60_000 }]);
+    const read = answerOf(await legacyTool(tokens.access_token, "collection_get", {
+      collection: "board", row_id: "big" })) as { row: Record<string, unknown> };
+    expect(read.row).toMatchObject({ row_id: "big", revision: 1, body_bytes: 60_000 });
   });
 });

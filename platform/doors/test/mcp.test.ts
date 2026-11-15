@@ -10,9 +10,8 @@ import { mcpOrigin } from "../src/binder";
 import { now } from "../src/config";
 import { profileNames, toolTable } from "../../contract/src/doors";
 import {
-  call, connect, legacyPost, legacyTool, OPEN, reached, registerClient, rpcBody, setControl,
-  sqlIn, type Tokens, url,
-  answerOf,
+  call, connect, crossed, grantsOf, legacyPost, legacyTool, OPEN, ownDoor, reached, unseen,
+  registerClient, rpcBody, setControl, type Tokens, url, answerOf,
 } from "./support";
 
 function owner(): string {
@@ -76,12 +75,15 @@ describe.each([
       command_center_id: "cc", display_name: "Muse", delivery_method: "pull", recipe_id: null } });
     expect(filed.isError).toBeFalsy();
     const origin = await mcpOrigin(registered.clientId, registered.redirectUri);
-    expect(await sqlIn(alice, "SELECT client, source, mode FROM outside_clients")).toEqual([
-      { client: origin.client, source: "mcp", mode: "full" }]);
-    expect(await sqlIn(alice, "SELECT client, family, source_ref, authenticated_at " +
-                              "FROM agent_cards")).toEqual([
-      { client: origin.client, family: origin.family, source_ref: registered.clientId,
-        authenticated_at: signedIn }]);
+    expect((await grantsOf(alice)).map(({ client, source, mode }) => ({ client, source, mode })))
+      .toEqual([{ client: origin.client, source: "mcp", mode: "full" }]);
+    // The doors handed the object the verified origin, source and sign-in; its card holds them.
+    const [proposed] = await crossed(alice, "registerPropose");
+    expect(proposed!.binding).toMatchObject({
+      origin, source: { kind: "mcp", ref: registered.clientId }, authenticated_at: signedIn });
+    const { card_id } = answerOf(filed) as { card_id: string };
+    expect(await ownDoor(alice, "registerProposal", { card_id })).toMatchObject({
+      client: origin.client, family: origin.family, source_ref: registered.clientId });
     await client.close();
   });
 
@@ -110,6 +112,7 @@ describe("the MCP endpoint", () => {
   it("refuses a present foreign Origin 403, before the token or the object", async () => {
     const alice = owner();
     const tokens = await connect(await registerClient(), { owner: alice });
+    await unseen(alice);
     const response = await legacyPost(tokens.access_token, {
       jsonrpc: "2.0", id: 0, method: "initialize", params: {
         protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "x", version: "1" } } },

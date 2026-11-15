@@ -110,20 +110,19 @@ import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./ho
 import {
   AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
 } from "../../contract/src/sync-ignore";
-import type {
-  Account, Call, Door, OwnerState,
-} from "./owner-do";
+import type { Account, Call, Door } from "./door";
+import type { OwnerState } from "./owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { Edited, EditRefusal } from "./edit";
 import {
   type ChunkCheck, type ChunkGet, type ChunkStore, GET_READS,
 } from "../../contract/src/files";
-import { fitList, PAGE_BYTES, RESULT_TOO_LARGE } from "./pages";
+import { fitList, RESULT_TOO_LARGE } from "./pages";
 import {
   frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
   words,
 } from "./file-search";
-import { windowEnd } from "./bodies";
+import { PAGE_BYTES, windowEnd } from "./bodies";
 import { joined } from "./bytes";
 import { clock, inTime } from "./clock";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
@@ -3332,7 +3331,6 @@ export const filesDoors = Object.freeze({
    */
   async fileList(o: OwnerState, door: Door<FileListRequest>):
       Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
-    await o.seededFor(door);
     return o.door(() => listed(o, door.check()));
   },
   /**
@@ -3343,7 +3341,6 @@ export const filesDoors = Object.freeze({
    */
   async fileText(o: OwnerState, door: Door<FileTextRequest>):
       Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
-    await o.seededFor(door);
     const asked = await o.door(() => {
       const { r } = door.check();
       const content = o.files.open(r["path"]);
@@ -3380,7 +3377,6 @@ export const filesDoors = Object.freeze({
    */
   async fileSearch(o: OwnerState, door: Door<FileSearchRequest>):
       Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
-    await o.seededFor(door);
     return o.door(() => searched(o, door.check()));
   },
   /**
@@ -3391,7 +3387,6 @@ export const filesDoors = Object.freeze({
   async fileFetch(o: OwnerState, door: Door<FileFetchRequest>):
       Promise<{ id: string; title: string; text: string; url: string;
                                         metadata: FetchMetadata }> {
-    await o.seededFor(door);
     const content = await o.door(() => o.files.open(door.check().r["id"]));
     // One answer holds it (`pages.ts`): its text cut to what its other fields leave, and
     // `truncated` with `next_offset` for file_read to go on from.
@@ -3455,7 +3450,6 @@ export const filesDoors = Object.freeze({
    * it is refused `file_busy`.
    */
   async fileAppend(o: OwnerState, door: Door<FileAppendRequest>): Promise<{ entry: Entry }> {
-    await o.seededFor(door);
     const { account, path, added } = await o.door(() => {
       const { account, r } = door.check();
       ownersTree(o, door.binding, account, "FILES.append", door.request, r["path"]);
@@ -3554,7 +3548,6 @@ export const filesDoors = Object.freeze({
    */
   async fileWrite(o: OwnerState, door: Door<FileWriteRequest>):
       Promise<{ entry: Entry } | FileConflicted> {
-    await o.seededFor(door);
     const { account, r, content } = await o.door(() => {
       const { account, r } = door.check();
       ownersTree(o, door.binding, account, "FILES.write", door.request, r["path"]);
@@ -3592,7 +3585,6 @@ export const filesDoors = Object.freeze({
    */
   async fileEdit(o: OwnerState, door: Door<FileEditRequest>):
       Promise<{ entry: Entry } | FileConflicted> {
-    await o.seededFor(door);
     const asked = await o.door(() => {
       const { account, r } = door.check();
       ownersTree(o, door.binding, account, "FILES.edit", door.request, r["path"]);

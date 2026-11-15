@@ -46,9 +46,8 @@ import {
   type AdmissionRequest, type OwnerStateAnswer, SUSPENSIONS,
 } from "../../contract/src/owner";
 import { tierName } from "./tier";
-import type {
-  Door, OwnerState,
-} from "./owner-do";
+import type { Door } from "./door";
+import type { OwnerState } from "./owner-do";
 import { clock } from "./clock";
 
 /** The refusals, each fixed: what a door or a `require_work` lane answers. */

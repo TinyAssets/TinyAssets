@@ -94,7 +94,7 @@ export interface SandboxRun {
 /** What the launcher reaches of the object: its stores, its gate, and its own reads. */
 export type LaunchState = Pick<OwnerState, "env" | "storage" | "owner" | "files" | "connections"
   | "grants" | "policy" | "usage" | "egress" | "relay" | "ledger" | "notices" | "signins"
-  | "bodies" | "starter" | "door" | "sync" | "rereading" | "control" | "admitted" | "unadmitted"
+  | "bodies" | "starter" | "door" | "sync" | "control" | "admitted" | "unadmitted"
   | "tier">;
 
 export class Launcher implements RunHost {
@@ -521,7 +521,7 @@ export class Launcher implements RunHost {
         }
         return this.#o.ledger.nextMail(bodies);
       };
-      const mail = await this.#o.rereading(() => {
+      const mail = await this.#o.bodies.rereading(() => {
         const found = next(new Map());
         return found?.content_id == null ? [] : [found.content_id];
       }, next, (found) => found?.content_id != null, (located) => this.#o.bodies.fetch(located));
@@ -580,7 +580,7 @@ export class Launcher implements RunHost {
    * A mail no longer held, or whose body is not its own, refuses the run.
    */
   async #mailPrompt(messageId: string, agent: string): Promise<string> {
-    const mail = await this.#o.rereading(() => {
+    const mail = await this.#o.bodies.rereading(() => {
       const found = this.#o.ledger.mailFor(messageId, nativeId(agent));
       return found?.content_id == null ? [] : [found.content_id];
     }, (bodies: ReadonlyMap<string, string>) =>

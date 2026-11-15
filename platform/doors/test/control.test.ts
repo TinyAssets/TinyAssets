@@ -14,7 +14,7 @@ import type { DoorsEnv } from "../src/env";
 import { mintKeyFor } from "./keys";
 import {
   appCallback, appPost, authorizeMcp, call, connect, doorsEnv, legacyPost, OPEN, reached,
-  registerClient, serveFirstPartyDocument, setControl, signInApp, url,
+  registerClient, serveFirstPartyDocument, setControl, signInApp, unseen, url,
 } from "./support";
 
 function owner(): string {
@@ -135,6 +135,7 @@ describe.each([
   it("refuses an MCP call 503, before the object", async () => {
     const alice = owner();
     const tokens = await connect(await registerClient(), { owner: alice });
+    await unseen(alice);
     const response = await listTools(tokens.access_token, await state());
     expect(response.status).toBe(503);
     expect(await reached(alice)).toBe(false);

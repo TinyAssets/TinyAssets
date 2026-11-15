@@ -108,7 +108,8 @@ import { Refusal } from "../../contract/src/refusal";
 import { clock } from "./clock";
 import { exported, NOT_EXPORTED } from "./export";
 import type { OwnerStorage } from "./gate";
-import type { Door, OwnerState } from "./owner-do";
+import type { Door } from "./door";
+import type { OwnerState } from "./owner-do";
 import { addNames, emptyFilter, filterOf, mayHold } from "./names-filter";
 import { MIGRATIONS } from "./schema";
 

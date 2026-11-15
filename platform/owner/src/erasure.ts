@@ -48,9 +48,10 @@ import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
 import { type EraseRequest, eraseWords } from "../../contract/src/owner";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
-import type {
-  Call, Door, OwnerState,
-} from "./owner-do";
+import type { Call, Door, DoorUnits, ObjectReads } from "./door";
+import type { Erasure } from "./erase";
+import type { Inbound } from "./inbound";
+import type { Keys } from "./keys";
 
 /**
  * What the account-erase door answers (slice L's door, which marks first and answers at
@@ -158,9 +159,19 @@ function confirmed(door: Door<EraseRequest>, words: (owner: string) => string): 
 
 // -- THE DOORS: the `erasure` rows' handlers (`contract/doors.json`) ------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`ErasureDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `erasure` doors reach: the erasure's job, and what the directory holds for the
+ * owner (its keys' ids, its inbound routes).
+ */
+export interface ErasureDoorNeeds extends Pick<DoorUnits, "door">, Pick<ObjectReads, "storage"> {
+  readonly erasure: Pick<Erasure, "begin" | "resume">;
+  readonly keys: Pick<Keys, "ids">;
+  readonly inbound: Pick<Inbound, "routes">;
+}
 
 /** The `erasure` doors' handlers, by door. */
 export const erasureDoors = Object.freeze({
@@ -171,7 +182,7 @@ export const erasureDoors = Object.freeze({
    * through the doors, the sandboxes, the R2 copies and the wipe, each retried until done,
    * none of them resting on this request finishing.
    */
-  async ownerErase(o: OwnerState, door: Door<EraseRequest>): Promise<{ erasing: true }> {
+  async ownerErase(o: ErasureDoorNeeds, door: Door<EraseRequest>): Promise<{ erasing: true }> {
     await o.door(() => confirmed(door, () => ERASE_CONFIRM));
     await o.erasure.begin();
     return { erasing: true as const };
@@ -180,7 +191,7 @@ export const erasureDoors = Object.freeze({
    * The platform's erasure of the owner, by its reserved caller (the operator's
    * `owner.erase`, for an owner who asked by other means), confirmed by `erase-<owner>`.
    */
-  async erasureBegin(o: OwnerState, door: Door<EraseRequest>): Promise<{ erasing: true }> {
+  async erasureBegin(o: ErasureDoorNeeds, door: Door<EraseRequest>): Promise<{ erasing: true }> {
     await o.door(() => confirmed(door, eraseWords));
     await o.erasure.begin();
     return { erasing: true as const };
@@ -191,12 +202,12 @@ export const erasureDoors = Object.freeze({
    * owner is marked erasing, and only by the platform's reserved caller; null once the
    * owner is wiped (its outside record confirmed before the wipe).
    */
-  erasureOutside(o: OwnerState, { erased }: Call<undefined>):
+  erasureOutside(o: ErasureDoorNeeds, { erased }: Call<undefined>):
       { keys: string[]; routes: string[] } | null {
     return erased ? null : { keys: o.keys.ids(), routes: o.inbound.routes() };
   },
   /** The doors' confirmation that the outside record is done: the wipe may go on. */
-  erasureOutsideDone(o: OwnerState, { erased }: Call<undefined>): { confirmed: true } {
+  erasureOutsideDone(o: ErasureDoorNeeds, { erased }: Call<undefined>): { confirmed: true } {
     if (erased) {
       return { confirmed: true } as const;
     }

@@ -41,18 +41,17 @@
 import { sha256Hex } from "../../contract/src/digest";
 
 import {
-  type Adopt, adopted, BODY_BYTES_MAX, bodyOffset, type Placed, READ_PAGE_BYTES,
+  type Adopt, adopted, BODY_BYTES_MAX, bodyOffset, PAGE_BYTES, type Placed, READ_PAGE_BYTES,
 } from "./bodies";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import {
-  bodied, conflictShown, contentsOf, fitPage, fittedRow, headChars, heads, headWindow, PAGE_BYTES,
-  windowed, windowedAll,
+  bodied, conflictShown, contentsOf, fitPage, fittedRow, headChars, heads, headWindow, windowed,
+  windowedAll,
 } from "./pages";
 import { codePoints, name, utf8Bytes } from "../../contract/src/text";
-import type {
-  Account, Call, Door, OwnerState,
-} from "./owner-do";
+import type { Account, Call, Door } from "./door";
+import type { OwnerState } from "./owner-do";
 import { clock } from "./clock";
 import { jsonBytes } from "../../contract/src/encoded";
 import { filerOf, MAIN_AGENT, OWNER } from "./authority";
@@ -838,7 +837,7 @@ function ring(o: OwnerState, account: Account, collection: string, after: number
 export const collectionsDoors = Object.freeze({
   /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
   async boardDigest(o: OwnerState, door: Door<BoardDigestRequest>): Promise<Heads> {
-    return o.reading(() => {
+    return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const chars = headChars(r["head_chars"]);
       const changes = o.collections.changed(caller, { collection: BOARD }, r["after"],
@@ -852,7 +851,7 @@ export const collectionsDoors = Object.freeze({
    * `etag`, refused when the row is no longer the one that answer read.
    */
   async collectionGet(o: OwnerState, door: Door<GetRequest>): Promise<{ row: Row | null }> {
-    return o.reading(() => {
+    return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
       // A read on names the revision it reads (review L3), so two are never spliced.
@@ -876,7 +875,7 @@ export const collectionsDoors = Object.freeze({
    * `collection_get`'s `body_offset`.
    */
   async collectionPull(o: OwnerState, door: Door<PullRequest>): Promise<Page> {
-    return o.reading(() => {
+    return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const page = o.collections.pull(caller, r["collection"] as string, r["after"],
                                           r["limit"]);
@@ -895,7 +894,7 @@ export const collectionsDoors = Object.freeze({
    * entry's body from that byte.
    */
   async collectionHistory(o: OwnerState, door: Door<HistoryRequest>): Promise<History> {
-    return o.reading(() => {
+    return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
       const kept = o.collections.history(caller, r["collection"] as string,
@@ -920,35 +919,43 @@ export const collectionsDoors = Object.freeze({
    */
   async collectionWrite(o: OwnerState, door: Door<WriteRequest>):
       Promise<{ row: WrittenRow } | Conflicted> {
-    return o.placing(() => {
-      const { account, r } = door.check();
-      return { body: checkBody(r["body"]), writer: filerOf(account) };
-    }, (placed) => {
-      const { account, r } = door.check();
-      const collection = r["collection"] as string;
-      const before = o.collections.clock();
-      const written = conflicted(() => ({
-        row: writtenRow(o.collections.write(account.owner, account.caller, collection,
-                                                r["row_id"] as string, r["body"],
-                                                r["expected_etag"], r["private"],
-                                                "history_op" in r ? r["history_op"] : "write",
-                                                placed, filerOf(account))),
-      }));
-      ring(o, account, collection, before);
-      return written;
-    }, { shown: conflictShown(), synced: true });
+    try {
+      return await o.bodies.placing(() => {
+        const { account, r } = door.check();
+        return { body: checkBody(r["body"]), writer: filerOf(account) };
+      }, (placed) => {
+        const { account, r } = door.check();
+        const collection = r["collection"] as string;
+        const before = o.collections.clock();
+        const written = conflicted(() => ({
+          row: writtenRow(o.collections.write(account.owner, account.caller, collection,
+                                              r["row_id"] as string, r["body"],
+                                              r["expected_etag"], r["private"],
+                                              "history_op" in r ? r["history_op"] : "write",
+                                              placed, filerOf(account))),
+        }));
+        ring(o, account, collection, before);
+        return written;
+      }, conflictShown());
+    } finally {
+      await o.sync();  // a write that rang an agent's doorbell (`ring`)
+    }
   },
   async collectionDelete(o: OwnerState, door: Door<DeleteRequest>):
       Promise<{ deleted: number } | Conflicted> {
-    return o.reading(() => {
-      const { account, r } = door.check();
-      const before = o.collections.clock();
-      const value = conflicted(() => o.collections.delete(
-        account.caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
-      ));
-      ring(o, account, r["collection"] as string, before);
-      return { value, contents: conflictShown<typeof value>().contents(value) };
-    }, conflictShown<{ deleted: number } | Conflicted>().fill, true);
+    try {
+      return await o.bodies.reading(() => {
+        const { account, r } = door.check();
+        const before = o.collections.clock();
+        const value = conflicted(() => o.collections.delete(
+          account.caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
+        ));
+        ring(o, account, r["collection"] as string, before);
+        return { value, contents: conflictShown<typeof value>().contents(value) };
+      }, conflictShown<{ deleted: number } | Conflicted>().fill);
+    } finally {
+      await o.sync();  // a delete that rang an agent's doorbell (`ring`)
+    }
   },
   collectionClear(o: OwnerState, { account, r }: Call<ClearRequest>): { deleted: number } {
     const before = o.collections.clock();
