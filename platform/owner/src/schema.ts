@@ -2343,4 +2343,24 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE restore_filter (only INTEGER PRIMARY KEY CHECK (only = 1), bits BLOB NOT " +
       "NULL CHECK (typeof(bits) = 'blob'))",
   ]),
+  // 15 (lane R, `changelog.ts`, `restore.ts`; `untangle-2026-11/r-log-staged-bytes.md`): what a
+  // restore stages of a generation's log, the last line per key, at its most (its peak at a
+  // segment's end), in place of the segments' sum (`staged`, the renamed `log_bytes`: one from
+  // before keeps that sum, never less than its peak). The capture's count of it: each key the
+  // log staged and its last line's bytes as written (`log_staged`), their sum and its peak. A
+  // restore's own: each staged line's bytes (`restore_rows.n`), their sum and its peak; a
+  // restore under way past `index` is failed, since what it staged was never measured.
+  Object.freeze([
+    "ALTER TABLE owner_backups RENAME COLUMN log_bytes TO staged",
+    "CREATE TABLE log_staged (tbl TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL CHECK " +
+      "(n > 0), PRIMARY KEY (tbl, k)) WITHOUT ROWID",
+    "ALTER TABLE log_capture ADD COLUMN staged INTEGER NOT NULL DEFAULT 0 CHECK (staged >= 0)",
+    "ALTER TABLE log_capture ADD COLUMN peak INTEGER NOT NULL DEFAULT 0 CHECK (peak >= 0)",
+    "ALTER TABLE restore_rows ADD COLUMN n INTEGER NOT NULL DEFAULT 0 CHECK (n >= 0)",
+    "ALTER TABLE owner_restore ADD COLUMN staged INTEGER NOT NULL DEFAULT 0 CHECK (staged >= 0)",
+    "ALTER TABLE owner_restore ADD COLUMN peak INTEGER NOT NULL DEFAULT 0 CHECK (peak >= 0)",
+    "UPDATE owner_restore SET step = 'failed', failed = 'an update ran while it was under way: " +
+      "what it staged was never measured; wipe it and restore again' WHERE step IN ('log', " +
+      "'apply', 'check', 'chunks', 'names', 'sweep', 'clear')",
+  ]),
 ]);

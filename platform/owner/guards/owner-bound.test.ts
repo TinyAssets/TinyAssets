@@ -621,16 +621,18 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     owner_backups_kept: { rows: 3 + EXPORTS_OPEN, bytes: ROW + 16 + 8 + 6 + 19 * 8,
                           tables: [],
                           by: "the newest finished generation, the one a restore falls back " +
-                            "to while the newest's log is past LOG_BYTES, the one a " +
+                            "to while what a restore stages of the newest's log is past " +
+                            "LOG_BYTES, the one a " +
                             "restore's pin holds, and EXPORTS_OPEN pinned ones" },
-    // Lane R: a restore (`restore.ts`): its record (its generation and its pin's), each base
-    // part's span of tables and where it is (a key at its widest), and the log it stages, the
-    // last line per key: a log of at most LOG_BYTES (a restore refuses a longer one), each
-    // line held with its key.
-    owner_restore: { rows: 1, bytes: ROW + 32 + 2 * 16 + 2 * 8 + MANIFEST_PARTS * 12
+    // Lane R: a restore (`restore.ts`): its record (its generation and its pin's, what it
+    // staged and its peak), each base part's span of tables and where it is (a key at its
+    // widest), and the log it stages, the last line per key, each line held with its key and
+    // its bytes: at most LOG_BYTES of lines at a segment's end (past it the restore fails),
+    // and the one segment that passed it.
+    owner_restore: { rows: 1, bytes: ROW + 32 + 2 * 16 + 4 * 8 + MANIFEST_PARTS * 12
                        + 4 * (MAX_PATH_BYTES + KIB), by: "one row" },
-    restore_rows: { rows: 1, bytes: 2 * LOG_BYTES + IMAGE_MAX,
-                    by: "a log of at most LOG_BYTES, each line with its key, and one past it" },
+    restore_rows: { rows: 1, bytes: 2 * (LOG_BYTES + CHUNK_BYTES),
+                    by: "LOG_BYTES of lines and one segment past it, each with its key" },
     // Its sweep's filter of its chunk rows' names (`names-filter.ts`), one row until `clear`.
     restore_filter: { rows: 1, bytes: ROW + FILTER_BYTES(),
                       by: "one row: FILTER_BYTES, the filter sized for CHUNK_ROWS_MAX" },
@@ -643,7 +645,13 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // The change log (`changelog.ts`, review R4): its capture's one row, and its unshipped
     // images, charged as its trigger counts them (each its text and LOG_ROW_BYTES), held under
     // LOG_BYTES, and one image past it at its widest.
-    log_capture: { rows: 1, bytes: ROW + 16 + 9 * 8, by: "one row" },
+    log_capture: { rows: 1, bytes: ROW + 16 + 11 * 8, by: "one row" },
+    // What a restore stages of the generation's log, as the capture counts it: each key's
+    // record (its table, key and last line's bytes) no wider than its line as written, at
+    // most LOG_BYTES of lines at a segment's end (past it the count stops and they go), and
+    // the one segment that passed it.
+    log_staged: { rows: 1, bytes: LOG_BYTES + CHUNK_BYTES,
+                  by: "LOG_BYTES of lines and one segment past it, a record a key" },
     change_log: { rows: 1, bytes: LOG_BYTES + IMAGE_MAX + LOG_ROW_BYTES, charged: true,
                   by: "LOG_BYTES of unshipped images and one past it, at WORST_FILL" },
     sandbox_spans: { rows: SPANS_KEPT + 1 + G.maxFreeClients + G.maxOwnerClients,

@@ -889,7 +889,7 @@ describe("the sweep of generations no row names", () => {
     // same pass prunes: the one before it is then kept, as the fallback.
     const newest = await generate(o.stub, { afterUnit: async ({ gate }) => {
       await gate.write(() => gate.storage.sql.exec(
-        "UPDATE owner_backups SET log_bytes = ? WHERE state = 'done' AND gen NOT IN (?, ?)",
+        "UPDATE owner_backups SET staged = ? WHERE state = 'done' AND gen NOT IN (?, ?)",
         LOG_BYTES + 1, exported.gen, fallback.gen));
     } });
     const { ns, key } = await spaceOf(o);
