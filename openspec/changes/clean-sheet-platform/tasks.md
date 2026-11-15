@@ -358,8 +358,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     erasure records refuse an erased owner first, and the monthly drill, read-only, on the
     whole bucket (`r8-copy-restore.md`).
   - [ ] A lost object, or every owner after an account loss, restored from the copy: `locate`
-    and an erasure record that survives the account, after the founder chooses the record
-    (`r8-copy-restore.md` item 5; `untangle/r8-account-loss`).
+    and an erasure record that survives the account: option A, a marker per erased namespace
+    in the files bucket (`r8-copy-restore.md` item 5; `untangle/r8-account-loss`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner

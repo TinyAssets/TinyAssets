@@ -17,6 +17,7 @@ Lane R's eighth PR: the restore from the off-account copy and its monthly drill 
    - The doors refuse that op for an erased owner three times over: the directory's erased record at the channel's gate, the object's tombstone, and its erasure mark while it is erasing (`r5r.md` item 10, `r5w.md` item 4).
    - So an erased owner's namespace is never named, and nothing of it is listed, recorded or written. An object that names no namespace (a lost one) is refused by the kit, with nothing read.
    - These are the erasure's own records, so the kit keeps no list of its own beside them.
+   - An erasure marked after `restore.source` answered still wins: its prefix delete waits `PUT_GRACE_MS` (a day) past the mark and repeats after the wipe, and the apply job ends within 30 minutes, so whatever the copy back wrote goes with the rest.
 4. **The restore record goes before the first byte.**
    - `copyBack` lists R2 and the copy, writes `{kind, began}` to `deploy:offsite:restore` (`recordRestore`, beside its reader), and only then copies.
    - A refused put stops the run with nothing written. With nothing lacking, nothing is written or recorded.
@@ -26,12 +27,12 @@ Lane R's eighth PR: the restore from the off-account copy and its monthly drill 
    - `locate`, a namespace's owner read from its generation (part 0's header, sealed: the files Worker's job, `r5r.md` item 12);
    - an erasure record that survives the account.
 
-   The record is a **founder decision**: each choice changes either what leaves the account or what the erasure promises after an account loss.
+   The record is **A, an engineering choice** (review, 2026-11-15; Fact 4): A keeps no personal identifier (a namespace is a random 128-bit id, tied to a person only by the owner's object, which the erasure deletes), spends nothing new, and is neither irreversible nor outward-facing. B keeps none either, but restores an erased foreign issuer's owner, so it fails the erasure on its own. Only C keeps a person's id (the owner principal) outside the account, a privacy commitment only the founder could make; it is not taken.
    - **A. The files bucket records each erased namespace** (an object per namespace, written at the mark), so the copy carries it. No person's id leaves the account. Erasures marked after the last passed night are still missed (at most `HIDE_NIGHTS`, under the canary's alarm). Owner and files code change.
    - **B. The issuer is the record.** The erasure deletes the identity at the issuer at the mark, so after a loss only owners whose identity still stands are restored. No new data is kept. It misses a foreign issuer's owners (`iss-`), whose identity is not the platform's to delete.
    - **C. The nightly copies the directory's erased records off the account.** A person's id is then kept outside the account for good, and the nightly needs a KV read key.
 
-   Until then R8 refuses these cases, loudly, and `checklist.md` says so. Owed: `untangle/r8-account-loss`, after the founder's choice.
+   Until then R8 refuses these cases, loudly, and `checklist.md` says so. Owed: `untangle/r8-account-loss`, building A: the marker kept outside `o/<ns>/`, so the erasure's own prefix delete spares it, for at least `KEEP_DAYS` past the namespace's last hide.
 6. **The drill, monthly, on the whole bucket; it writes nothing (`drill`).**
    - A second night runs on the 1st (`37 6 1 * *`), or a dispatch with `drill`. After its copy, it downloads every object R2 held when the night began from both sides and compares them byte for byte, the whole bucket rather than the nightly's 16. So a copy back as the copy stands writes exactly R2's bytes, which open at their keys.
    - It then runs a copy back's own reads (`readBack`) over the whole bucket, as the copy stood `BACK_DAYS` ago, the oldest time it takes. It counts what that copy back would write, and reads 16 of those objects whole (`rclone cat --discard`).
