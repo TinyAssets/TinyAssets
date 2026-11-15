@@ -8,16 +8,16 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { OWNER_UNADMITTED } from "../src/admission";
-import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import { apiKeyOrigin, type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { BREAKER_FAILURES, Inbound, INSTALL_PROOF } from "../src/inbound";
 import { profile, proves } from "../../contract/src/inbound-proof";
-import { Keys, TOO_MANY_KEYS } from "../src/keys";
+import { TOO_MANY_KEYS } from "../src/keys";
 import { MAX_KEYS } from "../../contract/src/limits";
 import { GRANT_LIMITS } from "../src/grants";
 import { LEDGER_LIMITS } from "../src/ledger";
 import { sqlIn } from "../../ci/workerd";
 import { rig } from "./ledger-support";
-import { failure, inGate, TIERS } from "./support";
+import { failure, inGate, storesOn, TIERS } from "./support";
 
 function pending(): { stub: DurableObjectStub; owner: string } {
   const owner = `owner-${crypto.randomUUID()}`;
@@ -93,22 +93,30 @@ describe("the platform's read of the owner's state", () => {
 describe("the key store", () => {
   it("counts live keys strictly, at the owner-set clients' own bound", async () => {
     expect(MAX_KEYS).toBe(GRANT_LIMITS.maxOwnerClients);
-    const stub = env.OWNER.getByName(`owner-${crypto.randomUUID()}`);
-    await inGate(stub, (_instance, state) => {
-      const keys = new Keys({ sql: state.storage.sql, transactionSync: (f: () => unknown) => f() } as never);
-      for (let i = 0; i < MAX_KEYS; i++) {
-        keys.add(i.toString(16).padStart(16, "0"), i.toString(16).padStart(64, "0"), "k", 1);
-      }
-      expect(() => keys.add("f".repeat(16), "f".repeat(64), "k", 1)).toThrow(TOO_MANY_KEYS);
-      keys.revoked("0".repeat(64), 2);
-      keys.add("f".repeat(16), "f".repeat(64), "k", 1);
-      keys.used("f".repeat(16), 100);
-      keys.used("f".repeat(16), 120);
-      expect(keys.list().find((key) => key.key_id === "f".repeat(16))?.last_used_at).toBe(100);
-      keys.used("f".repeat(16), 161);
-      expect(keys.list().find((key) => key.key_id === "f".repeat(16))?.last_used_at).toBe(161);
-      keys.forgotten("f".repeat(64));
-      expect(keys.idOf("f".repeat(64))).toBeNull();
+    const r = await rig();
+    const mint = (keyId: string) => r.stub.keyMint(r.session(null), {
+      key_id: keyId, name: "k", scopes: [{ universe: "cc", agent: "main",
+                                             capability: "read_graph" }] });
+    for (let i = 0; i < MAX_KEYS; i++) {
+      await mint(i.toString(16).padStart(16, "0"));
+    }
+    expect((await failure(() => mint("f".repeat(16)))).message).toBe(TOO_MANY_KEYS);
+    await r.stub.grantRevoke(r.bind(null), { client: apiKeyOrigin("0".repeat(16)).client });
+    await mint("f".repeat(16));
+    const client = apiKeyOrigin("f".repeat(16)).client;
+    await inGate(r.stub, (_instance, state) => {
+      const { gate, keys } = storesOn(state);
+      return gate.write(() => {
+        keys.used("f".repeat(16), 100);
+        keys.used("f".repeat(16), 120);
+        expect(keys.list().find((key) => key.key_id === "f".repeat(16))?.last_used_at)
+          .toBe(100);
+        keys.used("f".repeat(16), 161);
+        expect(keys.list().find((key) => key.key_id === "f".repeat(16))?.last_used_at)
+          .toBe(161);
+        keys.forgotten(client);
+        expect(keys.idOf(client)).toBeNull();
+      });
     });
   });
 });

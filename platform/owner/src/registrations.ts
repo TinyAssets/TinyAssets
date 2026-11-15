@@ -28,8 +28,7 @@ import { Refusal } from "../../contract/src/refusal";
 import { CARD_REQUEST_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
-import type { Call } from "./door";
-import type { OwnerState, RegisterRequest } from "./owner-do";
+import { type Call, type LiveSession, proven } from "./door";
 import type { Source } from "../../contract/src/binding";
 import { clock } from "./clock";
 
@@ -162,11 +161,12 @@ export class Registrations {
   }
 
   /**
-   * The owner's apply: the pending, unexpired card with the digest the owner was shown,
-   * whose client's authority still stands, consumed. The caller registers what it returns
-   * in the same transaction, so a refused registration keeps the card.
+   * The owner's apply, in its session: the pending, unexpired card with the digest the owner
+   * was shown, whose client's authority still stands, consumed. The caller registers what it
+   * returns in the same transaction, so a refused registration keeps the card.
    */
-  take(cardId: unknown, shown: unknown, now: number): Taken {
+  take(session: LiveSession, cardId: unknown, shown: unknown, now: number): Taken {
+    proven(session, "session");
     const row = typeof cardId === "string" && CARD_ID.test(cardId)
       ? this.#sql.exec<Row>("SELECT * FROM agent_cards WHERE card_id = ? AND filed_at >= ?",
                             cardId, now - CARD_TTL_S).toArray()[0]
@@ -194,9 +194,14 @@ export interface RegistrationCardRequest {
 
 // -- THE DOORS: the `registrations` rows' handlers (`contract/doors.json`) ------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`RegistrationsDoorNeeds`) once the row's steps held: the bind, the account,
+// the scope and the fields.
+
+/** What the `registrations` doors reach: the held cards. */
+export interface RegistrationsDoorNeeds {
+  readonly registrations: Registrations;
+}
 
 /** The `registrations` doors' handlers, by door. */
 export const registrationsDoors = Object.freeze({
@@ -205,14 +210,14 @@ export const registrationsDoors = Object.freeze({
    * object captures the origin the binder verified; the owner applies it in session
    * (`registerAgent`). Never applied here. Filing again replaces the identity's card.
    */
-  registerPropose(o: OwnerState, { account, r, binding }: Call<RegisterRequest>):
+  registerPropose(o: RegistrationsDoorNeeds, { account, r, binding }: Call<Fields>):
       { card_id: string; digest: string; expires_at: number } {
     return o.registrations.file(account.origin!, (binding.source as Source).ref, {
     client: account.origin!.client, generation: account.grant!.generation,
     authenticated_at: binding.authenticated_at ?? null }, r, clock());
   },
   /** The pending registration card the owner is shown, and the digest its apply names. */
-  registerProposal(o: OwnerState, { r }: Call<RegistrationCardRequest>): Card {
+  registerProposal(o: RegistrationsDoorNeeds, { r }: Call<RegistrationCardRequest>): Card {
     const card = o.registrations.card(r["card_id"], clock());
     if (card === null) {
       throw new Refusal("refused", "no pending registration for this card");

@@ -119,12 +119,40 @@ describe("the import layers", () => {
       "platform/doors/src/probe.ts imports platform/owner/src/runs.ts",
       "platform/doors/src/probe.ts imports platform/owner/src/grants.ts",
       "platform/doors/src/probe.ts imports platform/owner/src/bodies.ts",
-      "platform/doors/src/probe.ts imports platform/owner/src/inbound.ts"]],
+      "platform/doors/src/probe.ts imports platform/owner/src/inbound.ts",
+      "platform/doors/src/probe.ts loads a module at run time, by import() or require()"]],
     ["a computed module and an absolute path in a Worker's source", {
       "platform/doors/src/probe.ts":
         'export const f = (n: string) => import(n);\nimport x from "/etc/x.js";' },
      ["platform/doors/src/probe.ts imports /etc/x.js",
-      "platform/doors/src/probe.ts imports a computed module"]],
+      "platform/doors/src/probe.ts imports a computed module",
+      "platform/doors/src/probe.ts loads a module at run time, by import() or require()"]],
+    ["the proofs' mint imported but by the runner and the proofs' check", {
+      "platform/owner/src/ledger.ts": 'import { mintProof } from "./proof-mint";',
+      "platform/owner/src/grants.ts": 'import type { isMinted } from "./proof-mint.ts";',
+      "platform/owner/test/probe.test.ts": 'import { mintProof } from "../src/proof-mint";',
+      "platform/owner/memory/probe.ts": 'export { mintProof } from "../src/proof-mint";',
+      "platform/owner/guards/probe.test.ts": 'import "../src/proof-mint";',
+      "platform/owner/src/owner-do.ts": 'import { mintProof } from "./proof-mint";',
+      "platform/owner/src/door.ts": 'import { isMinted } from "./proof-mint";' },
+     ["platform/owner/src/ledger.ts imports platform/owner/src/proof-mint.ts, which only " +
+        `${OWNER_DO} and platform/owner/src/door.ts may import`,
+      "platform/owner/src/grants.ts imports platform/owner/src/proof-mint.ts, which only " +
+        `${OWNER_DO} and platform/owner/src/door.ts may import`,
+      "platform/owner/test/probe.test.ts imports platform/owner/src/proof-mint.ts, which only " +
+        `${OWNER_DO} and platform/owner/src/door.ts may import`,
+      "platform/owner/memory/probe.ts imports platform/owner/src/proof-mint.ts, which only " +
+        `${OWNER_DO} and platform/owner/src/door.ts may import`,
+      "platform/owner/guards/probe.test.ts imports platform/owner/src/proof-mint.ts, which " +
+        `only ${OWNER_DO} and platform/owner/src/door.ts may import`]],
+    ["an owner module loading the runner or the mint at run time", {
+      "platform/owner/src/ledger.ts": 'export const o = () => import("./owner-do");',
+      "platform/owner/src/policy.ts":
+        'export const m = async () => (await import("./proof-mint")).mintProof({});' },
+     ["platform/owner/src/ledger.ts loads a module at run time, by import() or require()",
+      "platform/owner/src/policy.ts imports platform/owner/src/proof-mint.ts, which only " +
+        `${OWNER_DO} and platform/owner/src/door.ts may import`,
+      "platform/owner/src/policy.ts loads a module at run time, by import() or require()"]],
     ["the contract reaching a Worker, the source records, a package and Node's file system", {
       "platform/contract/src/probe.ts": [
         'import { x } from "../../owner/src/text";',

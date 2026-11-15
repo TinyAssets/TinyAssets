@@ -307,7 +307,7 @@ export function pinned(storage: OwnerStorage): string | null {
  * the record of the wipe that emptied it. In a unit.
  */
 function emptiness(o: OwnerState): string | null {
-  const { state } = o.admission();
+  const { state } = o.admission.row();
   if (state !== "pending") {
     return `the owner is ${state}: a restore takes only a pending owner`;
   }
@@ -590,7 +590,7 @@ function answer(o: OwnerState, held: Held): RestoreAnswer {
   if (held.step !== "done") {
     return { step: held.step, done: false };
   }
-  const { state, reasons } = o.admission();
+  const { state, reasons } = o.admission.row();
   const rows = Object.keys(exported()).reduce((sum, table) => sum + o.storage.sql.exec<{
     n: number }>(`SELECT count(*) AS n FROM ${table}`).one().n, 0);
   return { step: "done", done: true, gen: held.gen, rows, chunks: held.at, keys: o.keys.ids(),
@@ -909,7 +909,7 @@ export const restoreDoors = Object.freeze({
       return { namespace: o.files.storedNamespace(),
                generations: o.backups.manifests().map(({ gen, finished_at }) =>
                  ({ gen, finished_at, restorable: o.backups.restorable(gen, clock()) })),
-               state: o.admission().state, begins: begun || emptiness(o) === null,
+               state: o.admission.row().state, begins: begun || emptiness(o) === null,
                restore: held === null ? null
                  : { step: held.step, gen: held.gen, fresh: held.fresh, since: held.since } };
     });
@@ -1019,7 +1019,7 @@ export const restoreDoors = Object.freeze({
         }
         return { held: now, began: false };
       }
-      const { state } = o.admission();
+      const { state } = o.admission.row();
       if (!ADMITS.includes(state)) {
         throw refused(`the owner is ${state}: a pin holds a live owner, and a pending one is ` +
                       "restored into with none");
@@ -1038,7 +1038,7 @@ export const restoreDoors = Object.freeze({
                            "NULL", o.files.storedNamespace(),
                          gen, clock());
       o.egress.end("admission");
-      o.launcher.stop(o.runs.endAll(clock()));
+      o.launcher.endAll(clock());
       return { held: record(o.storage.sql)!, began: true };
     });
     if (began) {

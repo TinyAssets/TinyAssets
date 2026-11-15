@@ -6,10 +6,21 @@
  * reach as its `<Module>DoorNeeds`: its own store, the other modules' methods it calls, and
  * the object's units and reads it calls (`DoorUnits`, `ObjectReads`). `tsc` holds the parts
  * the object hands every handler to each module's at its handler map (`HANDLERS`), since a
- * handler's first parameter is contravariant. No state flows through this module.
+ * handler's first parameter is contravariant.
+ *
+ * A widening (a grant, a key, a policy write, a session, the owner's tier or admission) takes
+ * as its first argument the proof its caller made (`LiveSession`, `OwnerSelf`, `PlatformLine`,
+ * `ImportLine`): `tsc` refuses a call that holds none, and the widening refuses one at run time
+ * (`proven`). A row's call carries the proof of its caller alone (`Call<R, K>`, by the row's
+ * `caller`), so only the doors whose caller proved it can make the widening it allows. Each
+ * proof is minted by the runner alone, once its row's caller held (`proof-mint.ts`, which only
+ * the runner and this check may import; the policy-boundary guard refuses a cast to a proof
+ * anywhere else). No state flows through this module.
  */
 import type { RunCapability } from "../../contract/src/capabilities";
 import type { Binding, Origin } from "../../contract/src/binding";
+import type { CallerKind } from "../../contract/src/doors";
+import { isMinted } from "./proof-mint";
 import type { Grant, Stamped } from "./authority";
 import type { ControlGate } from "./control-gate";
 import type { DoorRows } from "./door-map";
@@ -55,18 +66,65 @@ export interface Bound {
   readonly erased: boolean;
 }
 
+/** A proof's brand as a type (its run-time brand is `proof-mint.ts`'s): only a cast makes one. */
+declare const minted: unique symbol;
 /**
- * A door's call once its row's every step held: bound, its request's fields (`r`), a session
- * door's live session, a run door's place (its universe and agent), and, for a door whose
- * handler names the place its capability is held at, that check (`held`).
+ * A proof of what a caller proved: its kind (`proved`, read at run time by `proven`), and its
+ * brand, which no value holds (`minted`, the type's alone).
  */
-export interface Call<R = unknown> extends Bound {
+interface Proof<K extends string> {
+  readonly proved: K;
+  readonly minted: typeof minted;
+}
+/**
+ * The owner's live session, as `Sessions.live` found its row (S30, N10): a session row's
+ * proof, which every widening in the owner's session takes. `hash` is its id (the receipts').
+ */
+export interface LiveSession extends Proof<"session"> {
+  readonly hash: string;
+}
+/** The owner itself, on its own account, never an outside client nor a run: an owner row's. */
+export type OwnerSelf = Proof<"owner">;
+/** The platform's reserved caller, with no client and no session: a reserved row's. */
+export type PlatformLine = Proof<"reserved">;
+/** The platform's import binding, while the owner is pending: an import row's. */
+export type ImportLine = Proof<"import">;
+
+/** The proof a call of each caller carries, by the name it carries it under. */
+interface Proofs {
+  readonly session: { readonly session: LiveSession };
+  readonly owner: { readonly self: OwnerSelf };
+  readonly reserved: { readonly platform: PlatformLine };
+  readonly import: { readonly importing: ImportLine };
+}
+
+/**
+ * A proof's run-time check: a proof the runner minted (`proof-mint.ts`), of `kind`, else the
+ * widening is a bug, refused.
+ */
+export function proven<K extends string>(proof: Proof<K>, kind: K): void {
+  if (!isMinted(proof) || proof.proved !== kind) {
+    throw new Error(`a widening without its ${kind} proof`);
+  }
+}
+
+/**
+ * A door's call once its row's every step held: bound, its request's fields (`r`), a run
+ * door's place (its universe and agent), and, for a door whose handler names the place its
+ * capability is held at, that check (`held`); and the proof its row's caller `K` made, if it
+ * makes one (`Proofs`): a session door's live session, an owner door's self, a reserved door's
+ * platform line, an import door's import line. A call of no one caller carries none.
+ */
+export type Call<R = unknown, K extends CallerKind = CallerKind> =
+  Checked<R> & ([K] extends [keyof Proofs] ? Proofs[K] : unknown);
+
+/** A door's call once its row's every step held, but its caller's proof (`Call`). */
+export interface Checked<R = unknown> extends Bound {
   /** The binding the call came with, as the binder handed it. */
   readonly binding: Binding;
   /** The request as the binder handed it (`r` is its fields, as the row held them). */
   readonly request: R;
   readonly r: Record<string, unknown>;
-  readonly session: string;
   readonly universe: string | null;
   readonly agent: string;
   /** The row's capability held at `place`, the place its handler names. */
@@ -86,14 +144,14 @@ export interface Call<R = unknown> extends Bound {
 }
 
 /** A door whose handler makes its own units: its call, checked again in each. */
-export interface Door<R = unknown> {
+export interface Door<R = unknown, K extends CallerKind = CallerKind> {
   /** The binding the call came with, and its request, as the binder handed them. */
   readonly binding: Binding;
   readonly request: R;
   /** Every step of the row, in the unit it is called in. */
-  check(): Call<R>;
+  check(): Call<R, K>;
   /** `act` on the checked call; a session door's refusal receipted. */
-  within<T>(act: (call: Call<R>) => T): T;
+  within<T>(act: (call: Call<R, K>) => T): T;
   /** The bind and account steps alone. */
   bound(): Account;
   /** Every step but the fields: the caller's authority, whatever it asks. */
@@ -158,10 +216,11 @@ type DoorsIn<M extends Module> =
 /**
  * A door's handler, handed `N` (its first parameter: what it may reach) and, by its row's
  * gate, the door that checks its call in each unit it makes, or the call checked in one unit
- * of that gate. Its request is its own (`never` here, so any request type fits), held to the
- * row's fields by the runner.
+ * of that gate, with its row's caller's proof. Its request is its own (`never` here, so any
+ * request type fits), held to the row's fields by the runner.
  */
 export type HandlerOf<D extends DoorName, N> = GateOf<D> extends "units"
-  ? (o: N, door: Door<never>) => Promise<unknown> : (o: N, call: Call<never>) => unknown;
+  ? (o: N, door: Door<never, CallerOf<D>>) => Promise<unknown>
+  : (o: N, call: Call<never, CallerOf<D>>) => unknown;
 /** The handlers of module `M`'s doors, each handed `N`: one per row that names `M`. */
 export type DoorsOf<M extends Module, N> = { readonly [D in DoorsIn<M>]: HandlerOf<D, N> };

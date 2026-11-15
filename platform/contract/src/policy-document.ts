@@ -165,7 +165,7 @@ function checkActions(actions: unknown): void {
  * bytes, live and in history, the bodies placed in R2 (ADR-035), the small files kept inline,
  * and the collection rows', their history's and mail's bodies kept inline in the object;
  * never the platform's own bookkeeping (indexes, receipts, counters). It is the tier's storage
- * (free 25 GB, paid 250 GB, the control record's, `tier.ts`), never a number of ours, which
+ * (free 25 GB, paid 250 GB, the control record's, `admission.ts`), never a number of ours, which
  * the owner may set lower and no higher (`fileLimits`). A file is at most `max_file_bytes`,
  * off at `MAX_INTENT_CHUNKS` chunks (40 GiB), the most one upload intent holds.
  *

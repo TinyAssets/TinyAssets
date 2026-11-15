@@ -226,9 +226,9 @@ export interface DoorRows {
   readonly socketsEnd:
     { readonly module: "relay"; readonly caller: "owner"; readonly gate: "units" };
   readonly tierSet:
-    { readonly module: "tier"; readonly caller: "reserved"; readonly gate: "door" };
+    { readonly module: "admission"; readonly caller: "reserved"; readonly gate: "door" };
   readonly tierRead:
-    { readonly module: "tier"; readonly caller: "owner"; readonly gate: "door" };
+    { readonly module: "admission"; readonly caller: "owner"; readonly gate: "door" };
   readonly restoreSource:
     { readonly module: "restore"; readonly caller: "reserved"; readonly gate: "units" };
   readonly restoreBegin:

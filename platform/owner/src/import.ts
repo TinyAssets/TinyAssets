@@ -322,14 +322,13 @@ function rowThere(o: OwnerState, owner: string,
 /** The `import` doors' handlers, by door. */
 export const importDoors = Object.freeze({
   /** The policy, then collection rows, each in its own unit, a body placed past its size. */
-  async importRows(o: OwnerState, door: Door<ImportRowsRequest>): Promise<Imported> {
+  async importRows(o: OwnerState, door: Door<ImportRowsRequest, "import">): Promise<Imported> {
     const rows = await o.door(() => rowsOf(door.check().r["rows"]));
     let written = 0;
     for (const row of rows) {
       if (row.kind === "policy") {
         const set = await o.synced(() => {
-          door.check();
-          return o.policy.imported(row.document, clock());
+          return o.policy.imported(door.check().importing, row.document, clock());
         });
         written += set ? 1 : 0;
         continue;
@@ -481,10 +480,10 @@ export const importDoors = Object.freeze({
                more: rows.length > CHECK_ROWS };
     }
     return o.door(() => {
-      const { state, reasons } = o.admission();
+      const { state, reasons } = o.admission.row();
       const usage = o.files.usage();
       return { part: "state" as const, more: false as const,
-               policy_digest: o.policy.read().digest, tier: o.tier(), state, reasons,
+               policy_digest: o.policy.read().digest, tier: o.admission.tier(), state, reasons,
                used_bytes: usage.stored, limit_bytes: usage.limits.max_bytes };
     });
   },

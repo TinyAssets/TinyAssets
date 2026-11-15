@@ -129,7 +129,7 @@ import {
 import { COMMAND_CENTER_MAX, SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { type Change, CHANGES, type Follows, follows } from "../../contract/src/wake-kinds";
 import type { Account, Call, Door } from "./door";
-import type { OwnerState, RegisterRequest } from "./owner-do";
+import type { OwnerState } from "./owner-do";
 import type { Heads } from "./pages";
 import type { Events } from "../../contract/src/wake-records";
 import type { Resealed } from "../../contract/src/gateway";
@@ -478,6 +478,7 @@ export type Agent = {
   readonly wake_tat: number | null;
 };
 
+/** An agent's registration, as the owner asks it (`registerAgent`) or a held card holds it. */
 interface Registration {
   readonly command_center_id: unknown;
   readonly display_name: unknown;
@@ -3435,14 +3436,14 @@ export const ledgerDoors = Object.freeze({
    * row where the ledger reads them, and changed like any policy write: in the owner's
    * session, against the policy generation, receipted.
    */
-  policyWakeLimits(o: OwnerState, { session: id, r }: Call<WakeLimitsRequest>):
+  policyWakeLimits(o: OwnerState, { session, r }: Call<WakeLimitsRequest, "session">):
       { agent: Agent; generation: number } {
     return o.storage.transactionSync(() => {
       const agent = o.ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
                                                r["batch_window_s"]);
       const limits = { agent_id: agent.agent_id, max_wakes_per_hour: agent.max_wakes_per_hour,
                        batch_window_s: agent.batch_window_s };
-      const generation = o.policy.changed(id, r["expected_generation"], "wake_limits",
+      const generation = o.policy.changed(session, r["expected_generation"], "wake_limits",
                                               limits, agent.agent_id, clock());
       return { agent, generation };
     });
@@ -3455,17 +3456,16 @@ export const ledgerDoors = Object.freeze({
    * (`origin`, re-derived from the key id): the one door an outside origin reaches
    * together with the owner's session.
    */
-  registerAgent(o: OwnerState,
-                { account: { origin }, r, binding }: Call<RegisterRequest | CardApply>):
-      Agent {
+  registerAgent(o: OwnerState, { account: { origin }, session, r, binding }:
+                  Call<Registration | CardApply, "session">): Agent {
     if (origin === null) {
       return o.storage.transactionSync(() => {
-        const card = o.registrations.take(r["card_id"], r["digest"], clock());
+        const card = o.registrations.take(session, r["card_id"], r["digest"], clock());
         return o.ledger.register(card.origin, card.source,
-                                     card.request as unknown as RegisterRequest);
+                                     card.request as unknown as Registration);
       });
     }
-    return o.ledger.register(origin, binding.source, r as unknown as RegisterRequest);
+    return o.ledger.register(origin, binding.source, r as unknown as Registration);
   },
   /**
    * The owner disables any agent in its session. An outside client cannot reach it: it

@@ -35,7 +35,7 @@ import { parse as parseYaml } from "yaml";
 import { PLATFORM, REPO } from "../paths.ts";
 import { workerFolders } from "../wrangler.ts";
 import { type CutoverLayer, cutoverLayer, isGone } from "./cutover.ts";
-import { INLINE, type Layer, LAYERS, SCRIPT } from "./layers.ts";
+import { INLINE, type Layer, LAYERS, SCRIPT, SOLE_IMPORTERS } from "./layers.ts";
 import type { Found } from "./owed.ts";
 import { KINDS, parse, reporter, scriptsIn, workerSources } from "./sources.ts";
 
@@ -470,8 +470,11 @@ function edgeViolations(layer: Layer, layers: readonly Layer[], from: string, ws
       if (goes && gone) {
         continue;
       }
+      const sole = importersOf(to);
       if (!holders.some((each) => mayImport(each, ws, to, workers))) {
         out.push(`${from} imports ${to}`);
+      } else if (sole !== undefined && !sole.includes(from)) {
+        out.push(`${from} imports ${to}, which only ${sole.join(" and ")} may import`);
       } else if (gone && !(cutover.entries.get(at) ?? []).includes(to)) {
         out.push(`${from} imports ${to}, which the cutover deletes: name the import on the ` +
                  "file's edit in platform/cutover.json");
@@ -485,6 +488,29 @@ function edgeViolations(layer: Layer, layers: readonly Layer[], from: string, ws
     }
   }
   return [...new Set(out)];
+}
+
+/** The files alone that may import `to` (`SOLE_IMPORTERS`), or undefined for any other. */
+function importersOf(to: string): readonly string[] | undefined {
+  return Object.hasOwn(SOLE_IMPORTERS, to) ? SOLE_IMPORTERS[to] : undefined;
+}
+
+/** How many modules `source` loads at run time: each `import()` and `require()` it calls. */
+function runtimeLoads(path: string, source: string): number {
+  if (!/\b(?:import|require)\s*\(/.test(source)) {
+    return 0;
+  }
+  let loads = 0;
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+        || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
+      loads++;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.createSourceFile(path, source, ts.ScriptTarget.Latest, false,
+                            KINDS[posix.extname(path)] ?? ts.ScriptKind.TS));
+  return loads;
 }
 
 /** What the layer table finds over a set of files: files in no layer or two, and violations. */
@@ -529,6 +555,10 @@ export function layerProblems(inputs: LayerInputs): LayerReport {
     for (const what of edgeViolations(placed[0]!, layers, path, ws, specifiers(path, source),
                                       has, workers, cutover, path)) {
       violations.push({ workspace: ws ?? path.split("/")[0]!, what });
+    }
+    if (placed[0]!.eager === true && runtimeLoads(path, source) > 0) {
+      violations.push({ workspace: ws ?? path.split("/")[0]!,
+                        what: `${path} loads a module at run time, by import() or require()` });
     }
   }
   for (const [path, text] of workflows) {

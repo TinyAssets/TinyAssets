@@ -25,6 +25,10 @@
  * The cutover layer lies over the table, read from the cutover's manifest (`cutover.ts`): what
  * the manifest deletes may import itself whatever its layer says, and nothing that stays
  * imports it but the imports the manifest names.
+ *
+ * Over every layer, a module the table names a sole importer for (`SOLE_IMPORTERS`) is
+ * imported by those files alone, whatever any layer allows; and a layer that loads `eager`
+ * loads every module by name at its top, never by `import()` or `require()` at run time.
  */
 
 export interface Layer {
@@ -48,7 +52,20 @@ export interface Layer {
    * subject with the subject's own inputs.
    */
   readonly inherits?: boolean;
+  /** It loads no module at run time (`import()`, `require()`): what it runs, it imports. */
+  readonly eager?: boolean;
 }
+
+/**
+ * The modules only the files named may import, by any way an import is made, a type one and
+ * a test's or a memory leg's included. The widenings' proofs' mint (`owner/src/proof-mint.ts`):
+ * the runner mints with it (`owner-do.ts`), and the proofs' check reads its brand (`door.ts`),
+ * a private field that only the mint's class body can read.
+ */
+export const SOLE_IMPORTERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "platform/owner/src/proof-mint.ts":
+    Object.freeze(["platform/owner/src/owner-do.ts", "platform/owner/src/door.ts"]),
+});
 
 /** The contract: its modules and its data files. */
 const CONTRACT = Object.freeze(["platform/contract/src/**", "platform/contract/*.json"]);
@@ -77,8 +94,11 @@ export const LAYERS: readonly Layer[] = Object.freeze([
   {
     // A Worker's own data beside its config (`doors/shared-apps.json`) and its build's
     // output (the sandbox's runner in `dist/`, imported as data) are its own folder's.
+    // A Worker loads nothing at run time: a module its source could load by `import()` (the
+    // owner's runner, its proofs' mint) would reach what its imports do not show.
     name: "a Worker's source",
     files: ["platform/<worker>/src/**", ...NOT_TESTS],
+    eager: true,
     may: ["platform/<worker>/src/**", "platform/<worker>/*.json", "platform/<worker>/dist/**",
           ...CONTRACT, ...SOURCES, ...NOT_TESTS],
     also: {
