@@ -35,19 +35,19 @@ Untangle the code a change touches, or a whole area, and finish the job.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run: run only what the diff can break, one mutation per
-  declared change. One PR in flight per lane, never
+  declared change; read only what applies. One PR in flight per lane, never
   stacked. Merge `origin/main` in; never rebase a pushed branch. A diff touching
   `platform/` also runs every `ci` guard (`npx vitest run --root ci guards/` in
-  `platform/`): the layers, kit and kernels no workspace covers.
-- A prompt asks for no check this section doesn't: no full suite, and the
-  recorders (`npm run record` in `platform/`) only when the diff changes what
-  a Worker sends or answers. This section wins over a prompt.
-  One review a PR; a second only after a security block.
-- Before the cutover, build what other code or a stored record builds on.
-  A fix waits only when nothing builds on it, it works after the window
-  closes, and its failure is rare, loud and recoverable with what exists:
-  Fact 17's one exception, listed with its branch in `tasks.md`'s
-  "After the cutover" (founder, 2026-11-15).
+  `platform/`).
+- A coordinator's prompt asks for no check this section doesn't, and this
+  section wins: no full suite; the recorders (step 5) only when the diff
+  changes what a Worker sends or answers. One review a PR, a second only after
+  a security block.
+- Before the cutover, untangling, security and what code or a stored record
+  builds on come first. A fix waits only when nothing builds on it, it works
+  after the window closes, and its failure is rare, loud when it happens and
+  recoverable with what exists: `AGENTS.md` Fact 17's one exception, listed
+  with its branch in `tasks.md`'s "After the cutover" (founder, 2026-11-15).
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
   within about 20% of its ceiling lands with its fix; a reviewer who finds one
   blocks.
