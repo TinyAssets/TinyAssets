@@ -88,13 +88,17 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
  * Each proof's maker (`door.ts`): the owner's live session is `Sessions.live`'s, and the owner
  * itself, the platform's reserved line and its import line are the runner's, once its row's
  * caller held. Their brands are a type's alone and `tsc` takes any cast, so a proof outside
- * its maker is a source fact: a type assertion naming a proof's type, or a value naming a
- * proof's kind (`proved`), is refused anywhere else.
+ * its maker is a source fact: a type assertion naming a proof's type, or the name of a
+ * proof's kind (`proved`) in any spelling (a key, a shorthand, a computed key, a string, so a
+ * JSON text too), is refused anywhere else. A proof whose kind is not named reads as none
+ * at run time (`proven`), whatever it is cast to.
  */
 const MAKERS: Readonly<Record<string, string>> = Object.freeze({
   LiveSession: "owner/src/sessions.ts", OwnerSelf: OWNER_DO, PlatformLine: OWNER_DO,
   ImportLine: OWNER_DO,
 });
+/** Where the proofs and their kind are declared, and their check reads it (`proven`). */
+const DOOR = "owner/src/door.ts";
 
 /** Each proof `sources` make outside its maker, as `file:line: what`. */
 export function forged(sources: ReadonlyMap<string, string>): string[] {
@@ -111,8 +115,10 @@ export function forged(sources: ReadonlyMap<string, string>): string[] {
           }
         }
       }
-      if (ts.isPropertyAssignment(node) && node.name.getText(file).replace(/["']/g, "") === "proved"
-          && !makers.has(path)) {
+      const word = ts.isIdentifier(node) ? node.text
+        : ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node)
+          || ts.isTemplateTail(node) ? node.text : null;
+      if (word !== null && /\bproved\b/.test(word) && !makers.has(path) && path !== DOOR) {
         report(node, "names a proof's kind, which only its maker does");
       }
       ts.forEachChild(node, visit);
@@ -236,6 +242,12 @@ describe("policy-boundary guard", () => {
     ["the owner itself in an angle-bracket assertion", "const self = <OwnerSelf>{};",
      "owner/src/keys.ts", ["casts to OwnerSelf, which only owner/src/owner-do.ts makes"]],
     ["a proof's kind handed on as anything", 'grants.set({ "proved": "session" } as never);',
+     "owner/src/ledger.ts", ["names a proof's kind, which only its maker does"]],
+    ["a proof's kind by a shorthand", 'grants.set({ proved, hash } as never);',
+     "owner/src/ledger.ts", ["names a proof's kind, which only its maker does"]],
+    ["a proof's kind by a computed key", 'grants.set({ ["proved"]: "session" } as never);',
+     "owner/src/ledger.ts", ["names a proof's kind, which only its maker does"]],
+    ["a proof's kind in a JSON text", 'grants.set(JSON.parse(\'{"proved":"session"}\'));',
      "owner/src/ledger.ts", ["names a proof's kind, which only its maker does"]],
   ])("sees %s", (_what, source, path, problems) => {
     expect(forged(new Map([[path, source]])))

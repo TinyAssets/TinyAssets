@@ -122,6 +122,8 @@ describe("a widening's proof", () => {
     const mailboxAck: HandlerOf<"mailboxAck", OwnerState> = (o, call) => {
       // @ts-expect-error an account row's call carries no proof
       o.policy.changed(call.session, 1, "wake_limits", {}, "rule", clock());
+      // @ts-expect-error nor make one of the binding's session: the sessions' check is no proof
+      o.grants.set(o.sessions.live(call.binding.session, clock()), CHANGE, clock());
       // @ts-expect-error nor may it take a held registration
       return o.registrations.take(call.session, "card", "d", clock());
     };

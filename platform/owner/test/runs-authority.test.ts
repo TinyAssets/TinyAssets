@@ -20,7 +20,7 @@ import { AGENTS_OWNER_ONLY } from "../src/paths";
 import {
   EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate,
 } from "../../contract/src/run-events";
-import { TIER_UNREAD } from "../../contract/src/owner";
+import { TIER_UNREAD } from "../src/files";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,

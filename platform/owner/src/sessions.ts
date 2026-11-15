@@ -174,7 +174,8 @@ export class Sessions {
  * the app sockets signing every session out closes.
  */
 export interface SessionsDoorNeeds extends Pick<DoorUnits, "synced"> {
-  readonly sessions: Sessions;
+  /** Never `live`: only the runner's session step makes a live session's proof. */
+  readonly sessions: Pick<Sessions, "open" | "extend" | "id" | "close" | "closeAll">;
   readonly connections: { cancelFlows(session: string | null): void };
   readonly relay: Pick<Relay, "closeAll">;
 }

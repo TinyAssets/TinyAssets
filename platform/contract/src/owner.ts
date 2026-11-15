@@ -122,12 +122,6 @@ export interface TierRequest {
 }
 
 /**
- * The owner's refusal of a run or a file byte while its object holds no tier numbers
- * (`admission.ts`): the runs' admission and the files' byte bound both refuse with it.
- */
-export const TIER_UNREAD = "tier_unread: the platform's tier numbers are not known here";
-
-/**
  * The owner's state as the platform reads it (`ownerState`, the operator's `owner.state`):
  * names, codes and counts alone, never its content, a credential or a binding. An owner
  * being erased, or erased, has none: the door refuses it `erasing` or `owner_erased`.

@@ -25,7 +25,7 @@ import { slotBusy } from "../../contract/src/slots";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, type RunHost, Runs, SESSION_REFUSED,
          SIGNIN_LAPSED, TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
 import { PLATFORM_TIER_ONLY } from "../src/admission";
-import { TIER_UNREAD } from "../../contract/src/owner";
+import { TIER_UNREAD } from "../src/files";
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,

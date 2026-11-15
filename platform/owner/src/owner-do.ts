@@ -166,7 +166,7 @@ import { exportDoors } from "./export";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner";
 import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
-import { Sessions, sessionsDoors } from "./sessions";
+import { Sessions, type SessionsDoorNeeds, sessionsDoors } from "./sessions";
 import { Signins, signinsDoors, switchedOn } from "./signins";
 import { Starter, starterDoors } from "./starter";
 import { carried } from "./starter-package";
@@ -313,7 +313,11 @@ export interface OwnerState extends DoorUnits, ObjectReads {
   readonly collections: Collections;
   readonly policy: Policy;
   readonly grants: Grants;
-  readonly sessions: Sessions;
+  /**
+   * The sessions a module reaches: their live check a check alone (the files' own tree),
+   * never the live session's proof, which only the runner's session step hands (`#within`).
+   */
+  readonly sessions: SessionsDoorNeeds["sessions"] & { live(proof: unknown, now: number): void };
   readonly ledger: Ledger;
   readonly files: Files;
   readonly backups: Backups;

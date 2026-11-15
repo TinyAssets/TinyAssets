@@ -70,13 +70,13 @@ import { holdingStep, refuseRestoring } from "./restore";
 import { ADMISSION_TABLE } from "./schema";
 import { parseTiers, TIER_NAMES, type TierName, type Tiers } from "../../contract/src/control";
 import {
-  type AdmissionRequest, type OwnerStateAnswer, SUSPENSIONS, TIER_UNREAD, type TierRequest,
+  type AdmissionRequest, type OwnerStateAnswer, SUSPENSIONS, type TierRequest,
 } from "../../contract/src/owner";
 import {
   type Call, type Door, type DoorUnits, type ObjectReads, type PlatformLine, proven,
 } from "./door";
 import type { Egress } from "./egress";
-import type { Files } from "./files";
+import { type Files, TIER_UNREAD } from "./files";
 import type { Launcher } from "./launch";
 import type { Relay } from "./relay";
 import type { Runs } from "./runs";
