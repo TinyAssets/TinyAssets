@@ -154,8 +154,12 @@ export interface ChunkStore {
   deleteChunks(ns: string, key: string, sha256s: string[]): Promise<{ deleted: number }>;
   /** The wrapped key wrapped again under the ring's active kid (a rotation's sweep). */
   rewrapKey(ns: string, key: string): Promise<{ key: string }>;
-  /** A generation root's wrapped key wrapped again in place; null when there is no root. */
-  rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string } | null>;
+  /**
+   * A generation root's wrapped key wrapped again in place, and the key it now carries; `key`
+   * null when the root changed meanwhile (a pass wrote it, under the active kid), left as it
+   * is; null when there is no root.
+   */
+  rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string | null } | null>;
   /** Every object under the namespace's prefix deleted: the erasure's alone. */
   deleteNamespace(ns: string): Promise<{ deleted: number }>;
   putManifestPart(ns: string, key: string, gen: string, part: number, bytes: Uint8Array):

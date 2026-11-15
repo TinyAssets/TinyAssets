@@ -718,12 +718,14 @@ describe("manifests", () => {
     await service(env.BLOBS, OLD).putManifestRoot(space, old, "2222222222222222", [part], [],
                                                         { s: 1, e: 0 });
     expect((await service().getManifestRoot(space, "2222222222222222"))!.key).toBe(old);
-    // A root another pass wrote while its key was wrapped again: refused for now, run again.
+    // A root another pass wrote while its key was wrapped again: left as it is, and said, so
+    // the owner's sweep counts it left and asks again.
     const raced = { get: (at: string) => env.BLOBS.get(at), put: async () => null };
-    expect(await refused(() => service(raced as unknown as R2Bucket)
-      .rewrapManifestRoot(space, "2222222222222222"))).toBe("root_changed");
-    const { key } =(await service().rewrapManifestRoot(space, "2222222222222222"))!;
-    expect(key.startsWith("v1.k2.")).toBe(true);
+    expect(await service(raced as unknown as R2Bucket)
+      .rewrapManifestRoot(space, "2222222222222222")).toEqual({ key: null });
+    expect((await service().getManifestRoot(space, "2222222222222222"))!.key).toBe(old);
+    const { key } = (await service().rewrapManifestRoot(space, "2222222222222222"))!;
+    expect(key?.startsWith("v1.k2.")).toBe(true);
     expect(await service().rewrapManifestRoot(space, "2222222222222222")).toEqual({ key });
     expect(await service().rewrapManifestRoot(space, "3333333333333333")).toBeNull();
     // With the old kid gone, the root still opens, and its key reads its parts.

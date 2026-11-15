@@ -73,7 +73,9 @@ import { checkedRecord, type ModelRecord } from "../../contract/src/model-record
 import type { GatewayService, Refreshed } from "../../contract/src/gateway";
 import type {
   ConnectionCommitRequest, ConnectionPrepareRequest, ConnectionRequest, FlowFinishRequest,
+  ResealAnswer, Swept,
 } from "../../contract/src/owner";
+import { resealAnswer } from "../../contract/src/owner";
 import { isGatewayCode, Refusal, refusalOf } from "../../contract/src/refusal";
 import {
   CONNECTION_BLOB_MAX, EGRESS_JSON_MAX, MODELS_JSON_MAX, REDIRECT_URI_MAX,
@@ -839,37 +841,29 @@ export class Connections {
   }
 
   /**
-   * The platform's sweep before a gateway kid leaves the ring (`gatewayReseal`): every blob
-   * the object holds, an idle connection's and one kept for its provider revoke included,
-   * resealed by `GATEWAY.reseal` and stored at the next version by the reseal's
-   * compare-and-swap, each in a unit of its own. A blob the gateway found under its active
-   * kid already is left as it is. How many were resealed, and how many lost the swap to a
-   * refresh or a revoke meanwhile (`left`): the platform sweeps again until none is left,
-   * and only then retires the kid.
+   * The connections' half of the platform's sweep before a gateway kid leaves the ring
+   * (`gatewayReseal`): every blob the object holds, an idle connection's and one kept for
+   * its provider revoke included, resealed by `GATEWAY.reseal` and stored at the next
+   * version by the reseal's compare-and-swap, each in a unit of its own. A blob the gateway
+   * found under its active kid already is left as it is; one that lost the swap to a refresh
+   * or a revoke meanwhile is under no kid the sweep knows.
    */
-  async reseal(): Promise<{ resealed: number; left: number }> {
+  async reseal(): Promise<Swept[]> {
     const held = this.#sql.exec<{ connection_id: string; version: number; kid: string;
                                   blob: string }>(
       "SELECT connection_id, version, kid, blob FROM connection_secrets " +
         "ORDER BY connection_id").toArray();
-    let resealed = 0;
-    let left = 0;
+    const swept: Swept[] = [];
     for (const { connection_id: id, version, kid, blob } of held) {
       const answer = await this.#gateway.reseal(this.#owner(), id, version, blob);
-      if (answer.kid === kid) {
-        continue;
-      }
-      const kept = await this.#write(() => this.#keepResealed(
+      const kept = answer.kid !== kid && await this.#write(() => this.#keepResealed(
         id, version, answer, clockMs(), (row) => this.#sql.exec(
           "SELECT 1 FROM connection_secrets WHERE connection_id = ? AND version = ? " +
             "AND blob = ?", row.id, version, blob).toArray().length > 0));
-      if (kept) {
-        resealed++;
-      } else {
-        left++;
-      }
+      swept.push({ active: answer.kid, under: answer.kid === kid || kept ? answer.kid : null,
+                   resealed: kept });
     }
-    return { resealed, left };
+    return swept;
   }
 
   // -- the `connections` lane ------------------------------------------------------
@@ -1012,10 +1006,15 @@ export const connectionsDoors = Object.freeze({
                                             (live) => live.connection === revoked.connection));
     return revoked;
   },
-  async gatewayReseal(o: OwnerState, door: Door<undefined>):
-      Promise<{ resealed: number; left: number }> {
+  /**
+   * The platform's sweep before a gateway kid leaves the ring: every blob the object holds
+   * under it, its connections' and its doorbell subscriptions', an idle one's included, since
+   * nothing else reseals it. The platform sweeps again until none is left, and only then
+   * retires the kid.
+   */
+  async gatewayReseal(o: OwnerState, door: Door<undefined>): Promise<ResealAnswer> {
     await o.door(() => door.check());
-    return o.connections.reseal();
+    return resealAnswer([...await o.connections.reseal(), ...await o.doorbell.reseal()]);
   },
   connectionList(o: OwnerState, _call: Call<undefined>): { connections: ConnectionView[] } {
     return ({ connections: o.connections.list() });

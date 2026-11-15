@@ -132,6 +132,7 @@ import type {
 } from "./owner-do";
 import type { Heads } from "./pages";
 import type { Events } from "../../contract/src/wake-records";
+import type { Resealed } from "../../contract/src/gateway";
 
 /**
  * The reader and sender id of the object's owner. An outside agent's id is `agent_` + hex;
@@ -2788,11 +2789,32 @@ export class Ledger {
     );
   }
 
-  /** A subscription's blob resealed under the gateway's active kid (`ringDoorbell`). */
-  resealed(subscriptionId: string, blob: string, kid: string, version: number): void {
-    this.#sql.exec("UPDATE wake_callbacks SET blob = ?, kid = ?, version = ? " +
-                     "WHERE subscription_id = ? AND version < ?",
-                   blob, kid, version, subscriptionId, version);
+  /**
+   * A subscription's blob resealed under the gateway's active kid (`ringDoorbell`, or the
+   * platform's sweep), stored only over the blob and version it was resealed from: a refresh
+   * meanwhile stores its own secret at `DOORBELL_VERSION` again, so the version alone would
+   * let the old secret's reseal overwrite it. Whether it was stored.
+   */
+  resealed(subscriptionId: string, from: { readonly version: number; readonly blob: string },
+           to: Resealed): boolean {
+    return this.#sql.exec("UPDATE wake_callbacks SET blob = ?, kid = ?, version = ? " +
+                            "WHERE subscription_id = ? AND version = ? AND blob = ?",
+                          to.blob, to.kid, to.version, subscriptionId, from.version,
+                          from.blob).rowsWritten > 0;
+  }
+
+  /**
+   * Every subscription's sealed blob, for the platform's sweep before a gateway kid leaves
+   * the ring (`Doorbell.reseal`): its version, kid and blob, and the secret a refresh
+   * replaced while it still signs (`previous_until` past `now`), else null. A read.
+   */
+  sealedCallbacks(now: number): { subscription_id: string; version: number; kid: string;
+                                  blob: string; previous: string | null }[] {
+    return this.#sql.exec<{ subscription_id: string; version: number; kid: string; blob: string;
+                            previous: string | null }>(
+      "SELECT subscription_id, version, kid, blob, CASE WHEN previous_until > ? " +
+        "THEN previous_blob END AS previous FROM wake_callbacks ORDER BY subscription_id", now,
+    ).toArray();
   }
 
   /**

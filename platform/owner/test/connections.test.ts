@@ -960,7 +960,7 @@ describe("the platform's reseal sweep", () => {
     const idle = await keyUnder(r, "k1");
     const current = await keyUnder(r, "k2");
     expect((await failure(() => r.stub.gatewayReseal(r.bind()))).message).toBe(PLATFORM_ONLY);
-    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0 });
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0, kid: "k2" });
     const swept = [[idle, 2, "k2"], [current, 1, "k2"]]
       .sort((a, b) => (String(a[0]) < String(b[0]) ? -1 : 1));
     expect(await kids(r)).toEqual(swept);
@@ -969,7 +969,7 @@ describe("the platform's reseal sweep", () => {
                               row!["blob"]);
     expect(opened.credential.kind === "api_key" && opened.credential.secret).toBe("sk-k1");
     // Nothing is left under the older kid: a second sweep reseals nothing.
-    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 0 });
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 0, kid: "k2" });
     expect(await kids(r)).toEqual(swept);
   });
 
@@ -978,10 +978,10 @@ describe("the platform's reseal sweep", () => {
     const connection = await keyUnder(r, "k1");
     await r.sql("UPDATE connections SET lease_id = 'refreshing', lease_until = ?",
                 Date.now() + 60_000);
-    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 1 });
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 1, kid: "k2" });
     expect(await kids(r)).toEqual([[connection, 1, "k1"]]);
     await r.sql("UPDATE connections SET lease_id = NULL, lease_until = NULL");
-    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0 });
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0, kid: "k2" });
     expect(await kids(r)).toEqual([[connection, 2, "k2"]]);
   });
 
@@ -1005,7 +1005,7 @@ describe("the platform's reseal sweep", () => {
     const revokes = async () => (await r.gateway.calls())
       .filter((made) => made.method === "revokeAtProvider").map((made) => made.args as unknown[]);
     await until(async () => (await revokes()).length === 1, "the first revoke to be sent");
-    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0 });
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 0, kid: "k2" });
     expect(await kids(r)).toEqual([[connection, 2, "k2"]]);
     await r.gateway.release("revokeAtProvider");
     await until(async () => {
@@ -1038,7 +1038,7 @@ describe("the platform's reseal sweep", () => {
     // The revoke cleared the row's lease: only this instance's refresh still holds the blob.
     expect(await r.sql("SELECT status, lease_id FROM connections"))
       .toEqual([{ status: "revoked", lease_id: null }]);
-    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 1 });
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 1, kid: "k2" });
     expect(await kids(r)).toEqual([[connection, 1, "k1"]]);
     await r.gateway.release("refresh");
     await calling;
@@ -1078,7 +1078,7 @@ describe("the platform's reseal sweep", () => {
       return (await secrets(r, connection)).length === 0;
     }, "the provider revoke", 50);
     await r.gateway.release("reseal");
-    expect(await sweep).toEqual({ resealed: 0, left: 1 });
+    expect(await sweep).toEqual({ resealed: 0, left: 1, kid: "k2" });
     expect(await secrets(r, connection)).toEqual([]);
   });
 });

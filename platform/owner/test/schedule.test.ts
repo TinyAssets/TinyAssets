@@ -460,7 +460,7 @@ describe("the object's lanes", () => {
     const doorbell = new Doorbell({
       ledger, live: never, reads: never, touched: never, notice: never,
       write: never as unknown as Write, clock: never, admitted: () => admitted, gate: never,
-      ring: never });
+      ring: never, reseal: never });
     expect(doorbell.next(7)).toBe(8);
     admitted = false;
     expect(doorbell.next(7)).toBe(8);

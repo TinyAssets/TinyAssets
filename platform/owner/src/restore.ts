@@ -251,6 +251,19 @@ export function holdingStep(storage: OwnerStorage): Step | null {
 }
 
 /**
+ * The generations a restore that holds the owner reads its roots from: its `gen`, and the
+ * one its pin wrote (`fresh`), the undo; none when no restore holds it. A rotation's rewrap
+ * counts them left (`files.ts` `dataKeyRewrap`): a wiped object names neither. A read.
+ */
+export function heldGenerations(storage: OwnerStorage): string[] {
+  if (holdingStep(storage) === null) {
+    return [];
+  }
+  const { gen, fresh } = record(storage.sql)!;
+  return fresh === null || fresh === gen ? [gen] : [gen, fresh];
+}
+
+/**
  * Refused, for the moment (`restoring`, a transient code: a sign-in's redirect answers it
  * `temporarily_unavailable`), while a restore holds the owner. A read. When the hold began
  * is `restore.source`'s to answer (`since`): no door shows a refusal's facts.

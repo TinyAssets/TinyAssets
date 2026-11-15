@@ -313,10 +313,21 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
-  `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and
-  only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`), no sooner than the
-  off-account copy's versions under it expire (`r7-sweep.md` item 10; the driver,
-  `untangle/r7-rotation`).
+  `owner.rewrap` (or `owner.reseal`) for every owner until a pass answers `left` 0 for every
+  owner, and only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`), no
+  sooner than the off-account copy's versions under it expire (`r7-sweep.md` item 10;
+  `r7-rotation.md`).
+  - [x] The rotation's PR 1 (`r7-rotation.md`): `dataKeyRewrap` answers `{rewrapped, roots,
+    left, kid}`, a changed root and a restore's hold counted in `left`, never refused; and
+    `gatewayReseal` `{resealed, left, kid}`, resealing doorbell subscriptions' blobs
+    (`wake_callbacks`) too, since an idle one otherwise broke at a gateway kid's retirement;
+    the operator ops `owner.rewrap` and `owner.reseal`.
+  - [ ] The rotation's PR 2 (`untangle/r7-rotation-driver`): kit mode `rotation` over the
+    directory's owners with its progress record in CONTROL, and mode `retire` with the
+    founder's words, for `FILES_KEYRING` only after a second pass begun `KEEP_DAYS` + 1 days
+    after the first copy night that followed the first (`r7-rotation.md` item 6).
+  - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
+    (`live:` after `untangle/r7-rotation-driver`).
   - [x] `restore.wipe`, a live owner brought to pending and empty for a restore, the
     generation to restore pinned first, since a fresh generation's finish prunes every older
     unpinned one (`r5r.md` item 14). Restore (#5587) and owner migration 10's pin (#5589) landed;
@@ -324,7 +335,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] Owner migration 11's pin PR, after `restore.wipe` merges (`r5w.md` item 9): #5608.
   - [x] The sweep's rotation counts a restore record's `gen` and `fresh` (a wiped or failed
     restore's object knows neither), or does not finish while any owner is held
-    (`r5w.md` item 14): #5616, the rewrap refused during a hold.
+    (`r5w.md` item 14): #5616, then counted in `left`, so a pass never ends while any owner
+    is held (`r7-rotation.md`).
   - [x] Owner migration 13's pin, after the generations' sweep merges (`r7-sweep.md` item 5):
     with `owner.state` (`owner-state-op.md`).
   - [x] A restore's unnamed chunks swept: those the owner put after E have no row in the

@@ -33,8 +33,8 @@
  * key under its kid and wraps the same data key under the active one (the data key never
  * changes, so no chunk or part is resealed). Each owner's sweep re-wraps its object's copy
  * and every manifest root's (`owner/src/files.ts` `rewrap`); a kid leaves the ring only
- * after every owner's sweep has run (tasks.md). An owner a restore holds refuses its sweep
- * until the restore ends: its wiped object names neither root the restore reads.
+ * after a sweep of every owner left none (`left` 0, tasks.md). An owner a restore holds
+ * counts the restore's roots left until it ends: its wiped object names neither.
  *
  * **Names.** A chunk's R2 name is HMAC-SHA256 of its hash under a key derived from the data
  * key (`chunkName`), so listing the bucket cannot confirm that an owner holds a known file;

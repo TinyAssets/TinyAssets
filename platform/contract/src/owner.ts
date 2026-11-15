@@ -139,6 +139,55 @@ export interface OwnerStateAnswer {
   readonly stored_bytes: number;
 }
 
+/**
+ * A rotation's sweep of one owner under the files keyring (`dataKeyRewrap`, the operator's
+ * `owner.rewrap`): whether its object's wrapped data key changed, the manifest roots found,
+ * how many it could not bring under `kid` (a root a pass wrote meanwhile, or each generation
+ * a restore that holds the owner reads), and the kid its data key is under, read from the
+ * key's own header (null with no key). The platform asks again until `left` is 0.
+ */
+export interface RewrapAnswer {
+  readonly rewrapped: boolean;
+  readonly roots: number;
+  readonly left: number;
+  readonly kid: string | null;
+}
+
+/**
+ * A rotation's sweep of one owner under the gateway keyring (`gatewayReseal`, the operator's
+ * `owner.reseal`): its connection and doorbell subscription blobs resealed, how many are not
+ * under `kid` (one a refresh or a revoke held, or a replaced doorbell secret still signing),
+ * and the gateway's active kid as it answered (null with no blob). Asked again until `left`
+ * is 0.
+ */
+export interface ResealAnswer {
+  readonly resealed: number;
+  readonly left: number;
+  readonly kid: string | null;
+}
+
+/**
+ * One blob sealed under the gateway's ring, as the owner's sweep left it: the active kid the
+ * gateway answered for it, the kid it is under now (null: it lost its swap, or went), and
+ * whether this sweep resealed it.
+ */
+export interface Swept {
+  readonly active: string;
+  readonly under: string | null;
+  readonly resealed: boolean;
+}
+
+/**
+ * The sweep's answer from its blobs: those it resealed, and those not under the active kid
+ * the gateway answered last (`left`), so a ring changed mid-sweep leaves each blob sealed
+ * before the change left too.
+ */
+export function resealAnswer(swept: readonly Swept[]): ResealAnswer {
+  const kid = swept.at(-1)?.active ?? null;
+  return { resealed: swept.filter((blob) => blob.resealed).length,
+           left: swept.filter((blob) => blob.under !== kid).length, kid };
+}
+
 /** A restore's generation (`owner/src/restore.ts`): its namespace (32 hex) and id (16 hex). */
 export interface RestoreBeginRequest {
   readonly namespace: string;
@@ -334,8 +383,10 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   // Sign-in and sign-up (`authorize.ts`), the owner's session (`app.ts`), erasure (`erase.ts`).
   admissionSet(binding: Binding, request: AdmissionRequest): Promise<{ readonly state: string }>;
   tierSet(binding: Binding, request: TierRequest): Promise<{ readonly tier: TierName }>;
-  // The owner's state, the operator channel's (`operator.ts`).
+  // The owner's state and a key rotation's sweeps, the operator channel's (`operator.ts`).
   ownerState(binding: Binding): Promise<OwnerStateAnswer>;
+  dataKeyRewrap(binding: Binding): Promise<RewrapAnswer>;
+  gatewayReseal(binding: Binding): Promise<ResealAnswer>;
   // A restore, the operator channel's (`operator.ts`; `owner/src/restore.ts`).
   restoreSource(binding: Binding): Promise<RestoreSource>;
   restoreBegin(binding: Binding, request: Asked<"restoreBegin", RestoreBeginRequest>):

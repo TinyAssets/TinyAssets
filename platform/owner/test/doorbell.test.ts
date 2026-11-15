@@ -33,8 +33,12 @@ import {
 import { writeControl } from "../../ci/fixtures";
 import { failure, gateFor, storesOn } from "./support";
 import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
+import { opensRetired, underOlderKid } from "./gateway-support";
 
 const TOKEN = "sk-ant-oat01-" + "t".repeat(40);
+
+/** A doorbell's reseal where a test runs no rotation's sweep. */
+const unswept = (): Promise<never> => Promise.reject(new Error("no sweep in this test"));
 const KEY = Buffer.from(WHSEC.slice("whsec_".length), "base64");
 
 /** One ring the object asked of the gateway (slice W): the subscription and the request. */
@@ -118,16 +122,20 @@ function write(r: Rig, collection: string, rowId: string, caller = r.bind(null),
 
 /**
  * An agent's client's MCP Events subscription, as the MCP door makes it: its id derived,
- * its callback sealed by the gateway (as `verifyDoorbell` seals it once verified).
+ * its callback sealed by the gateway (as `verifyDoorbell` seals it once verified), or by the
+ * gateway's own code under the older kid `k1`, as one sealed before a rotation.
  */
 async function subscribed(r: Rung, from: Origin = MUSE, follows: { board?: boolean; rooms?: string[] }
-                            = {}, path = "chat", ttlMs: number | null = null) {
+                            = {}, path = "chat", ttlMs: number | null = null,
+                          older = false) {
   const url = `https://doorbell.test/${r.path}/${path}`;
   const args = { command_center_id: "alpha", board: follows.board ?? false,
                  rooms: follows.rooms ?? [] };
   const id = subscriptionId(from.client, url, EVENT, args);
-  const sealed = await env.CONNECT.sealDoorbell(r.owner, id, 1,
-                                                { record: "chatgpt_mcp_events", url, secret: WHSEC });
+  const current = await env.CONNECT.sealDoorbell(r.owner, id, 1,
+                                                 { record: "chatgpt_mcp_events", url, secret: WHSEC });
+  const sealed = older ? { blob: await underOlderKid(r.owner, `wake.${id}`, 1, current.blob),
+                           kid: "k1" } : current;
   await r.stub.wakeSubscribe(r.bind(from), {
     subscription_id: id, name: EVENT, arguments: args, blob: sealed.blob, kid: sealed.kid,
     version: 1, expires_at: ttlMs === null ? null : clock() + ttlMs / 1000 });
@@ -469,7 +477,7 @@ describe("a revoke is never outlived", () => {
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
         notice: async () => undefined, write, clock: () => t, admitted: () => true,
-        gate: async () => true,
+        gate: async () => true, reseal: unswept,
         ring: async () => {
           sent++;
           return { state: "answered", status: 202, retry_after: null };
@@ -644,7 +652,7 @@ describe("a send's answer", () => {
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
         notice: async () => undefined, write, clock: () => t, admitted: () => true,
-        gate: async () => true,
+        gate: async () => true, reseal: unswept,
         ring: async (id) => {
           asked.push(id);
           return { state: "answered", status: answers[id]!,
@@ -713,7 +721,7 @@ describe("a send's answer", () => {
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
         notice: async () => undefined, write, clock: () => t, admitted: () => true,
-        gate: async () => true,
+        gate: async () => true, reseal: unswept,
         ring: () => {
           sent++;
           return new Promise<RingAnswer>(() => undefined);
@@ -821,6 +829,47 @@ describe("a send's answer", () => {
   });
 });
 
+describe("a gateway key rotation's sweep of the doorbell", () => {
+  const platform = (r: Rung) => ({ owner: r.owner, caller: PLATFORM_CALLER, origin: null });
+
+  it("reseals an idle subscription never rung, so it still rings once the old kid is retired",
+     async () => {
+    const r = await rung();
+    await control([r.owner]);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await subscribed(r, MUSE, {}, "chat", null, true);
+    const swept = await r.stub.gatewayReseal(platform(r));
+    await r.post(null, `dm:${muse}`, { body: "hello" });
+    const [asked] = await rings(r, 1);
+    // What the object sent the gateway to ring opens once `k1` is retired from the ring.
+    const opens = await opensRetired(r.owner, `wake.${asked!.subscription}`, asked!.version,
+                                     asked!.blob);
+    expect([swept, asked!.previous, opens, (await received(r)).length])
+      .toEqual([{ resealed: 1, left: 0, kid: "k2" }, null, true, 1]);
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 0, kid: "k2" });
+  });
+
+  it("keeps a refresh that lands while the gateway reseals, counting it left, and counts the " +
+     "replaced secret left until its window lapses", async () => {
+    const r = await rung();
+    await r.register(MUSE, "Muse", "mcp_event");
+    await subscribed(r, MUSE, {}, "chat", null, true);
+    await r.gateway.arm("resealDoorbell", { hold: "after" });
+    const sweep = r.stub.gatewayReseal(platform(r));
+    await r.gateway.held("resealDoorbell");
+    // The client subscribes again: a new secret, under the active kid, at the same version.
+    await subscribed(r);
+    const [refreshed] = await r.sql("SELECT blob, version FROM wake_callbacks");
+    await r.gateway.release("resealDoorbell");
+    expect(await sweep).toEqual({ resealed: 0, left: 1, kid: "k2" });
+    expect(await r.sql("SELECT blob, version FROM wake_callbacks")).toEqual([refreshed]);
+    // The secret it replaced signs beside it for its window, under the old kid.
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 1, kid: "k2" });
+    await r.sql("UPDATE wake_callbacks SET previous_until = ?", clock() - 1);
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 0, kid: "k2" });
+  });
+});
+
 it("answers closed from the pass itself when the switch is closed, fails or never answers",
    async () => {
   const r = await rung();
@@ -838,7 +887,7 @@ it("answers closed from the pass itself when the switch is closed, fails or neve
     const doorbell = (gate: () => Promise<boolean>) => new Doorbell({
       ledger, live: () => true, reads: () => true, touched: () => false,
       notice: async () => undefined, write, clock: () => t, admitted: () => true,
-      gate,
+      gate, reseal: unswept,
       ring: async () => ({ state: "answered", status: 202, retry_after: null }) });
     return [await runWakes(ledger, doorbell(async () => false), () => t, write),
             await runWakes(ledger, doorbell(async () => { throw new Error("KV down"); }),

@@ -481,9 +481,10 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
   /**
    * A key rotation's step for one generation: its root's wrapped key wrapped again under the
    * active kid, written in place only if the root did not change meanwhile (a pass writing
-   * it again writes the active kid itself). The key the root now carries, or null for none.
+   * it again writes the active kid itself). The key the root now carries; `key` null when it
+   * changed meanwhile, so the owner's sweep counts it left and asks again; null for no root.
    */
-  async rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string } | null> {
+  async rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string | null } | null> {
     const object = await this.env.BLOBS.get(manifestKey(ns, gen));
     if (object === null) {
       return null;
@@ -494,8 +495,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       const put = await this.env.BLOBS.put(manifestKey(ns, gen), JSON.stringify({ ...root, key }),
                                            { onlyIf: { etagMatches: object.etag } });
       if (put === null) {
-        throw new Refusal("root_changed",
-                          "a manifest root changed while its key was wrapped again; run it again");
+        return { key: null };
       }
     }
     return { key };

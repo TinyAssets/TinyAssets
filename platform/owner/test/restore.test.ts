@@ -862,19 +862,28 @@ describe("a restore into a live owner", () => {
     expect(await sqlIn(stub, "SELECT sweep FROM owner_backup_state")).toEqual([{ sweep: 0 }]);
   });
 
-  it("refuses a rotation's rewrap while a restore holds the owner, through the wipe, so no kid " +
-     "is retired under the roots it restores from; and answers once it is done", async () => {
+  it("counts a restore's generations left in a rotation's rewrap while it holds the owner, " +
+     "through the wipe, touching nothing, so no kid is retired under the roots it restores " +
+     "from; and none once it is done", async () => {
     const { o, gen, ns } = await source();
     const hold = await pinnedTo(o.stub, o.name, gen.gen);
-    const pinned = await failure(() => o.stub.dataKeyRewrap(platform(o.name)));
-    expect([pinned.code, pinned.message]).toEqual(["restoring", RESTORING]);
+    const files = gateFor(env.FILES_GATE, ns);
+    const sent = async () => (await files.calls()).filter((call) =>
+      call.method === "rewrapKey" || call.method === "rewrapManifestRoot").length;
+    // Pinned: the generation it restores and the one its pin wrote, the undo.
+    expect(await o.stub.dataKeyRewrap(platform(o.name)))
+      .toEqual({ rewrapped: false, roots: 0, left: 2, kid: "k2" });
     // Wiped, the object holds neither the namespace nor a row of either generation.
     const stub = await wipedWith(o.stub, o.name, hold.confirm!);
-    expect((await failure(() => stub.dataKeyRewrap(platform(o.name)))).code).toBe("restoring");
+    expect(await stub.dataKeyRewrap(platform(o.name)))
+      .toEqual({ rewrapped: false, roots: 0, left: 2, kid: null });
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
-    expect((await failure(() => stub.dataKeyRewrap(platform(o.name)))).code).toBe("restoring");
+    expect(await stub.dataKeyRewrap(platform(o.name)))
+      .toMatchObject({ rewrapped: false, roots: 0, left: 2 });
+    expect(await sent()).toBe(0);
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
-    expect(await stub.dataKeyRewrap(platform(o.name))).toEqual({ rewrapped: false, roots: 1 });
+    expect(await stub.dataKeyRewrap(platform(o.name)))
+      .toEqual({ rewrapped: false, roots: 1, left: 0, kid: "k2" });
   });
 });
 
