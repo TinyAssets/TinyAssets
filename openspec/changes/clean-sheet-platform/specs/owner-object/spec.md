@@ -215,7 +215,7 @@ The object's one schedule SHALL run on the Agents SDK Lifecycle job queue (agent
 - **THEN** its job is held for a fixed backoff, a door's re-derive keeps the hold, and the next pass that succeeds clears it
 
 ### Requirement: A lane's pass is short and keeps its failures in its rows
-A lane's pass SHALL keep each outside call's failure, and each row's failed step, in that row, backed off there, so a failing row neither stops the pass, nor makes it throw, nor arms the alarm in a loop; a pass SHALL throw only for a bug. It SHALL hand long work off rather than await it. A lane's job SHALL be single-flight, its id SHALL carry the schedule's prefix, and a re-derive SHALL keep it where Lifecycle moved it later unless the rows have earlier work.
+A lane's pass SHALL keep each outside call's failure, and each row's failed step, in that row, backed off there, so a failing row neither stops the pass, nor makes it throw, nor arms the alarm in a loop; a pass SHALL throw only for a bug. It SHALL hand long work off rather than await it. A lane's job SHALL be single-flight, its id SHALL carry the schedule's prefix, and a re-derive SHALL keep it where Lifecycle moved it later unless the rows have earlier work, and SHALL leave a job already due to its run, which sets it from the rows at its end, so no door clears its single-flight mark.
 
 #### Scenario: The files Worker is down
 - **WHEN** a chunk delete to the files Worker fails during the `files` lane's pass
