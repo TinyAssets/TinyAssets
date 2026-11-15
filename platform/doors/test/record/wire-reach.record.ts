@@ -62,8 +62,11 @@ describe("inbound hooks reaching the owner", () => {
       agent: "main", secret, profile: {
         method: "hmac-sha256", signature_header: "x-hub-signature-256", encoding: "hex",
         prefix: "sha256=" } })).json<{ url: string }>();
+    // An event's identity is its key and its stamp (`doors/src/inbound.ts`): a replay sends
+    // the same stamp again.
+    const sent = now();
     const event = (at: string, id: string | null, headers: Record<string, string> = {},
-                   body = "{\"x\":1}", stamp: number = now()) => new Request(at, {
+                   body = "{\"x\":1}", stamp: number = sent) => new Request(at, {
       method: "POST", body, headers: {
         ...(id === null ? {} : { "Idempotency-Key": id }),
         "X-Event-Timestamp": String(stamp), ...headers } });
@@ -82,7 +85,7 @@ describe("inbound hooks reaching the owner", () => {
     await rec("inbound old stamp", call(event(made.url, "e4", {}, "{}", 1)));
     await rec("inbound bad utf8 body", call(new Request(made.url, {
       method: "POST", body: new Uint8Array([0xff, 0xfe, 0x00]),
-      headers: { "Idempotency-Key": "e6", "X-Event-Timestamp": String(now()) } })));
+      headers: { "Idempotency-Key": "e6", "X-Event-Timestamp": String(sent) } })));
     for (let n = 0; n < 3; n++) {
       await rec(`inbound burst ${n}`, call(event(made.url, `b${n}`, {}, `{"n":${n}}`)));
     }
