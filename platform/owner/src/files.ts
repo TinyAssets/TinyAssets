@@ -99,7 +99,6 @@ import { CLIENT_WRITER, CLIENTS, INDEX_BYTES } from "./manifest";
 import { OWNER, scopeOf } from "./authority";
 import { refuseErasing } from "./erasure";
 import { heldGenerations } from "./restore";
-import { TIER_UNREAD } from "./tier";
 import { AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
 import {
   ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within,
@@ -140,6 +139,11 @@ import { APP_RESOURCE } from "../../contract/src/identity";
 export const FILE_QUOTA = "file_quota" satisfies RefusalCode;
 export const FILE_SHARE = "file_share" satisfies RefusalCode;
 export const FILE_INDEX_FULL = "file_index_full" satisfies RefusalCode;
+/**
+ * No tier numbers kept here: no file byte is added (the byte bound), and no run admitted
+ * (`OwnerAdmission.numbers`, which only the object imports, so the refusal is the files').
+ */
+export const TIER_UNREAD = "tier_unread: the platform's tier numbers are not known here";
 const FILE_TOO_LARGE = `${FILE_QUOTA}: the file is larger than the owner's file size quota`;
 /** The refusal at the index's ceiling, in plain words: what is full, and what frees it. */
 const INDEX_FULL = `${FILE_INDEX_FULL}: your file index is full: it holds as many files and ` +

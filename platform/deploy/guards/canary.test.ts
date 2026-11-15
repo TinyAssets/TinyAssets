@@ -21,6 +21,7 @@ import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, type World
 import { APP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT } from "../../contract/src/identity";
 import { E2B_HOOK_URL, EGRESS_DOMAIN } from "../facts";
 import { NIGHTLY } from "../offsite";
+import { night, type Night, nightsAnswer } from "./copy-nights";
 
 type Json = Record<string, unknown>;
 
@@ -51,15 +52,6 @@ interface Platform {
   nightsStatus: number;
 }
 
-/** One night of `offsite-copy.yml`: when it ran, and how each of its two jobs ended. */
-interface Night {
-  at: string;
-  settings: "success" | "failure";
-  copy: "success" | "failure" | "skipped";
-}
-
-const night = (at: string, copy: Night["copy"], settings: Night["settings"] = "success"): Night =>
-  ({ at, settings, copy });
 const LAST_NIGHT = night("2026-11-14T05:40:00Z", "success");
 
 function platform(change: Partial<Platform> = {}): Platform {
@@ -157,20 +149,12 @@ function world(p: Platform, env: Record<string, string> = KEYED): World & { sent
           && new Headers(init?.headers).get("Authorization") !== `Bearer ${env[TOKEN]}`) {
         return json({ message: "Bad credentials" }, 401);
       }
-      if (url.startsWith(`${repository}/actions/workflows/${NIGHTLY.workflow}/runs?`)) {
-        expect([at.searchParams.get("branch"), at.searchParams.get("status")])
-          .toEqual([NIGHTLY.ref, "completed"]);
-        return p.nightsStatus !== 200 ? json({ message: "unavailable" }, p.nightsStatus)
-          : json({ workflow_runs: at.searchParams.get("page") !== "1" ? []
-            : p.nights.map((each, id) => ({ id, created_at: each.at,
-                                            updated_at: later(each.at, 20) })) });
+      if (url.startsWith(`${NIGHTS}?`) && p.nightsStatus !== 200) {
+        return json({ message: "unavailable" }, p.nightsStatus);
       }
-      const jobs = /^\/actions\/runs\/(\d+)\/jobs$/.exec(url.slice(repository.length));
-      if (jobs !== null) {
-        const each = p.nights[Number(jobs[1])]!;
-        return json({ jobs: [
-          { name: NIGHTLY.settings, conclusion: each.settings, completed_at: later(each.at, 1) },
-          { name: NIGHTLY.copy, conclusion: each.copy, completed_at: later(each.at, 20) }] });
+      const nights = nightsAnswer(url, p.nights);
+      if (nights !== null) {
+        return nights;
       }
       if (url.includes("/actions/workflows/") && url.includes("event=workflow_dispatch")) {
         return json({ workflow_runs: p.lastDispatch === null ? []
@@ -184,10 +168,6 @@ let lastBeat = "";
 
 const REPOSITORY = `https://api.github.com/repos/${DISPATCH.repository}`;
 const NIGHTS = `${REPOSITORY}/actions/workflows/${NIGHTLY.workflow}/runs`;
-
-/** `minutes` after `at`. */
-const later = (at: string, minutes: number) =>
-  new Date(Date.parse(at) + minutes * 60_000).toISOString().replace(".000Z", "Z");
 
 const states = (result: Result) => result.outcomes.map((each) => [each.check, each.state]);
 

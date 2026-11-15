@@ -96,8 +96,9 @@ import { canonical } from "../../contract/src/canonical";
 import { policyDigest } from "../../contract/src/policy-document";
 import type { Policy } from "./policy";
 import { codePoints, utf8Bytes } from "../../contract/src/text";
-import type { Call } from "./door";
-import type { GrantRequest, OwnerState } from "./owner-do";
+import { type Call, type LiveSession, type ObjectReads, proven } from "./door";
+import type { Keys } from "./keys";
+import type { Launcher } from "./launch";
 import { clock } from "./clock";
 
 const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
@@ -186,7 +187,8 @@ export interface ConnectedApp {
   readonly connect_url: string | null;
 }
 
-interface GrantChange {
+/** A grant's set, as the owner asks it (`grantSet`), or a key's mint makes it (`keyMint`). */
+export interface GrantChange {
   readonly client: unknown;
   readonly source: unknown;
   readonly mode: unknown;
@@ -413,9 +415,10 @@ export class Grants {
    * row, as a key's mint does. The revision always moves; the generation only when the
    * authority does (`moved`), which is when the caller ends the client's work.
    */
-  set(sessionId: string, change: GrantChange, now: number):
+  set(session: LiveSession, change: GrantChange, now: number):
       { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
         revision: number; moved: boolean } {
+    proven(session, "session");
     const client = outsideClient(change.client, change.source);
     const { mode, expected_revision: expected, name } = change;
     const source = change.source as string;
@@ -475,7 +478,7 @@ export class Grants {
       // The receipt's digest names the set whole, so a rename's differs from a set that
       // changes nothing; its generation is the authority's.
       this.#policy.receipt("outside_grant", {
-        session_id: sessionId,
+        session_id: session.hash,
         request_digest: policyDigest({ client, mode, scopes: held, name: named, revision,
                                        profile }),
         generation, rule: client, decision: mode, outcome: "committed",
@@ -528,8 +531,9 @@ export class Grants {
    * its bound: a widening, receipted per client. An MCP client forgotten may come back
    * only from a sign-in after its revoke (`grant_fences`); an API key's, not at all.
    */
-  forgetRevoked(sessionId: string, clients: unknown, now: number):
+  forgetRevoked(session: LiveSession, clients: unknown, now: number):
       { forgotten: string[]; mcp_fence: number } {
+    proven(session, "session");
     if (!Array.isArray(clients) || clients.length < 1 || clients.length > MAX_FORGET
         || new Set(clients).size !== clients.length) {
       throw new Refusal("invalid", `forget names 1 to ${MAX_FORGET} distinct outside clients`);
@@ -540,7 +544,7 @@ export class Grants {
       for (const client of ids) {
         const row = this.#row(client);
         if (row !== undefined) {
-          this.#forget(row, sessionId, now);
+          this.#forget(row, session.hash, now);
           forgotten.push(client);
         }
       }
@@ -628,23 +632,35 @@ export interface ForgetRequest {
 
 // -- THE DOORS: the `grants` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`GrantsDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `grants` doors reach: the grants and their keys, and what a grant change ends of
+ * its client's (its wakes, its held registrations, its runs).
+ */
+export interface GrantsDoorNeeds extends Pick<ObjectReads, "storage"> {
+  readonly grants: Grants;
+  readonly keys: Pick<Keys, "revoked" | "forgotten">;
+  readonly ledger: { suppressClient(client: string, now: number): void };
+  readonly registrations: { endClient(client: string): void };
+  readonly launcher: Pick<Launcher, "endClient">;
+}
 
 /**
  * A grant change ends what its client set going (P0-3's M3): its agents' open wakes and
  * callbacks and its held registrations, in the caller's transaction.
  */
-function endClient(o: OwnerState, client: string): void {
+function endClient(o: GrantsDoorNeeds, client: string): void {
   o.ledger.suppressClient(client, clock());
   o.registrations.endClient(client);
   // And its runs (ADR-034 decision 6): their grants gone in this unit, their CLIs stopped.
-  o.launcher.stop(o.runs.endClient(client, clock()));
+  o.launcher.endClient(client, clock());
 }
 
 /** In the revoke's transaction: revoked rows past their bound forgotten, keys with them. */
-function evictRevoked(o: OwnerState): void {
+function evictRevoked(o: GrantsDoorNeeds): void {
   for (const client of o.grants.evictRevoked(clock())) {
     o.keys.forgotten(client);
   }
@@ -652,7 +668,7 @@ function evictRevoked(o: OwnerState): void {
 
 /** The `grants` doors' handlers, by door. */
 export const grantsDoors = Object.freeze({
-  grantList(o: OwnerState, _call: Call<undefined>): { clients: Client[] } {
+  grantList(o: GrantsDoorNeeds, _call: Call<undefined>): { clients: Client[] } {
     return { clients: o.grants.list() };
   },
   /**
@@ -661,11 +677,11 @@ export const grantsDoors = Object.freeze({
    * registrations with it, as `grantRevoke` ends them; one that moves only the revision, a
    * rename, ends nothing: every stamp of the client's still stands.
    */
-  grantSet(o: OwnerState, { session: id, r }: Call<GrantRequest>):
+  grantSet(o: GrantsDoorNeeds, { session, r }: Call<GrantChange, "session">):
       { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
         revision: number } {
     return o.storage.transactionSync(() => {
-      const { moved, ...set } = o.grants.set(id, r as unknown as GrantRequest, clock());
+      const { moved, ...set } = o.grants.set(session, r as unknown as GrantChange, clock());
       if (moved) {
         endClient(o, set.client);
       }
@@ -680,7 +696,7 @@ export const grantsDoors = Object.freeze({
    * A narrowing the owner's account makes without a session, as a key's revoke does: the
    * client's agents' wakes and held registrations end with it, in its unit.
    */
-  grantRevoke(o: OwnerState, { r }: Call<ClientRequest>):
+  grantRevoke(o: GrantsDoorNeeds, { r }: Call<ClientRequest>):
       { client: string; revoked: boolean; generation: number; revision: number } {
     return o.storage.transactionSync(() => {
       const revoked = o.grants.revoke(r["client"], clock());
@@ -695,7 +711,8 @@ export const grantsDoors = Object.freeze({
    * directory has deleted the key (tasks 2). A narrowing, since a key with no row is
    * refused, so the owner's account makes it without a session. Never an MCP client's.
    */
-  grantForget(o: OwnerState, { r }: Call<ClientRequest>): { client: string; forgotten: boolean } {
+  grantForget(o: GrantsDoorNeeds, { r }: Call<ClientRequest>):
+      { client: string; forgotten: boolean } {
     return o.storage.transactionSync(() => {
       const forgot = o.grants.forgetKey(r["client"], clock());
       if (forgot.forgotten) {
@@ -709,10 +726,10 @@ export const grantsDoors = Object.freeze({
    * widening, so it is the only act that lifts an MCP revoke, and even then a forgotten
    * MCP client comes back only from a sign-in after the revoke (`grants.ts`).
    */
-  grantForgetRevoked(o: OwnerState, { session: id, r }: Call<ForgetRequest>):
+  grantForgetRevoked(o: GrantsDoorNeeds, { session, r }: Call<ForgetRequest, "session">):
       { forgotten: string[]; mcp_fence: number } {
     return o.storage.transactionSync(() => {
-      const forgot = o.grants.forgetRevoked(id, r["clients"], clock());
+      const forgot = o.grants.forgetRevoked(session, r["clients"], clock());
       for (const client of forgot.forgotten) {
         o.keys.forgotten(client);
       }

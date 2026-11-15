@@ -85,8 +85,10 @@ import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { profileNames } from "../../contract/src/doors";
 import { codePoints } from "../../contract/src/text";
-import type { Call, Door } from "./door";
-import type { OwnerState } from "./owner-do";
+import {
+  type Call, type Door, type DoorUnits, type ImportLine, type LiveSession, proven,
+} from "./door";
+import type { Egress } from "./egress";
 import { clock } from "./clock";
 import { OWNER } from "./authority";
 
@@ -314,13 +316,20 @@ export class Policy {
   }
 
   /**
-   * The owner's write; with `proposal`, only as that held card's one apply. The held
-   * proposal must be pending, unexpired, a `policy_proposal` of exactly this document
-   * and generation with the digest the owner was shown, and is marked applied in the
-   * same transaction.
+   * The owner's write, in its session; with `proposal`, only as that held card's one apply.
+   * The held proposal must be pending, unexpired, a `policy_proposal` of exactly this
+   * document and generation with the digest the owner was shown, and is marked applied in
+   * the same transaction.
    */
-  write(sessionId: string, expectedGeneration: unknown, document: unknown,
+  write(session: LiveSession, expectedGeneration: unknown, document: unknown,
         proposal: unknown, now: number): PolicyState {
+    proven(session, "session");
+    return this.#write(session.hash, expectedGeneration, document, proposal, now);
+  }
+
+  /** A write receipted under `sessionId`: the owner's session's, or the import's. */
+  #write(sessionId: string, expectedGeneration: unknown, document: unknown,
+         proposal: unknown, now: number): PolicyState {
     validate(document);
     const generation = expected(expectedGeneration);
     if (proposal !== null && (!keyed(proposal, ["request_id", "digest"])
@@ -370,7 +379,8 @@ export class Policy {
    * default; nothing (false) once it is this document already; any other policy refused
    * loudly (`conflict`). Deleted at the cutover with the import doors.
    */
-  imported(document: unknown, now: number): boolean {
+  imported(importing: ImportLine, document: unknown, now: number): boolean {
+    proven(importing, "import");
     validate(document);
     const row = this.#stored();
     if (row.digest === policyDigest(document)) {
@@ -381,17 +391,19 @@ export class Policy {
                         "conflict: the owner's policy is neither the default nor the " +
                         "imported one");
     }
-    this.write("import", row.generation, document, null, now);
+    this.#write("import", row.generation, document, null, now);
     return true;
   }
 
   /**
    * An owner policy change kept outside the document (an agent's wake limits, stored on
    * its registry row where the ledger reads them): it bumps the generation and is
-   * receipted like a write. Run inside the caller's transaction with the change itself.
+   * receipted like a write, in the owner's session. Run inside the caller's transaction with
+   * the change itself.
    */
-  changed(sessionId: string, expectedGeneration: unknown, kind: ReceiptKind,
+  changed(session: LiveSession, expectedGeneration: unknown, kind: ReceiptKind,
           request: unknown, rule: string, now: number): number {
+    proven(session, "session");
     const generation = expected(expectedGeneration);
     return this.#storage.transactionSync(() => {
       const row = this.#stored();
@@ -399,7 +411,7 @@ export class Policy {
         throw new Refusal("refused", "policy generation changed");
       }
       this.#sql.exec("UPDATE owner_policy SET generation = ?", generation + 1);
-      this.receipt(kind, { session_id: sessionId, old_digest: row.digest,
+      this.receipt(kind, { session_id: session.hash, old_digest: row.digest,
                            new_digest: row.digest, request_digest: policyDigest(request),
                            generation: generation + 1, rule, decision: "set",
                            outcome: "committed" }, now);
@@ -461,12 +473,13 @@ export class Policy {
   }
 
   /**
-   * In the mint's unit (`OwnerDO.keyMint`): an agent's held key request applied with its
-   * key's grant, once (the Python's `_apply_key_request`). The card must be pending,
-   * unexpired, an `api_key_request` whose scopes are exactly the grant's, with the digest
-   * the owner was shown; it is marked applied here.
+   * In the mint's unit (`keyMint`), in the owner's session: an agent's held key request
+   * applied with its key's grant, once (the Python's `_apply_key_request`). The card must
+   * be pending, unexpired, an `api_key_request` whose scopes are exactly the grant's, with
+   * the digest the owner was shown; it is marked applied here.
    */
-  applyKeyRequest(proposal: unknown, scopes: unknown, now: number): void {
+  applyKeyRequest(session: LiveSession, proposal: unknown, scopes: unknown, now: number): void {
+    proven(session, "session");
     if (!keyed(proposal, ["request_id", "digest"])
         || !cardId(proposal["request_id"]) || !cardId(proposal["digest"])) {
       throw new Refusal("invalid", "invalid proposal apply");
@@ -527,9 +540,15 @@ export interface CardRequest {
 
 // -- THE DOORS: the `policy` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`PolicyDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/** What the `policy` doors reach: the policy, and the sandbox egress a write ends. */
+export interface PolicyDoorNeeds extends Pick<DoorUnits, "door" | "synced"> {
+  readonly policy: Policy;
+  readonly egress: Pick<Egress, "end">;
+}
 
 /** The `policy` doors' handlers, by door. */
 export const policyDoors = Object.freeze({
@@ -537,15 +556,15 @@ export const policyDoors = Object.freeze({
    * An agent's proposal, the owner's or an admitted outside client's; never applied. A
    * scoped client proposes only with `propose_policy` granted where its agent is.
    */
-  policyPropose(o: OwnerState, { account, r }: Call<ProposeRequest>):
+  policyPropose(o: PolicyDoorNeeds, { account, r }: Call<ProposeRequest>):
       { request_digest: string; generation: number } {
     return o.policy.propose(r["change"], r["request_id"] ?? null,
                               account.origin?.client ?? OWNER, clock());
   },
-  policyRead(o: OwnerState, { account: { owner } }: Call<undefined>): Projection {
+  policyRead(o: PolicyDoorNeeds, { account: { owner } }: Call<undefined>): Projection {
     return o.policy.projection(owner);
   },
-  policyReceipts(o: OwnerState, _call: Call<undefined>): { receipts: Receipt[] } {
+  policyReceipts(o: PolicyDoorNeeds, _call: Call<undefined>): { receipts: Receipt[] } {
     return { receipts: o.policy.receipts() };
   },
   /**
@@ -555,7 +574,8 @@ export const policyDoors = Object.freeze({
    * sandbox's in-flight egress streams; a call opened after it is admitted under the new
    * generation.
    */
-  async policyWrite(o: OwnerState, door: Door<PolicyWriteRequest>): Promise<Projection> {
+  async policyWrite(o: PolicyDoorNeeds, door: Door<PolicyWriteRequest, "session">):
+      Promise<Projection> {
     const done = await o.synced(() => door.within(({ account: { owner }, session, r }) => {
       const written = o.policy.write(session, r["expected_generation"], r["policy"],
                                          r["proposal"] ?? null, clock());
@@ -566,7 +586,7 @@ export const policyDoors = Object.freeze({
     return done;
   },
   /** The pending card the owner is shown, and the digest its apply must name. */
-  policyProposal(o: OwnerState, { r }: Call<CardRequest>): { change: Change; digest: string } {
+  policyProposal(o: PolicyDoorNeeds, { r }: Call<CardRequest>): { change: Change; digest: string } {
     const held = o.policy.held(r["request_id"], clock());
     if (held === null) {
       throw new Refusal("refused", "no pending proposal for this card");

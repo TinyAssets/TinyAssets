@@ -17,13 +17,9 @@
  * table but its own, held by the policy-boundary guard's loader check), and reaches the
  * ledger once, for its seq allocator (`Ledger.restored`).
  *
- * The doors' handlers sit in their modules, and reach the ledger through the state the
- * object hands them (`OwnerState`), not by an import (review F3). The modules that name the
- * state's ledger are held the same way (`REACHERS`): the ledger's own doors, the doors
- * whose rows act on mail too (a collection's, a file's, a grant's, an inbound hook's), and
- * the runs lane. That list only shrinks too. The policy-boundary guard holds the state to
- * be used only as `o.<member>` (or handed to a parameter named `o`), so no alias or
- * destructuring reaches the ledger past this list.
+ * The doors' handlers sit in their modules, and reach the ledger through what the object
+ * hands them, not by an import (review F3): each module declares the ledger's methods its
+ * handlers call (`<Module>DoorNeeds`), and `tsc` holds the object's parts to it.
  */
 import { describe, expect, it } from "vitest";
 
@@ -37,26 +33,15 @@ const NAMERS = new Set([LEDGER, "owner/src/schema.ts", "owner/src/export.ts",
 const TABLES = Object.freeze(["outside_agents", "native_agents", "ledger_messages",
   "ledger_recipients", "ledger_readers", "ledger_wakes", "ledger_usage",
   "message_bodies", "wake_callbacks"]);
-/** The modules that name the state's ledger (`o.ledger`, the launcher's `this.#o.ledger`). */
-const REACHERS = new Set([LEDGER, "owner/src/collections.ts", "owner/src/files.ts",
-                          "owner/src/grants.ts", "owner/src/inbound.ts", "owner/src/launch.ts",
-                          "owner/src/restore.ts"]);
-/** The state's ledger, as a handler, the launcher or a holder of the state names it. */
-const REACH = /(?:\bo|\bstate|\bthis\.#o|\bthis\.#state)\.ledger\b/;
 /** A static import or export from, or a dynamic import of, the ledger module. */
 const IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'][^"']*\/ledger(?:\.[cm]?[jt]s)?["']/;
 
 /** Every source importing the ledger, and every one naming a ledger table, but its own. */
 export function boundary(sources: Map<string, string>): { importers: Set<string>;
-                                                          namers: Set<string>;
-                                                          reachers: Set<string> } {
+                                                          namers: Set<string> } {
   const importers = new Set<string>();
   const namers = new Set<string>();
-  const reachers = new Set<string>();
   for (const [path, source] of sources) {
-    if (REACH.test(source)) {
-      reachers.add(path);
-    }
     if (path !== LEDGER && IMPORT.test(source)) {
       importers.add(path);
     }
@@ -64,7 +49,7 @@ export function boundary(sources: Map<string, string>): { importers: Set<string>
       namers.add(path);
     }
   }
-  return { importers, namers, reachers };
+  return { importers, namers };
 }
 
 describe("ledger-boundary guard", () => {
@@ -73,16 +58,6 @@ describe("ledger-boundary guard", () => {
     const { importers, namers } = boundary(workerSources());
     expect(importers).toEqual(IMPORTERS);
     expect(namers).toEqual(NAMERS);
-  });
-
-  it("lets only the mail's doors and the runs lane reach the ledger through the state", () => {
-    expect(boundary(workerSources()).reachers).toEqual(REACHERS);
-    for (const line of ["o.ledger.post(1);", "const { ledger } = this.#o.ledger;"]) {
-      expect(boundary(new Map([["owner/src/probe.ts", line]])).reachers)
-        .toEqual(new Set(["owner/src/probe.ts"]));
-    }
-    expect(boundary(new Map([["owner/src/probe.ts", "this.#ledger.post(1); go.ledger;"]]))
-      .reachers).toEqual(new Set());
   });
 
   it.each([

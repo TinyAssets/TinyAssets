@@ -23,14 +23,15 @@ import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, type RunHost, Runs, SESSION_REFUSED,
-         SIGNIN_LAPSED, UNATTENDED_REFUSED } from "../src/runs";
-import { keepTiers, PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
+         SIGNIN_LAPSED, TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
+import { PLATFORM_TIER_ONLY } from "../src/admission";
+import { TIER_UNREAD } from "../src/files";
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
 import { secretOf } from "../../ci/workerd";
-import { drainDue, failure, gateFor, spaceOf } from "./support";
+import { drainDue, failure, gateFor, spaceOf, storesOn } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 afterEach(() => {
@@ -674,7 +675,7 @@ describe("auto and the owner's sign-ins", () => {
 
 /** A Runs host whose every member is `never`: a test overrides the ones it reaches. */
 function hostOf(never: () => never): RunHost {
-  return { unadmitted: never, tier: never, reachable: never,
+  return { unadmitted: never, tier: never, tiers: never, reachable: never,
            standing: never, caps: never, spent: never, lease: never, leases: never,
            openLease: never, releaseLease: never, renewLease: never, leasesLapsed: never,
            ended: never, answer: never, mailSettled: never, notice: never, stop: never };
@@ -723,11 +724,12 @@ describe("the admission unit", () => {
         throw new Error("a read went past its rows");
       };
       // The tier's simultaneous runs, by the numbers last kept: none, then 1 and 2.
-      const gate = new WriteGate(state.storage);
-      const runs = new Runs(gate.storage, { ...hostOf(never), tier: () => "free" });
+      const { gate, admission } = storesOn(state);
+      const runs = new Runs(gate.storage, { ...hostOf(never), tier: () => "free",
+                                            tiers: () => admission.tiers() });
       const picks: (string | null)[] = [];
       for (const capacity of [null, 1, 2]) {
-        await gate.write(() => keepTiers(gate.storage, capacity === null ? null
+        await gate.write(() => admission.keep(capacity === null ? null
           : { ...TIERS, free: { ...TIERS.free, runs: capacity } }, Date.now() / 1000));
         picks.push(runs.nextWaiting()?.id ?? null);
       }

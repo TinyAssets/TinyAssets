@@ -266,6 +266,8 @@ const NOT_STORED: ReadonlySet<string> = new Set(["relay", "posts", "env"]);
 const UNIT_ARGUMENTS: Readonly<Record<string, readonly number[]>> = Object.freeze({
   door: [0], quiet: [0], synced: [0], filing: [0], "bodies.placing": [0, 1],
   "bodies.reading": [0], "bodies.rereading": [0, 1], "bodies.rereadingPage": [0, 1],
+  // A launch's ask, which its admission unit calls (`Launcher.launch`).
+  "launcher.launch": [1],
 });
 /**
  * The stores' members a handler may call outside a unit: each makes its own units, or

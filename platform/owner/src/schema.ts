@@ -1057,7 +1057,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // its usage counters, which only the egress triggers below move (a call's charge, held to
     // settled, counts to its run as it counts to its source's day and month). At most
     // `RUNS_CEILING` are live (`queued` or `running`) at once, the most any tier record may
-    // set; the tier's own number is admission's (`tier.ts`). A live run names the sandbox
+    // set; the tier's own number is admission's (`admission.ts`). A live run names the sandbox
     // lease it runs under and its own last heartbeat (`beat_at`), and holds one run grant
     // (`run_grants`): its initiator's stamp and origin, its scopes, its own connection (none
     // on the vendor's own sign-in) and the SHA-256 of its own secret, deleted at its settle or

@@ -1004,8 +1004,8 @@ export interface ConnectionsDoorNeeds extends Pick<DoorUnits, "door" | "synced">
 export const connectionsDoors = Object.freeze({
   /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
   connectionPrepare(o: ConnectionsDoorNeeds,
-                    { session, request }: Call<ConnectionPrepareRequest>): Prepared {
-    return o.connections.prepare(session, request, clock());
+                    { session, request }: Call<ConnectionPrepareRequest, "session">): Prepared {
+    return o.connections.prepare(session.hash, request, clock());
   },
   /** The sealed blob the gateway returned, and the models its setup check listed. */
   connectionCommit(o: ConnectionsDoorNeeds, { request }: Call<ConnectionCommitRequest>):
@@ -1040,9 +1040,9 @@ export const connectionsDoors = Object.freeze({
     return ({ connections: o.connections.list() });
   },
   /** The callback's state, in the session that began the flow: its verifier, used up. */
-  flowFinish(o: ConnectionsDoorNeeds, { session, request }: Call<FlowFinishRequest>):
+  flowFinish(o: ConnectionsDoorNeeds, { session, request }: Call<FlowFinishRequest, "session">):
       { connection: string; version: number; verifier: string; redirect_uri: string;
                 source: string } {
-    return o.connections.flowFinish(session, request, clock());
+    return o.connections.flowFinish(session.hash, request, clock());
   },
 });

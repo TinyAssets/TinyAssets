@@ -23,7 +23,7 @@ import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import { migrate } from "../../contract/src/migrate";
 import { rig, type Rig } from "./ledger-support";
-import { TIER_UNREAD } from "../src/tier";
+import { TIER_UNREAD } from "../src/files";
 import {
   crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, passEnd, setFiles,
   starterSeed, text, TIERS, tiersAt,

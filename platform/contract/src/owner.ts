@@ -116,7 +116,7 @@ export type AdmissionRequest =
   | { readonly admit: true }
   | { readonly reason: string; readonly suspended: boolean };
 
-/** The platform's setting of the owner's tier (`tier.ts`; the import's admit step). */
+/** The platform's setting of the owner's tier (`admission.ts`; the import's admit step). */
 export interface TierRequest {
   readonly tier: TierName;
 }

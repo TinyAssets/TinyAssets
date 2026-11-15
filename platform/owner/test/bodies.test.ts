@@ -21,7 +21,7 @@ import { GRANT_LIMITS, scopes } from "../src/grants";
 import { MAX_BODY_BYTES } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
-import { TIER_UNREAD } from "../src/tier";
+import { TIER_UNREAD } from "../src/files";
 import { eraseBegun, erasedWhole, finished } from "./erasure-support";
 import { MUSE, rig, signedIn } from "./ledger-support";
 import { at, readOn } from "./pages-support";
