@@ -2323,9 +2323,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   ]),
   // 14 (lane R, `restore.ts`; `untangle-2026-11/r-restore-chunks.md`): a restore's two steps
   // between `chunks` and `clear`, while it holds the owner (`names`, every chunk row's name in
-  // the bucket staged; `sweep`, every chunk of the namespace no staged name names deleted),
-  // the record made again with them, its row kept; and the names it stages, each the 32
-  // bytes of its HMAC, which `clear` deletes.
+  // the bucket added to a filter; `sweep`, every chunk of the namespace the filter says no row
+  // names deleted), the record made again with them, its row kept; and the filter, one row of
+  // its bits (`names-filter.ts`), which `clear` deletes.
   Object.freeze([
     "CREATE TABLE owner_restore_next (only INTEGER PRIMARY KEY CHECK (only = 1), ns TEXT NOT " +
       "NULL CHECK (length(ns) = 32 AND ns NOT GLOB '*[^0-9a-f]*'), gen TEXT NOT NULL CHECK " +
@@ -2340,7 +2340,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "FROM owner_restore",
     "DROP TABLE owner_restore",
     "ALTER TABLE owner_restore_next RENAME TO owner_restore",
-    "CREATE TABLE restore_names (name BLOB PRIMARY KEY CHECK (typeof(name) = 'blob' AND " +
-      "length(name) = 32)) WITHOUT ROWID",
+    "CREATE TABLE restore_filter (only INTEGER PRIMARY KEY CHECK (only = 1), bits BLOB NOT " +
+      "NULL CHECK (typeof(bits) = 'blob'))",
   ]),
 ]);

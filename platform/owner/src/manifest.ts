@@ -1,6 +1,6 @@
 /**
  * What the owner's file manifest takes in its object, in bytes: the one measure the file
- * index's ceiling (`files.ts` `INDEX_BYTES`) and each outside client's share of it are held
+ * index's ceiling (`INDEX_BYTES`) and each outside client's share of it are held
  * in (plan §6; `files.ts`, migration 7).
  *
  * Every manifest row is charged what SQLite lays it out in, in its 4,096-byte pages: each
@@ -47,6 +47,17 @@ const SPILL_KEPT = 489;
 const OVERFLOW = 4092;
 /** A record's header and numbers, at most, past its text. */
 export const RECORD_FIXED = 48;
+
+/**
+ * The file index's ceiling: the most the index takes in the owner's object, in the bytes its
+ * rows are charged as SQLite lays them out (`manifest_bytes`, each small file's inline bytes
+ * in its content's row), which `files.ts` holds every change to. The files plane's one
+ * technical ceiling (`limits-audit.md`): the object's 10 GB, of which the owner-bound guard
+ * gives the index this at `WORST_FILL` (1,208 MB, its largest term). It is no setting, and no
+ * upgrade raises it: past it a change is refused (`file_index_full`) and room comes only from
+ * deleting files or old versions.
+ */
+export const INDEX_BYTES = 512 * 1024 ** 2;
 
 /**
  * Where a record of `payload` bytes lies, in a b-tree that keeps `kept` in place: its share
@@ -110,16 +121,24 @@ export const CONTENT_BYTES = (row: string): string =>
   `(${CONTENT_RECORD_BYTES(row)} + ${CHUNK_LIST(row)} * ${CHUNK_LIST_ROW_BYTES()})`;
 
 /**
- * A chunk's two records' payloads, in bytes: its own (its state at its longest, and the scope
- * that last let it go, which its garbage is charged to, at a client's 71 bytes) and its entry
- * in the due index. The same for every chunk, so a change of holder moves no charge, and the
- * owner-bound guard counts the most chunk rows the index's ceiling holds by them.
+ * A chunk's two records, each its payload's parts in bytes: its own (its hash, its state at its
+ * longest, and the scope that last let it go, which its garbage is charged to, at a client's
+ * 71 bytes) and its entry in the due index. The same for every chunk, so a change of holder
+ * moves no charge.
  */
-export const CHUNK_RECORDS: readonly string[] = Object.freeze([`${HASH} + 9 + 71`, `${HASH} + 8`]);
+const CHUNK_RECORDS: readonly (readonly number[])[] = Object.freeze([Object.freeze([HASH, 9, 71]),
+                                                                     Object.freeze([HASH, 8])]);
 
 /** A chunk: its two records (`CHUNK_RECORDS`). */
 export const CHUNK_ROW_BYTES = (): string =>
-  `(${CHUNK_RECORDS.map((payload) => record(payload, INDEX_KEPT)).join(" + ")})`;
+  `(${CHUNK_RECORDS.map((parts) => record(parts.join(" + "), INDEX_KEPT)).join(" + ")})`;
+
+/** What `CHUNK_ROW_BYTES` charges every chunk row, in bytes. */
+export const CHUNK_ROW_CHARGE = (): number => CHUNK_RECORDS.reduce((sum, parts) =>
+  sum + recordBytes(parts.reduce((a, b) => a + b, RECORD_FIXED), INDEX_KEPT), 0);
+
+/** The most chunk rows the file index holds: its ceiling over one chunk row's charge. */
+export const CHUNK_ROWS_MAX = (): number => Math.floor(INDEX_BYTES / CHUNK_ROW_CHARGE());
 
 /** A temporary directory: its record and its entry in the expiry index. */
 export const TEMP_BYTES = (row: string): string =>

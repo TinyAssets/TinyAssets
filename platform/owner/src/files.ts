@@ -92,7 +92,7 @@ import {
 import { letGo, planEdit } from "./edit";
 import { FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage, Write } from "./gate";
-import { CLIENT_WRITER, CLIENTS, OWNER_SCOPE } from "./manifest";
+import { CLIENT_WRITER, CLIENTS, INDEX_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
 import { refuseErasing } from "./erasure";
 import { refuseRestoring } from "./restore";
@@ -138,15 +138,6 @@ export const FILE_QUOTA = "file_quota" satisfies RefusalCode;
 export const FILE_SHARE = "file_share" satisfies RefusalCode;
 export const FILE_INDEX_FULL = "file_index_full" satisfies RefusalCode;
 const FILE_TOO_LARGE = `${FILE_QUOTA}: the file is larger than the owner's file size quota`;
-/**
- * The file index's ceiling: the most the index takes in the owner's object, in the bytes its
- * rows are charged as SQLite lays them out (`manifest_bytes`, each small file's inline bytes
- * in its content's row). The files plane's one technical ceiling (`limits-audit.md`): the
- * object's 10 GB, of which the owner-bound guard gives the index this at `WORST_FILL`
- * (1,208 MB, its largest term). It is no setting, and no upgrade raises it: past it a change
- * is refused (`file_index_full`) and room comes only from deleting files or old versions.
- */
-export const INDEX_BYTES = 512 * 1024 ** 2;
 /** The refusal at the index's ceiling, in plain words: what is full, and what frees it. */
 const INDEX_FULL = `${FILE_INDEX_FULL}: your file index is full: it holds as many files and ` +
   "versions as one owner's index can. Delete files or old versions of files you no longer " +
@@ -1017,10 +1008,17 @@ export class Files {
     return this.#reads(sha256s, (ns, key, batch) => this.#store.checkChunks(ns, key, batch));
   }
 
-  /** Each chunk's name in the bucket, in order (`FILES.chunkNames`), a call for them all. */
+  /** Each chunk's name in the bucket, in order (`FILES.chunkNames`), `DELETE_BATCH` a call. */
   async names(sha256s: readonly string[]): Promise<string[]> {
+    if (sha256s.length === 0) {
+      return [];
+    }
     const { ns, key } = await this.space();
-    return this.#store.chunkNames(ns, key, [...sha256s]);
+    const out: string[] = [];
+    for (let at = 0; at < sha256s.length; at += DELETE_BATCH) {
+      out.push(...await this.#store.chunkNames(ns, key, sha256s.slice(at, at + DELETE_BATCH)));
+    }
+    return out;
   }
 
   /** `read`'s answers to `items` in order, `GET_READS` items a call under the owner's key. */

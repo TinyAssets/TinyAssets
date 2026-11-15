@@ -45,14 +45,17 @@
  *    put after E, which nothing else would ever collect) deleted, while the restore holds the
  *    owner, so no upload makes a row for one meanwhile (`putChunks` of a key already there
  *    only verifies it). First the owner's admission at E is held to one a restore admits, or
- *    the restore fails before anything is deleted. **names** stages the bucket name of every
+ *    the restore fails before anything is deleted. **names** adds the bucket name of every
  *    `file_chunks` row, in any state (an upload's held one, a garbage one in its grace that
- *    may revive, one a kept generation names), `DELETE_BATCH` rows a unit by hash, each page
- *    named by `FILES.chunkNames`; **sweep** lists the namespace's chunks a page at a time from
- *    the last name listed (`FILES.listChunks`) and deletes those no staged name holds
- *    (`FILES.deleteListed`). The keep rule is the files plane's own (`files.ts`: every object
- *    in the bucket has a row first), so it never reads which generations are kept.
- * 7. **clear**: the staged rows and names deleted, a slice a unit.
+ *    may revive, one a kept generation names), to one Bloom filter (`names-filter.ts`),
+ *    `NAMES_ROWS` rows a unit by hash, their names from `FILES.chunkNames`; **sweep** lists the
+ *    namespace's chunks a page at a time from the last name listed (`FILES.listChunks`) and
+ *    deletes those the filter says no row names (`FILES.deleteListed`). A filter has no false
+ *    negative, so no chunk a row names is deleted; a false positive keeps an unnamed chunk
+ *    until erasure, at most about 1% of them. The keep rule is the files plane's own
+ *    (`files.ts`: every object in the bucket has a row first), so it never reads which
+ *    generations are kept.
+ * 7. **clear**: the staged rows deleted, a slice a unit, then the filter.
  * 8. **done**, one unit: the fence (every outside client and API key revoked, every MCP grant
  *    fenced, every inbound binding disabled at a new revision, every connection marked for a
  *    reconnect: their secrets and routes were never in the backup), the allocators the export
@@ -100,6 +103,7 @@ import { clock } from "./clock";
 import { exported, NOT_EXPORTED } from "./export";
 import type { OwnerStorage } from "./gate";
 import type { Door, OwnerState } from "./owner-do";
+import { addNames, emptyFilter, filterOf, mayHold } from "./names-filter";
 import { MIGRATIONS } from "./schema";
 
 /**
@@ -541,15 +545,22 @@ const NEXT: Readonly<Partial<Record<Step, Step>>> = Object.freeze({
   index: "log", log: "apply", apply: "check", check: "chunks", chunks: "names", names: "sweep",
   sweep: "clear", clear: "done" });
 
-/** The 32 bytes of a chunk's name (64 hex), as `restore_names` holds it. */
-const nameBytes = (name: string): ArrayBuffer =>
-  new Uint8Array(Buffer.from(name, "hex")).buffer as ArrayBuffer;
+/**
+ * Chunk rows one `names` unit adds to the filter: `NAMES_CALLS` `FILES.chunkNames` calls of
+ * `DELETE_BATCH` each, so the filter's row (`FILTER_BYTES()`, about 1.45 MB) is written again
+ * once per 10,000 rows, at most 122 times for `CHUNK_ROWS_MAX`, and a unit holds the filter
+ * and its rows' hashes and names, under 4 MB.
+ */
+const NAMES_CALLS = 10;
+const NAMES_ROWS = NAMES_CALLS * DELETE_BATCH;
 
-/** In a unit: up to `SLICE_ROWS` rows of a staging table deleted; whether it is now empty. */
-function emptied(sql: Pick<SqlStorage, "exec">, table: "restore_rows" | "restore_names",
-                 key: string): boolean {
-  return sql.exec(`DELETE FROM ${table} WHERE (${key}) IN (SELECT ${key} FROM ${table} LIMIT ?)`,
-                  SLICE_ROWS).rowsWritten < SLICE_ROWS;
+/** In a unit: the restore's names filter as its row holds it; loud when there is none. */
+function heldFilter(sql: Pick<SqlStorage, "exec">): Uint8Array {
+  const row = sql.exec<{ bits: ArrayBuffer }>("SELECT bits FROM restore_filter").toArray()[0];
+  if (row === undefined) {
+    throw new Error("a restore's names filter is missing");
+  }
+  return filterOf(row.bits);
 }
 
 /**
@@ -705,25 +716,32 @@ async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
         });
         return true;
       }
-      const page = await o.door(() => o.files.chunksAfter(held.after, DELETE_BATCH));
-      const names = page.length === 0 ? [] : await o.files.names(page);
+      const page = await o.door(() => o.files.chunksAfter(held.after, NAMES_ROWS));
+      const names = await o.files.names(page);
       await o.door(() => {
         if (!still()) {
           return;
         }
-        for (const name of names) {
-          sql.exec("INSERT OR IGNORE INTO restore_names (name) VALUES (?)", nameBytes(name));
-        }
-        const last = page.length < DELETE_BATCH;
+        // The first page begins the filter; each after it adds to the bits so far, so a page
+        // asked again sets the bits it set.
+        const filter = held.after === null ? emptyFilter() : heldFilter(sql);
+        addNames(filter, names);
+        sql.exec("INSERT INTO restore_filter (only, bits) VALUES (1, ?) ON CONFLICT (only) DO " +
+                   "UPDATE SET bits = excluded.bits", filter.buffer as ArrayBuffer);
+        const last = page.length < NAMES_ROWS;
         move(last ? NEXT.names! : "names", held.at, last ? null : page.at(-1)!);
       });
       return true;
     }
     case "sweep": {
       const listed = await source.listChunks(held.ns, held.after);
-      const unnamed = await o.door(() => still() ? listed.names.filter((name) => sql.exec(
-        "SELECT 1 FROM restore_names WHERE name = ?", nameBytes(name)).toArray().length === 0)
-        : null);
+      const unnamed = await o.door(() => {
+        if (!still()) {
+          return null;
+        }
+        const filter = heldFilter(sql);
+        return listed.names.filter((name) => !mayHold(filter, name));
+      });
       if (unnamed === null) {
         return true;
       }
@@ -742,8 +760,15 @@ async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
       return true;
     }
     case "clear": {
-      const cleared = await o.door(() => still() && emptied(sql, "restore_rows", "tbl, k")
-        && emptied(sql, "restore_names", "name"));
+      const cleared = await o.door(() => {
+        if (!still() || sql.exec("DELETE FROM restore_rows WHERE (tbl, k) IN (SELECT tbl, k " +
+                                   "FROM restore_rows LIMIT ?)", SLICE_ROWS).rowsWritten
+                          === SLICE_ROWS) {
+          return false;
+        }
+        sql.exec("DELETE FROM restore_filter");
+        return true;
+      });
       if (cleared) {
         const root = await rootOf(source, held.ns, held.gen);
         await o.door(() => {

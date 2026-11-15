@@ -15,12 +15,13 @@ import {
 import { sqlIn } from "../../ci/workerd";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import {
-  FILE_INDEX_FULL, FILE_QUOTA, FILE_SHARE, type Files, INDEX_BYTES, MAX_OPEN_INTENTS,
+  FILE_INDEX_FULL, FILE_QUOTA, FILE_SHARE, type Files, MAX_OPEN_INTENTS,
 } from "../src/files";
 import { sha256Hex } from "../../contract/src/digest";
 import {
-  CHUNK_LIST_ROW_BYTES, HISTORY_BYTES, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PAGE_ROOM,
-  PAGE_USABLE, RECORD_FIXED, record, recordBytes, SHARE_BYTES, TABLE_KEPT, WORST_FILL,
+  CHUNK_LIST_ROW_BYTES, HISTORY_BYTES, INDEX_BYTES, MANIFEST_INDEXES, MANIFEST_TABLES,
+  PAGE_BYTES, PAGE_ROOM, PAGE_USABLE, RECORD_FIXED, record, recordBytes, SHARE_BYTES, TABLE_KEPT,
+  WORST_FILL,
 } from "../src/manifest";
 import type { OwnerDO } from "../src/owner-do";
 import { FILE_SETTINGS } from "../../contract/src/policy-document";
