@@ -21,6 +21,7 @@ import { CLOCK_SECRETS } from "../contract/src/canary.ts";
 import { ZONE } from "../contract/src/egress.ts";
 import { ORIGIN, routeTakes, UPSTREAM_CALLBACK } from "../contract/src/identity.ts";
 import type { ImportNames } from "../contract/src/import-names.ts";
+import { OPERATOR_OPS, type OperatorOp } from "../contract/src/operator-message.ts";
 import platform from "./platform.json" with { type: "json" };
 
 /** Each Worker's checked-in config, by its folder under `platform/`. */
@@ -231,6 +232,24 @@ export const MADE: Readonly<Record<string, string>> = Object.freeze(platform.mad
 /** The keyrings: each rotated only by adding a key. */
 export const KEYRINGS: readonly string[] = Object.freeze(
   Object.keys(MADE).filter((name) => MADE[name] === "keyring"));
+
+/** A keyring mode `rotation` sweeps: the op it asks of each owner, and whether the copy holds it. */
+export interface Rotated {
+  readonly op: OperatorOp;
+  readonly copied: boolean;
+}
+
+/**
+ * The keyrings the platform seals stored blobs under, by name (`platform.json` `keyrings`):
+ * each a keyring, its op one of the operator's own `owner.` ops.
+ */
+export const ROTATED: Readonly<Record<string, Rotated>> = Object.freeze(Object.fromEntries(
+  Object.entries(platform.keyrings.rotated).map(([name, { op, copied }]) => {
+    if (!KEYRINGS.includes(name) || !Object.hasOwn(OPERATOR_OPS, op) || !op.startsWith("owner.")) {
+      throw new Error(`platform.json rotates ${name} by ${op}: a keyring, by an owner op`);
+    }
+    return [name, Object.freeze({ op: op as OperatorOp, copied })];
+  })));
 
 /** Where a sign-in starts. */
 export const AUTHORIZE = `${ORIGIN}${identity.signin.authorize}`;

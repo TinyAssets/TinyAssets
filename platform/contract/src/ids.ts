@@ -26,6 +26,11 @@ export const SUBSCRIPTION_ID = /^sub_[0-9a-f]{32}$/;
 export const INBOUND_ROUTE =
   /^(?:h:[0-9a-f]{64}|i:[a-z][a-z0-9_]{0,31}:(?:workspace|enterprise):[0-9a-f]{64})$/;
 /**
+ * The directory's record of an owner: `o:` and the owner's name (`doors/src/directory.ts`),
+ * which the deploy kit's key rotation lists to reach every owner (`deploy/operator.ts`).
+ */
+export const OWNER_ENTRY = "o:";
+/**
  * Whose authority a sandbox runs under: the owner's own work (`owner`), or an outside
  * client's, by its 64-hex id. One sandbox an authority (`contract/src/sandbox.ts`).
  */

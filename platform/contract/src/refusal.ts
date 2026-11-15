@@ -367,6 +367,22 @@ export function refusalOf(error: unknown): Refusal | null {
 }
 
 /**
+ * What `call` answers, or `refused` when it is refused (a fault, 5xx or no refusal, still
+ * throws): a key rotation's sweep counts a blob its ring no longer opens left and goes on, so
+ * one never keeps the owner's other blobs under a retiring kid.
+ */
+export async function orRefused<T, R>(call: Promise<T>, refused: R): Promise<T | R> {
+  try {
+    return await call;
+  } catch (error) {
+    if ((refusalOf(error)?.status ?? 500) >= 500) {
+      throw error;
+    }
+    return refused;
+  }
+}
+
+/**
  * What a POSIX call would fail with: the path is missing, or of the wrong kind. Not a
  * refusal: the file doors answer it as their own protocol does (the sync agent's, `404`
  * with its code). Its message is its code, then words for people.

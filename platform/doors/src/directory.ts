@@ -22,7 +22,7 @@
  * guard).
  */
 import { keyed } from "../../contract/src/checks";
-import { HEX16, HEX32, HEX64, INBOUND_ROUTE } from "../../contract/src/ids";
+import { HEX16, HEX32, HEX64, INBOUND_ROUTE, OWNER_ENTRY } from "../../contract/src/ids";
 import { principal } from "../../contract/src/text";
 
 import type { DoorsEnv } from "./env";
@@ -57,7 +57,7 @@ export interface RouteEntry {
 }
 
 function ownerName(owner: string): string {
-  return `o:${principal(owner)}`;
+  return `${OWNER_ENTRY}${principal(owner)}`;
 }
 
 /** The platform's record of `owner`, or null when it never signed up. Malformed throws. */

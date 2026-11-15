@@ -91,7 +91,9 @@ import {
 } from "../../contract/src/limits";
 
 import { letGo, planEdit } from "./edit";
-import { type Facts, FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
+import {
+  type Facts, FileFault, orRefused, Refusal, type RefusalCode,
+} from "../../contract/src/refusal";
 import type { OwnerStorage, Write } from "./gate";
 import { CLIENT_WRITER, CLIENTS, INDEX_BYTES } from "./manifest";
 import { OWNER, scopeOf } from "./authority";
@@ -999,28 +1001,29 @@ export class Files {
    * sweep, an idle owner's included. Whether the object's copy changed, the roots found, the
    * kid the object's copy is now under (`keyKid`), and how many roots are not under it
    * (`left`: one a pass wrote again meanwhile), which the platform asks again until none is.
+   * The key or a root the ring refuses is left as it is and counted (`orRefused`).
    */
   async rewrap(gens: readonly string[]): Promise<RewrapAnswer> {
     const { ns, data_key: held } = this.#space();
     if (ns === null || held === null) {
       return { rewrapped: false, roots: 0, left: 0, kid: null };  // nothing stored under a key
     }
-    const { key } = await this.#store.rewrapKey(ns, held);
-    if (key !== held) {
+    const { key } = await orRefused(this.#store.rewrapKey(ns, held), { key: null });
+    if (key !== null && key !== held) {
       await this.#write(() => this.#sql.exec(
         "UPDATE file_space SET data_key = ? WHERE data_key = ?", key, held));
     }
     const kid = this.keyKid();
     let roots = 0;
-    let left = 0;
+    let left = key === null ? 1 : 0;
     for (const gen of gens) {
-      const root = await this.#store.rewrapManifestRoot(ns, gen);
+      const root = await orRefused(this.#store.rewrapManifestRoot(ns, gen), { key: null });
       if (root !== null) {
         roots++;
         left += root.key !== null && kidOf(root.key) === kid ? 0 : 1;
       }
     }
-    return { rewrapped: key !== held, roots, left, kid };
+    return { rewrapped: key !== null && key !== held, roots, left, kid };
   }
 
   /** The kid the object's wrapped data key is under, read from its header; null with none. */

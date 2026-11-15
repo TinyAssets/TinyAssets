@@ -76,7 +76,7 @@ import type {
   ResealAnswer, Swept,
 } from "../../contract/src/owner";
 import { resealAnswer } from "../../contract/src/owner";
-import { isGatewayCode, Refusal, refusalOf } from "../../contract/src/refusal";
+import { isGatewayCode, orRefused, Refusal, refusalOf } from "../../contract/src/refusal";
 import {
   CONNECTION_BLOB_MAX, EGRESS_JSON_MAX, MODELS_JSON_MAX, REDIRECT_URI_MAX,
 } from "../../contract/src/limits";
@@ -846,7 +846,12 @@ export class Connections {
         "ORDER BY connection_id").toArray();
     const swept: Swept[] = [];
     for (const { connection_id: id, version, kid, blob } of held) {
-      const answer = await this.#gateway.reseal(this.#owner(), id, version, blob);
+      const answer = await orRefused(this.#gateway.reseal(this.#owner(), id, version, blob),
+                                     null);
+      if (answer === null) {
+        swept.push({ active: null, under: null, resealed: false });
+        continue;
+      }
       const kept = answer.kid !== kid && await this.#write(() => this.#keepResealed(
         id, version, answer, clockMs(), (row) => this.#sql.exec(
           "SELECT 1 FROM connection_secrets WHERE connection_id = ? AND version = ? " +
