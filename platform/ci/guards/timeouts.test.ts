@@ -188,7 +188,6 @@ describe("size classes", () => {
                                   BUDGETS.runner.calibration_ms / 2]) {
       const speed = speedOf(calibration_ms, BUDGETS.runner);
       expect(limit(3_650, 4, speed)).toBe(15_000);
-      expect(2 * 15_000).toBeGreaterThan(limit(3_650, 4, speed));
     }
   });
 
