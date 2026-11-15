@@ -18,7 +18,7 @@ import { join } from "node:path";
 
 import ts from "typescript";
 
-import { RPC_RESERVED } from "../contract/src/doors.ts";
+import { rpcReserved } from "../contract/src/doors.ts";
 import type { Arm, Crossed, GateSetup, Held } from "./gate-worker.ts";
 import { PLATFORM } from "./paths.ts";
 import { fakeConfig, transpiled, workerConfig } from "./workers.ts";
@@ -52,7 +52,7 @@ function fronted(to: GateTo): { name: string; compatibility_date: string;
 export function gate<Extra extends object = object>(name: string, methods: readonly string[],
                                                     to: GateTo, extra: Extra = {} as Extra) {
   if (methods.length === 0 || new Set(methods).size !== methods.length
-      || methods.some((method) => RPC_RESERVED.includes(method))) {
+      || methods.some((method) => rpcReserved().includes(method))) {
     throw new Error(`gate ${name}: its methods are one or more names, each once, none reserved`);
   }
   const config = fronted(to);

@@ -174,7 +174,7 @@ async function cross(method: string, name: string | null, args: unknown[],
 function define(target: object, forward: (self: never, method: string, args: unknown[]) =>
   Promise<unknown>): void {
   for (const method of SETUP.methods) {
-    // A name RPC reserves is refused where the gate is made (`gate.ts`, `RPC_RESERVED`).
+    // A name RPC reserves is refused where the gate is made (`gate.ts`, `rpcReserved`).
     if (method in target) {
       throw new Error(`the gate cannot define ${method}: it is already defined`);
     }

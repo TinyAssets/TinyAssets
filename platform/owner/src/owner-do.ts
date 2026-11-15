@@ -1055,7 +1055,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   static {
     // The table whole, as a hand method once held its own row at each call (`doorRow`): a
-    // door a name RPC reserves (`RPC_RESERVED`) among what it refuses.
+    // door a name RPC reserves (`rpcReserved`) among what it refuses.
     const problems = doorProblems(doorTable());
     if (problems.length > 0) {
       throw new Error(`the door table is broken: ${problems.join("; ")}`);
@@ -1069,7 +1069,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       }
     }
     for (const row of doorTable()) {
-      // A name RPC reserves is refused with the table (`RPC_RESERVED`): the runtime would
+      // A name RPC reserves is refused with the table (`rpcReserved`): the runtime would
       // refuse some only at a call. One the class or its chain has (`fetch`, `toString`)
       // never becomes a door either, or the door would hide it.
       if (row.door in this.prototype) {

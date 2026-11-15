@@ -90,13 +90,14 @@ export const CALLER_KINDS = Object.freeze(["account", "visitors", "owner", "sess
 export type CallerKind = (typeof CALLER_KINDS)[number];
 
 /**
- * The names no RPC method may take (Cloudflare's `rpc/reserved-methods`): `fetch` and
- * `connect`, which a stub keeps as its own; `dup` and `constructor`, on any RPC type; and an
- * object's `alarm` and hibernating socket handlers. No door is named one: the owner object's
- * loop refuses it when the class loads, as the table's rules do here.
+ * The names no RPC method may take (Cloudflare's `rpc/reserved-methods`, `doors.json`
+ * `reserved`): `fetch` and `connect`, which a stub keeps as its own; `dup` and `constructor`,
+ * on any RPC type; and an object's `alarm` and hibernating socket handlers. No door is named
+ * one: the owner object's loop refuses it when the class loads, as the table's rules do here.
  */
-export const RPC_RESERVED: readonly string[] = Object.freeze(["fetch", "connect", "dup",
-  "constructor", "alarm", "webSocketMessage", "webSocketClose", "webSocketError"]);
+export function rpcReserved(): readonly string[] {
+  return frozen(raw.reserved);
+}
 
 /** The doors that take no binding: the sandbox line's ring and E2B's billed events. */
 export const UNBOUND_DOORS: readonly string[] = Object.freeze(["sandboxBilled", "sandboxRung"]);
@@ -232,7 +233,7 @@ export function doorProblems(rows: unknown): string[] {
     if (typeof row["door"] !== "string" || !/^[a-z][A-Za-z]{1,63}$/.test(row["door"])) {
       say("not a method's name");
     }
-    if (RPC_RESERVED.includes(row["door"] as string)) {
+    if (rpcReserved().includes(row["door"] as string)) {
       say("a name RPC reserves");
     }
     if (seen.has(row["door"])) {

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { LIMITS } from "../src/collections";
 import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
-import { doorTable, RPC_RESERVED } from "../../contract/src/doors";
+import { doorTable, rpcReserved } from "../../contract/src/doors";
 import { OwnerDO } from "../src/owner-do";
 import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../../contract/src/migrate";
 import { MIGRATIONS } from "../src/schema";
@@ -265,7 +265,7 @@ describe("the object's RPC surface", () => {
   // row. `alarm` is the runtime's, handed to Lifecycle, and refused over RPC.
   it("is exactly its doors, none of them a name RPC reserves", async () => {
     const methods = Object.getOwnPropertyNames(OwnerDO.prototype)
-      .filter((method) => !RPC_RESERVED.includes(method)).sort();
+      .filter((method) => !rpcReserved().includes(method)).sort();
     expect(methods).toEqual(doorTable().map((row) => row.door).sort());
     expect(Object.getOwnPropertyNames(DurableObject.prototype)).toEqual(["constructor"]);
     const { stub, name } = await ownerObject();
