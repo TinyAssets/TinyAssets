@@ -1,10 +1,10 @@
 /**
  * Slice L's doors, in workerd through the real owner object: the platform's explicit admit
  * at sign-up and the erasure's outside record (an erased owner's name resolving nothing
- * again), whether the owner's own door or the operator's `owner.erase` began it; the key store; `/hooks/inbound`'s
- * two shapes (a bad HMAC, a replay, the gate, the breaker); no caller counted or capped by
- * the doors (slice L's review, N1); and the file door's bytes, streamed to `FILES` by the
- * binder.
+ * again), whether the owner's own door or the operator's `owner.erase` began it; the key
+ * store; `/hooks/inbound`'s two shapes (a bad HMAC, a replay, the gate, the breaker); no
+ * caller counted or capped by the doors (slice L's review, N1); and the file door's bytes,
+ * streamed to `FILES` by the binder.
  */
 import { createHash, createHmac } from "node:crypto";
 
