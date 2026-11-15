@@ -39,11 +39,16 @@ function clean(text: string): string {
  * `value` as a line shows it: an outside agent's id is minted at random (`agent_<hex>`, which
  * `clean` takes out) and the owner answers its agents in that id's order (`agentsPage`), so a
  * list of them is shown in its rows' order once cleaned, a total order of what the line shows.
+ * An answer out of that id's order fails its line, so the sort never hides a breach of it.
  */
 function shown(value: unknown): unknown {
   const agents = (value as { agents?: unknown } | null)?.agents;
   if (!Array.isArray(agents)) {
     return value;
+  }
+  const ids = agents.map((row) => String((row as { agent_id?: unknown }).agent_id));
+  if (ids.some((id, index) => index > 0 && ids[index - 1]! >= id)) {
+    throw new Error("agents answered out of their agent_id order (agentsPage)");
   }
   const keyed = agents.map((row: unknown) => [clean(JSON.stringify(row)), row] as const);
   keyed.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
