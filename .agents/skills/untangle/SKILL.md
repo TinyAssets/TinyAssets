@@ -43,15 +43,15 @@ Untangle the code a change touches, or a whole area, and finish the job.
   the decided design better (the log is updated) or a shortcut. It commits its
   own fixes of up to 50 lines and approves that head, posting its verdict as a
   PR review on the commit it read (first line `APPROVE` or `BLOCK`) as well as
-  the receipt; a bigger fix is a `BLOCK` with its diff. A re-confirm after a
-  merge of main reads only how its conflicts were resolved.
+  the receipt; a bigger fix is a `BLOCK` with its diff. A re-confirm after
+  main is merged in reads only its conflicts.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run, and a coordinator's prompt asks for no check this
   section doesn't: run only what the diff can break, once (the done-check:
   `docs/reference/executable-gates.md`), one mutation per declared change; the
-  recorders (step 5) only when the diff changes what a Worker sends or answers;
-  read only what applies. One review a PR, a second only after a security
+  recorders (step 5) whenever it touches a Worker's source (`platform/*/src`),
+  meant to change an answer or not; read only what applies. One review a PR, a second only after a security
   block. One PR in flight per lane, never stacked. Merge `origin/main` in;
   never rebase a pushed branch.
 - On a shared host, heavy runs (`test:root`, `test:sizes`, `test:memory`, the

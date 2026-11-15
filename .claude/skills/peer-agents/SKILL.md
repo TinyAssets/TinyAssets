@@ -47,7 +47,7 @@ HARD CONSTRAINTS ON HOW YOU WORK:
   direction, so every objective keeps moving. Merges stay serialized.
 ```
 
-Two more habits that fell out of the same incident:
+Habits from the same incident:
 
 - **Parallel dispatches are fine once every brief carries the block above.**
   The storm came from peers dispatching peers, not from two siblings; give
