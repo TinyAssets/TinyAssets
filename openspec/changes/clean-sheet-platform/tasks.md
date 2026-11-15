@@ -346,7 +346,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     owner's own erasure for an owner the directory signed up (`owner-erase-op.md`).
   - [ ] Live: `owner.erase`'s first real use, the founder's call for each request; the stage's
     end uses the owner's own door (d3 §H).
-  - [ ] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
+  - [x] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
     (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, unblocked since
     T1c merged (`r3.md` item 9).
   - [ ] The off-account copy's first live nights, after the founder's Backblaze steps
@@ -400,7 +400,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
 - [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
-  `owner.state` owed under lane R.
+  and `owner.state` (`owner-state-op.md`).
 - [ ] The manifest's dry run green (d3 §A10).
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).
