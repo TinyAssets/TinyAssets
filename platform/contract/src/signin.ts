@@ -3,7 +3,7 @@
  * Management's authorization-code flow with PKCE, for the environment's own client (ADR-032,
  * "the owner's sign-in"). The deploy kit writes the `UPSTREAM` record (`deploy/deploy.ts`
  * `upstreamFrom`) and checks it here before any deploy; the doors read it here at every
- * sign-in (`doors/src/index.ts`), and run the flow on it (`doors/src/oidc.ts`).
+ * sign-in (`doors/src/upstream.ts`), and run the flow on it (`doors/src/oidc.ts`).
  *
  * - `UpstreamConfig` and `upstreamConfig`: the record and its one parser.
  * - `SECRET_ORIGIN`: the one origin the client secret (WorkOS's API key) is sent to.

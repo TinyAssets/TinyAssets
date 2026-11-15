@@ -9,6 +9,7 @@ import { control, ownerGate } from "../ci/gate";
 import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
 import { auxiliary, fake, fakeConfig, main, once, pool } from "../ci/workers";
+import { QUEUES } from "../contract/src/queue-names";
 
 /** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), the doors' and the owner's. */
 const ROUTING_KEY = randomBytes(32).toString("base64url");
@@ -21,66 +22,73 @@ const KEYRING = keyring();
 /** The operator channel's keyring, its own, made fresh for each run. */
 const OPERATOR_KEYRING = keyring();
 
-/** The fake providers the gateway's fetches reach, and the owner suite's fake sandbox. */
+/**
+ * The outside world the doors' and the gateway's fetches reach (the fake AuthKit and model
+ * providers), and the owner suite's fake sandbox.
+ */
 const FAKE_PROVIDERS = join(PLATFORM, "doors", "test", "fake-providers.ts");
 const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
-/** The owner suite's erasure-queue consumer, which records what each object sent. */
-const FAKE_ERASURES = join(PLATFORM, "owner", "test", "fake-erasures.ts");
 /**
- * The queue the owner Worker sends its erasure to here, consumed by that fake: not the
- * config's `tinyassets-erasure`, whose consumer is the doors Worker's own entry, while these
- * tests serve the test entry and run the doors' consumer by hand on what was sent
- * (`doors-live.test.ts` `consume`).
+ * The owner's sign-in as the deploy kit configures it: the issuer and its `UPSTREAM` record
+ * (`contract/src/signin.ts`), whose endpoints the fake AuthKit answers.
  */
-const ERASURES_RECORDED = "owner-erasures-recorded";
+const ISSUER = "https://upstream.test";
+const UPSTREAM = JSON.stringify({
+  client_id: "client_fake",
+  authorization_endpoint: `${ISSUER}/authorize`,
+  token_endpoint: "https://api.workos.com/user_management/authenticate",
+  jwks_uri: `${ISSUER}/oauth2/jwks`,
+  token_issuer: "https://api.workos.com/user_management/client_fake",
+  user_delete: "https://api.workos.com/user_management/users/{sub}",
+  authorize_params: { provider: "authkit" },
+});
 /** The gate in front of the owner Worker's objects, which the doors' OWNER reaches. */
 const OWNER_GATE = "owner-gate";
 
 export default defineConfig({
   test: {
     projects: [
-      // Runs in workerd, against the config's own KV namespaces, flags and service bindings.
-      // The test entry serves the doors with a fake upstream sign-in and the records with a
-      // test source beside them; the fake upstream's issuer stands in for AuthKit's as the
-      // owner issuer. OWNER, which the config binds by script_name, is the owner gate
-      // (`ci/gate.ts`), in front of the owner Worker's objects: the owner Worker bundled from
-      // its real entry as a deploy bundles it, with every binding its config gives it (its
-      // FILES, GATEWAY and CODEMODE_VM the real Workers' beside it). The gate forwards every
-      // call unchanged until a test arms it, through OWNER_GATE (bound to the test Worker
-      // alone), to refuse one owner's door, and records what crossed by owner
-      // (`test/gates.ts` disarms it after each test). The owner's SANDBOX is the owner
-      // suite's fake sandbox Worker (`owner/test/fake-sandbox.ts`), whose record a test reads
-      // through SANDBOX_LOG; its ERASURES is a queue the owner suite's fake consumer records
-      // (`owner/test/fake-erasures.ts`), read through ERASURES_SENT. GATEWAY reaches the real
-      // gateway Worker (its `ConnectGateway` entrypoint, as the config names it), whose
-      // fetches reach the fake providers (`test/fake-providers.ts`); PROVIDERS is the tests'
-      // own way to them, to read back what they received. ROUTING_MAC_KEY is both the doors'
-      // and the owner's, as their configs share it. The doors' and each auxiliary Worker have
-      // every binding their configs give them (`main`, `auxiliary`), and the tests state each
-      // secret: none is read from the host. The import consumer's tests take a bundle the
-      // slice-2 builder made in Node (`test/import-setup.ts`), deleted at the cutover with the
-      // importer.
+      // Runs in workerd: the doors' real entry (`src/index.ts`, the config's `main`), against
+      // the config's own KV namespaces, flags, queues and service bindings. The owner's
+      // sign-in is the live one, configured as the deploy kit configures it (`ISSUER`,
+      // `UPSTREAM`): every fetch of the doors, as of the gateway, reaches the fake outside
+      // world (`test/fake-providers.ts`), which plays AuthKit too; PROVIDERS is the tests' own
+      // way to it, to read back what it received. OWNER, which the config binds by
+      // script_name, is the owner gate (`ci/gate.ts`), in front of the owner Worker's objects:
+      // the owner Worker bundled from its real entry as a deploy bundles it, with every binding
+      // its config gives it (its FILES, GATEWAY and CODEMODE_VM the real Workers' beside it,
+      // its ERASURES the config's queue, which the doors' own entry consumes, a message a batch
+      // and at once). The gate forwards every call unchanged until a test arms it, through
+      // OWNER_GATE (bound to the test Worker alone), to hold, refuse or answer one owner's
+      // door, and records what crossed by owner (`test/gates.ts` disarms it after each test).
+      // The owner's SANDBOX is the owner suite's fake sandbox Worker
+      // (`owner/test/fake-sandbox.ts`), whose record a test reads through SANDBOX_LOG. GATEWAY
+      // reaches the real gateway Worker (its `ConnectGateway` entrypoint, as the config names
+      // it). ROUTING_MAC_KEY is both the doors' and the owner's, as their configs share it.
+      // The doors' and each auxiliary Worker have every binding their configs give them
+      // (`main`, `auxiliary`), and the tests state each secret: none is read from the host.
+      // The import consumer's tests take a bundle the slice-2 builder made in Node
+      // (`test/import-setup.ts`), deleted at the cutover with the importer.
       project("doors", "workerd", {
         test: { globalSetup: ["./test/import-setup.ts"], setupFiles: ["./test/gates.ts"] },
         plugins: [
           cloudflareTest(once(async () => pool(main(join(PLATFORM, "doors"), {
               durableObjects: { OWNER: { className: "OwnerDO", scriptName: OWNER_GATE,
                                          useSQLite: true } },
-              bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY,
+              bindings: { OWNER_ISSUER: ISSUER, UPSTREAM, ROUTING_MAC_KEY: ROUTING_KEY,
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                           WORKOS_API_KEY: "test-client-secret", OPERATOR_KEYRING,
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
               serviceBindings: { PROVIDERS: fakeConfig(FAKE_PROVIDERS).name,
                                  OWNER_GATE: control(OWNER_GATE),
                                  SANDBOX_LOG: { name: fakeConfig(FAKE_SANDBOX).name,
-                                                entrypoint: "Log" },
-                                 ERASURES_SENT: { name: fakeConfig(FAKE_ERASURES).name,
-                                                  entrypoint: "Sent" } },
+                                                entrypoint: "Log" } },
+              queueConsumers: { [QUEUES.ERASURES]: { maxBatchSize: 1, maxBatchTimeout: 0 } },
+              outboundService: fakeConfig(FAKE_PROVIDERS).name,
               workers: [
                 await auxiliary(join(PLATFORM, "owner"), {
                   bindings: { ROUTING_MAC_KEY: ROUTING_KEY },
-                  serviceBindings: { SANDBOX: fakeConfig(FAKE_SANDBOX).name },
-                  queueProducers: { ERASURES: { queueName: ERASURES_RECORDED } } }),
+                  serviceBindings: { SANDBOX: fakeConfig(FAKE_SANDBOX).name } }),
                 ownerGate(OWNER_GATE),
                 await auxiliary(join(PLATFORM, "gateway"),
                                 { bindings: { GATEWAY_KEYRING: KEYRING },
@@ -88,11 +96,9 @@ export default defineConfig({
                 await auxiliary(join(PLATFORM, "codemode"), {}),
                 fake(FAKE_PROVIDERS),
                 fake(FAKE_SANDBOX),
-                fake(FAKE_ERASURES, { queueConsumers: {
-                  [ERASURES_RECORDED]: { maxBatchSize: 1, maxBatchTimeout: 0 } } }),
                 await auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: KEYRING } }),
               ],
-            }, "./test/entry.ts")))),
+            })))),
         ],
       }),
       // Static guards over the source and config, in Node.

@@ -18,9 +18,8 @@ import { base64url } from "../../contract/src/envelope";
 import { UPSTREAM_CALLBACK } from "../../contract/src/identity";
 import { upstreamConfig, type UpstreamConfig } from "../../contract/src/signin";
 import type { DoorsEnv } from "../src/env";
-import { upstreamOf } from "../src/index";
+import { UNWIRED, upstreamOf } from "../src/upstream";
 import { oidcUpstream, verifiedAccessToken } from "../src/oidc";
-import { UNWIRED } from "../src/upstream";
 import { doorsEnv } from "./support";
 
 const ISSUER = "https://auth.tinyassets.test";

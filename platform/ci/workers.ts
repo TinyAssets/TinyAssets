@@ -302,18 +302,18 @@ export async function auxiliary<Extra extends object>(dir: string, extra: Extra,
 
 /**
  * A test pool's own Worker (`cloudflareTest`'s `main`) built from the config at `dir`, as
- * `auxiliary` builds one beside it: its entry (`entry`, or the config's own), its module
- * rules, and everything its config gives it, with the test's secrets and changes (`extra`,
- * its auxiliary Workers among them). The pool never reads the config itself (its `wrangler`
+ * `auxiliary` builds one beside it: its config's own entry, its module rules, and
+ * everything its config gives it, with the test's secrets and changes (`extra`, its
+ * auxiliary Workers among them). The pool never reads the config itself (its `wrangler`
  * option), so nothing comes from `.dev.vars`, `.env` or `process.env`.
  */
-export function main<Extra extends object>(dir: string, extra: Extra, entry?: string) {
+export function main<Extra extends object>(dir: string, extra: Extra) {
   const config = workerConfig(dir);
   const rules = (config.rules ?? []).map((rule) => ({
     type: rule.type, include: [...rule.globs],
     ...(rule.fallthrough === undefined ? {} : { fallthrough: rule.fallthrough }) }));
   return {
-    main: entry ?? join(dir, String(config.main)),
+    main: join(dir, String(config.main)),
     miniflare: { rootPath: dir, ...configured(config, dir, extra),
                  ...(rules.length === 0 ? {} : { modulesRules: rules }) },
   };
