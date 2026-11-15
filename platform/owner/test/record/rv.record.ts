@@ -11,6 +11,7 @@ import { describe, it } from "vitest";
 
 import { OwnerDO } from "../../src/owner-do";
 import { apiKeyOrigin, type Origin } from "../../../contract/src/binding";
+import { rpcReserved } from "../../../contract/src/doors";
 import table from "../../../contract/doors.json" with { type: "json" };
 import { gated, type Gated } from "../gateway-support";
 import { MCP, origin, signedIn } from "../ledger-support";
@@ -22,9 +23,8 @@ import { asked } from "./support";
 
 type Row = { door: string; args: unknown };
 const ROWS = (table as { doors: Row[] }).doors;
-const PROTO = Object.getOwnPropertyNames(OwnerDO.prototype).filter((name) =>
-  !["constructor", "alarm", "fetch", "webSocketClose", "webSocketError",
-    "webSocketMessage"].includes(name)).sort();
+const PROTO = Object.getOwnPropertyNames(OwnerDO.prototype)
+  .filter((name) => !rpcReserved().includes(name)).sort();
 
 function clean(text: string): string {
   return text

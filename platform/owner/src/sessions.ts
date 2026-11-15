@@ -156,12 +156,13 @@ export class Sessions {
 
 // -- THE DOORS: the `sessions` rows' handlers (`contract/doors.json`) -----------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `sessions` doors' handlers, by door. */
 export const sessionsDoors = Object.freeze({
+  /** A verified interactive sign-in opens a session; its cookie is returned once. */
   sessionOpen(o: OwnerState, { binding }: Call<undefined>):
       { session: string; expires_at: number } {
     return o.sessions.open(binding.authenticated_at, clock());
@@ -169,6 +170,7 @@ export const sessionsDoors = Object.freeze({
   sessionExtend(o: OwnerState, { binding }: Call<undefined>): { expires_at: number } {
     return o.sessions.extend(binding.session, clock());
   },
+  /** One session signed out, and the connection flows it began cancelled with it. */
   sessionClose(o: OwnerState, { binding }: Call<undefined>): { closed: number } {
     const id = o.sessions.id(binding.session);
     const closed = o.sessions.close(binding.session);
@@ -177,6 +179,10 @@ export const sessionsDoors = Object.freeze({
     }
     return closed;
   },
+  /**
+   * Every session signed out: account revocation and deletion (`revoke_owner`), every open
+   * connection flow cancelled in the same unit, so a late callback finds none.
+   */
   async sessionCloseAll(o: OwnerState, door: Door<undefined>): Promise<{ closed: number }> {
     const closed = await o.synced(() => door.within(() => {
       o.connections.cancelFlows(null);

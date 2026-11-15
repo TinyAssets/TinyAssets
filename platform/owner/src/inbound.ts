@@ -318,7 +318,7 @@ export interface InboundEvent {
 
 // -- THE DOORS: the `inbound` rows' handlers (`contract/doors.json`) ------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
@@ -401,19 +401,35 @@ function inboundRefused(o: OwnerState, row: Row, error: unknown, now: number): I
 
 /** The `inbound` doors' handlers, by door. */
 export const inboundDoors = Object.freeze({
+  /** The owner's inbound bindings, never a secret. */
   inboundList(o: OwnerState, _call: Call<undefined>): { bindings: InboundBinding[] } {
     return { bindings: o.inbound.list() };
   },
+  /**
+   * A new inbound binding, in the owner's session: a capability URL the binder minted (its
+   * route the token's hash), with an owner-held proof if the owner adds one; or a shared
+   * app's installation, which only its install flow (owed) may name.
+   */
   inboundCreate(o: OwnerState, { request }: Call<InboundCreateRequest>): InboundBinding {
     return o.inbound.create(created(request), clock());
   },
+  /** The owner's change of a binding, in its session, against its revision. */
   inboundSet(o: OwnerState, { request }: Call<InboundSetRequest>): InboundBinding {
     return o.inbound.set(request, clock());
   },
+  /** A binding withdrawn, a narrowing the owner's account makes without a session. */
   inboundRevoke(o: OwnerState, { request }: Call<BindingRequest>):
       { binding_id: string; route: string | null } {
     return o.inbound.revoke(request);
   },
+  /**
+   * One inbound event, as the binder proved and routed it (`doors/src/inbound.ts`): the
+   * binding its route names at that route's revision, enabled; an owner-held proof checked
+   * on the raw bytes; the event posted as the owner's mail to the binding's agent, keyed by
+   * the binding, its revision and the event's id, so a retry is the same mail. A shared
+   * app's event refused for a full mailbox counts toward its breaker; once tripped, its
+   * events are a no-op until the owner changes the binding.
+   */
   async inboundAccept(o: OwnerState, door: Door<InboundEvent>): Promise<InboundAnswer> {
     return o.placing((): {
         body: unknown; writer: string } | { done: InboundAnswer } => {

@@ -807,7 +807,7 @@ export interface Conflicted {
 
 // -- THE DOORS: the `collections` rows' handlers (`contract/doors.json`) --------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
@@ -836,6 +836,7 @@ function ring(o: OwnerState, account: Account, collection: string, after: number
 
 /** The `collections` doors' handlers, by door. */
 export const collectionsDoors = Object.freeze({
+  /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
   async boardDigest(o: OwnerState, door: Door<BoardDigestRequest>): Promise<Heads> {
     return o.reading(() => {
       const { account: { caller }, r } = door.check();
@@ -846,6 +847,10 @@ export const collectionsDoors = Object.freeze({
                maxOf: () => headWindow(chars) };
     }, ({ changes, chars }, windows) => heads(changes, chars, windows));
   },
+  /**
+   * One row, fitted to one answer: with `body_offset`, its body from that byte, and with
+   * `etag`, refused when the row is no longer the one that answer read.
+   */
   async collectionGet(o: OwnerState, door: Door<GetRequest>): Promise<{ row: Row | null }> {
     return o.reading(() => {
       const { account: { caller }, r } = door.check();
@@ -865,6 +870,11 @@ export const collectionsDoors = Object.freeze({
     }, ({ got, offset }, windows) => ({ row: got.row === null ? null
       : fittedRow(windowed(got.row, windows, offset), jsonBytes({ row: null }) - 4) as Row }));
   },
+  /**
+   * A collection's rows past `after`, fitted to one answer (`pages.ts`): when rows are left
+   * the cursor is the last one's seq, and a first row cut to fit is read on with
+   * `collection_get`'s `body_offset`.
+   */
   async collectionPull(o: OwnerState, door: Door<PullRequest>): Promise<Page> {
     return o.reading(() => {
       const { account: { caller }, r } = door.check();
@@ -879,6 +889,11 @@ export const collectionsDoors = Object.freeze({
                rows: rows as Row[] };
     });
   },
+  /**
+   * A row's kept history, fitted to one answer, newest first: when entries are left `more`
+   * and `before` name the older ones; `body_offset` reads the page's newest
+   * entry's body from that byte.
+   */
   async collectionHistory(o: OwnerState, door: Door<HistoryRequest>): Promise<History> {
     return o.reading(() => {
       const { account: { caller }, r } = door.check();
@@ -898,6 +913,11 @@ export const collectionsDoors = Object.freeze({
         : { entries, more: true, before: entries[0]!.change };
     });
   },
+  /**
+   * A row written by compare-and-swap; the owner's own board or room write rings (`ring`, `collections.ts`).
+   * Answered without its body (review H3): its etag, revision, seq and `body_bytes`, so a
+   * body past one answer is never echoed back.
+   */
   async collectionWrite(o: OwnerState, door: Door<WriteRequest>):
       Promise<{ row: WrittenRow } | Conflicted> {
     return o.placing(() => {

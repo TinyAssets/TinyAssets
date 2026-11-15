@@ -214,12 +214,20 @@ export function writeTombstone(sql: Pick<SqlStorage, "exec">): void {
 
 // -- THE DOORS: the `admission` rows' handlers (`contract/doors.json`) ----------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `admission` doors' handlers, by door. */
 export const admissionDoors = Object.freeze({
+  /**
+   * The platform suspends the owner for a reason (`billing`, `abuse`), or lifts it
+   * (`admission.ts`): taken only from the reserved `PLATFORM_CALLER`, with no outside client
+   * and no session, whatever the owner's admission is now; an erased owner is never set
+   * again. A suspension then ends the sandbox's in-flight egress streams: the prompt stop,
+   * since every lease, egress call and wake claim is refused while it lasts. Lifting one
+   * gives the `wakes` lane its job back.
+   */
   async admissionSet(o: OwnerState, door: Door<AdmissionRequest>): Promise<Admission> {
     const set = await o.synced(() => {
       door.check();

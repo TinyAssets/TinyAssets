@@ -3093,9 +3093,14 @@ export interface FileConflicted {
 
 // -- THE DOORS: the `files` rows' handlers (`contract/doors.json`) --------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
+//
+// These doors move at most two chunks a call. The HTTP and MCP doors (tasks 2) stream
+// larger files from the binder to `FILES` itself. Another RPC may run in the object
+// whenever one awaits `FILES`, so a door that crosses to it writes its account first,
+// in a unit, and its later steps through units of their own (`Files`).
 
 /** A directory's page (`fileList`). */
 function listed(o: OwnerState, { r, readable }: Call):
@@ -3321,12 +3326,21 @@ export const filesDoors = Object.freeze({
   fileStat(o: OwnerState, { r }: Call<FileRequest>): { entry: Entry | null } {
     return { entry: o.files.stat(r["path"]) };
   },
+  /**
+   * A directory's entries by name; with `head_chars`, each small file's (inline, so no
+   * bucket is read) first characters of its text, enough for its frontmatter.
+   */
   async fileList(o: OwnerState, door: Door<FileListRequest>):
       Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
     await o.seededFor(door);
     return o.door(() => listed(o, door.check()));
   },
-  /** A window of a file's text, its call checked in its units (`fileText`). */
+  /**
+   * A window of a file's text (`file_read`): its UTF-8 bytes from `offset`, at most
+   * `max_bytes` (`READ_DEFAULT_BYTES` when omitted; at most one chunk, the files plane's own
+   * unit, a technical ceiling), cut back to a character boundary, and where the next window
+   * starts (null at the end). A file that is not UTF-8 text is refused as such.
+   */
   async fileText(o: OwnerState, door: Door<FileTextRequest>):
       Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
     await o.seededFor(door);
@@ -3356,12 +3370,24 @@ export const filesDoors = Object.freeze({
     return { entry: content.entry, offset, text: part.text,
              next_offset: end < content.entry.size ? end : null };
   },
+  /**
+   * A search of the owner's files (`search`; `file-search.ts`): the query's words, whole,
+   * against each file's path, and each small file's frontmatter, text and index lines, a
+   * page of the manifest at a time from `cursor` (`SEARCH_SCAN` entries, `SEARCH_ANSWER_BYTES`
+   * of results); every match of the page, best first, and `next_cursor` right after the last
+   * one answered or the last entry read, null at the end; a query of at most
+   * `SEARCH_QUERY_BYTES`.
+   */
   async fileSearch(o: OwnerState, door: Door<FileSearchRequest>):
       Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
     await o.seededFor(door);
     return o.door(() => searched(o, door.check()));
   },
-  /** A file by a search's id, its call checked in its units (`fileFetch`). */
+  /**
+   * A file by a search's id, its stored path (`fetch`): its title, its text (at most one
+   * chunk's, the files plane's own unit; `file_read` reads past it), the app's url for a
+   * citation, and its metadata.
+   */
   async fileFetch(o: OwnerState, door: Door<FileFetchRequest>):
       Promise<{ id: string; title: string; text: string; url: string;
                                         metadata: FetchMetadata }> {
@@ -3411,7 +3437,23 @@ export const filesDoors = Object.freeze({
     return answer(part.text, read.text === null || part.bytes >= content.entry.size ? null
       : part.bytes);
   },
-  /** Text added at the end of a file, its call checked in its units (`fileAppend`). */
+  /**
+   * Text added at the end of a file (`file_append`, slice BRAIN: an outside agent's everyday
+   * write-back), the file made when absent. It never changes a byte already there, so it is
+   * additive (OpenAI's `destructiveHint: false`): the file is read, the text put after it, and
+   * the whole written at the etag it was read at, so two appends never lose each other; one
+   * that meets another's write reads the file again and puts its text after that. A file of
+   * whole chunks keeps them as they are (`Files.write`'s `prefix`), so only its last chunk
+   * and the text are written again, at any size. The text is at most one chunk (4 MiB).
+   * A structured file (`STRUCTURED`: JSON, TOML, YAML) is refused: text put after its end
+   * breaks what it means however whole its bytes stay, so it is edited (the founder,
+   * 2026-11-04). A file that stays small (at most `INLINE_BYTES` with the text) is read and
+   * written in one unit (`Files.writeSmall`), so its append never meets another write and
+   * never tries twice. A larger one is written around its chunks' `FILES` calls, so another
+   * write to it can land between its read and its commit: it then reads again, checking the
+   * caller's authority and the agent trees each try, at most `APPEND_TRIES` times, past which
+   * it is refused `file_busy`.
+   */
   async fileAppend(o: OwnerState, door: Door<FileAppendRequest>): Promise<{ entry: Entry }> {
     await o.seededFor(door);
     const { account, path, added } = await o.door(() => {
@@ -3503,7 +3545,13 @@ export const filesDoors = Object.freeze({
       await o.sync();
     }
   },
-  /** A whole file written, its call checked in its units (`fileWrite`). */
+  /**
+   * Write a whole file of at most one chunk (4 MiB); larger ones go by upload. Its content is
+   * bytes, or text written as UTF-8 (`file_write`, an outside agent's whole replacement). An
+   * outside client or a run writes at the etag it read, or `""` to create a file only when it
+   * is absent, never with no etag at all (review H1): a replacement never lands over a file
+   * the agent did not read. The owner's own app may still write with none.
+   */
   async fileWrite(o: OwnerState, door: Door<FileWriteRequest>):
       Promise<{ entry: Entry } | FileConflicted> {
     await o.seededFor(door);
@@ -3534,7 +3582,14 @@ export const filesDoors = Object.freeze({
       await o.sync();
     }
   },
-  /** One exact occurrence replaced, its call checked in its units (`fileEdit`). */
+  /**
+   * One exact occurrence of `old_text` in a file's text replaced by `new_text`, at the etag
+   * the caller read (`file_edit`, slice BRAIN: a correction, as a stale directive rewritten in
+   * place). Text that occurs nowhere, or more than once, is refused with how many times, so
+   * the caller gives more of the text around it. A chunked file is edited chunk by chunk
+   * (`edit.ts`, ADR-037), each chunk read or made in a step of the isolate's units of its
+   * own, at most `EDIT_BYTES_MAX`; a small one, whole.
+   */
   async fileEdit(o: OwnerState, door: Door<FileEditRequest>):
       Promise<{ entry: Entry } | FileConflicted> {
     await o.seededFor(door);
@@ -3680,6 +3735,14 @@ export const filesDoors = Object.freeze({
         expected: r["expected_etag"], writer: fileWriter(account) }),
     }));
   },
+  /**
+   * What the owner stores against its one storage number (founder, 2026-11-03): every byte
+   * of user content wherever it lives (`used_bytes`: chunks in R2, small files and inline
+   * bodies in the object), the bound (`limit_bytes`: the tier's storage, or the owner's own
+   * lower setting; null until the binder has handed the tier numbers), and where it is:
+   * mail (`messages`), collection rows and their history (`collections`), and files, the
+   * rest. Platform bookkeeping (indexes, receipts, counters) is not user content.
+   */
   storageUsage(o: OwnerState, _call: Call<undefined>): {
     used_bytes: number; limit_bytes: number | null;
     breakdown: { files: number; messages: number; collections: number };
@@ -3697,6 +3760,13 @@ export const filesDoors = Object.freeze({
              deleted_content: { kept_bytes: o.files.garbageBytes(),
                                 kept_up_to_days: GC_GRACE_S / 86_400 } };
   },
+  /**
+   * A key rotation's sweep for this owner (`files/src/datakey.ts`, tasks.md): its wrapped
+   * data key, and every nightly manifest root it keeps, wrapped again under the files
+   * keyring's active kid; an idle owner's too, since nothing else rewrites its root. The
+   * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is. While a restore holds the
+   * owner, its generations are counted left, so a rotation never finishes past a hold.
+   */
   async dataKeyRewrap(o: OwnerState, door: Door<undefined>): Promise<RewrapAnswer> {
     const { held, gens } = await o.door(() => {
       door.check();
@@ -3711,6 +3781,12 @@ export const filesDoors = Object.freeze({
     });
     return held ?? o.files.rewrap(gens);
   },
+  /**
+   * An upload's target for the binder, which streams the file's bytes to `FILES` itself:
+   * the owner's chunk namespace, the intent's chunk plan and the chunks still to send. The
+   * binder is the trust root, already reaching every owner's object, so handing it this
+   * owner's namespace weakens no isolation.
+   */
   async fileUploadTarget(o: OwnerState, door: Door<IntentRequest>):
       Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
                 pending: string[] }> {
@@ -3719,9 +3795,17 @@ export const filesDoors = Object.freeze({
     const { ns, key } = await o.files.space();
     return { namespace: ns, key, ...plan };
   },
+  /**
+   * The binder's word that `FILES` accepted these of the intent's chunks (each put verified
+   * its hash): recorded as `fileUploadChunks` records its own puts.
+   */
   fileUploadStored(o: OwnerState, { r }: Call<UploadStoredRequest>): { stored: number } {
     return o.files.stored(r["intent_id"], r["chunks"]);
   },
+  /**
+   * A file's entry and content: its bytes when small, else its chunk list for
+   * `fileReadChunks`. With `etag` still current, only the entry (`not_modified`).
+   */
   fileRead(o: OwnerState, call: Call<FileReadRequest>):
       { entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] } {
     const { r } = call;
@@ -3733,6 +3817,7 @@ export const filesDoors = Object.freeze({
     const { content_id: _id, ...shown } = content;
     return shown;
   },
+  /** One or two of a kept version's chunks, from `first`, so a read pins its version. */
   async fileReadChunks(o: OwnerState, door: Door<FileChunksRequest>):
       Promise<{ chunks: Uint8Array[] }> {
     const reads = await o.door(() => {
@@ -3751,16 +3836,22 @@ export const filesDoors = Object.freeze({
     });
     return { chunks: await o.files.fetch(reads) };
   },
+  /**
+   * Begin an upload of one file: its size and chunk hashes, and back the ones whose bytes
+   * to send.
+   */
   fileUploadBegin(o: OwnerState, { account, r }: Call<UploadBeginRequest>):
       { intent_id: string; missing: string[]; expires_at: number } {
     return o.files.begin(r["size"], r["chunks"], fileWriter(account));
   },
+  /** Send an upload's chunk bytes, at most two chunks a call; R2 checks each hash. */
   async fileUploadChunks(o: OwnerState, door: Door<UploadChunksRequest>):
       Promise<{ created: number }> {
     const { r } = await o.door(() => door.check());
     // `Files.upload` records each chunk stored, once `FILES` took it, in a unit of its own.
     return o.files.upload(r["intent_id"], r["chunks"]);
   },
+  /** Commit an upload whose chunks are all stored as the file it declared. */
   fileUploadCommit(o: OwnerState, { account, r, binding }: Call<UploadCommitRequest>):
       { entry: Entry } | FileConflicted {
     ownersTree(o, binding, account, "FILES.write", { path: r["path"] }, r["path"]);
@@ -3772,9 +3863,14 @@ export const filesDoors = Object.freeze({
   fileUploadAbort(o: OwnerState, { r }: Call<IntentRequest>): { aborted: boolean } {
     return o.files.abort(r["intent_id"]);
   },
+  /** Drop a kept version's content: the owner's own act, never an outside client's. */
   fileRedact(o: OwnerState, { r }: Call<VersionRequest>): { redacted: number } {
     return o.files.redact(r["path"], r["version"]);
   },
+  /**
+   * Drop a path's kept versions but its current one: the owner's own act, never an
+   * outside client's, and never refused for a quota.
+   */
   fileHistoryPurge(o: OwnerState, { r }: Call<FileRequest>): { purged: number } {
     return o.files.purge(r["path"]);
   },
@@ -3797,10 +3893,16 @@ export const filesDoors = Object.freeze({
     return o.files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"], ops: r["ops"] },
                               (authority) => o.grants.full(authority));
   },
+  /**
+   * The sync agent's upload of a file past one inline write (`INLINE_BYTES`), through the
+   * files plane's own upload (slice S review M-6): begun as the lease's own writer, so its
+   * sync commit (`intent_id`) takes it, fenced by the live lease.
+   */
   fileSyncUploadBegin(o: OwnerState, { r }: Call<SyncUploadBeginRequest>):
       { intent_id: string; missing: string[]; expires_at: number } {
     return o.files.syncBegin(r["lease_id"], r["epoch"], r["size"], r["chunks"]);
   },
+  /** The sync agent's chunk bytes for its own upload, at most two chunks a call. */
   async fileSyncUploadChunks(o: OwnerState, door: Door<SyncUploadChunksRequest>):
       Promise<{ created: number }> {
     const r = await o.door(() => {
@@ -3813,6 +3915,11 @@ export const filesDoors = Object.freeze({
     });
     return o.files.upload(r["intent_id"], r["chunks"]);
   },
+  /**
+   * The sync agent's own upload given up (its file changed mid-sync, or was refused), let go
+   * now rather than holding the owner's storage until it expires; fenced by the live lease,
+   * and only the lease's own upload. One already gone is no error.
+   */
   fileSyncUploadAbort(o: OwnerState, { r }: Call<SyncUploadAbortRequest>): { aborted: boolean } {
     const writer = o.files.syncWriter(r["lease_id"], r["epoch"]);
     let owner: string | null;

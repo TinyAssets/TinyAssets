@@ -358,12 +358,19 @@ function billedEvent(value: unknown): BilledEvent {
 
 // -- THE DOORS: the `sandbox-time` rows' handlers (`contract/doors.json`) -------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `sandbox-time` doors' handlers, by door. */
 export const sandboxTimeDoors = Object.freeze({
+  /**
+   * One execution E2B billed, from its signed lifecycle event, which the doors verified and
+   * routed here by its sealed route (`doors/src/e2b-hooks.ts`). It carries no binding, as the
+   * line's ring does not (`sandboxRung`): it grants nothing, and only adds to the meter, once
+   * an execution, inside the window its event's time allows. An erased or erasing owner
+   * counts nothing.
+   */
   async sandboxBilled(o: OwnerState, door: Door<BilledEvent>): Promise<{ counted: boolean }> {
     if (o.gone()) {
       return { counted: false };
@@ -371,6 +378,7 @@ export const sandboxTimeDoors = Object.freeze({
     const checked = billedEvent(door.request);
     return o.door(() => ({ counted: o.sandboxTime.billed(checked, clockMs()) }));
   },
+  /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
   sandboxDays(o: OwnerState, { request }: Call<{ days?: number }>): {
     days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;
             gb_seconds: number; unverified_executions: number }[] } {

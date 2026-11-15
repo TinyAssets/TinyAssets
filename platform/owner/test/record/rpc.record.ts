@@ -7,16 +7,15 @@
 import { describe, it } from "vitest";
 
 import { OwnerDO } from "../../src/owner-do";
+import { rpcReserved } from "../../../contract/src/doors";
 import { gated } from "../gateway-support";
 import { DOT, MCP, MUSE, rig } from "../ledger-support";
 import { ALL_SCOPES, ownerRun, runBinding, runnerBinding } from "../runs-support";
 import { TIERS } from "../support";
 import { asked } from "./support";
 
-const RESERVED = new Set(["constructor", "alarm", "fetch", "webSocketClose", "webSocketError",
-                          "webSocketMessage"]);
 const METHODS = Object.getOwnPropertyNames(OwnerDO.prototype)
-  .filter((name) => !RESERVED.has(name)).sort();
+  .filter((name) => !rpcReserved().includes(name)).sort();
 
 function clean(text: string): string {
   return text

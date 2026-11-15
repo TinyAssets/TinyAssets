@@ -479,13 +479,22 @@ export function endLine(at: number, seq: number): string {
 
 // -- THE DOORS: the `export` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `export` doors' handlers, by door. */
 export const exportDoors = Object.freeze({
-  /** The export's next object, its call checked in its first unit. */
+  /**
+   * One object of the owner's export from `cursor` (null: the start, which opens the export
+   * on a generation, `backup.ts`: the one running, the newest finished while nothing changed
+   * since, or a new one, begun at once): its lines, and the next object's cursor, or null
+   * after its end line. Every object is immutable once R2 holds it, so any cursor resumes;
+   * one not yet written answers `pending`, its cursor the same, to ask again. The owner's
+   * alone, in its live session: no outside client, no run, and no request without the
+   * session cookie reaches it. A `read` door, so a billing suspension still lets the owner
+   * take its data; its writes (the export's own rows) are quiet: they mark nothing changed.
+   */
   async ownerExport(o: OwnerState, door: Door<{ cursor?: string | null; export_id?: string }>):
       Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
     const asked = await o.quiet(() => {
@@ -527,6 +536,12 @@ export const exportDoors = Object.freeze({
     return answer(new TextDecoder().decode(bytes).trimEnd().split("\n"),
                   encodeExportCursor(open.gen, index + 1));
   },
+  /**
+   * Chunks an open export's pages named, by hash: their bytes, at most two chunks a call
+   * (`BATCH_BYTES`), each checked against its hash by the files Worker. Any chunk the owner
+   * still stores is served (live, or garbage in its grace), however the owner changed since;
+   * one gone from the bucket is refused (`CHUNK_GONE`). The owner's alone.
+   */
   async exportChunks(o: OwnerState, door: Door<{ export_id: string; sha256s: string[] }>):
       Promise<{ chunks: { sha256: string; data: string }[] }> {
     const wanted = await o.door(() => {
@@ -543,6 +558,7 @@ export const exportDoors = Object.freeze({
     return { chunks: wanted.map((sha256, at) => ({
       sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
   },
+  /** An export ended: its id names it no longer. */
   exportEnd(o: OwnerState, { request }: Call<{ export_id: string }>): { ended: boolean } {
     return { ended: o.openExports.end(request?.export_id) };
   },

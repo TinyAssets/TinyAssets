@@ -33,10 +33,11 @@
  * guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
- * but its doors (the door table, `contract/doors.json`, lists them). The object is their
- * router and holds their state: each door's method hands its row's runner (`#run`, `#units`:
- * the bind, the account, the scope and the fields) the handler in the module its row names
- * (`<module>Doors.<door>`), which the runner hands the object's state (`OwnerState`). Its
+ * but its doors: the door table (`contract/doors.json`) defines them on its prototype when
+ * the class loads, one a row, none a name RPC reserves. The object is their router and holds
+ * their state: each door's method hands its row's runner (`#call`: the bind, the account, the
+ * scope and the fields) the handler in the module its row names (`<module>Doors.<door>`),
+ * which the runner hands the object's state (`OwnerState`). Its
  * runs are launched and delivered by `launch.ts`. Its timed work is the one
  * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
  * object's single physical alarm, beside the erasure's job. The object is a plain Durable
@@ -106,7 +107,10 @@ import { principal } from "../../contract/src/text";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import { doorRow, type DoorRow, fields, type ProfileName } from "../../contract/src/doors";
+import {
+  doorProblems, doorRow, type DoorRow, doorTable, fields, takesRequest,
+} from "../../contract/src/doors";
+import type { DoorMethods, DoorRows } from "./door-map";
 import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
@@ -118,80 +122,53 @@ import {
   agentId, AUTHORITY_CHANGED, MAIN_AGENT, may, NOT_GRANTED, OWNER, type Stamped,
 } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
-import { agentsAt, RUN_ENDED, Runs, type RunSchedule, runsDoors } from "./runs";
+import { agentsAt, RUN_ENDED, Runs, runsDoors } from "./runs";
 import { PostGate } from "../../contract/src/run-events";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
-import { type ApiKey, Keys, keysDoors } from "./keys";
-import { bindingId, Inbound, type InboundBinding, inboundDoors, type InboundRow } from "./inbound";
+import { Keys, keysDoors } from "./keys";
+import { bindingId, Inbound, inboundDoors, type InboundRow } from "./inbound";
 import { keepTiers, keptTiers, PLATFORM_TIER_ONLY, tierDoors } from "./tier";
 import type { TierName } from "../../contract/src/control";
 import { Bodies, type Located, type Placed, type Placing, type Window } from "./bodies";
-import { type Heads, PAGE_BYTES, type Shown, type Wants } from "./pages";
-import { Collections, collectionsDoors, type History, type Page, type Row } from "./collections";
-import {
-  Connections, connectionsDoors, type ConnectionView, type Prepared,
-} from "./connections";
+import { PAGE_BYTES, type Shown, type Wants } from "./pages";
+import { Collections, collectionsDoors } from "./collections";
+import { Connections, connectionsDoors } from "./connections";
 import type { RingAnswer } from "../../contract/src/gateway";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import {
- type Change as FileChange, type ChunkRef, type Entry, fileChanged,
- Files, filesDoors, type SandboxLease, SYNC_FENCED, type SyncOutcome,
- type Usage,
+  fileChanged, Files, filesDoors, type SandboxLease, type SyncCommitRequest, SYNC_FENCED,
 } from "./files";
 import { type OwnerStorage, WriteGate } from "./gate";
+import { type Grant, Grants, grantsDoors, type Scope } from "./grants";
+import { codemodeDoors } from "./codemode";
 import {
-  type Client, type ConnectedApp, type Grant, Grants, grantsDoors, type Scope,
-} from "./grants";
-import {
-  codemodeDoors, type CodeRequest, type CodeResult,
-} from "./codemode";
-import {
-  type Agent, type ChainMail, Ledger, ledgerDoors, type MailPage,
-  type NativeAgent, outsideOrigin, type Posted, READ_TRIES, registrant, RUN_NO_MAILBOX,
+  Ledger, ledgerDoors, outsideOrigin, READ_TRIES, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock } from "./clock";
 import type { OwnerEnv } from "./env";
-import {
-  type Binding, type InboundAnswer, type Origin, PLATFORM_CALLER,
-} from "../../contract/src/binding";
-import { type Notice, Notices, noticesDoors } from "./notices";
-import {
-  type ImportCheckAnswer, type ImportCheckRequest, type Imported, importDoors,
-  type ImportFileBeginRequest, type ImportFileCommitRequest, type ImportFilesRequest,
-  type ImportFileStoredRequest, type ImportNoticeRequest, type ImportRowsRequest,
-  type ImportUpload,
-} from "./import";
+import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
+import { Notices, noticesDoors } from "./notices";
+import { importDoors } from "./import";
 import { Erasure } from "./erase";
 import {
   erasing, erasureDoors, NO_ERASURE, outsideDone, wiped,
 } from "./erasure";
-import {
- type Change, fileLimits, modelSettings, Policy, policyDoors, type Projection, type Receipt,
-} from "./policy";
-import { type Card, Registrations, registrationsDoors } from "./registrations";
+import { fileLimits, modelSettings, Policy, policyDoors } from "./policy";
+import { Registrations, registrationsDoors } from "./registrations";
 import { Schedule } from "./schedule";
 import { ABILITY_TREES, AGENTS_DIR, within } from "../../contract/src/paths";
 import { Launcher } from "./launch";
-import {
- Egress, egressDoors, type EgressReceipt, sandboxBinding,
-} from "./egress";
+import { Egress, egressDoors, sandboxBinding } from "./egress";
 import { exportDoors } from "./export";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
-import type {
-  AdmissionRequest, BeatRequest, BilledEvent, BindingRequest, ConnectionCommitRequest,
-  ConnectionPrepareRequest, ConnectionRequest, EgressOpened, EgressRefusal, EgressReserved,
-  EraseRequest, FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors,
-  OwnerStateAnswer, ResealAnswer, RestoreAnswer, RestoreBeginRequest, RestoreHold,
-  RestorePinRequest, RestoreSource, RestoreWipeRequest, RewrapAnswer, SigninEventsRequest,
-  TierRequest,
-} from "../../contract/src/owner";
+import type { OwnerDoors } from "../../contract/src/owner";
 import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
-import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
-import { type Receipt as StarterReceipt, Starter, starterDoors } from "./starter";
+import { signinOwned, Signins, signinsDoors, switchedOn } from "./signins";
+import { Starter, starterDoors } from "./starter";
 import { carried } from "./starter-package";
-import { priced, Usage as ModelUsage, usageDoors, type UsageReceipt } from "./usage";
+import { priced, Usage as ModelUsage, usageDoors } from "./usage";
 import { migrate } from "../../contract/src/migrate";
 import { Archive } from "./archive";
 import { MIGRATIONS } from "./schema";
@@ -201,36 +178,6 @@ import { ChangeLog } from "./changelog";
 import { ControlGate } from "./control-gate";
 import { storageFull, storageFullRefusal } from "./storage-full";
 import { Doorbell, type WakeSender } from "./wakes";
-import { type Events } from "../../contract/src/wake-records";
-import type {
-  BoardDigestRequest, ClearRequest, Conflicted, DeleteRequest, GetRequest, HistoryRequest,
-  PullRequest, WriteRequest, WrittenRow,
-} from "./collections";
-import type {
-  AckRequest, AgentDoorbellRequest, AgentRequest, AgentsRequest, CardApply, ChainRequest,
-  DisableRequest, InboxDigestRequest, PostRequest, ReadRequest, SubscribeRequest,
-  UnsubscribeRequest, WakeLimitsRequest,
-} from "./ledger";
-import type { InboundEvent } from "./inbound";
-import type { CardRequest, PolicyWriteRequest, ProposeRequest } from "./policy";
-import type {
-  ChangesRequest, FetchMetadata, FileAppendRequest, FileChunksRequest, FileConflicted,
-  FileEditRequest, FileFetchRequest, FileHistoryRequest, FileListRequest, FileReadRequest,
-  FileRequest, FileSearchRequest, FileTextRequest, FileWriteRequest, IntentRequest, MkdirRequest,
-  RemoveRequest, RenameRequest, RestoreRequest, SearchResult, SyncCommitRequest,
-  SyncUploadAbortRequest, SyncUploadBeginRequest, SyncUploadChunksRequest, UploadBeginRequest,
-  UploadChunksRequest, UploadCommitRequest, UploadStoredRequest, VersionRequest,
-} from "./files";
-import type { ClientRequest, ForgetRequest } from "./grants";
-import type { ConversationRequest } from "./relay";
-import type {
-  EventsRequest, LaunchRequest, RunListed, RunListRequest, RunRequest, RunView, SubmitRequest,
-} from "./runs";
-import type { KeyMintRequest } from "./keys";
-import type { RegistrationCardRequest } from "./registrations";
-import type {
-  SigninCodeRequest, SigninRequest, SigninRequestById, SigninStartRequest,
-} from "./signins";
 
 /** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
 /** Why a restore's wipe resets the instance (`OwnerState.reset`). */
@@ -343,6 +290,28 @@ export interface Door<R = unknown> {
   /** Every step but the fields: the caller's authority, whatever it asks. */
   authorized(): void;
 }
+
+/** A door of the table, by name (`door-map.ts`, written from it). */
+export type DoorName = keyof DoorRows;
+/** A module that holds doors' handlers, as the rows name it. */
+export type Module = DoorRows[DoorName]["module"];
+/** Who a door takes (its row's `caller`): what its call's account step proved. */
+export type CallerOf<D extends DoorName> = DoorRows[D]["caller"];
+/** How a door's handler runs in the write gate (its row's `gate`). */
+export type GateOf<D extends DoorName> = DoorRows[D]["gate"];
+/** The doors whose rows name module `M`. */
+type DoorsIn<M extends Module> =
+  { [D in DoorName]: DoorRows[D]["module"] extends M ? D : never }[DoorName];
+/**
+ * A door's handler, handed `N` (its first parameter: what it may reach) and, by its row's
+ * gate, the door that checks its call in each unit it makes, or the call checked in one unit
+ * of that gate. Its request is its own (`never` here, so any request type fits), held to the
+ * row's fields by the runner.
+ */
+export type HandlerOf<D extends DoorName, N> = GateOf<D> extends "units"
+  ? (o: N, door: Door<never>) => Promise<unknown> : (o: N, call: Call<never>) => unknown;
+/** The handlers of module `M`'s doors, each handed `N`: one per row that names `M`. */
+export type DoorsOf<M extends Module, N> = { readonly [D in DoorsIn<M>]: HandlerOf<D, N> };
 
 /** What a run door needs where its agent acts: to start work, or (null) to read or cancel it. */
 type RunNeed = "converse" | "run_graph" | null;
@@ -527,9 +496,45 @@ export interface OwnerState {
   universe(account: Account): string | null;
   /** The account `binding` binds to at `door`'s row, as the runner binds it there. */
   accountAt(door: string, binding: Binding): Account;
-  /** `door`'s own public method called with `args`, as any call of it is (code mode). */
-  invoke(door: string, args: readonly unknown[]): Promise<unknown>;
+  /** `door` called by its row and handler, as any call of it is (code mode). */
+  invoke(door: string, binding: Binding, request: unknown): Promise<unknown>;
 }
+
+/**
+ * Each module's door handlers (`<module>Doors`), by the module its rows name: `tsc` holds
+ * that every module a row names is here, and that each handler of its rows is, typed by its
+ * gate and handed the object's state; the class's loop finds each row's own (`handlerOf`).
+ */
+const HANDLERS = Object.freeze({
+  admission: admissionDoors, codemode: codemodeDoors, collections: collectionsDoors,
+  connections: connectionsDoors, egress: egressDoors, erasure: erasureDoors,
+  export: exportDoors, files: filesDoors, grants: grantsDoors, import: importDoors,
+  inbound: inboundDoors, keys: keysDoors, ledger: ledgerDoors, notices: noticesDoors,
+  policy: policyDoors, registrations: registrationsDoors, relay: relayDoors,
+  restore: restoreDoors, runs: runsDoors, "sandbox-time": sandboxTimeDoors,
+  sessions: sessionsDoors, signins: signinsDoors, starter: starterDoors, tier: tierDoors,
+  usage: usageDoors,
+}) satisfies { readonly [M in Module]: DoorsOf<M, OwnerState> };
+
+/** A handler as the runner calls it, whatever its door: what its row's gate hands it. */
+type Handled = (o: OwnerState, call: never) => unknown;
+
+/** The handlers by module, as the runner reads them by a row's names. */
+function modules(): Readonly<Record<string, Readonly<Record<string, Handled>>>> {
+  return HANDLERS;
+}
+
+/** `row`'s handler, in the module its row names; none is a broken table (`tsc` refuses it). */
+function handlerOf(row: DoorRow): Handled {
+  const module = Object.hasOwn(modules(), row.handler) ? modules()[row.handler]! : {};
+  if (!Object.hasOwn(module, row.door)) {
+    throw new Error(`${row.door}: no handler in ${row.handler}, the module its row names`);
+  }
+  return module[row.door]!;
+}
+
+/** The object's doors, each defined from its row when the class loads (`#call`). */
+export interface OwnerDO extends DoorMethods<typeof HANDLERS> {}
 
 export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /** The one write gate: every owner write is one synchronous unit. */
@@ -876,9 +881,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       universe: (account: Account) => object.#universe(account),
       accountAt: (door: string, binding: Binding) =>
         object.#within(doorRow(door), binding, undefined, ({ account }) => account),
-      invoke: (door: string, args: readonly unknown[]) =>
-        Reflect.apply((object as unknown as Record<string, unknown>)[door] as
-          (...args: unknown[]) => Promise<unknown>, object, args),
+      invoke: (door: string, binding: Binding, request: unknown) => {
+        const row = doorRow(door);
+        return object.#call(row, binding, request, handlerOf(row));
+      },
     });
   }
 
@@ -1042,15 +1048,71 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   // -- THE RUNNER: every door's bind, account, scope and fields, from its row ------------
   //
-  // Each door is a row of the contract's table (`contract/doors.json`) and its handler: the
-  // public method names its row and hands the handler, and the steps are these, from the
-  // row alone.
+  // Each door is a row of the contract's table (`contract/doors.json`) and its handler in
+  // the module its row names (`HANDLERS`). The class defines each row's method on its
+  // prototype at module load (`DoorMethods`, written from the table), and each hands its row
+  // and handler to the one runner; the steps are these, from the row alone.
 
-  /** A door whose handler runs in one unit of its row's gate, checked in that unit. */
-  #run<R, T>(name: string, binding: Binding, request: R,
-             act: (o: OwnerState, call: Call<R>) => T): Promise<T> {
-    const row = doorRow(name);
-    const unit = () => this.#within(row, binding, request, (call) => act(this.#state, call));
+  static {
+    // The table whole, as a hand method once held its own row at each call (`doorRow`): a
+    // door a name RPC reserves (`rpcReserved`) among what it refuses.
+    const problems = doorProblems(doorTable());
+    if (problems.length > 0) {
+      throw new Error(`the door table is broken: ${problems.join("; ")}`);
+    }
+    // Every handler is a row's, of the module it is in: a handler no row names is refused.
+    const named = new Map(doorTable().map((row) => [row.door, row.handler]));
+    for (const [module, handlers] of Object.entries(modules())) {
+      const stray = Object.keys(handlers).filter((door) => named.get(door) !== module);
+      if (stray.length > 0) {
+        throw new Error(`${module}: handlers of no row of it (${stray.join(", ")})`);
+      }
+    }
+    for (const row of doorTable()) {
+      // A name RPC reserves is refused with the table (`rpcReserved`): the runtime would
+      // refuse some only at a call. One the class or its chain has (`fetch`, `toString`)
+      // never becomes a door either, or the door would hide it.
+      if (row.door in this.prototype) {
+        throw new Error(`${row.door}: the class's own name, or its chain's, is no door`);
+      }
+      const handler = handlerOf(row);
+      Object.defineProperty(this.prototype, row.door, {
+        value: row.caller === "none"
+          ? function (this: OwnerDO, request: unknown) {
+            return this.#call(row, undefined as unknown as Binding, request, handler);
+          }
+          : function (this: OwnerDO, binding: Binding, request: unknown) {
+            return this.#call(row, binding, request, handler);
+          },
+      });
+    }
+  }
+
+  /**
+   * A door's call: its handler handed the object's state and, by its row's gate, the call
+   * checked in one unit of that gate, or the door, which its handler checks in each unit it
+   * makes. A row that takes no request is handed none, whatever came.
+   */
+  #call(row: DoorRow, binding: Binding, request: unknown, handler: Handled): Promise<unknown> {
+    // The request's type is its handler's, held to the row's fields by the runner's fields
+    // step at run time, as `tsc` holds the handler to its row at `HANDLERS`.
+    const asked = (takesRequest(row) ? request : undefined) as never;
+    if (row.gate === "units") {
+      const door: Door<never> = {
+        binding, request: asked,
+        check: () => this.#within(row, binding, asked, (call) => call),
+        within: (inner) => this.#within(row, binding, asked, inner),
+        bound: () => this.#bound(row, binding, asked).account,
+        authorized: () => {
+          const { account } = this.#bound(row, binding, asked);
+          this.#guard(row, binding, account);
+          this.#scoped(row, account, null);
+        },
+      };
+      return Promise.resolve(handler(this.#state, door as never));
+    }
+    const unit = () => this.#within(row, binding, asked,
+                                    (call) => handler(this.#state, call as never));
     switch (row.gate) {
       case "door":
         return this.#door(unit);
@@ -1060,30 +1122,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         return this.#synced(unit);
       case "filing":
         return this.#filing(unit);
-      case "units":
-        break;
     }
-    throw new Error(`${name} runs in units of its own`);
-  }
-
-  /** A door whose handler makes its own units, each checking the call again. */
-  #units<R, T>(name: string, binding: Binding, request: R,
-               act: (o: OwnerState, door: Door<R>) => Promise<T>): Promise<T> {
-    const row = doorRow(name);
-    if (row.gate !== "units") {
-      throw new Error(`${name} runs in one unit of its gate`);
-    }
-    return act(this.#state, {
-      binding, request,
-      check: () => this.#within(row, binding, request, (call) => call),
-      within: (inner) => this.#within(row, binding, request, inner),
-      bound: () => this.#bound(row, binding, request).account,
-      authorized: () => {
-        const { account } = this.#bound(row, binding, request);
-        this.#guard(row, binding, account);
-        this.#scoped(row, account, null);
-      },
-    });
   }
 
   /**
@@ -1347,347 +1386,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return mine[0]!.command_center_id;
   }
 
-  // -- SESSIONS: the owner's protected interactive sessions ---------------------
-
-  /** A verified interactive sign-in opens a session; its cookie is returned once. */
-  sessionOpen(binding: Binding): Promise<{ session: string; expires_at: number }> {
-    return this.#run("sessionOpen", binding, undefined, sessionsDoors.sessionOpen);
-  }
-
-  sessionExtend(binding: Binding): Promise<{ expires_at: number }> {
-    return this.#run("sessionExtend", binding, undefined, sessionsDoors.sessionExtend);
-  }
-
-  /** One session signed out, and the connection flows it began cancelled with it. */
-  sessionClose(binding: Binding): Promise<{ closed: number }> {
-    return this.#run("sessionClose", binding, undefined, sessionsDoors.sessionClose);
-  }
-
-  /**
-   * Every session signed out: account revocation and deletion (`revoke_owner`), every open
-   * connection flow cancelled in the same unit, so a late callback finds none.
-   */
-  sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
-    return this.#units("sessionCloseAll", binding, undefined, sessionsDoors.sessionCloseAll);
-  }
-
-  // -- SANDBOX TIME: the sandbox Worker's log, metered (`sandbox-time.ts`) -----------
-
-  /**
-   * One execution E2B billed, from its signed lifecycle event, which the doors verified and
-   * routed here by its sealed route (`doors/src/e2b-hooks.ts`). It carries no binding, as the
-   * line's ring does not (`sandboxRung`): it grants nothing, and only adds to the meter, once
-   * an execution, inside the window its event's time allows. An erased or erasing owner
-   * counts nothing.
-   */
-  async sandboxBilled(event: BilledEvent): Promise<{ counted: boolean }> {
-    return this.#units("sandboxBilled", undefined as unknown as Binding, event, sandboxTimeDoors.sandboxBilled);
-  }
-
-  /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
-  sandboxDays(binding: Binding, request: { days?: number }): Promise<{
-      days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;
-              gb_seconds: number; unverified_executions: number }[] }> {
-    return this.#run("sandboxDays", binding, request, sandboxTimeDoors.sandboxDays);
-  }
-
-  // -- STORAGE: the tier's one storage number, used and left -------------------
-
-  /**
-   * What the owner stores against its one storage number (founder, 2026-11-03): every byte
-   * of user content wherever it lives (`used_bytes`: chunks in R2, small files and inline
-   * bodies in the object), the bound (`limit_bytes`: the tier's storage, or the owner's own
-   * lower setting; null until the binder has handed the tier numbers), and where it is:
-   * mail (`messages`), collection rows and their history (`collections`), and files, the
-   * rest. Platform bookkeeping (indexes, receipts, counters) is not user content.
-   */
-  storageUsage(binding: Binding): Promise<{
-      used_bytes: number; limit_bytes: number | null;
-      breakdown: { files: number; messages: number; collections: number };
-      deleted_content: { kept_bytes: number; kept_up_to_days: number } }> {
-    return this.#run("storageUsage", binding, undefined, filesDoors.storageUsage);
-  }
-
-  // -- OWNER_EXPORT: everything the owner holds (`export.ts`) --------------------
-
-  /**
-   * One object of the owner's export from `cursor` (null: the start, which opens the export
-   * on a generation, `backup.ts`: the one running, the newest finished while nothing changed
-   * since, or a new one, begun at once): its lines, and the next object's cursor, or null
-   * after its end line. Every object is immutable once R2 holds it, so any cursor resumes;
-   * one not yet written answers `pending`, its cursor the same, to ask again. The owner's
-   * alone, in its live session: no outside client, no run, and no request without the
-   * session cookie reaches it. A `read` door, so a billing suspension still lets the owner
-   * take its data; its writes (the export's own rows) are quiet: they mark nothing changed.
-   */
-  async ownerExport(binding: Binding,
-                    request: { cursor?: string | null; export_id?: string }):
-      Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
-    return this.#units("ownerExport", binding, request, exportDoors.ownerExport);
-  }
-
-  /**
-   * Chunks an open export's pages named, by hash: their bytes, at most two chunks a call
-   * (`BATCH_BYTES`), each checked against its hash by the files Worker. Any chunk the owner
-   * still stores is served (live, or garbage in its grace), however the owner changed since;
-   * one gone from the bucket is refused (`CHUNK_GONE`). The owner's alone.
-   */
-  async exportChunks(binding: Binding, request: { export_id: string; sha256s: string[] }):
-      Promise<{ chunks: { sha256: string; data: string }[] }> {
-    return this.#units("exportChunks", binding, request, exportDoors.exportChunks);
-  }
-
-  /** An export ended: its id names it no longer. */
-  exportEnd(binding: Binding, request: { export_id: string }): Promise<{ ended: boolean }> {
-    return this.#run("exportEnd", binding, request, exportDoors.exportEnd);
-  }
-
-  /**
-   * A key rotation's sweep for this owner (`files/src/datakey.ts`, tasks.md): its wrapped
-   * data key, and every nightly manifest root it keeps, wrapped again under the files
-   * keyring's active kid; an idle owner's too, since nothing else rewrites its root. The
-   * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is. While a restore holds the
-   * owner, its generations are counted left, so a rotation never finishes past a hold.
-   */
-  async dataKeyRewrap(binding: Binding): Promise<RewrapAnswer> {
-    return this.#units("dataKeyRewrap", binding, undefined, filesDoors.dataKeyRewrap);
-  }
-
-  /**
-   * A gateway key rotation's sweep for this owner (`gateway/src/keyring.ts`): every model
-   * credential and doorbell subscription blob it holds resealed under the gateway keyring's
-   * active kid, an idle one's too, since nothing else reseals it; the platform retires a kid
-   * once every owner's sweep left none. The platform's alone, as `dataKeyRewrap` is.
-   */
-  async gatewayReseal(binding: Binding): Promise<ResealAnswer> {
-    return this.#units("gatewayReseal", binding, undefined, connectionsDoors.gatewayReseal);
-  }
-
-  // -- RESTORE: the platform's, into a pending and empty owner (`restore.ts`) -----------
-
-  /** The owner's namespace and finished generations, its admission and any restore's step. */
-  restoreSource(binding: Binding): Promise<RestoreSource> {
-    return this.#units("restoreSource", binding, undefined, restoreDoors.restoreSource);
-  }
-
-  /** A restore begun from one generation of the owner's: a pending and empty object only. */
-  restoreBegin(binding: Binding, request: RestoreBeginRequest): Promise<RestoreAnswer> {
-    return this.#units("restoreBegin", binding, request, restoreDoors.restoreBegin);
-  }
-
-  /** The restore carried on from its record, a bounded pass; how far it is. */
-  restoreStep(binding: Binding): Promise<RestoreAnswer> {
-    return this.#units("restoreStep", binding, undefined, restoreDoors.restoreStep);
-  }
-
-  /** A live owner's generation pinned and the owner held, its present state written first. */
-  restorePin(binding: Binding, request: RestorePinRequest): Promise<RestoreHold> {
-    return this.#units("restorePin", binding, request, restoreDoors.restorePin);
-  }
-
-  /** The pinned owner's object wiped to pending and empty, confirmed; then the instance reset. */
-  restoreWipe(binding: Binding, request: RestoreWipeRequest): Promise<RestoreHold> {
-    return this.#units("restoreWipe", binding, request, restoreDoors.restoreWipe);
-  }
-
-  /** A pin not yet wiped given up: the owner as it was. */
-  restoreRelease(binding: Binding): Promise<{ released: true }> {
-    return this.#units("restoreRelease", binding, undefined, restoreDoors.restoreRelease);
-  }
-
-  // -- OWNER_POLICY ------------------------------------------------------------
-
-  policyRead(binding: Binding): Promise<Projection> {
-    return this.#run("policyRead", binding, undefined, policyDoors.policyRead);
-  }
-
-  policyReceipts(binding: Binding): Promise<{ receipts: Receipt[] }> {
-    return this.#run("policyReceipts", binding, undefined, policyDoors.policyReceipts);
-  }
-
-  /**
-   * The owner's write, in its session; with `proposal`, a held card's one apply. A new
-   * files retention is applied to rows already kept by housekeeping, so the schedule is
-   * synced after it (the `files` lane re-applies it). Once it committed, it ends the
-   * sandbox's in-flight egress streams; a call opened after it is admitted under the new
-   * generation.
-   */
-  async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
-    return this.#units("policyWrite", binding, request, policyDoors.policyWrite);
-  }
-
-  /**
-   * An agent's proposal, the owner's or an admitted outside client's; never applied. A
-   * scoped client proposes only with `propose_policy` granted where its agent is.
-   */
-  policyPropose(binding: Binding, request: ProposeRequest):
-      Promise<{ request_digest: string; generation: number }> {
-    return this.#run("policyPropose", binding, request, policyDoors.policyPropose);
-  }
-
-  /** The pending card the owner is shown, and the digest its apply must name. */
-  policyProposal(binding: Binding, request: CardRequest):
-      Promise<{ change: Change; digest: string }> {
-    return this.#run("policyProposal", binding, request, policyDoors.policyProposal);
-  }
-
-  /**
-   * Owner policy (W3): an agent's hourly wake cap and batch window, kept on its registry
-   * row where the ledger reads them, and changed like any policy write: in the owner's
-   * session, against the policy generation, receipted.
-   */
-  policyWakeLimits(binding: Binding, request: WakeLimitsRequest):
-      Promise<{ agent: Agent; generation: number }> {
-    return this.#run("policyWakeLimits", binding, request, ledgerDoors.policyWakeLimits);
-  }
-
-  // -- OUTSIDE_CLIENTS: grants (P0-3) ---------------------------------------------
-
-  grantList(binding: Binding): Promise<{ clients: Client[] }> {
-    return this.#run("grantList", binding, undefined, grantsDoors.grantList);
-  }
-
-  /**
-   * The owner's widening, in its session, against the grant's revision. A set that moves
-   * the grant's authority (its mode or scopes) ends the client's agents' wakes and held
-   * registrations with it, as `grantRevoke` ends them; one that moves only the revision, a
-   * rename, ends nothing: every stamp of the client's still stands.
-   */
-  grantSet(binding: Binding, request: GrantRequest): Promise<
-      { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
-        revision: number }> {
-    return this.#run("grantSet", binding, request, grantsDoors.grantSet);
-  }
-
-  /**
-   * A narrowing the owner's account makes without a session, as a key's revoke does: the
-   * client's agents' wakes and held registrations end with it, in its unit.
-   */
-  grantRevoke(binding: Binding, request: ClientRequest):
-      Promise<{ client: string; revoked: boolean; generation: number; revision: number }> {
-    return this.#run("grantRevoke", binding, request, grantsDoors.grantRevoke);
-  }
-
-  /**
-   * Forget a revoked API key's grant (slice 3's review L1): the binder calls it once the
-   * directory has deleted the key (tasks 2). A narrowing, since a key with no row is
-   * refused, so the owner's account makes it without a session. Never an MCP client's.
-   */
-  grantForget(binding: Binding, request: ClientRequest):
-      Promise<{ client: string; forgotten: boolean }> {
-    return this.#run("grantForget", binding, request, grantsDoors.grantForget);
-  }
-
-  /**
-   * The owner, in its session, forgets revoked clients to make room under its bound: a
-   * widening, so it is the only act that lifts an MCP revoke, and even then a forgotten
-   * MCP client comes back only from a sign-in after the revoke (`grants.ts`).
-   */
-  grantForgetRevoked(binding: Binding, request: ForgetRequest):
-      Promise<{ forgotten: string[]; mcp_fence: number }> {
-    return this.#run("grantForgetRevoked", binding, request, grantsDoors.grantForgetRevoked);
-  }
-
-  // -- THE KEY STORE: the owner's API keys (slice L; `keys.ts`) ------------------------
-
-  /**
-   * Mint an API key's record and its grant, in the owner's session, in one unit: the live
-   * keys counted there (`MAX_KEYS`, strict), the grant set (source `api_key`, scoped,
-   * revision 0), an agent's held key request applied with it when one is named
-   * (`proposal`), and the key's row. The binder then writes the key's directory entry and
-   * shows its secret once (`doors/src/api-keys.ts`); the object never sees the secret.
-   */
-  keyMint(binding: Binding, request: KeyMintRequest): Promise<ApiKey & { scopes: Scope[];
-      revision: number }> {
-    return this.#run("keyMint", binding, request, keysDoors.keyMint);
-  }
-
-  /** The owner's API keys, live and revoked: what its key list shows, and its erasure ends. */
-  keyList(binding: Binding): Promise<{ keys: ApiKey[] }> {
-    return this.#run("keyList", binding, undefined, keysDoors.keyList);
-  }
-
-  // -- ERASURE: the owner's own erasure (slice L; `erase.ts`, `erasure.ts`) ------------
-
-  /**
-   * The owner erases its account, in its live session, confirmed by its typed words: the
-   * object's mark first, durable before this answers (every door refuses from then on),
-   * then the erasure's own job drives every other step (`erasure.ts`): the outside record
-   * through the doors, the sandboxes, the R2 copies and the wipe, each retried until done,
-   * none of them resting on this request finishing.
-   */
-  async ownerErase(binding: Binding, request: EraseRequest): Promise<{ erasing: true }> {
-    return this.#units("ownerErase", binding, request, erasureDoors.ownerErase);
-  }
-
-  /**
-   * The platform's erasure of the owner (the operator's `owner.erase`), by its reserved caller
-   * and confirmed by `erase-<owner>`: the owner's own door's mark and job, nothing else.
-   */
-  erasureBegin(binding: Binding, request: EraseRequest): Promise<{ erasing: true }> {
-    return this.#units("erasureBegin", binding, request, erasureDoors.erasureBegin);
-  }
-
-  /**
-   * The erasure's outside step, as the doors take it from the erasure queue: what the
-   * directory holds for the owner (its keys' ids, its inbound routes), read only while the
-   * owner is marked erasing, and only by the platform's reserved caller; null once the
-   * owner is wiped (its outside record confirmed before the wipe).
-   */
-  erasureOutside(binding: Binding): Promise<{ keys: string[]; routes: string[] } | null> {
-    return this.#run("erasureOutside", binding, undefined, erasureDoors.erasureOutside);
-  }
-
-  /** The doors' confirmation that the outside record is done: the wipe may go on. */
-  erasureOutsideDone(binding: Binding): Promise<{ confirmed: true }> {
-    return this.#run("erasureOutsideDone", binding, undefined, erasureDoors.erasureOutsideDone);
-  }
-
   // -- THE CUTOVER'S IMPORT: the platform's, into a pending owner (`import.ts`) ------------
-
-  /** The owner's old policy, then its collections' rows, each skipped when it is there. */
-  importRows(binding: Binding, request: ImportRowsRequest): Promise<Imported> {
-    return this.#units("importRows", binding, request, importDoors.importRows);
-  }
-
-  /** Folders and inline files of the imported tree, each skipped when it is there. */
-  importFiles(binding: Binding, request: ImportFilesRequest): Promise<Imported> {
-    return this.#run("importFiles", binding, request, importDoors.importFiles);
-  }
-
-  /** A chunked file's upload, begun or resumed, for the doors to put its bytes to `FILES`. */
-  importFileBegin(binding: Binding, request: ImportFileBeginRequest): Promise<ImportUpload> {
-    return this.#units("importFileBegin", binding, request, importDoors.importFileBegin);
-  }
-
-  /** The doors' word that `FILES` took these of an import upload's chunks. */
-  importFileStored(binding: Binding, request: ImportFileStoredRequest):
-      Promise<{ stored: number }> {
-    return this.#run("importFileStored", binding, request, importDoors.importFileStored);
-  }
-
-  /** An import upload committed as its path, or skipped when the file is there. */
-  importFileCommit(binding: Binding, request: ImportFileCommitRequest): Promise<Imported> {
-    return this.#run("importFileCommit", binding, request, importDoors.importFileCommit);
-  }
-
-  /** The owner's one notice that its old files are in the imported tree. */
-  importNotice(binding: Binding, request: ImportNoticeRequest): Promise<{ added: boolean }> {
-    return this.#run("importNotice", binding, request, importDoors.importNotice);
-  }
-
-  /** A page of the check: the files, every chunk read back, the rows' digest, or the rest. */
-  importCheck(binding: Binding, request: ImportCheckRequest): Promise<ImportCheckAnswer> {
-    return this.#units("importCheck", binding, request, importDoors.importCheck);
-  }
-
-  /**
-   * The import's discard: every R2 object of the owner deleted and its database wiped, with no
-   * tombstone, no erased record and no issuer's deletion; a pending owner, or a rehearsal's.
-   */
-  importDiscard(binding: Binding): Promise<{ discarded: true; namespace: string | null }> {
-    return this.#units("importDiscard", binding, undefined, importDoors.importDiscard);
-  }
 
   /**
    * The discard's wipe (`import.ts`, `Erasure.discard`): the erasure's own deletion of every
@@ -1708,340 +1407,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return this.#erasure.discard((ns) => {
       this.#discarded = { ns };
     });
-  }
-
-  // -- INBOUND: the owner's event sources (slice L; `inbound.ts`) ----------------------
-
-  /** The owner's inbound bindings, never a secret. */
-  inboundList(binding: Binding): Promise<{ bindings: InboundBinding[] }> {
-    return this.#run("inboundList", binding, undefined, inboundDoors.inboundList);
-  }
-
-  /**
-   * A new inbound binding, in the owner's session: a capability URL the binder minted (its
-   * route the token's hash), with an owner-held proof if the owner adds one; or a shared
-   * app's installation, which only its install flow (owed) may name.
-   */
-  inboundCreate(binding: Binding, request: InboundCreateRequest): Promise<InboundBinding> {
-    return this.#run("inboundCreate", binding, request, inboundDoors.inboundCreate);
-  }
-
-  /** The owner's change of a binding, in its session, against its revision. */
-  inboundSet(binding: Binding, request: InboundSetRequest): Promise<InboundBinding> {
-    return this.#run("inboundSet", binding, request, inboundDoors.inboundSet);
-  }
-
-  /** A binding withdrawn, a narrowing the owner's account makes without a session. */
-  inboundRevoke(binding: Binding, request: BindingRequest):
-      Promise<{ binding_id: string; route: string | null }> {
-    return this.#run("inboundRevoke", binding, request, inboundDoors.inboundRevoke);
-  }
-
-  /**
-   * One inbound event, as the binder proved and routed it (`doors/src/inbound.ts`): the
-   * binding its route names at that route's revision, enabled; an owner-held proof checked
-   * on the raw bytes; the event posted as the owner's mail to the binding's agent, keyed by
-   * the binding, its revision and the event's id, so a retry is the same mail. A shared
-   * app's event refused for a full mailbox counts toward its breaker; once tripped, its
-   * events are a no-op until the owner changes the binding.
-   */
-  inboundAccept(binding: Binding, request: InboundEvent): Promise<InboundAnswer> {
-    return this.#units("inboundAccept", binding, request, inboundDoors.inboundAccept);
-  }
-
-  // -- THE FILE DOOR'S BYTES: the binder streams chunks to FILES (slice L; tasks 6.1) ----
-
-  /**
-   * An upload's target for the binder, which streams the file's bytes to `FILES` itself:
-   * the owner's chunk namespace, the intent's chunk plan and the chunks still to send. The
-   * binder is the trust root, already reaching every owner's object, so handing it this
-   * owner's namespace weakens no isolation.
-   */
-  async fileUploadTarget(binding: Binding, request: IntentRequest):
-      Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
-                pending: string[] }> {
-    return this.#units("fileUploadTarget", binding, request, filesDoors.fileUploadTarget);
-  }
-
-  /**
-   * The binder's word that `FILES` accepted these of the intent's chunks (each put verified
-   * its hash): recorded as `fileUploadChunks` records its own puts.
-   */
-  fileUploadStored(binding: Binding, request: UploadStoredRequest): Promise<{ stored: number }> {
-    return this.#run("fileUploadStored", binding, request, filesDoors.fileUploadStored);
-  }
-
-  // -- OUTSIDE_AGENTS ---------------------------------------------------------
-
-  /**
-   * The owner sees every outside agent; an outside caller only its own identity's. Beside
-   * them, the owner's own agents, each a ledger identity while its `agent.json` exists:
-   * every one for the owner; for anyone else, the live ones its grant covers (a scoped
-   * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
-   * it may mail). One answer holds a page (`pages.ts`, review M3): its agents, the owner's
-   * agents and the apps, in that order, each by its stable key, while they fit; when some
-   * are left, `next` is where the next page starts, for `after` on the next read.
-   */
-  async outsideAgents(binding: Binding, request: AgentsRequest = {}):
-      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
-                next?: string }> {
-    return this.#units("outsideAgents", binding, request, ledgerDoors.outsideAgents);
-  }
-
-  /**
-   * Registering an agent needs the owner's protected session (S30), in one of two forms.
-   * The owner itself applies an MCP client's held registration (`CardApply`): the card
-   * the client filed on its own verified call, which captured its origin. Or the owner's
-   * browser registers an agent for an API key it holds, naming the key's identity
-   * (`origin`, re-derived from the key id): the one door an outside origin reaches
-   * together with the owner's session.
-   */
-  registerAgent(binding: Binding, request: RegisterRequest | CardApply): Promise<Agent> {
-    return this.#run("registerAgent", binding, request, ledgerDoors.registerAgent);
-  }
-
-  /**
-   * An MCP client files the registration of its agent on its own verified call, so the
-   * object captures the origin the binder verified; the owner applies it in session
-   * (`registerAgent`). Never applied here. Filing again replaces the identity's card.
-   */
-  registerPropose(binding: Binding, request: RegisterRequest):
-      Promise<{ card_id: string; digest: string; expires_at: number }> {
-    return this.#run("registerPropose", binding, request, registrationsDoors.registerPropose);
-  }
-
-  /** The pending registration card the owner is shown, and the digest its apply names. */
-  registerProposal(binding: Binding, request: RegistrationCardRequest): Promise<Card> {
-    return this.#run("registerProposal", binding, request, registrationsDoors.registerProposal);
-  }
-
-  /**
-   * The owner disables any agent in its session. An outside client cannot reach it: it
-   * holds no owner session, and its call never carries one.
-   */
-  disableAgent(binding: Binding, request: DisableRequest): Promise<Agent> {
-    return this.#run("disableAgent", binding, request, ledgerDoors.disableAgent);
-  }
-
-  /**
-   * Only the owner itself, in its session, sets an agent's doorbell where its wake kind's
-   * record has the owner hand it over (`callback: owner`: Claude's `/fire`, Grok's webhook
-   * routine), for the agent's own kind: the blob the gateway sealed the pasted token and
-   * URL into (`sealDoorbell`, from the owner surface), under the id the door derived, and
-   * what it follows. A repeat refreshes it. The object never sees the token; a refusal's
-   * receipt holds only its request's digest.
-   */
-  agentDoorbell(binding: Binding, request: AgentDoorbellRequest):
-      Promise<{ agent_id: string; subscription_id: string }> {
-    return this.#run("agentDoorbell", binding, request, ledgerDoors.agentDoorbell);
-  }
-
-  /** Only the owner itself, in its session, ends a doorbell it pasted, by its id. */
-  agentDoorbellEnd(binding: Binding, request: UnsubscribeRequest):
-      Promise<{ unsubscribed: boolean }> {
-    return this.#run("agentDoorbellEnd", binding, request, ledgerDoors.agentDoorbellEnd);
-  }
-
-  /** Only the owner itself, in its session, deletes an agent. */
-  deleteAgent(binding: Binding, request: AgentRequest):
-      Promise<{ agent_id: string; messages: number }> {
-    return this.#run("deleteAgent", binding, request, ledgerDoors.deleteAgent);
-  }
-
-  // -- ROOM_POST and MAILBOX_RECEIPT -------------------------------------------
-
-  /**
-   * A post in a pair's room (`ledger.ts`), as the owner, an outside client's agent, or a
-   * run's own agent (never the owner or client that started it). Its authority is the
-   * caller's: none for the owner's own work, a client's grant at its generation, or the
-   * run's stamp. Mail to one of the owner's own agents starts that agent's run (the `runs`
-   * lane, which this door's unit rings), so its caller holds `converse` there too, as a
-   * `converse` call would.
-   */
-  roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
-    return this.#units("roomPost", binding, request, ledgerDoors.roomPost);
-  }
-
-  // -- MODEL CONNECTIONS: sealed credentials, flows and spend (tasks 4 G2) ------------
-  //
-  // Each door is the owner's own, in its live session: an outside client's call carries
-  // no session and is refused, with a refusal receipt. The binder seals and exchanges with
-  // the gateway between them; no plaintext secret reaches the object.
-
-  /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
-  connectionPrepare(binding: Binding, request: ConnectionPrepareRequest): Promise<Prepared> {
-    return this.#run("connectionPrepare", binding, request, connectionsDoors.connectionPrepare);
-  }
-
-  /** The sealed blob the gateway returned, and the models its setup check listed. */
-  connectionCommit(binding: Binding, request: ConnectionCommitRequest): Promise<ConnectionView> {
-    return this.#run("connectionCommit", binding, request, connectionsDoors.connectionCommit);
-  }
-
-  /**
-   * A connection unusable at once; its credential deleted here, and at its provider. Its
-   * sandbox egress streams end once the revoke committed.
-   */
-  async connectionRevoke(binding: Binding, request: ConnectionRequest):
-      Promise<{ connection: string; revoked: boolean; provider_revoke: boolean }> {
-    return this.#units("connectionRevoke", binding, request, connectionsDoors.connectionRevoke);
-  }
-
-  /** Every connection, newest first, never its blob. */
-  connectionList(binding: Binding): Promise<{ connections: ConnectionView[] }> {
-    return this.#run("connectionList", binding, undefined, connectionsDoors.connectionList);
-  }
-
-  /** The callback's state, in the session that began the flow: its verifier, used up. */
-  flowFinish(binding: Binding, request: FlowFinishRequest):
-      Promise<{ connection: string; version: number; verifier: string; redirect_uri: string;
-                source: string }> {
-    return this.#run("flowFinish", binding, request, connectionsDoors.flowFinish);
-  }
-
-  /** The owner's newest model-call receipts: what each call reserved, and what it cost. */
-  usageReceipts(binding: Binding): Promise<{ receipts: UsageReceipt[] }> {
-    return this.#run("usageReceipts", binding, undefined, usageDoors.usageReceipts);
-  }
-
-  // -- NOTICES: what the owner's work reported to the owner -------------------------
-
-  /** The owner's notices, newest first (`notices.ts`). */
-  noticeList(binding: Binding): Promise<{ notices: Notice[] }> {
-    return this.#run("noticeList", binding, undefined, noticesDoors.noticeList);
-  }
-
-  /**
-   * The starter package's receipts (`starter.ts`): each path it wrote, the version, and
-   * whether it stands as installed, edited, deleted or proposed; with the version the owner's
-   * files were last reconciled to and the version this code carries.
-   */
-  starterReceipts(binding: Binding):
-      Promise<{ version: number; carried: number; receipts: StarterReceipt[] }> {
-    return this.#run("starterReceipts", binding, undefined, starterDoors.starterReceipts);
-  }
-
-  // -- ADMISSION: the platform's word on the owner's account -------------------------
-
-  /**
-   * The platform suspends the owner for a reason (`billing`, `abuse`), or lifts it
-   * (`admission.ts`): taken only from the reserved `PLATFORM_CALLER`, with no outside client
-   * and no session, whatever the owner's admission is now; an erased owner is never set
-   * again. A suspension then ends the sandbox's in-flight egress streams: the prompt stop,
-   * since every lease, egress call and wake claim is refused while it lasts. Lifting one
-   * gives the `wakes` lane its job back.
-   */
-  async admissionSet(binding: Binding, request: AdmissionRequest): Promise<Admission> {
-    return this.#units("admissionSet", binding, request, admissionDoors.admissionSet);
-  }
-
-  /**
-   * The owner's state as the platform reads it (`admission.ts`; the operator's `owner.state`):
-   * names, codes and counts, never content; taken only from the reserved `PLATFORM_CALLER`.
-   */
-  ownerState(binding: Binding): Promise<OwnerStateAnswer> {
-    return this.#units("ownerState", binding, undefined, admissionDoors.ownerState);
-  }
-
-  /**
-   * A mailbox page. Its placed bodies (ADR-035) are read from R2 first, located in a unit
-   * of their own; the read's unit then marks only what it returns, and ends the page before
-   * a placed body it was not handed (one that arrived between), which a further read of
-   * the bodies picks up.
-   */
-  mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
-    return this.#units("mailboxRead", binding, request, ledgerDoors.mailboxRead);
-  }
-
-  mailboxAck(binding: Binding, request: AckRequest): Promise<{ reader: string; through: number }> {
-    return this.#run("mailboxAck", binding, request, ledgerDoors.mailboxAck);
-  }
-
-  // -- DIGESTS and CODE MODE: a main agent's few calls (slice M) -------------------
-
-  /**
-   * What changed for this agent since its cursor, in one read: its unacknowledged mail
-   * (`mailboxRead`'s page, from its own acknowledged cursor) and the owner's rooms' rows
-   * (`room:<app>:<room>`) written past `after`, an owner-wide cursor, each as its head.
-   * Held to its grant as the mailbox and the collections are: `read_graph`, and a private
-   * row only to its writer. Its mail part is a mailbox read, so a run is refused it
-   * (`run_no_mailbox`, slice ID), as at `mailboxRead`; a run reads the board's digest.
-   */
-  inboxDigest(binding: Binding, request: InboxDigestRequest):
-      Promise<{ mail: MailPage; rooms: Heads }> {
-    return this.#units("inboxDigest", binding, request, ledgerDoors.inboxDigest);
-  }
-
-  /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
-  boardDigest(binding: Binding, request: BoardDigestRequest): Promise<Heads> {
-    return this.#units("boardDigest", binding, request, collectionsDoors.boardDigest);
-  }
-
-  /**
-   * The tools this caller is served (the doors list and call no others): a run's, the `run`
-   * profile; an outside client's, its grant's (`custom`: the owner's policy's choice); the
-   * owner's own, `custom`. `code` only while the owner's policy turns code mode on.
-   */
-  toolProfile(binding: Binding): Promise<{ profile: ProfileName; tools: readonly string[] }> {
-    return this.#run("toolProfile", binding, undefined, codemodeDoors.toolProfile);
-  }
-
-  /**
-   * Code mode at the MCP door: one script calling the caller's profile's other tools as
-   * `tools.<name>(args)`, its VM in the codemode Worker (`codemode.ts`), its wall time
-   * `CODEMODE_TIMEOUT_MS`. Refused unless the owner's policy has `codemode.on` (its
-   * default) and the caller's profile holds `code`. Each call is the tool's own door with
-   * the caller's binding, admitted again (grant, run, admission), held to the caller's
-   * profile and the switch as they stand then, and to the platform's gates the door read
-   * (the control record's kill switch for an outside client, its maintenance gate for a
-   * run or the owner: `control-gate.ts`), so a revoke, a narrowed profile, the switch
-   * turned off or outside access switched off refuses the script's next call. A refusal
-   * reaches the script as an error with its reason; anything else as `internal error`,
-   * logged here in full.
-   */
-  async codeRun(binding: Binding, request: CodeRequest): Promise<CodeResult> {
-    return this.#units("codeRun", binding, request, codemodeDoors.codeRun);
-  }
-
-  /**
-   * The owner's view of a mail chain (agents' mail to each other included), from any of its
-   * messages, such as the mail a run's receipt names: oldest first, after `after`.
-   */
-  mailChain(binding: Binding, request: ChainRequest):
-      Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
-    return this.#units("mailChain", binding, request, ledgerDoors.mailChain);
-  }
-
-  /**
-   * The events this caller's client may subscribe (MCP Events `events/list`): each
-   * subscribing wake kind's, to an outside client (never a run) whose grant reads somewhere.
-   * Asked for a command center (`events/subscribe`, before the door sends its callback a
-   * byte), only its one enabled subscribing agent's there, where it holds `read_graph`; a
-   * caller with none is refused.
-   */
-  wakeEvents(binding: Binding, commandCenter?: string): Promise<{ events: Events[] }> {
-    return this.#run("wakeEvents", binding, commandCenter, ledgerDoors.wakeEvents);
-  }
-
-  /**
-   * An agent's own client subscribes (MCP Events `events/subscribe`), once the MCP door
-   * verified its callback and the gateway sealed it: for its one enabled agent in the command
-   * center its arguments name, where a scoped client needs `read_graph`. A run is refused.
-   * The subscription is stored under the id the door derived, its lifetime as granted. The
-   * answer never holds the callback.
-   */
-  wakeSubscribe(binding: Binding, request: SubscribeRequest):
-      Promise<{ subscription_id: string; agent_id: string; expires_at: number | null }> {
-    return this.#run("wakeSubscribe", binding, request, ledgerDoors.wakeSubscribe);
-  }
-
-  /**
-   * The caller that holds a subscription ends it (MCP Events `events/unsubscribe`), by the
-   * id the door derived; repeating it is harmless. A run is refused.
-   */
-  wakeUnsubscribe(binding: Binding, request: UnsubscribeRequest):
-      Promise<{ unsubscribed: boolean }> {
-    return this.#run("wakeUnsubscribe", binding, request, ledgerDoors.wakeUnsubscribe);
   }
 
   /** The platform's gates as this object reads them (`control-gate.ts`), from `CONTROL`. */
@@ -2336,58 +1701,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       : await this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES), wants.offsetOf));
   }
 
-  /**
-   * A row written by compare-and-swap; the owner's own board or room write rings (`ring`, `collections.ts`).
-   * Answered without its body (review H3): its etag, revision, seq and `body_bytes`, so a
-   * body past one answer is never echoed back.
-   */
-  collectionWrite(binding: Binding, request: WriteRequest):
-      Promise<{ row: WrittenRow } | Conflicted> {
-    return this.#units("collectionWrite", binding, request, collectionsDoors.collectionWrite);
-  }
-
-  /**
-   * A collection's rows past `after`, fitted to one answer (`pages.ts`): when rows are left
-   * the cursor is the last one's seq, and a first row cut to fit is read on with
-   * `collection_get`'s `body_offset`.
-   */
-  collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
-    return this.#units("collectionPull", binding, request, collectionsDoors.collectionPull);
-  }
-
-  /**
-   * One row, fitted to one answer: with `body_offset`, its body from that byte, and with
-   * `etag`, refused when the row is no longer the one that answer read.
-   */
-  collectionGet(binding: Binding, request: GetRequest): Promise<{ row: Row | null }> {
-    return this.#units("collectionGet", binding, request, collectionsDoors.collectionGet);
-  }
-
-  /**
-   * A row's kept history, fitted to one answer, newest first: when entries are left `more`
-   * and `before` name the older ones; `body_offset` reads the page's newest
-   * entry's body from that byte.
-   */
-  collectionHistory(binding: Binding, request: HistoryRequest): Promise<History> {
-    return this.#units("collectionHistory", binding, request, collectionsDoors.collectionHistory);
-  }
-
-  collectionDelete(binding: Binding, request: DeleteRequest):
-      Promise<{ deleted: number } | Conflicted> {
-    return this.#units("collectionDelete", binding, request, collectionsDoors.collectionDelete);
-  }
-
-  collectionClear(binding: Binding, request: ClearRequest): Promise<{ deleted: number }> {
-    return this.#run("collectionClear", binding, request, collectionsDoors.collectionClear);
-  }
-
-  // -- FILES: the owner's file tree (plan §6) --------------------------------------
-  //
-  // These doors move at most two chunks a call. The HTTP and MCP doors (tasks 2) stream
-  // larger files from the binder to `FILES` itself. Another RPC may run in the object
-  // whenever one awaits `FILES`, so a door that crosses to it writes its account first,
-  // in a unit, and its later steps through units of their own (`Files`).
-
   /** A changing file door: its unit, then the one schedule synced whatever came of it. */
   async #filing<T>(act: () => T): Promise<T> {
     try {
@@ -2395,115 +1708,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     } finally {
       await this.#schedule.sync();
     }
-  }
-
-  fileStat(binding: Binding, request: FileRequest): Promise<{ entry: Entry | null }> {
-    return this.#run("fileStat", binding, request, filesDoors.fileStat);
-  }
-
-  /**
-   * A directory's entries by name; with `head_chars`, each small file's (inline, so no
-   * bucket is read) first characters of its text, enough for its frontmatter.
-   */
-  async fileList(binding: Binding, request: FileListRequest):
-      Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
-    return this.#units("fileList", binding, request, filesDoors.fileList);
-  }
-
-  /**
-   * A window of a file's text (`file_read`): its UTF-8 bytes from `offset`, at most
-   * `max_bytes` (`READ_DEFAULT_BYTES` when omitted; at most one chunk, the files plane's own
-   * unit, a technical ceiling), cut back to a character boundary, and where the next window
-   * starts (null at the end). A file that is not UTF-8 text is refused as such.
-   */
-  async fileText(binding: Binding, request: FileTextRequest):
-      Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
-    return this.#units("fileText", binding, request, filesDoors.fileText);
-  }
-
-  /**
-   * A search of the owner's files (`search`; `file-search.ts`): the query's words, whole,
-   * against each file's path, and each small file's frontmatter, text and index lines, a
-   * page of the manifest at a time from `cursor` (`SEARCH_SCAN` entries, `SEARCH_ANSWER_BYTES`
-   * of results); every match of the page, best first, and `next_cursor` right after the last
-   * one answered or the last entry read, null at the end; a query of at most
-   * `SEARCH_QUERY_BYTES`.
-   */
-  async fileSearch(binding: Binding, request: FileSearchRequest):
-      Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
-    return this.#units("fileSearch", binding, request, filesDoors.fileSearch);
-  }
-
-  /**
-   * A file by a search's id, its stored path (`fetch`): its title, its text (at most one
-   * chunk's, the files plane's own unit; `file_read` reads past it), the app's url for a
-   * citation, and its metadata.
-   */
-  async fileFetch(binding: Binding, request: FileFetchRequest):
-      Promise<{ id: string; title: string; text: string; url: string;
-                metadata: FetchMetadata }> {
-    return this.#units("fileFetch", binding, request, filesDoors.fileFetch);
-  }
-
-  /**
-   * A file's entry and content: its bytes when small, else its chunk list for
-   * `fileReadChunks`. With `etag` still current, only the entry (`not_modified`).
-   */
-  fileRead(binding: Binding, request: FileReadRequest):
-      Promise<{ entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] }> {
-    return this.#run("fileRead", binding, request, filesDoors.fileRead);
-  }
-
-  /** One or two of a kept version's chunks, from `first`, so a read pins its version. */
-  async fileReadChunks(binding: Binding, request: FileChunksRequest):
-      Promise<{ chunks: Uint8Array[] }> {
-    return this.#units("fileReadChunks", binding, request, filesDoors.fileReadChunks);
-  }
-
-  /**
-   * Write a whole file of at most one chunk (4 MiB); larger ones go by upload. Its content is
-   * bytes, or text written as UTF-8 (`file_write`, an outside agent's whole replacement). An
-   * outside client or a run writes at the etag it read, or `""` to create a file only when it
-   * is absent, never with no etag at all (review H1): a replacement never lands over a file
-   * the agent did not read. The owner's own app may still write with none.
-   */
-  async fileWrite(binding: Binding, request: FileWriteRequest):
-      Promise<{ entry: Entry } | FileConflicted> {
-    return this.#units("fileWrite", binding, request, filesDoors.fileWrite);
-  }
-
-  /**
-   * Text added at the end of a file (`file_append`, slice BRAIN: an outside agent's everyday
-   * write-back), the file made when absent. It never changes a byte already there, so it is
-   * additive (OpenAI's `destructiveHint: false`): the file is read, the text put after it, and
-   * the whole written at the etag it was read at, so two appends never lose each other; one
-   * that meets another's write reads the file again and puts its text after that. A file of
-   * whole chunks keeps them as they are (`Files.write`'s `prefix`), so only its last chunk
-   * and the text are written again, at any size. The text is at most one chunk (4 MiB).
-   * A structured file (`STRUCTURED`: JSON, TOML, YAML) is refused: text put after its end
-   * breaks what it means however whole its bytes stay, so it is edited (the founder,
-   * 2026-11-04). A file that stays small (at most `INLINE_BYTES` with the text) is read and
-   * written in one unit (`Files.writeSmall`), so its append never meets another write and
-   * never tries twice. A larger one is written around its chunks' `FILES` calls, so another
-   * write to it can land between its read and its commit: it then reads again, checking the
-   * caller's authority and the agent trees each try, at most `APPEND_TRIES` times, past which
-   * it is refused `file_busy`.
-   */
-  async fileAppend(binding: Binding, request: FileAppendRequest): Promise<{ entry: Entry }> {
-    return this.#units("fileAppend", binding, request, filesDoors.fileAppend);
-  }
-
-  /**
-   * One exact occurrence of `old_text` in a file's text replaced by `new_text`, at the etag
-   * the caller read (`file_edit`, slice BRAIN: a correction, as a stale directive rewritten in
-   * place). Text that occurs nowhere, or more than once, is refused with how many times, so
-   * the caller gives more of the text around it. A chunked file is edited chunk by chunk
-   * (`edit.ts`, ADR-037), each chunk read or made in a step of the isolate's units of its
-   * own, at most `EDIT_BYTES_MAX`; a small one, whole.
-   */
-  async fileEdit(binding: Binding, request: FileEditRequest):
-      Promise<{ entry: Entry } | FileConflicted> {
-    return this.#units("fileEdit", binding, request, filesDoors.fileEdit);
   }
 
   /**
@@ -2516,211 +1720,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   async #seededFor(door: Door): Promise<void> {
     await this.#door(() => door.authorized());
     await this.#launcher.seeded();
-  }
-
-  /**
-   * Begin an upload of one file: its size and chunk hashes, and back the ones whose bytes
-   * to send.
-   */
-  fileUploadBegin(binding: Binding, request: UploadBeginRequest):
-      Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
-    return this.#run("fileUploadBegin", binding, request, filesDoors.fileUploadBegin);
-  }
-
-  /** Send an upload's chunk bytes, at most two chunks a call; R2 checks each hash. */
-  async fileUploadChunks(binding: Binding, request: UploadChunksRequest):
-      Promise<{ created: number }> {
-    return this.#units("fileUploadChunks", binding, request, filesDoors.fileUploadChunks);
-  }
-
-  /** Commit an upload whose chunks are all stored as the file it declared. */
-  fileUploadCommit(binding: Binding, request: UploadCommitRequest):
-      Promise<{ entry: Entry } | FileConflicted> {
-    return this.#run("fileUploadCommit", binding, request, filesDoors.fileUploadCommit);
-  }
-
-  fileUploadAbort(binding: Binding, request: IntentRequest): Promise<{ aborted: boolean }> {
-    return this.#run("fileUploadAbort", binding, request, filesDoors.fileUploadAbort);
-  }
-
-  fileMkdir(binding: Binding, request: MkdirRequest):
-      Promise<{ entry: Entry } | FileConflicted> {
-    return this.#run("fileMkdir", binding, request, filesDoors.fileMkdir);
-  }
-
-  fileRemove(binding: Binding, request: RemoveRequest):
-      Promise<{ removed: number } | FileConflicted> {
-    return this.#run("fileRemove", binding, request, filesDoors.fileRemove);
-  }
-
-  fileRename(binding: Binding, request: RenameRequest):
-      Promise<{ entry: Entry } | FileConflicted> {
-    return this.#run("fileRename", binding, request, filesDoors.fileRename);
-  }
-
-  fileHistory(binding: Binding, request: FileHistoryRequest):
-      Promise<{ changes: FileChange[]; next: number | null }> {
-    return this.#run("fileHistory", binding, request, filesDoors.fileHistory);
-  }
-
-  fileRestore(binding: Binding, request: RestoreRequest):
-      Promise<{ entry: Entry } | FileConflicted> {
-    return this.#run("fileRestore", binding, request, filesDoors.fileRestore);
-  }
-
-  /** Drop a kept version's content: the owner's own act, never an outside client's. */
-  fileRedact(binding: Binding, request: VersionRequest): Promise<{ redacted: number }> {
-    return this.#run("fileRedact", binding, request, filesDoors.fileRedact);
-  }
-
-  /**
-   * Drop a path's kept versions but its current one: the owner's own act, never an
-   * outside client's, and never refused for a quota.
-   */
-  fileHistoryPurge(binding: Binding, request: FileRequest): Promise<{ purged: number }> {
-    return this.#run("fileHistoryPurge", binding, request, filesDoors.fileHistoryPurge);
-  }
-
-  fileChanges(binding: Binding, request: ChangesRequest):
-      Promise<{ changes: FileChange[]; cursor: number; reset: boolean }> {
-    return this.#run("fileChanges", binding, request, filesDoors.fileChanges);
-  }
-
-  fileUsage(binding: Binding): Promise<Usage> {
-    return this.#run("fileUsage", binding, undefined, filesDoors.fileUsage);
-  }
-
-  // -- RUNS: the run doors (slice R, `runs.ts`; ADR-034 decision 4) -------------------------
-  //
-  // A run door starts, reads or cancels a run. Starting one is two units around the agent's
-  // file read: the first checks the call and reads what it asks; then `agent.json` is read
-  // (its bytes may cross to `FILES`); then one unit binds the call again and admits the run
-  // whole (`Launcher.launch`), so nothing between the two can widen what the admission saw. A run's
-  // own MCP door never converses (`RUN_STARTS_NONE`): work between agents is mail. It may
-  // launch and schedule its owner's agents, and read and cancel runs and schedules, as its
-  // initiator: an owner-started or scheduled run as the owner, a client's run as that client,
-  // held to that client's grant; whatever it launches runs unattended.
-
-  /**
-   * A message to one of the owner's agents (`converse`): a run in a new conversation, or in
-   * one of the caller's own (`conversation_id`), resuming its engine's session. A retry with
-   * the same `client_send_id` is the same run. Waits up to `wait_ms` for the run to settle,
-   * then answers the run as it stands; its status is `agentStatus`'s.
-   */
-  agentSubmit(binding: Binding, request: SubmitRequest): Promise<RunView> {
-    return this.#units("agentSubmit", binding, request, runsDoors.agentSubmit);
-  }
-
-  /**
-   * A launch of one of the owner's agents on an input (`run_graph`), in a fresh conversation
-   * of its own: now, or as a schedule of the `runs` lane, at a time (`at`) or at each time a
-   * cron names (`cron`). A schedule's run is unattended: its source must allow that
-   * (ADR-033 decision 3). An agent answers mail by being mailed itself (`roomPost`).
-   */
-  agentRun(binding: Binding, request: LaunchRequest): Promise<RunView | RunSchedule> {
-    return this.#units("agentRun", binding, request, runsDoors.agentRun);
-  }
-
-  /** A run of the caller's, from its receipt; or a schedule of the caller's. */
-  agentStatus(binding: Binding, request: RunRequest): Promise<RunView | RunSchedule> {
-    return this.#run("agentStatus", binding, request, runsDoors.agentStatus);
-  }
-
-  /**
-   * Cancel a run of the caller's: marked, its CLI stopped through the sandbox; it settles
-   * `failed` (`cancelled`) from the runner's end, or `unknown` if the runner is lost. Or a
-   * schedule of the caller's removed. A settled run cancels nothing.
-   */
-  async agentCancel(binding: Binding, request: RunRequest):
-      Promise<RunView | { schedule_id: string; cancelled: true }> {
-    return this.#units("agentCancel", binding, request, runsDoors.agentCancel);
-  }
-
-  /**
-   * The runner's report for its run (`EventsRequest`), on the egress host by the egress
-   * token and the run its path names: each new frame read by the run's record (its session
-   * id, result and error kept), relayed to the app sockets on the run's conversation, and
-   * never committed; the batch renews the lease (the runner's heartbeat); the runner's
-   * `end` settles the run.
-   */
-  runEvents(binding: Binding, request: EventsRequest):
-      Promise<{ accepted: number; settled: string | null }> {
-    return this.#units("runEvents", binding, request, runsDoors.runEvents);
-  }
-
-  // -- THE VENDOR'S OWN SIGN-IN, inside a sandbox (slice SIGNIN; `signins.ts`) -----------
-
-  /**
-   * Begin the vendor's own sign-in to `engine` (`mode: "in"`), or its sign-out (`"out"`),
-   * inside the owner's own sandbox or one client's (`authority`, that client's id: a login is
-   * never copied between sandboxes). The owner's own door, on its own account: the object
-   * opens that sandbox's lease with no run (or joins the live one), and the sandbox Worker
-   * starts the record's `cli.login` there (`SandboxService.signin`). The answer is the
-   * sign-in's id, which the owner's app watches on its socket (`ta.signin` frames: the
-   * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
-   * a pasted code), or the code the Worker answered (`sandbox_waiting`, ...).
-   */
-  signinStart(binding: Binding, request: SigninStartRequest):
-      Promise<SigninView | { started: false; code: string }> {
-    return this.#units("signinStart", binding, request, signinsDoors.signinStart);
-  }
-
-  /**
-   * The runner's frames of a sign-in (`ta.signin`: its state, the vendor's URL and code),
-   * on the egress host by the egress token and the runner's secret of the live lease that
-   * holds it: the latest prompt kept, the lease renewed (its beat), each frame relayed to the
-   * owner's app sockets on the sign-in's id; its end ends it, and the lease goes once nothing
-   * holds it.
-   */
-  signinEvents(binding: Binding, request: SigninEventsRequest):
-      Promise<{ accepted: number; ended: boolean }> {
-    return this.#units("signinEvents", binding, request, signinsDoors.signinEvents);
-  }
-
-  /**
-   * The code the vendor's page showed the owner, pasted back: to the sign-in's CLI's stdin
-   * (`SandboxService.signinInput`). The owner's own door.
-   */
-  signinCode(binding: Binding, request: SigninCodeRequest):
-      Promise<{ delivered: boolean }> {
-    return this.#units("signinCode", binding, request, signinsDoors.signinCode);
-  }
-
-  /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
-  signinCancel(binding: Binding, request: SigninRequestById):
-      Promise<{ cancelled: boolean }> {
-    return this.#units("signinCancel", binding, request, signinsDoors.signinCancel);
-  }
-
-  /**
-   * The sign-ins in progress, and each engine's presence in the owner's own sandbox as its
-   * runner last reported it (never a credential). The owner's own door.
-   */
-  signinList(binding: Binding): Promise<{ signins: SigninView[];
-                                           engines: ReturnType<Runs["signins"]> }> {
-    return this.#run("signinList", binding, undefined, signinsDoors.signinList);
-  }
-
-  /**
-   * The caller's past runs, newest first, a page at a time (`before`, the last page's
-   * `next`): the owner's every run, an outside client's its own alone, as their receipts show
-   * them (the result is the run's own door's, `agentStatus`).
-   */
-  runList(binding: Binding, request: RunListRequest):
-      Promise<{ runs: RunListed[]; next: number | null }> {
-    return this.#run("runList", binding, request, runsDoors.runList);
-  }
-
-  /**
-   * The runner's report of the engines' sign-ins (`SigninRequest`), on the egress host by
-   * the egress token of the live lease: each engine's row (signed in or not, when it was
-   * checked, the models it offers), never a credential; `auto` ranks the signed-in ones
-   * with the owner's connections. A sign-in that lapsed (signed in, now not) leaves a
-   * "sign in again" notice, and `auto` stops picking that engine.
-   */
-  async signinReport(binding: Binding, request: SigninRequest):
-      Promise<{ recorded: number; lapsed: string[] }> {
-    return this.#run("signinReport", binding, request, signinsDoors.signinReport);
   }
 
   /**
@@ -2765,40 +1764,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return universe;
   }
 
-  /**
-   * The platform's line rang this owner (slice S; `sandbox/src/slots.ts`, through the doors
-   * Worker's ring consumer): a sandbox freed, so each run waiting for one starts again
-   * through its whole admission, oldest first. It takes no binding: it carries nothing,
-   * reads nothing and grants nothing, and only the doors' consumer, which binds `OWNER`,
-   * reaches it. With no run waiting the owner leaves the line, so the next owner is rung.
-   * An erased or erasing owner does nothing (its erasure takes it out of the line).
-   */
-  sandboxRung(): Promise<{ waiting: number }> {
-    return this.#units("sandboxRung", undefined as unknown as Binding, undefined, runsDoors.sandboxRung);
-  }
-
   // -- SOCKETS: the owner app's live view of its runs (A6, salvaged; `relay.ts`) ----------
-
-  /**
-   * A socket ticket for one of the owner's own conversations (`read`): a routing-MAC token
-   * of the `socket` kind, single-use, good for `SOCKET_TICKET_S` and never past the token it
-   * was asked with, bound to that token's first-party grant (`binding.grant`,
-   * `binding.expires_at`, the binder's from the verified token). Only its secret's SHA-256
-   * is kept. The ticket, once.
-   */
-  socketTicket(binding: Binding, request: ConversationRequest):
-      Promise<{ ticket: string; conversation_id: string; expires_at: number }> {
-    return this.#run("socketTicket", binding, request, relayDoors.socketTicket);
-  }
-
-  /**
-   * The first-party grant the binding's token was issued under signed out (`reduce`): its
-   * outstanding tickets forgotten and its app sockets closed `signed_out`, every other
-   * device's left open. The doors tell it before they revoke the grant.
-   */
-  socketsEnd(binding: Binding): Promise<{ grant: string; ended: true }> {
-    return this.#units("socketsEnd", binding, undefined, relayDoors.socketsEnd);
-  }
 
   /**
    * In a unit: a socket's attach, as a `read` door: the binding's account, the owner's own
@@ -2836,34 +1802,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
   }
 
-  // -- THE TIER: the platform's word on the owner's tier (`tier.ts`) ---------------------
-
-  /**
-   * The platform sets the owner's tier (`free`, `paid`): taken only from the reserved
-   * `PLATFORM_CALLER`, as `admissionSet` is. The numbers are the control record's, never
-   * this door's.
-   */
-  tierSet(binding: Binding, request: TierRequest): Promise<{ tier: TierName }> {
-    return this.#run("tierSet", binding, request, tierDoors.tierSet);
-  }
-
-  /**
-   * The owner's own tier, for its app (`read`): its admission row's, which only the platform
-   * sets. The numbers are the control record's, which the doors read and show beside it.
-   */
-  tierRead(binding: Binding): Promise<{ tier: TierName }> {
-    return this.#run("tierRead", binding, undefined, tierDoors.tierRead);
-  }
-
-  // -- THE SANDBOX: its one lease, its network and its egress (tasks 4 G4) -----------
-  //
-  // The sandbox holds one lease, the file sync lease (`files.ts`): its id is the claim
-  // token and its epoch the fencing number, for the sync commits and the egress alike, and
-  // it holds the hashes of its two tokens' secrets, the egress token (E2B's transform alone
-  // carries it) and the sync token (the in-VM sync agent's). The lease itself is owner-
-  // internal (`launch.ts`): no door reaches it. The egress doors take the egress
-  // token's binding, the sync doors the sync token's, and no other door takes either.
-
   /** The owner's own admission for `door`, as a binding check reads it, for internal calls. */
   #admitted(door: DoorClass): void {
     if (this.#tombstone || this.#erasure.erased) {
@@ -2878,75 +1816,4 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
   }
 
-  /**
-   * One sandbox request, admitted at open (`Egress.open`): its blob, version, generation,
-   * reservation and end signal, or its refusal's fixed code and receipt. An OAuth
-   * credential about to expire is refreshed first, as a model call's is.
-   */
-  egressOpen(binding: Binding, request: unknown): Promise<EgressOpened | EgressRefusal> {
-    return this.#units("egressOpen", binding, request, egressDoors.egressOpen);
-  }
-
-  /**
-   * An admitted model call's reserve (`Egress.reserve`), which the gateway asks for through
-   * the egress door once its one parse of the body read the model and tier: its metering, or
-   * its refusal's fixed code and receipt. Held to the egress binding that opened the call.
-   */
-  egressReserve(binding: Binding, request: unknown): Promise<EgressReserved | EgressRefusal> {
-    return this.#run("egressReserve", binding, request, egressDoors.egressReserve);
-  }
-
-  /**
-   * One reservation's end, as the egress door saw it: its outcome, the provider's status
-   * and the bytes it streamed; a blob the gateway resealed meanwhile is kept by the
-   * connection's compare-and-swap.
-   */
-  /**
-   * A streaming call's beat from its door (`EGRESS_BEAT_S`): the open reservation its egress
-   * token opened is still its door's, so it is not settled lost.
-   */
-  egressBeat(binding: Binding, request: BeatRequest): Promise<{ beat: boolean }> {
-    return this.#run("egressBeat", binding, request, egressDoors.egressBeat);
-  }
-
-  egressSettle(binding: Binding, request: Record<string, unknown>):
-      Promise<{ settled: boolean }> {
-    return this.#run("egressSettle", binding, request, egressDoors.egressSettle);
-  }
-
-  /** The owner's newest egress receipts: what the sandbox asked, and how each ended. */
-  egressReceipts(binding: Binding): Promise<{ receipts: EgressReceipt[] }> {
-    return this.#run("egressReceipts", binding, undefined, egressDoors.egressReceipts);
-  }
-
-  fileSyncCommit(binding: Binding, request: SyncCommitRequest):
-      Promise<{ outcomes: SyncOutcome[] }> {
-    return this.#run("fileSyncCommit", binding, request, filesDoors.fileSyncCommit);
-  }
-
-  /**
-   * The sync agent's upload of a file past one inline write (`INLINE_BYTES`), through the
-   * files plane's own upload (slice S review M-6): begun as the lease's own writer, so its
-   * sync commit (`intent_id`) takes it, fenced by the live lease.
-   */
-  fileSyncUploadBegin(binding: Binding, request: SyncUploadBeginRequest):
-      Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
-    return this.#run("fileSyncUploadBegin", binding, request, filesDoors.fileSyncUploadBegin);
-  }
-
-  /** The sync agent's chunk bytes for its own upload, at most two chunks a call. */
-  async fileSyncUploadChunks(binding: Binding, request: SyncUploadChunksRequest):
-      Promise<{ created: number }> {
-    return this.#units("fileSyncUploadChunks", binding, request, filesDoors.fileSyncUploadChunks);
-  }
-
-  /**
-   * The sync agent's own upload given up (its file changed mid-sync, or was refused), let go
-   * now rather than holding the owner's storage until it expires; fenced by the live lease,
-   * and only the lease's own upload. One already gone is no error.
-   */
-  fileSyncUploadAbort(binding: Binding, request: SyncUploadAbortRequest):
-      Promise<{ aborted: boolean }> {
-    return this.#run("fileSyncUploadAbort", binding, request, filesDoors.fileSyncUploadAbort);
-  }
 }

@@ -1,5 +1,7 @@
 {
-  "about": "The owner object's doors (contract/src/doors.ts): one row for each public RPC method of OwnerDO, read by the object's runner and by the doors' tool table.",
+  "about": "The owner object's doors (contract/src/doors.ts): one row for each public RPC method of OwnerDO, read by the object's runner and by the doors' tool table; and the names no RPC method may take, which no door is named.",
+  "reserved": ["fetch", "connect", "dup", "constructor", "alarm", "webSocketMessage",
+               "webSocketClose", "webSocketError"],
   "doors": [
     {
       "door": "inboxDigest", "class": "read", "caller": "account", "guard": "no_mailbox",

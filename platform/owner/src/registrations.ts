@@ -195,18 +195,24 @@ export interface RegistrationCardRequest {
 
 // -- THE DOORS: the `registrations` rows' handlers (`contract/doors.json`) ------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `registrations` doors' handlers, by door. */
 export const registrationsDoors = Object.freeze({
+  /**
+   * An MCP client files the registration of its agent on its own verified call, so the
+   * object captures the origin the binder verified; the owner applies it in session
+   * (`registerAgent`). Never applied here. Filing again replaces the identity's card.
+   */
   registerPropose(o: OwnerState, { account, r, binding }: Call<RegisterRequest>):
       { card_id: string; digest: string; expires_at: number } {
     return o.registrations.file(account.origin!, (binding.source as Source).ref, {
     client: account.origin!.client, generation: account.grant!.generation,
     authenticated_at: binding.authenticated_at ?? null }, r, clock());
   },
+  /** The pending registration card the owner is shown, and the digest its apply names. */
   registerProposal(o: OwnerState, { r }: Call<RegistrationCardRequest>): Card {
     const card = o.registrations.card(r["card_id"], clock());
     if (card === null) {

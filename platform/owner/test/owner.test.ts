@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { LIMITS } from "../src/collections";
 import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
-import { doorTable } from "../../contract/src/doors";
+import { doorTable, rpcReserved } from "../../contract/src/doors";
 import { OwnerDO } from "../src/owner-do";
 import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../../contract/src/migrate";
 import { MIGRATIONS } from "../src/schema";
@@ -17,10 +17,6 @@ function version(state: DurableObjectState): number {
 }
 
 const PULL = { collection: "board", after: 0, limit: 1 };
-
-/** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */
-const RESERVED = Object.freeze(["alarm", "fetch", "webSocketClose", "webSocketError",
-                                "webSocketMessage"]);
 
 describe("schema migration on wake", () => {
   it("applies every migration before the first call", async () => {
@@ -264,12 +260,12 @@ describe("the object's stored owner", () => {
 
 describe("the object's RPC surface", () => {
   // Every public method of the class is an RPC any binding can call, so the door table
-  // (`contract/doors.json`) is the object's whole surface. `alarm` is the runtime's, handed to
-  // Lifecycle, and refused over RPC. Claiming, marking and settling a wake have no door: only
-  // the `wakes` lane runs them, in process, with the doorbell's sender.
-  it("is exactly its doors: nothing claims, marks or settles a wake", async () => {
+  // (`contract/doors.json`), which defines the object's methods when the class loads, is its
+  // whole surface: a public method written on the class beside them would be a door with no
+  // row. `alarm` is the runtime's, handed to Lifecycle, and refused over RPC.
+  it("is exactly its doors, none of them a name RPC reserves", async () => {
     const methods = Object.getOwnPropertyNames(OwnerDO.prototype)
-      .filter((method) => method !== "constructor" && !RESERVED.includes(method)).sort();
+      .filter((method) => !rpcReserved().includes(method)).sort();
     expect(methods).toEqual(doorTable().map((row) => row.door).sort());
     expect(Object.getOwnPropertyNames(DurableObject.prototype)).toEqual(["constructor"]);
     const { stub, name } = await ownerObject();
@@ -282,11 +278,6 @@ describe("the object's RPC surface", () => {
       void Promise.resolve(prop).catch(() => {});
       return prop({ owner: name, caller: name, origin: null }, {});
     };
-    // Read off the class itself: an RPC call on a method the object lacks rejects in the
-    // pool's stub outside the call's own promise (round 6's unhandled rejection).
-    for (const method of ["claimWake", "markWake", "settleWake", "dueWakes", "wakeSender"]) {
-      expect(Reflect.has(OwnerDO.prototype, method)).toBe(false);
-    }
     expect((await failure(() => call("alarm"))).message).toMatch(/reserved method/);
   });
 });

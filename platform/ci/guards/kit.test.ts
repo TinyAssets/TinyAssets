@@ -355,6 +355,8 @@ describe("the Worker kit", () => {
     expect(owner.modules[0]!.contents).toMatch(/export \{ GatedObject as OwnerDO \};\s*$/);
     expect(() => gate("g", [], { worker: join(PLATFORM, "files") })).toThrow(/one or more/);
     expect(() => gate("g", ["a", "a"], { worker: join(PLATFORM, "files") })).toThrow(/each once/);
+    expect(() => gate("g", ["a", "alarm"], { worker: join(PLATFORM, "files") }))
+      .toThrow(/none reserved/);
     expect(() => gate("g", ["a"], { worker: join(PLATFORM, "owner"), className: "a-b" }))
       .toThrow(/no class name/);
   });

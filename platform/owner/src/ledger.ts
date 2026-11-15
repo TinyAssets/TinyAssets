@@ -3211,7 +3211,7 @@ function parentMoved(): Refusal {
 
 // -- THE DOORS: the `ledger` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
@@ -3320,7 +3320,14 @@ function mailsAgent(o: OwnerState, account: Account, authority: MailAuthority | 
 
 /** The `ledger` doors' handlers, by door. */
 export const ledgerDoors = Object.freeze({
-  /** What changed for an agent, its call checked in each unit (`inboxDigest`). */
+  /**
+   * What changed for this agent since its cursor, in one read: its unacknowledged mail
+   * (`mailboxRead`'s page, from its own acknowledged cursor) and the owner's rooms' rows
+   * (`room:<app>:<room>`) written past `after`, an owner-wide cursor, each as its head.
+   * Held to its grant as the mailbox and the collections are: `read_graph`, and a private
+   * row only to its writer. Its mail part is a mailbox read, so a run is refused it
+   * (`run_no_mailbox`, slice ID), as at `mailboxRead`; a run reads the board's digest.
+   */
   async inboxDigest(o: OwnerState, door: Door<InboxDigestRequest>):
       Promise<{ mail: MailPage; rooms: Heads }> {
     // Its placed bodies (ADR-035), mail and rows, are read from R2 between its units, as a
@@ -3346,6 +3353,12 @@ export const ledgerDoors = Object.freeze({
     }, ({ mail: page }) => page.messages.length === 0 && page.more);
     return { mail, rooms: heads(rooms, chars, windows, INBOX_PART) };
   },
+  /**
+   * A mailbox page. Its placed bodies (ADR-035) are read from R2 first, located in a unit
+   * of their own; the read's unit then marks only what it returns, and ends the page before
+   * a placed body it was not handed (one that arrived between), which a further read of
+   * the bodies picks up.
+   */
   async mailboxRead(o: OwnerState, door: Door<ReadRequest>): Promise<MailPage> {
     return o.rereadingPage(() => {
       const { account, r } = door.check();
@@ -3363,7 +3376,14 @@ export const ledgerDoors = Object.freeze({
   mailboxAck(o: OwnerState, { account, r }: Call<AckRequest>): { reader: string; through: number } {
     return o.ledger.ack(account.origin, r["through"]);
   },
-  /** A post, its call checked in each unit (`roomPost`). */
+  /**
+   * A post in a pair's room (`ledger.ts`), as the owner, an outside client's agent, or a
+   * run's own agent (never the owner or client that started it). Its authority is the
+   * caller's: none for the owner's own work, a client's grant at its generation, or the
+   * run's stamp. Mail to one of the owner's own agents starts that agent's run (the `runs`
+   * lane, which this door's unit rings), so its caller holds `converse` there too, as a
+   * `converse` call would.
+   */
   async roomPost(o: OwnerState, door: Door<PostRequest>): Promise<Posted> {
     // A parent archived (acked, moved to a segment) is read from R2 before the units: its
     // seq, from its id, in the gate; then its record, outside. One the lane moved after the
@@ -3414,12 +3434,26 @@ export const ledgerDoors = Object.freeze({
       }
     }
   },
+  /**
+   * The owner sees every outside agent; an outside caller only its own identity's. Beside
+   * them, the owner's own agents, each a ledger identity while its `agent.json` exists:
+   * every one for the owner; for anyone else, the live ones its grant covers (a scoped
+   * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
+   * it may mail). One answer holds a page (`pages.ts`, review M3): its agents, the owner's
+   * agents and the apps, in that order, each by its stable key, while they fit; when some
+   * are left, `next` is where the next page starts, for `after` on the next read.
+   */
   async outsideAgents(o: OwnerState, door: Door<AgentsRequest>):
       Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ReturnType<OwnerState["grants"]["apps"]>;
                 next?: string }> {
     await o.seededFor(door);
     return o.door(() => agentsListed(o, door.check()));
   },
+  /**
+   * Owner policy (W3): an agent's hourly wake cap and batch window, kept on its registry
+   * row where the ledger reads them, and changed like any policy write: in the owner's
+   * session, against the policy generation, receipted.
+   */
   policyWakeLimits(o: OwnerState, { session: id, r }: Call<WakeLimitsRequest>):
       { agent: Agent; generation: number } {
     return o.storage.transactionSync(() => {
@@ -3432,6 +3466,14 @@ export const ledgerDoors = Object.freeze({
       return { agent, generation };
     });
   },
+  /**
+   * Registering an agent needs the owner's protected session (S30), in one of two forms.
+   * The owner itself applies an MCP client's held registration (`CardApply`): the card
+   * the client filed on its own verified call, which captured its origin. Or the owner's
+   * browser registers an agent for an API key it holds, naming the key's identity
+   * (`origin`, re-derived from the key id): the one door an outside origin reaches
+   * together with the owner's session.
+   */
   registerAgent(o: OwnerState,
                 { account: { origin }, r, binding }: Call<RegisterRequest | CardApply>):
       Agent {
@@ -3444,9 +3486,21 @@ export const ledgerDoors = Object.freeze({
     }
     return o.ledger.register(origin, binding.source, r as unknown as RegisterRequest);
   },
+  /**
+   * The owner disables any agent in its session. An outside client cannot reach it: it
+   * holds no owner session, and its call never carries one.
+   */
   disableAgent(o: OwnerState, { account: { origin }, r }: Call<DisableRequest>): Agent {
     return o.ledger.disable(r["agent_id"], r["reason"], origin);
   },
+  /**
+   * Only the owner itself, in its session, sets an agent's doorbell where its wake kind's
+   * record has the owner hand it over (`callback: owner`: Claude's `/fire`, Grok's webhook
+   * routine), for the agent's own kind: the blob the gateway sealed the pasted token and
+   * URL into (`sealDoorbell`, from the owner surface), under the id the door derived, and
+   * what it follows. A repeat refreshes it. The object never sees the token; a refusal's
+   * receipt holds only its request's digest.
+   */
   agentDoorbell(o: OwnerState, { r }: Call<AgentDoorbellRequest>):
       { agent_id: string; subscription_id: string } {
     const stored = o.ledger.subscribe(null, {
@@ -3457,17 +3511,30 @@ export const ledgerDoors = Object.freeze({
     });
     return { agent_id: stored.agent_id, subscription_id: r["subscription_id"] as string };
   },
+  /** Only the owner itself, in its session, ends a doorbell it pasted, by its id. */
   agentDoorbellEnd(o: OwnerState, { r }: Call<UnsubscribeRequest>): { unsubscribed: boolean } {
     return ({ unsubscribed: o.ledger.unsubscribe(null, r["subscription_id"]) });
   },
+  /** Only the owner itself, in its session, deletes an agent. */
   deleteAgent(o: OwnerState, { r }: Call<AgentRequest>): { agent_id: string; messages: number } {
     return o.ledger.remove(r["agent_id"]);
   },
+  /**
+   * The owner's view of a mail chain (agents' mail to each other included), from any of its
+   * messages, such as the mail a run's receipt names: oldest first, after `after`.
+   */
   async mailChain(o: OwnerState, door: Door<ChainRequest>):
       Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
     const { r } = await o.door(() => door.check());
     return o.archive.chain(door, r);
   },
+  /**
+   * The events this caller's client may subscribe (MCP Events `events/list`): each
+   * subscribing wake kind's, to an outside client (never a run) whose grant reads somewhere.
+   * Asked for a command center (`events/subscribe`, before the door sends its callback a
+   * byte), only its one enabled subscribing agent's there, where it holds `read_graph`; a
+   * caller with none is refused.
+   */
   wakeEvents(o: OwnerState, { account, held, request: commandCenter }: Call<string | undefined>):
       { events: Events[] } {
     const grant = account.grant;
@@ -3491,6 +3558,13 @@ export const ledgerDoors = Object.freeze({
     }
     return { events: [kindFor(agent.delivery_method)!.push!.events!] };
   },
+  /**
+   * An agent's own client subscribes (MCP Events `events/subscribe`), once the MCP door
+   * verified its callback and the gateway sealed it: for its one enabled agent in the command
+   * center its arguments name, where a scoped client needs `read_graph`. A run is refused.
+   * The subscription is stored under the id the door derived, its lifetime as granted. The
+   * answer never holds the callback.
+   */
   wakeSubscribe(o: OwnerState, { account, r, held }: Call<SubscribeRequest>):
       { subscription_id: string; agent_id: string; expires_at: number | null } {
     if (account.origin === null || account.run !== null) {
@@ -3514,6 +3588,10 @@ export const ledgerDoors = Object.freeze({
     });
     return { subscription_id: r["subscription_id"] as string, ...stored };
   },
+  /**
+   * The caller that holds a subscription ends it (MCP Events `events/unsubscribe`), by the
+   * id the door derived; repeating it is harmless. A run is refused.
+   */
   wakeUnsubscribe(o: OwnerState, { account, r }: Call<UnsubscribeRequest>):
       { unsubscribed: boolean } {
     if (account.origin === null || account.run !== null) {
