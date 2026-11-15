@@ -6,9 +6,9 @@
  * for it (`doors/src/operator.ts`, ops `restore.*`).
  *
  * **What it reads.** The generation's root, its base parts and its log segments, through the
- * files Worker's manifest reads (`GenerationSource`, `FILES`), the same reads an export makes.
- * The files Worker opens each under the owner's data key; nothing here holds a key or writes
- * to R2. A restore from the off-account copy (lane R's eighth PR) puts the copy's bytes back
+ * files Worker's manifest reads (`Bucket`, `FILES`), the same reads an export makes.
+ * The files Worker opens each under the owner's data key; nothing here holds a key or puts
+ * to R2, and what it deletes is only what its `sweep` step finds no row names. A restore from the off-account copy (lane R's eighth PR) puts the copy's bytes back
  * at the same R2 keys first (the seal binds the key, `r4.md` item 6), so this reads them
  * unchanged: only where `{namespace, gen}` comes from differs.
  *
@@ -41,8 +41,19 @@
  *    the owner is never admitted. Then **chunks**: every chunk a content names read back
  *    through `FILES` with its hash verified. A read that fails is thrown, so the next step
  *    tries it again.
- * 6. **clear**: the staged rows deleted, a slice a unit.
- * 7. **done**, one unit: the fence (every outside client and API key revoked, every MCP grant
+ * 6. **names**, then **sweep**: the chunks in the namespace that no restored row names (those
+ *    put after E, which nothing else would ever collect) deleted, while the restore holds the
+ *    owner, so no upload makes a row for one meanwhile (`putChunks` of a key already there
+ *    only verifies it). First the owner's admission at E is held to one a restore admits, or
+ *    the restore fails before anything is deleted. **names** stages the bucket name of every
+ *    `file_chunks` row, in any state (an upload's held one, a garbage one in its grace that
+ *    may revive, one a kept generation names), `DELETE_BATCH` rows a unit by hash, each page
+ *    named by `FILES.chunkNames`; **sweep** lists the namespace's chunks a page at a time from
+ *    the last name listed (`FILES.listChunks`) and deletes those no staged name holds
+ *    (`FILES.deleteListed`). The keep rule is the files plane's own (`files.ts`: every object
+ *    in the bucket has a row first), so it never reads which generations are kept.
+ * 7. **clear**: the staged rows and names deleted, a slice a unit.
+ * 8. **done**, one unit: the fence (every outside client and API key revoked, every MCP grant
  *    fenced, every inbound binding disabled at a new revision, every connection marked for a
  *    reconnect: their secrets and routes were never in the backup), the allocators the export
  *    leaves out moved past everything the rows name (each its module's `restored`), the
@@ -76,7 +87,7 @@
  * keys, its model connections' secrets, its inbound URLs, and anything written after E.
  */
 import { HEX16, HEX32, randomHex } from "../../contract/src/ids";
-import { LOG_BYTES } from "../../contract/src/limits";
+import { DELETE_BATCH, LOG_BYTES } from "../../contract/src/limits";
 import type { ChunkStore, ManifestRoot } from "../../contract/src/files";
 import { remigrate } from "../../contract/src/migrate";
 import type {
@@ -91,9 +102,12 @@ import type { OwnerStorage } from "./gate";
 import type { Door, OwnerState } from "./owner-do";
 import { MIGRATIONS } from "./schema";
 
-/** Where a restore reads a generation: the files Worker's manifest reads (`FILES`). */
-export type GenerationSource =
-  Pick<ChunkStore, "getManifestRoot" | "getManifestPart" | "getManifestSegment">;
+/**
+ * What a restore reaches in the bucket (`FILES`): a generation's manifest reads, and its
+ * sweep's list and delete of the chunks no row names.
+ */
+type Bucket = Pick<ChunkStore, "getManifestRoot" | "getManifestPart" | "getManifestSegment"
+  | "listChunks" | "deleteListed">;
 
 const FORMAT = "tinyassets-export";
 const VERSION = 3;
@@ -189,8 +203,8 @@ type Held = {
   readonly since: number;
 };
 
-type Step = "pinned" | "wiped" | "index" | "log" | "apply" | "check" | "chunks" | "clear"
-  | "done" | "failed";
+type Step = "pinned" | "wiped" | "index" | "log" | "apply" | "check" | "chunks" | "names"
+  | "sweep" | "clear" | "done" | "failed";
 
 /** How long one `restoreStep` call takes new work: its answer is well inside the kit's wait. */
 const RESTORE_PASS_MS = 30_000;
@@ -198,6 +212,8 @@ const RESTORE_PASS_MS = 30_000;
 const SLICE_ROWS = 500;
 /** Chunks one check unit reads back. */
 const SLICE_CHUNKS = 64;
+/** A live owner's admissions: the ones a pin holds, and a restore admits at E (`finish`). */
+const ADMITS: readonly string[] = Object.freeze(["admitted", "suspended"]);
 
 /** The restore's record, or null when none was begun. A read. */
 function record(sql: Pick<SqlStorage, "exec">): Held | null {
@@ -306,7 +322,7 @@ function lines(bytes: Uint8Array): Line[] {
 }
 
 /** The generation's root, read through the source: refused when there is none. */
-async function rootOf(source: GenerationSource, ns: string, gen: string): Promise<ManifestRoot> {
+async function rootOf(source: Bucket, ns: string, gen: string): Promise<ManifestRoot> {
   const root = await source.getManifestRoot(ns, gen);
   if (root === null) {
     throw refused(`the namespace holds no finished generation ${gen}`);
@@ -315,7 +331,7 @@ async function rootOf(source: GenerationSource, ns: string, gen: string): Promis
 }
 
 /** The `index`th object of the generation (its parts, then its segments), read whole. */
-function objectAt(source: GenerationSource, ns: string, root: ManifestRoot,
+function objectAt(source: Bucket, ns: string, root: ManifestRoot,
                   index: number): Promise<Uint8Array> {
   const part = root.parts[index];
   if (part !== undefined) {
@@ -522,14 +538,26 @@ function answer(o: OwnerState, held: Held): RestoreAnswer {
 
 /** The next step of a restore after `step`, in order. */
 const NEXT: Readonly<Partial<Record<Step, Step>>> = Object.freeze({
-  index: "log", log: "apply", apply: "check", check: "chunks", chunks: "clear", clear: "done" });
+  index: "log", log: "apply", apply: "check", check: "chunks", chunks: "names", names: "sweep",
+  sweep: "clear", clear: "done" });
+
+/** The 32 bytes of a chunk's name (64 hex), as `restore_names` holds it. */
+const nameBytes = (name: string): ArrayBuffer =>
+  new Uint8Array(Buffer.from(name, "hex")).buffer as ArrayBuffer;
+
+/** In a unit: up to `SLICE_ROWS` rows of a staging table deleted; whether it is now empty. */
+function emptied(sql: Pick<SqlStorage, "exec">, table: "restore_rows" | "restore_names",
+                 key: string): boolean {
+  return sql.exec(`DELETE FROM ${table} WHERE (${key}) IN (SELECT ${key} FROM ${table} LIMIT ?)`,
+                  SLICE_ROWS).rowsWritten < SLICE_ROWS;
+}
 
 /**
  * One bounded piece of the restore's current step, from its record, the record moved on in
  * the same unit, and only while no other call moved it first (`still`), so two calls at once
  * never do one piece twice; whether the restore goes on.
  */
-async function piece(o: OwnerState, door: Door<undefined>, source: GenerationSource):
+async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
     Promise<boolean> {
   const sql = o.storage.sql;
   const held = await o.door(() => {
@@ -657,19 +685,73 @@ async function piece(o: OwnerState, door: Door<undefined>, source: GenerationSou
                `stored as their hash (${[...new Set(unread)].join(", ")})`);
           return;
         }
-        move(listed.length < SLICE_CHUNKS ? "clear" : "chunks", held.at + listed.length, null);
+        move(listed.length < SLICE_CHUNKS ? NEXT.chunks! : "chunks", held.at + listed.length,
+             null);
+      });
+      return true;
+    }
+    case "names": {
+      // Read from the record before anything is deleted: a restore that cannot admit the
+      // owner as it stood at E fails here, its chunks untouched, for its operator to wipe.
+      const kept = JSON.parse(held.held ?? "{}") as Record<string, Record<string, unknown>>;
+      const state = kept["owner_admission"]?.["state"];
+      if (typeof state !== "string" || !ADMITS.includes(state)) {
+        await o.door(() => {
+          if (still()) {
+            console.error("a restore's generation holds no live admission; nothing is swept");
+            move("failed", held.at, held.after, `the generation holds the owner's admission ` +
+                 `at E as ${String(state)}: a restore admits only an admitted or suspended one`);
+          }
+        });
+        return true;
+      }
+      const page = await o.door(() => o.files.chunksAfter(held.after, DELETE_BATCH));
+      const names = page.length === 0 ? [] : await o.files.names(page);
+      await o.door(() => {
+        if (!still()) {
+          return;
+        }
+        for (const name of names) {
+          sql.exec("INSERT OR IGNORE INTO restore_names (name) VALUES (?)", nameBytes(name));
+        }
+        const last = page.length < DELETE_BATCH;
+        move(last ? NEXT.names! : "names", held.at, last ? null : page.at(-1)!);
+      });
+      return true;
+    }
+    case "sweep": {
+      const listed = await source.listChunks(held.ns, held.after);
+      const unnamed = await o.door(() => still() ? listed.names.filter((name) => sql.exec(
+        "SELECT 1 FROM restore_names WHERE name = ?", nameBytes(name)).toArray().length === 0)
+        : null);
+      if (unnamed === null) {
+        return true;
+      }
+      if (unnamed.length > 0) {
+        await source.deleteListed(held.ns, unnamed);
+      }
+      await o.door(() => {
+        if (still()) {
+          if (unnamed.length > 0) {
+            console.log(`a restore swept ${unnamed.length} chunks no row names`);  // no names
+          }
+          move(listed.more ? "sweep" : NEXT.sweep!, held.at,
+               listed.more ? listed.names.at(-1)! : null);
+        }
       });
       return true;
     }
     case "clear": {
-      const root = await rootOf(source, held.ns, held.gen);
-      await o.door(() => {
-        if (still() && sql.exec("DELETE FROM restore_rows WHERE (tbl, k) IN (SELECT tbl, k " +
-                                  "FROM restore_rows LIMIT ?)", SLICE_ROWS).rowsWritten
-                                  < SLICE_ROWS) {
-          finish(o, held, root);
-        }
-      });
+      const cleared = await o.door(() => still() && emptied(sql, "restore_rows", "tbl, k")
+        && emptied(sql, "restore_names", "name"));
+      if (cleared) {
+        const root = await rootOf(source, held.ns, held.gen);
+        await o.door(() => {
+          if (still()) {
+            finish(o, held, root);
+          }
+        });
+      }
       return true;
     }
     case "done":
@@ -681,7 +763,8 @@ async function piece(o: OwnerState, door: Door<undefined>, source: GenerationSou
 /**
  * In the last unit: the fence, the allocators past every value the rows name (each its
  * module's), the generation recorded as the object's newest, and the held columns as the
- * generation holds them: the owner's admission as it stood at E.
+ * generation holds them: the owner's admission as it stood at E, which `names` held to one
+ * a restore admits before anything was swept.
  */
 function finish(o: OwnerState, held: Held, root: ManifestRoot): void {
   const sql = o.storage.sql;
@@ -695,9 +778,6 @@ function finish(o: OwnerState, held: Held, root: ManifestRoot): void {
     const columns = load.held!;
     sql.exec(`UPDATE ${load.table} SET ${columns.map((column) => `${column} = ?`).join(", ")}`,
              ...columns.map((column) => kept[load.table]?.[column] ?? null));
-  }
-  if (!["admitted", "suspended"].includes(o.admission().state)) {
-    throw new Error("a checked restore holds the owner's admission at E, admitted or suspended");
   }
   sql.exec("UPDATE owner_restore SET step = 'done', after = NULL");
 }
@@ -757,7 +837,7 @@ export const restoreDoors = Object.freeze({
       return o.door(() => answer(o, asked.held!));
     }
     const { ns, gen } = asked;
-    const source: GenerationSource = o.env.FILES;
+    const source: Bucket = o.env.FILES;
     const root = await rootOf(source, ns, gen);
     const logged = root.segments.reduce((sum, segment) => sum + segment.size, 0);
     if (logged > LOG_BYTES) {
@@ -804,7 +884,7 @@ export const restoreDoors = Object.freeze({
   async restoreStep(o: OwnerState, door: Door<undefined>): Promise<RestoreAnswer> {
     await o.door(() => door.check());
     const until = clock() + RESTORE_PASS_MS / 1000;
-    const source: GenerationSource = o.env.FILES;
+    const source: Bucket = o.env.FILES;
     while (await piece(o, door, source) && clock() < until) {
       // the next piece
     }
@@ -834,7 +914,7 @@ export const restoreDoors = Object.freeze({
         return { held: now, began: false };
       }
       const { state } = o.admission();
-      if (state !== "admitted" && state !== "suspended") {
+      if (!ADMITS.includes(state)) {
         throw refused(`the owner is ${state}: a pin holds a live owner, and a pending one is ` +
                       "restored into with none");
       }

@@ -63,8 +63,8 @@ import {
   SIGNIN_URL_MAX, SOCKET_TICKETS, SPEND_KEPT, SUBSCRIPTIONS_PER_AGENT,
 } from "../../contract/src/limits";
 import {
-  INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, RECORD_FIXED,
-  recordLayout, TABLE_KEPT, WORST_FILL,
+  CHUNK_RECORDS, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, RECORD_FIXED,
+  recordBytes, recordLayout, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import { AUTOINDEXES } from "./autoindexes";
 import { NOTICES_KEPT } from "../src/notices";
@@ -186,6 +186,13 @@ const POLICY_LIMITS = declared(POLICY_DOCUMENT, "POLICY_LIMITS", "maxDocument", 
                                "pendingProposals", "appliedProposals", "receiptsPerBucket");
 /** The file index's one ceiling, in its charge's bytes (`files.ts`). */
 const INDEX_BYTES = constant("files", "INDEX_BYTES");
+/**
+ * The most chunk rows the file index holds: its ceiling over the charge of one, its two
+ * records (`CHUNK_RECORDS`) as the schema's triggers lay them out.
+ */
+const CHUNK_ROWS = Math.floor(INDEX_BYTES / CHUNK_RECORDS.reduce((sum, payload) =>
+  sum + recordBytes(evaluate(payload, "a chunk's record", "manifest") + RECORD_FIXED, INDEX_KEPT),
+  0));
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
@@ -631,6 +638,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                        + 4 * (MAX_PATH_BYTES + KIB), by: "one row" },
     restore_rows: { rows: 1, bytes: 2 * LOG_BYTES + IMAGE_MAX,
                     by: "a log of at most LOG_BYTES, each line with its key, and one past it" },
+    // Its sweep's staged names (`names`, `untangle-2026-11/r-restore-chunks.md`): one for each
+    // chunk row, held with the staged rows until `clear`, each its 32 bytes and its record.
+    restore_names: { rows: CHUNK_ROWS, bytes: 32 + RECORD_FIXED,
+                     by: "a name for each chunk row the file index's ceiling holds" },
     // Slice P: the sandbox meter (`sandbox-time.ts`).
     sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
     owner_backup_state: { rows: 1, bytes: ROW + 3 * 8,

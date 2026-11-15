@@ -110,12 +110,16 @@ export const CONTENT_BYTES = (row: string): string =>
   `(${CONTENT_RECORD_BYTES(row)} + ${CHUNK_LIST(row)} * ${CHUNK_LIST_ROW_BYTES()})`;
 
 /**
- * A chunk: its record (its state at its longest, and the scope that last let it go, which
- * its garbage is charged to, at a client's 71 bytes) and its entry in the due index. The
- * same for every chunk, so a change of holder moves no charge.
+ * A chunk's two records' payloads, in bytes: its own (its state at its longest, and the scope
+ * that last let it go, which its garbage is charged to, at a client's 71 bytes) and its entry
+ * in the due index. The same for every chunk, so a change of holder moves no charge, and the
+ * owner-bound guard counts the most chunk rows the index's ceiling holds by them.
  */
+export const CHUNK_RECORDS: readonly string[] = Object.freeze([`${HASH} + 9 + 71`, `${HASH} + 8`]);
+
+/** A chunk: its two records (`CHUNK_RECORDS`). */
 export const CHUNK_ROW_BYTES = (): string =>
-  `(${record(`${HASH} + 9 + 71`, INDEX_KEPT)} + ${record(`${HASH} + 8`, INDEX_KEPT)})`;
+  `(${CHUNK_RECORDS.map((payload) => record(payload, INDEX_KEPT)).join(" + ")})`;
 
 /** A temporary directory: its record and its entry in the expiry index. */
 export const TEMP_BYTES = (row: string): string =>

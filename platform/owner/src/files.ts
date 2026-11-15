@@ -1017,6 +1017,12 @@ export class Files {
     return this.#reads(sha256s, (ns, key, batch) => this.#store.checkChunks(ns, key, batch));
   }
 
+  /** Each chunk's name in the bucket, in order (`FILES.chunkNames`), a call for them all. */
+  async names(sha256s: readonly string[]): Promise<string[]> {
+    const { ns, key } = await this.space();
+    return this.#store.chunkNames(ns, key, [...sha256s]);
+  }
+
   /** `read`'s answers to `items` in order, `GET_READS` items a call under the owner's key. */
   async #reads<I, O>(items: readonly I[],
                      read: (ns: string, key: string, batch: I[]) => Promise<O[]>): Promise<O[]> {
@@ -1490,6 +1496,16 @@ export class Files {
       "SELECT DISTINCT c.sha256, k.size FROM file_content_chunks c JOIN file_chunks k " +
         "ON k.sha256 = c.sha256 ORDER BY c.sha256 LIMIT ? OFFSET ?", limit, offset)
       .toArray();
+  }
+
+  /**
+   * A read for a restore's sweep (`restore.ts`): `limit` of the hashes of every chunk row, in
+   * any state, after the hash `after` (null: from the first), in order.
+   */
+  chunksAfter(after: string | null, limit: number): string[] {
+    return this.#sql.exec<{ sha256: string }>(
+      "SELECT sha256 FROM file_chunks WHERE sha256 > ? ORDER BY sha256 LIMIT ?", after ?? "",
+      limit).toArray().map((row) => row.sha256);
   }
 
   /**

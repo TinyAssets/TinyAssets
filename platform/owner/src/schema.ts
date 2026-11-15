@@ -2321,4 +2321,26 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "UPDATE owner_backup_state SET sweep = 1 WHERE began_at IS NOT NULL OR EXISTS (SELECT 1 " +
       "FROM owner_backups)",
   ]),
+  // 14 (lane R, `restore.ts`; `untangle-2026-11/r-restore-chunks.md`): a restore's two steps
+  // between `chunks` and `clear`, while it holds the owner (`names`, every chunk row's name in
+  // the bucket staged; `sweep`, every chunk of the namespace no staged name names deleted),
+  // the record made again with them, its row kept; and the names it stages, each the 32
+  // bytes of its HMAC, which `clear` deletes.
+  Object.freeze([
+    "CREATE TABLE owner_restore_next (only INTEGER PRIMARY KEY CHECK (only = 1), ns TEXT NOT " +
+      "NULL CHECK (length(ns) = 32 AND ns NOT GLOB '*[^0-9a-f]*'), gen TEXT NOT NULL CHECK " +
+      "(length(gen) = 16 AND gen NOT GLOB '*[^0-9a-f]*'), step TEXT NOT NULL CHECK (step IN " +
+      "('pinned', 'wiped', 'index', 'log', 'apply', 'check', 'chunks', 'names', 'sweep', " +
+      "'clear', 'done', 'failed')), at INTEGER NOT NULL CHECK (at >= 0), after TEXT, held " +
+      "TEXT, spans TEXT, failed TEXT, fresh TEXT CHECK (fresh IS NULL OR (length(fresh) = 16 " +
+      "AND fresh NOT GLOB '*[^0-9a-f]*')), since REAL NOT NULL DEFAULT 0, CHECK ((step = " +
+      "'failed') = (failed IS NOT NULL)))",
+    "INSERT INTO owner_restore_next (only, ns, gen, step, at, after, held, spans, failed, " +
+      "fresh, since) SELECT only, ns, gen, step, at, after, held, spans, failed, fresh, since " +
+      "FROM owner_restore",
+    "DROP TABLE owner_restore",
+    "ALTER TABLE owner_restore_next RENAME TO owner_restore",
+    "CREATE TABLE restore_names (name BLOB PRIMARY KEY CHECK (typeof(name) = 'blob' AND " +
+      "length(name) = 32)) WITHOUT ROWID",
+  ]),
 ]);

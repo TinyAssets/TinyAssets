@@ -40,8 +40,16 @@
  *   whose put landed late, goes with the rest.
  * - `sweepManifests` lists one page of one namespace's generations and deletes every object
  *   of a generation the owner's object no longer names, each root before its objects: the
- *   manifest lane's sweep alone. These two are the only lists of the bucket, each only ever
- *   of one namespace's prefix.
+ *   manifest lane's sweep alone.
+ * - `chunkNames`, `listChunks` and `deleteListed`: a restore's sweep of the chunks no row of
+ *   its owner names (`owner/src/restore.ts`, its `names` and `sweep` steps), while the restore
+ *   holds the owner, so no upload can make a row for a name meanwhile. `chunkNames` answers the
+ *   names of up to 1,000 hashes under the owner's key, with no R2 call; `listChunks` lists one
+ *   page of the namespace's chunk names after a name; `deleteListed` deletes up to 1,000 of
+ *   them by name, under no key, as the erasure's prefix delete takes none.
+ *
+ * `deleteNamespace`, `sweepManifests` and `listChunks` are the only lists of the bucket, each
+ * only ever of one namespace's prefix.
  *
  * Every object is sealed in this Worker under its owner's data key (`datakey.ts`), by the
  * envelope's per-object seal (`contract/src/envelope.ts` `sealObject`: AES-256-GCM, the
@@ -154,6 +162,18 @@ async function opened(dataKey: ArrayBuffer, objectKey: string,
     throw new Error(OPENS_NOT);
   }
   return plain;
+}
+
+/**
+ * `value` as 1 to `DELETE_BATCH` distinct chunk hashes or names (64 lowercase hex, `keys.ts`),
+ * or refused, before any is acted on.
+ */
+function distinct(value: unknown, what: string): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > DELETE_BATCH
+      || new Set(value).size !== value.length) {
+    throw new Refusal("invalid", `${what} names 1 to ${DELETE_BATCH} distinct chunks`);
+  }
+  return value.map((each) => chunkHash(each));
 }
 
 function list<T>(value: unknown, what: string): T[] {
@@ -338,16 +358,41 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
    * already gone is not an error.
    */
   async deleteChunks(ns: string, key: string, sha256s: string[]): Promise<{ deleted: number }> {
-    namespace(ns);
-    if (!Array.isArray(sha256s) || sha256s.length === 0 || sha256s.length > DELETE_BATCH
-        || new Set(sha256s).size !== sha256s.length) {
-      throw new Refusal("invalid", `a delete names 1 to ${DELETE_BATCH} distinct chunks`);
-    }
-    const hashes = sha256s.map((sha256) => chunkHash(sha256));
-    const dataKey = await this.#key(ns, key);
-    const names = await Promise.all(hashes.map((sha256) => chunkName(dataKey, sha256)));
+    const names = await this.#names(ns, key, distinct(sha256s, "a delete"));
     await this.env.BLOBS.delete(names.map((name) => chunkKey(ns, name)));
-    return { deleted: hashes.length };
+    return { deleted: names.length };
+  }
+
+  /** The names of chunks (at most 1,000), by hash under the owner's key, in order; no R2 call. */
+  async chunkNames(ns: string, key: string, sha256s: string[]): Promise<string[]> {
+    return this.#names(ns, key, distinct(sha256s, "a lookup"));
+  }
+
+  /** The R2 names of `hashes` under the owner's key `key`, refused unless it opens for `ns`. */
+  async #names(ns: string, key: string, hashes: readonly string[]): Promise<string[]> {
+    namespace(ns);
+    const dataKey = await this.#key(ns, key);
+    return Promise.all(hashes.map((sha256) => chunkName(dataKey, sha256)));
+  }
+
+  /**
+   * One page of `ns`'s chunk names, in key order, after the name `after` (null: from the
+   * first), at most 1,000 (R2's page); and whether more follow.
+   */
+  async listChunks(ns: string, after: string | null): Promise<{ names: string[]; more: boolean }> {
+    const listed = await this.env.BLOBS.list({
+      prefix: chunkPrefix(ns), limit: DELETE_BATCH,
+      ...(after === null ? {} : { startAfter: chunkKey(ns, after) }) });
+    return { names: listed.objects.map((object) => listedChunk(ns, object.key)),
+             more: listed.truncated };
+  }
+
+  /** Chunks of `ns` (at most 1,000) deleted by their names; a name already gone is no error. */
+  async deleteListed(ns: string, names: string[]): Promise<{ deleted: number }> {
+    namespace(ns);
+    const listed = distinct(names, "a delete");
+    await this.env.BLOBS.delete(listed.map((name) => chunkKey(ns, name)));
+    return { deleted: listed.length };
   }
 
   /** A generation's object's bytes sealed under the owner's key at `at`, verified by R2. */
