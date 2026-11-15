@@ -7,9 +7,6 @@ description: Find and remove hidden links, needless links, surplus and special c
 
 Untangle the code a change touches, or a whole area, and finish the job.
 
-**Why:** agents write better code in a well-structured codebase, spend fewer
-tokens searching, break less without noticing, and find root causes faster.
-
 ## How this project uses it
 
 - **Every builder** runs step 2 on the code it touches and its callers before
@@ -38,18 +35,15 @@ tokens searching, break less without noticing, and find root causes faster.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run: run only what the diff can break, one mutation per
-  declared change. Read only what applies. One PR in flight per lane, never
+  declared change. One PR in flight per lane, never
   stacked. Merge `origin/main` in; never rebase a pushed branch. A diff touching
   `platform/` also runs every `ci` guard (`npx vitest run --root ci guards/` in
   `platform/`): the layers, kit and kernels no workspace covers.
-- Before the cutover, untangling and shape work come first: contracts, data
-  shapes, security, whatever other code or a stored record builds on. A fix
-  waits until after the cutover only when nothing builds on it, it can still
-  act once the window has closed, and the failure it fixes is rare, loud when
-  it happens and recoverable with what already exists. It is the one known fix
-  `AGENTS.md` Fact 17 lets wait: a PR that finds one names it with its branch
-  in `tasks.md`'s "After the cutover" list, never as a note (founder,
-  2026-11-15).
+- Before the cutover, build what other code or a stored record builds on.
+  A fix waits only when nothing builds on it, it works after the window
+  closes, and its failure is rare, loud and recoverable with what exists:
+  Fact 17's one exception, listed with its branch under `tasks.md`'s
+  "After the cutover" (founder, 2026-11-15).
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
   within about 20% of its ceiling lands with its fix; a reviewer who finds one
   blocks.
