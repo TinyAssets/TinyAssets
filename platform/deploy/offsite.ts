@@ -23,10 +23,16 @@
  *   and the copy is not run; with some, or with all and any error, it stops loudly.
  * - **Watched:** the platform's canary reads how long ago a night last passed (`watch`) and
  *   alarms past two nights, so no hide is late unseen.
+ * - **Read back (R8, `docs/decisions/untangle-2026-11/r8-copy-restore.md`):** the kit's mode
+ *   `copyback` writes into R2 the objects of one owner's namespace that R2 lacks, as the copy
+ *   held them at a time inside its window (`copyBack`), the namespace the one the owner's own
+ *   object names, so the doors' erasure records refuse an erased owner before anything is read.
+ *   The restore record goes first (`recordRestore`). Once a month a night is a drill (`drill`):
+ *   it reads back what R2 held, whole, and what a copy back at the window's far edge writes.
  *
  * `node --experimental-strip-types deploy/offsite.ts settings` writes `configured` for the
- * workflow; `… copy` runs the copy. Node runs this file as it is (type stripping), as the kit
- * does.
+ * workflow; `… copy` runs the copy, and `… drill` the copy and then the drill. Node runs this
+ * file as it is (type stripping), as the kit does.
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { randomInt } from "node:crypto";
@@ -35,9 +41,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { keyed, whole } from "../contract/src/checks.ts";
+import { objectPrefix } from "../contract/src/files.ts";
 import { HEX32 } from "../contract/src/ids.ts";
 import { RECOVERY_WINDOW_S } from "../contract/src/limits.ts";
 import { annotate, github, output, pages, type Reach, summarize } from "./actions.ts";
+import type { Cloudflare } from "./cloudflare.ts";
 import type { Io } from "./deploy.ts";
 
 /** What the copy acts on: the kit's own outside world. */
@@ -74,32 +82,77 @@ export type Settings = Readonly<Record<keyof typeof KEYS, Key>> & {
 /** A B2 bucket's name, as Backblaze takes one. */
 const BUCKET = /^[A-Za-z0-9-]{6,63}$/;
 
-/** The copy's settings from `env`: null when none is set, loudly when only some are. */
-export function settings(env: Readonly<Record<string, string | undefined>>): Settings | null {
+type Env = Readonly<Record<string, string | undefined>>;
+
+/**
+ * `names` from `env`, each set and none holding a space or a control character, the bucket's
+ * name a B2 one, else a loud stop naming them; `missing` says what an unset one is.
+ */
+function stored(env: Env, names: readonly string[], missing: (unset: string) => string):
+    (name: string) => string {
   const value = (name: string) => env[name] ?? "";
-  const missing = SETTINGS.filter((name) => value(name) === "");
-  if (missing.length === SETTINGS.length) {
-    return null;
+  const unset = names.filter((name) => value(name) === "");
+  if (unset.length > 0) {
+    throw new Error(missing(unset.join(", ")));
   }
-  if (missing.length > 0) {
-    throw new Error(`the off-account copy is configured in part: ${missing.join(", ")} ` +
-                    "not set (platform/deploy/checklist.md, \"The off-account copy\")");
-  }
-  const shaped = SETTINGS.filter((name) => /[\s\p{Cc}]/u.test(value(name)));
+  const shaped = names.filter((name) => /[\s\p{Cc}]/u.test(value(name)));
   if (shaped.length > 0) {
     throw new Error(`${shaped.join(", ")} hold a space or a control character`);
   }
   if (!BUCKET.test(value("OFFSITE_BUCKET"))) {
     throw new Error("OFFSITE_BUCKET is no B2 bucket name (6 to 63 letters, digits and dashes)");
   }
-  if (!HEX32.test(value("CLOUDFLARE_ACCOUNT_ID"))) {
+  return value;
+}
+
+/** The credential stored under `names`, as `value` reads them. */
+const keyOf = (value: (name: string) => string, [id, secret]: readonly [string, string]): Key =>
+  Object.freeze({ names: `${id} and ${secret}`, id: value(id), secret: value(secret) });
+
+/** The copy's settings from `env`: null when none is set, loudly when only some are. */
+export function settings(env: Env): Settings | null {
+  if (SETTINGS.every((name) => (env[name] ?? "") === "")) {
+    return null;
+  }
+  const value = stored(env, SETTINGS, (unset) => `the off-account copy is configured in part: ` +
+    `${unset} not set (platform/deploy/checklist.md, "The off-account copy")`);
+  if (!HEX32.test(env["CLOUDFLARE_ACCOUNT_ID"] ?? "")) {
     throw new Error("the repository variable CLOUDFLARE_ACCOUNT_ID is no 32-hex account id");
   }
-  const keys = Object.fromEntries(Object.entries(KEYS).map(([use, [id, secret]]) =>
-    [use, { names: `${id} and ${secret}`, id: value(id), secret: value(secret) }])) as
-    Record<keyof typeof KEYS, Key>;
+  const keys = Object.fromEntries(Object.entries(KEYS).map(([use, names]) =>
+    [use, keyOf(value, names)])) as Record<keyof typeof KEYS, Key>;
   return Object.freeze({ ...keys, bucket: value("OFFSITE_BUCKET"),
-                         account: value("CLOUDFLARE_ACCOUNT_ID") });
+                         account: env["CLOUDFLARE_ACCOUNT_ID"]! });
+}
+
+/**
+ * What a copy back reads the copy and R2 with: the copy's bucket and read key, the account's
+ * R2, and an S3 pair on its files bucket: a nightly's read pair (`drill`), or the write pair
+ * minted for one restore (`copyBack`).
+ */
+export type Back = Pick<Settings, "bucket" | "account" | "read" | "r2">;
+
+/**
+ * The R2 write pair a copy back writes with: the S3 pair of a token minted for one restore,
+ * ending the next day, and revoked after (`checklist.md`, "A restore from the copy"). No
+ * standing key can write the files bucket.
+ */
+const WRITE_BACK = Object.freeze(["OFFSITE_R2_WRITE_ACCESS_KEY_ID",
+                                  "OFFSITE_R2_WRITE_SECRET_ACCESS_KEY"] as const);
+
+/** What mode `copyback` reads (`deploy.ts`): the bucket's name, a variable, and the keys. */
+export const BACK_INPUTS = Object.freeze({
+  public: Object.freeze(["OFFSITE_BUCKET"]),
+  secret: Object.freeze([...KEYS.read, ...WRITE_BACK]),
+});
+
+/** A copy back's settings from `env`, in `account`: each one set, else a loud stop naming it. */
+export function backFrom(env: Env, account: string): Back {
+  const value = stored(env, [...BACK_INPUTS.public, ...BACK_INPUTS.secret], (unset) =>
+    `a copy back needs ${unset} (platform/deploy/checklist.md, "A restore from the copy"); ` +
+    "nothing is read or written");
+  return Object.freeze({ bucket: value("OFFSITE_BUCKET"), account,
+                         read: keyOf(value, KEYS.read), r2: keyOf(value, WRITE_BACK) });
 }
 
 /**
@@ -212,23 +265,36 @@ function remote(name: string, fields: Record<string, string>): Record<string, st
     [`RCLONE_CONFIG_${name.toUpperCase()}_${field}`, value]));
 }
 
+/** The remote `name` on the account's R2, with the S3 pair `key`. */
+const r2Remote = (name: string, account: string, key: Key) => remote(name, {
+  TYPE: "s3", PROVIDER: "Cloudflare", NO_CHECK_BUCKET: "true",
+  ENDPOINT: `https://${account}.r2.cloudflarestorage.com`, ACCESS_KEY_ID: key.id,
+  SECRET_ACCESS_KEY: key.secret });
+
 /**
- * The nightly copy of `source`, the files bucket, to the B2 bucket: held first, then
- * `rclone sync`, then a check of every object R2 held when the run began and a sample of them
- * byte for byte. Any failure throws. What it did, as summary lines.
+ * The remote `name` on the copy with the read key: as it stands, or as it stood at `at`
+ * (`--b2-version-at`, a view that writes nothing).
  */
-export async function copy(s: Settings, source: string, io: Effects): Promise<string[]> {
-  await held(s, io);
-  const remotes = {
-    source: remote("source", { TYPE: "s3", PROVIDER: "Cloudflare", NO_CHECK_BUCKET: "true",
-                               ENDPOINT: `https://${s.account}.r2.cloudflarestorage.com`,
-                               ACCESS_KEY_ID: s.r2.id, SECRET_ACCESS_KEY: s.r2.secret }),
-    copy: remote("copy", { TYPE: "b2", ACCOUNT: s.write.id, KEY: s.write.secret,
-                           HARD_DELETE: "false" }),
-    check: remote("check", { TYPE: "b2", ACCOUNT: s.read.id, KEY: s.read.secret }),
-  };
-  const rclone = (what: string, using: readonly (keyof typeof remotes)[],
-                  args: readonly string[], output = false): string => {
+const readRemote = (name: string, key: Key, at: Date | null) => remote(name, {
+  TYPE: "b2", ACCOUNT: key.id, KEY: key.secret, ...at === null ? {} : { VERSION_AT: iso(at) } });
+
+/** `at` to the second, as rclone and the summaries take a time. */
+const iso = (at: Date): string => at.toISOString().replace(/\.\d+Z$/, "Z");
+
+// R2's own LastModified: an object a Worker wrote carries no rclone time, which rclone would
+// otherwise ask R2 for object by object. B2 ignores the flag and keeps the time each upload
+// is given.
+const TIMES = Object.freeze(["--use-server-modtime", "--fast-list"]);
+
+/**
+ * rclone over `remotes`: `run` runs `what` with the remotes `using` names defined in its
+ * environment alone, its output when `output`, any failure thrown, naming `what`; `listed`
+ * lists every name under `at` on the one remote `using`, after `filters`.
+ */
+function rcloneOf<R extends string>(io: Effects,
+                                    remotes: Readonly<Record<R, Record<string, string>>>) {
+  const run = (what: string, using: readonly R[], args: readonly string[],
+               output = false): string => {
     const ran = io.spawn("rclone", args, {
       encoding: "utf8", maxBuffer: 2 ** 30,
       stdio: ["ignore", output ? "pipe" : "inherit", "inherit"],
@@ -240,45 +306,73 @@ export async function copy(s: Settings, source: string, io: Effects): Promise<st
     }
     return String(ran.stdout ?? "");
   };
-  // R2's own LastModified: an object a Worker wrote carries no rclone time, which rclone would
-  // otherwise ask R2 for object by object. B2 ignores the flag and keeps the time each upload
-  // is given.
-  const times = ["--use-server-modtime", "--fast-list"];
+  const listed = (what: string, using: R, at: string, filters: readonly string[] = []) =>
+    run(what, [using], ["lsf", "--files-only", "-R", ...TIMES, ...filters, at], true)
+      .split("\n").filter(Boolean);
+  return { run, listed };
+}
+
+/** `SAMPLE` of `names`, each once, at random. */
+function sampled(names: readonly string[]): string[] {
+  const left = [...names];
+  return Array.from({ length: Math.min(SAMPLE, left.length) },
+                    () => left.splice(randomInt(left.length), 1)[0]!);
+}
+
+/** `use` given a file that lists `names`, one a line, removed once `use` returns. */
+function withList<T>(names: readonly string[], use: (file: string) => T): T {
+  const folder = mkdtempSync(join(tmpdir(), "offsite-"));
+  try {
+    const file = join(folder, "names");
+    writeFileSync(file, names.map((name) => `${name}\n`).join(""));
+    return use(file);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}
+
+/** What a night copied: when it began, to the second, and what it did, as summary lines. */
+export interface Copied {
+  readonly began: string;
+  readonly lines: readonly string[];
+}
+
+/**
+ * The nightly copy of `source`, the files bucket, to the B2 bucket: held first, then
+ * `rclone sync`, then a check of every object R2 held when the run began and a sample of them
+ * byte for byte. Any failure throws.
+ */
+export async function copy(s: Settings, source: string, io: Effects): Promise<Copied> {
+  await held(s, io);
+  const remotes = {
+    source: r2Remote("source", s.account, s.r2),
+    copy: remote("copy", { TYPE: "b2", ACCOUNT: s.write.id, KEY: s.write.secret,
+                           HARD_DELETE: "false" }),
+    check: readRemote("check", s.read, null),
+  };
+  const { run: rclone, listed } = rcloneOf(io, remotes);
   const from = `source:${source}`;
   const to = `copy:${s.bucket}`;
   const sizeOf = (what: string, using: "source" | "copy", at: string) => {
-    const { count, bytes } = JSON.parse(rclone(what, [using], ["size", "--json", ...times, at],
+    const { count, bytes } = JSON.parse(rclone(what, [using], ["size", "--json", ...TIMES, at],
                                                true)) as { count: number; bytes: number };
     return { count, bytes };
   };
-
-  const listed = (what: string, using: "source" | "copy", at: string,
-                  filters: readonly string[] = []) =>
-    rclone(what, [using], ["lsf", "--files-only", "-R", ...times, ...filters, at], true)
-      .split("\n").filter(Boolean);
-  const began = io.now().toISOString().replace(/\.\d+Z$/, "Z");
+  const began = iso(io.now());
   const before = listed("listing of the copy", "copy", to);
   const kept = new Set(listed("listing of R2", "source", from));
   const hidden = before.filter((name) => !kept.has(name)).length;
   const limit = Math.max(MAX_DELETE_FLOOR, Math.floor(before.length * MAX_DELETE_SHARE));
   rclone("sync", ["source", "copy"],
-         ["sync", from, to, ...times, "--stats-one-line", "--stats", "1m",
+         ["sync", from, to, ...TIMES, "--stats-one-line", "--stats", "1m",
           "--stats-log-level", "NOTICE"]);
   // What R2 held when the run began: what it wrote or deleted since is the next night's.
   rclone("check of every object", ["source", "copy"],
-         ["check", from, to, "--one-way", "--size-only", ...times, "--min-age", began]);
+         ["check", from, to, "--one-way", "--size-only", ...TIMES, "--min-age", began]);
   const names = listed("listing of R2", "source", from, ["--min-age", began]);
-  const sample = Array.from({ length: Math.min(SAMPLE, names.length) },
-                            () => names.splice(randomInt(names.length), 1)[0]!);
-  const folder = mkdtempSync(join(tmpdir(), "offsite-"));
-  try {
-    writeFileSync(join(folder, "sample"), sample.map((name) => `${name}\n`).join(""));
-    rclone("byte check of a sample", ["source", "check"],
-           ["check", from, `check:${s.bucket}`, "--one-way", "--download", "--files-from",
-            join(folder, "sample")]);
-  } finally {
-    rmSync(folder, { recursive: true, force: true });
-  }
+  const sample = sampled(names);
+  withList(sample, (file) => rclone("byte check of a sample", ["source", "check"],
+    ["check", from, `check:${s.bucket}`, "--one-way", "--download", "--files-from", file]));
   const after = { source: sizeOf("count of R2", "source", from),
                   copy: sizeOf("count of the copy", "copy", to) };
   const lines = [
@@ -293,7 +387,7 @@ export async function copy(s: Settings, source: string, io: Effects): Promise<st
                     `a mass deletion in R2? Each hidden version stays ${KEEP_DAYS} days ` +
                     `(--b2-version-at reads it). ${lines.join("; ")}`);
   }
-  return lines;
+  return { began, lines };
 }
 
 /** The nightly workflow, the branch its schedule runs on, and its two jobs. */
@@ -402,7 +496,8 @@ export async function firstNightAfter(reach: Reach, at: Date):
 /**
  * Where the latest restore from the copy is recorded, in the control namespace:
  * `{kind, began}`, when it began writing R2, in seconds. Every write from the copy into R2
- * puts it before its first byte (R8, `docs/decisions/untangle-2026-11/r8-retire-gate.md`):
+ * puts it before its first byte (`copyBack`, the one such write;
+ * `docs/decisions/untangle-2026-11/r8-retire-gate.md`):
  * a version it reads back may hold a root under a kid a key rotation has since rewrapped
  * away, which the next night uploads again with a fresh `KEEP_DAYS`, so mode `retire` reads
  * the copy's gate from the first pass begun after it.
@@ -426,6 +521,114 @@ export function restoreBegan(value: unknown): number | null {
   return value["began"];
 }
 
+/** Where the restore record is put: the control namespace, through the kit's client. */
+export interface RestoreControl {
+  readonly cloudflare: Pick<Cloudflare, "put">;
+  readonly account: string;
+  readonly namespace: string;
+}
+
+/** The restore record put as begun at `now`: its `began`, or a loud stop on any refusal. */
+async function recordRestore(control: RestoreControl, now: Date): Promise<number> {
+  const began = Math.floor(now.getTime() / 1000);
+  const status = await control.cloudflare.put(control.account, control.namespace, RESTORE_KEY,
+                                              { kind: RESTORE_KIND, began });
+  if (status !== 200) {
+    throw new Error(`writing the restore record ${RESTORE_KEY} failed (${status}): nothing is ` +
+                    "written into R2");
+  }
+  return began;
+}
+
+/**
+ * The oldest time a copy back reads the copy as it stood at: a version gone from R2 since is
+ * kept `KEEP_DAYS` after it was hidden, so a view inside them is whole, and a day of them is
+ * left for the run itself.
+ */
+export const BACK_DAYS = KEEP_DAYS - 1;
+
+/** `at` held inside the copy's window at `now`, or a loud stop naming it. */
+export function readableAt(at: Date | null, now: Date): void {
+  const oldest = now.getTime() - BACK_DAYS * 86_400_000;
+  if (at !== null && (at.getTime() < oldest || at > now)) {
+    throw new Error(`the copy is read back as it stood at a time from ${iso(new Date(oldest))} ` +
+                    `to now, not at ${iso(at)}: a version older than ${KEEP_DAYS} days since ` +
+                    "it was hidden is gone");
+  }
+}
+
+/**
+ * `prefix` of the copy as it stood at `at` (null: as it stands) and of `source` in R2, and
+ * what a copy back of it writes: every name under it the copy then held that R2 now lacks,
+ * relative to it.
+ */
+function readBack(b: Back, source: string, prefix: string, at: Date | null, io: Effects) {
+  const rclone = rcloneOf(io, { back: readRemote("back", b.read, at),
+                                r2: r2Remote("r2", b.account, b.r2) });
+  const from = `back:${b.bucket}/${prefix}`;
+  const to = `r2:${source}/${prefix}`;
+  const there = new Set(rclone.listed("listing of R2", "r2", to));
+  const lacking = rclone.listed("listing of the copy", "back", from)
+    .filter((name) => !there.has(name));
+  return { run: rclone.run, from, to, lacking };
+}
+
+/**
+ * R8, the restore from the copy: the objects of `namespace` that `source`, the files bucket,
+ * lacks, written back from the copy as it stood at `at` (null: as it stands), each at its own
+ * key, then each read back byte for byte. Only objects R2 lacks: one R2 holds is never
+ * replaced, so no live root goes back to an older wrap. The restore record goes before the
+ * first byte, so mode `retire` holds a rotation's gate to a pass begun after it; with nothing
+ * lacking, nothing is written and nothing recorded. The caller names a namespace only as the
+ * owner's own object answers it (`deploy.ts` mode `copyback`). What it did, as plan lines.
+ */
+export async function copyBack(b: Back, source: string, namespace: string, at: Date | null,
+                               control: RestoreControl, io: Effects): Promise<string[]> {
+  readableAt(at, io.now());
+  const prefix = objectPrefix(namespace);
+  const as = at === null ? "as the copy stands" : `as the copy held them at ${iso(at)}`;
+  const back = readBack(b, source, prefix, at, io);
+  if (back.lacking.length === 0) {
+    return [`R2 lacks no object the copy holds under ${prefix}, ${as}: nothing is written, ` +
+            "and no restore is recorded"];
+  }
+  const began = await recordRestore(control, io.now());
+  withList(back.lacking, (file) => {
+    back.run("copy back", ["back", "r2"],
+             ["copy", back.from, back.to, "--files-from", file, "--ignore-existing",
+              "--stats-one-line", "--stats", "1m", "--stats-log-level", "NOTICE"]);
+    back.run("byte check of the copy back", ["back", "r2"],
+             ["check", back.from, back.to, "--one-way", "--download", "--files-from", file]);
+  });
+  return [`recorded a restore from the copy begun at ${iso(new Date(began * 1000))} in ` +
+          `${RESTORE_KEY}, before its first byte`,
+          `wrote ${back.lacking.length} objects under ${prefix} into ${source}, ${as}, each ` +
+          "one R2 lacked, and read each back byte for byte"];
+}
+
+/**
+ * The monthly drill, on the whole bucket, after the night `night` (`copy`): every object R2
+ * held when the night began downloaded from both sides and compared byte for byte, so a copy
+ * back as the copy stands writes exactly R2's bytes; then a copy back's own reads as the copy
+ * stood `BACK_DAYS` ago, the oldest it takes: what it would write counted, and `SAMPLE` of
+ * them read whole. It writes nothing: no standing key can write the files bucket.
+ */
+export function drill(s: Settings, source: string, night: Copied, io: Effects): string[] {
+  const { run } = rcloneOf(io, { source: r2Remote("source", s.account, s.r2),
+                                 check: readRemote("check", s.read, null) });
+  run("byte check of every object", ["source", "check"],
+      ["check", `source:${source}`, `check:${s.bucket}`, "--one-way", "--download",
+       "--min-age", night.began]);
+  const at = new Date(io.now().getTime() - BACK_DAYS * 86_400_000);
+  const back = readBack(s, source, "", at, io);
+  const sample = sampled(back.lacking);
+  withList(sample, (file) => back.run("read of a copy back's sample", ["back"],
+                                      ["cat", "--discard", "--files-from", file, back.from]));
+  return [`every object R2 held at ${night.began} is in the copy, compared byte for byte`,
+          `a copy back as the copy stood at ${iso(at)} would write ${back.lacking.length} ` +
+          `objects R2 no longer holds; ${sample.length} of them read back whole`];
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const env = process.env;
   const command = process.argv.slice(2).join(" ");
@@ -444,7 +647,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         summary(["### The off-account copy: not configured", why]);
       }
       output(env, "configured", String(stored !== null));
-    } else if (command === "copy") {
+    } else if (command === "copy" || command === "drill") {
       if (stored === null) {
         throw new Error("the off-account copy is not configured");
       }
@@ -452,10 +655,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       // the settings job, on a dark night, installs nothing.
       const { FILES_BUCKET } = await import("./facts.ts");
       const { IO } = await import("./deploy.ts");
-      summary(["### The off-account copy",
-               ...await copy(stored, FILES_BUCKET, IO)]);
+      const night = await copy(stored, FILES_BUCKET, IO);
+      summary(["### The off-account copy", ...night.lines]);
+      if (command === "drill") {
+        summary(["### The drill of a restore from the copy",
+                 ...drill(stored, FILES_BUCKET, night, IO)]);
+      }
     } else {
-      throw new Error("offsite.ts takes settings or copy");
+      throw new Error("offsite.ts takes settings, copy or drill");
     }
   })().catch((error: Error) => {
     console.error(annotate(env, "error", title, error.message));

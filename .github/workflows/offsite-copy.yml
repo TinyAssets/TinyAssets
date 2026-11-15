@@ -14,6 +14,11 @@ name: Off-account copy (nightly)
 # nights by their two jobs' names, `settings` and `copy` (offsite.ts `NIGHTLY`), and
 # alarms once no night has passed in two.
 #
+# Once a month a night is also the drill of a restore from the copy (offsite.ts `drill`): it
+# downloads every object R2 held when the night began from both sides and compares them byte
+# for byte, then reads the copy as a copy back would at the oldest time it takes. It writes
+# nothing into R2. A failed drill fails that night's copy job.
+#
 # Its settings (`SETTINGS` in offsite.ts) are `production` secrets and the repository variable
 # OFFSITE_BUCKET, read by both jobs; the Cloudflare account id is the repository variable
 # CLOUDFLARE_ACCOUNT_ID. Each credential reaches one rclone call's environment alone.
@@ -23,7 +28,16 @@ on:
     # 05:37 UTC: after the generations' night (00:00 to 04:00 UTC, owner/src/backup.ts) and a
     # pass, and off the hour, where scheduled runs are delayed or dropped under load.
     - cron: '37 5 * * *'
+    # The monthly drill of a restore from the copy (offsite.ts `drill`): on the 1st, a night
+    # copied again an hour after the first, then read back.
+    - cron: '37 6 1 * *'
   workflow_dispatch:
+    inputs:
+      drill:
+        description: 'Drill a restore from the copy after the night (offsite.ts drill)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -78,17 +92,10 @@ jobs:
         working-directory: platform
         run: npm ci
 
-      - name: Install rclone, pinned by its digest
-        env:
-          RCLONE: v1.75.2
-          RCLONE_SHA256: 349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
-        run: |
-          set -euo pipefail
-          zip="rclone-${RCLONE}-linux-amd64.zip"
-          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${zip}" "https://downloads.rclone.org/${RCLONE}/${zip}"
-          echo "${RCLONE_SHA256}  ${RUNNER_TEMP}/${zip}" | sha256sum -c -
-          unzip -q -j -d "${RUNNER_TEMP}/rclone" "${RUNNER_TEMP}/${zip}" "rclone-${RCLONE}-linux-amd64/rclone"
-          echo "${RUNNER_TEMP}/rclone" >> "${GITHUB_PATH}"
+      - uses: ./.github/actions/rclone
 
+      # A drill night (the monthly schedule, or a dispatch asking one) copies, then drills.
       - name: Copy the files bucket to B2
-        run: node --experimental-strip-types platform/deploy/offsite.ts copy
+        env:
+          COMMAND: ${{ (github.event.schedule == '37 6 1 * *' || inputs.drill) && 'drill' || 'copy' }}
+        run: node --experimental-strip-types platform/deploy/offsite.ts "${COMMAND}"
