@@ -42,19 +42,7 @@ Where any older doc disagrees with this section, this section wins.
 
 ## Contributing
 
-Python 3.11+. Tests run offline; providers are mocked, so no API keys are needed. How to contribute, and what this repo does not promise, is [CONTRIBUTING.md](CONTRIBUTING.md).
-
-```bash
-git clone https://github.com/TinyAssets/TinyAssets.git
-cd TinyAssets
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-python -m scripts.ci_structural_guards               # the fast guards every PR runs
-pytest -q tests/test_<area>.py                       # the tests your change touches
-ruff check <changed files>
-```
-
-CI runs the rest. How work is done here: [AGENTS.md](AGENTS.md).
+How to contribute, and what this repo does not promise, is [CONTRIBUTING.md](CONTRIBUTING.md). How work is done here: [AGENTS.md](AGENTS.md).
 
 ## License
 

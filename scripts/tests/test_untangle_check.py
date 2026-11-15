@@ -55,6 +55,7 @@ def test_an_owed_item_with_no_fix_named_is_refused(section: str) -> None:
 
 
 @pytest.mark.parametrize("fix", ["(#5601)", "(`untangle/o-wipe`)", "on `fix/wipe`",
+                                 "(`process/p7-headers`)", "from land/7",
                                  "(live: the dark deploy applies it)"])
 def test_an_owed_item_that_names_its_fix_passes(fix: str) -> None:
     assert _owed(f"**Left, with reasons:**\n\n- `x` is owed to lane O {fix}.\n") == []
