@@ -341,9 +341,9 @@ function rowThere(o: ImportDoorNeeds, owner: string,
 
 // -- THE DOORS: the `import` rows' handlers (`contract/doors.json`) --------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind (the platform's import binding,
-// the owner pending), and the fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`ImportDoorNeeds`) once the row's steps held: the bind (the platform's
+// import binding, the owner pending), and the fields.
 
 /** The `import` doors' handlers, by door. */
 export const importDoors = Object.freeze({

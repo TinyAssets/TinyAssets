@@ -807,9 +807,9 @@ export interface Conflicted {
 
 // -- THE DOORS: the `collections` rows' handlers (`contract/doors.json`) --------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`CollectionsDoorNeeds`) once the row's steps held: the bind, the account,
+// the scope and the fields.
 
 /**
  * What the `collections` doors reach: the collections, the bodies their rows place and read,
