@@ -9,7 +9,8 @@ import { describe, expect, it, vi } from "vitest";
 import { clock } from "../src/clock";
 import type { CallerOf, DoorName, HandlerOf, LiveSession, OwnerSelf } from "../src/door";
 import type { GrantsDoorNeeds } from "../src/grants";
-import type { OwnerState } from "../src/owner-do";
+import type { LedgerDoorNeeds } from "../src/ledger";
+import type { SessionsDoorNeeds } from "../src/sessions";
 import { Sessions } from "../src/sessions";
 import { rig, type Rig } from "./ledger-support";
 import { inStores, type TestStores } from "./support";
@@ -188,8 +189,10 @@ describe("a widening's proof", () => {
       // @ts-expect-error an owner row's call carries the owner itself, never a live session
       return o.grants.set(call.session, CHANGE, clock());
     };
-    // An account's ledger doors, whatever their gate, reach neither ledger widening.
-    const mailboxAck: HandlerOf<"mailboxAck", OwnerState> = (o, call) => {
+    // An account's ledger doors, whatever their gate and whatever stores they reach, make
+    // neither ledger widening, nor a grant.
+    type Reach = LedgerDoorNeeds & GrantsDoorNeeds & SessionsDoorNeeds;
+    const mailboxAck: HandlerOf<"mailboxAck", Reach> = (o, call) => {
       // @ts-expect-error an account row's call carries no proof
       o.policy.changed(call.session, 1, "wake_limits", {}, "rule", clock());
       // @ts-expect-error nor make one of the binding's session: the sessions' check is no proof
@@ -197,14 +200,14 @@ describe("a widening's proof", () => {
       // @ts-expect-error nor may it take a held registration
       return o.registrations.take(call.session, "card", "d", clock());
     };
-    const roomPost: HandlerOf<"roomPost", OwnerState> = async (o, door) => {
+    const roomPost: HandlerOf<"roomPost", Reach> = async (o, door) => {
       // @ts-expect-error a units account row's checked call carries none either
       return o.registrations.take(door.check().session, "card", "d", clock());
     };
     // A session row's call carries its live session, which the widening takes.
-    const wakeLimits: HandlerOf<"policyWakeLimits", OwnerState> = (o, call) =>
+    const wakeLimits: HandlerOf<"policyWakeLimits", LedgerDoorNeeds> = (o, call) =>
       o.policy.changed(call.session, 1, "wake_limits", {}, "rule", clock());
-    const owner: HandlerOf<"sessionExtend", OwnerState> = (o, call) =>
+    const owner: HandlerOf<"sessionExtend", SessionsDoorNeeds> = (o, call) =>
       o.sessions.extend(call.self, call.binding.session, clock());
     expect([untyped, ownerDoor, mailboxAck, roomPost, wakeLimits, owner].every(
       (handler) => typeof handler === "function")).toBe(true);
