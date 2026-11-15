@@ -213,18 +213,47 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   each under GitHub's 3,000-file limit and proved by the manifest's dry run (d3 §F5). It
   deletes the old stack, the import window above, the old stack's workflows (`dr-drill.yml`
   among them), its docs, rules and specs, and `docs/architecture.md`'s S36 row then reads
-  converged. `slow-tests` leaves the ruleset and the classic branch protection first (d3 §F4).
+  converged.
   - **Old tests leave with their code** (Direction 6): every test file
     `python scripts/affected_tests.py --retiring` lists (its `RETIRING` paths follow the
     manifest), and any other test that fails only because its code is gone. None is skipped,
     quarantined or rewritten to pass; a test that also reaches kept code keeps those cases. A
     structural guard (`scripts/ci_structural_guards.py` `GUARDS`) goes only once this line names
     its platform replacement or the decision that retires its principle. `tests.yml` loses
-    `select`, `structural-guards`, `required-tests-shard`, `affected-tests`, `heavy-tests` and
-    `slow-tests`; `required-tests` keeps `platform-tests`, `platform-sizes`, `platform-app` and
+    `select`, `structural-guards`, `required-tests-shard`, `affected-tests` and
+    `heavy-tests`; `required-tests` keeps `platform-tests`, `platform-sizes`, `platform-app` and
     `process`.
 
 ## 10. The remaining work, in order (d3 §D)
+
+### Process first: priority over every step below (d3 §B5)
+
+Each in its own PR, taking the next free slot, never behind product work; the product lanes
+keep running (the untangle skill's "Process first", founder 2026-11-15).
+
+- [ ] P2 in order: reviews posted as the App's `review` check reads them and seen green on a
+  real PR, then `review` required, then the receipt half deleted, with the ADR that every PR is
+  reviewed by one check, superseding ADR-015's review line (d3 §F4; `untangle/p2-review-gate`,
+  from `land/7`).
+- [ ] P6, process code in one place, research first: the scripts' tests beside them, the queue
+  helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
+  measured (`untangle/p6-process-code`).
+- [x] P7's builder page: the untangle skill's "How this project uses it" and
+  `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
+  `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
+- [ ] P7's rest: the workflow headers lose their dated history, which git holds (list3 T12;
+  `untangle/p7-headers`).
+- [ ] P8's rest and P9's "can go now" list: the always-red watchers, the callerless scripts,
+  the root leftovers, the OpenSpec prompts' copies, `setup-secure-merge-gate.sh`, the finished
+  changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`).
+- [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
+  their readers re-pointed, so the window's deletion is smaller (`untangle/p9-openspec`).
+- [ ] `slow-tests`, which collects no test, leaves the ruleset and the classic branch
+  protection, the founder's admin edit (d3 §E4; the exact command goes on his local-session
+  list when this session can't write it, §F4), then its job goes (`untangle/slow-tests`, from
+  `land/3`).
+- [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
+  one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
 
 ### Step 1. Now: B25, T0b, E2
 
@@ -278,7 +307,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       `DoorNeeds` (`untangle-2026-11/o1.md`).
     - [x] `untangle/o1b`: the four proofs, the policy stores, the guard cut
       (`untangle-2026-11/o1b.md`).
-    - [ ] `untangle/o1c`: files, collections, ledger, import.
+    - [x] `untangle/o1c`: files, collections, ledger, import (`untangle-2026-11/o1c.md`).
     - [ ] `untangle/o1d`: runs, launch, signins, restore; `OwnerState` deleted.
   - [x] B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
@@ -315,6 +344,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (d3 §K1, §K2).
   - [x] T1, the owner's tests at production's numbers through the object's one wiring, twelve
     PRs, T1a to T1e (#5515 to #5588; `t1c.md`).
+    - [x] T1's last edges: the owner tests' five B23 entries in `owner/guards/rules.ts`
+      (connections, export, gateway-support, holds, runs-authority), each through its Worker's
+      front door (`t1-owner-edges.md`).
   - T2, the doors' tests through the owner's front door, two PRs (`t2.md`):
     - [x] T2a: the owner an auxiliary Worker behind the owner gate, every reach into its object
       gone, and the doors' test `OWNER` (C2b) typed as the doors' env types it; 13 of the 20
@@ -325,6 +357,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       not by hand (`ownDoor<T>`); `d2:N52`, `N84`, `N85` and `N89`.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
+  - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
+    budgets' factor of 4 and the watchdogs' 3, and `search-cpu`'s host CPU bound with them: the
+    runner-variance rule (`untangle/budgets-variance`, #5640's review; `budgets-variance.md`).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `owner.rewrap` (or `owner.reseal`) for every owner until a pass answers `left` 0 for every
@@ -447,9 +482,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     notice. Until it lands, an old document is archived whole (`policy.refused.json`).
   - [ ] Later, only if an owner's rule needs it: hold-on-sync for `paths`, and asking for a
     host through web-fetch hooks.
-- [ ] Process (d3 §B): P2 in order: reviews posted as the App's `review` check reads them and
-  seen green on a real PR, then `review` required, then the receipt half deleted (d3 §F4);
-  P8 and P9's "can go now" list at once, P6 and the rest of P7 and P9 after the lanes (d3 §B5).
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
   tests pass takes the two older tests that make a call refuse by patching a class's prototype
   (`owner/test/runs-authority.test.ts:864` `Files.prototype.open`,
@@ -638,9 +670,6 @@ The fixes the untangle skill's cutover rule holds until after the cutover (found
   connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
   exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
   then its build (`untangle/r7-unopenable`).
-- [ ] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
-  budgets' factor of 4 and the watchdogs' 3, and `search-cpu`'s host CPU bound with them: the
-  runner-variance rule (`untangle/budgets-variance`, #5640's review).
 
 ### Step 17. Restore and the off-account copy
 

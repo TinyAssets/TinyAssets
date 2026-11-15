@@ -140,7 +140,8 @@ import { Connections, connectionsDoors } from "./connections";
 import type { RingAnswer } from "../../contract/src/gateway";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import {
-  fileChanged, Files, filesDoors, type SandboxLease, type SyncCommitRequest, SYNC_FENCED,
+  type FileReaction, Files, filesDoors, type SandboxLease, type SyncCommitRequest, SYNC_FENCED,
+  syncIgnoreReaction,
 } from "./files";
 import { type OwnerStorage, WriteGate } from "./gate";
 import { Grants, grantsDoors } from "./grants";
@@ -257,7 +258,7 @@ export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail
  * grants, sessions, keys, held registrations, ledger, nightly manifest (`backup.ts`) and
  * archive (`archive.ts`). The object builds its own with this, once; a test builds the same
  * over an object's own storage to reach a store directly. A file change tells the owner's
- * other modules through these stores (`fileChanged`), so every builder's tells them.
+ * other modules through these stores (`FileReaction`), so every builder's tells them.
  */
 export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
   const { storage, write } = units;
@@ -273,10 +274,8 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
     // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
     (stored, needed, held, limit) => storageFullRefusal(storageFull(
       stored, needed, held, limit, admission.tier(), admission.tiers())),
-    (path, present, now, change) => fileChanged({
-      ledger, policy, notices, grants, files,
-      agentsAt: (epoch, most) => agentsAt(storage, epoch, most),
-    }, path, present, now, change),
+    // What follows a file change: each agent's ledger identity, the sync's ignore list's notice.
+    () => reactions,
     // Garbage a generation kept names is never collected early.
     () => backups.protectsSince(clock()));
   const bodies = new Bodies(files, storage, write);
@@ -296,6 +295,11 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
     notice: (type, detail) => notices.add(type, detail, clock()),
   });
   const archive = new Archive({ door: write, ledger, files, bodies, notices });
+  const reactions: readonly FileReaction[] = Object.freeze([
+    ledger.agentFiles,
+    syncIgnoreReaction({ policy, notices, grants, files,
+                         agentsAt: (epoch, most) => agentsAt(storage, epoch, most) }),
+  ]);
   return { admission, policy, notices, log, files, bodies, collections, grants,
            sessions: new Sessions(storage), keys: new Keys(storage),
            registrations: new Registrations(storage, grants), ledger, backups, archive };

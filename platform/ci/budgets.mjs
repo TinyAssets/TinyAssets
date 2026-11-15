@@ -7,17 +7,22 @@
  *
  * CI's legs upload their reports: `tests-report-<n>` from `platform-tests` (the medium
  * tests), `sizes-report-<n>` from `platform-sizes` (the large ones). Each figure it writes
- * carries where and when it was measured; a figure the reports do not measure keeps its own.
+ * carries where and when it was measured, and the reports must measure every figure.
  *
  * A test's project is read from its path: the folder each project's tests are in
  * (`classes.ts`'s `PROJECTS`, which every config's projects are made from). Only passed
  * tests count; a failed or skipped one measures nothing.
+ *
+ * Each test carries its runner's calibration (`class-check.ts`). The budgets' runner is the
+ * median calibration of the tests read, so read a run's whole set of reports, and each test
+ * counts as that runner would have measured it: its time over its runner's speed
+ * (`classes.ts` `speedOf`), so a slow runner's report sets no figure higher.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PROJECTS as FOLDERS } from "./classes.ts";
+import { PROJECTS as FOLDERS, speedOf } from "./classes.ts";
 import { PLATFORM } from "./paths.ts";
 
 const CI = dirname(fileURLToPath(import.meta.url));
@@ -39,7 +44,7 @@ function fromPlatform(name) {
   return path.slice(at + BELOW.length);
 }
 
-/** Every passed test in `reports` as { project, test, ms, large }. */
+/** Every passed test in `reports` as { project, test, ms, large, calibration_ms }. */
 export function measured(reports) {
   const out = [];
   for (const report of reports) {
@@ -54,8 +59,13 @@ export function measured(reports) {
         if (result.status !== "passed" || typeof result.duration !== "number") {
           continue;
         }
+        const calibration_ms = result.meta?.calibration_ms;
+        if (typeof calibration_ms !== "number") {
+          throw new Error(`${rel} > ${result.fullName}: no runner calibration in its meta`);
+        }
         out.push({ project: `${workspace}/${project}`, test: `${rel} > ${result.fullName}`,
-                   ms: result.duration, large: (result.tags ?? []).includes("large") });
+                   ms: result.duration, large: (result.tags ?? []).includes("large"),
+                   calibration_ms });
       }
     }
   }
@@ -68,17 +78,32 @@ function slowest(rows, where) {
 }
 
 /**
- * `budgets` with each figure `rows` measure replaced by its measurement at `where`: each
- * project's slowest medium test, and the slowest large one. The rest keep their own.
+ * `budgets` measured at `where`: the budgets' runner, the median calibration of `rows`, and,
+ * as that runner measures them, each project's slowest medium test and the slowest large one.
+ * The runner is every figure's unit, so `rows` measure every figure, or nothing is written: a
+ * figure kept from other reports would be read against a runner that never measured it.
  */
 export function derive(budgets, rows, where) {
-  const medium = { ...budgets.medium };
-  for (const project of new Set(rows.filter((r) => !r.large).map((r) => r.project))) {
-    medium[project] = slowest(rows.filter((r) => !r.large && r.project === project), where);
+  if (rows.length === 0) {
+    throw new Error("the reports hold no passed test, so they measure no runner");
   }
-  const large = rows.filter((r) => r.large);
-  return { factor: budgets.factor, medium: Object.fromEntries(Object.entries(medium).sort()),
-           large: large.length ? slowest(large, where) : budgets.large };
+  const calibrations = rows.map((r) => r.calibration_ms).sort((a, b) => a - b);
+  const runner = { calibration_ms: calibrations[Math.floor(calibrations.length / 2)],
+                   measured: where };
+  const usual = rows.map((r) => ({ ...r, ms: r.ms / speedOf(r.calibration_ms, runner) }));
+  const medium = {};
+  for (const project of new Set(usual.filter((r) => !r.large).map((r) => r.project))) {
+    medium[project] = slowest(usual.filter((r) => !r.large && r.project === project), where);
+  }
+  const large = usual.filter((r) => r.large);
+  const unmeasured = [...Object.keys(budgets.medium).filter((p) => !(p in medium)),
+                      ...(large.length ? [] : ["large"])];
+  if (unmeasured.length) {
+    throw new Error(`the reports measure no ${unmeasured.join(", ")}: read a run's whole set`);
+  }
+  return { factor: budgets.factor, runner,
+           medium: Object.fromEntries(Object.entries(medium).sort()),
+           large: slowest(large, where) };
 }
 
 function main(argv) {

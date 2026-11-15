@@ -41,7 +41,8 @@
 import { sha256Hex } from "../../contract/src/digest";
 
 import {
-  type Adopt, adopted, BODY_BYTES_MAX, bodyOffset, PAGE_BYTES, type Placed, READ_PAGE_BYTES,
+  type Adopt, adopted, type Bodies, BODY_BYTES_MAX, bodyOffset, PAGE_BYTES, type Placed,
+  READ_PAGE_BYTES,
 } from "./bodies";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
@@ -50,8 +51,8 @@ import {
   windowedAll,
 } from "./pages";
 import { codePoints, name, utf8Bytes } from "../../contract/src/text";
-import type { Account, Call, Door } from "./door";
-import type { OwnerState } from "./owner-do";
+import type { Scope } from "./authority";
+import type { Account, Call, Door, DoorUnits } from "./door";
 import { clock } from "./clock";
 import { jsonBytes } from "../../contract/src/encoded";
 import { filerOf, MAIN_AGENT, OWNER } from "./authority";
@@ -806,9 +807,24 @@ export interface Conflicted {
 
 // -- THE DOORS: the `collections` rows' handlers (`contract/doors.json`) --------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`CollectionsDoorNeeds`) once the row's steps held: the bind, the account,
+// the scope and the fields.
+
+/**
+ * What the `collections` doors reach: the collections, the bodies their rows place and read,
+ * and the agents a change rings (the ledger's followers, held to their grants).
+ */
+export interface CollectionsDoorNeeds extends Pick<DoorUnits, "sync"> {
+  readonly collections: Collections;
+  readonly bodies: Pick<Bodies, "placing" | "reading">;
+  readonly ledger: {
+    followers(collection: string, board: boolean, now: number):
+        { agent_id: string; client: string; command_center_id: string }[];
+    changed(change: "board" | "rooms", after: number, agentIds: readonly string[]): void;
+  };
+  readonly grants: { reads(client: string, scope: Scope): boolean };
+}
 
 /**
  * Ring the agents that follow `collection` for a change past `after` (slice W): only for
@@ -818,7 +834,8 @@ export interface Conflicted {
  * agents with a live subscription following it whose grant reads their command center.
  * Each wake says what changed and the cursor before it, so its digest is just the change.
  */
-function ring(o: OwnerState, account: Account, collection: string, after: number): void {
+function ring(o: CollectionsDoorNeeds, account: Account, collection: string, after: number):
+    void {
   const change = collection === BOARD ? "board"
     : collection.startsWith(ROOM_PREFIX) ? "rooms" : null;
   if (account.origin !== null || account.run !== null || change === null
@@ -836,7 +853,7 @@ function ring(o: OwnerState, account: Account, collection: string, after: number
 /** The `collections` doors' handlers, by door. */
 export const collectionsDoors = Object.freeze({
   /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
-  async boardDigest(o: OwnerState, door: Door<BoardDigestRequest>): Promise<Heads> {
+  async boardDigest(o: CollectionsDoorNeeds, door: Door<BoardDigestRequest>): Promise<Heads> {
     return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const chars = headChars(r["head_chars"]);
@@ -850,7 +867,7 @@ export const collectionsDoors = Object.freeze({
    * One row, fitted to one answer: with `body_offset`, its body from that byte, and with
    * `etag`, refused when the row is no longer the one that answer read.
    */
-  async collectionGet(o: OwnerState, door: Door<GetRequest>): Promise<{ row: Row | null }> {
+  async collectionGet(o: CollectionsDoorNeeds, door: Door<GetRequest>): Promise<{ row: Row | null }> {
     return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
@@ -874,7 +891,7 @@ export const collectionsDoors = Object.freeze({
    * the cursor is the last one's seq, and a first row cut to fit is read on with
    * `collection_get`'s `body_offset`.
    */
-  async collectionPull(o: OwnerState, door: Door<PullRequest>): Promise<Page> {
+  async collectionPull(o: CollectionsDoorNeeds, door: Door<PullRequest>): Promise<Page> {
     return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const page = o.collections.pull(caller, r["collection"] as string, r["after"],
@@ -893,7 +910,7 @@ export const collectionsDoors = Object.freeze({
    * and `before` name the older ones; `body_offset` reads the page's newest
    * entry's body from that byte.
    */
-  async collectionHistory(o: OwnerState, door: Door<HistoryRequest>): Promise<History> {
+  async collectionHistory(o: CollectionsDoorNeeds, door: Door<HistoryRequest>): Promise<History> {
     return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
@@ -917,7 +934,7 @@ export const collectionsDoors = Object.freeze({
    * Answered without its body (review H3): its etag, revision, seq and `body_bytes`, so a
    * body past one answer is never echoed back.
    */
-  async collectionWrite(o: OwnerState, door: Door<WriteRequest>):
+  async collectionWrite(o: CollectionsDoorNeeds, door: Door<WriteRequest>):
       Promise<{ row: WrittenRow } | Conflicted> {
     try {
       return await o.bodies.placing(() => {
@@ -941,7 +958,7 @@ export const collectionsDoors = Object.freeze({
       await o.sync();  // a write that rang an agent's doorbell (`ring`)
     }
   },
-  async collectionDelete(o: OwnerState, door: Door<DeleteRequest>):
+  async collectionDelete(o: CollectionsDoorNeeds, door: Door<DeleteRequest>):
       Promise<{ deleted: number } | Conflicted> {
     try {
       return await o.bodies.reading(() => {
@@ -957,7 +974,7 @@ export const collectionsDoors = Object.freeze({
       await o.sync();  // a delete that rang an agent's doorbell (`ring`)
     }
   },
-  collectionClear(o: OwnerState, { account, r }: Call<ClearRequest>): { deleted: number } {
+  collectionClear(o: CollectionsDoorNeeds, { account, r }: Call<ClearRequest>): { deleted: number } {
     const before = o.collections.clock();
     const cleared = o.collections.clear(account.caller, r["collection"] as string,
                                             r["writer"]);

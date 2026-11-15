@@ -6,7 +6,6 @@
  * client's; the admission refusing every check; and the grants' own reads, over the
  * owner's real grant rows, a revoke ending what the stamp could do.
  */
-import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,11 +13,8 @@ import {
   NOT_OWNER, OWNER, type Stamped,
 } from "../src/authority";
 import { Refusal } from "../../contract/src/refusal";
-import { WriteGate } from "../src/gate";
-import { Grants } from "../src/grants";
-import type { OwnerDO } from "../src/owner-do";
-import { Policy } from "../src/policy";
 import { MUSE, rig, signedIn } from "./ledger-support";
+import { inStores } from "./support";
 
 const STAMP: Stamped = Object.freeze({ client: MUSE.client, generation: 1,
                                        authenticated_at: null, universe: "alpha",
@@ -121,9 +117,7 @@ describe("the authority over the owner's own grants", () => {
       expected_revision: row?.revision ?? 0 });
     const stamp: Stamped = { ...STAMP, generation };
     const check = (need: readonly ("read_files" | "write_files")[]) =>
-      runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
-        const storage = new WriteGate(state.storage).storage;
-        const grants = new Grants(storage, new Policy(storage));
+      inStores(r.stub, ({ grants }) => {
         const authority = new Authority({ grants: {
           standing: (client, at, signed) => grants.standing(client, at, signed) } });
         return authority.refusal({ by: "client", stamp }, need)?.message ?? "runs";

@@ -1,9 +1,10 @@
 // The owner object's namespace, bound for the tests only (the real class, the config's
-// `main`), the test keyring (the one the gateway Worker run beside the tests holds), and the
-// Worker's own bindings: FILES, GATEWAY and CODEMODE_VM, each to its Worker run beside it
-// (FILES and GATEWAY through a gate each), SANDBOX to the gate in front of the fake sandbox
-// Worker, CONTROL, ERASURES (consumed by the fake erasure Worker), and its one secret,
-// ROUTING_MAC_KEY; and the test's handles on the fakes and the gates.
+// `main`), the gateway and files Workers with their rings' older kid active and the gateway
+// once that kid is retired, and the Worker's own bindings: FILES, GATEWAY and CODEMODE_VM,
+// each to its Worker run beside it (FILES and GATEWAY through a gate each), SANDBOX to the
+// gate in front of the fake sandbox Worker, CONTROL, ERASURES (consumed by the fake erasure
+// Worker), and its one secret, ROUTING_MAC_KEY; and the test's handles on the fakes and the
+// gates.
 declare namespace Cloudflare {
   /** The owner Worker's own bindings, as its generated env types them (`src/env.ts`). */
   type OwnerBound = Pick<import("../src/env").OwnerEnv, "SANDBOX" | "FILES" | "GATEWAY"
@@ -23,10 +24,13 @@ declare namespace Cloudflare {
     GATEWAY_GATE: import("../../ci/gate").GateControl;
     /** The gateway's connect entrypoint, test-only: a test seals a doorbell's token as the doors do. */
     CONNECT: import("../../contract/src/gateway").ConnectService;
-    TEST_KEYRING: string;
-    /** The files Worker's ring, test-only: a test wraps a data key under its older kid. */
-    FILES_TEST_RING: string;
-    /** The files Worker's bucket, test-only: a test tampers a chunk's bytes. */
+    /** The gateway's connect steps on its ring with the older kid `k1` active. */
+    CONNECT_OLDER: import("../../contract/src/gateway").ConnectService;
+    /** The gateway once `k1` is retired from its ring: what still opens without it. */
+    GATEWAY_RETIRED: import("../../contract/src/gateway").GatewayService;
+    /** The files Worker on its ring with the older kid `k1` active: a key wrapped under it. */
+    FILES_OLDER: import("../../contract/src/files").ChunkStore;
+    /** The files Worker's bucket, test-only: a test copies, deletes or plants its objects. */
     BLOBS: R2Bucket;
   }
 }

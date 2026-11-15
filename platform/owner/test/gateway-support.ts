@@ -9,9 +9,8 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { ANTHROPIC, OPENAI } from "../../ci/fixtures";
-import type { Credential } from "../../gateway/src/credential";
 import type { EgressScope, Source } from "../../contract/src/egress-scope";
-import { binding, openValue, seal, sealValue } from "../../gateway/src/keyring";
+import type { ConnectService } from "../../contract/src/gateway";
 
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Binding } from "../../contract/src/binding";
@@ -61,40 +60,45 @@ async function checked(record: Source): Promise<{ models: ModelRecord[]; egress:
     { models: ModelRecord[]; egress: EgressScope };
 }
 
-/** The keyring the gateway holds, with `active` made the active kid. */
-export function keyring(active: "k1" | "k2"): { GATEWAY_KEYRING: string } {
-  const ring = JSON.parse(env.TEST_KEYRING) as { keys: Record<string, string> };
-  return { GATEWAY_KEYRING: JSON.stringify({ active, keys: ring.keys }) };
+/**
+ * The gateway's connect steps at `kid`: the gateway run beside the tests (`k2`, its ring's
+ * active kid), or the same gateway on that ring with the older kid `k1` active, so what it
+ * seals is a blob sealed before a rotation.
+ */
+export function connectAt(kid: "k1" | "k2"): ConnectService {
+  return { k1: env.CONNECT_OLDER, k2: env.CONNECT }[kid];
 }
 
-/** A credential sealed by the gateway's own code under kid `kid`, as a test needs it. */
-export async function sealedAs(kid: "k1" | "k2", owner: string, connection: string,
-                               version: number, plaintext: Credential): Promise<string> {
-  return (await seal(keyring(kid), { owner, connection, version }, plaintext)).blob;
-}
-
-/** The gateway's ring once `k1` is retired from it: the active kid `k2` alone. */
-function retired(): { GATEWAY_KEYRING: string } {
-  const { keys } = JSON.parse(env.TEST_KEYRING) as { keys: Record<string, string> };
-  return { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k2: keys["k2"] } }) };
+/** A pasted key, sealed for `connection` at version 1 by the gateway's own seal at `kid`. */
+export async function keySealed(kid: "k1" | "k2", owner: string, connection: string,
+                                key: string, record: Source = ANTHROPIC): Promise<string> {
+  return (await connectAt(kid).seal(owner, connection, 1, key, record)).blob;
 }
 
 /**
- * `blob`, which the real gateway sealed for `connection` at `version`, sealed again by the
- * gateway's own code under the older kid `k1`, as a blob sealed before a rotation. A doorbell
- * subscription's blob is bound as `wake.<subscription>`.
+ * OAuth tokens for `connection` at version 1, bought by the gateway's own exchange at `kid`
+ * for `record`'s client, their refresh token `refresh`: `rt-1`, or one the fake's refresh
+ * grant answers as it is named (`rt-dead`, `rt-down`, `rt-lapsed`).
  */
-export async function underOlderKid(owner: string, connection: string, version: number,
-                                    blob: string): Promise<string> {
-  const bound = binding(owner, connection, version);
-  const { value } = await openValue(keyring("k2"), bound, blob, (opened) => opened);
-  return (await sealValue(keyring("k1"), bound, value, (kept) => kept)).blob;
+export async function tokensSealed(kid: "k1" | "k2", owner: string, connection: string,
+                                   refresh: string, record: Source = OAUTH): Promise<string> {
+  return (await connectAt(kid).exchange(owner, connection, 1, {
+    code: `good-code:${refresh}`, verifier: "v".repeat(43), redirect_uri: REDIRECT }, record))
+    .blob;
 }
 
-/** Whether `blob` opens for `connection` at `version` once `k1` is retired from the ring. */
+/**
+ * Whether `blob` opens for `connection` at `version` once `k1` is retired: the gateway on
+ * the ring without it reseals it. A doorbell subscription's blob, by its subscription, likewise.
+ */
 export async function opensRetired(owner: string, connection: string, version: number,
                                    blob: string): Promise<boolean> {
-  return openValue(retired(), binding(owner, connection, version), blob, (opened) => opened)
+  return env.GATEWAY_RETIRED.reseal(owner, connection, version, blob).then(() => true, () => false);
+}
+
+export async function doorbellOpensRetired(owner: string, subscription: string,
+                                           version: number, blob: string): Promise<boolean> {
+  return env.GATEWAY_RETIRED.resealDoorbell(owner, subscription, version, blob)
     .then(() => true, () => false);
 }
 

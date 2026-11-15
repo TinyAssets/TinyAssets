@@ -10,11 +10,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, inject, it } from "vitest";
 
 import { classProblem } from "../class-rule";
-import { BUDGETS, budget, CLASS_CHECK, derived, LARGE, medium, type ProjectName, PROJECTS,
-         SMALL_MS } from "../classes";
+import { BUDGETS, budget, CLASS_CHECK, derived, LARGE, limit, medium, type ProjectName,
+         PROJECTS, RUNNER, SMALL_MS, speedOf } from "../classes";
 import { project } from "../project";
 import { largeTests, timeoutLiterals, timerWaits } from "../timeouts";
 import { PLATFORM, REPO } from "../paths";
@@ -168,10 +168,27 @@ describe("test waits", () => {
 
 describe("size classes", () => {
   it("are derived from the measurement, never under the small class", () => {
-    expect(derived({ slowest_ms: 100, test: "t", measured: "m" }, 4)).toBe(SMALL_MS);
-    expect(derived({ slowest_ms: 3_650, test: "t", measured: "m" }, 4)).toBe(15_000);
+    expect(limit(100, 4, 1)).toBe(SMALL_MS);
+    expect(limit(3_650, 4, 1)).toBe(15_000);
     expect(LARGE.timeout).toBe(derived(BUDGETS.large));
     expect(() => budget("nowhere/workerd")).toThrow(/no measured budget/);
+  });
+
+  // #5635's owner leg ran on a runner about four to five times slower than usual: its
+  // admission-caller guard took 10,370 ms against `owner/guards`' 10 s (2,461 ms measured).
+  it("scale with a slow runner, so a test within its budget there passes", () => {
+    const slow = speedOf(4 * BUDGETS.runner.calibration_ms, BUDGETS.runner);
+    expect(10_370).toBeGreaterThan(limit(2_461, 4, 1));
+    expect(10_370).toBeLessThan(limit(2_461, 4, slow));
+  });
+
+  it("hold a usual or faster runner to the measured budget, so a test twice past it fails",
+     () => {
+    for (const calibration_ms of [BUDGETS.runner.calibration_ms,
+                                  BUDGETS.runner.calibration_ms / 2]) {
+      const speed = speedOf(calibration_ms, BUDGETS.runner);
+      expect(limit(3_650, 4, speed)).toBe(15_000);
+    }
   });
 
   it("set every project's budget from its class, and the large tag, in every config",
@@ -209,7 +226,7 @@ describe("size classes", () => {
 
 describe("the run-time check", () => {
   const want = { project: "ci/guards", medium: medium("ci/guards").testTimeout,
-                 large: LARGE.timeout };
+                 large: LARGE.timeout, runner: RUNNER };
 
   it("passes tests at their class's timeout", () => {
     expect(classProblem({ name: "a", timeout: want.medium, tags: [] }, want)).toBeNull();
@@ -221,6 +238,10 @@ describe("the run-time check", () => {
     expect(classProblem({ name: "b", timeout: want.medium, tags: ["large"] }, want))
       .toMatch(/large/);
     expect(classProblem({ name: "c", timeout: want.medium }, undefined)).toMatch(/provides no/);
+  });
+
+  it("records each test's runner calibration, which its report keeps", ({ task }) => {
+    expect(task.meta.calibration_ms).toBe(inject("classTimeouts").runner.calibration_ms);
   });
 
   it("is every project's setup file, carried by medium()", async () => {

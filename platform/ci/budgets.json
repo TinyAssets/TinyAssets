@@ -1,5 +1,9 @@
 {
   "factor": 4,
+  "runner": {
+    "calibration_ms": 34,
+    "measured": "Estimated before any CI run carried the calibration, 2026-11-15: its least round on the build host, 18.7 ms (the median of six loads of classes.ts), times the ratio of search-cpu.test.ts's distinct-words CPU on CI to the host's: 1,713 ms in merge-group run 43749136142, the slowest of the three runs the budgets come from, against the host's median of 940 ms in ten runs. Both are V8 on one thread. budgets.mjs replaces it with the median of the next three merge-group runs' reports (budgets-variance)"
+  },
   "medium": {
     "ci/guards": {
       "slowest_ms": 3883,
@@ -22,9 +26,9 @@
       "measured": "CI runs 43736045737, 43749136142 and 43751240226 (merge groups of #5635, #5636 and #5637, after #5628's files sizes leg), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-7 (platform-sizes), with owner.test.ts's every-earlier-version migration test read as large (budgets-ci-3 tags it so), the slowest across the three, 2026-11-15"
     },
     "contract/guards": {
-      "slowest_ms": 16442,
+      "slowest_ms": 4643,
       "test": "contract/guards/sync-ignore.test.ts > its ceilings, each line past one said in file order applies the list to `LIST_BYTES`, every line past it said",
-      "measured": "CI run 43668466020 (merge group of #5610, after #5609; sync-ignore unchanged since), its tests-report-8 (platform-tests' contract leg, on a runner that ran the whole leg in about five times its usual time): the slowest contract leg measured after #5609, which three runs' 4,643 ms would leave at 87% of its budget, 2026-11-15"
+      "measured": "CI runs 43736045737, 43749136142 and 43751240226 (merge groups of #5635, #5636 and #5637), each one's tests-report-8 (platform-tests' contract leg), the slowest across the three, on the budgets' usual runners: #5610's slow runner, which set it before, now scales its own budget (budgets-variance), 2026-11-15"
     },
     "deploy/guards": {
       "slowest_ms": 383,
