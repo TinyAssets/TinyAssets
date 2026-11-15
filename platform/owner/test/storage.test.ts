@@ -28,9 +28,9 @@ const ownChunks = async (r: Awaited<ReturnType<typeof rig>>) => SEED.mine(
   (row) => row["sha256"] as string);
 
 /**
- * A generation's row: begun at `started` (s), finished at `finished`, what a restore
- * stages of its log `log` bytes, `seq` its place among the generations. With `finished` null it is being written,
- * its next pass a day off, so no pass of the lane carries it here.
+ * A generation's row: begun at `started` (s), finished at `finished`, what a restore stages
+ * of its log `log` bytes, `seq` its place among the generations. With `finished` null it is
+ * being written, its next pass a day off, so no pass of the lane carries it here.
  */
 async function generation(r: Awaited<ReturnType<typeof rig>>, gen: string, started: number,
                           finished: number | null, log = 0, seq = 1): Promise<void> {

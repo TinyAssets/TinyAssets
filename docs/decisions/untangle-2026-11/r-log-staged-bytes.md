@@ -20,6 +20,10 @@
    - The capture's figure predicts the restore's, and `restore.test.ts` holds the two equal.
    - `adopt` takes the restore's peak, not the root's sum, so an adopted generation is judged as it was.
    - Pin and begin reset both counts.
+   - **A lost object's restore that fails here is wiped for any generation of its namespace** (review F1; a decided change to `r5w.md`'s rule, the coordinator, 2026-11-15).
+     - The gap: a lost object names no generation (`restore.source` is empty), so its newest is begun, and one past `LOG_BYTES` fails only at this step. On main, begin refused it by the root's sum and the one kept before it was begun next. Here every route to that one was refused (begin, `restore.pin`, `restore.release`, and the wipe's `wipedFor`), so the owner was stuck with the restore that fails.
+     - **`r5w.md`'s rule changes:** "a wiped object takes only the generation it was pinned for, or the one its pin wrote" now binds only where a pin held the owner (`fresh`). The reason: a pinned live owner keeps its undo, the fresh generation of its present state; a lost object has no live data to protect.
+     - So `wipedFor` admits any generation of the namespace for a wiped object no pin held, and `restorePin` answers a failed restore no pin held as it stands for any generation: the kit pins, wipes and begins the kept one (`restore.test.ts`, "a lost object's restore that fails at its log step › is wiped and begun again from the generation kept before it, as the kit asks it"). The failure's words no longer point at `restore.source`, which a lost object cannot answer.
    - **Corrects `r5r.md` item 2's** "a generation whose whole log through E passed `LOG_BYTES` is refused": one whose staged peak passes it fails at its `log` step, and the object judges it so beforehand.
 5. **Migration 15** renames `owner_backups.log_bytes` to `staged`. It adds `log_staged`, `log_capture.staged` and `.peak`, `restore_rows.n`, and `owner_restore.staged` and `.peak`.
    - **A generation from before** keeps its segments' sum as `staged`. That sum is never less than its peak, so it is judged as on main, conservatively. A restore of it measures its own staging exactly.
@@ -36,6 +40,6 @@
      - counting every segment's lines, the old count: the crash test;
      - the finish recording the final sum, not the peak: the written-through test;
      - begin refusing by the root's sum again: the large test, refused;
-     - no failure past `LOG_BYTES` at the log step: the failure test, done instead;
+     - no failure past `LOG_BYTES` at the log step: the failure test, in 1 s. It holds the first segment's read, then refuses the next base part's, so a restore whose log step went on stops at `apply`, never admitted, and the test fails on the record. Before, it ran on to `done`, and the admitted object's manifest lane (due the next night) kept the failed run from ending (review: past 600 s);
      - `adopt` taking the root's sum: the large test (the owner is told none can be restored);
      - the migration leaving a restore under way: the migration test.

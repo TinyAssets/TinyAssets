@@ -633,18 +633,63 @@ describe("what a restore stages", () => {
     await shapedFiles(o);
     const gen = await generate(o.stub, { afterUnit: writtenThrough() });
     const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const ns = space!["ns"] as string;
     const stub = await lose(o);
-    await stub.restoreBegin(platform(o.name), { namespace: space!["ns"] as string,
-                                                gen: gen.gen });
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
     // As if a restore had staged LOG_BYTES of lines: the generation's first segment passes it.
     await sqlIn(stub, "UPDATE owner_restore SET staged = ?, peak = ?", LOG_BYTES, LOG_BYTES);
-    expect((await stepped(stub, o.name)).at(-1)).toEqual({
+    // Its first segment's read held, so the base is indexed; from there no base part is read
+    // (the next one refused), so a restore whose log step went on stops at its record, never
+    // admitted (an admitted one's lanes outlive a failed test), and the test reads the record.
+    const files = gateFor(env.FILES_GATE, ns);
+    await files.arm("getManifestSegment", { hold: "before" });
+    const stepping = stub.restoreStep(platform(o.name)).catch((error: unknown) => error);
+    await files.held("getManifestSegment");
+    await files.arm("getManifestPart", { refuse: { code: "unavailable", message: "held" } });
+    await files.release("getManifestSegment");
+    expect(await stepping).toEqual({
       step: "failed", done: false,
       failed: `the generation's log stages past the ${LOG_BYTES} bytes a restore takes: wipe ` +
-        "it and restore the one kept before it, which restore.source names restorable" });
+        "it and restore the one kept before it, or the one its pin wrote" });
     expect(await sqlIn(stub, "SELECT step, at FROM owner_restore"))
       .toEqual([{ step: "failed", at: 0 }]);
     expect(await sqlIn(stub, "SELECT state FROM owner_admission")).toEqual([{ state: "pending" }]);
+  });
+});
+
+describe("a lost object's restore that fails at its log step", () => {
+  it("is wiped and begun again from the generation kept before it, as the kit asks it",
+     async () => {
+    const o = await owner();
+    await shapedFiles(o);
+    const first = await generate(o.stub);
+    await o.stub.fileWrite(o.bind(), { path: `${W}/later.txt`, expected_etag: null,
+                                       content: "later" });
+    // The newest past what a restore stages, as its finish records it: the first is kept.
+    const through = writtenThrough();
+    const second = await generate(o.stub, { afterUnit: async (unit) => {
+      await through(unit);
+      await unit.gate.write(() => unit.gate.storage.sql.exec(
+        "UPDATE owner_backups SET staged = ? WHERE state = 'done' AND gen != ?",
+        LOG_BYTES + 1, first.gen));
+    } });
+    await drainDue(o.stub);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const ns = space!["ns"] as string;
+    // Lost, it names no generation, so the newest is begun and fails at its log step.
+    const lost = await lose(o);
+    await lost.restoreBegin(platform(o.name), { namespace: ns, gen: second.gen });
+    await sqlIn(lost, "UPDATE owner_restore SET staged = ?, peak = ?", LOG_BYTES, LOG_BYTES);
+    expect((await stepped(lost, o.name)).at(-1)).toMatchObject({ step: "failed" });
+    // The kit: pinned to the kept one (a failed restore no pin held answers as it stands),
+    // wiped by its words, and begun from it.
+    const hold = await lost.restorePin(platform(o.name), { gen: first.gen });
+    expect(hold).toMatchObject({ step: "failed", fresh: null,
+                                 confirm: `wipe-${o.name}-${second.gen}` });
+    const stub = await wipedWith(lost, o.name, hold.confirm!);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: first.gen });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: first.gen });
+    expect(await rowsOf(stub)).toBe(first.atE);
   });
 });
 

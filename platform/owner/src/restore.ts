@@ -84,7 +84,9 @@
  *   is. A failed restore is wiped the same way, to be restored again.
  * - `restoreRelease`: a pin not yet wiped given up, the owner as it was.
  * A wiped object takes a restore only of the generation it was pinned for, or of the one its
- * pin wrote (the undo).
+ * pin wrote (the undo). One no pin held (a lost object's failed restore) takes any generation
+ * of its namespace, as the lost object did: a log that stages past `LOG_BYTES` fails only at
+ * its `log` step, and the one kept before it is then restored.
  *
  * From the pin until done, or once a restore failed, no lane runs (`restoring`, the schedule's
  * halt), every door but the restore's refuses (`refuseRestoring`), and so do the platform's
@@ -314,11 +316,13 @@ function emptiness(o: OwnerState): string | null {
 const refused = (why: string) => new Refusal("refused", why);
 
 /**
- * Refused unless a wiped object (`held` at `wiped`) is begun from its own namespace and from
- * the generation it was pinned for or the one its pin wrote; any other object passes.
+ * Refused unless a wiped object (`held` at `wiped`) is begun from its own namespace and, when
+ * a pin held it (`fresh`), from the generation it was pinned for or the one its pin wrote; any
+ * other object passes.
  */
 function wipedFor(held: Held | null, ns: string, gen: string): void {
-  if (held?.step === "wiped" && (ns !== held.ns || (gen !== held.gen && gen !== held.fresh))) {
+  if (held?.step === "wiped" && (ns !== held.ns
+      || (held.fresh !== null && gen !== held.gen && gen !== held.fresh))) {
     throw refused(`this object was wiped to restore generation ${held.gen} of its namespace` +
                   `${held.fresh === null ? "" : `, or ${held.fresh}, the one its pin wrote`}`);
   }
@@ -658,8 +662,8 @@ async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
           sql.exec("UPDATE owner_restore SET staged = ?, peak = ?", staged, peak);
           if (peak > LOG_BYTES) {
             move("failed", held.at, null, `the generation's log stages past the ${LOG_BYTES} ` +
-                 "bytes a restore takes: wipe it and restore the one kept before it, which " +
-                 "restore.source names restorable");
+                 "bytes a restore takes: wipe it and restore the one kept before it, or the " +
+                 "one its pin wrote");
             return;
           }
         }
@@ -976,7 +980,8 @@ export const restoreDoors = Object.freeze({
       }
       const now = record(o.storage.sql);
       if (now !== null && now.step !== "done") {
-        if (gen !== now.gen && gen !== now.fresh) {
+        // A failed restore no pin held (a lost object's) is wiped for any generation.
+        if (gen !== now.gen && gen !== now.fresh && (now.step !== "failed" || now.fresh !== null)) {
           throw refused(`a restore of this owner from generation ${now.gen} holds it: release ` +
                         "it, or restore that one");
         }
