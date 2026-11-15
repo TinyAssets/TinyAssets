@@ -346,7 +346,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`FILES.listChunks` from the last name, each name the filter says no row has deleted by
     `deleteListed`; a false positive leaks at most about 1% of them until erasure); owner
     migration 14, its pin after (`r-restore-chunks.md`, `untangle/r-restore-chunks`).
-  - [ ] Owner migration 14's pin PR, after the restore's chunk sweep merges
+  - [x] Owner migration 14's pin PR, after the restore's chunk sweep merges
     (`r-restore-chunks.md`, `untangle/r-restore-chunks-pin14`).
   - [x] A restore's kept generations' chunks kept from early collection: the files plane
     collects early only garbage the newest generation does not name, so the fallback a

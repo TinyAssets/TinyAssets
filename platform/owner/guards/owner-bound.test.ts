@@ -25,7 +25,7 @@
  * files (ADR-034), so what the owner's object holds is its own bounded rows only.
  *
  * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is
- * 44.99% of the limit (4,499,205,219.5 bytes), 500.8 MB under half; the starter slice's
+ * what this guard prints, under half the limit; the starter slice's
  * receipts (`STARTER_FILES_MAX` paths) and its one state row take 361,189 of it. Slice S's columns
  * (a run's `sandbox_wait`, one byte in `runs`, in place of a recheck time) move no term
  * at its page share, and it adds no table: the sandbox Worker keeps its own. Slice W added
