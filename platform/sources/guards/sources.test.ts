@@ -3,7 +3,7 @@
  *
  * - Every file is in the catalog (`sources/src/records.ts`), and every record passes the schema
  *   (`sourceRecord`), whose gateway part is the gateway's own check: so a record naming an
- *   API outside the gateway's `SUPPORTED_APIS` fails here, from that one list.
+ *   API with no row in the gateway's table (`api-rules.ts`) fails here, from that one list.
  * - pi-ai's catalog supplies a known provider: a record of one restates its base URL and
  *   speaks an API its catalog has models for, so a record overrides only as `custom`.
  * - A record that breaks the schema fails loudly, naming itself.
@@ -25,7 +25,7 @@ import { bundledRecords, catalogOf } from "../src/catalog";
 import { CREDENTIAL_NAME, sealedSource, sourceRecord } from "../src/check";
 import { RUN_BASICS, runEnv } from "../src/run-env";
 import { type Install, type SourceRecord, SourceRecordError } from "../src/schema";
-import { SUPPORTED_APIS } from "../../contract/src/egress-scope";
+import { supportedApis } from "../../contract/src/api-rules";
 import { forbids } from "../../contract/src/text";
 import { RECORDS_DIR, recordFiles } from "../write-records";
 
@@ -96,7 +96,7 @@ describe("the source records", () => {
       expect(provider?.baseUrl, id).toBe(upstream.base_url);
       expect(provider!.getModels().filter((model) => model.api === upstream.api).length, id)
         .toBeGreaterThan(0);
-      expect(SUPPORTED_APIS, id).toContain(upstream.api);
+      expect(supportedApis(), id).toContain(upstream.api);
     }
   });
 

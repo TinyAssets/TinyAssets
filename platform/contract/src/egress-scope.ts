@@ -11,6 +11,7 @@
  * by older code that no longer fits fails loudly rather than being half-read; anything else
  * is `invalid_source`, the gateway's fixed code.
  */
+import { apiRules, declaredApi } from "./api-rules.ts";
 import { count, list, shape, text, valueAtPath } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 import { checkedRecord, type ModelRecord } from "./model-record.ts";
@@ -74,26 +75,6 @@ export interface Source {
   readonly oauth?: OAuthClient;
   readonly key_exchange?: KeyExchange;
 }
-
-/**
- * The pi-ai 1.4.0 APIs the gateway runs: those a sandbox call can be metered on (each has
- * its rules, `api-rules.ts` `ruledApis`, which a gateway test holds equal), since egress is
- * the one model path and an API with no rules could be sealed but never used. Each sends every request through `fetch`, so the call's
- * endpoint guard sees it, either as `options.fetch` (`anthropic-messages.js:422`,
- * `openai-responses.js:138`, `openai-completions.js:186`, `mistral-conversations.js:180`) or,
- * for Google's, which refuses a custom fetch, through the global-fetch interposer
- * (`egress.ts`). Every other API is refused as `invalid_source`: Bedrock signs with a Node
- * HTTP handler outside `fetch`, and `openai-codex-responses` is the legacy ChatGPT backend
- * (research §2.6: Sign in with ChatGPT reaches only `POST /v1/responses`, through
- * `openai-responses`), with a WebSocket transport and per-session caches kept in module state.
- */
-export const SUPPORTED_APIS: readonly string[] = Object.freeze([
-  "anthropic-messages", "openai-responses", "openai-completions", "mistral-conversations",
-  "google-generative-ai",
-]);
-
-/** The supported APIs whose adapters refuse `options.fetch` (held by `egress.ts`). */
-export const GLOBAL_FETCH_APIS: readonly string[] = Object.freeze(["google-generative-ai"]);
 
 /** A pi-ai provider's or API's id. */
 export const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -180,14 +161,15 @@ export function endpoint(value: unknown): Endpoint {
   });
 }
 
-/** An API id the gateway runs; any other is refused when it is sealed. */
+/** An API id the gateway runs (`api-rules.ts`); any other is refused when it is sealed. */
 function supported(api: string): string {
-  if (!SUPPORTED_APIS.includes(api)) {
+  if (apiRules(api) === null) {
     throw new Refusal("invalid_source");
   }
   return api;
 }
 
+/** An upstream; a declared endpoint (`custom`) only on an API with a declared adapter. */
 export function upstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
   const fields = shape(value, ["provider", "api", "base_url", "auth"], ["verify_url", "models"]);
   const auth = shape(fields["auth"], ["header", "scheme"]);
@@ -201,12 +183,13 @@ export function upstream(value: unknown, endpoints: readonly Endpoint[]): Upstre
     throw new Refusal("invalid_source");
   }
   const custom = provider === "custom";
-  if (custom !== (fields["models"] !== undefined)) {
+  const api = supported(text(fields["api"], ID));
+  if (custom !== (fields["models"] !== undefined) || (custom && !declaredApi(api))) {
     throw new Refusal("invalid_source");
   }
   return Object.freeze({
     provider,
-    api: supported(text(fields["api"], ID)),
+    api,
     base_url: fields["base_url"] as string,
     auth: Object.freeze({ header: text(auth["header"], HEADER), scheme: text(auth["scheme"], SCHEME) }),
     ...(verify === undefined ? {} : { verify_url: verify as string }),

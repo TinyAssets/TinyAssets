@@ -3,9 +3,9 @@
  *
  * The gateway holds no provider code: a credential's sealed `upstream.provider` names a
  * pi-ai built-in provider, whose factory brings its catalog (base URLs, model metadata,
- * prices) and its adapter. `custom` is a declared endpoint: a pi-ai `createProvider` over
- * the sealed models with pi-ai's own adapter for the sealed API. Either way the request
- * goes to the sealed `base_url`, never the catalog's.
+ * prices) and its adapter. A declared endpoint (sealed with its own models) is a pi-ai
+ * `createProvider` over the sealed models with pi-ai's own adapter for the sealed API.
+ * Either way the request goes to the sealed `base_url`, never the catalog's.
  *
  * Auth never comes from the environment: the collection the gateway streams through is
  * given an auth context with no variables and no files, so the opened credential is the
@@ -19,7 +19,8 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { createProvider, isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
-import { SUPPORTED_APIS, type Upstream } from "../../contract/src/egress-scope";
+import { type DeclaredApi, declaredApi } from "../../contract/src/api-rules";
+import type { Upstream } from "../../contract/src/egress-scope";
 import { Refusal } from "../../contract/src/refusal";
 import type { ModelRecord } from "../../contract/src/model-record";
 
@@ -46,49 +47,48 @@ export const NO_AMBIENT: AuthContext = Object.freeze({
   fileExists: async (): Promise<boolean> => false,
 });
 
-/** pi-ai's lazy adapters a declared endpoint may speak, by API id. */
-const CUSTOM_APIS: Readonly<Record<string, () => ProviderStreams>> = Object.freeze({
+/**
+ * pi-ai's lazy adapter for each API a declared endpoint may speak, keyed by the contract's
+ * table (`api-rules.ts` `DeclaredApi`): exactly the APIs marked `declared` there.
+ */
+const DECLARED = Object.freeze({
   "anthropic-messages": anthropicMessagesApi,
   "google-generative-ai": googleGenerativeAIApi,
   "openai-completions": openAICompletionsApi,
   "openai-responses": openAIResponsesApi,
-});
+} satisfies Record<DeclaredApi, () => ProviderStreams>);
 
-function customProvider(upstream: Upstream): Provider {
-  const api = Object.hasOwn(CUSTOM_APIS, upstream.api) ? CUSTOM_APIS[upstream.api] : undefined;
-  if (api === undefined || upstream.models === undefined) {
-    throw new Refusal("unsupported_source");
+/** A declared endpoint's sealed `models`, on pi-ai's adapter for its API; or none. */
+function declaredProvider(upstream: Upstream, declared: readonly ModelRecord[]):
+    Provider | undefined {
+  const { api, provider: id, base_url: baseUrl } = upstream;
+  if (!declaredApi(api)) {
+    return undefined;
   }
-  const models: Model<Api>[] = upstream.models.map((model) => ({
+  const models: Model<Api>[] = declared.map((model) => ({
     ...structuredClone(model) as Omit<Model<Api>, "api" | "provider" | "baseUrl">,
-    api: upstream.api,
-    provider: "custom",
-    baseUrl: upstream.base_url,
+    api, provider: id, baseUrl,
   }));
   return createProvider({
-    id: "custom",
+    id,
     name: "Declared endpoint",
-    baseUrl: upstream.base_url,
+    baseUrl,
     auth: { apiKey: { name: "Sealed credential",
                       resolve: async ({ credential }) =>
                         credential?.key ? { auth: { apiKey: credential.key } } : undefined } },
     models,
-    api: api(),
+    api: DECLARED[api](),
   });
 }
 
 /**
- * The provider for a sealed upstream; `unsupported_source` when pi-ai has none, or when
- * its API is not one the gateway runs.
+ * The provider for an opened upstream (whose API `upstream` checked against the contract's
+ * table): its declared models when it was sealed with them, else pi-ai's built-in
+ * provider; `unsupported_source` when pi-ai has none.
  */
 export function providerFor(catalog: Catalog, upstream: Upstream): Provider {
-  if (!SUPPORTED_APIS.includes(upstream.api)) {
-    throw new Refusal("unsupported_source");
-  }
-  if (upstream.provider === "custom") {
-    return customProvider(upstream);
-  }
-  const provider = catalog.provider(upstream.provider);
+  const provider = upstream.models === undefined ? catalog.provider(upstream.provider)
+    : declaredProvider(upstream, upstream.models);
   if (provider === undefined) {
     throw new Refusal("unsupported_source");
   }
