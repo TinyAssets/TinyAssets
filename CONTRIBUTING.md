@@ -31,29 +31,11 @@ whether any external catalog repository is still a contribution target.
 2. Read [AGENTS.md](AGENTS.md). It is the working agreement for this repo.
    Changes to the public MCP or API, storage shape, authority, migrations, or
    money need a spec first. Other changes can be a small diff with no plan.
-3. Python 3.11+. From a checkout:
-
-```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-python -m scripts.ci_structural_guards
-pytest -q tests/test_<area>.py
-ruff check <changed files>
-```
-
-Tests run offline. Providers are mocked. API keys are not required for that
-loop. CI runs the rest. Required CI does not run the files listed in
-`.github/heavy-test-files.txt`.
-
-4. Open the pull request against `main`.
-
-A second model family reviews floor-class changes and gate-file changes only
-([ADR-015](docs/decisions/ADR-015-only-the-floor-blocks-a-deploy.md)). That is
-narrower than "every change gets a second review."
-
-TODO(owner): the public developers page says every change gets a review from
-a second model family (`WebSite/site-react/app/developers/page.tsx`). That
-sentence is broader than ADR-015.
+3. Run the checks your change can break
+   ([docs/reference/executable-gates.md](docs/reference/executable-gates.md)).
+   CI runs the rest.
+4. Open the pull request against `main`. Every pull request is reviewed before
+   it merges: the scope guard requires a review receipt for its head.
 
 Leave `.github/workflows/` and `deploy/` alone unless the change is
 specifically about them. This repository's production path is easy to break

@@ -60,7 +60,7 @@ Two more habits that fell out of the same incident:
 
 ## Output contract
 
-- Success: `--out` holds every Claude assistant text block in stream order, including Stop-hook continuations, or Codex's final message; exit 0. Claude requires a successful terminal result; its duplicate echo of the last text block is omitted. Thinking, tool payloads, user/system events and raw JSON are excluded. The wrapper does not choose a verdict: multiple verdicts remain visible and must be read in context. The full retained result is also on task stdout.
+- Success: `--out` holds every Claude assistant text block in stream order, including Stop-hook continuations, or Codex's final message; exit 0. Claude requires a successful terminal result; its duplicate echo of the last text block is omitted. Thinking, tool payloads, user/system events and raw JSON are excluded. The full retained result is also on task stdout.
 - Failure: the file holds a `[peer_agent] ERROR ...` block; exit 2 (provider error), 124 (timeout), 127 (CLI not found — set `CLAUDE_BIN`/`CODEX_BIN`).
 - Never treat a missing or stale `--out` file as a result; check the exit code in the task status first.
 
@@ -71,18 +71,16 @@ Two more habits that fell out of the same incident:
 
 Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (both CLIs; `low` for trivial tasks, `xhigh` to escalate). **Never `--effort minimal` — the GPT-6 models reject it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Models are classes, never versions; each resolves to its newest.** claude: `--model opus` (over fable). codex: `luna` mechanical, `sol` (default) build/verify, `astra` hard/escalation; resolved from `~/.codex/models_cache.json`, one retry on the next-newest, model printed. Pin a slug only with a stated reason. A failed run writes `[peer_agent] ERROR` + stderr to `--out`.
+**Models are classes, never versions; each resolves to its newest.** claude: `--model opus` (over fable). codex: `luna` mechanical, `sol` (default) build/verify, `astra` hard/escalation; resolved from `~/.codex/models_cache.json`, one retry on the next-newest, model printed. Pin a slug only with a stated reason.
 
 ## When to use which peer
 
-- **Which changes need a review is not decided here.** ADR-015 owns the scope — floor-class changes and gate files, started as soon as the diff is pushed and run alongside CI; the untangle skill's "How this project uses it" owns how many reviews a PR gets; this skill owns the mechanics. When one is owed, dispatch a separate reviewer told to break the change: either CLI, any model family, never the authoring session. Prefer the other family when it is available on this host.
+- **Every PR is reviewed** (the untangle skill's "How this project uses it"); this skill owns the mechanics. Dispatch a separate reviewer told to break the change: either CLI, any model family, never the authoring session. Prefer the other family when it is available on this host.
 
 ## Notes
 
 - API keys are stripped from the peer's environment (subscription auth only).
-- **You write the review contract; the wrapper does not.** The retired `codex_review` wrapper used to
-  inject an adversarial preamble and demand a trailing `VERDICT:` line. It was deleted
-  2026-08-26 and `peer_agent.py` does neither — it sends your prompt verbatim. When you need a
-  verdict, ask for one **in the prompt** ("end with exactly one line: `VERDICT: APPROVE|ADAPT|REJECT`")
-  and check that it arrived. Do not assume enforcement that no longer exists.
+- **You write the review contract:** `peer_agent.py` sends your prompt verbatim and enforces
+  no verdict. Ask for one **in the prompt** ("end with exactly one line:
+  `VERDICT: APPROVE|ADAPT|REJECT`") and check that it arrived.
 - Peers do not see your chat context. Put everything they need in the prompt/brief: file paths, line numbers, what "done" means, and any constraints (e.g. "do not commit").
