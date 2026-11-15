@@ -65,7 +65,9 @@ export const BUDGETS: Budgets = JSON.parse(readFileSync(
 /**
  * A fixed workload of the kind the tests do (V8's strings, maps, sorts and JSON), in rounds:
  * the least round's milliseconds, so a stray collection does not count. A slow runner is slow
- * from its first step to its last (`budgets-variance.md`), so this measures it.
+ * from its first step to its last (`budgets-variance.md`), so this measures it. Fifteen
+ * rounds, about half a second on CI, outlast a neighbour's burst: on the loaded build host,
+ * five read over 1.2 times their median in 13 loads of 80, fifteen in 2.
  */
 export function calibrate(): number {
   const round = (): number => {
@@ -82,7 +84,7 @@ export function calibrate(): number {
   };
   round();
   let least = Number.POSITIVE_INFINITY;
-  for (let at = 0; at < 5; at++) {
+  for (let at = 0; at < 15; at++) {
     const start = performance.now();
     round();
     least = Math.min(least, performance.now() - start);

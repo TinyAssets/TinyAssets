@@ -262,16 +262,17 @@ jobs:
   # long as the next. Pinned by platform/ci/guards.
   # Full history: the owner's migration lock is held against the event's base.
   #
-  # timeout-minutes is a watchdog, never a design figure: about 5 x the slowest leg's
+  # timeout-minutes is a watchdog, never a design figure: about 6 x the slowest leg's
   # measured time, since a runner up to five times slower than usual scales every test's
-  # budget (platform/ci/classes.ts) and its leg takes that much longer, and a job's watchdog
-  # is fixed before its first step measures the runner. The owner's shard 2/2 took 4m50s of
-  # job in merge-group run 43761103673, the slowest in runs 43759409585, 43759511841,
-  # 43761103673 and 43762132768 (docs/decisions/untangle-2026-11/budgets-variance.md).
+  # budget (platform/ci/classes.ts) and its leg takes that much longer, with a fifth to
+  # spare, and a job's watchdog is fixed before its first step measures the runner. The
+  # owner's shard 2/2 took 4m50s of job in merge-group run 43761103673, the slowest in runs
+  # 43759409585, 43759511841, 43761103673 and 43762132768
+  # (docs/decisions/untangle-2026-11/budgets-variance.md).
   platform-tests:
     name: platform-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 29
     strategy:
       fail-fast: false
       matrix:
@@ -333,13 +334,13 @@ jobs:
   # the owner's workerd memory leg (each chunk-wise path O(1) in its data's size, by
   # differences at checkpoints, ADR-037). Required through `required-tests`' needs.
   #
-  # timeout-minutes is a watchdog: about 5 x the slowest leg's measured time, as
+  # timeout-minutes is a watchdog: about 6 x the slowest leg's measured time, as
   # `platform-tests`' (memory, 4m11s of job in merge-group run 43759511841, the slowest in
   # runs 43759409585, 43759511841, 43761103673 and 43762132768).
   platform-checks:
     name: platform-checks
     runs-on: ubuntu-latest
-    timeout-minutes: 21
+    timeout-minutes: 26
     strategy:
       fail-fast: false
       matrix:
@@ -371,13 +372,13 @@ jobs:
   # queue and the hourly run hold main to it. Every workspace with a large test has its
   # `test:sizes` here, every shard, `1/1` when whole (platform/ci/guards/legs.test.ts).
   #
-  # timeout-minutes is a watchdog: about 5 x the slowest shard's measured time, as
+  # timeout-minutes is a watchdog: about 6 x the slowest shard's measured time, as
   # `platform-tests`' (the owner's shard 3/3, 4m40s of job in merge-group run 43759511841,
   # the slowest in runs 43759409585, 43759511841, 43761103673 and 43762132768).
   platform-sizes:
     name: platform-sizes
     runs-on: ubuntu-latest
-    timeout-minutes: 24
+    timeout-minutes: 28
     strategy:
       fail-fast: false
       matrix:
