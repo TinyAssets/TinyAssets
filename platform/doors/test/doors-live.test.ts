@@ -1,5 +1,5 @@
 /**
- * Slice L's doors, in workerd through the real owner object: the platform's explicit admit
+ * Slice L's doors, in workerd through the real owner Worker: the platform's explicit admit
  * at sign-up and the erasure's outside record (an erased owner's name resolving nothing
  * again), whether the owner's own door or the operator's `owner.erase` began it; the key
  * store; `/hooks/inbound`'s two shapes (a bad HMAC, a replay, the gate, the breaker); no
@@ -8,9 +8,7 @@
  */
 import { createHash, createHmac } from "node:crypto";
 
-import {
-  env, evictDurableObject, runDurableObjectAlarm, runInDurableObject,
-} from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
@@ -19,13 +17,9 @@ import {
   type OperatorAnswer, operatorAnswer, type OperatorArgs, signOperator,
 } from "../../contract/src/operator-message";
 import { eraseWords } from "../../contract/src/owner";
-import { OWNER_ERASED, OWNER_UNADMITTED, PLATFORM_ONLY } from "../../owner/src/admission";
+import { OWNER_UNADMITTED, PLATFORM_ONLY } from "../../owner/src/admission";
 import { ERASING, Refusal } from "../../contract/src/refusal";
-import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
-import { ERASE_CONFIRM, NO_ERASURE, PUT_GRACE_MS } from "../../owner/src/erasure";
-import { LEDGER_LIMITS } from "../../owner/src/ledger";
-import { defineAgent, later } from "../../owner/test/runs-support";
-import { failure } from "../../owner/test/support";
+import { ERASE_CONFIRM, NO_ERASURE } from "../../owner/src/erasure";
 import { QUEUES } from "../../contract/src/queue-names";
 import type { OwnerMessage } from "../../contract/src/queues";
 import { MCP_RESOURCE } from "../../contract/src/identity";
@@ -35,13 +29,15 @@ import { readOwner, readRoute } from "../src/directory";
 import { eraseOutside, erasureQueue } from "../src/erase";
 import { contentDigest } from "../src/file-bytes";
 import { sharedApps } from "../src/inbound";
-import { type OwnerDO, refuseOnce } from "./entry";
 import { keyring, writeControl } from "../../ci/fixtures";
 import { slotBusy } from "../../contract/src/slots";
 import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
 import {
- appCallback, appPost, call, connect, deliver, doorsEnv, held, NAVIGATE, OPEN, refresh,
- registerClient, serveFirstPartyDocument, setControl, signInApp, sqlIn, url,
+ admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorsEnv, held,
+ NAVIGATE, OPEN,
+ grantsOf, ownDoor, refresh, refuseOnce, registerClient, serveFirstPartyDocument, setControl,
+ signInApp,
+ url,
 } from "./support";
 
 const SCOPES = [{ universe: "cc", agent: "main", capability: "read_graph" }];
@@ -62,7 +58,7 @@ function ownerBinding(who: string): Binding {
 async function owned() {
   const who = owner();
   const app = await signInApp({ owner: who });
-  await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
+  await defineMain(who, app, SIGNED_IN);
   return { who, app };
 }
 
@@ -83,12 +79,12 @@ describe("sign-up", () => {
      async () => {
     const who = owner();
     // Any getByName makes an object; made is never admitted.
-    const fresh = env.OWNER.get(env.OWNER.idFromName(who));
-    expect((await failure(() => fresh.grantList(ownerBinding(who)))).message).toMatch(OWNER_UNADMITTED);
+    const fresh = doorsEnv.OWNER.get(doorsEnv.OWNER.idFromName(who));
+    await expect(fresh.grantList(ownerBinding(who))).rejects.toThrow(OWNER_UNADMITTED);
     expect(await readOwner(doorsEnv, who)).toBeNull();
     const app = await signInApp({ owner: who });
     expect(await readOwner(doorsEnv, who)).toEqual({ s: "admitted", t: expect.any(Number) });
-    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "admitted" }]);
+    expect(await admissionOf(who)).toMatchObject({ state: "admitted", reasons: [] });
     expect((await appPost("keys/list", app.access_token, null, {})).status).toBe(200);
   });
 
@@ -96,25 +92,24 @@ describe("sign-up", () => {
     const who = owner();
     await connect(await registerClient(), { owner: who });
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
-    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "admitted" }]);
+    expect(await admissionOf(who)).toMatchObject({ state: "admitted", reasons: [] });
   });
 
   it("never lifts a suspension when the owner signs in again", async () => {
     const who = owner();
     await signInApp({ owner: who });
-    await env.OWNER.getByName(who).admissionSet({ owner: who, caller: PLATFORM_CALLER, origin: null },
+    await doorsEnv.OWNER.getByName(who).admissionSet({ owner: who, caller: PLATFORM_CALLER, origin: null },
                                                 { reason: "billing", suspended: true });
     await env.DIRECTORY.delete(`o:${who}`);  // as if the record were lost
     await appCallback({ owner: who });
-    expect(await sqlIn(who, "SELECT state, reasons FROM owner_admission"))
-      .toEqual([{ state: "suspended", reasons: "[\"billing\"]" }]);
+    expect(await admissionOf(who)).toMatchObject({ state: "suspended", reasons: ["billing"] });
   });
 
   it("is refused for an admit the platform's reserved caller sends at any other door", async () => {
     const who = owner();
     await signInApp({ owner: who });
-    expect((await failure(() => env.OWNER.getByName(who).grantList({ owner: who, caller: PLATFORM_CALLER,
-                                                      origin: null }))).message).toMatch(/reaches no owner door/);
+    await expect(doorsEnv.OWNER.getByName(who).grantList(
+      { owner: who, caller: PLATFORM_CALLER, origin: null })).rejects.toThrow(/reaches no owner door/);
   });
 });
 
@@ -149,14 +144,8 @@ describe("the erasure", () => {
     return done;
   }
 
-  /**
-   * The erasure's job run once its put grace (a day) is up on the object's clock, a fake
-   * `Date` (the object is hosted in this test Worker, so the clock reaches it).
-   */
-  async function finish(who: string): Promise<void> {
-    later(PUT_GRACE_MS / 1000 + 60);
-    await runDurableObjectAlarm(env.OWNER.getByName(who));
-  }
+  // The doors' work ends with the outside record and its confirmation: the wipe after the
+  // put grace, on the object's own clock, is the owner's test (`owner/test/erasure.test.ts`).
 
   const RING = parseRing(doorsEnv.OPERATOR_KEYRING)!;
 
@@ -202,10 +191,10 @@ describe("the erasure", () => {
     const tokens = await connect(client, { owner: who });
     FORGOTTEN.length = 0;
     await begin(who, app);
-    // The mark first: every door refuses from the answer on.
-    expect((await failure(() => env.OWNER.getByName(who).grantList(ownerBinding(who)))).message)
-      .toBe(ERASING);
-    expect(await sqlIn(who, "SELECT outside FROM owner_erasure")).toEqual([{ outside: 0 }]);
+    // The mark first: every door refuses from the answer on, and no outside record is in.
+    await expect(doorsEnv.OWNER.getByName(who).grantList(ownerBinding(who)))
+      .rejects.toMatchObject({ message: ERASING });
+    expect(await crossed(who, "erasureOutsideDone")).toEqual([]);
     // The queue's message, consumed: the outside record, then the confirmation (the job may
     // send it more than once; each after the first finds the work done).
     expect(await consume(who)).toContain("done");
@@ -226,39 +215,34 @@ describe("the erasure", () => {
     expect(new URL(again.back.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
     expect(FORGOTTEN).toEqual([who, who]);  // the identity's deletion tried again
-    // The job finishes the wipe (the confirmation in), leaving the tombstone alone.
-    await finish(who);
-    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
-    expect((await failure(() => env.OWNER.getByName(who).grantList(ownerBinding(who)))).message)
-      .toBe(OWNER_ERASED);
   });
 
-  it("finishes a half-done erasure: a lost message is sent again until the outside record lands",
-     async () => {
+  // That the object's own job sends a lost message again, and wipes only once the outside
+  // record is in, is the owner's test (`owner/test/erasure.test.ts`).
+  it("finishes a half-done erasure: the mark locks the owner out until a message's outside " +
+     "record lands, and one after the wipe finds it done", async () => {
     const { who, app } = await owned();
     await appPost("account/erase", app.access_token, app.session, { confirm: ERASE_CONFIRM });
-    // The request is gone and its message lost: the object's own job sends again.
+    // The request is gone and its message lost.
     await sent(who);
-    await finish(who);
-    // Not wiped without the outside record: the wipe waits for the doors' confirmation.
-    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "admitted" }]);
     // Locked out meanwhile: the mark refuses sign-in, though no outside record exists yet.
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
     const during = await appCallback({ owner: who });
     expect(new URL(during.back.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
-    expect(await consume(who)).toContain("done");
-    await finish(who);
+    // The job's message sent again, consumed.
+    expect(await eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM)).toBe("done");
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "erased" });
-    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
-    // A message after the wipe is done already.
+    // A message after the wipe: the object names nothing left to erase, and nothing is done.
+    await env.OWNER_GATE.arm({ method: "erasureOutside", name: who, answer: null });
     expect(await eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM)).toBe("wiped");
+    expect(await crossed(who, "erasureOutsideDone")).toHaveLength(1);
   });
 
   it("writes no outside record for an owner no erasure has marked", async () => {
     const { who } = await owned();
-    expect((await failure(() => eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM))).message)
-      .toBe(NO_ERASURE);
+    await expect(eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM))
+      .rejects.toMatchObject({ message: NO_ERASURE });
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
     // The queue's consumer drops it, and a message out of shape, without retrying.
     const acked: string[] = [];
@@ -276,7 +260,7 @@ describe("the erasure", () => {
   it("retries an erasure message the object refuses for the moment, never drops it",
      async () => {
     const { who } = await owned();
-    refuseOnce("erasureOutside", who, slotBusy());
+    await refuseOnce("erasureOutside", who, slotBusy());
     const acked: string[] = [];
     const retried: string[] = [];
     await erasureQueue({ queue: QUEUES.ERASURES, messages: [{
@@ -300,31 +284,23 @@ describe("the erasure", () => {
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
                        doorsEnv, () => failing);
     expect(retried).toEqual(["m1"]);
-    expect(await sqlIn(who, "SELECT outside FROM owner_erasure")).toEqual([{ outside: 0 }]);
+    expect(await crossed(who, "erasureOutsideDone")).toEqual([]);
     expect(await eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM)).toBe("done");
-    await finish(who);
-    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
+    expect(await crossed(who, "erasureOutsideDone")).toHaveLength(1);
   });
 
-  it("closes the crash window: a wiped object that lost its tombstone is pending, never admitted",
-     async () => {
+  // That a wiped object that lost its tombstone starts pending, as any new object does, is
+  // the owner's test (`owner/test/admit.test.ts`, `erasure.test.ts`); here, the doors' half.
+  it("closes the crash window: no sign-in admits an erased name, the directory's record " +
+     "refusing it before the object is asked", async () => {
     const { who, app } = await owned();
     await appPost("account/erase", app.access_token, app.session, { confirm: ERASE_CONFIRM });
     await consume(who);
-    // The crash the window names: the wipe durable, the tombstone lost.
-    await runInDurableObject(env.OWNER.getByName(who), async (_instance: OwnerDO, state) => {
-      await state.storage.deleteAll();
-    });
-    await evictDurableObject(env.OWNER.getByName(who));
-    const remade = env.OWNER.get(env.OWNER.idFromName(who));
-    expect((await failure(() => remade.grantList(ownerBinding(who)))).message)
-      .toMatch(OWNER_UNADMITTED);
-    // And no sign-in admits the name again: the directory's record refuses it first.
+    await env.OWNER_GATE.seen(who);
     const again = await appCallback({ owner: who });
     expect(new URL(again.back.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
-    expect((await failure(() => remade.grantList(ownerBinding(who)))).message)
-      .toMatch(OWNER_UNADMITTED);
+    expect(await crossed(who, "admissionSet")).toEqual([]);
   });
 
   it("erases by the operator only an owner the platform signed up, by a message its ring " +
@@ -355,8 +331,8 @@ describe("the erasure", () => {
       "an operator message is out of shape; dropped"]);
     logged.mockRestore();
     // The owner's own binding at the platform's door.
-    expect((await failure(() => env.OWNER.getByName(who).erasureBegin(
-      ownerBinding(who), { confirm: eraseWords(who) }))).message).toBe(PLATFORM_ONLY);
+    await expect(doorsEnv.OWNER.getByName(who).erasureBegin(
+      ownerBinding(who), { confirm: eraseWords(who) })).rejects.toMatchObject({ message: PLATFORM_ONLY });
     // A name the platform never signed up, with its own words: never barred.
     expect((await operated(other, "owner.erase", { confirm: eraseWords(other) }))
       .answer?.["refused"]).toEqual({
@@ -364,9 +340,9 @@ describe("the erasure", () => {
         message: "the platform holds no owner of that name: only an owner who signed up is erased",
       });
     expect(await readOwner(doorsEnv, other)).toBeNull();
-    for (const name of [who, other]) {
-      expect(await sqlIn(name, "SELECT COUNT(*) AS n FROM owner_erasure")).toEqual([{ n: 0 }]);
-    }
+    // No erasure began: the owner's state is its own, and the other's object never asked.
+    expect(await admissionOf(who)).toMatchObject({ state: "admitted", reasons: [] });
+    expect(await crossed(other, "erasureBegin")).toEqual([]);
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
   });
 
@@ -379,26 +355,21 @@ describe("the erasure", () => {
     expect(await consume(who)).toContain("done");
     expect((await operated(who, "owner.erase", { confirm: eraseWords(who) }))
       .answer?.["refused"]).toEqual({ code: "owner_erased", message: "the owner is erased" });
-    await finish(who);
-    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
   });
 
   it("answers owner.state only at the platform's door; for an owner being erased erasing, " +
-     "and once erased owner_erased, at the channel and at the object's own door", async () => {
+     "and once erased owner_erased", async () => {
     const { who } = await owned();
     expect((await operated(who, "owner.state", {})).answer).toMatchObject({
       result: { state: "admitted", restore: null } });
-    expect((await failure(() => env.OWNER.getByName(who).ownerState(ownerBinding(who))))
-      .message).toBe(PLATFORM_ONLY);
+    await expect(doorsEnv.OWNER.getByName(who).ownerState(ownerBinding(who)))
+      .rejects.toMatchObject({ message: PLATFORM_ONLY });
     await BEGINS[1][1](who);
     expect((await operated(who, "owner.state", {})).answer?.["refused"])
       .toMatchObject({ code: "erasing" });
     expect(await consume(who)).toContain("done");
     expect((await operated(who, "owner.state", {})).answer?.["refused"])
       .toEqual({ code: "owner_erased", message: "the owner is erased" });
-    await finish(who);
-    expect((await failure(() => env.OWNER.getByName(who).ownerState(
-      { owner: who, caller: PLATFORM_CALLER, origin: null }))).message).toBe(OWNER_ERASED);
   });
 
   it("erases nothing without the session or the owner's words", async () => {
@@ -409,7 +380,7 @@ describe("the erasure", () => {
       const refused = await appPost("account/erase", app.access_token, session, body);
       expect(refused.status).toBeGreaterThanOrEqual(400);
     }
-    expect(await sqlIn(who, "SELECT COUNT(*) AS n FROM owner_erasure")).toEqual([{ n: 0 }]);
+    expect(await admissionOf(who)).toMatchObject({ state: "admitted", reasons: [] });
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
   });
 });
@@ -443,7 +414,7 @@ describe("the key store", () => {
     const app = await signInApp({ owner: who });
     const minted = await json<{ key: string; key_id: string }>(
       await appPost("keys", app.access_token, app.session, { name: "laptop", scopes: SCOPES }));
-    const [row] = (await env.OWNER.getByName(who).grantList(ownerBinding(who))).clients;
+    const [row] = await grantsOf(who);
     expect(row!.source).toBe("api_key");
     expect(await env.DIRECTORY.get(`k:${minted.key_id}`)).not.toBeNull();
     const off = await appPost("grants/revoke", app.access_token, null, { client: row!.client });
@@ -462,10 +433,12 @@ describe("the key store", () => {
   it("applies an agent's held key request with its grant, once", async () => {
     const who = owner();
     const app = await signInApp({ owner: who });
-    const stub = env.OWNER.getByName(who);
+    const stub = doorsEnv.OWNER.getByName(who);
     const change = { type: "api_key_request", scopes: SCOPES };
-    await stub.policyPropose(ownerBinding(who), { change, request_id: "card-key-1" });
-    const { digest } = await stub.policyProposal(ownerBinding(who), { request_id: "card-key-1" });
+    const proposed = (request_id: string) =>
+      ownDoor<{ digest: string }>(who, "policyProposal", { request_id });
+    await ownDoor(who, "policyPropose", { change, request_id: "card-key-1" });
+    const { digest } = await proposed("card-key-1");
     const proposal = { request_id: "card-key-1", digest };
     const first = await appPost("keys", app.access_token, app.session,
                                 { name: "agent key", scopes: SCOPES, proposal });
@@ -475,8 +448,8 @@ describe("the key store", () => {
     expect(again.status).toBe(403);
     expect(await again.json()).toEqual({ error: "proposal is not the pending card shown" });
     const other = [{ universe: "cc", agent: "main", capability: "write_graph" }];
-    await stub.policyPropose(ownerBinding(who), { change, request_id: "card-key-2" });
-    const held = await stub.policyProposal(ownerBinding(who), { request_id: "card-key-2" });
+    await ownDoor(who, "policyPropose", { change, request_id: "card-key-2" });
+    const held = await proposed("card-key-2");
     const widened = await appPost("keys", app.access_token, app.session, {
       name: "agent key", scopes: other,
       proposal: { request_id: "card-key-2", digest: held.digest } });
@@ -502,23 +475,26 @@ function slackEvent(team: string, eventId: string): Record<string, unknown> {
 }
 
 /**
- * A shared app's install for `who`, as its owed install flow will write it: the object's
- * row (no door makes one before that flow's proof) and the directory's route.
+ * A shared app's install for `who`, as its owed install flow will write it: the directory's
+ * route to a binding of the object's. No door makes the object's row before that flow's proof
+ * (`owner/test/admit.test.ts`), so here the object's answers to its events are the owner
+ * gate's, armed by each test (`accepts`): what the object does with an event is the owner's
+ * test (`admit.test.ts`, "an inbound event at the object's door").
  */
 async function slackInstall(who: string, team: string): Promise<string> {
   const route = `i:slack:workspace:${createHash("sha256").update(team).digest("hex")}`;
   const id = crypto.randomUUID().replace(/-/g, "");
-  await sqlIn(who, "INSERT INTO inbound_bindings (binding_id, kind, agent, enabled, revision, " +
-              "route, created_at, changed_at) VALUES (?, 'shared', 'main', 1, 1, ?, ?, ?)",
-              id, route, now(), now());
   await env.DIRECTORY.put(route, JSON.stringify({ o: who, b: id, r: 1 }));
   return id;
 }
 
-function mail(who: string): Promise<Record<string, unknown>[]> {
-  return sqlIn(who, "SELECT message_id, client_message_id FROM ledger_messages " +
-                    "WHERE client_message_id LIKE 'inb_%' ORDER BY seq");
+/** `who`'s object's next `times` answers to an inbound event, `answer`, at the owner gate. */
+async function accepts(who: string, answer: unknown, times = 1): Promise<void> {
+  await env.OWNER_GATE.arm({ method: "inboundAccept", name: who, answer, times });
 }
+
+/** The object's answer to an event it took: mailed, its receipt. */
+const ADMITTED = Object.freeze({ state: "admitted", receipt: "m".repeat(32), deduped: false });
 
 describe("/hooks/inbound, a capability URL", () => {
   async function hooked() {
@@ -546,14 +522,16 @@ describe("/hooks/inbound, a capability URL", () => {
     expect(accepted.status).toBe(202);
     const answer = await json<{ receipt: string; deduped: boolean }>(accepted);
     expect(answer.deduped).toBe(false);
-    const [body] = await sqlIn(who, "SELECT body FROM message_bodies WHERE message_id = ?",
-                               answer.receipt);
-    const envelope = JSON.parse(String(body!["body"])) as { inbound: { raw_base64: string } };
-    expect(Buffer.from(envelope.inbound.raw_base64, "base64").toString("utf8")).toBe(bytes);
+    // The object is handed the event's bytes as they came (that it mails them verbatim is the
+    // owner's test, `owner/test/admit.test.ts`).
+    const [taken] = await crossed(who, "inboundAccept");
+    expect(taken!.binding).toMatchObject({ inbound: { binding: binding_id, revision: 1 } });
+    expect(taken!.request).toMatchObject({
+      event_id: "evt-1", body: { bytes: new TextEncoder().encode(bytes).byteLength } });
   });
 
   it("answers a replayed event deduped, with its receipt, and mails once", async () => {
-    const { who, url: hookUrl } = await hooked();
+    const { url: hookUrl } = await hooked();
     // A replay is the same event: its id, its bytes and its own time. (Stamped afresh, a
     // second's tick between the two calls made it another event under the same id, so
     // `event_conflict`, 409: the envelope the object dedupes on carries the event's time.)
@@ -563,7 +541,6 @@ describe("/hooks/inbound, a capability URL", () => {
     const replay = await call(event(hookUrl, "evt-r", undefined, {}, at));
     expect(replay.status).toBe(202);
     expect(await replay.json()).toMatchObject({ receipt: first.receipt, deduped: true });
-    expect(await mail(who)).toHaveLength(1);
     const conflict = await call(event(hookUrl, "evt-r", "{\"other\":true}", {}, at));
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toEqual({ error: "event_conflict" });
@@ -572,7 +549,7 @@ describe("/hooks/inbound, a capability URL", () => {
   it("answers the object's refused answer as the door answers any refusal: its code's " +
      "status and wait, and {error}", async () => {
     const { who, url: hookUrl } = await hooked();
-    await sqlIn(who, "UPDATE ledger_usage SET messages = ?", LEDGER_LIMITS.maxMessages);
+    await accepts(who, { state: "refused", error: "mailbox_full" });
     const full = await call(event(hookUrl, "evt-f"));
     expect([full.status, full.headers.get("Retry-After"), await full.json()])
       .toEqual([429, "5", { error: "mailbox_full" }]);
@@ -648,12 +625,13 @@ describe("/hooks/inbound, a capability URL", () => {
   it("is refused at every door but inboundAccept, and inboundAccept refuses any other binding",
      async () => {
     const { who, binding_id } = await hooked();
-    const stub = env.OWNER.getByName(who);
+    const stub = doorsEnv.OWNER.getByName(who);
     const inbound = { owner: who, caller: who, origin: null,
                       inbound: { binding: binding_id, revision: 1 } };
-    expect((await failure(() => stub.grantList(inbound))).message).toMatch(/inbound door alone/);
-    expect((await failure(() => stub.inboundAccept(ownerBinding(who), { event_id: "x", event_at: now(),
-                                                         body: new Uint8Array(1), headers: {} }))).message).toMatch(/inbound event's route alone/);
+    await expect(stub.grantList(inbound)).rejects.toThrow(/inbound door alone/);
+    await expect(stub.inboundAccept(ownerBinding(who), {
+      event_id: "x", event_at: now(), body: new Uint8Array(1), headers: {} }))
+      .rejects.toThrow(/inbound event's route alone/);
   });
 });
 
@@ -661,14 +639,16 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
   it("answers its URL challenge, and delivers a signed event to the installing owner", async () => {
     const who = owner();
     await signInApp({ owner: who });
-    await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
     const team = `T${crypto.randomUUID().slice(0, 8)}`;
-    await slackInstall(who, team);
+    const binding = await slackInstall(who, team);
     const challenge = await call(slackRequest({ type: "url_verification", challenge: "c-1" }));
     expect(await challenge.json()).toEqual({ challenge: "c-1" });
+    await accepts(who, ADMITTED);
     const delivered = await call(slackRequest(slackEvent(team, "Ev1")));
-    expect(delivered.status).toBe(202);
-    expect(await mail(who)).toHaveLength(1);
+    expect([delivered.status, await delivered.json()]).toEqual([202, ADMITTED]);
+    const [taken] = await crossed(who, "inboundAccept");
+    expect(taken!.binding).toMatchObject({ inbound: { binding, revision: 1 } });
+    expect(taken!.request).toMatchObject({ event_id: "Ev1" });
   });
 
   it("refuses a bad HMAC, another secret's, and a replay past the five minutes' skew", async () => {
@@ -687,28 +667,21 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     expect((await call(unsigned)).status).toBe(401);
   });
 
-  it("is never claimed by an owner: no door makes a shared binding before its install flow",
-     async () => {
-    const who = owner();
-    const app = await signInApp({ owner: who });
-    const route = `i:slack:workspace:${createHash("sha256").update("TOTHER").digest("hex")}`;
-    expect((await failure(() => env.OWNER.getByName(who).inboundCreate(
-      { owner: who, caller: who, origin: null, session: app.session },
-      { kind: "shared", agent: "main", route }))).message).toBe(INSTALL_PROOF);
-    expect(await sqlIn(who, "SELECT COUNT(*) AS n FROM inbound_bindings")).toEqual([{ n: 0 }]);
-  });
-
-  it("dedupes a replayed event inside the skew, and no-ops an install no owner made", async () => {
+  // The object's dedupe of a replay is the owner's test (`owner/test/admit.test.ts`).
+  it("hands a replayed event inside the skew the object as it came, and no-ops an install no " +
+     "owner made", async () => {
     const who = owner();
     await signInApp({ owner: who });
-    await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
     const team = `T${crypto.randomUUID().slice(0, 8)}`;
     await slackInstall(who, team);
     const retried = slackEvent(team, "EvR");  // a retry carries the same envelope
+    await accepts(who, ADMITTED);
     expect((await call(slackRequest(retried))).status).toBe(202);
+    await accepts(who, { ...ADMITTED, deduped: true });
     const replay = await call(slackRequest(retried));
     expect(await replay.json()).toMatchObject({ state: "admitted", deduped: true });
-    expect(await mail(who)).toHaveLength(1);
+    const [first, again] = await crossed(who, "inboundAccept");
+    expect(again!.request).toEqual(first!.request);
     const stranger = await call(slackRequest(slackEvent("TNOBODY", "EvS")));
     expect(stranger.status).toBe(200);
     expect(await stranger.json()).toEqual({ state: "no_op" });
@@ -717,34 +690,27 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     expect(await shared.json()).toEqual({ state: "no_op" });
   });
 
-  it("is told to send an event again at the hot ceiling, whether it clears by itself or is " +
-     "held by a full storage (review E-2)", async () => {
+  // That the object answers mailbox_full at the hot ceiling, never counting it to the breaker,
+  // is the owner's test (`owner/test/admit.test.ts`); here, the doors' answer to it.
+  it("is told to send an event again when the object's mailbox is full (review E-2)",
+     async () => {
     const who = owner();
     await signInApp({ owner: who });
-    await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
     const team = `T${crypto.randomUUID().slice(0, 8)}`;
     await slackInstall(who, team);
-    for (const blocked of [0, ...Array<number>(BREAKER_FAILURES + 1).fill(1)]) {
-      // The hot ceiling; blocked, the archive's moves wait for the owner to free space.
-      await sqlIn(who, "UPDATE ledger_usage SET messages = ?, archive_blocked = ?",
-                  LEDGER_LIMITS.maxMessages, blocked);
-      const refused = await call(slackRequest(slackEvent(team, `EvC${crypto.randomUUID()}`)));
-      expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
-        .toEqual([429, "5", { state: "refused", error: "mailbox_full" }]);
-    }
-    // Never the breaker's: more refusals than trip it, and the events still told to retry.
-    const { notices } = await env.OWNER.getByName(who).noticeList(ownerBinding(who));
-    expect(notices.map((notice) => notice.type)).not.toContain("inbound");
+    await accepts(who, { state: "refused", error: "mailbox_full" });
+    const refused = await call(slackRequest(slackEvent(team, `EvC${crypto.randomUUID()}`)));
+    expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
+      .toEqual([429, "5", { state: "refused", error: "mailbox_full" }]);
   });
 
   it("is told to send an event again when the object or the owner's maintenance gate refuses " +
      "it for the moment, and no-ops the event's own refusal", async () => {
     const who = owner();
     await signInApp({ owner: who });
-    await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
     const team = `T${crypto.randomUUID().slice(0, 8)}`;
     await slackInstall(who, team);
-    refuseOnce("inboundAccept", who, slotBusy());
+    await refuseOnce("inboundAccept", who, slotBusy());
     const busy = await call(slackRequest(slackEvent(team, "EvP")));
     expect([busy.status, busy.headers.get("Retry-After"), await busy.json()])
       .toEqual([503, "1", { state: "refused", error: "busy" }]);
@@ -753,42 +719,28 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     expect([closed.status, closed.headers.get("Retry-After"), await closed.json()])
       .toEqual([503, "60", { state: "refused", error: "unavailable" }]);
     await setControl({ ...OPEN, inbound: true });
-    refuseOnce("inboundAccept", who, new Refusal("binding_withdrawn"));
+    await refuseOnce("inboundAccept", who, new Refusal("binding_withdrawn"));
     const withdrawn = await call(slackRequest(slackEvent(team, "EvP")));
     expect([withdrawn.status, withdrawn.headers.get("Retry-After"), await withdrawn.json()])
       .toEqual([200, null, { state: "refused", error: "binding_withdrawn" }]);
+    await accepts(who, ADMITTED);
     expect((await call(slackRequest(slackEvent(team, "EvP")))).status).toBe(202);
-    expect(await mail(who)).toHaveLength(1);
+    // Each refused try reached the object, and the one it took; the closed gate's did not.
+    expect((await crossed(who, "inboundAccept")).map((call) => call.request["event_id"]))
+      .toEqual(["EvP", "EvP", "EvP"]);
   });
 
-  it("trips its breaker after the agent's mailbox refuses it, then no-ops until re-armed",
-     async () => {
+  // That a shared binding's breaker trips once the agent's mailbox refused it, telling the
+  // owner, until the owner's change re-arms it, is the owner's test (`owner/test/admit.test.ts`).
+  it("answers the object's no-op, a tripped breaker, 200 with its error", async () => {
     const who = owner();
-    const app = await signInApp({ owner: who });
-    await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
+    await signInApp({ owner: who });
     const team = `T${crypto.randomUUID().slice(0, 8)}`;
-    const bindingId = await slackInstall(who, team);
-    expect((await call(slackRequest(slackEvent(team, "EvB0")))).status).toBe(202);
-    // Too much mail unread, owner-wide (slice STORE item 2: one ceiling, no mailbox's own).
-    await sqlIn(who, "UPDATE ledger_usage SET unacked = 1000000");
-    for (let i = 1; i <= BREAKER_FAILURES; i++) {
-      const refused = await call(slackRequest(slackEvent(team, `EvB${i}`)));
-      expect(refused.status).toBe(429);
-      expect(refused.headers.get("Retry-After")).toBe("5");
-      expect(await refused.json()).toMatchObject({ state: "refused", error: "mailbox_full" });
-    }
+    await slackInstall(who, team);
+    await accepts(who, { state: "no_op", error: "breaker_tripped" });
     const tripped = await call(slackRequest(slackEvent(team, "EvT")));
-    expect(tripped.status).toBe(200);
-    expect(await tripped.json()).toEqual({ state: "no_op", error: "breaker_tripped" });
-    const { notices } = await env.OWNER.getByName(who).noticeList(ownerBinding(who));
-    expect(notices.map((notice) => notice.type)).toContain("inbound");
-    // The owner's change re-arms it, at a new revision its route now carries.
-    await sqlIn(who, "UPDATE ledger_usage SET unacked = (SELECT COUNT(*) FROM " +
-                     "ledger_messages WHERE unacked > 0)");
-    const set = await appPost("hooks/set", app.access_token, app.session,
-                              { binding_id: bindingId, expected_revision: 1, enabled: true });
-    expect(set.status).toBe(200);
-    expect((await call(slackRequest(slackEvent(team, "EvA")))).status).toBe(202);
+    expect([tripped.status, await tripped.json()])
+      .toEqual([200, { state: "no_op", error: "breaker_tripped" }]);
   });
 });
 
@@ -947,8 +899,8 @@ describe("the file door's bytes", () => {
     const committed = await appPost("files/upload/commit", app.access_token, null, {
       intent_id, path: "/workspace/big.bin", expected_etag: null });
     expect(committed.status).toBe(200);
-    const read = await env.OWNER.getByName(who).fileRead(ownerBinding(who),
-                                                        { path: "/workspace/big.bin" });
+    const read = await ownDoor<{ entry: { size: number } }>(who, "fileRead",
+                                                             { path: "/workspace/big.bin" });
     expect(read.entry.size).toBe(FILE.byteLength);
   });
 

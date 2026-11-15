@@ -5,22 +5,19 @@
  */
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { BUSY, slotBusy } from "../../contract/src/slots";
-import { refuseOnce } from "./entry";
 
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { GRANT_LIMITS } from "../../owner/src/grants";
-import { apiKeyOrigin } from "../../contract/src/binding";
+import { apiKeyOrigin, type Binding } from "../../contract/src/binding";
 import { newKey, parseKey } from "../src/api-keys";
 import { sha256Hex } from "../../contract/src/digest";
-import { MAX_KEYS } from "../../contract/src/limits";
 import { now } from "../src/config";
 import type { DoorsEnv } from "../src/env";
 import { DEFAULT_PROFILE, profileNames } from "../../contract/src/doors";
 import {
-  appPost, call, connect, doorsEnv, legacyPost, OPEN, reached, registerClient,
-  serveFirstPartyDocument, setControl, signInApp, sqlIn, TIERS, url,
+  appPost, call, connect, doorsEnv, grantsOf, legacyPost, OPEN, ownDoor, reached, refuseOnce,
+  registerClient, serveFirstPartyDocument, setControl, signInApp, TIERS, url,
 } from "./support";
 
 const SCOPES = [{ universe: "cc", agent: "main", capability: "read_graph" }];
@@ -75,9 +72,10 @@ function directoryWith(overrides: Partial<KVNamespace>): DoorsEnv {
   return { ...doorsEnv, DIRECTORY: wrapped };
 }
 
-function grantRow(o: string, keyId: string) {
-  return sqlIn(o, "SELECT source, mode, revoked_at FROM outside_clients WHERE client = ?",
-               apiKeyOrigin(keyId).client);
+/** The key's grant, as the owner's `grantList` door answers it, or none. */
+async function grantRow(o: string, keyId: string) {
+  return (await grantsOf(o)).filter((row) => row.client === apiKeyOrigin(keyId).client)
+    .map(({ source, mode, revoked_at }) => ({ source, mode, revoked_at }));
 }
 
 let restore: () => void = () => undefined;
@@ -98,9 +96,10 @@ describe("a refusal across the object's RPC", () => {
 
   it("reaches the caller with its code, its Retry-After and its facts", async () => {
     const o = await signedIn();
-    refuseOnce("outsideAgents", o.owner, new Refusal("storage_busy", "storage_busy: catching up",
-                                         { retryAfterS: 7, facts: FACTS }));
-    const error = await env.OWNER.getByName(o.owner).outsideAgents({ owner: o.owner } as never)
+    await refuseOnce("outsideAgents", o.owner, new Refusal("storage_busy",
+                                                           "storage_busy: catching up",
+                                                           { retryAfterS: 7, facts: FACTS }));
+    const error = await ownDoor(o.owner, "outsideAgents", {})
       .then(() => null, (caught: unknown) => caught);
     expect(error).not.toBeInstanceOf(Refusal);  // the class never crosses
     const refusal = refusalOf(error)!;
@@ -117,7 +116,7 @@ describe("a refusal across the object's RPC", () => {
                                                               retry) => {
     const o = await signedIn();
     const { key } = await mint(o);
-    refuseOnce("outsideAgents", o.owner, new Refusal(code, message, more));
+    await refuseOnce("outsideAgents", o.owner, new Refusal(code, message, more));
     const refused = await api(key, "agents_list", {});
     expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
       .toEqual([status, retry, { error: message }]);
@@ -128,7 +127,7 @@ describe("a refusal across the object's RPC", () => {
   // bytes, as on the API above.
   it("answers busy 503 with Retry-After on the app's tools", async () => {
     const o = await signedIn();
-    refuseOnce("outsideAgents", o.owner, slotBusy());
+    await refuseOnce("outsideAgents", o.owner, slotBusy());
     const busy = await appPost("tools/agents_list", o.token, o.session, {});
     expect([busy.status, busy.headers.get("Retry-After"), await busy.json()])
       .toEqual([503, "1", { error: BUSY }]);
@@ -137,7 +136,7 @@ describe("a refusal across the object's RPC", () => {
   it("answers busy 503 with Retry-After on MCP's profile", async () => {
     const who = owner();
     const tokens = await connect(await registerClient(), { owner: who });
-    refuseOnce("toolProfile", who, slotBusy());
+    await refuseOnce("toolProfile", who, slotBusy());
     const busy = await legacyPost(tokens.access_token, { jsonrpc: "2.0", id: 1,
                                                          method: "tools/list" });
     expect([busy.status, busy.headers.get("Retry-After"), await busy.json()])
@@ -146,7 +145,7 @@ describe("a refusal across the object's RPC", () => {
 
   it("answers a refusal's Retry-After on an upload's bytes", async () => {
     const o = await signedIn();
-    refuseOnce("fileUploadTarget", o.owner, slotBusy());
+    await refuseOnce("fileUploadTarget", o.owner, slotBusy());
     const busy = await call(new Request(url(`/app/api/files/upload/${"a".repeat(32)}/0`), {
       method: "PUT", body: new Uint8Array(1),
       headers: { "Content-Type": "application/octet-stream", Origin: "https://tinyassets.io",
@@ -160,8 +159,8 @@ describe("a refusal across the object's RPC", () => {
     const o = await signedIn();
     const forged = new Refusal("refused", "from another version");
     (forged as unknown as { code: string }).code = "not_a_code";
-    refuseOnce("outsideAgents", o.owner, forged);
-    const error = await env.OWNER.getByName(o.owner).outsideAgents({ owner: o.owner } as never)
+    await refuseOnce("outsideAgents", o.owner, forged);
+    const error = await ownDoor(o.owner, "outsideAgents", {})
       .then(() => null, (caught: unknown) => caught);
     expect(refusalOf(error)).toBeNull();
   });
@@ -172,7 +171,7 @@ describe("the key format", () => {
      async () => {
     const o = await signedIn();
     const { key } = await mint(o);
-    refuseOnce("outsideAgents", o.owner, slotBusy());
+    await refuseOnce("outsideAgents", o.owner, slotBusy());
     const busy = await api(key, "agents_list", {});
     expect([busy.status, busy.headers.get("Retry-After")]).toEqual([503, "1"]);
     expect(await busy.json()).toEqual({ error: BUSY });
@@ -218,7 +217,7 @@ describe("a mint", () => {
     const response = await appPost("keys", o.token, null, { name: "laptop", scopes: SCOPES });
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: "interactive owner session required" });
-    expect(await sqlIn(o.owner, "SELECT client FROM outside_clients")).toEqual([]);
+    expect(await grantsOf(o.owner)).toEqual([]);
   });
 
   it("writes the grant, then the directory entry, then returns the secret once", async () => {
@@ -248,8 +247,8 @@ describe("a mint", () => {
     const o = await signedIn();
     const failing = directoryWith({ put: async () => { throw new Error("KV down"); } });
     await expect(mint(o, failing)).rejects.toThrow("KV down");
-    const rows = await sqlIn(o.owner, "SELECT source, mode FROM outside_clients");
-    expect(rows).toEqual([{ source: "api_key", mode: "scoped" }]);
+    expect((await grantsOf(o.owner)).map(({ source, mode }) => ({ source, mode })))
+      .toEqual([{ source: "api_key", mode: "scoped" }]);
   });
 
   it("refuses a name that is blank or over 80 characters", async () => {
@@ -260,22 +259,25 @@ describe("a mint", () => {
     }
   });
 
-  it("refuses past MAX_KEYS live keys, counted in the mint's own unit, and writes nothing",
-     async () => {
+  // That the owner refuses a mint past MAX_KEYS live keys, counted in the mint's own unit, is
+  // the owner's test (`owner/test/admit.test.ts`); here, the doors' answer to its refusal.
+  it("answers a mint the owner refuses with its refusal, and writes no entry", async () => {
     const o = await signedIn();
     await mint(o);
-    // The rest of the live keys, as earlier mints left them (a revoked one does not count).
-    await sqlIn(o.owner, "INSERT INTO owner_keys (key_id, client, name, created_at, revoked_at) " +
-                "SELECT printf('%016x', x), printf('%064x', x), 'k', 0, " +
-                "CASE WHEN x = 1 THEN 1 ELSE NULL END FROM (WITH RECURSIVE c(x) AS " +
-                "(SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?) SELECT x FROM c)",
-                MAX_KEYS);
-    const before = await sqlIn(o.owner, "SELECT COUNT(*) AS n FROM outside_clients");
-    const over = await appPost("keys", o.token, o.session, { name: "one more", scopes: SCOPES });
+    const before = await grantsOf(o.owner);
+    let puts = 0;
+    const counted = directoryWith({ put: async () => { puts++; } });
+    await refuseOnce("keyMint", o.owner, new Refusal("refused", "no more keys for this owner"));
+    const over = await call(new Request(url("/app/api/keys"), {
+      method: "POST", headers: { "Content-Type": "application/json",
+                                 Origin: "https://tinyassets.io",
+                                 Authorization: `Bearer ${o.token}`,
+                                 Cookie: `__Host-ta-owner=${o.session}` },
+      body: JSON.stringify({ name: "one more", scopes: SCOPES }) }), counted);
     expect(over.status).toBe(403);
-    expect(await over.json()).toEqual({ error: "too many live API keys; revoke one first" });
-    expect(await sqlIn(o.owner, "SELECT COUNT(*) AS n FROM outside_clients")).toEqual(before);
-    expect(MAX_KEYS).toBe(GRANT_LIMITS.maxOwnerClients);
+    expect(await over.json()).toEqual({ error: "no more keys for this owner" });
+    expect(puts).toBe(0);
+    expect(await grantsOf(o.owner)).toEqual(before);
   });
 });
 
@@ -285,23 +287,27 @@ describe("a key's use", () => {
     const { key, key_id } = await mint(o);
     const response = await api(key, "agents_list", {});
     expect(response.status).toBe(200);
-    expect(await sqlIn(o.owner, "SELECT client, source FROM outside_clients")).toEqual([
-      { client: apiKeyOrigin(key_id).client, source: "api_key" }]);
+    expect((await grantsOf(o.owner)).map(({ client, source }) => ({ client, source })))
+      .toEqual([{ client: apiKeyOrigin(key_id).client, source: "api_key" }]);
   });
 
-  it("carries the mint time as its sign-in: a revoke before it passes, one after does not",
+  // The owner's revoke fence against that sign-in time is the owner's test
+  // (`owner/test/grants.test.ts`); here, the time the doors hand it, and its refusal answered.
+  it("carries the mint time as its sign-in, and answers the owner's revoke fence 403",
      async () => {
     const o = await signedIn();
     const { key, key_id } = await mint(o);
     const minted = now() - 1_000;
     const entry = await env.DIRECTORY.get<{ o: string; h: string }>(`k:${key_id}`, { type: "json" });
     await env.DIRECTORY.put(`k:${key_id}`, JSON.stringify({ ...entry, c: minted }));
-    const client = apiKeyOrigin(key_id).client;
-    await sqlIn(o.owner, "UPDATE outside_clients SET revoked_at = ? WHERE client = ?",
-                minted - 100, client);
+    await env.OWNER_GATE.seen(o.owner);
     expect((await api(key, "agents_list", {})).status).toBe(200);
-    await sqlIn(o.owner, "UPDATE outside_clients SET revoked_at = ? WHERE client = ?",
-                now() - 10, client);
+    const [sent] = await env.OWNER_GATE.seen(o.owner);
+    expect((sent!.args as [Binding])[0]).toMatchObject({
+      owner: o.owner, origin: apiKeyOrigin(key_id), source: { kind: "api_key", ref: key_id },
+      authenticated_at: minted });
+    await refuseOnce("outsideAgents", o.owner,
+                     new Refusal("refused", "a fresh sign-in is required after a revoke"));
     const refused = await api(key, "agents_list", {});
     expect(refused.status).toBe(403);
     expect(await refused.json()).toEqual({ error: "a fresh sign-in is required after a revoke" });

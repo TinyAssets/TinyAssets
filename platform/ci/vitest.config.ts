@@ -1,12 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 import { keyring } from "./fixtures";
-import { control, gate, methodsOf } from "./gate";
+import { control, gate, methodsOf, ownerGate } from "./gate";
 import { PLATFORM } from "./paths";
 import { project } from "./project";
 import { auxiliary, once, pool, workerConfig } from "./workers";
@@ -16,9 +15,6 @@ const FILES = join(PLATFORM, "files");
 /** The gates in front of the files Worker and of the owner's objects. */
 const FILES_GATE = "files-gate";
 const OWNER_GATE = "owner-gate";
-/** The owner object's doors, the methods the owner gate has (`contract/doors.json`). */
-const DOORS = (JSON.parse(readFileSync(join(PLATFORM, "contract", "doors.json"), "utf8")) as
-  { doors: { door: string }[] }).doors.map((row) => row.door);
 
 export default defineConfig({
   test: {
@@ -64,7 +60,7 @@ export default defineConfig({
                   bindings: { E2B_API_KEY: "e2b_unused_in_kit_tests" } }),
                 gate(FILES_GATE, methodsOf(join(PLATFORM, "contract", "src", "files.ts"),
                                              "ChunkStore"), { worker: FILES }),
-                gate(OWNER_GATE, DOORS, { worker: OWNER, className: "OwnerDO" }),
+                ownerGate(OWNER_GATE),
               ],
             },
           }))),

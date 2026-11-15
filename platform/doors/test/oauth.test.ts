@@ -15,10 +15,12 @@ import type { Upstream } from "../src/upstream";
 import { TEST_SOURCES } from "./entry";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 import {
-  appPost, authorizeMcp, authorizeUrl, call, connect, consent, DARK, decide, doorsEnv, handleOf,
-  Jar, legacyPost, legacyTool, NAVIGATE, OPEN, pkce, refresh, registerClient,
-  serveFirstPartyDocument, setControl, signInApp, sqlIn, type ToolResult, upstreamReturns, url,
+  appPost, authorizeMcp, authorizeUrl, call, connect, consent, crossed, DARK, decide, doorsEnv,
+  handleOf, Jar, legacyPost, legacyTool, NAVIGATE, OPEN, pkce, refresh, refuseOnce,
+  registerClient, serveFirstPartyDocument, setControl, signInApp, type ToolResult,
+  upstreamReturns, url,
 } from "./support";
+import { Refusal } from "../../contract/src/refusal";
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -266,10 +268,8 @@ describe("authenticated_at", () => {
     expect(third.access_token).not.toBe(first.access_token);
     expect((await fileCard(third.access_token)).isError).toBeUndefined();
     const origin = await mcpOrigin(client.clientId, client.redirectUri);
-    expect(await sqlIn(alice, "SELECT client, family, source_ref, authenticated_at FROM " +
-                               "agent_cards")).toEqual([{
-      client: origin.client, family: origin.family, source_ref: client.clientId,
-      authenticated_at: signedIn }]);
+    expect((await crossed(alice, "registerPropose")).map((call) => call.binding)).toMatchObject([{
+      origin, source: { kind: "mcp", ref: client.clientId }, authenticated_at: signedIn }]);
   });
 });
 
@@ -335,31 +335,21 @@ describe("a revoke", () => {
     }
   });
 
-  it("is lifted only by a sign-in after it", async () => {
-    const restore = serveFirstPartyDocument();
-    try {
-      const client = await registerClient();
-      const alice = owner();
-      const first = await connect(client, { owner: alice });
-      expect((await fileCard(first.access_token)).isError).toBeUndefined();
-      const app = await signInApp({ owner: alice });
-      const origin = await mcpOrigin(client.clientId, client.redirectUri);
-      await appPost("grants/revoke", app.access_token, null, { client: origin.client });
-      // The owner grants the client again in session; the fence still needs a fresh
-      // sign-in, and the provider's new grant carries one.
-      await sqlIn(alice, "UPDATE outside_clients SET mode = 'full', revoked_at = ? " +
-                         "WHERE client = ?", now() - 60, origin.client);
-      const before = await connect(client, { owner: alice, authenticatedAt: now() - 120 });
-      // Refused before any tool is listed: the object answers the client's profile first.
-      const refused = await legacyPost(before.access_token,
-                                       { jsonrpc: "2.0", id: 1, method: "tools/list" });
-      expect([refused.status, await refused.json()])
-        .toEqual([403, { error: "a fresh sign-in is required after a revoke" }]);
-      const after = await connect(client, { owner: alice, authenticatedAt: now() });
-      expect((await fileCard(after.access_token)).isError).toBeUndefined();
-    } finally {
-      restore();
-    }
+  // That a revoke fences every sign-in before it, and a sign-in after lifts it, is the owner's
+  // test on its clock (`owner/test/grants.test.ts`); here, the doors' answer to its refusal.
+  it("is answered before any tool is listed, the profile the object's first answer",
+     async () => {
+    const client = await registerClient();
+    const alice = owner();
+    const before = await connect(client, { owner: alice, authenticatedAt: now() - 120 });
+    await refuseOnce("toolProfile", alice,
+                     new Refusal("refused", "a fresh sign-in is required after a revoke"));
+    const refused = await legacyPost(before.access_token,
+                                     { jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect([refused.status, await refused.json()])
+      .toEqual([403, { error: "a fresh sign-in is required after a revoke" }]);
+    const after = await connect(client, { owner: alice, authenticatedAt: now() });
+    expect((await fileCard(after.access_token)).isError).toBeUndefined();
   });
 });
 

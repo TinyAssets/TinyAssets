@@ -13,7 +13,7 @@ import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { until } from "../../ci/workerd";
+import { secretOf, until } from "../../ci/workerd";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { type Credential } from "../../gateway/src/credential";
 import { supportedApis } from "../../contract/src/api-rules";
@@ -29,7 +29,7 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import { egressTokenOf, generationOf } from "../../contract/src/egress";
-import { hashed, ownerRun, secretOf } from "./runs-support";
+import { hashed, ownerRun } from "./runs-support";
 import {
   ANTHROPIC, catalog, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT, scopeOf, sealedAs,
 } from "./gateway-support";

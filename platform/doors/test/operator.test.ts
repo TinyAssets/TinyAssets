@@ -10,19 +10,21 @@
  */
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
+import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { keyring } from "../../ci/fixtures";
+import { HELD_WAIT_MS, keyring } from "../../ci/fixtures";
 import { parseRing, type Ring } from "../../contract/src/envelope";
 import {
   acceptanceKey, acceptanceOf, answerKey, argsText, type OperatorAnswer, operatorAnswer,
   type OperatorArgs, type OperatorMessage, OPERATOR_WINDOW_S, type Refused, signOperator,
 } from "../../contract/src/operator-message";
+import { Refusal } from "../../contract/src/refusal";
 import { now } from "../src/config";
 import { putKey, putOwner, readKey, readOwner } from "../src/directory";
 import type { DoorsEnv } from "../src/env";
 import {
-  appCallback, deliver, doorsEnv, held, serveFirstPartyDocument, sqlIn,
+  admissionOf, appCallback, deliver, doorsEnv, held, refuseOnce, serveFirstPartyDocument,
 } from "./support";
 
 const RING = parseRing(doorsEnv.OPERATOR_KEYRING)!;
@@ -213,12 +215,6 @@ describe("the operator channel", () => {
 });
 
 
-/** The owner's admission row as its own object holds it. */
-async function admission(owner: string) {
-  const [row] = await sqlIn(owner, "SELECT state, reasons, tier FROM owner_admission");
-  return { ...row, reasons: JSON.parse(String(row!["reasons"])) as string[] };
-}
-
 /** `op` with `args` for `owner` delivered once, and its answer. */
 async function asked(owner: string, op: string, args: OperatorArgs = {}) {
   const message = await sign(owner, op, args);
@@ -241,20 +237,21 @@ function answerFailingOnce(ask: string): DoorsEnv {
     } } as unknown as R2Bucket };
 }
 
-/** Every row of every table the owner's object holds, by table. */
-async function everyRow(owner: string) {
-  const tables = await sqlIn(owner, "SELECT name FROM sqlite_master WHERE type = 'table' AND " +
-                                    "name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' " +
-                                    "ORDER BY name");
-  return Object.fromEntries(await Promise.all(tables.map(async ({ name }) =>
-    [name, await sqlIn(owner, `SELECT * FROM "${String(name)}"`)])));
+/**
+ * The doors the operator's deliveries called on `owner`'s object since the last look (the
+ * owner gate's record): that the object's own read changes nothing is the owner's test
+ * (`owner/test/admit.test.ts`).
+ */
+async function doorsCalled(owner: string): Promise<string[]> {
+  return (await env.OWNER_GATE.seen(owner)).map((call) => call.method);
 }
 
 describe("the operator's owner ops, on a real owner object", () => {
   it("admits an owner, sets its tier, and suspends and lifts it, each answered with the " +
      "owner's own state", async () => {
     const owner = fresh();
-    expect(await admission(owner)).toEqual({ state: "pending", reasons: [], tier: "free" });
+    expect(await asked(owner, "owner.state")).toMatchObject({
+      result: { state: "pending", reasons: [], tier: "free" } });
     expect(await asked(owner, "owner.admit")).toMatchObject({
       result: { state: "admitted", reasons: [] } });
     expect((await readOwner(doorsEnv, owner))?.s).toBe("admitted");
@@ -262,14 +259,14 @@ describe("the operator's owner ops, on a real owner object", () => {
       result: { tier: "paid" } });
     expect(await asked(owner, "owner.suspend", { reason: "abuse" })).toMatchObject({
       result: { state: "suspended", reasons: ["abuse"] } });
-    expect(await admission(owner)).toEqual({ state: "suspended", reasons: ["abuse"],
+    expect(await admissionOf(owner)).toEqual({ state: "suspended", reasons: ["abuse"],
                                              tier: "paid" });
     // An admit leaves a suspended owner as it stands.
     expect(await asked(owner, "owner.admit")).toMatchObject({
       result: { state: "suspended", reasons: ["abuse"] } });
     expect(await asked(owner, "owner.lift", { reason: "abuse" })).toMatchObject({
       result: { state: "admitted", reasons: [] } });
-    expect(await admission(owner)).toEqual({ state: "admitted", reasons: [], tier: "paid" });
+    expect(await admissionOf(owner)).toEqual({ state: "admitted", reasons: [], tier: "paid" });
   });
 
   it.each([
@@ -286,7 +283,7 @@ describe("the operator's owner ops, on a real owner object", () => {
   ] as const)("answers %s refused, the owner as it was", async (_what, op, args, refusal) => {
     const owner = fresh();
     expect(refusedOf(await asked(owner, op, args))).toMatchObject(refusal);
-    expect(await admission(owner)).toEqual({ state: "pending", reasons: [], tier: "free" });
+    expect(await admissionOf(owner)).toEqual({ state: "pending", reasons: [], tier: "free" });
     expect(await readOwner(doorsEnv, owner)).toBeNull();
   });
 
@@ -300,12 +297,12 @@ describe("the operator's owner ops, on a real owner object", () => {
     const logged = logs();
     expect(await deliver(message, flaky)).toEqual({ acked: 0, retried: 1 });
     expect(logged()).toEqual(["an operator message failed; the queue tries again"]);
-    expect(await admission(owner)).toEqual({ state: "suspended", reasons: ["billing"],
+    expect(await admissionOf(owner)).toEqual({ state: "suspended", reasons: ["billing"],
                                              tier: "free" });
     expect(await deliver(message, flaky)).toEqual({ acked: 1, retried: 0 });
     expect(operatorAnswer((await held(message.ask)).answer, message)).toMatchObject({
       result: { state: "suspended", reasons: ["billing"] } });
-    expect(await admission(owner)).toEqual({ state: "suspended", reasons: ["billing"],
+    expect(await admissionOf(owner)).toEqual({ state: "suspended", reasons: ["billing"],
                                              tier: "free" });
   });
 });
@@ -321,11 +318,6 @@ describe("the operator's owner.state, on a real owner object", () => {
     const { result } = await asked(owner, "owner.state") as { result: unknown };
     expect(result).toEqual({ state: "suspended", reasons: ["billing"], tier: "paid",
                              restore: null, runs: 0, stored_bytes: 0 });
-    // Held for a restore: its every door but the platform's refuses, and its state says why.
-    await sqlIn(owner, "INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
-                       "'pinned', 0)", "a".repeat(32), "b".repeat(16));
-    expect(await asked(owner, "owner.state")).toMatchObject({ result: {
-      state: "suspended", restore: "pinned" } });
   });
 
   it("changes nothing: asked again, and delivered again after its read but before its " +
@@ -333,7 +325,7 @@ describe("the operator's owner.state, on a real owner object", () => {
     const owner = fresh();
     await asked(owner, "owner.admit");
     await asked(owner, "owner.suspend", { reason: "abuse" });
-    const rows = await everyRow(owner);
+    await doorsCalled(owner);
     const message = await sign(owner, "owner.state");
     const logged = logs();
     expect(await deliver(message, answerFailingOnce(message.ask)))
@@ -345,14 +337,15 @@ describe("the operator's owner.state, on a real owner object", () => {
     expect(operatorAnswer((await held(message.ask)).answer, message))
       .toMatchObject({ result: state });
     expect(await asked(owner, "owner.state")).toMatchObject({ result: state });
-    expect(await everyRow(owner)).toEqual(rows);
+    // Each delivery called the object's read alone, its every time.
+    expect(await doorsCalled(owner)).toEqual(["ownerState", "ownerState", "ownerState"]);
   });
 
   it("answers only a message its ring signed: another ring's, or none, is dropped with " +
      "nothing written", async () => {
     const owner = fresh();
     await asked(owner, "owner.admit");
-    const rows = await everyRow(owner);
+    await doorsCalled(owner);
     const forged = await sign(owner, "owner.state", {}, OTHER);
     const { mac: _mac, ...unsigned } = await sign(owner, "owner.state");
     const logged = logs();
@@ -363,16 +356,16 @@ describe("the operator's owner.state, on a real owner object", () => {
     expect(logged()).toEqual([
       "an operator message has a MAC that does not hold under its kid; dropped",
       "an operator message is out of shape; dropped"]);
-    expect(await everyRow(owner)).toEqual(rows);
+    expect(await doorsCalled(owner)).toEqual([]);
   });
 });
 
 describe("the operator's restore ops, on a real owner object", () => {
   const GEN = { namespace: "a".repeat(32), gen: "b".repeat(16) };
-  /** Nothing of a restore in the owner's object. */
+  /** Nothing of a restore in the owner's object, as its restore source answers it. */
   const untouched = async (owner: string) =>
-    expect(await sqlIn(owner, "SELECT (SELECT count(*) FROM owner_restore) AS r, (SELECT ns " +
-                              "FROM file_space) AS ns")).toEqual([{ r: 0, ns: null }]);
+    expect(await asked(owner, "restore.source")).toMatchObject({
+      result: { namespace: null, generations: [], restore: null } });
 
   it("answers a pending owner's source as its object holds it: no namespace, no generation",
      async () => {
@@ -398,7 +391,7 @@ describe("the operator's restore ops, on a real owner object", () => {
     await putOwner(doorsEnv, owner, { s: "erased", t: now() });
     expect(refusedOf(await asked(owner, "restore.begin", GEN))).toEqual({
       code: "owner_erased", message: "the owner is erased" });
-    await untouched(owner);
+    expect(await doorsCalled(owner)).toEqual([]);
   });
 
   it("takes a begin's namespace and generation exactly", async () => {
@@ -410,14 +403,14 @@ describe("the operator's restore ops, on a real owner object", () => {
     await untouched(owner);
   });
 
+  // That a finished restore's step answers the restored owner's keys is the owner's test
+  // (`owner/test/restore.test.ts`); here, the doors' work with that answer.
   it("once a restore is done, deletes the restored owner's API keys from the directory, its " +
      "answer naming them and no row", async () => {
     const owner = fresh();
     const key = "0123456789abcdef";
-    await sqlIn(owner, "INSERT INTO owner_keys (key_id, client, name, created_at, revoked_at) " +
-                       "VALUES (?, ?, 'k', 1, 2)", key, "c".repeat(64));
-    await sqlIn(owner, "INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
-                       "'done', 0)", GEN.namespace, GEN.gen);
+    await env.OWNER_GATE.arm({ method: "restoreStep", name: owner,
+                               answer: { step: "done", done: true, keys: [key] } });
     await putKey(doorsEnv, key, { o: owner, h: "h".repeat(64), c: 1 });
     expect(await asked(owner, "restore.step")).toMatchObject({
       result: { step: "done", done: true, keys: [key] } });
@@ -433,22 +426,22 @@ describe("an owner a restore holds, on a real owner object", () => {
     new URL((await appCallback({ owner })).back.headers.get("Location")!).searchParams
       .get("error");
 
+  // That a restore under way or failed refuses every door but the restore's, `restoring`, is
+  // the owner's test (`owner/test/restore.test.ts`); here, the sign-in's answer to it.
   it("answers a sign-in during a restore, and one after a failed restore, " +
      "temporarily_unavailable: never a thrown bug", async () => {
     serveFirstPartyDocument();
+    const restoring = () => new Refusal("restoring", "restoring: this owner is held for a restore");
     // An owner the directory holds no record of (R8's case, its account lost): its sign-in's
     // admit meets the restore under way, and the directory is left without it.
     const lost = fresh();
-    await sqlIn(lost, "INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
-                      "'index', 0)", GEN.namespace, GEN.gen);
+    await refuseOnce("admissionSet", lost, restoring());
     expect(await signInError(lost)).toBe("temporarily_unavailable");
     expect(await readOwner(doorsEnv, lost)).toBeNull();
     // An owner signed up before, whose restore failed: its session's open meets it.
     const known = fresh();
     expect(await signInError(known)).toBeNull();
-    await sqlIn(known, "UPDATE owner_admission SET state = 'pending'");
-    await sqlIn(known, "INSERT INTO owner_restore (only, ns, gen, step, at, failed) VALUES " +
-                       "(1, ?, ?, 'failed', 0, 'x')", GEN.namespace, GEN.gen);
+    await refuseOnce("sessionOpen", known, restoring());
     expect(await signInError(known)).toBe("temporarily_unavailable");
   });
 
@@ -471,24 +464,25 @@ describe("an owner a restore holds, on a real owner object", () => {
     }
   });
 
+  // That the wipe resets the object and leaves its record, which a redelivery's wipe answers,
+  // is the owner's test (`owner/test/restore.test.ts`); here, the doors' redelivery.
   it("answers a confirmed wipe on its redelivery: the wipe resets the object, and the " +
      "record it left answers", async () => {
     const owner = fresh();
     await asked(owner, "owner.admit");
-    await sqlIn(owner, "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
-                       "bytes, s, schema, started_at, finished_at) VALUES (?, '20261114', " +
-                       "'done', 'ended', 0, '', 0, 1, 11, 1, 2)", FRESH);
-    await sqlIn(owner, "INSERT INTO owner_restore (only, ns, gen, step, at, fresh) VALUES " +
-                       "(1, ?, ?, 'pinned', 0, ?)", GEN.namespace, GEN.gen, FRESH);
     const message = await sign(owner, "restore.wipe", { confirm: `wipe-${owner}-${FRESH}` });
     const logged = logs();
-    expect(await deliver(message)).toEqual({ acked: 0, retried: 1 });
+    // The first delivery's wipe never answers: the reset dropped its connection.
+    await env.OWNER_GATE.arm({ method: "restoreWipe", name: owner, hold: "before" });
+    const first = deliver(message);
+    const [wiping] = await env.OWNER_GATE.held(HELD_WAIT_MS);
+    await env.OWNER_GATE.lose(wiping!.id);
+    expect(await first).toEqual({ acked: 0, retried: 1 });
     expect(logged()).toEqual(["an operator message failed; the queue tries again"]);
+    await env.OWNER_GATE.arm({ method: "restoreWipe", name: owner, answer: {
+      step: "wiped", namespace: GEN.namespace, gen: GEN.gen, fresh: FRESH } });
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     expect(operatorAnswer((await held(message.ask)).answer, message)).toMatchObject({
       result: { step: "wiped", namespace: GEN.namespace, gen: GEN.gen, fresh: FRESH } });
-    expect(await sqlIn(owner, "SELECT (SELECT state FROM owner_admission) AS state, (SELECT " +
-                              "count(*) FROM owner_backups) AS gens")).toEqual([
-      { state: "pending", gens: 0 }]);
   });
 });

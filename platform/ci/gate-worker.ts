@@ -6,7 +6,9 @@
  * - held before it is sent, or after its answer, until the test lets it go, or loses it: the
  *   call then throws, as one whose connection dropped does, its answer (if any) never handed on;
  * - its bytes changed in flight (the first byte of each byte array it carries);
- * - refused, with the refusal the test gave, crossing as a real refusal crosses.
+ * - refused, with the refusal the test gave, crossing as a real refusal crosses;
+ * - answered, with the answer the test gave, in the real one's place: never sent, as for the
+ *   state behind that answer a test cannot reach (a finished restore).
  * It records what crossed, by method and by name: an object's name, or for a service the call's
  * first argument when it is a string (every service the gates front takes its owner, or the
  * owner's namespace, first), so a test arms and reads one owner's calls alone.
@@ -42,7 +44,8 @@ interface InjectedRefusal {
 type Act =
   | { readonly hold: "before" | "after" }
   | { readonly corrupt: true }
-  | { readonly refuse: InjectedRefusal };
+  | { readonly refuse: InjectedRefusal }
+  | { readonly answer: unknown };
 
 /** One arming: a method, the name it is for (any when absent), how often. */
 export type Arm = Act & {
@@ -153,6 +156,9 @@ async function cross(method: string, name: string | null, args: unknown[],
       name: errorName, code, ...(retryAfterS === undefined ? {} : { retryAfterS }),
       ...(facts === undefined ? {} : { facts }) });
   }
+  if (act !== null && "answer" in act) {
+    return act.answer;
+  }
   if (act !== null && "hold" in act && act.hold === "before") {
     await hold(method, name, "before");
   }
@@ -239,11 +245,11 @@ export class Control extends WorkerEntrypoint {
     if (!SETUP.methods.includes(arm.method)) {
       throw new Error(`the gate has no method ${arm.method}`);
     }
-    const acts = ["hold", "corrupt", "refuse"].filter((act) => act in arm);
+    const acts = ["hold", "corrupt", "refuse", "answer"].filter((act) => act in arm);
     const hold = (arm as { hold?: unknown }).hold;
     if (acts.length !== 1 || (acts[0] === "hold" && hold !== "before" && hold !== "after")) {
-      throw new Error("an arming holds a call before or after it, changes its bytes, or " +
-                      `refuses it: one of those, not ${JSON.stringify(arm)}`);
+      throw new Error("an arming holds a call before or after it, changes its bytes, " +
+                      `refuses it or answers it: one of those, not ${JSON.stringify(arm)}`);
     }
     const times = arm.times ?? 1;
     if (!Number.isSafeInteger(times) || times < 1) {

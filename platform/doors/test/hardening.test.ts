@@ -22,7 +22,7 @@ import { profileNames } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar, legacyPost,
-  NAVIGATE, OPEN, pkce, reached, refresh, registerClient, rpcBody, serveFirstPartyDocument,
+  NAVIGATE, OPEN, pkce, reached, unseen, refresh, registerClient, rpcBody, serveFirstPartyDocument,
   setControl, signInApp, tokenCall, upstreamReturns, url, admitOwner } from "./support";
 
 function owner(): string {
@@ -515,6 +515,7 @@ describe("L7: the doors' routes and gates", () => {
     "refuses Origin %s on /mcp 403, with a valid token", async (origin) => {
       const alice = owner();
       const tokens = await connect(await registerClient(), { owner: alice });
+      await unseen(alice);
       expect((await legacyPost(tokens.access_token, AGENTS_LIST, { Origin: origin })).status)
         .toBe(403);
       expect(await reached(alice)).toBe(false);

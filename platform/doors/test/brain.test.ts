@@ -9,11 +9,20 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "../src/instructions";
+import { mcpOrigin } from "../src/binder";
 import type { DoorsEnv } from "../src/env";
 import {
-  call, connect, doorsEnv, OPEN, registerClient, setControl, sqlIn, type Tokens, url,
-  answerOf,
+  call, type Client as Registered, connect, doorsEnv, grantsOf, OPEN, registerClient,
+  setControl, type Tokens, url, answerOf,
 } from "./support";
+
+/** The vendor `registered`'s grant in `who`'s object holds, as the `grantList` door answers. */
+async function vendorOf(who: string, registered: Registered) {
+  const { client } = await mcpOrigin(registered.clientId, registered.redirectUri);
+  const row = (await grantsOf(who)).find((each) => each.client === client);
+  return row === undefined ? undefined
+    : { vendor: row.vendor, vendor_verified: row.vendor_verified };
+}
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -65,12 +74,11 @@ describe("a client's vendor, at sign-in", () => {
     const alice = owner();
     for (const [name, vendor] of [["Muse", "muse"], ["Gemini", "gemini"],
                                   ["Some Agent", null]] as const) {
-      const client = await mcpClient(await connect(await registerClient(name), { owner: alice }));
+      const registered = await registerClient(name);
+      const client = await mcpClient(await connect(registered, { owner: alice }));
       await tool(client, "agents_list", {});
       await client.close();
-      const rows = await sqlIn(alice, "SELECT vendor, vendor_verified FROM outside_clients " +
-                                      "ORDER BY first_seen, client");
-      expect(rows.at(-1)).toEqual({ vendor, vendor_verified: 0 });
+      expect(await vendorOf(alice, registered)).toEqual({ vendor, vendor_verified: 0 });
     }
   });
 
@@ -94,8 +102,8 @@ describe("a client's vendor, at sign-in", () => {
       const { value } = await tool(client, "agents_list", {});
       expect((value["apps"] as { id: string; connected: boolean; verified: boolean }[])
         .find((app) => app.id === "claude")).toMatchObject({ connected: true, verified: true });
-      expect(await sqlIn(alice, "SELECT vendor, vendor_verified FROM outside_clients"))
-        .toEqual([{ vendor: "claude", vendor_verified: 1 }]);
+      expect(await vendorOf(alice, { clientId: document, redirectUri: redirect }))
+        .toEqual({ vendor: "claude", vendor_verified: 1 });
       await client.close();
     } finally {
       spy.mockRestore();
@@ -170,8 +178,8 @@ describe("a CIMD document on a vendor's host that sends access elsewhere (review
       const client = await mcpClient(await connect({ clientId: document, redirectUri: redirect },
                                                    { owner: alice }));
       await tool(client, "agents_list", {});
-      expect(await sqlIn(alice, "SELECT vendor, vendor_verified FROM outside_clients"))
-        .toEqual([{ vendor: "chatgpt", vendor_verified: 0 }]);
+      expect(await vendorOf(alice, { clientId: document, redirectUri: redirect }))
+        .toEqual({ vendor: "chatgpt", vendor_verified: 0 });
       await client.close();
     } finally {
       spy.mockRestore();
@@ -251,9 +259,6 @@ describe("one brain across two vendors' agents (the local proof)", () => {
                                                   row_id: "offer:connect:grok" });
     expect((row.value["row"] as { body: string }).body)
       .toMatch(/^status: doing\nowner: [ab]\n/);
-    const rows = await sqlIn(alice, "SELECT count(*) AS n FROM collection_rows " +
-                                    "WHERE collection = 'board' AND row_id = 'offer:connect:grok'");
-    expect(rows).toEqual([{ n: 1 }]);
     await a.close();
     await b.close();
   });

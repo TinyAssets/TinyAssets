@@ -1,6 +1,6 @@
 /**
  * The cutover import's consumer (`src/import/`, slice 4), in workerd through the real owner
- * object and the real files Worker: a bundle the slice-2 builder made from its old-stack
+ * Worker and the real files Worker: a bundle the slice-2 builder made from its old-stack
  * fixture (`import-setup.ts`) imported into a pending owner and read back through the
  * object's own read doors; each gate dropping its message loudly with nothing written; a
  * second run skipping everything; a killed delivery and a sliced one converging; a page's
@@ -9,15 +9,15 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 
-import { env, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, inject, it } from "vitest";
 
 import { inlineId } from "../../contract/src/content";
 import { canonical } from "../../contract/src/canonical";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
-  answerName, doneName, type Entry, importMac, type ImportMessage, NO_ROWS, rehearsalName,
-  rowsSum,
+  answerName, type CheckChunk, type CheckEntry, doneName, type Entry, importMac,
+  type ImportMessage, NO_ROWS, rehearsalName, type Row, rowsSum,
 } from "../../contract/src/import-message";
 import { type Answers, clean, differences, expectedOf } from "../../import/check";
 import type { DoorsEnv } from "../src/env";
@@ -25,9 +25,8 @@ import { putOwner, readOwner } from "../src/directory";
 import { IMPORT_HOLD_BYTES, importQueue, type SliceBounds } from "../src/import";
 import { CHUNK_BYTES } from "../../contract/src/limits";
 import { QUEUES } from "../../contract/src/queue-names";
-import type { OwnerDO } from "./entry";
 import type { ImportBundle } from "./import-setup";
-import { admitOwner, doorsEnv, OPEN, setControl, TIERS } from "./support";
+import { admitOwner, doorsEnv, OPEN, ownDoor, setControl, TIERS } from "./support";
 
 const KEY = randomBytes(32).toString("base64url");
 const BUNDLE: ImportBundle = inject("importBundle");
@@ -36,8 +35,7 @@ const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const json = (bytes: Uint8Array) => JSON.parse(text(bytes)) as Record<string, unknown>;
 const fresh = () => `user_${randomBytes(12).toString("hex")}`;
-const own = (owner: string): Binding => ({ owner, caller: owner, origin: null });
-const stubOf = (owner: string) => env.OWNER.getByName(owner);
+const stubOf = (owner: string) => doorsEnv.OWNER.getByName(owner);
 
 /** The fixture's bundle, its files' bytes by name. */
 function bundleFiles(): Map<string, Uint8Array> {
@@ -121,36 +119,33 @@ async function drain(w: ReturnType<typeof world>, first: unknown, bounds?: Slice
 }
 
 /**
- * What the pending object holds, by its own tables: how many entries, uploads, rows and
- * notices, the policy's generation, and a digest of every entry's and row's version, so a
- * run that changes nothing leaves it equal.
+ * What the pending object holds, as the import's check through the consumer answers it (the
+ * object's own read of its files, chunks, rows and policy, `importCheck`), so a run that
+ * changes nothing leaves it equal. That it reads them whole is the owner's test
+ * (`owner/test/import.test.ts`).
  */
-function held(owner: string): Promise<Record<string, number | string>> {
-  return runInDurableObject(stubOf(owner), (_instance: unknown, state: DurableObjectState) => {
-    const sql = state.storage.sql;
-    const count = (table: string) => sql.exec<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM ${table}`).one().n;
-    const versions = JSON.stringify([
-      ...sql.exec("SELECT parent, name, version FROM file_entries ORDER BY parent, name")
-        .toArray(),
-      ...sql.exec("SELECT collection, row_id, revision FROM collection_rows " +
-                  "ORDER BY collection, row_id").toArray()]);
-    return { entries: count("file_entries"), intents: count("file_intents"),
-             rows: count("collection_rows"), notices: count("owner_notices"),
-             generation: sql.exec<{ generation: number }>(
-               "SELECT generation FROM owner_policy").one().generation,
-             versions: sha256(versions) };
-  });
+async function held(message: ImportMessage): Promise<{
+    entries: readonly CheckEntry[]; chunks: readonly CheckChunk[]; rows: Answers["rows"];
+    policy: string }> {
+  const asked = asking(message, "check");
+  expect(await drain(world(), asked)).toMatchObject({ outcome: "acked" });
+  const { entries, chunks, rows, state } = await answersOf(asked);
+  // A folder's mtime is when the import made it, never the bundle's.
+  return { entries: entries.map((entry) => entry.kind === "dir" ? { ...entry, mtime_ms: 0 }
+                                                                : entry),
+           chunks, rows, policy: state.policy_digest };
 }
 
 /** Every imported entry, row, the policy and the notice read back through the object's doors. */
 async function readBack(owner: string, files = bundleFiles()): Promise<void> {
-  const stub = stubOf(owner);
+  type Read = { entry: { size: number; mode: number; writer: string; mtime_ms: number };
+                inline?: Uint8Array; chunks?: { sha256: string }[] };
   for (const entry of paged<Entry>(files, "manifest", "entries")) {
-    const stat = (await stub.fileStat(own(owner), { path: entry.path })).entry;
+    const stat = (await ownDoor<{ entry: { kind: string } | null }>(
+      owner, "fileStat", { path: entry.path })).entry;
     expect([entry.path, stat?.kind]).toEqual([entry.path, entry.kind]);
     if (entry.kind === "file") {
-      const read = await stub.fileRead(own(owner), { path: entry.path });
+      const read = await ownDoor<Read>(owner, "fileRead", { path: entry.path });
       expect([entry.path, read.entry.size, read.entry.mode, read.entry.writer,
               read.entry.mtime_ms])
         .toEqual([entry.path, entry.size, entry.mode, "owner", entry.mtime_ms]);
@@ -163,16 +158,18 @@ async function readBack(owner: string, files = bundleFiles()): Promise<void> {
   }
   for (const row of paged<Record<string, unknown>>(files, "rows", "rows")) {
     if (row["kind"] === "policy") {
-      const policy = await stub.policyRead(own(owner));
+      const policy = await ownDoor<{ policy: unknown }>(owner, "policyRead");
       expect(canonical(policy.policy)).toBe(canonical(row["document"]));
     } else {
-      const got = await stub.collectionGet(own(owner), { collection: row["collection"] as string,
-                                                         row_id: row["row_id"] as string });
+      const got = await ownDoor<{ row: { body: string; private: boolean; writer: string } | null }>(
+        owner, "collectionGet", { collection: row["collection"] as string,
+                                  row_id: row["row_id"] as string });
       expect([got.row?.body, got.row?.private, got.row?.writer])
         .toEqual([row["body"], row["private"] === 1, owner]);
     }
   }
-  const notices = (await stub.noticeList(own(owner))).notices;
+  const { notices } = await ownDoor<{ notices: { type: string; detail: unknown }[] }>(
+    owner, "noticeList");
   expect(notices.filter((notice) => notice.type === "imported").map((notice) => notice.detail))
     .toEqual([json(files.get("owner.json")!)["notice"]]);
 }
@@ -187,7 +184,6 @@ describe("the import consumer", () => {
     const owner = fresh();
     const w = world();
     expect(await drain(w, await staged(owner))).toEqual({ deliveries: 1, outcome: "acked" });
-    expect((await held(owner)).intents).toBe(0);
     const chunks = [...bundleFiles().keys()].filter((name) => name.startsWith("chunks/"))
       .map((name) => name.slice("chunks/".length));
     expect(chunks.length).toBeGreaterThan(0);
@@ -203,26 +199,27 @@ describe("the import consumer", () => {
     const w = world();
     const message = await staged(owner);
     await drain(w, message);
-    const before = await held(owner);
+    const before = await held(message);
     w.puts.splice(0);
     expect(await drain(w, message)).toEqual({ deliveries: 1, outcome: "acked" });
     expect(w.puts).toEqual([]);
-    // Every entry, row, the policy and the notice as they were: nothing written again.
-    expect(await held(owner)).toEqual(before);
-    // The old stack's policy is archived, not carried (d3 §N6), so the default's generation.
-    expect(before).toMatchObject({ intents: 0, notices: 1, generation: 1 });
+    // Every entry, chunk, row and the policy as they were: nothing written again.
+    expect(await held(message)).toEqual(before);
+    // The old stack's policy is archived, not carried (d3 §N6), so the default's.
+    expect(before.policy).toBe((await held(await staged(fresh()))).policy);
   });
 
   it("goes on from its own continuation, one slice at a time, to the same owner state", async () => {
     const owner = fresh();
     const w = world();
     // Every slice is over once it moved a byte or a step: each sends its continuation.
-    const sliced = await drain(w, await staged(owner), { ms: 0, bytes: 0 });
+    const message = await staged(owner);
+    const sliced = await drain(w, message, { ms: 0, bytes: 0 });
     expect(sliced.outcome).toBe("acked");
     expect(sliced.deliveries).toBeGreaterThan(3);
-    const whole = fresh();
-    await drain(world(), await staged(whole));
-    const [a, b] = [await held(owner), await held(whole)];
+    const whole = await staged(fresh());
+    await drain(world(), whole);
+    const [a, b] = [await held(message), await held(whole)];
     expect(a).toEqual(b);
     await admitOwner(owner);
     await readBack(owner);
@@ -241,11 +238,10 @@ describe("the import consumer", () => {
     } } });
     const message = await staged(owner);
     expect((await drain(killed, message)).outcome).toBe("retried");
-    // Its upload stays open, and the run again resumes it: no second intent is begun.
-    expect((await held(owner)).intents).toBe(1);
+    // The run again resumes its upload (that no second one is begun is the owner's test,
+    // `owner/test/import.test.ts`).
     const w = world();
     expect(await drain(w, message)).toEqual({ deliveries: 1, outcome: "acked" });
-    expect((await held(owner)).intents).toBe(0);
     // Every chunk but the one the killed delivery put is put now, that one never again.
     const chunks = [...bundleFiles().keys()].filter((name) => name.startsWith("chunks/"));
     expect(first.length).toBe(1);
@@ -283,22 +279,23 @@ describe("the import consumer", () => {
       .filter(([name]) => !name.startsWith("manifest/")));
     index["parts"] = { ...parts, "manifest/0.json": sha256(page) };
     files.set("bundle.json", new TextEncoder().encode(`${JSON.stringify(index)}\n`));
-    expect(await drain(world(), await staged(owner, made(owner, files))))
-      .toEqual({ deliveries: 1, outcome: "acked" });
-    expect((await held(owner)).entries).toBe(entries.length);
+    const message = await staged(owner, made(owner, files));
+    expect(await drain(world(), message)).toEqual({ deliveries: 1, outcome: "acked" });
+    expect((await held(message)).entries).toHaveLength(entries.length);
   });
 });
 
 describe("the import consumer's gates, each before anything is written", () => {
+  /** `body` dropped with nothing written: no continuation, no chunk, no call of the object. */
   async function dropped(owner: string, w: ReturnType<typeof world>, body: unknown):
       Promise<void> {
-    const before = await held(owner);
+    await env.OWNER_GATE.seen(owner);
     const delivered = batch(body);
     await importQueue(delivered.batch, w.env);
     expect([delivered.acked, delivered.retried]).toEqual([[0], []]);
     expect(w.sent).toEqual([]);
     expect(w.puts).toEqual([]);
-    expect(await held(owner)).toEqual(before);
+    expect(await env.OWNER_GATE.seen(owner)).toEqual([]);
   }
 
   it("drops every message while the doors hold no IMPORT_KEY", async () => {
@@ -371,7 +368,8 @@ describe("the import consumer's gates, each before anything is written", () => {
     expect(entries.length).toBeGreaterThan(0);
     await admitOwner(other);
     for (const entry of entries) {
-      expect((await stubOf(other).fileStat(own(other), { path: entry.path })).entry).toBeNull();
+      expect((await ownDoor<{ entry: unknown }>(other, "fileStat", { path: entry.path })).entry)
+        .toBeNull();
     }
   });
 
@@ -393,10 +391,10 @@ describe("the import consumer's gates, each before anything is written", () => {
     await importQueue(delivered.batch, w.env);
     expect([delivered.acked, delivered.retried]).toEqual([[0], []]);
     expect(w.puts).toEqual([]);
-    const stub = stubOf(owner) as unknown as DurableObjectStub<OwnerDO>;
-    expect((await stub.noticeList(own(owner))).notices.filter((n) => n.type === "imported"))
-      .toEqual([]);
-    expect((await stub.fileStat(own(owner), { path: "/workspace/imported" })).entry).toBeNull();
+    const { notices } = await ownDoor<{ notices: { type: string }[] }>(owner, "noticeList");
+    expect(notices.filter((n) => n.type === "imported")).toEqual([]);
+    expect((await ownDoor<{ entry: unknown }>(owner, "fileStat", { path: "/workspace/imported" }))
+      .entry).toBeNull();
   });
 });
 
@@ -446,13 +444,6 @@ async function checkOf(message: ImportMessage, bounds?: SliceBounds) {
                      await answersOf(asked), "free");
 }
 
-/** The owner object's file space: its namespace and wrapped data key. */
-function spaceOf(owner: string): Promise<{ ns: string; data_key: string }> {
-  return runInDurableObject(stubOf(owner), (_i: unknown, state: DurableObjectState) =>
-    state.storage.sql.exec<{ ns: string; data_key: string }>(
-      "SELECT ns, data_key FROM file_space").one());
-}
-
 describe("the import's check, through the consumer, held to the bundle by the job's diff", () => {
   it("finds nothing missing, extra or different after an import, sliced or not, and marks " +
      "the import done", async () => {
@@ -468,40 +459,39 @@ describe("the import's check, through the consumer, held to the bundle by the jo
     expect(await checkOf(message, { ms: 0, bytes: 0 })).toEqual(found);
   });
 
+  // The owner's check pages, as the consumer writes them, held to the bundle changed under them
+  // by one file more, one file's mtime and one row's body, and with one chunk the files Worker
+  // could not read back (that the object answers a lost chunk so is the owner's test,
+  // `owner/test/import.test.ts`); and one file the owner holds that the bundle has not.
   it("finds a missing, an extra and a changed file, a changed row and a bad chunk", async () => {
     const owner = fresh();
     const message = await staged(owner);
     await drain(world(), message);
     const entries = paged<Entry>(bundleFiles(), "manifest", "entries");
     const files = entries.filter((entry) => entry.kind === "file" && entry.chunks === undefined);
-    const [gone, changed] = [files[0]!, files[1]!];
+    const changed = files[1]!;
+    const missing = { ...files[0]!, path: "/workspace/imported/missing.md" };
     const chunk = entries.find((entry) => entry.chunks !== undefined)!.chunks![0]!;
-    const row = paged<Record<string, unknown>>(bundleFiles(), "rows", "rows")
-      .find((each) => each["kind"] === "collection")!;
-    const split = (path: string) => [path.slice(0, path.lastIndexOf("/")),
-                                     path.slice(path.lastIndexOf("/") + 1)];
+    const rows = paged<Row>(bundleFiles(), "rows", "rows");
+    const row = rows.find((each) => each.kind === "collection")!;
     // The same length, one letter changed: only the body's id tells them apart.
-    const body = (row["body"] as string).replace(/[a-z]/, (c) => c === "x" ? "y" : "x");
-    await runInDurableObject(stubOf(owner), (_i: unknown, state: DurableObjectState) => {
-      const sql = state.storage.sql;
-      sql.exec("DELETE FROM file_entries WHERE parent = ? AND name = ?", ...split(gone.path));
-      sql.exec("UPDATE file_entries SET mtime_ms = mtime_ms + 1 WHERE parent = ? AND name = ?",
-               ...split(changed.path));
-      sql.exec("UPDATE collection_rows SET body = ? WHERE row_id = ?", body,
-               row["row_id"] as string);
-    });
+    const body = row.body.replace(/[a-z]/, (c) => c === "x" ? "y" : "x");
     const extra = new TextEncoder().encode("extra");
     const { binding, stub } = bindImportFor(owner, message.bundle);
     await stub.importFiles(binding, { entries: [{ kind: "file", path: "/workspace/imported/x.md",
                                                   size: extra.byteLength, mode: 0,
                                                   content_id: inlineId(extra), mtime_ms: 1,
                                                   bytes: extra }] });
-    const space = await spaceOf(owner);
-    await (env as unknown as { OWNER_FILES: { deleteChunks(ns: string, key: string,
-                                                       shas: string[]): Promise<unknown> } })
-      .OWNER_FILES.deleteChunks(space.ns, space.data_key, [chunk]);
-    const found = await checkOf(message);
-    expect(found.missing).toEqual([`file ${gone.path}`]);
+    const asked = asking(message, "check");
+    expect(await drain(world(), asked)).toMatchObject({ outcome: "acked" });
+    const answers = await answersOf(asked);
+    const expected = expectedOf(
+      [...entries.map((entry) => entry.path === changed.path
+        ? { ...entry, mtime_ms: (entry.mtime_ms as number) + 1 } : entry), missing],
+      rows.map((each) => each === row ? { ...row, body } : each));
+    const found = differences(expected, { ...answers, chunks: answers.chunks.map((each) =>
+      each.sha256 === chunk ? { ...each, read: null } : each) }, "free");
+    expect(found.missing).toEqual([`file ${missing.path}`]);
     expect(found.extra).toEqual(["file /workspace/imported/x.md"]);
     expect(found.different).toEqual([`file ${changed.path}: mtime_ms`,
                                      `chunk ${chunk}: not read back as its hash`,
@@ -527,7 +517,7 @@ describe("the import's check, through the consumer, held to the bundle by the jo
 function bindImportFor(owner: string, bundle: string) {
   return { binding: { owner, caller: PLATFORM_CALLER, origin: null, import: { bundle },
                       tiers: TIERS } as Binding,
-           stub: stubOf(owner) as unknown as DurableObjectStub<OwnerDO> };
+           stub: stubOf(owner) };
 }
 
 describe("the import's discard, through the consumer", () => {
@@ -535,11 +525,12 @@ describe("the import's discard, through the consumer", () => {
     const owner = fresh();
     const message = await staged(owner);
     await drain(world(), message);
-    const { ns } = await spaceOf(owner);
     const asked = asking(message, "discard");
     expect(await drain(world(), asked)).toMatchObject({ outcome: "acked" });
-    expect(await staging(answerName(asked.prefix, asked.ask!)))
-      .toEqual({ op: "discard", bundle: message.bundle, discarded: true, namespace: ns });
+    const answered = await staging(answerName(asked.prefix, asked.ask!));
+    expect(answered).toEqual({ op: "discard", bundle: message.bundle, discarded: true,
+                               namespace: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    const ns = answered!["namespace"];
     expect(await readOwner(doorsEnv, owner)).toBeNull();
     // Killed before its answer, the discard run again answers the same.
     const again = asking(message, "discard");
@@ -570,8 +561,8 @@ describe("the import's discard, through the consumer", () => {
     await drain(world(), recorded);
     expect((await staging(answerName(recorded.prefix, recorded.ask!)))?.["refused"])
       .toMatch(/holds a record of this owner/);
-    expect((await stubOf(real).fileStat(own(real), { path: "/workspace/imported" })).entry)
-      .not.toBeNull();
+    expect((await ownDoor<{ entry: unknown }>(real, "fileStat", { path: "/workspace/imported" }))
+      .entry).not.toBeNull();
   });
 });
 
@@ -647,9 +638,9 @@ describe("the import consumer's own bounds", () => {
     const outcomes = await Promise.all([drain(a, message, { ms: 0, bytes: 0 }),
                                         drain(b, message, { ms: 0, bytes: 0 })]);
     expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["acked", "acked"]);
-    const whole = fresh();
-    await drain(world(), await staged(whole));
-    const [two, one] = [await held(owner), await held(whole)];
+    const whole = await staged(fresh());
+    await drain(world(), whole);
+    const [two, one] = [await held(message), await held(whole)];
     expect(two).toEqual(one);
     expect(await checkOf(message)).toEqual({ missing: [], extra: [], different: [] });
   });
@@ -669,6 +660,6 @@ describe("the import consumer's own bounds", () => {
     await importQueue(delivered.batch, w.env);
     expect([delivered.acked, delivered.retried]).toEqual([[0], []]);
     expect(w.puts).toEqual([]);
-    expect((await held(owner)).entries).toBe(0);
+    expect((await held(await staged(owner))).entries).toEqual([]);
   });
 });

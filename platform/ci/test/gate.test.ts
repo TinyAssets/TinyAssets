@@ -149,6 +149,17 @@ describe("the files gate", () => {
     expect(await read()).toEqual([s.bytes]);
   });
 
+  it("answers a call with the armed answer in the real one's place, never sending it",
+     async () => {
+    const s = await space();
+    const bytes = new TextEncoder().encode("never stored by the armed call");
+    const put = [{ sha256: await sha256(bytes), bytes }];
+    await e.FILES_GATE.arm({ method: "putChunks", answer: { created: 7 } });
+    expect(await e.FILES.putChunks(s.ns, s.key, put)).toEqual({ created: 7 });
+    // Never sent: the real Worker stores the chunk on the next call, as new.
+    expect(await e.FILES.putChunks(s.ns, s.key, put)).toEqual({ created: 1 });
+  });
+
   it("passes a real refusal through as it crosses without the gate", async () => {
     const s = await space();
     const empty = (files: ChunkStore) => outcome(() => files.putChunks(s.ns, s.key, []));

@@ -1,7 +1,19 @@
 /** Test helpers for workerd tests in more than one workspace (they import `cloudflare:test`). */
 import { runInDurableObject } from "cloudflare:test";
 
+import { egressDoor } from "../contract/src/egress";
+import type { SandboxStart } from "../contract/src/sandbox";
+
 export type Row = Record<string, SqlStorageValue>;
+
+/** A run's own secret, as its start's MCP URL carries it (`/r/<run>/<secret>/mcp`). */
+export function secretOf(start: SandboxStart): string {
+  const door = egressDoor(new URL(start.urls.mcp).pathname);
+  if (door?.door !== "mcp" || door.secret === undefined) {
+    throw new Error(`the start of ${start.run} carries no run secret`);
+  }
+  return door.secret;
+}
 
 /** Rows a query returns in `stub`'s own storage. */
 export function sqlIn(stub: DurableObjectStub, statement: string,

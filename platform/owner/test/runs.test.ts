@@ -22,13 +22,14 @@ import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
-import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, type RunHost, Runs, SIGNIN_LAPSED,
-         UNATTENDED_REFUSED } from "../src/runs";
+import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, type RunHost, Runs, SESSION_REFUSED,
+         SIGNIN_LAPSED, UNATTENDED_REFUSED } from "../src/runs";
 import { keepTiers, PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
-  runnerBinding, runnerSandbox, scripted, secretOf, startOf, TIERS } from "./runs-support";
+  runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
+import { secretOf } from "../../ci/workerd";
 import { drainDue, failure, gateFor, spaceOf } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
@@ -82,6 +83,11 @@ describe("a run", () => {
                                 settled_at: null });
     const [lease] = await r.sql("SELECT authority, lease_id, epoch FROM sandbox_leases");
     expect(lease!["authority"]).toBe("owner");
+    // The lease keeps its egress token's hash, never the token's secret.
+    const token = egressTokenOf(start.network!.network)!;
+    const leases = JSON.stringify(await r.sql("SELECT * FROM sandbox_leases"));
+    expect(leases).not.toContain(token.split(".")[2]);
+    expect(leases).toContain(verifyToken(env.ROUTING_MAC_KEY, "egress", token)!.hash);
     expect(await r.sql("SELECT lease_id, epoch FROM runs WHERE id = ?", run.run_id))
       .toEqual([{ lease_id: lease!["lease_id"], epoch: lease!["epoch"] }]);
     // Its grant: the run's own secret's hash, never the secret, which only its URLs carry.
@@ -332,6 +338,26 @@ describe("a run's settle", () => {
     await ownerRun(r.stub, r.bind());
     expect(await r.stub.agentStatus(r.bind(), { run_id: lost.run.run_id }))
       .toMatchObject({ state: "unknown", code: "lost" });
+  });
+
+  it("keeps the run, its result and its session id and no frame as a row; a session id " +
+     "outside its shape is refused and never kept", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const ok = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, ok.start), {
+      frames: frames(INIT("sess-ok"), { type: "assistant", message: { content: [] } },
+                     RESULT("done")), end: { exit_code: 0 } });
+    const stored = JSON.stringify(await r.sql("SELECT * FROM runs"));
+    expect(stored).toContain("\"result\":\"done\"");
+    expect(stored).not.toContain("assistant");
+    const bad = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, bad.start), {
+      frames: frames(INIT("has a space"), RESULT("done")), end: { exit_code: 0 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: bad.run.run_id }))
+      .toMatchObject({ error: SESSION_REFUSED });
+    expect(await r.sql("SELECT session_id FROM conversations WHERE id = ?",
+                       bad.run.conversation_id)).toEqual([{ session_id: null }]);
   });
 
   it("is unknown when the sandbox's start never answered, failed when it refused", async () => {

@@ -5,12 +5,13 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
-import { PLATFORM_CALLER } from "../../contract/src/binding";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { base64url } from "../../contract/src/envelope";
 import { acceptanceKey, answerKey } from "../../contract/src/operator-message";
 import { QUEUES } from "../../contract/src/queue-names";
-import { writeControl } from "../../ci/fixtures";
-import { type Row, sqlIn as rowsIn } from "../../ci/workerd";
+import type { Refusal } from "../../contract/src/refusal";
+import { OPEN, writeControl } from "../../ci/fixtures";
+import { until } from "../../ci/workerd";
 import { now } from "../src/config";
 import type { DoorsEnv } from "../src/env";
 import {
@@ -19,6 +20,7 @@ import {
 import { serve } from "../src/doors";
 import doors from "../src/index";
 import { authorizationServer } from "../src/oauth";
+import { callDoor } from "../src/tools";
 import type { Sources } from "../../sources/src/schema";
 import worker from "./entry";
 import { FAKE_UPSTREAM, fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
@@ -26,7 +28,7 @@ import { FAKE_UPSTREAM, fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
 
 /**
  * What `owner`'s object asked of its sandbox: the owner's fake sandbox Worker, bound by
- * config to the object these tests host (`vitest.config.ts`), reads it back.
+ * config to the owner Worker (`vitest.config.ts`), reads it back.
  */
 export async function recorded(owner: string) {
   return await env.SANDBOX_LOG.recorded(owner);
@@ -73,8 +75,8 @@ export async function held(ask: string) {
  * (`authorize.ts`), for a test that reaches an owner's object without signing it in.
  */
 export async function admitOwner(owner: string): Promise<void> {
-  await env.OWNER.getByName(owner).admissionSet({ owner, caller: PLATFORM_CALLER, origin: null },
-                                                { admit: true });
+  await doorsEnv.OWNER.getByName(owner).admissionSet(
+    { owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
 }
 
 export function url(path: string): string {
@@ -374,13 +376,114 @@ export async function legacyTool(token: string, name: string, args: unknown):
   return body["result"] as ToolResult;
 }
 
-/** Rows a query returns in an owner's object. */
-export function sqlIn(owner: string, statement: string, ...params: SqlStorageValue[]):
-    Promise<Row[]> {
-  return rowsIn(env.OWNER.getByName(owner), statement, ...params);
+/**
+ * `owner`'s next call of `door` refused at the owner gate (`ci/gate.ts`) with `refusal`,
+ * crossing the object's RPC to the doors as a refusal thrown in the object does (as a full
+ * slot pool refuses it `busy`, `contract/src/slots.ts`).
+ */
+export async function refuseOnce(door: string, owner: string, refusal: Refusal): Promise<void> {
+  const { code, message, name, retryAfterS, facts } = refusal;
+  await env.OWNER_GATE.arm({ method: door, name: owner, refuse: {
+    code, message, name, ...(retryAfterS === undefined ? {} : { retryAfterS }),
+    ...(facts === undefined ? {} : { facts }) } });
 }
 
-/** Whether a door was ever served in an owner's object: its owner is stored on first use. */
+/** `owner`'s admission and tier, as its `ownerState` door answers the platform. */
+export async function admissionOf(owner: string) {
+  const { state, reasons, tier } = await doorsEnv.OWNER.getByName(owner).ownerState(
+    { owner, caller: PLATFORM_CALLER, origin: null });
+  return { state, reasons, tier };
+}
+
+/** One outside client's grant, as the owner's `grantList` door answers it. */
+export interface GrantRow {
+  readonly client: string;
+  readonly source: string;
+  readonly mode: string;
+  readonly scopes: unknown;
+  readonly revision: number;
+  readonly revoked_at: number | null;
+  readonly vendor: string | null;
+  readonly vendor_verified: number;
+}
+
+/** The owner's own binding, as a door takes it from the owner's app. */
+export function ownBinding(owner: string): Binding {
+  return { owner, caller: owner, origin: null, tiers: OPEN.tiers };
+}
+
+/**
+ * `owner`'s door `door` called with its own binding (`ownBinding`), as the doors call a
+ * table door (`callDoor`): its answer, as the door's row says it is.
+ */
+export async function ownDoor<T>(owner: string, door: string, request?: unknown): Promise<T> {
+  return await callDoor(doorsEnv.OWNER.getByName(owner), ownBinding(owner), door, request) as T;
+}
+
+/** `owner`'s grants, as its `grantList` door answers them to its own binding. */
+export async function grantsOf(owner: string): Promise<GrantRow[]> {
+  return (await ownDoor<{ clients: GrantRow[] }>(owner, "grantList")).clients;
+}
+
+/**
+ * `owner`'s `main` agent defined as `file`, as its app writes it in its session, once the
+ * owner's starter seed (its own `main` among it), which its sign-in began, has landed.
+ */
+export async function defineMain(owner: string, app: { access_token: string; session: string },
+                                 file: Record<string, unknown>): Promise<void> {
+  await until(async () => (await ownDoor<{ version: number }>(owner, "starterReceipts"))
+    .version > 0, "the starter's seed");
+  const path = "/workspace/agents/main/agent.json";
+  const read = await appPost("files/read", app.access_token, app.session, { path });
+  const { entry } = await read.json<{ entry: { etag: string } | null }>();
+  const written = await appPost("files/write", app.access_token, app.session,
+                                { path, expected_etag: entry?.etag ?? null,
+                                  text: JSON.stringify(file) });
+  if (written.status !== 200) {
+    throw new Error(`main's agent.json: ${written.status} ${await written.text()}`);
+  }
+}
+
+/**
+ * The calls of `door` that crossed into `owner`'s object since the last look (the owner
+ * gate's record, `ci/gate.ts`): each one's binding and request, as the doors sent them.
+ */
+export async function crossed(owner: string, door: string):
+    Promise<{ binding: Binding; request: Record<string, unknown> }[]> {
+  return (await env.OWNER_GATE.seen(owner)).filter((call) => call.method === door)
+    .map((call) => {
+      const [binding, request] = call.args as [Binding, Record<string, unknown>];
+      return { binding, request };
+    });
+}
+
+/**
+ * The agent `owner` registers for the client `tokens` connects, as a client registers one:
+ * the client files its card (`agent_register`) and the owner applies it in a session of its
+ * own (`registerAgent`). Its id.
+ */
+export async function registerAgent(tokens: Tokens, owner: string, delivery_method: string,
+                                    command_center_id = "alpha"): Promise<string> {
+  const filed = answerOf(await legacyTool(tokens.access_token, "agent_register", {
+    command_center_id, display_name: "Dot", delivery_method, recipe_id: null })) as
+    { card_id: string; digest: string };
+  const stub = doorsEnv.OWNER.getByName(owner);
+  const { session } = await stub.sessionOpen({ ...ownBinding(owner),
+                                               authenticated_at: now() - 5 });
+  const registered = await callDoor(stub, { ...ownBinding(owner), session }, "registerAgent",
+                                    { card_id: filed.card_id, digest: filed.digest });
+  return (registered as { agent_id: string }).agent_id;
+}
+
+/**
+ * What crossed `owner`'s gate so far, forgotten: a test's own setup's calls (a sign-in's
+ * admit), before the call whose reach it watches (`reached`).
+ */
+export async function unseen(owner: string): Promise<void> {
+  await env.OWNER_GATE.seen(owner);
+}
+
+/** Whether the doors called `owner`'s object since the last look: what crossed its gate. */
 export async function reached(owner: string): Promise<boolean> {
-  return (await sqlIn(owner, "SELECT owner FROM object_owner")).length > 0;
+  return (await env.OWNER_GATE.seen(owner)).length > 0;
 }
