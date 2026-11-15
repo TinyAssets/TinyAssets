@@ -57,6 +57,7 @@ export const OPERATOR_OPS = Object.freeze({
   "owner.suspend": Object.freeze(["reason"] as const),
   "owner.lift": Object.freeze(["reason"] as const),
   "owner.admit": Object.freeze([] as const),
+  "owner.erase": Object.freeze(["confirm"] as const),
   "restore.source": Object.freeze([] as const),
   "restore.begin": Object.freeze(["namespace", "gen"] as const),
   "restore.step": Object.freeze([] as const),

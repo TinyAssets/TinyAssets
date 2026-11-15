@@ -44,6 +44,9 @@
  *   wiped only with `--confirm` the words that names; then begun, stepped until done and the
  *   owner admitted. With no `--generation`, the owner's namespace and finished generations,
  *   as its object holds them, or with `--confirm release-<owner>` its pin given up.
+ * - `erase` (the operator path): `--owner` erased through the operator channel as its own
+ *   door erases it, for an owner who asked by other means; only with `--confirm` its words,
+ *   `erase-<owner>`, which a run without them names.
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -115,7 +118,9 @@ import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract
 import {
   argsText, OPERATOR_KEYRING, type OperatorArgs,
 } from "../contract/src/operator-message.ts";
-import type { RestoreAnswer, RestoreHold, RestoreSource } from "../contract/src/owner.ts";
+import {
+  eraseWords, type RestoreAnswer, type RestoreHold, type RestoreSource,
+} from "../contract/src/owner.ts";
 import { principal } from "../contract/src/text.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
@@ -132,7 +137,7 @@ import {
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
   type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
-  ownerAct, PIN_WAIT_MS, RESTORE_LOSES, restoreFrom,
+  ERASE_LOSES, ownerAct, PIN_WAIT_MS, RESTORE_LOSES, restoreFrom,
 } from "./operator.ts";
 /**
  * The control record a first deploy writes when there is none: every outside door closed, and
@@ -181,7 +186,7 @@ export const IO: Io = Object.freeze({
 });
 
 export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback" | "control"
-  | "owner" | "restore";
+  | "owner" | "restore" | "erase";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -210,7 +215,7 @@ export interface Run {
   readonly act: Act | null;
   /** `--generation`: the generation `restore` restores `--owner` from; none asks its source. */
   readonly generation: Generation | null;
-  /** `--confirm`: the words that confirm `restore`'s wipe, or give its pin up. */
+  /** `--confirm`: the words that confirm `restore`'s wipe, give its pin up, or `erase`. */
   readonly confirm: string | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -1513,8 +1518,33 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   say(`the doors answered owner.admit for ${owner}: ${JSON.stringify(await ask("owner.admit"))}`);
 });
 
-/** What `--confirm` takes: a wipe's words or a release's, each naming the owner. */
-const CONFIRM = /^(?:wipe|release)-\S+$/;
+/**
+ * Mode `erase`: `--owner` erased through the operator channel (`owner.erase`), for an owner
+ * who asked by other means: its object marked as its own door marks it, then the same
+ * erasure (`owner/src/erasure.ts`). Irreversible, so only with `--confirm` its words
+ * (`eraseWords`), which the doors hold it to again; without them the run ends saying them,
+ * and with others it stops. The plan job only plans it.
+ */
+const eraseAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const owner = run.owner!;
+  const words = eraseWords(owner);
+  if (run.confirm === null) {
+    say(`erase ${owner} only with its words: run again with --confirm ${words}`);
+    return;
+  }
+  if (run.confirm !== words) {
+    throw new Error(`--confirm ${run.confirm} is not the erasure's words for ${owner}: ${words}`);
+  }
+  say(`erase ${owner} through the operator channel, as its own door erases it: ${ERASE_LOSES}`);
+  if (!run.apply) {
+    return;
+  }
+  say(`the doors answered owner.erase for ${owner}: ${
+    JSON.stringify(await asked(run, got, "owner.erase", owner, { confirm: words }))}`);
+});
+
+/** What `--confirm` takes: a wipe's, a release's or an erasure's words, each naming the owner. */
+const CONFIRM = /^(?:wipe|release|erase)-\S+$/;
 
 /**
  * E2B's lifecycle webhook, registered or changed once the doors hold E2B_WEBHOOK_SECRET:
@@ -1931,6 +1961,7 @@ const HANDBACK = Steps.none.then(zone).then(recordRead).then(e2b).then(hookListe
 const CONTROL = Steps.none.then(zone).then(controlEdit).list;
 const OWNER = Steps.none.then(zone).then(ownerAsk).list;
 const RESTORE = Steps.none.then(zone).then(restoreAsk).list;
+const ERASE = Steps.none.then(zone).then(eraseAsk).list;
 
 /** What the plan job holds: the Cloudflare token, its one `production` secret, and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
@@ -1998,6 +2029,11 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
     deploys: false, applies: true, own: ["--owner", "--generation", "--confirm"],
     steps: { public: RESTORE, secrets: RESTORE }, report: { unchanged: NOTHING, after: [] },
+  },
+  erase: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
+    deploys: false, applies: true, own: ["--owner", "--confirm"],
+    steps: { public: ERASE, secrets: ERASE }, report: { unchanged: NOTHING, after: [] },
   },
 });
 
@@ -2153,7 +2189,8 @@ const OWN = Object.freeze({
   "--generation": { names: "the generation to restore from, <namespace>/<gen> as " +
                            "restore.source answers them", needed: false },
   "--confirm": { names: "the words that confirm a restore's wipe, wipe-<owner>-<gen> as " +
-                        "restore.pin answers them, or give its pin up, release-<owner>",
+                        "restore.pin answers them, or give its pin up, release-<owner>, or " +
+                        "an erasure, erase-<owner>",
                  needed: false },
 });
 export type Own = keyof typeof OWN;

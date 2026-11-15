@@ -172,6 +172,19 @@ export interface RestoreWipeRequest {
 }
 
 /**
+ * The words that confirm the platform's erasure of `owner` (`erasureBegin`, the operator's
+ * `owner.erase`): the owner named a second time, after the one the signed message names, so
+ * an erasure is never begun by words typed for another owner. The object takes these words
+ * exactly, and the kit names them before it asks (`deploy.ts`, mode `erase`).
+ */
+export const eraseWords = (owner: string): string => `erase-${owner}`;
+
+/** What confirms an erasure: the owner's typed words, or the platform's (`eraseWords`). */
+export interface EraseRequest {
+  readonly confirm: string;
+}
+
+/**
  * A restore's hold on its owner, from the pin through the wipe (`owner/src/restore.ts`): the
  * record's step, the generation pinned and its namespace, the generation the pin wrote of the
  * owner's present state (`fresh`: null before it is begun, or for an object that held no
@@ -318,7 +331,9 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   sessionClose(binding: Binding): Promise<{ readonly closed: number }>;
   socketsEnd(binding: Binding): Promise<object>;
   socketTicket(binding: Binding, request: Handed<"socketTicket">): Promise<object>;
-  ownerErase(binding: Binding, request: Asked<"ownerErase", { readonly confirm: string }>):
+  ownerErase(binding: Binding, request: Asked<"ownerErase", EraseRequest>):
+    Promise<{ readonly erasing: true }>;
+  erasureBegin(binding: Binding, request: Asked<"erasureBegin", EraseRequest>):
     Promise<{ readonly erasing: true }>;
   erasureOutside(binding: Binding):
     Promise<{ readonly keys: readonly string[]; readonly routes: readonly string[] } | null>;

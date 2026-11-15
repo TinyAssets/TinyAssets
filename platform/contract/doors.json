@@ -764,6 +764,13 @@
       "args": { "refused": "invalid policy request", "required": { "confirm": {} }, "optional": {} }
     },
     {
+      "door": "erasureBegin", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "erasure", "gate": "units",
+      "args": {
+        "refused": "invalid erasure request", "required": { "confirm": {} }, "optional": {}
+      }
+    },
+    {
       "door": "erasureOutside", "class": "admission", "caller": "erasure", "capability": null,
       "handler": "erasure", "gate": "door", "args": "none"
     },
