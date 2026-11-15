@@ -1,5 +1,5 @@
 /**
- * The egress door (tasks 4 G4), in workerd, through the real owner object and the real
+ * The egress door (tasks 4 G4), in workerd, through the real owner Worker and the real
  * gateway Worker (its `EgressGateway` entrypoint, as the config binds it), against the fake
  * providers' Groq.
  *
@@ -10,9 +10,7 @@
  * clamped to its reservation; every refusal is a fixed code that forwards nothing; and every
  * admitted call is settled once, however it ends, at the cost pi-ai read, or kept whole.
  */
-import {
-  createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
-} from "cloudflare:test";
+import { createExecutionContext, env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
@@ -22,16 +20,17 @@ import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, RUNNER_HEADER,
   SANDBOX_HEADER,
 } from "../../contract/src/egress";
-import { defineAgent, later, secretOf } from "../../owner/test/runs-support";
 import type { DoorsEnv } from "../src/env";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
-import { until } from "../../ci/workerd";
+import { HELD_WAIT_MS } from "../../ci/fixtures";
+import { secretOf, until } from "../../ci/workerd";
+import { Refusal } from "../../contract/src/refusal";
 import worker from "./entry";
 import { EGRESS_CHUNKS, EGRESS_USAGE } from "./fake-providers";
 import {
-  appPost, call, doorsEnv, OPEN, reached, recorded, serveFirstPartyDocument, setControl,
-  signInApp, sqlIn, url,
+  appPost, call, crossed, defineMain, doorsEnv, OPEN, ownDoor, reached, recorded,
+  refuseOnce, serveFirstPartyDocument, setControl, signInApp, url,
 } from "./support";
 import type { NetworkApplied, NetworkPlan } from "../../contract/src/sandbox";
 import type {
@@ -77,11 +76,11 @@ function send(request: Request, environment: DoorsEnv = doorsEnv): Promise<Respo
 /** An owner's object as the test reaches it: its own stub, every door of it. */
 interface Held {
   readonly binding: Binding;
-  readonly stub: ReturnType<typeof env.OWNER.getByName>;
+  readonly stub: ReturnType<typeof doorsEnv.OWNER.getByName>;
 }
 
 function ownerBound(owner: string): Held {
-  return { binding: { owner, caller: owner, origin: null }, stub: env.OWNER.getByName(owner) };
+  return { binding: { owner, caller: owner, origin: null }, stub: doorsEnv.OWNER.getByName(owner) };
 }
 
 function sessionOf(sandbox: Sandbox): Binding {
@@ -117,13 +116,12 @@ async function sandbox(models: Record<string, unknown> = {
   const { connection, models: ids } = await connected.json<{ connection: string;
                                                              models: string[] }>();
   const bound = ownerBound(owner);
-  const { generation, policy } = await bound.stub.policyRead(bound.binding);
+  const { generation, policy } = await policyOf(owner);
   await bound.stub.policyWrite({ ...bound.binding, session: app.session }, {
     expected_generation: generation,
     policy: { ...policy, models } });
   // The run door admits pi on the key, which opens the sandbox's lease.
-  await defineAgent(bound.stub, bound.binding, "main",
-                    { engine: "pi", credential: "api_key", connection, scopes: [] });
+  await defineMain(owner, app, { engine: "pi", credential: "api_key", connection, scopes: [] });
   const submitted = await appPost("agent/submit", app.access_token, null,
                                   { message: "go", client_send_id: "s-1" });
   expect(submitted.status).toBe(200);
@@ -188,15 +186,46 @@ async function forwarded(): Promise<{ headers: Record<string, string>; url: stri
   return log.filter((entry) => new URL(entry.url).pathname === COMPLETIONS);
 }
 
+/** One egress call's receipt, as the owner's `egressReceipts` door answers it. */
+interface Receipt {
+  readonly reservation: string;
+  readonly method: string;
+  readonly path: string;
+  readonly state: string;
+  readonly code: string | null;
+  readonly ended: string | null;
+  readonly outcome: string | null;
+  readonly status: number | null;
+  readonly bytes: number | null;
+  readonly charge: string | null;
+  readonly rule: string | null;
+  readonly est_cost: number | null;
+  readonly cost: number | null;
+  readonly tokens: number | null;
+  readonly served: string | null;
+}
+
+/** The owner's egress receipts, oldest first. */
+async function receipts(owner: string): Promise<Receipt[]> {
+  return (await ownDoor<{ receipts: Receipt[] }>(owner, "egressReceipts")).receipts.reverse();
+}
+
+/** Each call's end, as its receipt holds it. */
 async function reservations(owner: string) {
-  return sqlIn(owner, "SELECT state, code, ended, outcome, status, bytes, bytes_hint, path, " +
-                        "method FROM egress_reservations ORDER BY opened_at, rowid");
+  return (await receipts(owner)).map(({ state, code, ended, outcome, status, bytes, path,
+                                        method }) =>
+    ({ state, code, ended, outcome, status, bytes, path, method }));
 }
 
 /** Each call's charge: its state (or the row's, uncharged), its rule, what it held and used. */
 async function spends(owner: string) {
-  return sqlIn(owner, "SELECT coalesce(charge, state) AS state, rule, tokens, cost, est_cost " +
-                        "FROM egress_reservations ORDER BY opened_at, rowid");
+  return (await receipts(owner)).map(({ charge, state, rule, tokens, cost, est_cost }) =>
+    ({ state: charge ?? state, rule, tokens, cost, est_cost }));
+}
+
+/** The owner's policy, as its `policyRead` door answers it. */
+function policyOf(owner: string) {
+  return ownDoor<{ generation: number; policy: Record<string, unknown> }>(owner, "policyRead");
 }
 
 /** The answer's refusal code. */
@@ -234,7 +263,7 @@ async function settledOf(owner: string): Promise<void> {
 async function writeEgress(box: Sandbox,
                            reapplied: NetworkApplied = { state: "applied" }): Promise<void> {
   await env.SANDBOX_LOG.script(box.owner, { networkAnswer: reapplied });
-  const { generation, policy } = await box.bound.stub.policyRead(box.bound.binding);
+  const { generation, policy } = await policyOf(box.owner);
   await box.bound.stub.policyWrite(sessionOf(box), {
     expected_generation: generation,
     policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
@@ -280,30 +309,34 @@ describe("the egress door", () => {
     expect(JSON.stringify(sent)).not.toContain("ta_ph");
     expect(JSON.stringify(sent)).not.toContain(box.token);
     const reserved = (await spends(box.owner))[0]!;
-    const asked = JSON.parse(sent!.body) as Record<string, unknown>;
+    const forwardedBody = JSON.parse(sent!.body) as Record<string, unknown>;
     // The output cap the reservation leaves, in place of the 900M the client asked.
-    expect(asked["max_completion_tokens"]).toBeLessThan(900_000_000);
-    expect(asked["max_completion_tokens"]).toBeGreaterThan(0);
+    expect(forwardedBody["max_completion_tokens"]).toBeLessThan(900_000_000);
+    expect(forwardedBody["max_completion_tokens"]).toBeGreaterThan(0);
     // The rest as the client sent it, but for the usage report the gateway asks for.
-    expect({ ...asked, max_completion_tokens: 0 }).toEqual({
+    expect({ ...forwardedBody, max_completion_tokens: 0 }).toEqual({
       ...JSON.parse(body), max_completion_tokens: 0, stream_options: { include_usage: true } });
     await settledOf(box.owner);
     expect(await reservations(box.owner)).toEqual([{
       state: "settled", code: null, ended: null, outcome: "complete", status: 200,
       bytes: new TextEncoder().encode(text).byteLength,
-      bytes_hint: new TextEncoder().encode(body).byteLength,
       path: `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&Access_Token=ta_ph&stream=true`, method: "POST" }]);
-    // pi-ai's own reading of the stream, priced by the catalog's record of the model.
-    const [{ models }] = await sqlIn(box.owner, "SELECT models FROM connections") as
-      [{ models: string }];
-    const record = (JSON.parse(models) as { id: string; cost: { input: number;
-                                                                output: number } }[])
-      .find((model) => model.id === box.model)!;
-    const cost = Math.ceil((EGRESS_USAGE.prompt_tokens * record.cost.input
-                            + EGRESS_USAGE.completion_tokens * record.cost.output));
-    expect(await spends(box.owner)).toEqual([{ state: "succeeded", rule: null,
-                                               tokens: EGRESS_USAGE.total_tokens, cost,
-                                               est_cost: reserved["est_cost"] }]);
+    // The open carried the body's length; the settle, pi-ai's own reading of the stream as
+    // the gateway metered it (its price is the gateway's test, `gateway/test/meter.test.ts`).
+    const calls = await env.OWNER_GATE.seen(box.owner);
+    const asked = (door: string) => (calls.find((call) => call.method === door)!
+      .args as [Binding, Record<string, unknown>])[1];
+    expect(asked("egressOpen")["bytes_hint"]).toBe(new TextEncoder().encode(body).byteLength);
+    const spend = asked("egressSettle")["spend"] as { state: string; tokens: number;
+                                                      cost: number };
+    expect(spend).toMatchObject({ state: "succeeded", tokens: EGRESS_USAGE.total_tokens });
+    expect(spend.cost).toBeGreaterThan(0);
+    // Charged at it, in the owner's own unit (the owner's test, `owner/test/egress.test.ts`).
+    const [charged] = await spends(box.owner);
+    expect(charged).toMatchObject({ state: "succeeded", rule: null,
+                                    tokens: EGRESS_USAGE.total_tokens,
+                                    est_cost: reserved["est_cost"] });
+    expect(charged!.cost).toBeGreaterThan(0);
   });
 
   it("streams an SSE answer as the provider writes it, unbuffered, its type kept", async () => {
@@ -352,12 +385,11 @@ describe("the egress door", () => {
         .filter((row) => row["state"] === "settled").length === i + 1, "the settle", 400);
     }
     const charged = await spends(box.owner);
+    expect(charged).toHaveLength(3);
     for (const row of charged) {
       expect(row).toMatchObject({ state: "unknown", cost: null, tokens: null });
+      expect(row.est_cost).toBeGreaterThan(0);
     }
-    const [spent] = await sqlIn(box.owner, "SELECT COALESCE(SUM(cost), 0) AS cost " +
-                                            "FROM model_spend WHERE period GLOB 'd:*'");
-    expect(spent!["cost"]).toBe(charged.reduce((sum, row) => sum + (row["est_cost"] as number), 0));
   });
 
   it("prices a dated snapshot as the model the call named, and keeps its id; a call that " +
@@ -367,8 +399,7 @@ describe("the egress door", () => {
       headers: { "x-fake-egress": "snapshot" } }));
     await named.text();
     await settledOf(box.owner);
-    const [settled] = await sqlIn(box.owner, "SELECT charge, cost, served FROM " +
-                                              "egress_reservations");
+    const [settled] = await receipts(box.owner);
     expect(settled).toMatchObject({ charge: "succeeded", served: `${box.model}-2026-01-01` });
     expect(settled!["cost"] as number).toBeGreaterThan(0);
     const other = await sandbox();
@@ -407,8 +438,8 @@ describe("the egress door", () => {
       } } });
     const answer = await unknown.json<{ error: { code: string }; receipt: string }>();
     expect([unknown.status, answer.error.code]).toEqual([404, "egress_unknown_model"]);
-    expect((await sqlIn(other.owner, "SELECT id, state, code FROM egress_reservations"))[0])
-      .toEqual({ id: answer.receipt, state: "refused", code: "egress_unknown_model" });
+    expect((await receipts(other.owner))[0]).toMatchObject(
+      { reservation: answer.receipt, state: "refused", code: "egress_unknown_model" });
     const large = await send(egressRequest(other, COMPLETIONS, {
       headers: { "content-length": String(EGRESS_BODY_MAX + 1) } }));
     expect([large.status, await codeOf(large)]).toEqual([413, "egress_too_large"]);
@@ -565,9 +596,14 @@ describe("the egress door", () => {
     expect(JSON.stringify(box.opened.env)).not.toContain(box.key);
     // No directory entry is written for either token.
     expect((await env.DIRECTORY.list({ prefix: "l:" })).keys).toEqual([]);
-    const stored = JSON.stringify(await sqlIn(box.owner, "SELECT * FROM sandbox_leases"));
-    expect(stored).not.toContain(box.token.split(".")[2]);
-    expect(stored).toContain(verifyToken(env.ROUTING_MAC_KEY, "egress", box.token)!.hash);
+    // A call through the door hands the object the token's hash, never its secret (that the
+    // lease keeps the hash alone is the owner's test, `owner/test/egress.test.ts`).
+    await env.OWNER_GATE.seen(box.owner);
+    await (await send(egressRequest(box))).text();
+    const [opened] = await crossed(box.owner, "egressOpen");
+    expect(JSON.stringify(opened)).not.toContain(box.token.split(".")[2]);
+    expect(JSON.stringify(opened))
+      .toContain(verifyToken(env.ROUTING_MAC_KEY, "egress", box.token)!.hash);
   });
 });
 
@@ -637,8 +673,10 @@ describe("a refused call", () => {
     expect(await reservations(box.owner)).toEqual([]);
   });
 
-  it("with an unknown secret under a true MAC, or a lease that lapsed or closed, is refused " +
-     "by the owner's object; a never-seen owner's gets no rows", async () => {
+  // A lease that lapsed is refused so by the owner's test, on its clock
+  // (`owner/test/egress.test.ts`).
+  it("with an unknown secret under a true MAC, or a lease that closed, is refused by the " +
+     "owner's object, and by a never-seen owner's", async () => {
     const box = await sandbox();
     const deadline = Math.floor(Date.now() / 1000) + 3600;
     const unknown = mintToken(env.ROUTING_MAC_KEY, "egress", box.owner, deadline).token;
@@ -648,11 +686,8 @@ describe("a refused call", () => {
     const theirs = await send(egressRequest({ ...box,
       token: mintToken(env.ROUTING_MAC_KEY, "egress", stranger, deadline).token }));
     expect(theirs.status).toBe(403);
-    expect(await reached(stranger)).toBe(false);
-    expect(await reservations(stranger)).toEqual([]);
-    later();
-    const lapsed = await send(egressRequest(box));
-    expect([lapsed.status, await codeOf(lapsed)]).toEqual([401, "egress_lease_closed"]);
+    // Its object asked once (that it keeps no row of the call is the owner's test).
+    expect(await crossed(stranger, "egressOpen")).toHaveLength(1);
     const other = await sandbox();
     await over(other);
     const closed = await send(egressRequest(other));
@@ -696,9 +731,9 @@ describe("a refused call", () => {
                                       { reason: "billing", suspended: true });
     const suspended = await send(egressRequest(box));
     expect([suspended.status, await codeOf(suspended)]).toEqual([403, "owner_suspended"]);
-    await sqlIn(box.owner, "UPDATE owner_admission SET state = 'erased', reasons = '[]'");
-    const { evictDurableObject } = await import("cloudflare:test");
-    await evictDurableObject(box.bound.stub);
+    // An erased owner's tombstone refuses every door (the owner's test, on its clock).
+    await refuseOnce("egressOpen", box.owner,
+                     new Refusal("owner_erased", "owner_erased: the owner's account was erased"));
     const erased = await send(egressRequest(box));
     expect([erased.status, await codeOf(erased)]).toEqual([403, "owner_erased"]);
     expect(await forwarded()).toEqual([]);
@@ -773,8 +808,8 @@ describe("a policy write mid-stream", () => {
     const old = await send(egressRequest(box));
     expect([old.status, await codeOf(old)]).toEqual([409, "egress_policy_stale"]);
     // The `runs` lane the write woke re-applied the lease's network under generation 2 (the
-    // sandbox Worker's `network`), so a call through it is answered.
-    await runDurableObjectAlarm(env.OWNER.getByName(box.owner));
+    // sandbox Worker's `network`), on the object's own alarm, so a call through it is answered.
+    await until(async () => (await recorded(box.owner)).networks.length > 0, "the re-apply");
     const asked = (await recorded(box.owner)).networks;
     expect(asked).toMatchObject([{ lease: box.opened.lease }]);
     expect(asked.map((each) => generationOf(each.network.network))).toEqual([2]);
@@ -843,18 +878,20 @@ describe("settlement", () => {
     expect((await reservations(box.owner))[0]!["outcome"]).toBe("complete");
   });
 
-  it("goes through a fresh stub when the owner's object reset mid-stream", async () => {
+  it("settles through a fresh stub when the first settle's answer was lost", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
       headers: { "x-fake-egress": "slow-reset" } }));
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     await reader.read();
-    await runInDurableObject(box.bound.stub, (_instance: unknown, state: DurableObjectState) => {
-      state.abort("reset");
-    }).catch(() => undefined);
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    expect(await drained(reader)).toBe("egress_ended");
+    // The settle's first call is lost on its way (as to an object that reset), never sent.
+    await env.OWNER_GATE.arm({ method: "egressSettle", name: box.owner, hold: "before" });
+    await writeEgress(box);
+    const ending = drained(reader);
+    const [held] = await env.OWNER_GATE.held(HELD_WAIT_MS);
+    await env.OWNER_GATE.lose(held!.id);
+    expect(await ending).toBe("egress_ended");
     await settledOf(box.owner);
     expect(await reservations(box.owner)).toMatchObject([{ state: "settled",
                                                            outcome: "ended" }]);

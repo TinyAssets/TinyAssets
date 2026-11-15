@@ -1,22 +1,21 @@
 /**
  * The in-VM sync agent's doors on the egress host (slice S), in workerd through the real
- * owner object (its `SANDBOX` a recording fake, `entry.ts`): by the lease's sync token with
+ * owner Worker (its `SANDBOX` a recording fake, `vitest.config.ts`): by the lease's sync token with
  * the egress token E2B's transform sets beside it (review M-5: the sync token alone, taken
  * out of the VM, reaches nothing), never the egress token alone or none; the feed, a file's
  * bytes, a listing, the upload of a file past an inline write and the fenced commit; and a
  * stale or forged token reaching no object.
  */
-import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { mintToken } from "../../contract/src/routing-mac";
 import type { Binding } from "../../contract/src/binding";
-import { defineAgent } from "../../owner/test/runs-support";
 import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, SANDBOX_HEADER, SYNC_HEADER,
 } from "../../contract/src/egress";
 import {
-  appPost, call, OPEN, recorded, serveFirstPartyDocument, setControl, signInApp,
+  appPost, call, defineMain, doorsEnv, OPEN, recorded, serveFirstPartyDocument, setControl,
+  signInApp,
 } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
@@ -35,8 +34,8 @@ async function leased() {
   const who = `user_${crypto.randomUUID().replace(/-/g, "")}`;
   const app = await signInApp({ owner: who });
   const binding: Binding = { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
-  await defineAgent(env.OWNER.getByName(who), binding, "main", SIGNED_IN);
-  await env.OWNER.getByName(who).fileWrite(binding, {
+  await defineMain(who, app, SIGNED_IN);
+  await doorsEnv.OWNER.getByName(who).fileWrite(binding, {
     path: "/workspace/notes.md", expected_etag: null, content: new TextEncoder().encode("hi") });
   await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "s-1" });
   const [start] = (await recorded(who)).starts as SandboxStart[];

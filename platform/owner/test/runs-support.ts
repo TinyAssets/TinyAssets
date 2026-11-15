@@ -10,7 +10,8 @@ import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
 import { verifyToken } from "../../contract/src/routing-mac";
-import { egressDoor, egressTokenOf } from "../../contract/src/egress";
+import { egressTokenOf } from "../../contract/src/egress";
+import { secretOf } from "../../ci/workerd";
 
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
@@ -109,15 +110,6 @@ export async function whileOut<R>(owner: string, method: "start" | "network",
     await sandbox.release(method);
   }
   return answered;
-}
-
-/** A run's own secret, as its start's MCP URL carries it (`/r/<run>/<secret>/mcp`). */
-export function secretOf(start: SandboxStart): string {
-  const door = egressDoor(new URL(start.urls.mcp).pathname);
-  if (door?.door !== "mcp" || door.secret === undefined) {
-    throw new Error(`the start of ${start.run} carries no run secret`);
-  }
-  return door.secret;
 }
 
 /** The SHA-256 the binder hands the object of a secret its call presented. */

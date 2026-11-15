@@ -16,9 +16,9 @@ import {
 import { PLATFORM_CALLER } from "../../../contract/src/binding";
 import type { SandboxStart } from "../../../contract/src/sandbox";
 import { toolTable } from "../../../contract/src/doors";
-import { refuseOnce } from "../entry";
 import {
-  appPost, call, connect, legacyPost, OPEN, rpcBody, registerClient, serveFirstPartyDocument,
+  appPost, call, connect, doorsEnv, legacyPost, OPEN, refuseOnce, rpcBody, registerClient,
+  serveFirstPartyDocument,
   setControl, url,
 } from "../support";
 import { clean, owned as ownedBy } from "./support";
@@ -186,14 +186,14 @@ describe("wire: busy, suspended and erasing owners", () => {
     const { who, app } = await owned("busy");
     const key = await mint(app.access_token, app.session);
     const tokens = await connect(await registerClient(), { owner: who });
-    inject(who);
+    await inject(who);
     await rec("busy api agents_list", api(key, "agents_list", {}));
-    inject(who);
+    await inject(who);
     await rec("busy app agents_list", appPost("tools/agents_list", app.access_token,
                                                     app.session, {}));
-    inject(who);
+    await inject(who);
     recRaw("busy mcp agents_list", await mcpTool(tokens.access_token, "agents_list", {}));
-    inject(who);
+    await inject(who);
     recRaw("busy mcp tools/list", await mcpRaw(tokens.access_token,
                                                { jsonrpc: "2.0", id: 5, method: "tools/list" }));
   });
@@ -203,7 +203,7 @@ describe("wire: busy, suspended and erasing owners", () => {
       const { who, app } = await owned(`s${reason}`);
       const key = await mint(app.access_token, app.session);
       const tokens = await connect(await registerClient(), { owner: who });
-      await env.OWNER.getByName(who).admissionSet(
+      await doorsEnv.OWNER.getByName(who).admissionSet(
         { owner: who, caller: PLATFORM_CALLER, origin: null }, { reason, suspended: true });
       for (const name of ["agents_list", "write_page", "read_page", "converse", "get_status"]) {
         await rec(`susp-${reason} api ${name}`, api(key, name, {}));
@@ -270,7 +270,7 @@ describe("wire: the app's other routes", () => {
 describe("wire: egress, run events and sync doors", () => {
   async function leased() {
     const { who, app, binding } = await owned("lease");
-    await env.OWNER.getByName(who).fileWrite(binding, {
+    await doorsEnv.OWNER.getByName(who).fileWrite(binding, {
       path: "/workspace/notes.md", expected_etag: null, content: new TextEncoder().encode("hi") });
     await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "s-1" });
     // The owner's fake sandbox Worker records each start, by owner (T1a's

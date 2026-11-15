@@ -10,11 +10,10 @@
  * browser and the session that began it, once, while it lasts, and only with a code that
  * came back on its own source's callback; a connect that fails leaves nothing live.
  */
-import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { OwnerDO } from "../../owner/src/owner-do";
-import { CONNECT_CALLBACK, CONNECTED_PAGE, now } from "../src/config";
+import { CONNECT_CALLBACK, CONNECTED_PAGE } from "../src/config";
 import { base64url } from "../../contract/src/envelope";
 import { ORIGIN } from "../../contract/src/identity";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
@@ -26,8 +25,8 @@ import { TEST_OAUTH } from "./entry";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 import { mintKeyFor } from "./keys";
 import {
-  call, connect, doorsEnv, NAVIGATE, OPEN, registerClient, serveFirstPartyDocument,
-  setControl, signInApp, url,
+  call, connect, doorsEnv, NAVIGATE, OPEN, ownDoor, refuseOnce, registerClient,
+  serveFirstPartyDocument, setControl, signInApp, url,
 } from "./support";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 
@@ -105,39 +104,18 @@ async function received(): Promise<{ method: string; url: string; headers: Recor
   return (await env.PROVIDERS.fetch("https://status.test/log")).json();
 }
 
-/**
- * Every value in every table of the owner's object, as one string, but the files plane's
- * wrapped data key: it is sealed in the same format, and is the namespace's own key, never a
- * connection's (the starter's seed writes files, so every owner has one).
- */
-function storageOf(owner: string): Promise<string> {
-  return runInDurableObject(env.OWNER.getByName(owner), (_instance: OwnerDO, state) => {
-    const sql = state.storage.sql;
-    const tables = sql.exec<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' " +
-        "AND name NOT LIKE '_cf_%'")
-      .toArray().map((row) => row.name);
-    return JSON.stringify(tables.map((table) =>
-      sql.exec(`SELECT * FROM "${table.replace(/"/g, "\"\"")}"`).toArray()
-        .map((row) => table === "file_space" ? { ...row, data_key: null } : row)));
-  });
+/** Each of the owner's connections, as its app lists them (`connections/list`). */
+async function connectionRows(app: App):
+    Promise<{ status: string; provider_revoke_pending: boolean }[]> {
+  const listed = await (await post(app, "connections/list", {})).json<{
+    connections: { status: string; provider_revoke_pending: boolean }[] }>();
+  return listed.connections.map(({ status, provider_revoke_pending }) =>
+    ({ status, provider_revoke_pending }));
 }
-
-function sqlOf<T extends Record<string, SqlStorageValue>>(owner: string, statement: string):
-    Promise<T[]> {
-  return runInDurableObject(env.OWNER.getByName(owner), (_instance: OwnerDO, state) =>
-    state.storage.sql.exec<T>(statement).toArray());
-}
-
-const flowRows = (owner: string) => sqlOf<{ status: string }>(
-  owner, "SELECT status FROM connection_flows");
-const connectionRows = (owner: string) => sqlOf<{ status: string; revoke_due: number | null }>(
-  owner, "SELECT status, revoke_due FROM connections");
-const blobRows = (owner: string) => sqlOf(owner, "SELECT connection_id FROM connection_secrets");
 
 async function noticeTypes(owner: string): Promise<string[]> {
-  const { notices } = await env.OWNER.getByName(owner).noticeList(
-    { owner, caller: owner, origin: null });
+  const { notices } = await ownDoor<{ notices: { type: string; detail: string }[] }>(
+    owner, "noticeList");
   return notices.map((notice) => `${notice.type}: ${notice.detail}`);
 }
 
@@ -163,16 +141,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** The secret reached nothing but the gateway and its provider. */
-async function keptFromObject(owner: string, secret: string, calls: readonly Call[],
-                              answer: string): Promise<void> {
+/**
+ * The secrets reached nothing but the gateway and its provider: no call the doors made on
+ * the owner's stub, and no call that crossed into its object at all (the owner gate's
+ * record), carried one, so the object could store none.
+ */
+async function keptFromObject(owner: string, secrets: readonly string[],
+                              calls: readonly Call[], answer: string): Promise<void> {
   expect(calls.length).toBeGreaterThan(0);
-  for (const made of calls) {
-    expect(made.args, made.method).not.toContain(secret);
+  const crossed = JSON.stringify(await env.OWNER_GATE.seen(owner));
+  for (const secret of secrets) {
+    for (const made of calls) {
+      expect(made.args, made.method).not.toContain(secret);
+    }
+    expect(crossed).not.toContain(secret);
+    expect(answer).not.toContain(secret);
+    expect(logged.join("\n")).not.toContain(secret);
   }
-  expect(await storageOf(owner)).not.toContain(secret);
-  expect(answer).not.toContain(secret);
-  expect(logged.join("\n")).not.toContain(secret);
 }
 
 describe("a pasted key", () => {
@@ -197,7 +182,7 @@ describe("a pasted key", () => {
     expect(sent.map((request) => `${request.method} ${request.url}`))
       .toEqual(["GET https://api.groq.com/openai/v1/models"]);
     expect(sent[0]!.headers["authorization"]).toBe(`Bearer ${key}`);
-    await keptFromObject(app.owner, key, calls, text);
+    await keptFromObject(app.owner, [key], calls, text);
   });
 
   it("is sent as the record's own header, and takes the owner's name for it", async () => {
@@ -220,9 +205,9 @@ describe("a pasted key", () => {
     expect(answer.status).toBe(502);
     expect(JSON.parse(text)).toEqual({ error: "upstream_unauthorized" });
     expect(methods(calls)).toEqual(["connectionPrepare", "connectionRevoke"]);
-    await keptFromObject(app.owner, key, calls, text);
-    expect(await connectionRows(app.owner)).toEqual([{ status: "revoked", revoke_due: null }]);
-    expect(await blobRows(app.owner)).toEqual([]);
+    await keptFromObject(app.owner, [key], calls, text);
+    expect(await connectionRows(app)).toEqual([{ status: "revoked",
+                                                 provider_revoke_pending: false }]);
   });
 
   it.each([
@@ -237,7 +222,8 @@ describe("a pasted key", () => {
                               failing);
     expect(answer.status).toBe(status);
     expect(await answer.json()).toEqual({ error: code });
-    expect(await connectionRows(app.owner)).toEqual([{ status: "revoked", revoke_due: null }]);
+    expect(await connectionRows(app))
+      .toEqual([{ status: "revoked", provider_revoke_pending: false }]);
   });
 
   it("throws any other gateway failure as it came, giving the connection up first", async () => {
@@ -252,7 +238,7 @@ describe("a pasted key", () => {
       await expect(post(app, "connections/key", { source: "groq", key: "gsk-good-5" }, failing))
         .rejects.toThrow(message);
     }
-    expect((await connectionRows(app.owner)).map((row) => row.status))
+    expect((await connectionRows(app)).map((row) => row.status))
       .toEqual(["revoked", "revoked", "revoked"]);
   });
 
@@ -294,7 +280,7 @@ describe("a pasted key", () => {
                                 { source: "groq", key: "gsk-good-1", display_name });
       expect(answer.status).toBe(400);
     }
-    expect(await connectionRows(app.owner)).toEqual([]);
+    expect(await connectionRows(app)).toEqual([]);
     expect(await received()).toEqual([]);
   });
 
@@ -434,9 +420,7 @@ describe("an OAuth connect", () => {
                                               new TextEncoder().encode(form.get("code_verifier")!));
     expect(base64url(new Uint8Array(digest))).toBe(params["code_challenge"]);
     expect(sent[1]!.headers["authorization"]).toBe("Bearer at-good");
-    for (const secret of ["good-code", "at-good", "rt-good"]) {
-      await keptFromObject(app.owner, secret, calls, text);
-    }
+    await keptFromObject(app.owner, ["good-code", "at-good", "rt-good"], calls, text);
   });
 
   it("takes a hosted preset's key exchange the same way, its state in its callback's path",
@@ -472,9 +456,7 @@ describe("an OAuth connect", () => {
     expect(JSON.parse(sent[0]!.body)).toMatchObject({ code: "or-good",
                                                       code_challenge_method: "S256" });
     expect(sent[1]!.headers["authorization"]).toBe("Bearer sk-or-bought");
-    for (const secret of ["or-good", "sk-or-bought"]) {
-      await keptFromObject(app.owner, secret, calls, text);
-    }
+    await keptFromObject(app.owner, ["or-good", "sk-or-bought"], calls, text);
   });
 
   it("answers a refused exchange with the gateway's fixed code, and holds no slot", async () => {
@@ -486,8 +468,8 @@ describe("an OAuth connect", () => {
                                 doorsEnv, [started.binding]);
     expect(finished.status).toBe(502);
     expect(await finished.json()).toEqual({ error: "oauth_rejected" });
-    expect(await flowRows(app.owner)).toEqual([{ status: "used" }]);
-    expect(await connectionRows(app.owner)).toEqual([{ status: "revoked", revoke_due: null }]);
+    expect(await connectionRows(app)).toEqual([{ status: "revoked",
+                                                 provider_revoke_pending: false }]);
   });
 
   it("answers a provider key outside the secret grammar as oauth_malformed, never a 500",
@@ -523,7 +505,7 @@ describe("an OAuth connect", () => {
       answers.push((await post(app, "connections/oauth", { source: "test_oauth" })).status);
     }
     expect(answers).toEqual([...Array<number>(10).fill(200), 403, 403]);
-    expect(await connectionRows(app.owner)).toHaveLength(10);
+    expect(await connectionRows(app)).toHaveLength(10);
   });
 });
 
@@ -549,10 +531,8 @@ describe("a credential the provider issued whose setup check then fails", () => 
     expect(methods(calls)).toEqual(["flowFinish", "connectionCommit"]);
     expect(JSON.parse(calls[1]!.args)[1]).toMatchObject({ failed: "upstream_timeout",
                                                           models: [] });
-    const [row] = await connectionRows(app.owner);
-    expect(row!.status).toBe("error");
-    expect(row!.revoke_due).not.toBeNull();
-    expect(await blobRows(app.owner)).toHaveLength(1);
+    expect(await connectionRows(app)).toEqual([{ status: "error",
+                                                 provider_revoke_pending: true }]);
   });
 
   it("is never kept when it cannot be revoked, and the owner is told to delete it", async () => {
@@ -566,8 +546,8 @@ describe("a credential the provider issued whose setup check then fails", () => 
                                 failingVerify("deadline"), [started.binding]);
     expect(finished.status).toBe(504);
     expect(await finished.json()).toEqual({ error: "deadline" });
-    expect(await connectionRows(app.owner)).toEqual([{ status: "error", revoke_due: null }]);
-    expect(await blobRows(app.owner)).toEqual([]);
+    expect(await connectionRows(app)).toEqual([{ status: "error",
+                                                 provider_revoke_pending: false }]);
     expect((await noticeTypes(app.owner)).join("\n"))
       .toMatch(/connection_setup_failed: .*failed \(deadline\).*delete it at the provider/);
   });
@@ -718,22 +698,22 @@ describe("a flow's finish", () => {
     expect(await received()).toEqual([]);
   });
 
-  it("is refused when the flow has expired", async () => {
+  // That the owner refuses a flow past its expiry is the owner's test, on its clock
+  // (`owner/test/connections.test.ts`); here, the doors' answer to that refusal.
+  it("is refused when the owner refuses the flow, before any exchange", async () => {
     const { app, started, body } = await begun();
-    await runInDurableObject(env.OWNER.getByName(app.owner), (_instance: OwnerDO, storage) => {
-      storage.storage.sql.exec("UPDATE connection_flows SET expires_at = ?", now() - 1);
-    });
+    await refuseOnce("flowFinish", app.owner,
+                     new Refusal("refused", "no open connection flow for this state"));
     const answer = await post(app, "connections/oauth/finish", body, doorsEnv,
                               [started.binding]);
     expect(answer.status).toBe(403);
+    expect(await answer.json()).toEqual({ error: "no open connection flow for this state" });
     expect(await received()).toEqual([]);
   });
 
   it("is refused after sessionCloseAll, the flow cancelled", async () => {
     const { app, started, body } = await begun();
-    await env.OWNER.getByName(app.owner).sessionCloseAll(
-      { owner: app.owner, caller: app.owner, origin: null });
-    expect(await flowRows(app.owner)).toEqual([{ status: "cancelled" }]);
+    await ownDoor(app.owner, "sessionCloseAll");
     for (const who of [app, await signedIn(app.owner)]) {
       const answer = await post(who, "connections/oauth/finish", body, doorsEnv,
                                 [started.binding]);
@@ -747,8 +727,6 @@ describe("a flow's finish", () => {
     const kept = await signedIn(app.owner);
     const kept2 = await begin(kept, "test_oauth");
     expect((await post(app, "session/close", {})).status).toBe(200);
-    expect((await flowRows(app.owner)).map((row) => row.status).sort())
-      .toEqual(["cancelled", "open"]);
     const fresh = await signedIn(app.owner);
     expect((await post(fresh, "connections/oauth/finish", body, doorsEnv,
                        [started.binding])).status).toBe(403);
@@ -770,7 +748,6 @@ describe("a flow's finish", () => {
                        JSON.stringify({ ...body, code: "x".repeat(EGRESS_BODY_MAX) }), environment,
                        [started.binding])).status).toBe(413);
     expect(methods(calls)).toEqual(["flowFinish"]);
-    expect(await flowRows(app.owner)).toEqual([{ status: "open" }]);
     expect((await post(app, "connections/oauth/finish", body, doorsEnv,
                        [started.binding])).status).toBe(200);
   });
@@ -793,14 +770,14 @@ describe("a flow's finish", () => {
     }
     expect(state).toBe(started.state);
     expect(await received()).toEqual([]);
-    expect((await connectionRows(app.owner)).map((row) => row.status))
+    expect((await connectionRows(app)).map((row) => row.status))
       .toEqual(["revoked", "revoked", "revoked"]);
   });
 
   it("refuses a flow begun at any redirect URI but its source's own", async () => {
     const app = await signedIn();
     const elsewhere = `${CONNECT_CALLBACK}/groq`;
-    const prepared = await env.OWNER.getByName(app.owner).connectionPrepare(
+    const prepared = await doorsEnv.OWNER.getByName(app.owner).connectionPrepare(
       { owner: app.owner, caller: app.owner, origin: null, session: app.session },
       { source: "test_oauth", kind: "oauth2", display_name: "Test", provider: "openai",
         revocable: true, redirect_uri: elsewhere });
@@ -827,7 +804,8 @@ describe("a flow's finish", () => {
       body: JSON.stringify(body) }), doorsEnv, ctx, FAKE_UPSTREAM, gone);
     expect(answer.status).toBe(404);
     expect(await received()).toEqual([]);
-    expect(await connectionRows(app.owner)).toEqual([{ status: "revoked", revoke_due: null }]);
+    expect(await connectionRows(app))
+      .toEqual([{ status: "revoked", provider_revoke_pending: false }]);
   });
 
   it.each([
@@ -889,7 +867,6 @@ describe("list and revoke", () => {
     const listed = await (await post(app, "connections/list", {})).json<{
       connections: { status: string }[] }>();
     expect(listed.connections.map((row) => row.status)).toEqual(["revoked"]);
-    expect(await storageOf(app.owner)).not.toMatch(/v1\.k1\./);
   });
 
   it("tells the truth for a key exchange: no provider revoke, and the owner is told", async () => {
@@ -906,7 +883,6 @@ describe("list and revoke", () => {
       connections: Record<string, unknown>[] }>();
     expect(listed.connections[0]).toMatchObject({ status: "revoked", provider_revocable: false,
                                                   provider_revoke_pending: false });
-    expect(await blobRows(app.owner)).toEqual([]);
     expect((await noticeTypes(app.owner)).join("\n"))
       .toMatch(/connection_revoke_unsupported: .*delete it at the provider/);
   });

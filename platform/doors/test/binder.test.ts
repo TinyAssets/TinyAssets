@@ -19,10 +19,22 @@ import { FAKE_ISSUER } from "./fake-upstream";
 import { mintKeyFor } from "./keys";
 import {
   appCallback,
-  appPost, call, connect, doorsEnv, legacyPost, OPEN, reached, registerClient, rpcBody,
-  serveFirstPartyDocument, setControl, sqlIn, url,
-  answerOf,
+  appPost, call, connect, doorsEnv, legacyPost, OPEN, ownDoor, reached, registerClient, rpcBody,
+  serveFirstPartyDocument, setControl, unseen, url, answerOf,
 } from "./support";
+
+/** A filed registration card, as the owner's `registerProposal` door answers it. */
+interface Card {
+  readonly client: string;
+  readonly family: string;
+  readonly request: { readonly display_name: string };
+}
+
+/** The card an `agent_register` call filed for `who`, as its door answers it. */
+async function cardOf(who: string, filed: Response): Promise<Card> {
+  const { card_id } = answerOf((await rpcBody(filed))["result"]) as { card_id: string };
+  return await ownDoor<Card>(who, "registerProposal", { card_id });
+}
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -112,6 +124,7 @@ describe("an MCP binding", () => {
   it("keeps one agent identity for a native client across loopback ports", async () => {
     const alice = owner();
     const registered = await registerClient("Claude Code", "http://127.0.0.1/callback");
+    const origins: unknown[] = [];
     for (const port of [5555, 6666]) {
       const tokens = await connect({ clientId: registered.clientId,
                                      redirectUri: `http://127.0.0.1:${port}/callback` },
@@ -120,10 +133,11 @@ describe("an MCP binding", () => {
         method: "tools/call", params: { name: "agent_register", arguments: {
           command_center_id: "cc", display_name: `port ${port}`, delivery_method: "pull",
           recipe_id: null } } });
-      expect(answerOf((await rpcBody(filed))["result"])).toMatchObject({});
+      const { client, family } = await cardOf(alice, filed);
+      origins.push({ client, family });
     }
     const origin = await mcpOrigin(registered.clientId, "http://127.0.0.1:7777/callback");
-    expect(await sqlIn(alice, "SELECT client, family FROM agent_cards")).toEqual([origin]);
+    expect(origins).toEqual([origin, origin]);
   });
 
   it("derives the client from the issuer and client id alone", async () => {
@@ -275,6 +289,7 @@ describe("a forged owner, caller or origin in the request", () => {
     const alice = owner();
     const bob = owner();
     const tokens = await connect(await registerClient(), { owner: alice });
+    await unseen(alice);
     const response = await call(new Request(url(`/mcp?owner=${bob}&caller=${bob}`), {
       method: "POST",
       headers: { ...FORGED, "X-Owner": bob, Authorization: `Bearer ${tokens.access_token}`,
@@ -336,18 +351,21 @@ describe("one owner's credential", () => {
     const client = await registerClient();
     const aliceTokens = await connect(client, { owner: alice });
     const bobTokens = await connect(client, { owner: bob });
+    const filed = new Map<string, string>();
     for (const [tokens, who] of [[aliceTokens, alice], [bobTokens, bob]] as const) {
       const response = await legacyPost(tokens.access_token, { jsonrpc: "2.0", id: 1,
         method: "tools/call", params: { name: "agent_register", arguments: {
           command_center_id: "cc", display_name: who, delivery_method: "pull",
           recipe_id: null } } });
-      expect(answerOf((await rpcBody(response))["result"])).toMatchObject({});
+      filed.set(who, (answerOf((await rpcBody(response))["result"]) as { card_id: string })
+        .card_id);
     }
-    const cards = async (who: string) =>
-      (await sqlIn(who, "SELECT request FROM agent_cards")).map((row) =>
-        (JSON.parse(row["request"] as string) as { display_name: string }).display_name);
-    expect(await cards(alice)).toEqual([alice]);
-    expect(await cards(bob)).toEqual([bob]);
-    expect(await sqlIn(alice, "SELECT owner FROM object_owner")).toEqual([{ owner: alice }]);
+    // Each card is in its own owner's object alone.
+    for (const [who, other] of [[alice, bob], [bob, alice]] as const) {
+      expect((await ownDoor<Card>(who, "registerProposal", { card_id: filed.get(who) }))
+        .request.display_name).toBe(who);
+      await expect(ownDoor(other, "registerProposal", { card_id: filed.get(who) }))
+        .rejects.toMatchObject({ name: "Refusal", code: "refused" });
+    }
   });
 });

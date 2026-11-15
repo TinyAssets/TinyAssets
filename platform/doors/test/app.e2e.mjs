@@ -1,11 +1,11 @@
 // The owner app in a real browser (Chromium, through Playwright), against the doors in
-// workerd: the doors' test Worker (`e2e-entry.ts`: the fake upstream sign-in, the real
-// owner object, its sandbox the owner suite's fake sandbox Worker) with the real gateway,
-// codemode and files Workers and
-// the fake providers, each bundled by wrangler from its own config as `vitest.config.ts`
-// does (`ci/workers.ts`). The files Worker is bound as production binds it: the doors' FILES its upload
-// entrypoint, the owner object's (OWNER_FILES here) its whole service, so a new owner's
-// starter seed really writes its files.
+// workerd: the doors' test Worker (`e2e-entry.ts`: the fake upstream sign-in) with the real
+// owner, gateway, codemode and files Workers and the fake providers, each bundled by wrangler
+// from its own config as `vitest.config.ts` does (`ci/workers.ts`), and the owner's sandbox
+// the owner suite's fake sandbox Worker. Each Worker is bound as production binds it: the
+// doors' OWNER the owner Worker's objects, the doors' FILES the files Worker's upload
+// entrypoint and the owner's its whole service, so a new owner's starter seed really writes
+// its files.
 //
 // The browser believes it talks to https://tinyassets.io: its resolver sends our hosts to the
 // local workerd (`--host-resolver-rules`), so every request it makes, the app's live socket
@@ -76,11 +76,10 @@ const errors = [];
 
 async function doors() {
   const gateway = workerConfig(join(PLATFORM, "gateway"));
-  const codemode = workerConfig(join(PLATFORM, "codemode"));
-  const files = workerConfig(join(PLATFORM, "files"));
   const providers = fake(join(DOORS, "test", "fake-providers.ts"));
   const sandbox = fake(join(PLATFORM, "owner", "test", "fake-sandbox.ts"));
   const keyring = newKeyring();
+  const routingKey = randomBytes(32).toString("base64url");
   const webClient = `${ORIGIN}/oauth/clients/web.json`;
   mf = new Miniflare(convertV4MiniflareOptions(pool({
     host: "127.0.0.1", port: 0, https: true,
@@ -88,22 +87,21 @@ async function doors() {
       // The doors' test Worker, with everything the doors' config gives it (`auxiliary`):
       // its secrets are the test's, none read from the host.
       await auxiliary(DOORS, {
-        bindings: { OWNER_ISSUER: UPSTREAM,
-                    ROUTING_MAC_KEY: randomBytes(32).toString("base64url"),
+        bindings: { OWNER_ISSUER: UPSTREAM, ROUTING_MAC_KEY: routingKey,
                     WORKOS_API_KEY: "test-client-secret",
                     E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                     OPERATOR_KEYRING: newKeyring() },
-        durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
-        // CODEMODE_VM, OWNER_FILES and SANDBOX: the owner object's, in this script for the
-        // test; SANDBOX the owner suite's fake sandbox Worker, which SANDBOX_LOG reads back.
-        serviceBindings: { CODEMODE_VM: codemode.name, PROVIDERS: providers.name,
-                           OWNER_FILES: files.name, SANDBOX: sandbox.name,
+        // SANDBOX_LOG reads back the owner's fake sandbox Worker.
+        serviceBindings: { PROVIDERS: providers.name,
                            SANDBOX_LOG: { name: sandbox.name, entrypoint: "Log" } },
         // The provider fetches the first-party app's metadata document, as production does
         // over the public internet; nothing else leaves the doors.
         outboundService: (request) => request.url === webClient ? mf.dispatchFetch(webClient)
           : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
       }, "test/e2e-entry.ts"),
+      // The owner Worker, its SANDBOX the owner suite's fake sandbox Worker.
+      await auxiliary(join(PLATFORM, "owner"), { bindings: { ROUTING_MAC_KEY: routingKey },
+                                                 serviceBindings: { SANDBOX: sandbox.name } }),
       await auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: keyring },
                                                    outboundService: providers.name }),
       // The files Worker: its config's bucket and cipher, and a test keyring.

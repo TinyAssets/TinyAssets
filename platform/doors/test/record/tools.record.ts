@@ -11,8 +11,8 @@ import type { Binding } from "../../../contract/src/binding";
 import type { SandboxStart } from "../../../contract/src/sandbox";
 import { mcpOrigin } from "../../src/binder";
 import {
-  appPost, call, connect, legacyPost, OPEN, registerClient, serveFirstPartyDocument,
-  setControl,
+  appPost, call, connect, doorsEnv, legacyPost, OPEN, registerClient, serveFirstPartyDocument,
+  grantsOf, ownDoor, setControl,
 } from "../support";
 import { owned } from "./support";
 
@@ -49,14 +49,14 @@ async function runListed(start: SandboxStart): Promise<string> {
 describe("tools/list, byte for byte", () => {
   it("every profile", async () => {
     const { who, app, binding: own } = await owned(`user_${"ab".repeat(16)}`);
-    const stub = env.OWNER.getByName(who);
+    const stub = doorsEnv.OWNER.getByName(who);
     const custom = await connect(await registerClient("Custom"), { owner: who });
     const listedClient = await registerClient("Listed");
     const listed = await connect(listedClient, { owner: who });
     const origin = await mcpOrigin(listedClient.clientId, listedClient.redirectUri);
     const session: Binding = { ...own, session: app.session };
     console.log(`TOOLS\tlisted-custom\t${await listedRaw(listed.access_token)}`);
-    const row = (await stub.grantList(own)).clients.find((c) => c.client === origin.client)!;
+    const row = (await grantsOf(who)).find((c) => c.client === origin.client)!;
     await stub.grantSet(session, { client: origin.client, source: row.source, mode: row.mode,
                                    scopes: row.scopes as never, expected_revision: row.revision,
                                    name: "", profile: "directory" });
@@ -70,8 +70,9 @@ describe("tools/list, byte for byte", () => {
     const [start] = (await env.SANDBOX_LOG.recorded(who)).starts as SandboxStart[];
     console.log(`TOOLS\trun\t${await runListed(start!)}`);
     // Code mode off: every custom tool but code.
-    const { generation, policy } = await stub.policyRead(own);
-    const { tools: _tools, ...rest } = policy as typeof policy & { tools?: unknown };
+    const { generation, policy } = await ownDoor<
+      { generation: number; policy: Record<string, unknown> }>(who, "policyRead");
+    const { tools: _tools, ...rest } = policy;
     await stub.policyWrite(session, { expected_generation: generation,
                                       policy: { ...rest, codemode: { on: false } } });
     console.log(`TOOLS\tcustom-nocode\t${await listedRaw(custom.access_token)}`);
