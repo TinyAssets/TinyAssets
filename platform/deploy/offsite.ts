@@ -34,6 +34,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { keyed, whole } from "../contract/src/checks.ts";
 import { HEX32 } from "../contract/src/ids.ts";
 import { RECOVERY_WINDOW_S } from "../contract/src/limits.ts";
 import { annotate, github, output, pages, type Reach, summarize } from "./actions.ts";
@@ -396,6 +397,33 @@ export async function firstNightAfter(reach: Reach, at: Date):
     first = new Date(String(copied["completed_at"]));
   }
   return { first, ever: first !== null };
+}
+
+/**
+ * Where the latest restore from the copy is recorded, in the control namespace:
+ * `{kind, began}`, when it began writing R2, in seconds. Every write from the copy into R2
+ * puts it before its first byte (R8, `docs/decisions/untangle-2026-11/r8-retire-gate.md`):
+ * a version it reads back may hold a root under a kid a key rotation has since rewrapped
+ * away, which the next night uploads again with a fresh `KEEP_DAYS`, so mode `retire` reads
+ * the copy's gate from the first pass begun after it.
+ */
+export const RESTORE_KEY = "deploy:offsite:restore";
+const RESTORE_KIND = "tinyassets-offsite-restore";
+
+/**
+ * When the restore record `value` (`RESTORE_KEY`, as KV answers it) says the latest restore
+ * from the copy began, in seconds, or null when none is recorded; a record out of shape is a
+ * loud stop.
+ */
+export function restoreBegan(value: unknown): number | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (!keyed(value, ["kind", "began"]) || value["kind"] !== RESTORE_KIND
+      || !whole(value["began"], 0)) {
+    throw new Error(`the restore record ${RESTORE_KEY} is out of shape`);
+  }
+  return value["began"];
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

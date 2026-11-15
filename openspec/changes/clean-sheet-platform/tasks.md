@@ -344,13 +344,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     window, so no rotation reaches it: the window's close checks every bundle is admitted or
     discarded, the founder's decision in `r7-rotation-driver.md` item 8
     (`untangle/i-window-close`).
-  - [ ] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
+  - [x] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
     old-kid roots back and restarts the copy's expiry, so `retire`'s gate is read from that
-    night (`r7-rotation-driver.md` item 11). Built on `untangle/r8-retire-gate`: `retire` reads the record
-    `deploy:offsite:restore`, which the copy's restore writes (`untangle/r8-copy-restore`).
-  - [ ] R8, the restore from the off-account copy (`r4.md` item 13): erasures applied first,
-    and the record `deploy:offsite:restore` written before its first byte into R2, in the
-    `platform-deploy` concurrency group (`untangle/r8-copy-restore`).
+    night (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`): `retire` reads the copy's
+    restore record (`deploy:offsite:restore`) and draws the gate from the first pass that swept
+    and began after it, and needs no second pass (`r8-retire-gate.md`).
+  - [ ] R8, restore from the off-account copy and its monthly drill
+    (`untangle/r8-copy-restore`): every write from the copy into R2 puts the restore record
+    before its first byte, in the kit's concurrency group (`r8-retire-gate.md` item 3), and
+    every erasure the copy can't show is applied before any owner is restored (`r4.md`
+    item 13).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
     (`live:` after `untangle/r7-rotation-driver`).
   - [x] `restore.wipe`, a live owner brought to pending and empty for a restore, the
@@ -626,6 +629,9 @@ The fixes the untangle skill's cutover rule holds until after the cutover (found
   connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
   exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
   then its build (`untangle/r7-unopenable`).
+- [ ] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
+  budgets' factor of 4 and the watchdogs' 3, and `search-cpu`'s host CPU bound with them: the
+  runner-variance rule (`untangle/budgets-variance`, #5640's review).
 
 ### Step 17. Restore and the off-account copy
 

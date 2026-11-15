@@ -55,10 +55,10 @@
  *   stored ring's active kid. Never while the doors hold the import window's key.
  * - `retire`: `--keyring` as `keyring-retire` wrote it (its active kid alone), stored by the
  *   founder, set on its Workers, then the canary, only once its rotation's latest pass swept
- *   every owner (for a keyring the off-account copy holds, a pass begun `KEEP_DAYS` + 1 days
- *   after the first night that copied the first pass), and only with `--confirm` its words,
- *   `retire-<keyring>-<kids>`, which its apply job names. Irreversible unless the old ring is
- *   kept offline.
+ *   every owner (for a keyring the off-account copy holds, `KEEP_DAYS` + 1 days after the
+ *   first night that copied the first pass begun after the latest restore from the copy), and
+ *   only with `--confirm` its words, `retire-<keyring>-<kids>`, which its apply job names.
+ *   Irreversible unless the old ring is kept offline.
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -158,7 +158,9 @@ import {
   RETIRED, ROTATED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS,
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
-import { firstNightAfter, KEEP_DAYS, type Watch, watch } from "./offsite.ts";
+import {
+  firstNightAfter, KEEP_DAYS, RESTORE_KEY, restoreBegan, type Watch, watch,
+} from "./offsite.ts";
 import {
   type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
   ERASE_LOSES, heldRotation, keyHashes, ownerAct, RESTORE_LOSES, restoreFrom, rotate,
@@ -1636,19 +1638,22 @@ const rotationSweep = step<"cloudflare" | "account">(async ({ run, say }, got) =
 /** What mode `retire` holds a keyring's retirement to (`retirement`). */
 export interface Retiring {
   readonly keyring: string;
-  /** Whether the off-account copy holds blobs under the keyring (`platform.json` `keyrings`). */
-  readonly copied: boolean;
   /** The keyring as stored, which `keyring-retire` wrote: its active kid alone. */
   readonly stored: Ring;
   /** The rotation's record under the stored ring's active kid, or undefined when none is kept. */
   readonly record: RotationRecord | undefined;
   /**
-   * For a copied keyring, the copy as it stands (`watch`) and its first night after the first
-   * pass swept (`firstNightAfter`), or null before any pass swept.
+   * For a keyring the off-account copy holds blobs under (`platform.json` `keyrings`): the copy
+   * as it stands (`watch`), when a restore from it last began writing R2 (`restoreBegan`, null
+   * when none is recorded), and its first night after a time (`firstNightAfter`). Null for a
+   * keyring the copy never holds.
    */
-  readonly copy: { readonly watch: Watch;
-                   readonly night: { readonly first: Date | null; readonly ever: boolean } | null }
-    | null;
+  readonly copy: {
+    readonly watch: Watch;
+    readonly restored: number | null;
+    readonly nightAfter: (at: Date) => Promise<{ readonly first: Date | null;
+                                                 readonly ever: boolean }>;
+  } | null;
   readonly now: Date;
 }
 
@@ -1657,16 +1662,20 @@ export interface Retiring {
  * confirm it, with what its gates read. It holds only when:
  * 1. the stored ring is the rotation record's ring less every kid but the active one;
  * 2. the record's latest pass swept every owner to `left` 0;
- * 3. for a keyring the off-account copy holds, the copy is not overdue, and either it never
- *    passed a night (so it holds no blob of the keyring) or the latest pass began at least
- *    `KEEP_DAYS` + 1 days after T, the first night that copied R2 after the first pass swept:
- *    that night uploaded every rewrapped root, so each version under a retiring kid, and every
- *    one hidden before it, is gone by then (`offsite.ts`: the lock runs from upload, and never
- *    outlasts the lifecycle's `KEEP_DAYS` and its daily pass). Until then a restore from an older
- *    copy could bring a root under a retiring kid back, which only a pass after the gate finds.
+ * 3. for a keyring the off-account copy holds, the copy is not overdue, and `KEEP_DAYS` + 1
+ *    days have passed since T, the first night that copied R2 after the first pass that swept
+ *    and began after the latest restore from the copy (with none recorded, the first that
+ *    swept), or the copy never passed a night, so it holds no blob of the keyring. That pass
+ *    left no root in R2 under a retiring kid; T uploaded each root it rewrapped and hid each
+ *    one gone since, so every version under a retiring kid is gone by then (`offsite.ts`: the
+ *    lock runs from upload, and never outlasts the lifecycle's `KEEP_DAYS` and its daily
+ *    pass). After it only a restore from the copy puts such a root back in R2, and the next
+ *    night uploads it again under a fresh `KEEP_DAYS`: so the restore's record moves the gate
+ *    to a pass begun after it.
  */
-export function retirement({ keyring: name, copied, stored, record, copy, now }: Retiring):
-    { readonly kids: readonly string[]; readonly words: string; readonly lines: readonly string[] } {
+export async function retirement({ keyring: name, stored, record, copy, now }: Retiring):
+    Promise<{ readonly kids: readonly string[]; readonly words: string;
+              readonly lines: readonly string[] }> {
   const key = rotationKey(name, stored.active);
   if (record === undefined) {
     throw new Error(`${NAMESPACES["CONTROL"]} holds no rotation record ${key}: rotate first, ` +
@@ -1690,38 +1699,39 @@ export function retirement({ keyring: name, copied, stored, record, copy, now }:
   const at = (seconds: number) => new Date(seconds * 1000).toISOString();
   const lines = [`pass ${record.passes.length} of ${key} swept every owner to left 0 at ${
     at(latest.swept)}`];
-  if (copied) {
-    const first = record.passes.find((pass) => pass.swept !== null)!;
-    if (copy === null || copy.night === null) {
-      throw new Error(`${name} is copied off the account, and its copy's nights were not read`);
-    }
+  if (copy !== null) {
     if (copy.watch.state === "overdue") {
       throw new Error(`the off-account copy is overdue (${copy.watch.line}): its versions under ` +
                       `${kids.join(", ")} expire only after nights pass; nothing is changed`);
     }
-    if (copy.night.first === null) {
-      if (copy.night.ever) {
-        throw new Error(`no night of the off-account copy has passed since pass 1 swept at ${
-          at(first.swept!)}: retire waits ${KEEP_DAYS + 1} days after the first that does; ` +
-                        "nothing is changed");
+    const settled = record.passes.findIndex((pass) => pass.swept !== null
+      && pass.began! >= (copy.restored ?? 0));
+    if (settled < 0) {
+      throw new Error(`a restore from the off-account copy began at ${at(copy.restored!)}, after ` +
+                      `every pass of ${key} that swept began: it may have put roots under ${
+                        kids.join(", ")} back, so run mode rotation for a pass begun after it; ` +
+                      "nothing is changed");
+    }
+    const swept = record.passes[settled]!.swept!;
+    const night = await copy.nightAfter(new Date(swept * 1000));
+    if (night.first === null) {
+      if (night.ever) {
+        throw new Error(`no night of the off-account copy has passed since pass ${settled + 1} ` +
+                        `swept at ${at(swept)}: retire waits ${KEEP_DAYS + 1} days after the ` +
+                        "first that does; nothing is changed");
       }
       lines.push("the off-account copy has never passed a night, so it holds no blob under " +
                  `${kids.join(", ")}`);
     } else {
-      const gate = copy.night.first.getTime() + (KEEP_DAYS + 1) * 86_400_000;
-      if (now.getTime() < gate) {
+      const gate = new Date(night.first.getTime() + (KEEP_DAYS + 1) * 86_400_000);
+      if (now < gate) {
         throw new Error(`the off-account copy's versions under ${kids.join(", ")} expire by ${
-          new Date(gate).toISOString()}, ${KEEP_DAYS + 1} days after its night of ${
-          copy.night.first.toISOString()}: retire waits until then; nothing is changed`);
-      }
-      if (latest.began! * 1000 < gate) {
-        throw new Error(`pass ${record.passes.length} of ${key} began at ${at(latest.began!)}, ` +
-                        `before the copy's versions under ${kids.join(", ")} expired at ${
-          new Date(gate).toISOString()}: run mode rotation again for a pass begun after it; ` +
-                        "nothing is changed");
+          gate.toISOString()}, ${KEEP_DAYS + 1} days after its night of ${
+          night.first.toISOString()}: retire waits until then; nothing is changed`);
       }
       lines.push(`the off-account copy's versions under ${kids.join(", ")} expired at ${
-        new Date(gate).toISOString()}, before pass ${record.passes.length} began`);
+        gate.toISOString()}, ${KEEP_DAYS + 1} days after its first night after pass ${
+        settled + 1} swept`);
     }
   }
   return { kids, words: `retire-${name}-${kids.join(",")}`, lines };
@@ -1749,14 +1759,14 @@ const retireAsk = step<"cloudflare" | "account" | "wrangler">(async ({ run, say 
   const key = rotationKey(name, stored.active);
   const held = await got.cloudflare.value(got.account, control, key);
   const record = held === undefined ? undefined : rotationRecord(held, key);
-  const copied = ROTATED[name]!.copied;
-  const first = record?.passes.find((pass) => pass.swept !== null)?.swept ?? null;
   const reach = { fetch: run.io.fetch, env: run.env };
   const now = run.io.now();
-  const { kids, words, lines } = retirement({
-    keyring: name, copied, stored, record, now,
-    copy: !copied ? null : { watch: await watch(reach, now), night: first === null ? null
-      : await firstNightAfter(reach, new Date(first * 1000)) } });
+  const { kids, words, lines } = await retirement({
+    keyring: name, stored, record, now,
+    copy: !ROTATED[name]!.copied ? null : {
+      watch: await watch(reach, now),
+      restored: restoreBegan(await got.cloudflare.value(got.account, control, RESTORE_KEY)),
+      nightAfter: (at) => firstNightAfter(reach, at) } });
   say(...lines);
   const deployed = await got.cloudflare.workers(got.account);
   for (const worker of holders) {

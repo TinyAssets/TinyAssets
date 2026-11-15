@@ -4,13 +4,13 @@
  * each batch of operator messages, a fake GitHub of the copy's nights, and a fake clock: the
  * record written after every page and gone on from after a crash; an owner left owing asked
  * first by the next run; an answer under another kid stopping the run with nothing of its page
- * recorded; and each of the retirement's gates refusing until it holds. The modes' wiring is
+ * recorded; and each of the retirement's gates refusing until it holds, a restore from the copy
+ * moving the copy's gate to the pass begun after it. The modes' wiring is
  * `deploy.test.ts`'s; the owner's answers are `owner/test`'s.
  */
 import { describe, expect, it } from "vitest";
 
 import { keyring } from "../../ci/fixtures";
-import { DISPATCH } from "../../contract/src/canary";
 import { parseRing, type Ring } from "../../contract/src/envelope";
 import { OWNER_ENTRY } from "../../contract/src/ids";
 import {
@@ -21,10 +21,11 @@ import { TOKEN } from "../actions";
 import { Cloudflare } from "../cloudflare";
 import { retirement, type Retiring } from "../deploy";
 import { OPERATOR_NAMES } from "../facts";
-import { firstNightAfter, KEEP_DAYS, NIGHTLY } from "../offsite";
+import { firstNightAfter, KEEP_DAYS } from "../offsite";
 import {
   keyHashes, type Pass, rotate, type RotationRecord, rotationKey, RUN_MS,
 } from "../operator";
+import { night, type Night, nightsAnswer } from "./copy-nights";
 
 const ACCOUNT = "a".repeat(32);
 const OPERATOR = parseRing(keyring("k1"))!;
@@ -271,100 +272,112 @@ const RETIRED = parseRing(JSON.stringify({ active: "k2", keys: { k2: Buffer.from
   STORED.keys.get("k2")!).toString("base64") } }))!;
 const s = (iso: string) => Date.parse(iso) / 1000;
 const DAY = 86_400_000;
-/** The first copy night after pass 1, and its gate: `KEEP_DAYS` + 1 days on. */
-const T = new Date("2026-11-16T05:58:00.000Z");
-const GATE = new Date(T.getTime() + (KEEP_DAYS + 1) * DAY);
+/** Pass 1, the copy's first night after it (its copy's end), and its gate: `KEEP_DAYS` + 1 on. */
 const PASS_1: Pass = { began: s("2026-11-15T12:00:00Z"), through: "user_z", owing: [],
                        swept: s("2026-11-15T13:00:00Z") };
-const after = (from: Date, ms: number) => Math.floor((from.getTime() + ms) / 1000);
-const PASS_2: Pass = { began: after(GATE, 60_000), through: "user_z", owing: [],
-                       swept: after(GATE, 3600_000) };
+const T = new Date("2026-11-16T05:58:00.000Z");
+const GATE = new Date(T.getTime() + (KEEP_DAYS + 1) * DAY);
+/** A restore from the copy ten days on, pass 2 begun after it, and its night and gate. */
+const RESTORED = s("2026-11-25T09:00:00Z");
+const PASS_2: Pass = { began: s("2026-11-25T12:00:00Z"), through: "user_z", owing: [],
+                       swept: s("2026-11-25T13:00:00Z") };
+const T_2 = new Date("2026-11-26T05:58:00.000Z");
+const GATE_2 = new Date(T_2.getTime() + (KEEP_DAYS + 1) * DAY);
 const PASSED = { state: "passed", line: "a night last passed" } as const;
+/** The copy's first night after a time, of `nights` (each its copy's end), as GitHub shows them. */
+const nightsOf = (...nights: Date[]) => async (at: Date) =>
+  ({ first: nights.find((night) => night > at) ?? null, ever: nights.length > 0 });
+type Copy = NonNullable<Retiring["copy"]>;
 
-function retiring(change: Partial<Retiring> = {}): Retiring {
-  return { keyring: "FILES_KEYRING", copied: true, stored: RETIRED,
-           record: recordOf([PASS_1, PASS_2]),
-           copy: { watch: PASSED, night: { first: T, ever: true } },
+function retiring(change: Partial<Retiring> = {}, copy: Partial<Copy> = {}): Retiring {
+  return { keyring: "FILES_KEYRING", stored: RETIRED, record: recordOf([PASS_1]),
+           copy: { watch: PASSED, restored: null, nightAfter: nightsOf(T, T_2), ...copy },
            now: new Date(GATE.getTime() + 2 * 3600_000), ...change };
 }
+const sweptAt = (pass: Pass) => new Date(pass.swept! * 1000).toISOString();
 
 describe("a keyring's retirement", () => {
-  it("holds once the latest pass swept after the copy's versions under the old kids expired, " +
-     "and names its words", () => {
+  it("holds once a pass swept and the copy's versions from before its next night expired, and " +
+     "names its words", async () => {
     expect(KEEP_DAYS).toBe(22);
-    expect(retirement(retiring())).toEqual({ kids: ["k1"], words: "retire-FILES_KEYRING-k1",
-      lines: [`pass 2 of ${KEY} swept every owner to left 0 at ${
-        new Date(PASS_2.swept! * 1000).toISOString()}`,
-              `the off-account copy's versions under k1 expired at ${GATE.toISOString()}, ` +
-              "before pass 2 began"] });
+    const holds = { kids: ["k1"], words: "retire-FILES_KEYRING-k1", lines: [
+      `pass 1 of ${KEY} swept every owner to left 0 at ${sweptAt(PASS_1)}`,
+      `the off-account copy's versions under k1 expired at ${GATE.toISOString()}, 23 days ` +
+      "after its first night after pass 1 swept"] };
+    expect(await retirement(retiring())).toEqual(holds);
+    // A restore before pass 1 began put nothing back that pass 1 did not rewrap.
+    expect(await retirement(retiring({}, { restored: PASS_1.began! - 3600 }))).toEqual(holds);
+    // A later pass, with no restore, moves no gate.
+    expect((await retirement(retiring({ record: recordOf([PASS_1, PASS_2]) }))).lines[1])
+      .toBe(holds.lines[1]);
     // A keyring the copy never holds: one pass is enough.
-    expect(retirement(retiring({ keyring: "GATEWAY_KEYRING", copied: false, copy: null,
-      record: { ...recordOf([PASS_1]), keyring: "GATEWAY_KEYRING" } })).words)
-      .toBe("retire-GATEWAY_KEYRING-k1");
+    expect((await retirement(retiring({ keyring: "GATEWAY_KEYRING", copy: null,
+      record: { ...recordOf([PASS_1]), keyring: "GATEWAY_KEYRING" },
+      now: new Date(PASS_1.swept! * 1000) }))).words).toBe("retire-GATEWAY_KEYRING-k1");
     // A copy that never passed a night holds nothing under k1.
-    expect(retirement(retiring({ record: recordOf([PASS_1]),
-      copy: { watch: { state: "waiting", line: "" }, night: { first: null, ever: false } } }))
-      .lines.at(-1)).toBe("the off-account copy has never passed a night, so it holds no blob " +
-                          "under k1");
+    expect((await retirement(retiring({}, { watch: { state: "waiting", line: "" },
+                                            nightAfter: nightsOf() }))).lines.at(-1))
+      .toBe("the off-account copy has never passed a night, so it holds no blob under k1");
+  });
+
+  it("reads the copy's gate from the first pass begun after the latest restore from it",
+     async () => {
+    // The restore may have put roots under k1 back, which the next night uploaded again.
+    await expect(retirement(retiring({}, { restored: RESTORED }))).rejects.toThrow(
+      "a restore from the off-account copy began at 2026-11-25T09:00:00.000Z, after every " +
+      `pass of ${KEY} that swept began: it may have put roots under k1 back, so run mode ` +
+      "rotation for a pass begun after it");
+    // Pass 2 began after it: its night's gate, not pass 1's.
+    const both = { record: recordOf([PASS_1, PASS_2]) };
+    await expect(retirement(retiring(both, { restored: RESTORED }))).rejects.toThrow(
+      `the off-account copy's versions under k1 expire by ${GATE_2.toISOString()}, 23 days ` +
+      `after its night of ${T_2.toISOString()}`);
+    expect((await retirement(retiring({ ...both, now: GATE_2 }, { restored: RESTORED })))
+      .lines).toEqual([
+      `pass 2 of ${KEY} swept every owner to left 0 at ${sweptAt(PASS_2)}`,
+      `the off-account copy's versions under k1 expired at ${GATE_2.toISOString()}, 23 days ` +
+      "after its first night after pass 2 swept"]);
   });
 
   it.each([
-    ["no record", { record: undefined }, `holds no rotation record ${KEY}`],
-    ["the full ring stored", { stored: STORED },
+    ["no record", { record: undefined }, {}, `holds no rotation record ${KEY}`],
+    ["the full ring stored", { stored: STORED }, {},
      "the stored FILES_KEYRING is not the rotation record's ring less k1"],
-    ["another key kept under k2", { stored: parseRing(keyring("k2"))! },
+    ["another key kept under k2", { stored: parseRing(keyring("k2"))! }, {},
      "the stored FILES_KEYRING is not the rotation record's ring less k1"],
-    ["no pass swept", { record: recordOf([{ ...PASS_1, swept: null, owing: ["user_a"] }]) },
-     "pass 1 of deploy:rotation:FILES_KEYRING:k2 has not swept every owner to left 0"],
-    ["the latest pass owing", { record: recordOf([PASS_1, { ...PASS_2, swept: null }]) },
-     "pass 2 of deploy:rotation:FILES_KEYRING:k2 has not swept"],
-    ["no copy night after pass 1", { record: recordOf([PASS_1]),
-                                     copy: { watch: PASSED, night: { first: null, ever: true } } },
+    ["no pass swept", { record: recordOf([{ ...PASS_1, swept: null, owing: ["user_a"] }]) }, {},
+     `pass 1 of ${KEY} has not swept every owner to left 0`],
+    ["the latest pass owing", { record: recordOf([PASS_1, { ...PASS_2, swept: null }]) }, {},
+     `pass 2 of ${KEY} has not swept`],
+    ["no copy night after pass 1", {}, { nightAfter: nightsOf(new Date("2026-11-15T05:58Z")) },
      "no night of the off-account copy has passed since pass 1 swept at 2026-11-15T13:00:00.000Z"],
-    ["a minute before the gate", { now: new Date(GATE.getTime() - 60_000) },
+    ["a minute before the gate", { now: new Date(GATE.getTime() - 60_000) }, {},
      `the off-account copy's versions under k1 expire by ${GATE.toISOString()}`],
-    ["pass 2 begun before the gate", { record: recordOf([PASS_1, {
-      ...PASS_2, began: after(GATE, -60_000) }]) },
-     "pass 2 of deploy:rotation:FILES_KEYRING:k2 began at"],
-    ["one pass alone", { record: recordOf([PASS_1]) }, "pass 1 of deploy:rotation:FILES_KEYRING:k2 began at"],
-    ["the copy overdue", { copy: { watch: { state: "overdue", line: "no night since" },
-                                   night: { first: T, ever: true } } },
+    ["the copy overdue", {}, { watch: { state: "overdue", line: "no night since" } },
      "the off-account copy is overdue (no night since)"],
-  ] as [string, Partial<Retiring>, string][])("refuses with %s", (_what, change, refusal) => {
-    expect(() => retirement(retiring(change))).toThrow(refusal);
-  });
+  ] as [string, Partial<Retiring>, Partial<Copy>, string][])("refuses with %s",
+    async (_what, change, copy, refusal) => {
+      await expect(retirement(retiring(change, copy))).rejects.toThrow(refusal);
+    });
 });
 
 describe("the copy's first night after a pass", () => {
-  /** A GitHub of the copy's completed nights, newest first: when each was made, and its copy. */
-  const reach = (nights: { at: string; copy: string }[]) => ({
+  /** A GitHub of the copy's completed nights, newest first. */
+  const reach = (nights: Night[]) => ({
     env: { [TOKEN]: "gh-token" },
-    fetch: async (url: string) => {
-      const repository = `https://api.github.com/repos/${DISPATCH.repository}`;
-      const at = new URL(url);
-      if (url.startsWith(`${repository}/actions/workflows/${NIGHTLY.workflow}/runs?`)) {
-        return Response.json({ workflow_runs: at.searchParams.get("page") !== "1" ? []
-          : nights.map((night, id) => ({ id, created_at: night.at })) });
-      }
-      const jobs = /\/actions\/runs\/(\d+)\/jobs$/.exec(at.pathname);
-      const night = nights[Number(jobs?.[1])]!;
-      return Response.json({ jobs: [
-        { name: NIGHTLY.settings, conclusion: "success", completed_at: night.at },
-        { name: NIGHTLY.copy, conclusion: night.copy,
-          completed_at: new Date(Date.parse(night.at) + 20 * 60_000).toISOString() }] });
-    },
+    fetch: async (url: string) => nightsAnswer(url, nights)!,
   });
 
   it("is the copy's end of the first night made after it that passed", async () => {
-    const nights = [{ at: "2026-11-18T05:37:00Z", copy: "success" },
-                    { at: "2026-11-17T05:37:00Z", copy: "success" },
-                    { at: "2026-11-16T05:37:00Z", copy: "failure" },
-                    { at: "2026-11-15T05:37:00Z", copy: "success" }];
+    const nights = [night("2026-11-18T05:37:00Z", "success"),
+                    night("2026-11-17T05:37:00Z", "success"),
+                    night("2026-11-16T05:37:00Z", "failure"),
+                    night("2026-11-15T05:37:00Z", "success")];
     expect(await firstNightAfter(reach(nights), new Date("2026-11-15T13:00:00Z")))
       .toEqual({ first: new Date("2026-11-17T05:57:00Z"), ever: true });
     expect(await firstNightAfter(reach(nights), new Date("2026-11-18T06:00:00Z")))
       .toEqual({ first: null, ever: true });
-    expect(await firstNightAfter(reach([{ at: "2026-11-18T05:37:00Z", copy: "skipped" }]),
+    expect(await firstNightAfter(reach([night("2026-11-18T05:37:00Z", "skipped")]),
                                  new Date("2026-11-15T13:00:00Z")))
       .toEqual({ first: null, ever: false });
   });
