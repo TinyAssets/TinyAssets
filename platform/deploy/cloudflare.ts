@@ -15,6 +15,8 @@ import { HEX32 } from "../contract/src/ids.ts";
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 const CF_API = "https://api.cloudflare.com/client/v4";
+/** The most messages one Queues batch push takes (Cloudflare's Queues limits). */
+export const BATCH = 100;
 
 /** Cloudflare's answer envelope, as every API but a KV value's answers. */
 interface Envelope {
@@ -544,6 +546,19 @@ export class Cloudflare {
     await this.#send(`sending a message to the queue ${queue}`, "POST",
                      `/accounts/${account}/queues/${queue}/messages`,
                      { body, content_type: "json" });
+  }
+
+  /**
+   * `bodies` sent as JSON messages to the queue `queue` (its id), in calls of `BATCH`, the
+   * most one batch push takes.
+   */
+  async sendBatch(account: string, queue: string, bodies: readonly unknown[]): Promise<void> {
+    for (let at = 0; at < bodies.length; at += BATCH) {
+      await this.#send(`sending messages to the queue ${queue}`, "POST",
+                       `/accounts/${account}/queues/${queue}/messages/batch`,
+                       { messages: bodies.slice(at, at + BATCH)
+                         .map((body) => ({ body, content_type: "json" })) });
+    }
   }
 
   /** The consumers of the queue `queue` (its id), by type (`worker` or `http_pull`). */
