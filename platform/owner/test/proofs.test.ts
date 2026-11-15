@@ -5,12 +5,13 @@
  * carries only its own caller's proof, so a door of another caller cannot make the widening.
  */
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { clock } from "../src/clock";
 import type { CallerOf, DoorName, HandlerOf, LiveSession, OwnerSelf } from "../src/door";
 import type { GrantsDoorNeeds } from "../src/grants";
 import type { OwnerDO, OwnerState } from "../src/owner-do";
+import { Sessions } from "../src/sessions";
 import { rig, type Rig } from "./ledger-support";
 import { storesOn, type TestStores } from "./support";
 
@@ -157,6 +158,33 @@ describe("a widening's proof", () => {
                             parsed: "a widening without its reserved proof",
                             computed: "a widening without its reserved proof",
                             coded: "a widening without its owner proof" });
+  });
+
+  it("hands its holder no other: a real one re-kinded, remade, copied or wrapped is none",
+     async () => {
+    const r = await rig();
+    // The owner's own proof, as the runner hands the session's extend door (`call.self`).
+    const extend = vi.spyOn(Sessions.prototype, "extend");
+    await r.stub.sessionExtend(r.bind(null, { session: r.cookie }));
+    const real = extend.mock.calls[0]![0] as object;
+    extend.mockRestore();
+    const kind = JSON.parse(`{"pro${""}ved":"reserved"}`) as object;
+    const tried = await inStores(r.stub, ({ admission }) => {
+      const as = (proof: unknown) => outcome(() => admission.setTier(proof as never,
+                                                                     { tier: "paid" }));
+      const maker = (real as { constructor?: unknown }).constructor;
+      return {
+        maker: maker === undefined && Object.getPrototypeOf(real) === null,
+        rekinded: outcome(() => Object.assign(real, kind)),
+        spread: as({ ...real, ...kind }),
+        derived: as(Object.create(real, Object.getOwnPropertyDescriptors(kind))),
+        wrapped: as(new Proxy(real, { get: (to, key) => Reflect.get(kind, key)
+                                                         ?? Reflect.get(to, key) })),
+      };
+    });
+    const none = "a widening without its reserved proof";
+    expect(tried).toEqual({ maker: true, spread: none, derived: none, wrapped: none,
+                            rekinded: expect.stringContaining("read only") });
   });
 
   it("is carried only by its own caller's rows: an owner's door holds no live session", () => {

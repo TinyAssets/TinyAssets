@@ -668,9 +668,10 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
                                                mode: "revoked", scopes: [],
                                                expected_revision: 0, name: "" });
     }
-    const kept = (await clients(r)).map((c) => c.client);
-    expect(kept).not.toContain(CHATGPT.client);
-    expect(kept).toContain(CLAUDE.client);
+    // Only the oldest revoke is forgotten: every other row stays.
+    const fillers = Array.from({ length: GRANT_LIMITS.maxOwnerClients - 1 }, (_, n) => filler(n));
+    expect((await clients(r)).map((c) => c.client).sort())
+      .toEqual([CLAUDE.client, ...fillers].sort());
     expect(await fence(r)).toBeGreaterThan(0);
   });
 

@@ -101,6 +101,8 @@ const MAKERS: Readonly<Record<string, string>> = Object.freeze({
  * minted (`proof-mint.ts`).
  */
 const HOMES: ReadonlySet<string> = new Set(["owner/src/door.ts", "owner/src/proof-mint.ts"]);
+/** The mint's name, the runner's and its own module's alone: `door.ts` checks, never mints. */
+const MINTERS: ReadonlySet<string> = new Set([OWNER_DO, "owner/src/proof-mint.ts"]);
 
 /** Each proof `sources` make outside its maker, as `file:line: what`. */
 export function forged(sources: ReadonlyMap<string, string>): string[] {
@@ -120,8 +122,8 @@ export function forged(sources: ReadonlyMap<string, string>): string[] {
       const word = ts.isIdentifier(node) ? node.text
         : ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node)
           || ts.isTemplateTail(node) ? node.text : null;
-      if (word !== null && /\b(?:proved|mintProof)\b/.test(word) && !makers.has(path)
-          && !HOMES.has(path)) {
+      if (word !== null && ((/\bproved\b/.test(word) && !makers.has(path) && !HOMES.has(path))
+          || (/\bmintProof\b/.test(word) && !MINTERS.has(path)))) {
         report(node, "names a proof's kind, which only its maker does");
       }
       ts.forEachChild(node, visit);
@@ -254,6 +256,8 @@ describe("policy-boundary guard", () => {
      "owner/src/ledger.ts", ["names a proof's kind, which only its maker does"]],
     ["the proofs' mint outside the runner", "grants.set(mintProof({}) as never);",
      "owner/src/ledger.ts", ["names a proof's kind, which only its maker does"]],
+    ["the proofs' mint handed on by their check", 'export { mintProof as m } from "./proof-mint";',
+     "owner/src/door.ts", ["names a proof's kind, which only its maker does"]],
   ])("sees %s", (_what, source, path, problems) => {
     expect(forged(new Map([[path, source]])))
       .toEqual(problems.map((problem) => `${path}:1: ${problem}`));
