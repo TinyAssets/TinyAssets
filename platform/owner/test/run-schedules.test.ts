@@ -253,3 +253,19 @@ describe("a run's run tools (review H1)", () => {
       .toMatchObject({ schedule_id: brief.schedule_id });
   });
 });
+
+describe("a post at the hot ceiling", () => {
+  it("rings the archive lane when it is refused storage_busy, so the lane moves", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    // The hot ceiling, its mail acked: the archive has a move to make, and no sync has run.
+    await r.sql("UPDATE ledger_usage SET messages = ?", LEDGER_LIMITS.maxMessages);
+    const job = "SELECT id FROM cf_agents_jobs WHERE id = 'owner-schedule/archive'";
+    expect(await r.sql(job)).toEqual([]);
+    const posted = await failure(() => r.stub.roomPost(r.bind(), {
+      room_id: `dm:${nativeId("main")}`, client_message_id: "c-1", body: "hello",
+      parent_id: null }));
+    expect(posted.code).toBe("storage_busy");
+    expect(await r.sql(job)).toEqual([{ id: "owner-schedule/archive" }]);
+  });
+});
