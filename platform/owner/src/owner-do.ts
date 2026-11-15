@@ -83,8 +83,8 @@
  * `toolProfile` answers the doors which tools a caller is served (`contract/profiles.json`:
  * its grant's profile, or a run's).
  *
- * Erasing the owner (`erasure.ts`, `erase.ts`; the door `ownerErase`): once it marks the
- * owner, every door refuses
+ * Erasing the owner (`erasure.ts`, `erase.ts`; the owner's door `ownerErase`, or the
+ * platform's `erasureBegin`): once it marks the owner, every door refuses
  * (`ERASING`, in the binding check every door's first unit runs) and no lane runs; it ends
  * every run, then wipes the owner whole, leaving only the erased admission row
  * (`admission.ts`). An object that finds that tombstone as it
@@ -180,9 +180,9 @@ import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type {
   AdmissionRequest, BeatRequest, BilledEvent, BindingRequest, ConnectionCommitRequest,
   ConnectionPrepareRequest, ConnectionRequest, EgressOpened, EgressRefusal, EgressReserved,
-  FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors, RestoreAnswer,
-  RestoreBeginRequest, RestoreHold, RestorePinRequest, RestoreSource, RestoreWipeRequest,
-  SigninEventsRequest, TierRequest,
+  EraseRequest, FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors,
+  RestoreAnswer, RestoreBeginRequest, RestoreHold, RestorePinRequest, RestoreSource,
+  RestoreWipeRequest, SigninEventsRequest, TierRequest,
 } from "../../contract/src/owner";
 import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
@@ -221,7 +221,6 @@ import type {
 } from "./files";
 import type { ClientRequest, ForgetRequest } from "./grants";
 import type { ConversationRequest } from "./relay";
-import type { EraseRequest } from "./erasure";
 import type {
   EventsRequest, LaunchRequest, RunListed, RunListRequest, RunRequest, RunView, SubmitRequest,
 } from "./runs";
@@ -1614,6 +1613,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    */
   async ownerErase(binding: Binding, request: EraseRequest): Promise<{ erasing: true }> {
     return this.#units("ownerErase", binding, request, erasureDoors.ownerErase);
+  }
+
+  /**
+   * The platform's erasure of the owner (the operator's `owner.erase`), by its reserved caller
+   * and confirmed by `erase-<owner>`: the owner's own door's mark and job, nothing else.
+   */
+  erasureBegin(binding: Binding, request: EraseRequest): Promise<{ erasing: true }> {
+    return this.#units("erasureBegin", binding, request, erasureDoors.erasureBegin);
   }
 
   /**

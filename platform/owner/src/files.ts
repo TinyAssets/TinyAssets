@@ -40,7 +40,8 @@
  *   R2 verified, recorded after the put resolves; a commit refuses any chunk not stored.
  *   So every object in the bucket has a row first, garbage collection never lists the
  *   bucket, and a deduplicated chunk is always one the bucket holds. A chunk whose
- *   references and holds both reach zero becomes garbage, deleted after a 24 h grace; a
+ *   references and holds both reach zero becomes garbage, deleted once its grace is past
+ *   (`GC_GRACE_S`), the oldest sooner once the owner's garbage passes its storage figure; a
  *   stored garbage chunk revives when wanted again, one never stored is sent again, and
  *   one being deleted is never held.
  * - Bounds: two, each refused loudly in the change's own unit with a fixed code and

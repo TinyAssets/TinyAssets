@@ -17,36 +17,16 @@ import {
   acceptanceKey, acceptanceOf, answerKey, argsText, type OperatorAnswer, operatorAnswer,
   type OperatorArgs, type OperatorMessage, OPERATOR_WINDOW_S, type Refused, signOperator,
 } from "../../contract/src/operator-message";
-import { QUEUES } from "../../contract/src/queue-names";
 import { now } from "../src/config";
 import { putKey, putOwner, readKey, readOwner } from "../src/directory";
 import type { DoorsEnv } from "../src/env";
-import worker from "../src/index";
-import { appCallback, doorsEnv, serveFirstPartyDocument, sqlIn } from "./support";
+import {
+  appCallback, deliver, doorsEnv, held, serveFirstPartyDocument, sqlIn,
+} from "./support";
 
 const RING = parseRing(doorsEnv.OPERATOR_KEYRING)!;
 const OTHER = parseRing(keyring())!;
 const fresh = () => `user_${randomBytes(12).toString("hex")}`;
-
-/** One delivery of `body` through the doors' queue handler, and how it ended. */
-async function deliver(body: unknown, env: DoorsEnv = doorsEnv) {
-  const acked: number[] = [];
-  const retried: number[] = [];
-  const batch = { queue: QUEUES.OPERATOR, ackAll: () => undefined, retryAll: () => undefined,
-                  messages: [{ id: "0", timestamp: new Date(), attempts: 1, body,
-                               ack: () => acked.push(0), retry: () => retried.push(0) }] };
-  await worker.queue(batch as unknown as MessageBatch<unknown>, env);
-  return { acked: acked.length, retried: retried.length };
-}
-
-/** What the bucket holds for `ask`: its acceptance record and its answer, or null. */
-async function held(ask: string) {
-  const read = async (key: string) => {
-    const object = await doorsEnv.OPERATOR_LOG.get(key);
-    return object === null ? null : await object.json() as Record<string, unknown>;
-  };
-  return { accepted: await read(acceptanceKey(ask)), answer: await read(answerKey(ask)) };
-}
 
 /** What the consumer logs from here on, each line's first part. */
 function logs() {
@@ -130,7 +110,7 @@ describe("the operator channel", () => {
     const message = await sign(owner);
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     expect(refusedOf(operatorAnswer((await held(message.ask)).answer, message)))
-      .toEqual({ code: "refused", message: "the owner is erased" });
+      .toEqual({ code: "owner_erased", message: "the owner is erased" });
   });
 
   const changed = async (change: (message: OperatorMessage) => unknown) =>
@@ -345,7 +325,7 @@ describe("the operator's restore ops, on a real owner object", () => {
     const owner = fresh();
     await putOwner(doorsEnv, owner, { s: "erased", t: now() });
     expect(refusedOf(await asked(owner, "restore.begin", GEN))).toEqual({
-      code: "refused", message: "the owner is erased" });
+      code: "owner_erased", message: "the owner is erased" });
     await untouched(owner);
   });
 
@@ -415,7 +395,7 @@ describe("an owner a restore holds, on a real owner object", () => {
     for (const [op, args] of [["restore.pin", { gen: GEN.gen }], ["restore.wipe",
                               { confirm: "x" }], ["restore.release", {}]] as const) {
       expect(refusedOf(await asked(erased, op, args))).toEqual({
-        code: "refused", message: "the owner is erased" });
+        code: "owner_erased", message: "the owner is erased" });
     }
   });
 
