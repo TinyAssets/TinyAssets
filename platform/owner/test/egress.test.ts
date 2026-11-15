@@ -36,8 +36,9 @@ import { NETWORK_RETRY_S, type SandboxRun } from "../src/launch";
 import { LANE_CALL_MS } from "../src/schedule";
 import {
   defineAgent, hashed, later, ownerRun, recorder, runnerBinding, runnerSandbox, scripted,
-  secretOf, whileOut,
+  whileOut,
 } from "./runs-support";
+import { secretOf } from "../../ci/workerd";
 import {
   type NetworkPlan, SANDBOX_WAITING, type SandboxSignin, type SandboxStart,
 } from "../../contract/src/sandbox";

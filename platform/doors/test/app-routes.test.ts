@@ -7,18 +7,17 @@
  * and each widening the owner's session.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { runDurableObjectAlarm } from "cloudflare:test";
-import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { until } from "../../ci/workerd";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import { wakeKinds } from "../../contract/src/wake-records";
 import { mcpOrigin } from "../src/binder";
 import { bundledSources } from "../../sources/src/catalog";
 import { profileNames, toolNames } from "../../contract/src/doors";
 import {
-  appPost, call, connect, OPEN, registerClient, serveFirstPartyDocument, setControl,
-  signInApp, TIERS, type Tokens, url,
+  appPost, call, connect, doorsEnv, OPEN, ownDoor, registerClient, serveFirstPartyDocument,
+  setControl, signInApp, TIERS, type Tokens, url,
 } from "./support";
 
 function owner(): string {
@@ -50,26 +49,25 @@ async function answered(response: Response, status = 200): Promise<Record<string
   return body;
 }
 
-describe("a new owner's starter seed, through the doors' own bindings", () => {
+describe("a new owner's starter seed, through the owner Worker's own bindings", () => {
   it("lands main and the starter's files, with no failure told: a missing or broken files " +
      "binding fails here", async () => {
     const who = owner();
     await signInApp({ owner: who });
-    const stub = env.OWNER.getByName(who);
-    const binding = { owner: who, caller: who, origin: null, tiers: TIERS };
-    // The seed is the owner's own lane's work once the sign-in admits it: run it out.
-    for (let i = 0; i < 20 && (await stub.starterReceipts(binding)).version === 0; i++) {
-      await runDurableObjectAlarm(stub);
-    }
-    const failed = (await stub.noticeList(binding)).notices
-      .filter((notice) => notice.type === "starter_failed").map((notice) => notice.detail);
-    expect(failed).toEqual([]);
-    expect((await stub.starterReceipts(binding)).version).toBeGreaterThan(0);
-    expect((await stub.outsideAgents(binding)).owner_agents.map((agent) => agent.agent))
-      .toContain("main");
+    // The seed is the owner's own lane's work once the sign-in admits it, on its own alarm.
+    await until(async () => (await ownDoor<{ version: number }>(who, "starterReceipts"))
+      .version > 0, "the starter's seed");
+    const { notices } = await ownDoor<{ notices: { type: string; detail: unknown }[] }>(
+      who, "noticeList");
+    expect(notices.filter((notice) => notice.type === "starter_failed")
+      .map((notice) => notice.detail)).toEqual([]);
+    const { owner_agents: agents } = await ownDoor<{ owner_agents: { agent: string }[] }>(
+      who, "outsideAgents", {});
+    expect(agents.map((agent) => agent.agent)).toContain("main");
     for (const path of ["/workspace/USER.md", "/workspace/index.md",
                         "/workspace/agents/main/agent.json"]) {
-      expect((await stub.fileStat(binding, { path })).entry, path).not.toBeNull();
+      expect((await ownDoor<{ entry: unknown }>(who, "fileStat", { path })).entry, path)
+        .not.toBeNull();
     }
   });
 });
@@ -263,12 +261,10 @@ describe("the owner app's file routes", () => {
   it("show a file that is not UTF-8 as not text, and take only closed bodies", async () => {
     const who = owner();
     const app = await signInApp({ owner: who });
-    const { env } = await import("cloudflare:workers");
-    const stub = (env as unknown as { OWNER: DurableObjectNamespace<
-      import("../../owner/src/owner-do").OwnerDO> }).OWNER.getByName(who);
-    await stub.fileWrite({ owner: who, caller: who, origin: null, tiers: TIERS },
-                         { path: "/workspace/blob.bin", expected_etag: null,
-                           content: new Uint8Array([0xff, 0xfe, 0x00]) });
+    await doorsEnv.OWNER.getByName(who).fileWrite(
+      { owner: who, caller: who, origin: null, tiers: TIERS },
+      { path: "/workspace/blob.bin", expected_etag: null,
+        content: new Uint8Array([0xff, 0xfe, 0x00]) });
     expect(await answered(await appPost("files/read", app.access_token, null,
                                         { path: "/workspace/blob.bin" })))
       .toMatchObject({ text: null, why: "not UTF-8 text" });

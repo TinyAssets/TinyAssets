@@ -4,13 +4,16 @@
  * questions 2 and 4). A gate is a Worker (`gate-worker.ts`) that a test's config binds in
  * place of one binding, in front of the real Worker or object that binding names. It
  * forwards every call unchanged unless the test arms it, through its `Control` entrypoint, to
- * hold a call before it is sent or after its answer, change its bytes in flight, or refuse it
- * with a refusal that crosses as a real one does. It records what crossed.
+ * hold a call before it is sent or after its answer, change its bytes in flight, refuse it
+ * with a refusal that crosses as a real one does, or answer it in the real one's place. It
+ * records what crossed.
  *
  * - `gate(name, methods, to)`: the gate Worker, for a pool's `workers`. `to` is the real
  *   Worker's folder, and the entrypoint it is bound at or the class whose object it fronts;
  *   or a test's fake Worker (`workers.ts` `fake()`), by its file.
  * - `methodsOf(file, name)`: a contract interface's method names, the methods a gate has.
+ * - `ownerGate(name)`: the gate in front of the owner Worker's objects, with every door of
+ *   its door table (`contract/doors.json`).
  * - `control(name)`: the binding of a gate's `Control` entrypoint, for the test Worker alone.
  */
 import { readFileSync } from "node:fs";
@@ -81,6 +84,18 @@ export function gate<Extra extends object = object>(name: string, methods: reado
             [className]: { className, useSQLite: true } } }),
     ...extra,
   };
+}
+
+/**
+ * The gate `name` in front of the owner Worker's objects (`OwnerDO`, bound by `scriptName` as
+ * the real class is): its methods are the owner's doors, each row of its door table
+ * (`contract/doors.json`).
+ */
+export function ownerGate(name: string) {
+  const table = JSON.parse(readFileSync(join(PLATFORM, "contract", "doors.json"), "utf8")) as
+    { doors: { door: string }[] };
+  return gate(name, table.doors.map((row) => row.door),
+              { worker: join(PLATFORM, "owner"), className: "OwnerDO" });
 }
 
 /** The binding of gate `name`'s `Control` entrypoint, for the test Worker alone. */

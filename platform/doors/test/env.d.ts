@@ -1,21 +1,24 @@
-// The doors Worker's bindings, as its generated env types them (`src/env.ts`), but OWNER: the
-// test entry's OwnerDO (vitest.config.ts), whose doors outside the contract the tests still
-// call, and which the owner's own tests bind as OWNER too.
+// The doors Worker's bindings, as its generated env types them (`src/env.ts`), and the tests'
+// own: the owner gate's control, and the fakes' read-backs (vitest.config.ts). OWNER is not
+// here: a test reaches it as `doorsEnv.OWNER` (`support.ts`), typed as the doors' env types it,
+// since one tsc program merges every workspace's `Cloudflare.Env` and the owner suite's
+// declares its own OWNER, its object's class.
 declare namespace Cloudflare {
   type DoorsBound = import("../src/env").DoorsEnv;
 
   interface Env extends Pick<DoorsBound, "OAUTH_KV" | "DIRECTORY" | "CONTROL" | "ASSETS"
                                          | "DCR_ENABLED" | "OWNER_ISSUER" | "FOREIGN_ISSUERS"
                                          | "ROUTING_MAC_KEY"> {
-    OWNER: DurableObjectNamespace<import("../../owner/src/owner-do").OwnerDO>;
+    /** The gate in front of the owner Worker's objects, which OWNER reaches (`ci/gate.ts`). */
+    OWNER_GATE: import("../../ci/gate").GateControl;
     /** The fake providers (test/fake-providers.ts), for the tests to read back. */
     PROVIDERS: Fetcher;
     /**
-     * The owner object's fake sandbox Worker's record, by owner: the object hosted here
-     * reaches that Worker as its SANDBOX (`owner/test/fake-sandbox.ts`).
+     * The owner Worker's fake sandbox Worker's record, by owner: the owner reaches that
+     * Worker as its SANDBOX (`owner/test/fake-sandbox.ts`).
      */
     SANDBOX_LOG: Service<import("../../owner/test/fake-sandbox").Log>;
-    /** What the owner object hosted here sent its erasure queue (`owner/test/fake-erasures.ts`). */
+    /** What the owner Worker sent its erasure queue (`owner/test/fake-erasures.ts`). */
     ERASURES_SENT: Service<import("../../owner/test/fake-erasures").Sent>;
   }
 }

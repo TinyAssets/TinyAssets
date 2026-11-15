@@ -422,6 +422,8 @@ describe("the erasure's tombstone", () => {
     await erasedWhole(r.stub(), r.owner, r.session());
     expect(await sqlIn(r.stub(), "SELECT only, state, reasons FROM owner_admission"))
       .toEqual([{ only: 1, state: "erased", reasons: "[]" }]);
+    // The doors' erasure job asked again after the wipe: nothing is left outside to erase.
+    expect(await r.stub().erasureOutside(r.platform)).toBeNull();
     for (let round = 0; round < 2; round++) {
       await crash(r);
       for (const refused of [() => r.stub().policyRead(r.bind(null)),

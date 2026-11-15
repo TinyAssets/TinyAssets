@@ -1,6 +1,6 @@
 /**
- * Runs at the doors (slice R), in workerd, through the real owner object with a recording
- * fake behind its `SANDBOX` (`entry.ts`): the run tools on `/mcp` and `/api`, the owner's
+ * Runs at the doors (slice R), in workerd, through the real owner Worker with a recording
+ * fake behind its `SANDBOX` (`vitest.config.ts`): the run tools on `/mcp` and `/api`, the owner's
  * `/app/api/agent/*` routes, the tier numbers the control record holds, a run's own MCP door
  * and event door on the egress host, the sandbox's sign-in report door, and the owner
  * app's live socket on a conversation
@@ -8,25 +8,22 @@
  * nothing, and a sign-out closes exactly its device's sockets).
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
-import type { Binding } from "../../contract/src/binding";
 import { SOCKET_VERSION, TICKET_REFUSED } from "../../contract/src/socket-shape";
-import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { RUN_INSTRUCTIONS } from "../src/instructions";
 import { profileNames } from "../../contract/src/doors";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
 import { SESSION_REFUSED } from "../../owner/src/runs";
-import { until } from "../../ci/workerd";
-import { refuseOnce } from "./entry";
+import { secretOf, until } from "../../ci/workerd";
 import {
-  answerOf, appPost, call, connect, OPEN, reached, recorded, registerClient, rpcBody,
-  serveFirstPartyDocument, setControl, signInApp, sqlIn, type Tokens, url,
+  answerOf, appPost, call, connect, crossed, defineMain, OPEN, ownDoor, reached, recorded,
+  refuseOnce, registerClient, rpcBody, serveFirstPartyDocument, setControl, signInApp,
+  type Tokens, url,
 } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
@@ -49,16 +46,11 @@ beforeEach(async () => {
   restore = serveFirstPartyDocument();
 });
 
-/** The owner's own binding, as the object's file doors take it in a test. */
-function ownerBinding(who: string): Binding {
-  return { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
-}
-
 /** A signed-in owner whose `main` agent is Claude Code on its own sign-in. */
 async function owned(file: Record<string, unknown> = SIGNED_IN) {
   const who = owner();
   const app = await signInApp({ owner: who });
-  await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", file);
+  await defineMain(who, app, file);
   return { who, app };
 }
 
@@ -73,9 +65,8 @@ async function ownedOnKey() {
                                   { source: "groq", key: `gsk-good-${crypto.randomUUID()}` });
   expect(connected.status).toBe(200);
   const { connection } = await connected.json<{ connection: string }>();
-  await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main",
-                    { engine: "pi", credential: "api_key", connection,
-                      scopes: ["read_files", "read_graph"] });
+  await defineMain(who, app, { engine: "pi", credential: "api_key", connection,
+                         scopes: ["read_files", "read_graph"] });
   return { who, app };
 }
 
@@ -259,7 +250,7 @@ describe("a run's own doors on the egress host", () => {
     ] as const) {
       expect((await post(method, params))["error"]).toMatchObject({ code: -32024 });
     }
-    expect(await sqlIn(who, "SELECT 1 FROM wake_callbacks")).toEqual([]);
+    expect(await crossed(who, "wakeSubscribe")).toEqual([]);
   });
 
   it("take a run's own secret as its header, where its CLI sends one", async () => {
@@ -293,12 +284,13 @@ describe("a run's own doors on the egress host", () => {
       [new Refusal("storage_busy", "storage_busy: the archive moved this mail",
                    { retryAfterS: 1 }), "1"],
     ] as const) {
-      refuseOnce("runEvents", who, refusal);
+      await refuseOnce("runEvents", who, refusal);
       const refused = await report(start!, { frames: [] });
       expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
         .toEqual([503, retry, { error: { code: refusal.code, message: refusal.message } }]);
     }
-    refuseOnce("runEvents", who, new Refusal("run_ended", "run_ended: the run is no longer live"));
+    await refuseOnce("runEvents", who,
+                     new Refusal("run_ended", "run_ended: the run is no longer live"));
     const ended = await report(start!, { frames: [] });
     expect([ended.status, ended.headers.get("Retry-After")]).toEqual([403, null]);
   });
@@ -354,9 +346,8 @@ describe("a run's own doors on the egress host", () => {
     expect((await signin({})).status).toBe(401);
     expect((await signin({ ...sandbox, Origin: url("") })).status).toBe(404);
     expect((await signin(sandbox, "GET")).status).toBe(405);
-    expect(await runInDurableObject(env.OWNER.getByName(who), (_instance, state) =>
-      state.storage.sql.exec("SELECT engine, signed_in FROM engine_signins").toArray()))
-      .toEqual([{ engine: "claude-code", signed_in: 1 }]);
+    expect((await ownDoor<{ engines: { engine: string; signed_in: boolean }[] }>(
+      who, "signinList")).engines).toMatchObject([{ engine: "claude-code", signed_in: true }]);
   });
 });
 
@@ -438,11 +429,11 @@ describe("a run's live events", () => {
       { seq: 3, at: 3, event: { type: "result", result: "done" } }], end: { exit_code: 0 } });
     await until(() => early.frames.length === 3, "the result");
     expect(early.frames[2]).toMatchObject({ seq: 3, kind: "result" });
-    // What is durable is the run, its result and the session id; no frame is a row.
-    const stored = await runInDurableObject(env.OWNER.getByName(who), (_instance, state) =>
-      JSON.stringify(state.storage.sql.exec("SELECT * FROM runs").toArray()));
-    expect(stored).toContain("\"result\":\"done\"");
-    expect(stored).not.toContain("assistant");
+    // What is durable is the run and its result (that no frame is a row is the owner's test,
+    // `owner/test/runs.test.ts`).
+    expect(await (await appPost("agent/status", app.access_token, null,
+                                { run_id: start!.run })).json()).toMatchObject({
+      state: "succeeded", result: "done" });
     // Its tail went with its settle: a joiner now sees none of its frames.
     const after = frames(await socket(await ticketFor(app.access_token, run.conversation_id),
                                       run.conversation_id));
@@ -467,10 +458,6 @@ describe("a run's live events", () => {
     const status = await (await appPost("agent/status", app.access_token, null,
                                         { run_id: run.run_id })).json<Record<string, unknown>>();
     expect(status["error"]).toBe(SESSION_REFUSED);
-    const kept = await runInDurableObject(env.OWNER.getByName(who), (_instance, state) =>
-      state.storage.sql.exec("SELECT session_id FROM conversations WHERE id = ?",
-                             run.conversation_id).toArray());
-    expect(kept).toEqual([{ session_id: null }]);
   });
 
   it("keep a settled run's tail no longer: the live runs' tails have its room", async () => {

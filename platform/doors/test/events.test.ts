@@ -5,17 +5,15 @@
  * the owner surface's doorbell and wake-limits routes, whose token never comes back.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { OwnerDO } from "../../owner/src/owner-do";
 import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { mcpOrigin } from "../src/binder";
 import {
-  appPost, call, connect, legacyPost, OPEN, rpcBody, registerClient, serveFirstPartyDocument, setControl,
-  signInApp, sqlIn, type Tokens, url,
+  appPost, call, connect, crossed, legacyPost, OPEN, ownDoor, registerAgent, registerClient,
+  rpcBody, serveFirstPartyDocument, setControl, signInApp, type Tokens, url,
 } from "./support";
 
 const KEY = new Uint8Array(32).map((_, n) => n + 1);
@@ -31,20 +29,16 @@ async function rpc(tokens: Tokens, method: string, params: unknown) {
   return rpcBody(await legacyPost(tokens.access_token, { jsonrpc: "2.0", id: 1, method, params }));
 }
 
-/** A connected client with a ringing agent registered for it in `alpha`. */
-async function ringingClient(alice = owner()) {
+/**
+ * A connected client with a ringing agent registered for it in `alpha`, as a client registers
+ * one: the client files its card (`agent_register`) and the owner applies it in its session.
+ */
+async function ringingClient(alice = owner(), delivery_method = "mcp_event") {
   const registered = await registerClient();
   const tokens = await connect(registered, { owner: alice });
-  await rpc(tokens, "events/list", {});  // its grant recorded on its first call
+  const agent = await registerAgent(tokens, alice, delivery_method);
   const origin = await mcpOrigin(registered.clientId, registered.redirectUri);
-  await runInDurableObject(env.OWNER.getByName(alice), (_i: OwnerDO, state) => {
-    state.storage.sql.exec(
-      "INSERT INTO outside_agents (agent_id, command_center_id, outside_client, outside_family, " +
-        "source, source_ref, display_name, delivery_method, recipe_id, revision, created_at) " +
-        "VALUES ('agent_00000000000000aa', 'alpha', ?, ?, 'mcp', ?, 'Dot', 'mcp_event', NULL, " +
-        "1, 0)", origin.client, origin.family, registered.clientId);
-  });
-  return { alice, tokens, origin };
+  return { alice, tokens, origin, agent };
 }
 
 function subscribe(tokens: Tokens, path: string, extra: Record<string, unknown> = {}) {
@@ -123,17 +117,20 @@ describe("MCP Events at the MCP door", () => {
     expect(again).toMatchObject({ id, refreshBefore: null });
     // A Work chat beside the dot is its own subscription.
     await subscribe(tokens, "echo/work-chat");
-    const rows = await sqlIn(alice, "SELECT subscription_id, blob FROM wake_callbacks " +
-                                    "ORDER BY subscription_id");
-    expect(rows).toHaveLength(2);
-    expect(JSON.stringify(rows)).not.toContain(WHSEC);
-    expect(JSON.stringify(rows)).not.toContain("callback.test");
-    // Unsubscribe by name, arguments and URL.
+    const work = subscriptionId(origin.client, "https://callback.test/echo/work-chat", EVENT,
+                                { command_center_id: "alpha", board: true, rooms: [] });
+    // The object is handed each under its derived id, and only the sealed callback: never
+    // the secret, never the URL.
+    const subscribed = (await crossed(alice, "wakeSubscribe")).map((call) => call.request);
+    expect(subscribed.map((request) => request["subscription_id"])).toEqual([id, id, work]);
+    expect(JSON.stringify(subscribed)).not.toContain(WHSEC);
+    expect(JSON.stringify(subscribed)).not.toContain("callback.test");
+    // Unsubscribe by name, arguments and URL: the dot's id, derived again.
     const ended = await rpc(tokens, "events/unsubscribe", {
       name: EVENT, arguments: { command_center_id: "alpha", board: true },
       delivery: { mode: "webhook", url: "https://callback.test/echo/dot" } });
     expect(ended["result"]).toMatchObject({});
-    expect(await sqlIn(alice, "SELECT 1 FROM wake_callbacks")).toHaveLength(1);
+    expect((await crossed(alice, "wakeUnsubscribe")).map((call) => call.request)).toEqual([{ subscription_id: id }]);
   });
 
   it("answers each refusal with the design sketch's code, and a callback's as a category",
@@ -162,7 +159,7 @@ describe("MCP Events at the MCP door", () => {
     // A lifetime no date can write is refused before anything is stored.
     expect(await code(await subscribe(tokens, "echo/x", { ttlMs: 9_000_000_000_000_000 })))
       .toMatchObject({ code: -32602 });
-    expect(await sqlIn(alice, "SELECT 1 FROM wake_callbacks")).toEqual([]);
+    expect((await crossed(alice, "wakeSubscribe")).map((call) => call.request)).toEqual([]);
     // A client with no ringing agent there may verify nothing into place.
     const stranger = await connect(await registerClient(), { owner: alice });
     expect(await code(await subscribe(stranger, "echo/x")))
@@ -180,8 +177,6 @@ describe("an agent's own subscriptions", () => {
       { code: -32025, data: { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT } });
     // A refresh of one it holds is no new place.
     expect((await subscribe(tokens, "echo/chat-0"))["result"]).toBeDefined();
-    expect(await sqlIn(alice, "SELECT 1 FROM wake_callbacks")).toHaveLength(
-      SUBSCRIPTIONS_PER_AGENT);
   });
 });
 
@@ -189,24 +184,21 @@ describe("the owner surface's doorbell", () => {
   it("seals the pasted token through the gateway and never answers it back", async () => {
     const who = owner();
     const app = await signInApp({ owner: who });
-    const { origin } = await ringingClient(who);
-    await runInDurableObject(env.OWNER.getByName(who), (_i: OwnerDO, state) => {
-      state.storage.sql.exec("UPDATE outside_agents SET delivery_method = 'routine_fire'");
-    });
-    void origin;
+    const { agent } = await ringingClient(who, "routine_fire");
     const token = "sk-ant-oat01-" + "z".repeat(40);
     const fire = "https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire";
+    await env.OWNER_GATE.seen(who);
     const answered = await appPost("agent/doorbell", app.access_token, app.session, {
-      agent_id: "agent_00000000000000aa", kind: "claude_routine_fire", url: fire, secret: token,
-      board: true });
+      agent_id: agent, kind: "claude_routine_fire", url: fire, secret: token, board: true });
     const text = await answered.text();
     expect(answered.status).toBe(200);
     expect(text).not.toContain(token);
-    const rows = await sqlIn(who, "SELECT principal, kind, board FROM wake_callbacks");
-    expect(rows).toEqual([{ principal: "owner", kind: "claude_routine_fire", board: 1 }]);
-    expect(JSON.stringify(await sqlIn(who, "SELECT * FROM wake_callbacks"))).not.toContain(token);
+    // The object is handed the doorbell sealed: its kind and board, never the token.
+    const rung = (await crossed(who, "agentDoorbell")).map((call) => call.request);
+    expect(rung).toMatchObject([{ agent_id: agent, kind: "claude_routine_fire", board: true }]);
+    expect(JSON.stringify(rung)).not.toContain(token);
     const refused = await appPost("agent/doorbell", app.access_token, app.session, {
-      agent_id: "agent_00000000000000aa", kind: "claude_routine_fire",
+      agent_id: agent, kind: "claude_routine_fire",
       url: "https://evil.example/v1/claude_code/routines/t/fire", secret: token });
     expect(refused.status).toBe(400);
     const { subscription_id } = JSON.parse(text) as { subscription_id: string };
@@ -214,10 +206,9 @@ describe("the owner surface's doorbell", () => {
                                 { subscription_id });
     expect(await ended.json()).toEqual({ unsubscribed: true });
     // The owner's own wake settings, off by default, set here.
-    const policy = await env.OWNER.getByName(who).policyRead({ owner: who, caller: who,
-                                                               origin: null } as never);
+    const policy = await ownDoor<{ generation: number }>(who, "policyRead");
     const limits = await appPost("agent/wake-limits", app.access_token, app.session, {
-      agent_id: "agent_00000000000000aa", max_wakes_per_hour: 2, batch_window_s: 0,
+      agent_id: agent, max_wakes_per_hour: 2, batch_window_s: 0,
       expected_generation: policy.generation });
     expect((await limits.json<{ agent: { max_wakes_per_hour: number } }>()).agent
       .max_wakes_per_hour).toBe(2);

@@ -8,7 +8,6 @@
  * client is at `/mcp`.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { apiKeyOrigin } from "../../contract/src/binding";
@@ -16,9 +15,8 @@ import type { Binding } from "../../contract/src/binding";
 import { mcpOrigin } from "../src/binder";
 import { profileNames } from "../../contract/src/doors";
 import {
-  appPost, call, connect, legacyPost, OPEN, registerClient, serveFirstPartyDocument,
-  setControl, signInApp, type Tokens, url,
-  answerOf,
+  answerOf, appPost, call, connect, doorsEnv, grantsOf, legacyPost, OPEN, ownDoor,
+  registerClient, serveFirstPartyDocument, setControl, signInApp, type Tokens, url,
 } from "./support";
 
 function owner(): string {
@@ -47,20 +45,21 @@ async function listed(tokens: Tokens): Promise<string[]> {
 async function signedIn() {
   const who = owner();
   const app = await signInApp({ owner: who });
-  const stub = env.OWNER.getByName(who);
+  const stub = doorsEnv.OWNER.getByName(who);
   const own: Binding = { owner: who, caller: who, origin: null };
   const session: Binding = { ...own, session: app.session };
   return {
     who, app, stub, own,
     policy: async (codemode: boolean, custom?: string[]) => {
-      const { generation, policy } = await stub.policyRead(own);
-      const { tools: _tools, ...rest } = policy as typeof policy & { tools?: unknown };
+      const { generation, policy } = await ownDoor<
+        { generation: number; policy: Record<string, unknown> }>(who, "policyRead");
+      const { tools: _tools, ...rest } = policy;
       await stub.policyWrite(session, { expected_generation: generation, policy: {
         ...rest, codemode: { on: codemode },
         ...(custom === undefined ? {} : { tools: { custom } }) } });
     },
     profile: async (client: string, profile: string) => {
-      const row = (await stub.grantList(own)).clients.find((c) => c.client === client)!;
+      const row = (await grantsOf(who)).find((c) => c.client === client)!;
       await stub.grantSet(session, { client, source: row.source, mode: row.mode,
                                      scopes: row.scopes as never,
                                      expected_revision: row.revision, name: "", profile });

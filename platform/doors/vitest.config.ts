@@ -5,11 +5,12 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 import { keyring } from "../ci/fixtures";
+import { control, ownerGate } from "../ci/gate";
 import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
-import { auxiliary, fake, fakeConfig, main, once, pool, workerConfig } from "../ci/workers";
+import { auxiliary, fake, fakeConfig, main, once, pool } from "../ci/workers";
 
-/** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), made fresh for each run. */
+/** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), the doors' and the owner's. */
 const ROUTING_KEY = randomBytes(32).toString("base64url");
 
 /** The shared inbound app's signing secret (`shared-apps.json`'s Slack), for the tests. */
@@ -26,57 +27,61 @@ const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
 /** The owner suite's erasure-queue consumer, which records what each object sent. */
 const FAKE_ERASURES = join(PLATFORM, "owner", "test", "fake-erasures.ts");
 /**
- * The queue the owner object hosted here sends its erasure to, consumed by that fake: not the
- * config's `tinyassets-erasure`, whose consumer is the doors Worker itself, since these tests
- * run the doors' consumer by hand on what was sent (`doors-live.test.ts` `consume`).
+ * The queue the owner Worker sends its erasure to here, consumed by that fake: not the
+ * config's `tinyassets-erasure`, whose consumer is the doors Worker's own entry, while these
+ * tests serve the test entry and run the doors' consumer by hand on what was sent
+ * (`doors-live.test.ts` `consume`).
  */
 const ERASURES_RECORDED = "owner-erasures-recorded";
+/** The gate in front of the owner Worker's objects, which the doors' OWNER reaches. */
+const OWNER_GATE = "owner-gate";
 
 export default defineConfig({
   test: {
     projects: [
-      // Runs in workerd, against the config's own KV namespaces, flags and GATEWAY
-      // binding. The test entry serves the doors with a fake upstream sign-in and the
-      // records with a test source beside them, and exports the real OwnerDO, so OWNER,
-      // which the config binds by script_name, is bound to it here; the fake upstream's
-      // issuer stands in for AuthKit's as the owner issuer. GATEWAY reaches the real
+      // Runs in workerd, against the config's own KV namespaces, flags and service bindings.
+      // The test entry serves the doors with a fake upstream sign-in and the records with a
+      // test source beside them; the fake upstream's issuer stands in for AuthKit's as the
+      // owner issuer. OWNER, which the config binds by script_name, is the owner gate
+      // (`ci/gate.ts`), in front of the owner Worker's objects: the owner Worker bundled from
+      // its real entry as a deploy bundles it, with every binding its config gives it (its
+      // FILES, GATEWAY and CODEMODE_VM the real Workers' beside it). The gate forwards every
+      // call unchanged until a test arms it, through OWNER_GATE (bound to the test Worker
+      // alone), to refuse one owner's door, and records what crossed by owner
+      // (`test/gates.ts` disarms it after each test). The owner's SANDBOX is the owner
+      // suite's fake sandbox Worker (`owner/test/fake-sandbox.ts`), whose record a test reads
+      // through SANDBOX_LOG; its ERASURES is a queue the owner suite's fake consumer records
+      // (`owner/test/fake-erasures.ts`), read through ERASURES_SENT. GATEWAY reaches the real
       // gateway Worker (its `ConnectGateway` entrypoint, as the config names it), whose
-      // fetches reach the fake providers (`test/fake-providers.ts`); PROVIDERS is the
-      // tests' own way to them, to read back what they received. ROUTING_MAC_KEY, the
-      // config's one secret, is the owner Worker's too: here both are this Worker. The
-      // gateway, codemode and files Workers are each bundled from their own config, as a
-      // deploy bundles them. The doors' and each auxiliary Worker have every binding their
-      // configs give them (`main`, `auxiliary`), and the tests state each secret: none is
-      // read from the host. The owner object hosted in this script has only the four bindings
-      // stated below, until it runs as an auxiliary of its own (T2). SANDBOX is the owner
-      // suite's fake sandbox Worker (`owner/test/fake-sandbox.ts`), whose record a test
-      // reads through SANDBOX_LOG; ERASURES is a queue the owner suite's fake consumer
-      // records (`owner/test/fake-erasures.ts`), read through ERASURES_SENT.
-      // The import consumer's tests take a bundle the slice-2 builder made in Node
-      // (`test/import-setup.ts`), deleted at the cutover with the importer.
+      // fetches reach the fake providers (`test/fake-providers.ts`); PROVIDERS is the tests'
+      // own way to them, to read back what they received. ROUTING_MAC_KEY is both the doors'
+      // and the owner's, as their configs share it. The doors' and each auxiliary Worker have
+      // every binding their configs give them (`main`, `auxiliary`), and the tests state each
+      // secret: none is read from the host. The import consumer's tests take a bundle the
+      // slice-2 builder made in Node (`test/import-setup.ts`), deleted at the cutover with the
+      // importer.
       project("doors", "workerd", {
-        test: { globalSetup: ["./test/import-setup.ts"] },
+        test: { globalSetup: ["./test/import-setup.ts"], setupFiles: ["./test/gates.ts"] },
         plugins: [
           cloudflareTest(once(async () => pool(main(join(PLATFORM, "doors"), {
-              durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
+              durableObjects: { OWNER: { className: "OwnerDO", scriptName: OWNER_GATE,
+                                         useSQLite: true } },
               bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY,
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                           WORKOS_API_KEY: "test-client-secret", OPERATOR_KEYRING,
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
-              // CODEMODE_VM, OWNER_FILES and SANDBOX: the owner object's (in this script for
-              // the tests), to the real codemode and files Workers, as the owner config binds
-              // them (the owner's FILES is the files Worker's whole service, the doors' its
-              // upload entrypoint), and to the owner suite's fake sandbox Worker.
               serviceBindings: { PROVIDERS: fakeConfig(FAKE_PROVIDERS).name,
-                                 CODEMODE_VM: workerConfig(join(PLATFORM, "codemode")).name,
-                                 OWNER_FILES: workerConfig(join(PLATFORM, "files")).name,
-                                 SANDBOX: fakeConfig(FAKE_SANDBOX).name,
+                                 OWNER_GATE: control(OWNER_GATE),
                                  SANDBOX_LOG: { name: fakeConfig(FAKE_SANDBOX).name,
                                                 entrypoint: "Log" },
                                  ERASURES_SENT: { name: fakeConfig(FAKE_ERASURES).name,
                                                   entrypoint: "Sent" } },
-              queueProducers: { ERASURES: { queueName: ERASURES_RECORDED } },
               workers: [
+                await auxiliary(join(PLATFORM, "owner"), {
+                  bindings: { ROUTING_MAC_KEY: ROUTING_KEY },
+                  serviceBindings: { SANDBOX: fakeConfig(FAKE_SANDBOX).name },
+                  queueProducers: { ERASURES: { queueName: ERASURES_RECORDED } } }),
+                ownerGate(OWNER_GATE),
                 await auxiliary(join(PLATFORM, "gateway"),
                                 { bindings: { GATEWAY_KEYRING: KEYRING },
                                   outboundService: fakeConfig(FAKE_PROVIDERS).name }),

@@ -5,15 +5,14 @@
  */
 import { createHmac } from "node:crypto";
 
-import { env, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { beforeEach, describe, it } from "vitest";
 
 import { now } from "../../src/config";
-import { mcpOrigin } from "../../src/binder";
 import { Refusal, refusalOf } from "../../../contract/src/refusal";
 import {
-  appPost, call, connect, legacyPost, OPEN, rpcBody, registerClient, serveFirstPartyDocument,
-  setControl, url,
+  appPost, call, connect, legacyPost, OPEN, registerAgent, rpcBody, registerClient,
+  serveFirstPartyDocument, setControl, url,
 } from "../support";
 import { clean, owned as ownedBy } from "./support";
 
@@ -111,14 +110,7 @@ describe("subscriptions reaching the owner", () => {
       cursor: null, ...extra });
     // No agent registered for the client yet: the owner refuses.
     recRaw("ev sub no agent", await sub({ command_center_id: "alpha", board: true }));
-    const origin = await mcpOrigin(registered.clientId, registered.redirectUri);
-    await runInDurableObject(env.OWNER.getByName(alice), (_i: unknown, state) => {
-      state.storage.sql.exec(
-        "INSERT INTO outside_agents (agent_id, command_center_id, outside_client, outside_family, " +
-          "source, source_ref, display_name, delivery_method, recipe_id, revision, created_at) " +
-          "VALUES ('agent_00000000000000aa', 'alpha', ?, ?, 'mcp', ?, 'Dot', 'mcp_event', NULL, " +
-          "1, 0)", origin.client, origin.family, registered.clientId);
-    });
+    await registerAgent(tokens, alice, "mcp_event");
     recRaw("ev sub bad args", await sub({ command_center_id: 7 }));
     recRaw("ev sub other cc", await sub({ command_center_id: "beta", board: true }));
     recRaw("ev sub bad url", await sub({ command_center_id: "alpha", board: true },
