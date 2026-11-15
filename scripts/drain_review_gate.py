@@ -516,8 +516,8 @@ def is_prose(path: str) -> bool:
 #
 # A pull request that changes anything but prose carries an **Untangle check**: a
 # heading, or a line that opens in bold, named so. In it, an item left, owed or for
-# later names its fix: a PR (`#123`), a branch (`untangle/...`, `fix/...`) or a live wait
-# (`live: ...`). An item is a bullet or a paragraph. It is owed when it sits under a
+# later names its fix: a PR (`#123`), a branch (`untangle/`, `fix/`, `process/` or `land/`)
+# or a live wait (`live: ...`). An item is a bullet or a paragraph. It is owed when it sits under a
 # label (a heading, a bold opener, or a line ending in `:`) that opens `Owed` or `Later`,
 # or under one that opens `Left` and itself says owed or later; a decided keep under
 # `Left` is not owed. Code spans are not read, and "owed no" or "nothing owed" is not a
@@ -531,7 +531,8 @@ _OWING_LABEL_RE = re.compile(r"^\W*(?P<word>left|owed|later)\b", re.IGNORECASE)
 _OWED_WORD_RE = re.compile(r"\b(?:owed|later)\b", re.IGNORECASE)
 _NOT_OWED_RE = re.compile(r"\bowed\s+(?:no|nothing)\b|\b(?:nothing|none)\s+(?:is\s+)?owed\b",
                           re.IGNORECASE)
-_NAMES_FIX_RE = re.compile(r"#\d+|\b(?:untangle|fix)/[\w./-]+|\blive:", re.IGNORECASE)
+_NAMES_FIX_RE = re.compile(r"#\d+|\b(?:untangle|fix|process|land)/[\w./-]+|\blive:",
+                           re.IGNORECASE)
 _NOTHING_RE = re.compile(r"^\W*(?:nothing|none)\b", re.IGNORECASE)
 
 
@@ -604,7 +605,7 @@ def untangle_check_problems(body: str, paths: list[str]) -> list[str]:
     if section is None:
         return ["the body has no Untangle check (a heading or a bold line named so), and the "
                 f"change is not only prose: {next(p for p in paths if not is_prose(p))}"]
-    return [f"an owed item names no PR (#123), branch (untangle/..., fix/...) or live: wait: "
+    return [f"an owed item names no PR (#123), branch (untangle/, fix/, process/, land/) or live: wait: "
             f"{item[:200]}" for item in _owed_items(section)]
 
 
