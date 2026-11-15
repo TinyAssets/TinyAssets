@@ -24,7 +24,7 @@
     "contract/guards": {
       "slowest_ms": 16442,
       "test": "contract/guards/sync-ignore.test.ts > its ceilings, each line past one said in file order applies the list to `LIST_BYTES`, every line past it said",
-      "measured": "CI run 43668466020 (merge group of #5610, after #5609; sync-ignore unchanged since), its tests-report-8 (platform-tests' contract leg, on a runner that ran the whole leg in about twice its usual time): the slowest of the ten successful push and merge-group runs after #5609, which three runs' 4,552 ms would leave at 87% of its budget, 2026-11-15"
+      "measured": "CI run 43668466020 (merge group of #5610, after #5609; sync-ignore unchanged since), its tests-report-8 (platform-tests' contract leg, on a runner that ran the whole leg in about five times its usual time): the slowest of the ten successful push and merge-group runs after #5609, which three runs' 4,552 ms would leave at 87% of its budget, 2026-11-15"
     },
     "deploy/guards": {
       "slowest_ms": 381,
