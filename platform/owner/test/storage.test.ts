@@ -28,14 +28,14 @@ const ownChunks = async (r: Awaited<ReturnType<typeof rig>>) => SEED.mine(
   (row) => row["sha256"] as string);
 
 /**
- * A generation's row: begun at `started` (s), finished at `finished`, its log `log` bytes
- * through E, `seq` its place among the generations. With `finished` null it is being written,
+ * A generation's row: begun at `started` (s), finished at `finished`, what a restore
+ * stages of its log `log` bytes, `seq` its place among the generations. With `finished` null it is being written,
  * its next pass a day off, so no pass of the lane carries it here.
  */
 async function generation(r: Awaited<ReturnType<typeof rig>>, gen: string, started: number,
                           finished: number | null, log = 0, seq = 1): Promise<void> {
   await sqlIn(r.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
-                      "bytes, s, schema, started_at, finished_at, retry_at, log_bytes, seq) " +
+                      "bytes, s, schema, started_at, finished_at, retry_at, staged, seq) " +
                       "VALUES (?, ?, ?, NULL, 0, '', 0, 1, 1, ?, ?, ?, ?, ?)",
               gen, manifestDay(Date.now() / 1000), finished === null ? "writing" : "done",
               started, finished, finished === null ? Date.now() / 1000 + 86_400 : null, log, seq);
@@ -224,7 +224,7 @@ describe("the one storage number", () => {
   // is kept by the one list the prune reads, and so is everything it names (r-fallback-chunks).
   it.each([
     { kept: "the fallback", log: LOG_BYTES + 1, open: false,
-      release: "UPDATE owner_backups SET log_bytes = 0 WHERE gen = 'fedcba9876543210'" },
+      release: "UPDATE owner_backups SET staged = 0 WHERE gen = 'fedcba9876543210'" },
     { kept: "an open export's", log: 0, open: true, release: "DELETE FROM owner_exports" },
   ])("never collects early a chunk only $kept generation names", async ({ log, open, release }) => {
     const r = await rig();

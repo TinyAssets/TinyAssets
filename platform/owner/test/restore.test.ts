@@ -19,6 +19,8 @@ import { DELETE_BATCH, INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contra
 import type { RestoreAnswer, RestoreHold } from "../../contract/src/owner";
 import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
 import { exported, NOT_EXPORTED } from "../src/export";
+import type { Files } from "../src/files";
+import type { WriteGate } from "../src/gate";
 import { CHUNK_ROW_BYTES, CHUNK_ROW_CHARGE } from "../src/manifest";
 import { addNames, emptyFilter, FILTER_BYTES } from "../src/names-filter";
 import type { OwnerDO } from "../src/owner-do";
@@ -28,7 +30,8 @@ import { MIGRATIONS } from "../src/schema";
 const LOAD = loadOrder();
 import { erasedWhole } from "./erasure-support";
 import {
-  BURST, digest, type Generated, generate, objectsOf, type Owner, owner, PAGE, standing,
+  BURST, digest, type Generated, generate, type Line, objectsOf, type Owner, owner, PAGE, replay,
+  standing,
 } from "./generation-support";
 import { MUSE, registerOn } from "./ledger-support";
 import {
@@ -188,6 +191,36 @@ async function stepped(stub: Stub, name: string): Promise<RestoreAnswer[]> {
   throw new Error("the restore did not end");
 }
 
+/**
+ * What a restore stages of generation `gen`'s log, read from its segments as a reader keeps
+ * them: the bytes of each key's last line, newline included, summed at each segment's end
+ * (`peak`, the most) and at the log's end (`end`); and the segments' sum (`sum`).
+ */
+async function stagedOf(ns: string, gen: string):
+    Promise<{ peak: number; end: number; sum: number }> {
+  const root = (await env.FILES.getManifestRoot(ns, gen))!;
+  const tables = exported();
+  const last = new Map<string, number>();
+  let staged = 0;
+  let peak = 0;
+  for (const segment of root.segments) {
+    const text = new TextDecoder().decode(await env.FILES.getManifestSegment(
+      ns, root.key, gen, segment.a, segment.b, segment.sha256));
+    for (const each of text.trimEnd().split("\n")) {
+      const line = JSON.parse(each) as Line;
+      const table = line["table"] as string;
+      const key = line.t === "gone" ? line["key"]
+        : tables[table]!.key.map((column) => (line["row"] as Record<string, unknown>)[column]);
+      const id = JSON.stringify([table, key]);
+      const n = new TextEncoder().encode(each).byteLength + 1;
+      staged += n - (last.get(id) ?? 0);
+      last.set(id, n);
+    }
+    peak = Math.max(peak, staged);
+  }
+  return { peak, end: staged, sum: root.segments.reduce((sum, each) => sum + each.size, 0) };
+}
+
 /** A shaped owner, its generation, and its rows and counters at E (no write after it). */
 async function source(): Promise<{ o: Owner; gen: Generated; ns: string; rows: string;
                                    counters: unknown; usage: unknown }> {
@@ -282,16 +315,19 @@ describe("a restore", () => {
       .toEqual([gen.gen]);
   });
 
-  it("reads a generation the owner wrote through, its log's rows given way to by the base's",
-     async () => {
+  it("reads a generation the owner wrote through, its log's rows given way to by the base's, " +
+     "staging at most what the capture counted", async () => {
     const o = await owner();
     await shapedFiles(o);
     // A base of two bursts, and after every unit of the generation: a notice changed, one
-    // gone, one new, and a file written, so the log holds rows of every kind before E.
+    // gone, one new, and a file written, so the log holds rows of every kind before E; and
+    // early, notices of a thousand characters, gone once a segment holding them is shipped,
+    // so what is staged shrinks.
     await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE " +
                         "i < ?) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
                         "printf('%.1000c', 'a') FROM n", BURST + 2 * PAGE);
     let after = 0;
+    let wide: number | null = null;
     const gen = await generate(o.stub, { afterUnit: async ({ files, gate }) => {
       after++;
       await files.write(`${W}/during-${after}.txt`,
@@ -302,14 +338,37 @@ describe("a restore", () => {
         gate.storage.sql.exec("DELETE FROM owner_notices WHERE seq = ?", 10 + after);
         gate.storage.sql.exec("INSERT INTO owner_notices (at, type, detail) VALUES (?, 'y', " +
                               "'new')", after);
+        const { shipped, last } = gate.storage.sql.exec<{ shipped: number; last: number }>(
+          "SELECT shipped, last FROM log_capture").one();
+        if (after === 2) {
+          gate.storage.sql.exec("INSERT INTO owner_notices (at, type, detail) SELECT ?, 'w', " +
+                                "printf('%.1000c', 'w') FROM owner_notices LIMIT 20", after);
+          wide = last + 20;
+        } else if (wide !== null && shipped >= wide) {
+          gate.storage.sql.exec("DELETE FROM owner_notices WHERE type = 'w'");
+          wide = null;
+        }
       });
     } });
     expect(gen.lines.filter((line) => line.t === "gone").length).toBeGreaterThan(0);
     const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const ns = space!["ns"] as string;
+    // The capture counted what a restore stages at its most: each key's last line, at a
+    // segment's end; past the log's end, and below the segments' sum.
+    const staged = await stagedOf(ns, gen.gen);
+    expect(staged.end).toBeLessThan(staged.peak);
+    expect(staged.peak).toBeLessThan(staged.sum);
+    expect(await sqlIn(o.stub, "SELECT staged FROM owner_backups WHERE gen = ?", gen.gen))
+      .toEqual([{ staged: staged.peak }]);
     const stub = await lose(o);
-    await stub.restoreBegin(platform(o.name), { namespace: space!["ns"] as string, gen: gen.gen });
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done" });
     expect(await rowsOf(stub)).toBe(gen.atE);
+    // And the restore staged as much: its own count, and the generation it adopts.
+    expect(await sqlIn(stub, "SELECT staged, peak FROM owner_restore"))
+      .toEqual([{ staged: staged.end, peak: staged.peak }]);
+    expect(await sqlIn(stub, "SELECT staged FROM owner_backups WHERE gen = ?", gen.gen))
+      .toEqual([{ staged: staged.peak }]);
   });
 
   it("keeps the generation before a newest whose log is past what a restore stages, and " +
@@ -323,7 +382,7 @@ describe("a restore", () => {
     // before the same pass prunes: the one before it is then kept, as the fallback.
     const second = await generate(o.stub, { afterUnit: async ({ gate }) => {
       await gate.write(() => gate.storage.sql.exec(
-        "UPDATE owner_backups SET log_bytes = ? WHERE state = 'done' AND gen != ?",
+        "UPDATE owner_backups SET staged = ? WHERE state = 'done' AND gen != ?",
         LOG_BYTES + 1, first.gen));
     } });
     await drainDue(o.stub);
@@ -348,7 +407,7 @@ describe("a restore", () => {
                                        content: "later" });
     const second = await generate(o.stub, { afterUnit: async ({ gate }) => {
       await gate.write(() => gate.storage.sql.exec(
-        "UPDATE owner_backups SET log_bytes = ? WHERE state = 'done' AND gen != ?",
+        "UPDATE owner_backups SET staged = ? WHERE state = 'done' AND gen != ?",
         LOG_BYTES + 1, first.gen));
     } });
     await drainDue(o.stub);
@@ -455,6 +514,137 @@ describe("a restore", () => {
     await stub.restoreBegin(platform(o.name), { namespace: space!["ns"] as string, gen: gen.gen });
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({
       step: "done", state: "suspended", reasons: ["abuse"] });
+  });
+});
+
+/**
+ * A connection at the widest a row's image is (its models at 640 KiB, each a character JSON
+ * escapes): three of them fill a log segment, so three rewritten in turn are each once in
+ * every segment.
+ */
+const HOT = ["h0", "h1", "h2"].map((id) => id.padEnd(25, "h"));
+const hotRow = (o: Owner, id: string) => sqlIn(
+  o.stub, "INSERT INTO connections (id, source, kind, display_name, provider, models, status, " +
+          "version, created_at, revocable, egress) VALUES (?, 'src', 'oauth2', 'hot', 'p', ?, " +
+          "'active', 1, 0, 1, ?)", id, '"'.repeat(655_360), "\\".repeat(16_384));
+
+/** A notice rewritten after every unit of a generation, and one written, a file with them. */
+const writtenThrough = () => {
+  let after = 0;
+  return async ({ files, gate }: { files: Files; gate: WriteGate }) => {
+    after++;
+    await files.write(`${W}/during-${after}.txt`, new TextEncoder().encode(`${PLAIN} ${after}`),
+                      { expected: null, writer: "owner" });
+    await gate.write(() => {
+      gate.storage.sql.exec("UPDATE owner_notices SET detail = ? WHERE seq = 1", `${after}`);
+      gate.storage.sql.exec("INSERT INTO owner_notices (at, type, detail) VALUES (?, 'y', " +
+                            "'new')", after);
+    });
+  };
+};
+
+describe("what a restore stages", () => {
+  it("takes a generation whose segments sum past LOG_BYTES while its hot rows' last lines " +
+     "fit, and restores it", { tags: ["large"] }, async () => {
+    const o = await owner();
+    for (const id of HOT) {
+      await hotRow(o, id);
+    }
+    await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE " +
+                        "i < ?) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
+                        "printf('%.1000c', 'a') FROM n", BURST + 2 * PAGE);
+    // The hot rows rewritten in turn at each of the generation's outside calls until its E is
+    // recorded, a few at a time, so the unshipped log stays well under LOG_BYTES.
+    let left = 60;
+    const gen = await generate(o.stub, { duringCall: async ({ gate }) => {
+      const sql = gate.storage.sql;
+      if (sql.exec("SELECT 1 FROM owner_backups WHERE state = 'writing' AND e IS NULL")
+            .toArray().length === 0) {
+        return;
+      }
+      for (let n = 0; n < 6 && left > 0; n++, left--) {
+        await gate.write(() => sql.exec("UPDATE connections SET expires_at = coalesce(" +
+                                        "expires_at, 0) + 1 WHERE id = ?", HOT[left % 3]!));
+      }
+    } });
+    expect(gen.notices).toEqual([]);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const ns = space!["ns"] as string;
+    const staged = await stagedOf(ns, gen.gen);
+    // The segments' sum, what main counted, is past it; what a restore stages is not.
+    expect(staged.sum).toBeGreaterThan(LOG_BYTES);
+    expect(staged.peak).toBeLessThan(LOG_BYTES / 8);
+    expect(await sqlIn(o.stub, "SELECT staged FROM owner_backups WHERE gen = ?", gen.gen))
+      .toEqual([{ staged: staged.peak }]);
+    expect((await o.stub.restoreSource(platform(o.name))).generations)
+      .toMatchObject([{ gen: gen.gen, restorable: true }]);
+    const stub = await lose(o);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
+    // The owner as at E, the hot rows' last lines among it (the fence marks them failed).
+    const atE = replay(gen.lines);
+    const rewrites = (rows: readonly Record<string, unknown>[]) =>
+      Object.fromEntries(rows.map((row) => [row["id"], row["expires_at"]]));
+    expect(rewrites(await sqlIn(stub, "SELECT id, expires_at FROM connections")))
+      .toEqual(rewrites(Object.values(atE["connections"]!)
+        .map((row) => JSON.parse(row) as Record<string, unknown>)));
+    for (const table of FENCED) {
+      delete atE[table];
+    }
+    expect(await rowsOf(stub, FENCED)).toBe(digest(atE));
+    // The generation it adopts is as restorable as it was: the restore's own count.
+    expect((await stub.restoreSource(platform(o.name))).generations)
+      .toMatchObject([{ gen: gen.gen, restorable: true }]);
+  });
+
+  it("is counted once, its last line per key, though a segment's put is answered and lost " +
+     "and the lane starts again", async () => {
+    const run = async (failAt?: { call: number; when: "after" }) => {
+      const o = await owner();
+      await shapedFiles(o);
+      await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
+                          "WHERE i < ?) INSERT INTO owner_notices (at, type, detail) SELECT 0, " +
+                          "'x', printf('%.1000c', 'a') FROM n", 3 * PAGE);
+      const kinds: string[] = [];
+      const gen = await generate(o.stub, {
+        duringCall: async ({ kind }) => {
+          kinds.push(kind);
+        },
+        afterUnit: writtenThrough(), ...(failAt === undefined ? {} : { failAt }) });
+      const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+      return { o, gen, kinds, ns: space!["ns"] as string };
+    };
+    // The second segment's put, its answer lost once it landed: the next pass, a fresh lane
+    // as a restarted object's, puts the same segment again and acknowledges it.
+    const call = (await run()).kinds.map((kind, n) => kind === "segment" ? n + 1 : 0)
+      .filter((n) => n > 0)[1]!;
+    const { o, gen, kinds, ns } = await run({ call, when: "after" });
+    expect(kinds[call - 1]).toBe("segment");
+    expect(kinds[call]).toBe("segment");
+    const staged = await stagedOf(ns, gen.gen);
+    expect(staged.peak).toBeLessThan(staged.sum);
+    expect(await sqlIn(o.stub, "SELECT staged FROM owner_backups WHERE gen = ?", gen.gen))
+      .toEqual([{ staged: staged.peak }]);
+  });
+
+  it("fails a restore at its log step once what it stages passes LOG_BYTES, named, never " +
+     "admitting", async () => {
+    const o = await owner();
+    await shapedFiles(o);
+    const gen = await generate(o.stub, { afterUnit: writtenThrough() });
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const stub = await lose(o);
+    await stub.restoreBegin(platform(o.name), { namespace: space!["ns"] as string,
+                                                gen: gen.gen });
+    // As if a restore had staged LOG_BYTES of lines: the generation's first segment passes it.
+    await sqlIn(stub, "UPDATE owner_restore SET staged = ?, peak = ?", LOG_BYTES, LOG_BYTES);
+    expect((await stepped(stub, o.name)).at(-1)).toEqual({
+      step: "failed", done: false,
+      failed: `the generation's log stages past the ${LOG_BYTES} bytes a restore takes: wipe ` +
+        "it and restore the one kept before it, which restore.source names restorable" });
+    expect(await sqlIn(stub, "SELECT step, at FROM owner_restore"))
+      .toEqual([{ step: "failed", at: 0 }]);
+    expect(await sqlIn(stub, "SELECT state FROM owner_admission")).toEqual([{ state: "pending" }]);
   });
 });
 
@@ -1131,11 +1321,44 @@ describe("a restore's sweep of the chunks no row names", () => {
                  "since) VALUES (1, ?, ?, 'clear', 7, NULL, '{}', '[]', ?, 5)", "a".repeat(32),
                "b".repeat(16), "c".repeat(16));
       const before = sql.exec("SELECT * FROM owner_restore").toArray();
-      migrate(state.storage, MIGRATIONS);
+      migrate(state.storage, MIGRATIONS.slice(0, 14));
       return { before, after: sql.exec("SELECT * FROM owner_restore").toArray(),
                filters: sql.exec("SELECT count(*) AS n FROM restore_filter").one().n };
     });
     expect(mapped.after).toEqual(mapped.before);
     expect(mapped.filters).toBe(0);
+  });
+
+  it("maps migration 14's generations as staging their whole log, and fails a restore under " +
+     "way past index, what it staged never measured", async () => {
+    for (const step of ["index", "log", "clear"]) {
+      const { stub } = await ownerObject();
+      const mapped = await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+        const sql = state.storage.sql;
+        for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+            "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+            "AND name NOT GLOB 'cf_*'").toArray()) {
+          sql.exec(`DROP TABLE "${name}"`);
+        }
+        migrate(state.storage, MIGRATIONS.slice(0, 14));
+        sql.exec("INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, bytes, " +
+                   "s, schema, started_at, finished_at, log_bytes, seq) VALUES (?, '20261101', " +
+                   "'done', 'ended', 0, '', 0, 1, 14, 1, 1, ?, 1)", "d".repeat(16), LOG_BYTES + 1);
+        sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) VALUES (1, ?, ?, ?, " +
+                   "3, 5)", "a".repeat(32), "b".repeat(16), step);
+        sql.exec("INSERT INTO restore_rows (tbl, k, row) VALUES ('owner_notices', '[1]', '{}')");
+        migrate(state.storage, MIGRATIONS);
+        return { staged: sql.exec("SELECT staged FROM owner_backups").one().staged,
+                 record: sql.exec("SELECT step, at, failed, staged, peak FROM owner_restore")
+                   .one() };
+      });
+      // A sum of segments is never less than what a restore of them stages at once.
+      expect(mapped.staged).toBe(LOG_BYTES + 1);
+      expect(mapped.record).toEqual(step === "index"
+        ? { step, at: 3, failed: null, staged: 0, peak: 0 }
+        : { step: "failed", at: 3, staged: 0, peak: 0,
+            failed: "an update ran while it was under way: what it staged was never measured; " +
+              "wipe it and restore again" });
+    }
   });
 });
