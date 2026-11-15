@@ -3098,9 +3098,10 @@ describe("mode erase", () => {
 
   it("is mode erase's alone: --act never asks owner.erase", () => {
     const w = world();
-    expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", "erase"], ENV,
-                       w.io)).toThrow("--act is one of tier=<tier>, suspend=<reason>, " +
-                                      "lift=<reason>, admit");
+    for (const act of ["erase", `erase=${WORDS}`]) {
+      expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", act], ENV, w.io),
+             act).toThrow(/^--act is one of tier=<tier>, suspend=<reason>, lift=<reason>, admit$/);
+    }
     expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", "admit",
                         "--confirm", WORDS], ENV, w.io))
       .toThrow("mode owner takes no --confirm: it is mode restore and erase's");
