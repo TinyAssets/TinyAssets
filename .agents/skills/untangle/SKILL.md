@@ -42,6 +42,11 @@ tokens searching, break less without noticing, and find root causes faster.
   stacked. Merge `origin/main` in; never rebase a pushed branch. A diff touching
   `platform/` also runs every `ci` guard (`npx vitest run --root ci guards/` in
   `platform/`): the layers, kit and kernels no workspace covers.
+- Before the cutover, build only what other code builds on: untangling,
+  contracts, data shapes, security. A fix for a rare failure that nothing builds
+  on, that is loud when it happens and can be recovered from, is not built
+  before it. It goes in `tasks.md`'s "After the cutover" list, named with its
+  branch, and a PR that finds one adds it there (founder, 2026-11-15).
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
   within about 20% of its ceiling lands with its fix; a reviewer who finds one
   blocks.
