@@ -62,13 +62,13 @@
  * owner's export, bounded by the object it copies (`limits-audit.md`).
  */
 import { randomHex } from "../../contract/src/ids";
-import { createHash } from "node:crypto";
+import { sha256 } from "../../contract/src/digest";
 
 import {
   CHUNK_BYTES, GC_GRACE_S, LOG_BYTES, MANIFEST_PARTS, SLOT_WAIT_MS,
 } from "../../contract/src/limits";
 import type { ChangeLog } from "./changelog";
-import { clock } from "./clock";
+import { clock, clockMs } from "./clock";
 import {
   chunkLine, type Cursor, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES,
   type Lines,
@@ -190,7 +190,7 @@ async function unitsNow(pool: SlotPool, units: number): Promise<Slot> {
 
 /** The owner's own offset into the night, in seconds. */
 export function spread(owner: string): number {
-  return createHash("sha256").update(owner).digest().readUInt32BE(0) % MANIFEST_SPREAD_S;
+  return sha256(owner).readUInt32BE(0) % MANIFEST_SPREAD_S;
 }
 
 /**
@@ -385,7 +385,7 @@ export class Backups {
    */
   mark(sql: Pick<SqlStorage, "exec">): boolean {
     return sql.exec("UPDATE owner_backups SET changed_at = ? WHERE changed_at IS NULL " +
-                      "RETURNING gen", Date.now() / 1000).toArray().length > 0;
+                      "RETURNING gen", clock()).toArray().length > 0;
   }
 
   /** When (s) the last generation was begun, given up or not, or null for none. */
@@ -634,7 +634,7 @@ export class Backups {
       if (writing !== undefined && !await this.#carry(writing, until)) {
         await this.#write(() => this.#sql.exec(
           "UPDATE owner_backups SET retry_at = ? WHERE gen = ? AND state = 'writing'",
-          Date.now() / 1000 + MANIFEST_CONTINUE_S, writing.gen));
+          clock() + MANIFEST_CONTINUE_S, writing.gen));
       }
     } catch (error) {
       if (isSlotBusy(error)) {
@@ -642,14 +642,14 @@ export class Backups {
         // goes on once units turn over, never counted a failure.
         await this.#write(() => this.#sql.exec(
           "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing'",
-          Date.now() / 1000 + MANIFEST_BUSY_RETRY_S));
+          clock() + MANIFEST_BUSY_RETRY_S));
         return;
       }
       // An R2 call that failed, kept in the rows: the lane comes back after its retry.
       console.error("the generation's pass failed; it is tried again later");
       await this.#write(() => this.#sql.exec(
         "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing'",
-        Date.now() / 1000 + MANIFEST_RETRY_S));
+        clock() + MANIFEST_RETRY_S));
     } finally {
       // After what the pass did, so a give-up's own notice, the more telling one, comes first.
       if (!this.#parts.halted()) {
@@ -708,7 +708,7 @@ export class Backups {
     const { ns } = await this.#parts.space();
     let cursor: string | null = null;
     do {
-      if (Date.now() >= until || this.#parts.halted()) {
+      if (clockMs() >= until || this.#parts.halted()) {
         return false;
       }
       const names = await this.#write(() => this.#parts.pinned() === null
@@ -803,7 +803,7 @@ export class Backups {
     const logBytes = logged.reduce((sum, segment) => sum + segment.size, 0);
     await this.#write(() => this.#parts.storage.transactionSync(() => {
       this.#sql.exec("UPDATE owner_backups SET state = 'done', finished_at = ?, part_list = " +
-                       "'', segment_list = '', log_bytes = ? WHERE gen = ?", Date.now() / 1000,
+                       "'', segment_list = '', log_bytes = ? WHERE gen = ?", clock(),
                      logBytes, gen);
       this.#sql.exec("UPDATE owner_backup_state SET told = 0, lost = CASE WHEN ? <= ? THEN 0 " +
                        "ELSE coalesce(lost, 0) END", logBytes, LOG_BYTES);
@@ -824,7 +824,7 @@ export class Backups {
               cut: number | null = null): Promise<boolean | null> {
     const log = this.#parts.log;
     while (log.state().shipped < through) {
-      if (Date.now() >= until || this.#parts.halted()) {
+      if (clockMs() >= until || this.#parts.halted()) {
         return false;
       }
       const at = this.#rows().find((each) => each.gen === row.gen)!;
@@ -900,9 +900,9 @@ export class Backups {
     const page = await this.#write(() => {
       const read = readPage(this.#sql, decodeCursor(cursor),
                             { schema: this.#parts.schema, owner: this.#parts.owner(),
-                              at: Date.now(), gen: at.gen, s: at.s },
+                              at: clockMs(), gen: at.gen, s: at.s },
                             Number.MAX_SAFE_INTEGER, GENERATION_SIZES.page);
-      return { read, last: read.next === null ? log.state().last : null, at: Date.now() };
+      return { read, last: read.next === null ? log.state().last : null, at: clockMs() };
     });
     const encoded = encodeLines(page.read.lines);
     const pool = ownerSlots();
@@ -928,14 +928,14 @@ export class Backups {
       // A migration ran while it was under way: its base and log are the old schema's, so it
       // is given up, loudly, and a fresh one begun under the new (review L5-2).
       await this.#abandon(row, MANIFEST_SCHEMA);
-      const gen = await this.#write(() => this.#open(Date.now() / 1000));
+      const gen = await this.#write(() => this.#open(clock()));
       return this.#carry(this.#rows().find((each) => each.gen === gen)!, until);
     }
     if (log.state().gen !== row.gen) {
       await this.#abandon(row, null);  // a generation whose capture is not its own
       return true;
     }
-    while (Date.now() < until) {
+    while (clockMs() < until) {
       if (this.#parts.halted()) {
         return true;
       }

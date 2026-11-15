@@ -692,7 +692,7 @@ describe("a chunk between a pass's units", () => {
     const refused = await failure(() => inFiles(r.stub, (files) =>
       files.write(`${W}/a.bin`, filled(INLINE_BYTES + 1, 15),
                   { expected: "", writer: "owner" })));
-    expect(refused.name).toBe("FileConflict");
+    expect(refused).toMatchObject({ name: "Refusal", code: "conflict" });
     expect(await sqlIn(r.stub, "SELECT intent_id FROM file_intents")).toEqual([]);
     expect(await chunk(r, sha256Hex(filled(INLINE_BYTES + 1, 15))))
       .toMatchObject({ state: "garbage", holds: 0 });

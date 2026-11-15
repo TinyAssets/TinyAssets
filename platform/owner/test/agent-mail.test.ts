@@ -413,9 +413,9 @@ describe("mail to an agent", () => {
                                          scopes: [{ universe: "alpha", agent: "main",
                                                     capability: "write_graph" }],
                                          expected_revision: revision, name: "Muse" });
-    expect((await failure(() => r.stub.roomPost(client, {
-      room_id: room, client_message_id: "c-2", body: "again", parent_id: null }))).message)
-      .toBe("outside client capability not granted");
+    expect(await failure(() => r.stub.roomPost(client, {
+      room_id: room, client_message_id: "c-2", body: "again", parent_id: null })))
+      .toMatchObject({ code: "not_granted", message: "outside client capability not granted" });
     // Nor post in a room that is not its own.
     expect((await failure(() => r.stub.roomPost(client, {
       room_id: `dm:${main.agent_id}`, client_message_id: "c-3", body: "x",

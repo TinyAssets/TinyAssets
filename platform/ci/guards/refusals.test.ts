@@ -1,7 +1,7 @@
 /**
  * The refusal guard (untangle B2, `ci/kit/refusals.ts`): no Worker's own source has an error
- * class of its own or reads a code from a message, but for exactly what each workspace owes
- * (`<workspace>/guards/rules.ts`'s `OWED`, `ci/kit/owed.ts`).
+ * class of its own or reads a code from a message, with no exception: no workspace's `OWED`
+ * (`ci/kit/owed.ts`) holds one.
  */
 import { describe, expect, it } from "vitest";
 
@@ -14,9 +14,10 @@ const found = (path: string, source: string) =>
   refusalProblems(new Map([[path, source]])).map((each) => `${each.workspace} ${each.what}`);
 
 describe("the refusal guard", () => {
-  it("finds every break in a Worker's own source, but for exactly what is owed", async () => {
-    const problems = refusalProblems(workerSources());
-    expect(problems.length).toBeGreaterThan(0);
+  it("finds no break in any Worker's own source, and nothing is owed", async () => {
+    const sources = workerSources();
+    const problems = refusalProblems(sources);
+    expect([sources.size > 0, problems]).toEqual([true, []]);
     expect(ratchet("refusals", problems, await owedLists())).toEqual([]);
   });
 

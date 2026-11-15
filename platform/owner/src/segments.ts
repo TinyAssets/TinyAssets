@@ -32,7 +32,8 @@
 import { utf8Decoder } from "../../contract/src/text";
 import { HEX32 } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
+import { sha256, sha256Stream } from "../../contract/src/digest";
 
 import { CHUNK_BYTES } from "../../contract/src/limits";
 
@@ -730,7 +731,7 @@ export function chunkReads(chunks: readonly string[], offset: number, length: nu
  * never the batch held at once).
  */
 export class ImageDigest {
-  readonly #hash = createHash("sha256");
+  readonly #hash = sha256Stream();
 
   add(image: unknown): void {
     this.#hash.update(JSON.stringify(image)).update("\n");
@@ -749,7 +750,7 @@ export class ImageDigest {
 export const BLOOM_BYTES = 64;
 
 function bloomBits(member: string): number[] {
-  const hash = createHash("sha256").update(member).digest();
+  const hash = sha256(member);
   return [0, 2, 4].map((at) => hash.readUInt16BE(at) % (BLOOM_BYTES * 8));
 }
 

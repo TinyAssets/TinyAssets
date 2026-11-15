@@ -1385,7 +1385,7 @@ export class Ledger {
           throw new Refusal("storage_busy",
                             `${STORAGE_BUSY}: earlier deleted agents' mail is still being ` +
                             `removed from the archive; try again in ${STORAGE_BUSY_RETRY_S} ` +
-                            `seconds. ${JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S })}`);
+                            "seconds.");
         }
         sql.exec("INSERT INTO archive_purges (agent_id, at) VALUES (?, ?) ON CONFLICT " +
                    "(agent_id) DO NOTHING", agentId, now);
@@ -2449,8 +2449,7 @@ export class Ledger {
       }
       throw new Refusal("storage_busy",
                         `${STORAGE_BUSY}: your storage is catching up, moving older mail ` +
-                        `out; try again in ${STORAGE_BUSY_RETRY_S} seconds. ` +
-                        JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S }));
+                        `out; try again in ${STORAGE_BUSY_RETRY_S} seconds.`);
     }
   }
 
@@ -3194,13 +3193,15 @@ export const READ_TRIES = 3;
 export function archiveMoving(): Refusal {
   const retry = 1;
   return new Refusal(STORAGE_BUSY, `${STORAGE_BUSY}: the archive moved this mail under each ` +
-    `of ${READ_TRIES} reads; try again in ${retry} second. ` +
-    JSON.stringify({ retry_after_s: retry }), { retryAfterS: retry });
+    `of ${READ_TRIES} reads; try again in ${retry} second.`, { retryAfterS: retry });
 }
 
-/** A post's parent, hot at its gate, moved to the archive before its unit (`roomPost`). */
-class ParentMoved extends Error {
-  override readonly name = "ParentMoved";
+/**
+ * A post's parent, hot at its gate, moved to the archive before its unit (`roomPost`): read
+ * again, up to `READ_TRIES` times.
+ */
+function parentMoved(): Refusal {
+  return new Refusal("archive_changed", "a post's parent moved to the archive before its unit");
 }
 
 // -- THE DOORS: the `ledger` rows' handlers (`contract/doors.json`) -------------------------------
@@ -3308,7 +3309,7 @@ function mailsAgent(o: OwnerState, account: Account, authority: MailAuthority | 
     return;
   }
   if (!may(account.grant, "converse", { universe: authority.universe, agent })) {
-    throw new Refusal("refused", NOT_GRANTED);
+    throw new Refusal("not_granted", NOT_GRANTED);
   }
 }
 
@@ -3376,7 +3377,7 @@ export const ledgerDoors = Object.freeze({
       // In each unit: the parent the gate found hot is hot still.
       const kept = () => {
         if (archived === null && o.archive.archivedParent(door.request) !== null) {
-          throw new ParentMoved();
+          throw parentMoved();
         }
       };
       try {
@@ -3401,8 +3402,9 @@ export const ledgerDoors = Object.freeze({
                                    filerOf(account), archived);
         }, { synced: true }));
       } catch (error) {
-        if (!(error instanceof ParentMoved) || tries + 1 >= READ_TRIES) {
-          throw error instanceof ParentMoved ? archiveMoving() : error;
+        const moved = error instanceof Refusal && error.code === "archive_changed";
+        if (!moved || tries + 1 >= READ_TRIES) {
+          throw moved ? archiveMoving() : error;
         }
       }
     }
