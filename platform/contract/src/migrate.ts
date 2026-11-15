@@ -84,3 +84,18 @@ export function migrate(store: MigrationStorage, migrations: readonly Migration[
   }
   return migrations.length;
 }
+
+/**
+ * In the caller's transaction: the object's schema made afresh, as a new object's start makes
+ * it. Every table of `tables` (each one its migrations made, as the object names them) is
+ * dropped with its indexes and triggers, and this module's own two with them, then every
+ * migration is applied again from the first. The runtime's own tables, which no migration
+ * made, stay. The version now stored.
+ */
+export function remigrate(store: MigrationStorage, migrations: readonly Migration[],
+                          tables: readonly string[]): number {
+  for (const table of [...tables, "schema_version", "schema_digests"]) {
+    store.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+  }
+  return migrate(store, migrations);
+}

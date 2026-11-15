@@ -29,8 +29,9 @@
  * - **Given up, never looped.** Past `MANIFEST_PARTS` objects, or when the unshipped log
  *   passed `LOG_BYTES` (an R2 outage), its objects are deleted, the owner is told once, and
  *   the lane waits for the owner's next change. The owner's writes always land.
- * - **Kept.** The newest finished generation, the one being written, and each an open export
- *   pins (`owner_exports`, `EXPORT_LIFE_S`); and, while the newest's log is past `LOG_BYTES`
+ * - **Kept.** The newest finished generation, the one being written, each an open export
+ *   pins (`owner_exports`, `EXPORT_LIFE_S`), and the one a restore holds (`pinned`, from its
+ *   pin to its end, `restore.ts`); and, while the newest's log is past `LOG_BYTES`
  *   (which a restore refuses to stage, `restore.ts`), the latest older one whose log is within
  *   it (`fallback`), so a generation a restore can load always stands. Every other is deleted
  *   from R2, root first.
@@ -223,7 +224,17 @@ type GenerationRow = {
   readonly retry_at: number | null;
   /** A finished generation's log through E, in bytes: its segments' sizes. */
   readonly log_bytes: number;
+  /** Its place in the order generations were begun or adopted (`NEXT_SEQ`). */
+  readonly seq: number;
 };
+
+/**
+ * A generation's place, after every one kept: generations are ordered by when they were begun
+ * or adopted, never by a clock. A clock that reads behind the last generation's start (another
+ * machine's, one set back) would sort the new one as older, and its own finish would prune it
+ * as superseded, the pinned one kept as the newest.
+ */
+const NEXT_SEQ = "(SELECT coalesce(max(seq), 0) + 1 FROM owner_backups)";
 
 /** A generation's object an export reads at an index: a part, a segment, its end, or none yet. */
 type GenerationObject =
@@ -279,12 +290,16 @@ interface BackupParts {
   readonly schema: number;
   /** Whether the owner is being erased: a pass under way stops before its next put. */
   readonly halted: () => boolean;
+  /** The generation a restore holds (`restore.ts`), which no prune deletes; null for none. */
+  readonly pinned: () => string | null;
   /** In a unit: the owner told something its work reports (`notices.ts`). */
   readonly notice: (type: string, detail: string) => void;
 }
 
 export class Backups {
   readonly #parts: BackupParts;
+  /** The pass under way, which a second asked meanwhile joins (`run`). */
+  #pass: Promise<void> | null = null;
 
   constructor(parts: BackupParts) {
     this.#parts = parts;
@@ -315,8 +330,8 @@ export class Backups {
   }
 
   #rows(): GenerationRow[] {
-    return this.#sql.exec<GenerationRow>("SELECT * FROM owner_backups ORDER BY started_at")
-      .toArray();
+    return this.#sql.exec<GenerationRow>(
+      "SELECT * FROM owner_backups ORDER BY seq, started_at").toArray();
   }
 
   /** Until when (s) an open export pins generation `gen` from deletion, or null. A read. */
@@ -324,6 +339,12 @@ export class Backups {
     return this.#sql.exec<{ until: number | null }>(
       "SELECT MAX(ends_at) AS until FROM owner_exports WHERE gen = ? AND ends_at > ?", gen, now)
       .one().until;
+  }
+
+  /** The superseded generations a prune may delete: no restore's, no fallback. A read. */
+  #prunable(done: readonly GenerationRow[]): GenerationRow[] {
+    const kept = [fallback(done), this.#parts.pinned()];
+    return done.slice(0, -1).filter((row) => !kept.includes(row.gen));
   }
 
   /** The finished generations, oldest first. A read. */
@@ -346,10 +367,8 @@ export class Backups {
       return retry(writing.retry_at);
     }
     const done = rows.filter((row) => row.state === "done");
-    // A superseded generation goes once no export pins it, but the restore's fallback.
-    const kept = fallback(done);
-    const older = done.slice(0, -1).filter((row) => row.gen !== kept)
-      .map((row) => this.#pinned(row.gen, now) ?? now);
+    // A superseded generation goes once no export pins it, but a restore's and the fallback.
+    const older = this.#prunable(done).map((row) => this.#pinned(row.gen, now) ?? now);
     const prune = older.length === 0 ? null : retry(Math.min(...older));
     const nightly = done.length > 0 && !this.#changed() ? null
       : Math.max(now, dayStart(done.at(-1)?.day ?? manifestDay(now)) + DAY_S
@@ -412,8 +431,8 @@ export class Backups {
     const at = root.at / 1000;
     this.#sql.exec(
       "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, segments, " +
-        "segment_list, bytes, s, schema, e, ended_at, started_at, finished_at, log_bytes) " +
-        "VALUES (?, ?, 'done', ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?)", root.gen,
+        "segment_list, bytes, s, schema, e, ended_at, started_at, finished_at, log_bytes, seq) " +
+        `VALUES (?, ?, 'done', ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ${NEXT_SEQ})`, root.gen,
       manifestDay(at), ENDED, root.parts.length, root.segments.length,
       [...root.parts, ...root.segments].reduce((sum, object) => sum + object.size, 0), root.s,
       this.#parts.schema, root.e, at, at, at,
@@ -425,13 +444,31 @@ export class Backups {
     return this.#rows().some((row) => row.gen === gen && row.state === "done");
   }
 
+  /** Whether generation `gen` is kept: being written or finished, not given up. A read. */
+  kept(gen: string): boolean {
+    return this.#rows().some((row) => row.gen === gen);
+  }
+
+  /** The generation being written, or null. A read. */
+  writing(): string | null {
+    return this.#rows().find((row) => row.state === "writing")?.gen ?? null;
+  }
+
   /**
    * One pass: superseded generations no export pins deleted, then the one due begun or
    * carried on, until the wall clock reaches `until` (ms). One it did not finish goes on
    * `MANIFEST_CONTINUE_S` later; an R2 call that fails backs the lane off in its row
-   * (`MANIFEST_RETRY_S`); the pass itself completes.
+   * (`MANIFEST_RETRY_S`); the pass itself completes. One at a time: a pass asked while one runs
+   * (the lane's, or a restore's pin carrying its fresh generation) joins it.
    */
-  async run(now: number, until: number): Promise<void> {
+  run(now: number, until: number): Promise<void> {
+    this.#pass ??= this.#run(now, until).finally(() => {
+      this.#pass = null;
+    });
+    return this.#pass;
+  }
+
+  async #run(now: number, until: number): Promise<void> {
     try {
       if (!await this.#prune(until)) {
         return;
@@ -462,7 +499,7 @@ export class Backups {
       console.error("the generation's pass failed; it is tried again later");
       await this.#write(() => this.#sql.exec(
         "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing' OR gen = " +
-          "(SELECT gen FROM owner_backups ORDER BY started_at LIMIT 1)",
+          "(SELECT gen FROM owner_backups ORDER BY seq, started_at LIMIT 1)",
         Date.now() / 1000 + MANIFEST_RETRY_S));
     }
   }
@@ -471,9 +508,8 @@ export class Backups {
   async #prune(until: number): Promise<boolean> {
     const done = this.#rows().filter((row) => row.state === "done");
     const now = Date.now() / 1000;
-    const kept = fallback(done);
-    for (const old of done.slice(0, -1)) {
-      if (old.gen === kept || this.#pinned(old.gen, now) !== null) {
+    for (const old of this.#prunable(done)) {
+      if (this.#pinned(old.gen, now) !== null) {
         continue;
       }
       if (Date.now() >= until || this.#parts.halted()) {
@@ -488,6 +524,14 @@ export class Backups {
     return true;
   }
 
+  /**
+   * In a quiet unit: a new generation begun at `now`, whatever the owner's change since the
+   * last; its id. A restore's pin's (`restore.ts`), which needs one begun after its hold.
+   */
+  begin(now: number): string {
+    return this.#open(now);
+  }
+
   /** In a unit: a new generation begun at `now`, its capture on; its id. */
   #open(now: number): string {
     const gen = randomHex(8);
@@ -495,7 +539,8 @@ export class Backups {
     const s = this.#parts.log.begin(gen);
     this.#sql.exec(
       "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, bytes, s, " +
-        "schema, started_at) VALUES (?, ?, 'writing', NULL, 0, '', 0, ?, ?, ?)", gen,
+        `schema, started_at, seq) VALUES (?, ?, 'writing', NULL, 0, '', 0, ?, ?, ?, ${NEXT_SEQ})`,
+      gen,
       manifestDay(now), s, this.#parts.schema, now);
     return gen;
   }

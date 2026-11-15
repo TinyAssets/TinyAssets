@@ -94,6 +94,10 @@ export const REFUSALS = Object.freeze({
   owner_limit: REFUSED,
   owner_suspended: REFUSED,
   owner_unadmitted: REFUSED,
+  // An owner held for a restore (`owner/src/restore.ts`), from its pin through its wipe and
+  // its load to done, or while a failed one waits for its operator: every door but the
+  // restore's own, a sign-in's admit and the import's, for the moment.
+  restoring: Object.freeze({ status: 503, retryAfterS: 60, transient: true }),
   result_too_large: REFUSED,
   row_changed: REFUSED,
   run_ended: REFUSED,

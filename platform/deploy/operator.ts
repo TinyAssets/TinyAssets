@@ -193,6 +193,14 @@ export const RESTORE_LOSES = "the owner loses its sessions (it signs in again), 
 /** How often the kit reads the bucket for an answer, and how long it waits for one. */
 export const POLL_MS = 2_000;
 export const WAIT_MS = 120_000;
+/**
+ * How long mode `restore` asks a pin to write the owner's present state before it stops,
+ * loudly, the owner still held: inside the apply job's 30 minutes (`platform-deploy.yml`), so
+ * the run ends by its own words, never the job's timeout. A run again carries the same
+ * generation on (the longest, the worst stream's, is under 42 minutes: `backup.ts`), and a
+ * release gives the pin up.
+ */
+export const PIN_WAIT_MS = 20 * 60_000;
 
 /** The clock the kit waits by: replaced whole by the tests. */
 export interface Waiting {

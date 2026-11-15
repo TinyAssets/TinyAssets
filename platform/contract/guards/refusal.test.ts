@@ -82,13 +82,14 @@ describe("a transient refusal", () => {
       .filter(([, entry]) => (entry as { transient?: true }).transient === true)
       .map(([code]) => code).sort();
     expect(transient).toEqual(["busy", "egress_rate", "events_busy", "events_raced",
-                               "inbound_app_unconfigured", "mailbox_full", "root_changed",
-                               "storage_busy", "unavailable"]);
+                               "inbound_app_unconfigured", "mailbox_full", "restoring",
+                               "root_changed", "storage_busy", "unavailable"]);
     expect(Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { retryAfterS?: number }).retryAfterS !== undefined)
       .map(([code]) => code).sort())
       .toEqual(["busy", "egress_rate", "events_busy", "events_raced",
-                "inbound_app_unconfigured", "mailbox_full", "storage_busy", "unavailable"]);
+                "inbound_app_unconfigured", "mailbox_full", "restoring", "storage_busy",
+                "unavailable"]);
     expect([new Refusal("busy").transient, new Refusal("storage_busy").transient,
             new Refusal("unavailable", MAINTENANCE).transient,
             new Refusal("tier_runs").transient, new Refusal("refused").transient])

@@ -40,8 +40,10 @@
  * - `owner` (the operator path): `--act`'s op asked of the doors for `--owner` through the
  *   operator channel, and their answer said.
  * - `restore` (the operator path): `--owner`'s restore from `--generation` through the
- *   operator channel, begun, stepped until done and the owner admitted; with no
- *   `--generation`, the owner's namespace and finished generations, as its object holds them.
+ *   operator channel: a live owner pinned, held and its present state written, its object
+ *   wiped only with `--confirm` the words that names; then begun, stepped until done and the
+ *   owner admitted. With no `--generation`, the owner's namespace and finished generations,
+ *   as its object holds them, or with `--confirm release-<owner>` its pin given up.
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -113,7 +115,7 @@ import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract
 import {
   argsText, OPERATOR_KEYRING, type OperatorArgs,
 } from "../contract/src/operator-message.ts";
-import type { RestoreAnswer } from "../contract/src/owner.ts";
+import type { RestoreAnswer, RestoreHold, RestoreSource } from "../contract/src/owner.ts";
 import { principal } from "../contract/src/text.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
@@ -130,7 +132,7 @@ import {
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
   type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
-  ownerAct, RESTORE_LOSES, restoreFrom,
+  ownerAct, PIN_WAIT_MS, RESTORE_LOSES, restoreFrom,
 } from "./operator.ts";
 /**
  * The control record a first deploy writes when there is none: every outside door closed, and
@@ -208,6 +210,8 @@ export interface Run {
   readonly act: Act | null;
   /** `--generation`: the generation `restore` restores `--owner` from; none asks its source. */
   readonly generation: Generation | null;
+  /** `--confirm`: the words that confirm `restore`'s wipe, or give its pin up. */
+  readonly confirm: string | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly io: Io;
@@ -1421,31 +1425,80 @@ const ownerAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
 });
 
 /**
- * Mode `restore` (`owner/src/restore.ts`): with no `--generation`, `restore.source` asked for
- * `--owner` and its answer said; with one, the restore begun from it, stepped until done, and
- * the owner admitted (`owner.admit`: the object first, then the directory). A refusal or a
- * failed check stops the run, named, and the owner is not admitted. The plan job only plans it.
+ * Mode `restore` (`owner/src/restore.ts`), each op through the operator channel, in order, a
+ * refusal or a failed check stopping the run, named, and the owner never admitted. The plan
+ * job only plans it.
+ * - With no `--generation`: `restore.source` asked for `--owner` and its answer said; with
+ *   `--confirm release-<owner>`, its pin given up (`restore.release`), the owner as it was.
+ * - With one: the owner's source read; a live owner (or a failed restore) pinned to it and
+ *   held, `restore.pin` asked until the owner's present state is written as a fresh
+ *   generation, and then, only with `--confirm` the words the pin's answer names
+ *   (`wipe-<owner>-<that generation>`), its object wiped (`restore.wipe`). Without them the
+ *   run ends there, saying them: the confirmation is a second run, by the operator who read
+ *   the generation it names. Then the restore begun, stepped until done, and the owner
+ *   admitted (`owner.admit`: the object first, then the directory). An owner already restored
+ *   from that generation is only admitted again.
  */
 const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   const owner = run.owner!;
   const from = run.generation;
+  const ask = (op: string, args: OperatorArgs = {}) => asked(run, got, op, owner, args);
   if (from === null) {
-    say(`ask the doors restore.source for ${owner}, through the operator channel`);
+    const release = run.confirm === `release-${owner}`;
+    if (run.confirm !== null && !release) {
+      throw new Error(`--confirm ${run.confirm} with no --generation is release-${owner}`);
+    }
+    const op = release ? "restore.release" : "restore.source";
+    say(`ask the doors ${op} for ${owner}, through the operator channel`);
     if (run.apply) {
-      say(`the doors answered restore.source for ${owner}: ${
-        JSON.stringify(await asked(run, got, "restore.source", owner, {}))}`);
+      say(`the doors answered ${op} for ${owner}: ${JSON.stringify(await ask(op))}`);
     }
     return;
   }
   say(`restore ${owner} from generation ${from.gen} of namespace ${from.namespace}, into its ` +
-      "own object only while it is pending and empty, then admit it, through the operator " +
-      `channel: ${RESTORE_LOSES}`);
+      "own object only while it is pending and empty (a live owner held first, its present " +
+      "state written as a fresh generation, and its object wiped once --confirm names that " +
+      "generation), then admit it, through the operator channel: " + RESTORE_LOSES);
   if (!run.apply) {
     return;
   }
-  await asked(run, got, "restore.begin", owner, { namespace: from.namespace, gen: from.gen });
+  const source = await ask("restore.source") as RestoreSource;
+  const held = source.restore;
+  if (held?.step === "done" && held.gen === from.gen) {
+    say(`${owner} was restored from ${from.gen} already: the doors answered owner.admit: ${
+      JSON.stringify(await ask("owner.admit"))}`);
+    return;
+  }
+  if (!source.begins) {
+    const until = run.io.now().getTime() + PIN_WAIT_MS;
+    let hold = await ask("restore.pin", { gen: from.gen }) as RestoreHold;
+    while (!hold.written) {
+      if (run.io.now().getTime() >= until) {
+        throw new Error(`${owner}'s present state was not written within ${PIN_WAIT_MS / 60_000} ` +
+                        "minutes, and the owner stays held: run again to carry it on, or give " +
+                        `the pin up with --confirm release-${owner} and no --generation`);
+      }
+      say(`${owner} is held; its present state is being written as a fresh generation`);
+      hold = await ask("restore.pin", { gen: from.gen }) as RestoreHold;
+    }
+    if (run.confirm === null) {
+      say(`${owner} is held, its present state written as generation ${hold.fresh} of ` +
+          `${hold.namespace}: to wipe its object and restore ${from.gen}, run again with ` +
+          `--confirm ${hold.confirm}; to give the pin up, --confirm release-${owner} and no ` +
+          "--generation");
+      return;
+    }
+    if (run.confirm !== hold.confirm) {
+      throw new Error(`--confirm ${run.confirm} is not the wipe's words for ${owner}: ` +
+                      `${hold.confirm}`);
+    }
+    await ask("restore.wipe", { confirm: run.confirm });
+    say(`wiped ${owner}'s object for its restore; generation ${hold.fresh ?? hold.gen} is ` +
+        "its undo");
+  }
+  await ask("restore.begin", { namespace: from.namespace, gen: from.gen });
   for (;;) {
-    const at = await asked(run, got, "restore.step", owner, {}) as RestoreAnswer;
+    const at = await ask("restore.step") as RestoreAnswer;
     if (at.step === "failed") {
       throw new Error(`the restore of ${owner} failed its check, and the owner is not ` +
                       `admitted: ${at.failed}`);
@@ -1457,9 +1510,11 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
     }
     say(`the restore of ${owner} is at its ${at.step} step`);
   }
-  say(`the doors answered owner.admit for ${owner}: ${
-    JSON.stringify(await asked(run, got, "owner.admit", owner, {}))}`);
+  say(`the doors answered owner.admit for ${owner}: ${JSON.stringify(await ask("owner.admit"))}`);
 });
+
+/** What `--confirm` takes: a wipe's words or a release's, each naming the owner. */
+const CONFIRM = /^(?:wipe|release)-\S+$/;
 
 /**
  * E2B's lifecycle webhook, registered or changed once the doors hold E2B_WEBHOOK_SECRET:
@@ -1941,7 +1996,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   },
   restore: {
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
-    deploys: false, applies: true, own: ["--owner", "--generation"],
+    deploys: false, applies: true, own: ["--owner", "--generation", "--confirm"],
     steps: { public: RESTORE, secrets: RESTORE }, report: { unchanged: NOTHING, after: [] },
   },
 });
@@ -2097,6 +2152,9 @@ const OWN = Object.freeze({
   "--act": { names: "the op asked of the doors", needed: true },
   "--generation": { names: "the generation to restore from, <namespace>/<gen> as " +
                            "restore.source answers them", needed: false },
+  "--confirm": { names: "the words that confirm a restore's wipe, wipe-<owner>-<gen> as " +
+                        "restore.pin answers them, or give its pin up, release-<owner>",
+                 needed: false },
 });
 export type Own = keyof typeof OWN;
 
@@ -2131,6 +2189,11 @@ function ownValue(name: Own, text: string): unknown {
       } catch {
         throw refused();
       }
+    case "--confirm":
+      if (!CONFIRM.test(text)) {
+        throw refused();
+      }
+      return text;
   }
 }
 
@@ -2171,7 +2234,8 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
     edits: (own["--set"] as Edit[] | undefined) ?? [], replace: own["--replace"],
     owner: (own["--owner"] as string | undefined) ?? null,
     act: (own["--act"] as Act | undefined) ?? null,
-    generation: (own["--generation"] as Generation | undefined) ?? null, env, io });
+    generation: (own["--generation"] as Generation | undefined) ?? null,
+    confirm: (own["--confirm"] as string | undefined) ?? null, env, io });
   if (row.report !== null) {
     if (run.apply && run.reach === "public") {
       throw new Error("--public is the plan job's: it never changes anything");

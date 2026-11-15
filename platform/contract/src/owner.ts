@@ -133,7 +133,8 @@ export interface RestoreBeginRequest {
  * the owner's admission as it stood at E.
  */
 export type RestoreAnswer =
-  | { readonly step: "index" | "log" | "apply" | "check" | "chunks" | "clear";
+  | { readonly step: "pinned" | "wiped" | "index" | "log" | "apply" | "check" | "chunks"
+                     | "clear";
       readonly done: false }
   | { readonly step: "failed"; readonly done: false; readonly failed: string }
   | { readonly step: "done"; readonly done: true; readonly gen: string;
@@ -147,7 +148,43 @@ export interface RestoreSource {
   readonly generations: readonly { readonly gen: string; readonly finished_at: number;
                                    readonly restorable: boolean }[];
   readonly state: string;
-  readonly restore: string | null;
+  /**
+   * Whether a restore may begin, or go on, in this object as it stands: pending and empty,
+   * wiped for it, or begun. Else a pin and a wipe come first (a live owner, a failed restore).
+   */
+  readonly begins: boolean;
+  /**
+   * The restore's record, from its pin: its step, its generation, the pin's own, and when the
+   * hold began (seconds).
+   */
+  readonly restore: { readonly step: string; readonly gen: string;
+                      readonly fresh: string | null; readonly since: number } | null;
+}
+
+/** The generation a restore pins on a live owner (`restorePin`): one of its finished ones. */
+export interface RestorePinRequest {
+  readonly gen: string;
+}
+
+/** What confirms a wipe (`restoreWipe`): `wipe-<owner>-<gen>`, as the pin's answer names it. */
+export interface RestoreWipeRequest {
+  readonly confirm: string;
+}
+
+/**
+ * A restore's hold on its owner, from the pin through the wipe (`owner/src/restore.ts`): the
+ * record's step, the generation pinned and its namespace, the generation the pin wrote of the
+ * owner's present state (`fresh`: null before it is begun, or for an object that held no
+ * owner), whether the wipe may go on (that generation finished), and the words that confirm
+ * the wipe while one is due (`pinned` once written, or `failed`), else null.
+ */
+export interface RestoreHold {
+  readonly step: string;
+  readonly namespace: string;
+  readonly gen: string;
+  readonly fresh: string | null;
+  readonly written: boolean;
+  readonly confirm: string | null;
 }
 
 /**
@@ -271,6 +308,11 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   restoreBegin(binding: Binding, request: Asked<"restoreBegin", RestoreBeginRequest>):
     Promise<RestoreAnswer>;
   restoreStep(binding: Binding): Promise<RestoreAnswer>;
+  restorePin(binding: Binding, request: Asked<"restorePin", RestorePinRequest>):
+    Promise<RestoreHold>;
+  restoreWipe(binding: Binding, request: Asked<"restoreWipe", RestoreWipeRequest>):
+    Promise<RestoreHold>;
+  restoreRelease(binding: Binding): Promise<{ readonly released: true }>;
   sessionOpen(binding: Binding): Promise<{ readonly session: string }>;
   sessionExtend(binding: Binding): Promise<object>;
   sessionClose(binding: Binding): Promise<{ readonly closed: number }>;

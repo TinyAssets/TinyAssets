@@ -181,9 +181,10 @@ import type {
   AdmissionRequest, BeatRequest, BilledEvent, BindingRequest, ConnectionCommitRequest,
   ConnectionPrepareRequest, ConnectionRequest, EgressOpened, EgressRefusal, EgressReserved,
   FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors, RestoreAnswer,
-  RestoreBeginRequest, RestoreSource, SigninEventsRequest, TierRequest,
+  RestoreBeginRequest, RestoreHold, RestorePinRequest, RestoreSource, RestoreWipeRequest,
+  SigninEventsRequest, TierRequest,
 } from "../../contract/src/owner";
-import { RESTORING, restoreDoors, restoring } from "./restore";
+import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
 import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
 import { type Receipt as StarterReceipt, Starter, starterDoors } from "./starter";
@@ -231,6 +232,8 @@ import type {
 } from "./signins";
 
 /** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
+/** Why a restore's wipe resets the instance (`OwnerState.reset`). */
+const RESET = "the object was wiped for a restore; its next call starts it afresh";
 const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
 const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
 
@@ -418,6 +421,7 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
     owner: () => id.name ?? "", schema: MIGRATIONS.length,
     serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
     halted: () => wiped(storage.sql) || erasing(storage),
+    pinned: () => pinned(storage),
     notice: (type, detail) => notices.add(type, detail, clock()),
   });
   return { policy, notices, log, files, bodies, collections, grants, ledger, backups };
@@ -510,6 +514,12 @@ export interface OwnerState {
    * the whole database deleted, no tombstone; the namespace it deleted.
    */
   discard(): Promise<string | null>;
+  /**
+   * The instance reset once what it wrote is durable, as a crash resets it, so the next call
+   * starts a fresh one: a restore's wipe (`restore.ts`), which nothing the instance holds in
+   * memory may outlive. The call that asks it ends with the reset.
+   */
+  reset(): Promise<never>;
   /** The owner's admission as its row holds it (`admission.ts`): a read. */
   admission(): Admission;
   /** The tier numbers a door's binding handed, kept for the runs the lane starts. */
@@ -855,6 +865,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       setTier: (request: unknown) => setTier(storage, request),
       gone: () => object.#tombstone || object.#erasure.erased || erasing(storage),
       discard: () => object.#discard(),
+      reset: async () => {
+        // Durable first: a reset takes back what is not yet (`facet-probe.md`, Q8).
+        await object.#gate.durable();
+        object.ctx.abort(RESET);
+        throw new Error(RESET);
+      },
       admission: () => admission(storage),
       keepTiers: (binding: Binding) => keepTiers(storage, binding.tiers, clock()),
       scope: (account: Account, capability: RunCapability, center?: unknown, agent?: string) =>
@@ -1465,6 +1481,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return this.#units("restoreStep", binding, undefined, restoreDoors.restoreStep);
   }
 
+  /** A live owner's generation pinned and the owner held, its present state written first. */
+  restorePin(binding: Binding, request: RestorePinRequest): Promise<RestoreHold> {
+    return this.#units("restorePin", binding, request, restoreDoors.restorePin);
+  }
+
+  /** The pinned owner's object wiped to pending and empty, confirmed; then the instance reset. */
+  restoreWipe(binding: Binding, request: RestoreWipeRequest): Promise<RestoreHold> {
+    return this.#units("restoreWipe", binding, request, restoreDoors.restoreWipe);
+  }
+
+  /** A pin not yet wiped given up: the owner as it was. */
+  restoreRelease(binding: Binding): Promise<{ released: true }> {
+    return this.#units("restoreRelease", binding, undefined, restoreDoors.restoreRelease);
+  }
+
   // -- OWNER_POLICY ------------------------------------------------------------
 
   policyRead(binding: Binding): Promise<Projection> {
@@ -2060,13 +2091,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     if (named !== owner) {
       throw new Refusal("refused", "this object belongs to another owner");
     }
+    if (door !== "admission") {
+      // From a restore's pin to its end, only the restore's doors (the platform's) take the
+      // owner: not its own, not a run's, not the import's (whose discard would delete the
+      // generation the restore reads).
+      refuseRestoring(this.#storage);
+    }
     if (door === "import") {
-      // Only an owner the platform has not admitted yet is imported into: never a live one,
-      // nor one a restore is loading (its discard would delete the generation it reads).
+      // Only an owner the platform has not admitted yet is imported into: never a live one.
       // The discard takes a rehearsal's name in any state too: no issuer's subject is one.
-      if (restoring(this.#storage)) {
-        throw new Refusal("refused", RESTORING);
-      }
       if (admission(this.#storage).state !== "pending"
           && !(discarding && rehearsalRun(owner) !== null)) {
         throw new Refusal("refused", IMPORT_PENDING_ONLY);

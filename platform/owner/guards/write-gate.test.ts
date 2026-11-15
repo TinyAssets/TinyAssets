@@ -320,6 +320,8 @@ const OWN_UNITS: ReadonlySet<string> = new Set([
   "files.write", "files.writeChunks", "files.upload", "files.rewrap", "files.space",
   "connections.fresh", "connections.reseal", "erasure.begin", "launcher.seeded", "launcher.launch",
   "launcher.cancel",
+  // The manifest lane's pass, which a restore's pin drives for its fresh generation.
+  "backups.run",
   // Each reads in units of its own, or R2 alone.
   "files.fetch", "files.check", "archive.archived", "archive.chain", "launcher.readAgent",
   "launcher.settledWithin",

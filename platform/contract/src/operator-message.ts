@@ -60,6 +60,9 @@ export const OPERATOR_OPS = Object.freeze({
   "restore.source": Object.freeze([] as const),
   "restore.begin": Object.freeze(["namespace", "gen"] as const),
   "restore.step": Object.freeze([] as const),
+  "restore.pin": Object.freeze(["gen"] as const),
+  "restore.wipe": Object.freeze(["confirm"] as const),
+  "restore.release": Object.freeze([] as const),
 } satisfies Record<string, readonly string[]>);
 export type OperatorOp = keyof typeof OPERATOR_OPS;
 

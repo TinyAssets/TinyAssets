@@ -49,9 +49,28 @@
  *    generation recorded as the object's newest finished one, and the owner's admission as it
  *    stood at E (`held`).
  *
- * While a restore is under way, or once it failed, no lane runs (`restoring`, the schedule's
- * halt), every door but the platform's refuses (the owner is `pending`), and neither the
- * platform's admission nor the cutover's import takes it (`RESTORING`).
+ * **Into a live owner** (`untangle-2026-11/r5w.md`) the object is first brought to `pending`
+ * and empty, and its record begins two steps earlier:
+ * - `restorePin {gen}`: one of the object's finished, restorable generations pinned (never
+ *   pruned while a restore holds the owner, `Backups`' `pinned`), the owner held (the record's
+ *   `pinned` step: every door but the restore's refused, every run and stream ended, no lane
+ *   run), and then a fresh generation of its present state written (`fresh`), begun after
+ *   the hold, so nothing the owner wrote is lost unwritten (Fact 13). Asked again until it is
+ *   written, each call carrying the generation on for at most `RESTORE_PASS_MS`; its answer
+ *   then names the words that confirm the wipe, `wipe-<owner>-<fresh>`.
+ * - `restoreWipe {confirm}`: in one unit, every table the schema made dropped and the schema
+ *   migrated afresh (`remigrate`), as a new object's start makes it, and the record written
+ *   again at `wiped`, the pin with it; then the instance reset, so nothing it held in memory
+ *   outlives the wipe. Nothing in R2 is touched: the files' chunks and every generation stay
+ *   in the namespace, which the record names, and the pinned one is begun as a lost object's
+ *   is. A failed restore is wiped the same way, to be restored again.
+ * - `restoreRelease`: a pin not yet wiped given up, the owner as it was.
+ * A wiped object takes a restore only of the generation it was pinned for, or of the one its
+ * pin wrote (the undo).
+ *
+ * From the pin until done, or once a restore failed, no lane runs (`restoring`, the schedule's
+ * halt), every door but the restore's refuses (`refuseRestoring`), and so do the platform's
+ * admission and the cutover's import: `restoring`, a refusal for the moment.
  *
  * **What the owner loses** (the kit's plan says so): its sessions, every agent's grant, its API
  * keys, its model connections' secrets, its inbound URLs, and anything written after E.
@@ -59,11 +78,15 @@
 import { HEX16, HEX32, randomHex } from "../../contract/src/ids";
 import { LOG_BYTES } from "../../contract/src/limits";
 import type { ChunkStore, ManifestRoot } from "../../contract/src/files";
-import type { RestoreAnswer, RestoreBeginRequest, RestoreSource } from "../../contract/src/owner";
+import { remigrate } from "../../contract/src/migrate";
+import type {
+  RestoreAnswer, RestoreBeginRequest, RestoreHold, RestorePinRequest, RestoreSource,
+  RestoreWipeRequest,
+} from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
 
 import { clock } from "./clock";
-import { exported } from "./export";
+import { exported, NOT_EXPORTED } from "./export";
 import type { OwnerStorage } from "./gate";
 import type { Door, OwnerState } from "./owner-do";
 import { MIGRATIONS } from "./schema";
@@ -161,9 +184,13 @@ type Held = {
   readonly held: string | null;
   readonly spans: string | null;
   readonly failed: string | null;
+  readonly fresh: string | null;
+  /** When the hold began, in seconds: the pin, or a lost object's begin. */
+  readonly since: number;
 };
 
-type Step = "index" | "log" | "apply" | "check" | "chunks" | "clear" | "done" | "failed";
+type Step = "pinned" | "wiped" | "index" | "log" | "apply" | "check" | "chunks" | "clear"
+  | "done" | "failed";
 
 /** How long one `restoreStep` call takes new work: its answer is well inside the kit's wait. */
 const RESTORE_PASS_MS = 30_000;
@@ -174,22 +201,23 @@ const SLICE_CHUNKS = 64;
 
 /** The restore's record, or null when none was begun. A read. */
 function record(sql: Pick<SqlStorage, "exec">): Held | null {
-  return sql.exec<Held>("SELECT ns, gen, step, at, after, held, spans, failed FROM owner_restore")
-    .toArray()[0] ?? null;
+  return sql.exec<Held>("SELECT ns, gen, step, at, after, held, spans, failed, fresh, since " +
+                          "FROM owner_restore").toArray()[0] ?? null;
 }
 
 /**
- * What the platform's admission and the cutover's import doors answer while a restore is
- * under way or failed: the object holds a half-loaded owner, which only the restore's own
- * doors take, so nothing admits or writes into it before its check passes.
+ * What every door but the restore's answers while a restore holds the owner, the platform's
+ * admission and the cutover's import too (`refuseRestoring`): from the pin the object holds
+ * an owner about to be wiped, then a half-loaded one, which only the restore's own doors take,
+ * so nothing admits, reads or writes it before the check passes.
  */
-export const RESTORING = "a restore of this owner is under way, or failed its check: only " +
-  "the restore's doors take it";
+export const RESTORING = "this owner is held for a restore, under way or failed its check: " +
+  "only the restore's doors take it";
 
 /**
- * Whether a restore is under way: begun and not yet done, or failed. While it is, no lane runs
- * (the schedule's halt, `owner-do.ts`), and neither the platform's admission nor the
- * cutover's import takes the owner (`RESTORING`). A read.
+ * Whether a restore holds the owner: pinned and not yet done, or failed. While one does, no
+ * lane runs (the schedule's halt, `owner-do.ts`) and every door but the restore's refuses
+ * (`refuseRestoring`). A read.
  */
 export function restoring(storage: OwnerStorage): boolean {
   const held = record(storage.sql);
@@ -197,16 +225,36 @@ export function restoring(storage: OwnerStorage): boolean {
 }
 
 /**
+ * Refused, for the moment (`restoring`, a transient code: a sign-in's redirect answers it
+ * `temporarily_unavailable`), while a restore holds the owner. A read. When the hold began
+ * is `restore.source`'s to answer (`since`): no door shows a refusal's facts.
+ */
+export function refuseRestoring(storage: OwnerStorage): void {
+  if (restoring(storage)) {
+    throw new Refusal("restoring", RESTORING);
+  }
+}
+
+/**
+ * The generation a restore holds while it holds the owner, which no prune deletes
+ * (`Backups`' `pinned`); null otherwise. A read.
+ */
+export function pinned(storage: OwnerStorage): string | null {
+  return restoring(storage) ? record(storage.sql)!.gen : null;
+}
+
+/**
  * Why this object can't be restored into, or null: an object not `pending`, or one holding
- * anything but what its migrations seeded (`SEEDED`), a namespace, or a restore already. In a
- * unit.
+ * anything but what its migrations seeded (`SEEDED`), a namespace, or a restore already, but
+ * the record of the wipe that emptied it. In a unit.
  */
 function emptiness(o: OwnerState): string | null {
   const { state } = o.admission();
   if (state !== "pending") {
     return `the owner is ${state}: a restore takes only a pending owner`;
   }
-  if (record(o.storage.sql) !== null) {
+  const begun = record(o.storage.sql);
+  if (begun !== null && begun.step !== "wiped") {
     return "a restore of this owner was begun already";
   }
   const held = o.files.storedNamespace() !== null ? ["a namespace"]
@@ -219,6 +267,35 @@ function emptiness(o: OwnerState): string | null {
 
 /** A refusal of the restore, terminal: what is asked can't be done to this object. */
 const refused = (why: string) => new Refusal("refused", why);
+
+/**
+ * Refused unless a wiped object (`held` at `wiped`) is begun from its own namespace and from
+ * the generation it was pinned for or the one its pin wrote; any other object passes.
+ */
+function wipedFor(held: Held | null, ns: string, gen: string): void {
+  if (held?.step === "wiped" && (ns !== held.ns || (gen !== held.gen && gen !== held.fresh))) {
+    throw refused(`this object was wiped to restore generation ${held.gen} of its namespace` +
+                  `${held.fresh === null ? "" : `, or ${held.fresh}, the one its pin wrote`}`);
+  }
+}
+
+/**
+ * The hold a restore's record makes, as it stands (`RestoreHold`): whether the wipe may go on
+ * (no fresh generation is due, or it is finished), and the words that confirm it while one
+ * is due: at `pinned` once the fresh generation is written, or at `failed`, naming the
+ * generation the wipe leaves as the undo (the one a failed restore was from, should no pin
+ * have written one). In a unit.
+ */
+function holdOf(o: OwnerState, held: Held): RestoreHold {
+  const written = held.step !== "pinned"
+    || (held.fresh !== null && o.backups.finished(held.fresh));
+  const due = held.step === "failed" || (held.step === "pinned" && written);
+  return { step: held.step, namespace: held.ns, gen: held.gen, fresh: held.fresh, written,
+           confirm: due ? `wipe-${o.owner()}-${held.fresh ?? held.gen}` : null };
+}
+
+/** Every table of the owner's schema: the export's two lists, which hold every one. */
+const schemaTables = (): string[] => [...Object.keys(exported()), ...Object.keys(NOT_EXPORTED)];
 
 /** A line of a part or a segment, as JSON. */
 type Line = { readonly t: string } & Readonly<Record<string, unknown>>;
@@ -459,7 +536,7 @@ async function piece(o: OwnerState, door: Door<undefined>, source: GenerationSou
     door.check();
     return record(sql);
   });
-  if (held === null) {
+  if (held === null || held.step === "pinned" || held.step === "wiped") {
     throw refused("no restore of this owner was begun");
   }
   /** In a unit: whether the record is still as `held` read it. */
@@ -564,15 +641,23 @@ async function piece(o: OwnerState, door: Door<undefined>, source: GenerationSou
     }
     case "chunks": {
       const listed = await o.door(() => o.files.chunksPage(held.at, SLICE_CHUNKS));
-      for (const chunk of listed) {
-        // Read whole by the files Worker under the owner's key and checked against its hash;
-        // one byte of it comes back. A chunk that fails is thrown: the next step reads again.
-        await o.files.fetch([{ sha256: chunk.sha256, offset: 0, length: 1 }]);
-      }
+      // Each read whole by the files Worker under the owner's key and held to its hash, no
+      // byte of it coming back. A read gone wrong is thrown (the next step reads the slice
+      // again); `missing` or `broken` is the bucket's answer, so the restore failed, named,
+      // and its operator wipes it again for another generation or the pin's undo.
+      const found = await o.files.check(listed.map((chunk) => chunk.sha256));
+      const unread = found.filter((check) => check !== "stored");
       await o.door(() => {
-        if (still()) {
-          move(listed.length < SLICE_CHUNKS ? "clear" : "chunks", held.at + listed.length, null);
+        if (!still()) {
+          return;
         }
+        if (unread.length > 0) {
+          console.error("a restore's chunks are not stored; the owner is not admitted");
+          move("failed", held.at, null, `${unread.length} of the generation's chunks are not ` +
+               `stored as their hash (${[...new Set(unread)].join(", ")})`);
+          return;
+        }
+        move(listed.length < SLICE_CHUNKS ? "clear" : "chunks", held.at + listed.length, null);
       });
       return true;
     }
@@ -632,10 +717,14 @@ export const restoreDoors = Object.freeze({
   async restoreSource(o: OwnerState, door: Door<undefined>): Promise<RestoreSource> {
     return o.door(() => {
       door.check();
+      const held = record(o.storage.sql);
+      const begun = held !== null && !["pinned", "wiped", "done", "failed"].includes(held.step);
       return { namespace: o.files.storedNamespace(),
                generations: o.backups.manifests().map(({ gen, finished_at, log_bytes }) =>
                  ({ gen, finished_at, restorable: log_bytes <= LOG_BYTES })),
-               state: o.admission().state, restore: record(o.storage.sql)?.step ?? null };
+               state: o.admission().state, begins: begun || emptiness(o) === null,
+               restore: held === null ? null
+                 : { step: held.step, gen: held.gen, fresh: held.fresh, since: held.since } };
     });
   },
   /**
@@ -653,13 +742,15 @@ export const restoreDoors = Object.freeze({
                                      "(16 hex)");
       }
       const held = record(o.storage.sql);
-      if (held !== null && held.ns === ns && held.gen === gen) {
+      if (held !== null && held.step !== "pinned" && held.step !== "wiped" && held.ns === ns
+          && held.gen === gen) {
         return { ns, gen, held };
       }
       const why = emptiness(o);
       if (why !== null) {
         throw refused(why);
       }
+      wipedFor(held, ns, gen);
       return { ns, gen, held: null };
     });
     if (asked.held !== null) {
@@ -697,9 +788,12 @@ export const restoreDoors = Object.freeze({
       if (why !== null) {
         throw refused(why);  // another call began one, or wrote, while the root was read
       }
+      wipedFor(record(o.storage.sql), ns, gen);
       o.files.adoptSpace(ns, root.key);
-      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
-                           "'index', 0)", ns, gen);
+      // A wiped object's record goes on, its pin's fresh generation kept: the undo.
+      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) VALUES " +
+                           "(1, ?, ?, 'index', 0, ?) ON CONFLICT (only) DO UPDATE SET gen = " +
+                           "excluded.gen, step = 'index', at = 0", ns, gen, clock());
       return answer(o, record(o.storage.sql)!);
     });
   },
@@ -716,5 +810,136 @@ export const restoreDoors = Object.freeze({
     }
     await o.sync();
     return o.door(() => answer(o, record(o.storage.sql)!));
+  },
+  /**
+   * Generation `gen` of this live owner pinned, the owner held, and its present state written
+   * as a fresh generation: the first call pins and holds, every call carries the fresh
+   * generation on for at most `RESTORE_PASS_MS` until it is written; its answer then names
+   * the words that confirm the wipe. A record past the pin, for `gen` or the one its pin
+   * wrote, answers as it stands; a pending owner is restored into directly, with no pin.
+   */
+  async restorePin(o: OwnerState, door: Door<RestorePinRequest>): Promise<RestoreHold> {
+    const { held, began } = await o.door(() => {
+      const { r } = door.check();
+      const gen = r.gen;
+      if (typeof gen !== "string" || !HEX16.test(gen)) {
+        throw new Refusal("invalid", "a pin names a generation (16 hex)");
+      }
+      const now = record(o.storage.sql);
+      if (now !== null && now.step !== "done") {
+        if (gen !== now.gen && gen !== now.fresh) {
+          throw refused(`a restore of this owner from generation ${now.gen} holds it: release ` +
+                        "it, or restore that one");
+        }
+        return { held: now, began: false };
+      }
+      const { state } = o.admission();
+      if (state !== "admitted" && state !== "suspended") {
+        throw refused(`the owner is ${state}: a pin holds a live owner, and a pending one is ` +
+                      "restored into with none");
+      }
+      const kept = o.backups.manifests().find((each) => each.gen === gen);
+      if (kept === undefined || kept.log_bytes > LOG_BYTES) {
+        throw refused(`generation ${gen} is not one of the owner's finished generations a ` +
+                      "restore can load: restore.source names them");
+      }
+      // The hold, in the unit that pins: no door but the restore's from here on, and every
+      // run and stream ended, as a suspension's prompt stop ends them (`admission.ts`).
+      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) VALUES " +
+                           "(1, ?, ?, 'pinned', 0, ?) ON CONFLICT (only) DO UPDATE SET ns = " +
+                           "excluded.ns, gen = excluded.gen, step = 'pinned', at = 0, after = " +
+                           "NULL, held = NULL, spans = NULL, failed = NULL, fresh = NULL, since " +
+                           "= excluded.since", o.files.storedNamespace(), gen, clock());
+      o.egress.end("admission");
+      o.launcher.stop(o.runs.endAll(clock()));
+      return { held: record(o.storage.sql)!, began: true };
+    });
+    if (began) {
+      o.relay.closeAll("lost");  // a socket opened again is refused until the restore is done
+    }
+    if (held.step !== "pinned") {
+      return o.door(() => holdOf(o, held));
+    }
+    // The fresh generation, begun after the hold: a generation under way began before it, so
+    // it is carried to its end first, and a new one begun.
+    await o.quiet(() => {
+      door.check();
+      const now = record(o.storage.sql);
+      if (now?.step === "pinned" && (now.fresh === null || !o.backups.kept(now.fresh))
+          && o.backups.writing() === null) {
+        o.storage.sql.exec("UPDATE owner_restore SET fresh = ?", o.backups.begin(clock()));
+      }
+    });
+    if (!await o.door(() => holdOf(o, record(o.storage.sql)!).written)) {
+      await o.backups.run(clock(), clock() * 1000 + RESTORE_PASS_MS);
+    }
+    return o.door(() => {
+      door.check();
+      return holdOf(o, record(o.storage.sql)!);
+    });
+  },
+  /**
+   * The object wiped for its restore, confirmed by the words the pin's answer names: in one
+   * unit, every table the schema made dropped and migrated afresh, and the record written
+   * again at `wiped`; then the instance reset (the call ends with its reset, and the
+   * operator channel's redelivery answers it). Nothing in R2 is touched. A wiped or begun
+   * record answers as it stands; a failed restore is wiped again the same way.
+   */
+  async restoreWipe(o: OwnerState, door: Door<RestoreWipeRequest>): Promise<RestoreHold> {
+    const wiped = await o.door(() => {
+      const { r } = door.check();
+      const held = record(o.storage.sql);
+      if (held === null || held.step === "done") {
+        throw refused("no generation of this owner is pinned: restore.pin first");
+      }
+      if (held.step !== "pinned" && held.step !== "failed") {
+        return false;
+      }
+      const { confirm } = holdOf(o, held);
+      if (confirm === null) {
+        throw refused("the owner's present state is not yet written: ask restore.pin again " +
+                      "until it is");
+      }
+      if (r.confirm !== confirm) {
+        throw new Refusal("invalid", "a wipe is confirmed by wipe-<owner>-<gen>, as " +
+                                     "restore.pin's answer names it");
+      }
+      // A transaction of its own: a unit that throws keeps what it wrote (`gate.ts`), so a
+      // wipe that throws part way would leave the object half made and its pin gone.
+      o.storage.transactionSync(() => {
+        remigrate(o.storage, MIGRATIONS, schemaTables());
+        o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, fresh, since) " +
+                             "VALUES (1, ?, ?, 'wiped', 0, ?, ?)", held.ns, held.gen, held.fresh,
+                           held.since);
+      });
+      return true;
+    });
+    if (wiped) {
+      await o.reset();
+    }
+    return o.door(() => {
+      door.check();
+      return holdOf(o, record(o.storage.sql)!);
+    });
+  },
+  /**
+   * A pin not yet wiped given up: the record gone, the owner as it was (the runs the hold
+   * ended stay ended), its lanes running again. With none pinned, answered the same.
+   */
+  async restoreRelease(o: OwnerState, door: Door<undefined>): Promise<{ released: true }> {
+    await o.door(() => {
+      door.check();
+      const held = record(o.storage.sql);
+      if (held === null || held.step === "done") {
+        return;
+      }
+      if (held.step !== "pinned") {
+        throw refused("the owner's object was wiped for its restore: restore the generation " +
+                      "it was pinned for, or the one its pin wrote");
+      }
+      o.storage.sql.exec("DELETE FROM owner_restore");
+    });
+    await o.sync();
+    return { released: true as const };
   },
 });
