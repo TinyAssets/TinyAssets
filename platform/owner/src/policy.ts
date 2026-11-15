@@ -528,12 +528,16 @@ export interface CardRequest {
 
 // -- THE DOORS: the `policy` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `policy` doors' handlers, by door. */
 export const policyDoors = Object.freeze({
+  /**
+   * An agent's proposal, the owner's or an admitted outside client's; never applied. A
+   * scoped client proposes only with `propose_policy` granted where its agent is.
+   */
   policyPropose(o: OwnerState, { account, r }: Call<ProposeRequest>):
       { request_digest: string; generation: number } {
     return o.policy.propose(r["change"], r["request_id"] ?? null,
@@ -545,6 +549,13 @@ export const policyDoors = Object.freeze({
   policyReceipts(o: OwnerState, _call: Call<undefined>): { receipts: Receipt[] } {
     return { receipts: o.policy.receipts() };
   },
+  /**
+   * The owner's write, in its session; with `proposal`, a held card's one apply. A new
+   * files retention is applied to rows already kept by housekeeping, so the schedule is
+   * synced after it (the `files` lane re-applies it). Once it committed, it ends the
+   * sandbox's in-flight egress streams; a call opened after it is admitted under the new
+   * generation.
+   */
   async policyWrite(o: OwnerState, door: Door<PolicyWriteRequest>): Promise<Projection> {
     const done = await o.synced(() => door.within(({ account: { owner }, session, r }) => {
       const written = o.policy.write(session, r["expected_generation"], r["policy"],
@@ -555,6 +566,7 @@ export const policyDoors = Object.freeze({
     await o.door(() => o.egress.end("policy"));
     return done;
   },
+  /** The pending card the owner is shown, and the digest its apply must name. */
   policyProposal(o: OwnerState, { r }: Call<CardRequest>): { change: Change; digest: string } {
     const held = o.policy.held(r["request_id"], clock());
     if (held === null) {

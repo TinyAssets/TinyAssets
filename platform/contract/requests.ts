@@ -1,29 +1,34 @@
 /**
- * The owner's door requests as types, written from the door table (`doors.json`), so a
- * door's fields are listed once, in its row (`args`), and `tsc` holds both sides of a call
- * to them: the doors' request literals and the object's handlers (`OwnerDO implements
- * OwnerDoors`, `contract/src/owner.ts`).
+ * The door table (`doors.json`, read by `doorTable()`) as types, one of `npm run generate`'s
+ * generators, which `ci/guards/generated.test.ts` holds current. A JSON module's types cannot
+ * name them: its strings widen to `string`, so no row can be picked by its door. Node runs
+ * this file as it is (type stripping). It writes two files:
  *
- * A JSON module's types cannot name them: its strings widen to `string`, so no row can be
- * picked by its door. So this writes `contract/src/requests.ts`, one of `npm run generate`'s
- * generators, which `ci/guards/generated.test.ts` holds current.
- * Node runs this file as it is (type stripping).
- *
- * Each row with a field list is one entry: its required fields, then its optional ones, as
- * the runner holds them (`fields`). A field's value is `unknown`: the schemas are its tool's
- * JSON arguments, and the doors send some as other values (`fileWrite`'s content as bytes),
- * so its handler checks each value. A row by who asks (`registerAgent`) is either list. A row
- * that takes no request (`none`), or one its module reads whole (`loose`), has no entry.
+ * - `contract/src/requests.ts`: each door's request whose row lists its fields, so a door's
+ *   fields are listed once, in its row (`args`), and `tsc` holds the doors' request literals
+ *   to them (`OwnerDoors`, `contract/src/owner.ts`). Each row with a field list is one entry:
+ *   its required fields, then its optional ones, as the runner holds them (`fields`). A
+ *   field's value is `unknown`: the schemas are its tool's JSON arguments, and the doors send
+ *   some as other values (`fileWrite`'s content as bytes), so its handler checks each value.
+ *   A row by who asks (`registerAgent`) is either list. A row that takes no request (`none`),
+ *   or one its module reads whole (`loose`), has no entry.
+ * - `owner/src/door-map.ts`: the owner object's typed handler map (untangle B4). Each row's
+ *   module, caller and gate (`DoorRows`), which type its handler (`owner-do.ts`, `DoorsOf`),
+ *   and each door as the object's method (`DoorMethods`), which the object's loop defines on
+ *   its prototype from the row at module load: its binding unless its caller is `none`, its
+ *   request unless it takes none (optional where the row says an omitted one is empty), its
+ *   request and answer its handler's, and its doc the row's tool description.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { Args, DoorRow } from "./src/doors.ts";
+import { type Args, type DoorRow, doorTable } from "./src/doors.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-/** The file this writes. */
+/** The files this writes. */
 const REQUESTS_FILE = join(HERE, "src", "requests.ts");
+const MAP_FILE = join(HERE, "..", "owner", "src", "door-map.ts");
 
 /** The widest line the platform's sources keep. */
 const WIDTH = 100;
@@ -98,13 +103,75 @@ function requestsSource(rows: readonly DoorRow[]): string {
   ].join("\n");
 }
 
-/** The table's rows, read as the file holds them. */
-function tableRows(): readonly DoorRow[] {
-  return (JSON.parse(readFileSync(join(HERE, "doors.json"), "utf8")) as
-    { doors: readonly DoorRow[] }).doors;
+/** `text` as a doc comment at `indent`, its words wrapped at the width. */
+function doc(door: string, text: string, indent: string): string[] {
+  if (text.includes("*/")) {
+    throw new Error(`${door}: a tool description that ends a comment`);
+  }
+  const lines = [`${indent} *`];
+  for (const word of text.split(/\s+/).filter((each) => each !== "")) {
+    if (lines.at(-1)!.length + 1 + word.length > WIDTH && lines.at(-1) !== `${indent} *`) {
+      lines.push(`${indent} *`);
+    }
+    lines[lines.length - 1] += ` ${word}`;
+  }
+  return [`${indent}/**`, ...lines, `${indent} */`];
+}
+
+/** One door as the object's method: its binding, its request, its answer, its tool's doc. */
+function method(row: DoorRow): string[] {
+  const parts = [
+    ...row.caller === "none" ? [] : ["binding: Binding"],
+    ...row.args === "none" ? []
+      : [`request${row.args !== "loose" && "omitted" in row.args ? "?" : ""}: ` +
+         `RequestIn<H, "${row.door}">`],
+  ];
+  const line = `  ${row.door}(${parts.join(", ")}): Promise<AnswerIn<H, "${row.door}">>;`;
+  return [...row.tool === undefined ? [] : doc(row.door, row.tool.description, "  "),
+          ...line.length <= WIDTH ? [line]
+            : [`  ${row.door}(${parts.join(", ")}):`, `    Promise<AnswerIn<H, "${row.door}">>;`]];
+}
+
+/** The source of `owner/src/door-map.ts`, from `rows`. */
+function mapSource(rows: readonly DoorRow[]): string {
+  return [
+    "/**",
+    " * The owner object's typed handler map, by door: written by `npm run generate` from the",
+    " * door table (`contract/doors.json`), which says what each means. Edit the table, never",
+    " * this file.",
+    " */",
+    "import type { Binding } from \"../../contract/src/binding\";",
+    "",
+    "/** Each door's module (its handler's), caller and gate, as its row names them. */",
+    "export interface DoorRows {",
+    ...rows.flatMap((row) => [
+      `  readonly ${row.door}:`,
+      `    { readonly module: "${row.handler}"; readonly caller: "${row.caller}"; ` +
+        `readonly gate: "${row.gate}" };`]),
+    "}",
+    "",
+    "/** The handler of `door` in a map of modules' handlers `H`, by its row's module. */",
+    "type HandlerIn<H, D extends keyof DoorRows> = DoorRows[D][\"module\"] extends infer M",
+    "  ? M extends keyof H ? D extends keyof H[M] ? H[M][D] : never : never : never;",
+    "/** The request a door's handler in `H` takes (its call's `request`). */",
+    "export type RequestIn<H, D extends keyof DoorRows> =",
+    "  HandlerIn<H, D> extends (o: never, call: infer C) => unknown",
+    "    ? C extends { readonly request: infer R } ? R : never : never;",
+    "/** What a door's handler in `H` answers. */",
+    "export type AnswerIn<H, D extends keyof DoorRows> =",
+    "  HandlerIn<H, D> extends (...args: never) => infer T ? Awaited<T> : never;",
+    "",
+    "/** Each door as the owner object's method, typed by its handler in `H`. */",
+    "export interface DoorMethods<H> {",
+    ...rows.flatMap(method),
+    "}",
+    "",
+  ].join("\n");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  writeFileSync(REQUESTS_FILE, requestsSource(tableRows()));
-  console.log("platform/contract/src/requests.ts");
+  const rows = doorTable();
+  writeFileSync(REQUESTS_FILE, requestsSource(rows));
+  writeFileSync(MAP_FILE, mapSource(rows));
+  console.log("platform/contract/src/requests.ts, platform/owner/src/door-map.ts");
 }

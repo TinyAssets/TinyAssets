@@ -104,15 +104,24 @@ export function keptTiers(storage: OwnerStorage): Tiers | null {
 
 // -- THE DOORS: the `tier` rows' handlers (`contract/doors.json`) ---------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `tier` doors' handlers, by door. */
 export const tierDoors = Object.freeze({
+  /**
+   * The platform sets the owner's tier (`free`, `paid`): taken only from the reserved
+   * `PLATFORM_CALLER`, as `admissionSet` is. The numbers are the control record's, never
+   * this door's.
+   */
   tierSet(o: OwnerState, { request }: Call<TierRequest>): { tier: TierName } {
     return o.setTier(request);
   },
+  /**
+   * The owner's own tier, for its app (`read`): its admission row's, which only the platform
+   * sets. The numbers are the control record's, which the doors read and show beside it.
+   */
   tierRead(o: OwnerState, _call: Call<undefined>): { tier: TierName } {
     return { tier: o.tier() };
   },

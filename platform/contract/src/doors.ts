@@ -89,6 +89,15 @@ export const CALLER_KINDS = Object.freeze(["account", "visitors", "owner", "sess
   "changes", "lease", "inbound", "none"] as const);
 export type CallerKind = (typeof CALLER_KINDS)[number];
 
+/**
+ * The names no RPC method may take (Cloudflare's `rpc/reserved-methods`): `fetch` and
+ * `connect`, which a stub keeps as its own; `dup` and `constructor`, on any RPC type; and an
+ * object's `alarm` and hibernating socket handlers. No door is named one: the owner object's
+ * loop refuses it when the class loads, as the table's rules do here.
+ */
+export const RPC_RESERVED: readonly string[] = Object.freeze(["fetch", "connect", "dup",
+  "constructor", "alarm", "webSocketMessage", "webSocketClose", "webSocketError"]);
+
 /** The doors that take no binding: the sandbox line's ring and E2B's billed events. */
 export const UNBOUND_DOORS: readonly string[] = Object.freeze(["sandboxBilled", "sandboxRung"]);
 
@@ -103,14 +112,6 @@ export type Guard = (typeof GUARDS)[number];
 /** How a door's handler runs in the object's write gate (`gate.ts`). */
 export const GATES = Object.freeze(["door", "quiet", "synced", "filing", "units"] as const);
 export type Gate = (typeof GATES)[number];
-
-/** The owner modules whose state the doors' handlers read and write. */
-export const HANDLERS = Object.freeze(["admission", "codemode", "collections", "connections",
-  "egress", "erasure", "export", "files", "grants", "import", "inbound", "keys", "ledger",
-  "notices", "policy", "registrations", "relay", "restore", "runs", "sandbox-time", "sessions",
-  "signins",
-  "starter", "tier", "usage"] as const);
-export type Handler = (typeof HANDLERS)[number];
 
 /** A door's request: its fields, each a JSON Schema, and the words its refusal is given. */
 export interface Args {
@@ -159,7 +160,11 @@ export interface DoorRow {
   readonly fieldsFirst?: true;
   /** The act a call of this door is, and when (`acts.json`). */
   readonly act?: { readonly name: string; readonly when?: Condition };
-  readonly handler: Handler;
+  /**
+   * The owner module that holds the door's handler (`<module>Doors.<door>`): the object's
+   * typed handler map (`owner/src/door-map.ts`, written from this) holds it to one.
+   */
+  readonly handler: string;
   readonly gate: Gate;
   readonly args: DoorArgs;
   readonly tool?: ToolInfo;
@@ -227,6 +232,9 @@ export function doorProblems(rows: unknown): string[] {
     if (typeof row["door"] !== "string" || !/^[a-z][A-Za-z]{1,63}$/.test(row["door"])) {
       say("not a method's name");
     }
+    if (RPC_RESERVED.includes(row["door"] as string)) {
+      say("a name RPC reserves");
+    }
     if (seen.has(row["door"])) {
       say("named twice");
     }
@@ -267,7 +275,7 @@ export function doorProblems(rows: unknown): string[] {
         || ("when" in act && !isCondition(act["when"])))) {
       say("an act is one of acts.json's, and when, one of its conditions");
     }
-    if (!one(HANDLERS, row["handler"])) {
+    if (typeof row["handler"] !== "string" || !/^[a-z]+(-[a-z]+)*$/.test(row["handler"])) {
       say("no handler module");
     }
     if (!one(GATES, row["gate"])) {

@@ -2,18 +2,15 @@
  * The owner object's door table (`contract/doors.json`, read by `src/doors.ts`): every row
  * whole and of known parts, so the object's runner and the doors' tool table read it alone.
  * A row with no argument schema, an unknown caller or gate, a tool missing a hint, a tool
- * named twice or a door named twice is refused when the table loads, and here.
+ * named twice, a door named twice or one named as RPC reserves is refused when the table
+ * loads, and here.
  *
  * And the door classes the spec names (`owner-object/spec.md`, admission): a billing
  * suspension refuses only `work`, an abuse suspension every door, and the platform's own
  * doors alone read no admission.
  */
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../ci/paths";
 import raw from "../doors.json" with { type: "json" };
 import { argsSchema, doorProblems, doorRow, doorTable, toolTable } from "../src/doors";
 
@@ -55,6 +52,8 @@ describe("the door table", () => {
     ["an unknown gate", changed("fileStat", { gate: "later" })],
     ["an unknown guard", changed("fileStat", { guard: "maybe" })],
     ["no handler module", without("fileStat", "handler")],
+    ["a handler that is no module's name", changed("fileStat", { handler: "../files" })],
+    ["a door a name RPC reserves", changed("fileStat", { door: "alarm" })],
     ["a door class past the five", changed("fileStat", { class: "write" })],
     ["admission read by an account door", changed("fileStat", { class: "admission" })],
     ["a platform door that reads admission", changed("tierSet", { class: "work" })],
@@ -78,13 +77,6 @@ describe("the door table", () => {
     ["an unbound door that binds", changed("sandboxRung", { caller: "account", class: "work" })],
   ])("refuses %s", (_what, rows) => {
     expect(doorProblems(rows)).not.toEqual([]);
-  });
-
-  it("names each door's handler module, one of the owner's", () => {
-    for (const each of doorTable()) {
-      expect(existsSync(join(PLATFORM, "owner", "src", `${each.handler}.ts`)), each.door)
-        .toBe(true);
-    }
   });
 
   it("serves each tool its door's capability and arguments", () => {

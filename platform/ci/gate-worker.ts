@@ -67,10 +67,6 @@ export interface Crossed {
   readonly args: unknown;
 }
 
-/** The names no RPC method may take (Cloudflare's reserved and disallowed methods). */
-const RESERVED = Object.freeze(["fetch", "connect", "dup", "constructor", "alarm",
-                                "webSocketMessage", "webSocketClose", "webSocketError"]);
-
 const SETUP = JSON.parse((env as unknown as { GATE: string }).GATE) as GateSetup;
 
 const arms: { arm: Arm; left: number }[] = [];
@@ -178,8 +174,9 @@ async function cross(method: string, name: string | null, args: unknown[],
 function define(target: object, forward: (self: never, method: string, args: unknown[]) =>
   Promise<unknown>): void {
   for (const method of SETUP.methods) {
-    if (RESERVED.includes(method) || method in target) {
-      throw new Error(`the gate cannot define ${method}: it is reserved, or already defined`);
+    // A name RPC reserves is refused where the gate is made (`gate.ts`, `RPC_RESERVED`).
+    if (method in target) {
+      throw new Error(`the gate cannot define ${method}: it is already defined`);
     }
     Object.defineProperty(target, method, {
       value: function (this: never, ...args: unknown[]) {

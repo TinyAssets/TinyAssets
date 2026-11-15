@@ -831,7 +831,7 @@ function finish(o: OwnerState, held: Held, root: ManifestRoot): void {
 
 // -- THE DOORS: the `restore` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands the
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands the
 // object's state once the row's steps held: the bind (the platform's reserved caller), and the
 // fields.
 

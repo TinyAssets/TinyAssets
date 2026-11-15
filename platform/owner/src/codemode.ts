@@ -21,7 +21,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
-  doorRow, profileNames, takesRequest, type Tool, toolsNamed,
+  doorRow, profileNames, type Tool, toolsNamed,
 } from "../../contract/src/doors";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { sha256Hex } from "../../contract/src/digest";
@@ -241,7 +241,7 @@ async function runScript(parts: ScriptParts): Promise<CodeResult> {
 
 // -- THE DOORS: the `codemode` rows' handlers (`contract/doors.json`) -----------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
@@ -277,8 +277,7 @@ async function scripted(o: OwnerState, binding: Binding, tool: Tool, args: unkno
       }
     });
     // The tool's own door, by its row: admitted again, as any call of it is.
-    const row = doorRow(tool.door);
-    return await o.invoke(row.door, takesRequest(row) ? [binding, args] : [binding]);
+    return await o.invoke(tool.door, binding, args);
   } catch (error) {
     if (!(error instanceof Refusal)) {
       console.error(`code mode's ${tool.name} call failed`, error);
@@ -290,7 +289,19 @@ async function scripted(o: OwnerState, binding: Binding, tool: Tool, args: unkno
 
 /** The `codemode` doors' handlers, by door. */
 export const codemodeDoors = Object.freeze({
-  /** A script's run (`codeRun`), its call checked in its first unit. */
+  /**
+   * Code mode at the MCP door: one script calling the caller's profile's other tools as
+   * `tools.<name>(args)`, its VM in the codemode Worker (`codemode.ts`), its wall time
+   * `CODEMODE_TIMEOUT_MS`. Refused unless the owner's policy has `codemode.on` (its
+   * default) and the caller's profile holds `code`. Each call is the tool's own door with
+   * the caller's binding, admitted again (grant, run, admission), held to the caller's
+   * profile and the switch as they stand then, and to the platform's gates the door read
+   * (the control record's kill switch for an outside client, its maintenance gate for a
+   * run or the owner: `control-gate.ts`), so a revoke, a narrowed profile, the switch
+   * turned off or outside access switched off refuses the script's next call. A refusal
+   * reaches the script as an error with its reason; anything else as `internal error`,
+   * logged here in full.
+   */
   async codeRun(o: OwnerState, door: Door<CodeRequest>): Promise<CodeResult> {
     const { owner, script, tools, gate } = await o.door(() => {
       const { account, r } = door.check();
@@ -320,6 +331,11 @@ export const codemodeDoors = Object.freeze({
                        call: (tool, args) => scripted(o, door.binding, tool, args,
                                                       () => control.refusal(gate, owner)) });
   },
+  /**
+   * The tools this caller is served (the doors list and call no others): a run's, the `run`
+   * profile; an outside client's, its grant's (`custom`: the owner's policy's choice); the
+   * owner's own, `custom`. `code` only while the owner's policy turns code mode on.
+   */
   toolProfile(o: OwnerState, { account }: Call<undefined>):
       { profile: ProfileName; tools: readonly string[] } {
     return profile(o, account);

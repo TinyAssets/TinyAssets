@@ -45,6 +45,7 @@
 
         { "edit": "platform/owner/src/admission.ts", "names": ["IMPORT_PLATFORM_ONLY", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "DISCARDED", "\"import\""], "what": "the import doors' refusals and class" },
         { "edit": "platform/owner/src/owner-do.ts", "names": ["#discarded", "#discard", "IMPORT_DOORS_ONLY", "\"discard\""], "imports": ["platform/owner/src/import.ts", "platform/contract/src/import-message.ts"], "what": "the import doors, the object's #discarded and the import and discard callers" },
+        { "edit": "platform/owner/src/door-map.ts", "names": ["importRows", "importDiscard", "\"import\"", "\"discard\""], "what": "the import doors' rows and methods, by npm run generate once contract/doors.json loses them" },
         { "edit": "platform/owner/src/policy.ts", "names": ["imported("], "what": "Policy.imported" },
         { "edit": "platform/owner/src/files.ts", "names": ["openUploads", "entriesPage", "chunksPage", "mtimeMs"], "what": "Files.openUploads, Files.entriesPage, Files.chunksPage and the files plane's mtime_ms write option" },
         { "edit": "platform/owner/src/collections.ts", "names": ["rowsPage"], "what": "Collections.rowsPage" },

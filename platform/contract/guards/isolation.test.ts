@@ -27,6 +27,8 @@ isolationTests(IMPORTS, {
     ].join("\n")],
     ["its wake kinds' file", "contract/src/probe.ts",
      "import raw from '../wake-kinds.json' with { type: 'json' };"],
+    ["the names RPC reserves, in the door table's module", "contract/src/doors.ts",
+     "export const RPC_RESERVED = Object.freeze(['fetch', 'connect']);"],
   ],
 });
 

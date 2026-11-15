@@ -7,15 +7,17 @@
  * At run time the gate's storage view refuses a write outside a unit; this guard keeps the
  * source shaped so the view is the only storage the object's code writes through, and so
  * every write in an awaiting context is inside a unit:
- * - every door of `OwnerDO` (a public method taking the binding) begins in the gate: its
- *   first statement returns its row's runner (`this.#run`, whose every gate is a unit, or
- *   `this.#units`, whose handler's own first step is one), or returns or awaits
- *   `this.#door`, `this.#synced`, `this.#filing`, `this.#seededFor` or `this.#quiet`, and
- *   those are the gate (`#door` is `this.#gate.write`, `#quiet` its `quiet`, the others call
- *   `#door`; `#seededFor`, a file door's caller checked in a unit before it waits for a new
- *   owner's seed, slice BRAIN). A door's handler is in the module its row names
- *   (`contract/doors.json`'s `handler`: `<module>Doors.<door>`, untangle A2), handed the
- *   object's state, whose gate members (`o.door`, `o.synced`, ...) are those helpers;
+ * - every door of `OwnerDO` begins in the gate. Its method, which the door table defines
+ *   (untangle B4), hands its row's handler to the one runner (`#call`), which runs it in a
+ *   unit of the row's gate (`#door`, `#quiet`, `#synced`, `#filing`), or, for a row whose
+ *   handler makes its own units (`units`), hands it the door, and that handler's first
+ *   statement returns or awaits a unit of the state it is handed (`o.door`, `o.synced`,
+ *   `o.filing`, `o.seededFor`, `o.quiet`, ...). Those are the gate (`#door` is
+ *   `this.#gate.write`, `#quiet` its `quiet`, the others call `#door`; `#seededFor`, a file
+ *   door's caller checked in a unit before it waits for a new owner's seed, slice BRAIN). A
+ *   door's handler is in the module its row names (`contract/doors.json`'s `handler`:
+ *   `<module>Doors.<door>`, untangle A2), handed the object's state, whose gate members are
+ *   those helpers;
  * - the object names `ctx.storage` once, to make the gate, and its modules are handed the
  *   gate's view, and no other source names a `ctx.storage`; no source builds a SQLite
  *   adapter (`DurableObjectSqliteDatabase`) over the owner's storage, and no source opens an
@@ -40,7 +42,7 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { doorRow } from "../../contract/src/doors";
+import { type DoorRow, doorTable } from "../../contract/src/doors";
 import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
@@ -49,11 +51,10 @@ const GATE = "owner/src/gate.ts";
 const UNIT_HELPERS = Object.freeze(["door", "synced", "filing", "placing", "reading", "rereading",
                             "rereadingPage", "quiet", "seededFor"]);
 /**
- * The object's gate helpers, as it calls them and as its doors' handlers do through the state
- * they are handed (`OwnerState`, whose members are those helpers: held below).
+ * The object's gate helpers, as its doors' handlers call them through the state they are
+ * handed (`OwnerState`, whose members are those helpers: held below).
  */
-const ENTRIES: ReadonlySet<string> = new Set(UNIT_HELPERS.flatMap((name) =>
-  [`this.#${name}`, `o.${name}`]));
+const ENTRIES: ReadonlySet<string> = new Set(UNIT_HELPERS.map((name) => `o.${name}`));
 /** The calls whose arrow argument is a unit. */
 const UNITS =
   /(^|\.)(#?write|unit|#?door|#?synced|#?filing|#?placing|#?reading|#?rereading|#?quiet)$/;
@@ -221,14 +222,14 @@ export function doorHandlers(sources: ReadonlyMap<string, string>):
 }
 
 /**
- * Each door of `source`'s `OwnerDO` that does not begin in the gate, its handlers in their
- * modules read from `handlers` (`doorHandlers`).
+ * Each door of `rows` whose handler makes its own units (`units`) and does not begin in the
+ * gate: its first statement returns or awaits none, its handlers in their modules read from
+ * `handlers` (`doorHandlers`). The runner runs every other row's handler in a unit; a door
+ * that takes no binding (`none`) has no caller to check first.
  */
-export function ungatedDoors(source: string,
-                             handlers: ReturnType<typeof doorHandlers> = new Map()): string[] {
-  const file = parse("owner-do.ts", source);
-  const found: string[] = [];
-  const own = new Map<string, ts.MethodDeclaration>();
+export function ungatedHandlers(
+    handlers: ReturnType<typeof doorHandlers>,
+    rows: readonly Pick<DoorRow, "door" | "handler" | "gate" | "caller">[]): string[] {
   const entered = (node: ts.Expression | undefined): boolean => {
     let expression = node;
     if (expression !== undefined && ts.isAwaitExpression(expression)) {
@@ -246,59 +247,9 @@ export function ungatedDoors(source: string,
             && first.declarationList.declarations.length === 1
             && entered(first.declarationList.declarations[0]!.initializer)
             && ts.isAwaitExpression(first.declarationList.declarations[0]!.initializer!)));
-  // A `#units` handler begins in the gate: its body, or the one private method it hands the
-  // call to, begins so; a handler in its module (`<module>Doors.<door>`), its own body.
-  const handled = (handler: ts.Expression | undefined): boolean => {
-    if (handler !== undefined && ts.isPropertyAccessExpression(handler)) {
-      return begins(handlers.get(handler.getText(file))?.body?.statements[0]);
-    }
-    if (handler === undefined || !ts.isArrowFunction(handler)) {
-      return false;
-    }
-    const body = handler.body;
-    if (ts.isBlock(body)) {
-      return begins(body.statements[0]);
-    }
-    if (entered(body)) {
-      return true;
-    }
-    const call = ts.isCallExpression(body) ? body.expression : undefined;
-    const method = call !== undefined && ts.isPropertyAccessExpression(call)
-      && call.expression.kind === ts.SyntaxKind.ThisKeyword
-      && ts.isPrivateIdentifier(call.name) ? own.get(call.name.text) : undefined;
-    return method !== undefined && begins(method.body?.statements[0]);
-  };
-  const run = (first: ts.Statement | undefined): boolean => {
-    if (first === undefined || !ts.isReturnStatement(first) || first.expression === undefined
-        || !ts.isCallExpression(first.expression)) {
-      return false;
-    }
-    const called = first.expression.expression.getText(file);
-    return called === "this.#run"
-      || (called === "this.#units" && handled(first.expression.arguments[3]));
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isClassDeclaration(node) && node.name?.text === "OwnerDO") {
-      for (const member of node.members) {
-        if (ts.isMethodDeclaration(member) && ts.isPrivateIdentifier(member.name)) {
-          own.set(member.name.text, member);
-        }
-      }
-      for (const member of node.members) {
-        if (!ts.isMethodDeclaration(member) || ts.isPrivateIdentifier(member.name)
-            || member.parameters[0]?.type?.getText(file) !== "Binding") {
-          continue;
-        }
-        const first = member.body?.statements[0];
-        if (!begins(first) && !run(first)) {
-          found.push(member.name.getText(file));
-        }
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return found;
+  return rows.filter((row) => row.gate === "units" && row.caller !== "none" && !begins(
+    handlers.get(`${handlerName(row.handler)}.${row.door}`)?.body?.statements[0]))
+    .map((row) => row.door);
 }
 
 /**
@@ -454,7 +405,7 @@ function helpers(source: string): Record<string, string> {
   const visit = (node: ts.Node): void => {
     if (ts.isMethodDeclaration(node) && ts.isPrivateIdentifier(node.name)
         && ["#door", "#synced", "#filing", "#placing", "#reading", "#rereading",
-            "#rereadingPage", "#quiet", "#run", "#stateOf",
+            "#rereadingPage", "#quiet", "#call", "#stateOf",
             "#seededFor"].includes(node.name.text)) {
       found[node.name.text] = node.body?.getText(file) ?? "";
     }
@@ -502,19 +453,22 @@ const HANDLERS = "export const filesDoors = Object.freeze({\n" +
   "  async fileRead(o: S, door: D) { return o.files.read(); },\n" +
   "  async fileGated(o: S, door: D) {\n" +
   "    const r = await o.door(() => 1);\n    return o.files.fetch(r);\n  },\n" +
+  "  async fileFiled(o: S, door: D) { return o.filing(() => 1); },\n" +
+  "  async fileSeeded(o: S, door: D) { await o.seededFor(door); return o.door(() => 1); },\n" +
+  "  async fileChecked(o: S, door: D) { door.check(); return o.door(() => 1); },\n" +
   "});";
 
 describe("write-gate guard", () => {
   const sources = workerSources();
 
   it("begins every door of the object in the gate", () => {
-    const source = sources.get(OWNER_DO)!;
-    expect(ungatedDoors(source, doorHandlers(sources))).toEqual([]);
-    expect(source.match(/return this\.#(run|units)\(/g)?.length).toBeGreaterThan(100);
-    const bodies = helpers(source);
-    // The runner's every gate is a unit of the gate.
+    const rows = doorTable();
+    expect(ungatedHandlers(doorHandlers(sources), rows)).toEqual([]);
+    expect(rows.filter((row) => row.gate === "units").length).toBeGreaterThan(40);
+    const bodies = helpers(sources.get(OWNER_DO)!);
+    // The runner's every other gate is a unit of the gate.
     for (const gate of ["#door", "#quiet", "#synced", "#filing"]) {
-      expect(bodies["#run"]).toContain(`return this.${gate}(unit);`);
+      expect(bodies["#call"]).toContain(`return this.${gate}(unit);`);
     }
     expect(bodies["#door"]).toBe("{\n    return this.#gate.write(act);\n  }");
     // A quiet unit is a unit of the same gate, which marks nothing changed (`gate.ts`).
@@ -535,28 +489,6 @@ describe("write-gate guard", () => {
     for (const name of UNIT_HELPERS) {
       expect(state).toMatch(new RegExp(`\\n      ${name}: [^]*?=>\\s*object\\.#${name}\\(`));
     }
-  });
-
-  it("hands each door its handler from the module its row names", () => {
-    const handlers = doorHandlers(sources);
-    const file = parse(OWNER_DO, sources.get(OWNER_DO)!);
-    const handed: string[] = [];
-    const visit = (node: ts.Node): void => {
-      if (ts.isCallExpression(node) && /^this\.#(run|units)$/.test(node.expression.getText(file))
-          && node.arguments.length === 4 && ts.isStringLiteral(node.arguments[0]!)) {
-        const door = node.arguments[0].text;
-        const handler = node.arguments[3]!.getText(file);
-        const held = handlers.get(handler);
-        handed.push(door);
-        expect([door, handler, held?.module])
-          .toEqual([door, `${handlerName(doorRow(door).handler)}.${door}`, doorRow(door).handler]);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(file);
-    expect(handed.length).toBeGreaterThan(100);
-    expect(new Set(handed).size).toBe(handed.length);
-    expect(handlers.size).toBe(handed.length);
   });
 
   it("holds every statement of a door's handler in the gate, not only its first", () => {
@@ -621,38 +553,24 @@ describe("write-gate guard", () => {
   });
 
   it.each([
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#files.read(); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { this.#check(); " +
-      "return this.#door(() => 1); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#other(() => 1); } }",
-    "export class OwnerDO { async fileRead(binding: Binding) { const r = this.#door(() => 1); " +
-      "return r; } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#units('fileRead', " +
-      "binding, 1, (door) => this.#files.read()); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#units('fileRead', " +
-      "binding, 1, (door) => this.#read(door)); } #read(door: D) { return this.#files.read(); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#units('fileRead', " +
-      "binding, 1, filesDoors.fileRead); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#units('fileRead', " +
-      "binding, 1, filesDoors.fileOther); } }",
-  ])("sees an ungated door: %s", (source) => {
-    expect(ungatedDoors(source, doorHandlers(new Map([["owner/src/files.ts", HANDLERS]]))))
-      .toEqual(["fileRead"]);
+    ["a units handler whose first statement is no unit", "fileRead", "units"],
+    ["a units handler that checks its call outside a unit", "fileChecked", "units"],
+    ["a row whose module has no such handler", "fileProbe", "units"],
+  ])("sees an ungated door: %s", (_what, door, gate) => {
+    expect(ungatedHandlers(doorHandlers(new Map([["owner/src/files.ts", HANDLERS]])),
+                           [{ door, handler: "files", gate, caller: "account" }] as DoorRow[]))
+      .toEqual([door]);
   });
 
   it.each([
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#door(() => 1); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#filing(() => 1); } }",
-    "export class OwnerDO { async fileRead(binding: Binding) { " +
-      "const r = await this.#door(() => 1); return this.#files.fetch(r); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#run('fileRead', " +
-      "binding, 1, (call) => 1); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#units('fileRead', " +
-      "binding, 1, (door) => this.#read(door)); } #read(door: D) { return this.#door(() => 1); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#units('fileRead', " +
-      "binding, 1, filesDoors.fileGated); } }",
-  ])("allows a gated door: %s", (source) => {
-    expect(ungatedDoors(source, doorHandlers(new Map([["owner/src/files.ts", HANDLERS]]))))
+    ["a units handler that awaits a unit first", "fileGated", "units", "account"],
+    ["a units handler that returns a unit", "fileFiled", "units", "account"],
+    ["a units handler that awaits its seed first", "fileSeeded", "units", "account"],
+    ["a handler the runner runs in a unit of its gate", "fileRead", "door", "account"],
+    ["a door that takes no binding", "fileRead", "units", "none"],
+  ])("allows a gated door: %s", (_what, door, gate, caller) => {
+    expect(ungatedHandlers(doorHandlers(new Map([["owner/src/files.ts", HANDLERS]])),
+                           [{ door, handler: "files", gate, caller }] as DoorRow[]))
       .toEqual([]);
   });
 

@@ -136,12 +136,19 @@ export interface KeyMintRequest {
 
 // -- THE DOORS: the `keys` rows' handlers (`contract/doors.json`) ---------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `keys` doors' handlers, by door. */
 export const keysDoors = Object.freeze({
+  /**
+   * Mint an API key's record and its grant, in the owner's session, in one unit: the live
+   * keys counted there (`MAX_KEYS`, strict), the grant set (source `api_key`, scoped,
+   * revision 0), an agent's held key request applied with it when one is named
+   * (`proposal`), and the key's row. The binder then writes the key's directory entry and
+   * shows its secret once (`doors/src/api-keys.ts`); the object never sees the secret.
+   */
   keyMint(o: OwnerState, { session: id, r }: Call<KeyMintRequest>): ApiKey & { scopes: GrantRequest["scopes"];
       revision: number } {
     const key = keyId(r["key_id"]);
@@ -159,6 +166,7 @@ export const keysDoors = Object.freeze({
       return { ...row, scopes: set.scopes, revision: set.revision };
     });
   },
+  /** The owner's API keys, live and revoked: what its key list shows, and its erasure ends. */
   keyList(o: OwnerState, _call: Call<undefined>): { keys: ApiKey[] } {
     return { keys: o.keys.list() };
   },

@@ -365,12 +365,13 @@ export class Usage {
 
 // -- THE DOORS: the `usage` rows' handlers (`contract/doors.json`) --------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `usage` doors' handlers, by door. */
 export const usageDoors = Object.freeze({
+  /** The owner's newest model-call receipts: what each call reserved, and what it cost. */
   usageReceipts(o: OwnerState, _call: Call<undefined>): { receipts: UsageReceipt[] } {
     return { receipts: o.usage.receipts(clock()) };
   },

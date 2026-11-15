@@ -11,6 +11,8 @@
  * a binding it opens: `readControl` takes its store (`ControlStore`) and `migrate` an
  * object's (`MigrationStorage`).
  *
+ * The door table's module (`doors.ts`) alone names `fetch`, as the first of the names an RPC
+ * method may not take (`RPC_RESERVED`, untangle B4), never the runtime's fetch.
  */
 import type { ImportRules } from "../../ci/kit/imports";
 import { kernels, type Owed } from "../../ci/kit/owed";
@@ -19,7 +21,10 @@ export const IMPORTS: ImportRules = Object.freeze({
   worker: "contract",
   called: "the contract",
   banned: Object.freeze([{
-    pattern: /^(?:fetch|process|node:process|globalThis|caches|WebSocket|DurableObject|WorkerEntrypoint|getByName)$/,
+    pattern: /^(?:process|node:process|globalThis|caches|WebSocket|DurableObject|WorkerEntrypoint|getByName)$/,
+    says: "names %s, the runtime's I/O",
+  }, {
+    pattern: /^fetch$/, homes: Object.freeze(["contract/src/doors.ts"]),
     says: "names %s, the runtime's I/O",
   }]),
 });

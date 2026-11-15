@@ -53,9 +53,16 @@ import { imports, type Owed } from "../../ci/kit/owed";
  * `contract/src/slots.ts`, which holds no state). The pool is the isolate's, shared by every
  * object and request in it; it holds a count of slots in use, the calls waiting and the
  * leases holding units, each with the owner id it waits or holds for, never an owner's data.
+ * And the object's doors (`owner-do.ts`, untangle B4): its static block defines each row of
+ * the door table as a method on its prototype when the class loads, once, none writable, so
+ * it runs at load but keeps no state.
  */
-export const MODULE_STATE: readonly Exemption[] = Object.freeze([Object.freeze({
-  file: "owner/src/holds.ts", symbol: "ISOLATE", reason: "the isolate's one chunk pool" })]);
+export const MODULE_STATE: readonly Exemption[] = Object.freeze([
+  Object.freeze({ file: "owner/src/holds.ts", symbol: "ISOLATE",
+                  reason: "the isolate's one chunk pool" }),
+  Object.freeze({ file: "owner/src/owner-do.ts", symbol: "OwnerDO.static",
+                  reason: "the door table's methods, defined on the prototype at load" }),
+]);
 
 /** The classes the Worker's migrations make, each SQLite-backed. */
 export const CLASSES = Object.freeze(["OwnerDO"]);
