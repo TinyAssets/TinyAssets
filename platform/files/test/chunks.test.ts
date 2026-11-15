@@ -475,7 +475,10 @@ describe("a restore's sweep: chunkNames, listChunks, deleteListed", () => {
       .toBe("data_key_refused");
   });
 
-  it("lists a namespace's chunk names a page at a time after a name, and no other's", async () => {
+  // A page boundary needs a full page of R2 objects (DELETE_BATCH), which takes seconds on CI:
+  // a size test, in the files sizes leg.
+  it("lists a namespace's chunk names a page at a time after a name, and no other's",
+     { tags: ["large"] }, async () => {
     const [space, other] = [ns(), ns()];
     const names = await orphans(space, DELETE_BATCH + 5);
     await orphans(other, 3);
