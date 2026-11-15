@@ -44,7 +44,7 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,348,560,714.75 bytes, 43.49% of the 10 GB: 651.4 MB under
+**The worst case that ships is 4,494,570,004.75 bytes, 44.95% of the 10 GB: 505.4 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
 Untangle 3b deleted the ledger's receipts (`ledger_receipts`, 309.6 MB), each fact on the row
 it describes; a recipient row's read time and failure reason take 6.4 MB more, and the room
