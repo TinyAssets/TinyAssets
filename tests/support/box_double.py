@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -131,6 +132,9 @@ class _PermissiveBoxd:
             cores, self._cores = list(self._cores.values()), {}
         for core in cores:
             core.close()
+        # The state directory is this double's alone; leaving it leaked one
+        # directory per test into /tmp, hundreds of thousands across runs.
+        shutil.rmtree(self._state, ignore_errors=True)
 
 
 def _box_path(value):

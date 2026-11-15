@@ -258,11 +258,18 @@ describe("one sandbox an authority (review H-1)", () => {
       throw new Error(`refused ${opened.code}`);
     }
     const client = await fullClient(r);
-    await r.stub.agentSubmit({ ...client, tiers: TIERS }, { message: "hi", client_send_id: "o-1" });
-    const ended = await Promise.race([
-      opened.ended.getReader().read().then(() => true, () => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300))]);
-    expect(ended).toBe(false);
+    const theirs = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+                                            { message: "hi", client_send_id: "o-1" });
+    // The client's sandbox opened in the submit, and the owner's stream was left open: read
+    // from its row, which the object marks in the unit that ends a stream (`Egress.end`).
+    await startOf(r.stub, theirs.run_id);
+    const marked = () => r.sql("SELECT ended FROM egress_reservations");
+    expect(await marked()).toEqual([{ ended: null }]);
+    // Its own run's end is what ends it.
+    const ended = opened.ended.getReader().read().then(() => true, () => true);
+    await r.stub.runEvents(runnerBinding(r, keyed.start), { frames: [], end: { exit_code: 0 } });
+    expect(await ended).toBe(true);
+    expect(await marked()).toEqual([{ ended: "run" }]);
   });
 
   it("never joins a lease whose renewal lapsed, its tokens with it: its runs are lost, a " +

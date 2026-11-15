@@ -71,17 +71,23 @@ describe("a pool of units", () => {
   });
 
   // Review rvmem4 (M-b), flipped: a stream of one-unit holds once starved a larger one.
-  it("lets a five-unit append land amid eight cycling one-unit holds", async () => {
+  it("lets a five-unit append land amid one-unit holds cycling through all but the reserve",
+     async () => {
     const pool = owners(1_500);
+    // So many that a unit let go is never room for the append alone: it lands only if the
+    // one-unit asks wait behind it while it waits.
+    const cycling = OWNER_POOL_UNITS - OWNER_RESERVE_UNITS;
     let on = true;
-    const cyclers = Array.from({ length: 8 }, async () => {
+    const cyclers = Array.from({ length: cycling }, async () => {
       while (on) {
         const slot = await pool.acquire(1);
         await sleep(20);
         slot.release();
       }
     });
-    await sleep(50);
+    // Each takes its unit at once, and asks again as it lets one go: the append asks with
+    // every one held, and waits amid their cycling.
+    expect(pool.state().held).toBe(cycling);
     const outcome = await pool.acquire(5).then((slot) => {
       slot.release();
       return "granted";

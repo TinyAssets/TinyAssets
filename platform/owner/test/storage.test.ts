@@ -171,11 +171,12 @@ describe("the one storage number", () => {
     // The figure is now the seed's and one file's (a lowered setting, or a downgrade):
     // nothing to take early, so the lane waits for the retry, never sets itself due at once.
     const small = r.bind(null, { tiers: tiers(SEED.bytes + unit) });
+    // Read from the lane's job, which the door's own sync set before it answered, and again
+    // once whatever is due has run.
     await r.stub.fileMkdir(small, { path: "/workspace/x", expected_etag: null });
-    for (let i = 0; i < 2; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      expect(await laneAt(r.stub, "files")).toBeGreaterThanOrEqual(retry);
-    }
+    expect(await laneAt(r.stub, "files")).toBeGreaterThanOrEqual(retry);
+    await drainDue(r.stub);
+    expect(await laneAt(r.stub, "files")).toBeGreaterThanOrEqual(retry);
   });
 
   it("never collects early a chunk the newest manifest names (review N3)", async () => {

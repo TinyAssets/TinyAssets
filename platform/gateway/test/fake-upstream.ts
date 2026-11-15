@@ -41,7 +41,10 @@
  *
  * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
  * `say`, `decoded`, `hdr`, `jsonesc`, `stall` (some bytes, then silence), and `held`: the body read to its end, its length
- * answered after 1.5 s, as a provider holds its answer until its first token); `auth.test` is a token
+ * answered once the test lets it go, `https://status.test/release?id=<x-fake-id>`, as a
+ * provider holds its answer until its first token). A request with an `x-fake-id` is
+ * recorded as it arrives, read back from `https://status.test/cancelled?id=<id>`
+ * (`arrived`), so a test acts once the provider has it; `auth.test` is a token
  * endpoint; `keys.test` is a key-exchange endpoint (OpenRouter's PKCE flow); `evil.test` records everything it receives, read back from
  * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
  * code: its module state (the cancel registry, the evil log) is the fake's, never the
@@ -52,6 +55,10 @@
  * sent, else 202.
  */
 const cancelled = new Map<string, boolean>();
+/** The `x-fake-id`s of the passthrough requests that arrived. */
+const arrived = new Set<string>();
+/** The `held` answers the test let go, by `x-fake-id`. */
+const released = new Set<string>();
 /** The `cmd:overflow-<id>` ids already refused once. */
 const overflowed = new Set<string>();
 /** What `cmd:ta-model` hands `ta`'s nested model call besides its question. */
@@ -378,6 +385,10 @@ async function keyExchange(request: Request): Promise<Response> {
 async function forwardEcho(request: Request): Promise<Response> {
   const mode = request.headers.get("x-fake-mode");
   const url = new URL(request.url);
+  const id = request.headers.get("x-fake-id");
+  if (id !== null) {
+    arrived.add(id);
+  }
   if (mode === "hang") {
     // Answers only after 10 s (a timer, so workerd does not cut it as hung).
     return new Promise<Response>((resolve) =>
@@ -386,8 +397,7 @@ async function forwardEcho(request: Request): Promise<Response> {
   if (mode === "stall") {
     // Some bytes, then silence; a timer holds the stream open (so workerd does not cut it
     // as hung) and ends it after 5 s. Its cancel is recorded under `x-fake-id`.
-    const id = request.headers.get("x-fake-id") ?? "";
-    cancelled.set(id, false);
+    cancelled.set(id ?? "", false);
     let timer: ReturnType<typeof setTimeout> | undefined;
     return new Response(new ReadableStream<Uint8Array>({
       start(controller) {
@@ -396,14 +406,17 @@ async function forwardEcho(request: Request): Promise<Response> {
       },
       cancel() {
         clearTimeout(timer);
-        cancelled.set(id, true);
+        cancelled.set(id ?? "", true);
       },
     }));
   }
   if (mode === "held") {
     const length = (await request.arrayBuffer()).byteLength;
-    return new Promise<Response>((resolve) =>
-      setTimeout(() => resolve(Response.json({ length })), 1500));
+    // workerd wakes no request by a promise another resolves: the release is polled.
+    while (!released.has(id ?? "")) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    return Response.json({ length });
   }
   if (mode === "redirect") {
     return new Response(null, { status: 307, headers: { location: "https://evil.test/steal" } });
@@ -491,8 +504,13 @@ export default {
     if (url.hostname === "status.test" && url.pathname === "/evil") {
       return Response.json(evil);
     }
+    if (url.hostname === "status.test" && url.pathname === "/release") {
+      released.add(url.searchParams.get("id") ?? "");
+      return new Response(null, { status: 204 });
+    }
     if (url.hostname === "status.test") {
-      return Response.json({ cancelled: cancelled.get(url.searchParams.get("id") ?? "") ?? null });
+      const id = url.searchParams.get("id") ?? "";
+      return Response.json({ cancelled: cancelled.get(id) ?? null, arrived: arrived.has(id) });
     }
     if (url.hostname === "keys.test") {
       return keyExchange(request);

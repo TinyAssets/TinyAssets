@@ -18,7 +18,7 @@ import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
   defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf, TIERS,
 } from "./runs-support";
-import { drainDue, failure } from "./support";
+import { drainDue, failure, until } from "./support";
 import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
@@ -118,7 +118,7 @@ describe("a sign-in", () => {
     expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
     // No run holds the lease: it goes, and its sandbox is released.
     expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(async () => (await recorder(r.stub)).releases.length > 0, "the release");
     expect((await recorder(r.stub)).releases).toEqual([{ lease_id: signin.lease.lease_id }]);
     // Its door is closed after its end.
     expect((await failure(() => r.stub.signinEvents(runner, { id, frames: [] }))).message)
@@ -187,15 +187,17 @@ describe("a sign-in", () => {
                                                                      client_send_id: "k-1" });
     const start = await startOf(r.stub, run.run_id);
     expect(start.lease.lease_id).toBe(signin.lease.lease_id);
-    // The run ends first: the sign-in still holds its sandbox, so the lease stays.
+    // The run ends first: the sign-in still holds its sandbox, so the lease stays (its row,
+    // which the run's end would have taken in the same unit as it let the lease go).
     await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
-    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(await r.sql("SELECT lease_id FROM sandbox_leases"))
       .toEqual([{ lease_id: signin.lease.lease_id }]);
-    expect((await recorder(r.stub)).releases).toEqual([]);
     await r.stub.signinEvents(runner, { id, frames: [
       frame(1, { state: "cancelled" })], end: { exit_code: 1 } });
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+    // Its sandbox released at the sign-in's end.
+    await until(async () => (await recorder(r.stub)).releases.length > 0, "the release");
+    expect((await recorder(r.stub)).releases).toEqual([{ lease_id: signin.lease.lease_id }]);
   });
 
   it("is stopped by the owner, and ends with no sandbox to start in", async () => {
