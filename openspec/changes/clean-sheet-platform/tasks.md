@@ -277,13 +277,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Owed to lane O by merged PRs, one line each:
     - S8: the owner adopts `served()` (`s8.md`).
     - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
-    - V2 (#5543): `owner/src/egress.ts:266` `HINT`, and the three range builders.
-    - D1: `ledger.ts:1252`'s `512` is `COMMAND_CENTER_MAX`.
     - C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
     - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
-    - X1: the owner tests' literals, then B10's literal guard, which waits on O4b alone (`o4.md` item 7).
-    - D1: `holds.ts:36` names `API_BODY_MAX`, now `EGRESS_BODY_MAX`.
-    - D4: `import.ts:4` cites `doors/src/import.ts`, now `doors/src/import/` (comments pass).
+    - X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
   - V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`).

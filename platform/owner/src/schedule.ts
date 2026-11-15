@@ -65,7 +65,7 @@ import {
   type LifecycleJob, LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
 } from "agents/lifecycle";
 
-import { clock, clockMs } from "./clock";
+import { clock } from "./clock";
 import type { Write } from "./gate";
 
 /** The schedule's Lifecycle capability id, and the prefix of its job ids. */
@@ -83,25 +83,6 @@ export const LANE_PASS_S = 45;
  */
 export const LANE_CALL_MS = (LANE_HUNG_S - LANE_PASS_S) * 1000;
 
-/**
- * `run`'s result if it settles within `ms`, else "late": how a pass bounds a row's outside
- * call. `run` is never cancelled, so a late caller keeps the row fenced (a mark, a state).
- */
-export async function inTime<T>(run: Promise<T>, ms: number): Promise<T | "late"> {
-  if (ms === Infinity) {
-    return run;  // unbounded: no timer, whatever a runtime makes of an Infinity delay
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<"late">((resolve) => {
-    timer = setTimeout(() => resolve("late"), Math.max(0, ms));
-  });
-  try {
-    return await Promise.race([run, late]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /** A lane's Lifecycle job id. */
 export function laneJob(name: string): string {
   return `${SCHEDULE}/${name}`;
@@ -112,8 +93,8 @@ export interface Lane {
   /** When the lane next has work it can do, never before `now`; null for none. */
   next(now: number): number | null;
   /**
-   * One short, bounded pass over what is due at `now`, taking no new row once the wall
-   * clock (`clockMs()`) reaches `until`. Each outside call's failure is kept in its
+   * One short, bounded pass over what is due at `now`, taking no new row once the owner's
+   * clock (`clock()`) reaches `until`. Each outside call's failure is kept in its
    * own row, backed off there; a throw is a bug, and fails the whole pass. Each of its
    * writes is a unit of the object's write gate. A pass that could take none of its due
    * rows for a reason outside them (the `wakes` lane's kill switch, closed) answers
@@ -143,17 +124,14 @@ function setFor(job: LifecycleJob): number {
 
 export class Schedule extends LifecycleCapability {
   readonly #lanes: ReadonlyMap<string, Lane>;
-  readonly #clock: () => number;
   /** The object's write gate, which every job set goes through. */
   readonly #write: Write;
   /** Whether every lane is halted: the owner is being erased (`erasure.ts`). A read. */
   readonly #halted: () => boolean;
 
-  constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number, write: Write,
-              halted: () => boolean) {
+  constructor(lanes: Readonly<Record<string, Lane>>, write: Write, halted: () => boolean) {
     super(SCHEDULE);
     this.#lanes = new Map(Object.entries(lanes));
-    this.#clock = clock;
     this.#write = write;
     this.#halted = halted;
   }
@@ -182,12 +160,12 @@ export class Schedule extends LifecycleCapability {
     const id = laneJob(name);
     const [rearmed] = await this.#write((): [Promise<unknown>] | [] => {
       const job = jobs.get(id);
-      // Due by Lifecycle's clock, the wall clock in ms (`clock()` is it in seconds; the
-      // lanes' `#clock` may not be), so maybe running: its run sets it at its end.
+      // Due by Lifecycle's clock (its job times are `clock()` in ms), so maybe running: its
+      // run sets it at its end.
       if (hold === undefined && job !== undefined && job.time / 1000 <= clock()) {
         return [];
       }
-      const next = this.#lanes.get(name)!.next(this.#clock());
+      const next = this.#lanes.get(name)!.next(clock());
       if (next === null) {
         return job === undefined ? [] : [jobs.cancel(id)];
       }
@@ -216,7 +194,7 @@ export class Schedule extends LifecycleCapability {
     if (lane === undefined || job.id !== laneJob(job.fn) || this.#halted()) {
       return undefined;  // no lane of this code's, or none runs: done
     }
-    const answer = await lane.run(this.#clock(), clockMs() + LANE_PASS_S * 1000);
+    const answer = await lane.run(clock(), clock() + LANE_PASS_S);
     await this.#set(job.fn, heldUntil(answer));
     return undefined;  // superseded by the set above
   }
@@ -227,7 +205,7 @@ export class Schedule extends LifecycleCapability {
       return undefined;
     }
     console.error(`the owner's ${job.fn} pass failed; it runs again later`);  // no ids or paths
-    await this.#set(job.fn, this.#clock() + LANE_RETRY_S);
+    await this.#set(job.fn, clock() + LANE_RETRY_S);
     return undefined;
   }
 }

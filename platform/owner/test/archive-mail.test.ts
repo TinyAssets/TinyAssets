@@ -30,7 +30,7 @@ import {
 import { batchOf, hotSources, noRead } from "./archive-support";
 import { MUSE, rig } from "./ledger-support";
 import { referenceSegment, storedContent, streamed } from "./segment-support";
-import { storesOn } from "./support";
+import { storesOn, TIERS, tiersAt } from "./support";
 
 describe("segments", () => {
   it("encode records as export lines with a trailer, each read back by its range", () => {
@@ -290,8 +290,7 @@ describe("the tail's seal at the production limits (review N4)", () => {
 describe("a tier's storage", () => {
   it("is held to TIER_STORAGE_MAX, the fence rows' bound: a larger tier needs larger segments",
      () => {
-    const tier = (bytes: number) => ({ free: { runs: 5, storage_bytes: 25e9 },
-                                       paid: { runs: 10, storage_bytes: bytes } });
+    const tier = (bytes: number) => tiersAt(TIERS.free.storage_bytes, bytes);
     expect(parseTiers(tier(TIER_STORAGE_MAX)).paid.storage_bytes).toBe(TIER_STORAGE_MAX);
     expect(() => parseTiers(tier(TIER_STORAGE_MAX + 1))).toThrow(/storage whole bytes up to/);
   });

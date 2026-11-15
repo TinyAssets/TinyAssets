@@ -390,7 +390,7 @@ export class LegOwner extends OwnerDO {
     });
     await this.#gate.write(() => sql.exec("UPDATE owner_backups SET changed_at = ? WHERE changed_at IS NULL", Date.now() / 1000));
     await this.#gate.quiet(() => backups.forExport(Date.now() / 1000));
-    await backups.run(Date.now() / 1000, Date.now() + 120_000);
+    await backups.run(Date.now() / 1000, Date.now() / 1000 + 120);
     if (parts < 3) {
       throw new Error(`the burst case put ${parts} parts: its write never ran`);
     }
@@ -441,7 +441,7 @@ export class LegOwner extends OwnerDO {
       sql.exec("UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
                "WHERE seq <= 4200");
     });
-    await backups.run(Date.now() / 1000, Date.now() + 120_000);
+    await backups.run(Date.now() / 1000, Date.now() / 1000 + 120);
     if (segments < 2) {
       throw new Error(`the ship case shipped ${segments} segments, not a full one and more`);
     }

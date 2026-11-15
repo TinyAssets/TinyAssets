@@ -42,6 +42,8 @@ import { agentFile } from "./agent-file";
 import { FileFault, Refusal } from "../../contract/src/refusal";
 import { contentIdOf } from "../../contract/src/content";
 import { type Content, type Files, lostSwap } from "./files";
+import { clock } from "./clock";
+import { OWNER } from "./authority";
 import type { OwnerStorage, Write } from "./gate";
 import type { Call, OwnerState } from "./owner-do";
 import { NEWER, type StarterClass, type StarterFile, type StarterPackage } from "./starter-package";
@@ -106,7 +108,6 @@ interface StarterDeps {
    * are known (a door's binding hands them). A read.
    */
   readonly ready: () => boolean;
-  readonly clock: () => number;
 }
 
 export class Starter {
@@ -198,7 +199,7 @@ export class Starter {
         this.#sql.exec(
           "INSERT INTO starter_state (only, version, retry_at, noticed) VALUES (1, 0, ?, ?) " +
             "ON CONFLICT (only) DO UPDATE SET retry_at = excluded.retry_at, " +
-            "noticed = excluded.noticed", this.#deps.clock() + STARTER_RETRY_S, version);
+            "noticed = excluded.noticed", clock() + STARTER_RETRY_S, version);
         if (state?.noticed !== version) {
           this.#deps.notice("starter_failed", `your agent's starter files (version ${version}) ` +
                             `could not all be written, and are tried again: ${why}`);
@@ -395,7 +396,7 @@ export class Starter {
    */
   async #install(file: StarterFile, bytes: Uint8Array, expected: string): Promise<boolean> {
     try {
-      await this.#deps.files.write(file.path, bytes, { expected, writer: "owner",
+      await this.#deps.files.write(file.path, bytes, { expected, writer: OWNER,
                                                        op: STARTER_OP });
     } catch (error) {
       if (lostSwap(error)) {
@@ -451,7 +452,7 @@ export class Starter {
     }
     try {
       await this.#deps.write(() => this.#deps.files.remove(path, {
-        expected: copy.entry.etag, recursive: false, writer: "owner" }));
+        expected: copy.entry.etag, recursive: false, writer: OWNER }));
     } catch (error) {
       if (lostSwap(error)) {
         return;  // changed as the pass ran: the owner's now
@@ -466,7 +467,7 @@ export class Starter {
                state: "edited" | "proposed", installed: string | null, id: string):
       Promise<void> {
     await this.#deps.files.write(`${file.path}${NEWER}`, bytes, {
-      expected: null, writer: "owner", op: STARTER_OP });
+      expected: null, writer: OWNER, op: STARTER_OP });
     await this.#record(file, receipt?.version ?? this.#pkg.version, state, installed, id);
   }
 

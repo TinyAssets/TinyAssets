@@ -9,7 +9,7 @@ import { sqlIn } from "../../ci/workerd";
 import { type Entry, type Files } from "../src/files";
 import { INLINE_BYTES } from "../../contract/src/limits";
 import { rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, setFiles, starterSeed, text } from "./support";
+import { failure, fileCounters, inFiles, passEnd, setFiles, starterSeed, text } from "./support";
 
 const W = "/workspace";
 /** What every owner's seed holds before a test writes (`starterSeed`). */
@@ -119,7 +119,7 @@ describe("a rename across the roots", () => {
     expect(kept).toEqual(counted);
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
     await inFiles(r.stub, async (files) => {
-      await files.run(Date.now() / 1000);
+      await files.run(Date.now() / 1000, passEnd());
       expect(await bytesAt(files, `${at}/s`)).toEqual(small);
       expect(await bytesAt(files, `${at}/b`)).toEqual(big);
     });
@@ -302,7 +302,7 @@ describe("the change feed", () => {
     await setFiles(r, { retention_days: 0 });
     await inFiles(r.stub, async (files, unit) => {
       await unit(() => files.remove(`${W}/gone`, { expected: null, writer: "owner" }));
-      await files.run(Date.now() / 1000 + 1);
+      await files.run(Date.now() / 1000 + 1, passEnd());
     });
     const page = await r.stub.fileChanges(r.bind(null), { after: cursor, limit: 10 });
     expect(page.reset).toBe(true);

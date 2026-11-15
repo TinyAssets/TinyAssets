@@ -23,7 +23,9 @@ import {
 } from "../src/starter-package";
 import { unseededRig } from "./ledger-support";
 import { later } from "./runs-support";
-import { drainDue, failure, gateFor, setFiles, spaceOf, storesOn, text } from "./support";
+import {
+  atClock, drainDue, failure, gateFor, setFiles, spaceOf, storesOn, text,
+} from "./support";
 import {
   AGENTS, agentJson, failedOwner, file, notices, pass, readText, receipts, type Rig, SEED,
   settled, settledOwner, SKILLS, starterOn, versionOf,
@@ -347,14 +349,13 @@ describe("a pass and the one storage wall (after slice STORE)", () => {
     // The owner's own storage figure (`max_bytes`), set in its session, then one pass.
     const update = async (now: number, maxBytes: number) => {
       await setFiles(r, { max_bytes: maxBytes });
-      await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+      await atClock(now, () => runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
         const { gate, files, notices } = storesOn(state);
         await new Starter({
           storage: gate.storage, write: gate.write, admitted: () => true, ready: () => true,
-          clock: () => now, files,
-          notice: (type, detail) => notices.add(type, detail, now),
+          files, notice: (type, detail) => notices.add(type, detail, now),
         }, pkg).run(now);
-      });
+      }));
     };
     // What the owner stores leaves no room for the update's big file under a figure 1 KB on.
     const before = (await r.stub.storageUsage(r.bind(null))).used_bytes;
@@ -387,17 +388,16 @@ describe("a pass that cannot reach its files plane", () => {
     const tries = [now, now + STARTER_RETRY_S];
     const next: (number | null)[] = [];
     for (const at of tries) {
-      next.push(await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+      next.push(await atClock(at, () => runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
         // A files binding with nothing behind it: each call a TypeError.
         const { gate, files, notices } = storesOn(state, {} as never);
         const starter = new Starter({
           storage: gate.storage, write: gate.write, admitted: () => true, ready: () => true,
-          clock: () => at, files,
-          notice: (type, detail) => notices.add(type, detail, at),
+          files, notice: (type, detail) => notices.add(type, detail, at),
         }, pkg);
         await starter.run(at);
         return starter.next(at);
-      }));
+      })));
     }
     expect(next).toEqual(tries.map((at) => at + STARTER_RETRY_S));
     const failed = await notices(r, "starter_failed");
@@ -419,7 +419,7 @@ describe("seeding before the tier's numbers are known (after slice L)", () => {
       const { gate, files } = storesOn(state);
       const starter = new Starter({
         storage: gate.storage, files, write: gate.write,
-        admitted: () => true, ready: () => false, clock: () => now, notice: () => {
+        admitted: () => true, ready: () => false, notice: () => {
           throw new Error("no notice while it waits");
         },
       }, pkg);

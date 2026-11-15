@@ -36,6 +36,8 @@ import { createHmac, randomBytes } from "node:crypto";
 import { sha256, sha256Stream } from "../../contract/src/digest";
 
 import { CHUNK_BYTES } from "../../contract/src/limits";
+import type { ChunkRef } from "./files";
+import { joined } from "./bytes";
 
 /**
  * A segment is sealed once its records' own bytes reach this (never their trailer shares,
@@ -634,15 +636,12 @@ export async function lineAt(content: Content, offset: number, most: number,
   throw new Error("a segment's record line has no end");
 }
 
-/** Byte arrays joined into one. */
-export function joined(parts: readonly Uint8Array[]): Uint8Array {
-  const whole = new Uint8Array(lengthOf(parts));
-  let at = 0;
-  for (const part of parts) {
-    whole.set(part, at);
-    at += part.byteLength;
-  }
-  return whole;
+/**
+ * A stream's chunks as `files.ts` `Files.range` reads them: cut every `CHUNK_BYTES` (a segment's, a
+ * placed body's), the last perhaps shorter, which a range inside the stream never passes.
+ */
+export function streamChunks(sha256s: readonly string[]): ChunkRef[] {
+  return sha256s.map((sha256) => ({ sha256, size: CHUNK_BYTES }));
 }
 
 /** A trailer's line, parsed and checked. */
@@ -702,26 +701,6 @@ export function recordRows(bytes: Uint8Array): [string, Record<string, unknown>]
   const decoder = utf8Decoder("keep");
   return parseRecord(bytes).map(([table, row, raw]) =>
     [table, raw === undefined ? row : { ...row, body: decoder.decode(raw[0]) }]);
-}
-
-/** A byte range of a segment's content, as reads of its chunks (each `CHUNK_BYTES`). */
-export function chunkReads(chunks: readonly string[], offset: number, length: number):
-    { sha256: string; offset: number; length: number }[] {
-  const reads: { sha256: string; offset: number; length: number }[] = [];
-  let at = offset;
-  const end = offset + length;
-  while (at < end) {
-    const index = Math.floor(at / CHUNK_BYTES);
-    const within = at - index * CHUNK_BYTES;
-    const take = Math.min(end - at, CHUNK_BYTES - within);
-    const sha256 = chunks[index];
-    if (sha256 === undefined) {
-      throw new Error("a segment's range runs past its content");
-    }
-    reads.push({ sha256, offset: within, length: take });
-    at += take;
-  }
-  return reads;
 }
 
 /**

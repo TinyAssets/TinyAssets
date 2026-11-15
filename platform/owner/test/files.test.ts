@@ -17,7 +17,7 @@ import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import {
-  failure, fileCounters, inFiles, laneAt, ownerObject, setFiles, starterSeed, text,
+  failure, fileCounters, inFiles, laneAt, ownerObject, passEnd, setFiles, starterSeed, text,
 } from "./support";
 
 const W = "/workspace";
@@ -570,7 +570,7 @@ describe("the manifest's queries", () => {
     await inFiles(r.stub, async (files) => {
       await files.write(`${W}/z/c.bin`, new Uint8Array(INLINE_BYTES * 2).fill(5),
                         { expected: null, writer: "t" });
-      await files.run(Date.now() / 1000 + 10);
+      await files.run(Date.now() / 1000 + 10, passEnd());
     });
     const [after, recount] = await fileCounters(r.stub);
     expect(after).toEqual(recount);

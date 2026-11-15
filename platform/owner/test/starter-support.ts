@@ -15,7 +15,7 @@ import type { OwnerDO } from "../src/owner-do";
 import { Starter } from "../src/starter";
 import { carried, type StarterFile, type StarterPackage } from "../src/starter-package";
 import { rig, unseededRig } from "./ledger-support";
-import { drainDue, storesOn } from "./support";
+import { atClock, drainDue, storesOn } from "./support";
 
 /** The version every owner here is seeded at: a test's package is `SEED + n`. */
 export const SEED = carried().version;
@@ -121,14 +121,14 @@ export const SEED_REFUSED = "internal: the files plane failed (the test's)";
  */
 export function starterOn(r: Rig, pkg: StarterPackage, now: number) {
   return <T>(act: (starter: Starter) => Promise<T>) =>
-    runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+    atClock(now, () => runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const { gate, files, notices } = storesOn(state);
       return act(new Starter({
         storage: gate.storage, files, write: gate.write,
-        admitted: () => true, ready: () => true, clock: () => now,
+        admitted: () => true, ready: () => true,
         notice: (type, detail) => notices.add(type, detail, now),
       }, pkg));
-    });
+    }));
 }
 
 /** One pass of `pkg` over `r`'s object, as its lane runs it, at `now`. */

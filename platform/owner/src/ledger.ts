@@ -94,14 +94,14 @@
 import { apiKeyOrigin, nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
 import type { Binding, Origin, Source } from "../../contract/src/binding";
-import { codePoints, isPrintable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
+import { codePoints, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 import { canonical } from "../../contract/src/canonical";
 import { keyed, whole } from "../../contract/src/checks";
-import { HEX16, HEX64, SUBSCRIPTION_ID } from "../../contract/src/ids";
+import { HEX16, HEX64, randomHex, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
 
-import { AGENT_DIR, filerOf, may, NOT_GRANTED } from "./authority";
+import { AGENT_DIR, filerOf, may, NOT_GRANTED, OWNER, scopeOf } from "./authority";
 import {
   type Adopt, adopted, BODY_BYTES_MAX, bodyOffset, inlineWindow, type Placed, type Window,
 } from "./bodies";
@@ -125,7 +125,7 @@ import {
 import {
   admittedMethods, eventKind, kindFor, ringingMethods, wakeKinds,
 } from "../../contract/src/wake-records";
-import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
+import { COMMAND_CENTER_MAX, SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { type Change, CHANGES, type Follows, follows } from "../../contract/src/wake-kinds";
 import type {
   Account, Call, Door, OwnerState, RegisterRequest,
@@ -134,11 +134,6 @@ import type { Heads } from "./pages";
 import type { Events } from "../../contract/src/wake-records";
 import type { Resealed } from "../../contract/src/gateway";
 
-/**
- * The reader and sender id of the object's owner. An outside agent's id is `agent_` + hex;
- * one of the owner's own agents' (`native_agents`) is `ta_` + hex.
- */
-export const OWNER = "owner";
 const OUTSIDE_ID = /^agent_[0-9a-f]{16}$/;
 const NATIVE_ID = /^ta_[0-9a-f]{16}$/;
 /**
@@ -685,22 +680,8 @@ type StoredWake = {
   created_at: number;
 };
 
-function token(bytes: number): string {
-  const raw = new Uint8Array(bytes);
-  crypto.getRandomValues(raw);
-  return Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 function round3(value: number): number {
   return Math.round(value * 1000) / 1000;
-}
-
-/** 1 to `limit` printable characters, as the Python's `_text`. */
-function text(value: unknown, limit: number, what: string): string {
-  if (typeof value !== "string" || !value || codePoints(value) > limit || !isPrintable(value)) {
-    throw new Refusal("invalid", `${what} is 1 to ${limit} printable characters`);
-  }
-  return value;
 }
 
 /** A mail authority as kept with its message, or null; `universe` is its message's own. */
@@ -767,7 +748,7 @@ export function registrant(source: unknown, origin: Origin | null): Source {
       throw new Refusal("refused", "the origin is not this API key's");
     }
   }
-  return { kind, ref: text(ref, 512, "source_ref") };
+  return { kind, ref: printable(ref, 512, "source_ref") };
 }
 
 /** A doorbell's answer as the sender gave it, or refused. */
@@ -1239,8 +1220,10 @@ export class Ledger {
     const verified = registrant(source, origin);
     const client = origin!.client;
     const family = origin!.family;
-    const commandCenter = text(request.command_center_id, 512, "command_center_id");
-    const recipe = request.recipe_id === null ? null : text(request.recipe_id, 128, "recipe_id");
+    const commandCenter = printable(request.command_center_id, COMMAND_CENTER_MAX,
+                                    "command_center_id");
+    const recipe = request.recipe_id === null ? null
+      : printable(request.recipe_id, 128, "recipe_id");
     const name = displayName(request.display_name);
     if (!name) {
       throw new Refusal("invalid",
@@ -1286,7 +1269,7 @@ export class Ledger {
                             "the owner's agent registry is full; delete a disabled agent " +
                             "to make room");
         }
-        agentId = "agent_" + token(8);
+        agentId = "agent_" + randomHex(8);
         sql.exec(
           "INSERT INTO outside_agents (agent_id, command_center_id, outside_client, " +
             "outside_family, source, source_ref, display_name, delivery_method, recipe_id, " +
@@ -1321,7 +1304,7 @@ export class Ledger {
    */
   disable(agentId: unknown, reason: unknown, origin: Origin | null = null,
           now: number = clock()): Agent {
-    text(reason, 200, "reason");
+    printable(reason, 200, "reason");
     if (typeof agentId !== "string") {
       throw new Refusal("invalid", "agent_id is an agent id");
     }
@@ -1509,7 +1492,7 @@ export class Ledger {
    * recipient's id, and its agent's name when it is one of the owner's own. A read.
    */
   recipient(actor: Actor, roomId: unknown): { id: string; native: string | null } {
-    const members = this.#room(text(roomId, 128, "room_id"));
+    const members = this.#room(printable(roomId, 128, "room_id"));
     const sender = this.#sender(actor, members);
     const to = members.find((m) => m !== sender)!;
     return { id: to.id, native: to.kind === "native" ? to.native.agent : null };
@@ -1548,9 +1531,9 @@ export class Ledger {
                              members: [Member, Member]; from: Member; to: Member;
                              kind: string; sender: string; recipient: string;
                              parent: StoredMessage | undefined; parentArchived: boolean } {
-    const room = text(roomId, 128, "room_id");
-    const cmid = text(clientMessageId, 128, "client_message_id");
-    const parentKey = parentId === null ? null : text(parentId, 128, "parent_id");
+    const room = printable(roomId, 128, "room_id");
+    const cmid = printable(clientMessageId, 128, "client_message_id");
+    const parentKey = parentId === null ? null : printable(parentId, 128, "parent_id");
     const sha = sha256Hex(body);
     const sql = this.#sql;
     const members = this.#room(room);
@@ -1607,7 +1590,7 @@ export class Ledger {
    */
   post(origin: Actor, roomId: unknown, clientMessageId: unknown, body: unknown,
        parentId: unknown, now: number = clock(), authority: MailAuthority | null = null,
-       placed: Placed | null = null, filer = "owner", archived: ArchivedMail | null = null):
+       placed: Placed | null = null, filer = OWNER, archived: ArchivedMail | null = null):
       Posted {
     checkMessage(body);
     const sql = this.#sql;
@@ -1700,7 +1683,7 @@ export class Ledger {
       return null;
     }
     return this.post(actor, mail.room_id, postId, body, mailId, now, authority, placed,
-                     authority === null ? "owner" : `client:${authority.client}`);
+                     scopeOf(authority?.client ?? null));
   }
 
   /**
@@ -2860,7 +2843,7 @@ export class Ledger {
         "INSERT INTO ledger_wakes (wake_id, agent_id, state, due, changes, after, created_at) " +
           "SELECT ?, agent_id, 'pending', ? + batch_window_s, ?, ?, ? FROM outside_agents " +
           "WHERE agent_id = ?",
-        "wake_" + token(16), now, bit, after, now, agentId,
+        "wake_" + randomHex(16), now, bit, after, now, agentId,
       );
     }
   }
@@ -2981,7 +2964,7 @@ export class Ledger {
         sql.exec("UPDATE outside_agents SET wake_tat = ? WHERE agent_id = ?", now + HOUR_S / cap,
                  agent.agent_id);
       }
-      const claimId = "claim_" + token(16);
+      const claimId = "claim_" + randomHex(16);
       const cursor = this.#cursor(agent.agent_id);
       const through = this.#newest(agent.agent_id);
       sql.exec(

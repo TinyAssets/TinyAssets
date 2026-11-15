@@ -87,7 +87,7 @@ import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
 import { costMicros, largestFitting, periods } from "./money";
 import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
-import type { MeterOutcome } from "../../contract/src/gateway";
+import { type MeterOutcome, MODEL_NAME } from "../../contract/src/gateway";
 import type {
   EgressOpened, EgressRefusal, EgressRequest, EgressReserved, ReserveRequest,
 } from "../../contract/src/owner";
@@ -263,10 +263,6 @@ const MIN_OUTPUT = 1_024;
 
 const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", "PATCH",
                                                   "DELETE"]);
-/** A model id or a tier value the gateway read: visible ASCII. */
-const HINT = /^[\x21-\x7e]{1,256}$/;
-/** A served model's id, as a receipt keeps it: visible ASCII. */
-const SERVED = /^[\x21-\x7e]{1,256}$/;
 
 type Charge = "held" | "succeeded" | "failed" | "unknown";
 
@@ -315,8 +311,8 @@ function reserveRequest(value: unknown): ReserveRequest {
   }
   const { reservation, model, tier } = value;
   if (typeof reservation !== "string" || !HEX32.test(reservation)
-      || typeof model !== "string" || !HINT.test(model)
-      || (tier !== null && (typeof tier !== "string" || !HINT.test(tier)))) {
+      || typeof model !== "string" || !MODEL_NAME.test(model)
+      || (tier !== null && (typeof tier !== "string" || !MODEL_NAME.test(tier)))) {
     throw new Refusal("invalid", "invalid egress reserve");
   }
   return { reservation, model, tier: tier as string | null };
@@ -361,7 +357,7 @@ function spendOutcome(value: unknown): MeterOutcome {
     ? (value as { served: unknown }).served : undefined;
   if ((keyed(value, ["cost", "state", "tokens"])
        || (keyed(value, ["cost", "served", "state", "tokens"]) && typeof served === "string"
-           && SERVED.test(served)))
+           && MODEL_NAME.test(served)))
       && value["state"] === "succeeded"
       && typeof value["tokens"] === "number" && Number.isSafeInteger(value["tokens"])
       && value["tokens"] >= 0 && typeof value["cost"] === "number"

@@ -15,7 +15,7 @@ import { createHmac } from "node:crypto";
 
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
 import { WAKE_LEASE_S } from "../src/ledger";
@@ -31,9 +31,13 @@ import {
   DOT, EVENT, ledgerSubscription, MUSE, registerOn, rig, type Rig, WHSEC,
 } from "./ledger-support";
 import { writeControl } from "../../ci/fixtures";
-import { failure, gateFor, storesOn } from "./support";
+import { clockAt, failure, gateFor, storesOn } from "./support";
 import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
 import { opensRetired, underOlderKid } from "./gateway-support";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const TOKEN = "sk-ant-oat01-" + "t".repeat(40);
 
@@ -452,6 +456,7 @@ describe("a revoke is never outlived", () => {
   it("lands between the mark and the byte: nothing is sent", async () => {
     const r = await rung();
     const t = clock();
+    clockAt(t);
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
       const stores = storesOn(state);
       const { ledger } = stores;
@@ -476,13 +481,13 @@ describe("a revoke is never outlived", () => {
       let sent = 0;
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
-        notice: async () => undefined, write, clock: () => t, admitted: () => true,
+        notice: async () => undefined, write, admitted: () => true,
         gate: async () => true, reseal: unswept,
         ring: async () => {
           sent++;
           return { state: "answered", status: 202, retry_after: null };
         } });
-      const accepted = await runWakes(ledger, doorbell, () => t, write);
+      const accepted = await runWakes(ledger, doorbell, write);
       return { accepted, sent,
                wake: state.storage.sql.exec("SELECT state, marked, receipt_json FROM " +
                                             "ledger_wakes").one() };
@@ -633,6 +638,7 @@ describe("a send's answer", () => {
      async () => {
     const r = await rung();
     const t = clock();
+    clockAt(t);
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
       const stores = storesOn(state);
       const { ledger } = stores;
@@ -651,7 +657,7 @@ describe("a send's answer", () => {
       const asked: string[] = [];
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
-        notice: async () => undefined, write, clock: () => t, admitted: () => true,
+        notice: async () => undefined, write, admitted: () => true,
         gate: async () => true, reseal: unswept,
         ring: async (id) => {
           asked.push(id);
@@ -664,11 +670,12 @@ describe("a send's answer", () => {
         status: state.storage.sql.exec("SELECT subscription_id, status FROM wake_callbacks " +
                                        "ORDER BY subscription_id").toArray(),
       });
-      await runWakes(ledger, doorbell, () => t, write);
+      await runWakes(ledger, doorbell, write);
       const first = { asked: [...asked].sort(), ...read() };
       asked.length = 0;
       answers[limited!] = 202;
-      await runWakes(ledger, doorbell, () => t + 31, write);
+      clockAt(t + 31);
+      await runWakes(ledger, doorbell, write);
       return { first, second: { asked: [...asked], ...read() }, ids: [taken, limited, gone] };
     });
     const [taken, limited, gone] = out.ids;
@@ -720,15 +727,16 @@ describe("a send's answer", () => {
       let sent = 0;
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
-        notice: async () => undefined, write, clock: () => t, admitted: () => true,
+        notice: async () => undefined, write, admitted: () => true,
         gate: async () => true, reseal: unswept,
         ring: () => {
           sent++;
           return new Promise<RingAnswer>(() => undefined);
         } });
-      const first = await runWakes(ledger, doorbell, () => t, write, 16, 30);
+      const first = await runWakes(ledger, doorbell, write, 16, 30);
       const late = state.storage.sql.exec("SELECT state, marked FROM ledger_wakes").one();
-      const again = await runWakes(ledger, doorbell, () => t + WAKE_LEASE_S, write, 16, 30);
+      clockAt(clock() + WAKE_LEASE_S);
+      const again = await runWakes(ledger, doorbell, write, 16, 30);
       const after = state.storage.sql.exec("SELECT state, marked FROM ledger_wakes").one();
       return { first, late, again, after, sent };
     });
@@ -906,13 +914,12 @@ it("answers closed from the pass itself when the switch is closed, fails or neve
     });
     const doorbell = (gate: () => Promise<boolean>) => new Doorbell({
       ledger, live: () => true, reads: () => true, touched: () => false,
-      notice: async () => undefined, write, clock: () => t, admitted: () => true,
+      notice: async () => undefined, write, admitted: () => true,
       gate, reseal: unswept,
       ring: async () => ({ state: "answered", status: 202, retry_after: null }) });
-    return [await runWakes(ledger, doorbell(async () => false), () => t, write),
-            await runWakes(ledger, doorbell(async () => { throw new Error("KV down"); }),
-                           () => t, write),
-            await runWakes(ledger, doorbell(() => new Promise(() => {})), () => t, write, 16, 30)];
+    return [await runWakes(ledger, doorbell(async () => false), write),
+            await runWakes(ledger, doorbell(async () => { throw new Error("KV down"); }), write),
+            await runWakes(ledger, doorbell(() => new Promise(() => {})), write, 16, 30)];
   });
   expect(out).toEqual([CLOSED, CLOSED, CLOSED]);
 });

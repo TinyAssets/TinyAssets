@@ -79,7 +79,7 @@
  * cross to `FILES` open their own, one for each step around a call, so no write waits on
  * the files Worker.
  */
-import { HEX32, HEX64, randomHex } from "../../contract/src/ids";
+import { AUTHORITY, HEX32, HEX64, randomHex } from "../../contract/src/ids";
 import type { RewrapAnswer, SyncOp } from "../../contract/src/owner";
 
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
@@ -93,8 +93,8 @@ import {
 import { letGo, planEdit } from "./edit";
 import { type Facts, FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage, Write } from "./gate";
-import { CLIENT_WRITER, CLIENTS, INDEX_BYTES, OWNER_SCOPE } from "./manifest";
-import { inTime } from "./schedule";
+import { CLIENT_WRITER, CLIENTS, INDEX_BYTES } from "./manifest";
+import { OWNER, scopeOf } from "./authority";
 import { refuseErasing } from "./erasure";
 import { heldGenerations } from "./restore";
 import { TIER_UNREAD } from "./tier";
@@ -103,7 +103,7 @@ import {
   ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within,
   WORKSPACE,
 } from "../../contract/src/paths";
-import { codePoints, isPrintable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
+import { isPrintable, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
 import {
   AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
@@ -122,7 +122,8 @@ import {
   words,
 } from "./file-search";
 import { windowEnd } from "./bodies";
-import { clock, clockMs } from "./clock";
+import { joined } from "./bytes";
+import { clock, inTime } from "./clock";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { slotted } from "../../contract/src/slots";
 import { APP_RESOURCE } from "../../contract/src/identity";
@@ -157,8 +158,6 @@ export const INTENT_TTL_S = 86_400;
 export const PLACE_TTL_S = 600;
 /** When a failed chunk delete is tried again. */
 export const GC_RETRY_S = 300;
-/** The owner's own work's sandbox: the authority every run the owner started holds. */
-export const OWNER_AUTHORITY = "owner";
 /** A temporary directory's life. */
 const TEMP_TTL_S = 7 * 86_400;
 /**
@@ -227,7 +226,7 @@ function isClient(writer: string | null): writer is string {
  * and its own, anyone else's the owner's.
  */
 function scopesOf(writer: string): readonly string[] {
-  return isClient(writer) ? [CLIENTS, writer] : [OWNER_SCOPE];
+  return isClient(writer) ? [CLIENTS, writer] : [OWNER];
 }
 
 /** The owner's place in the bucket: its namespace and its wrapped data key. */
@@ -329,7 +328,7 @@ export interface Lease {
 
 /** A live sandbox lease as the runs, egress and the sync doors check it. */
 export interface SandboxLease {
-  /** Whose sandbox: the owner's own work's (`OWNER_AUTHORITY`), or an outside client's id. */
+  /** Whose sandbox: the owner's own work's (`OWNER`), or an outside client's id. */
   readonly authority: string;
   readonly lease_id: string;
   readonly epoch: number;
@@ -1035,6 +1034,29 @@ export class Files {
     return this.#reads(reads, (ns, key, batch) => this.#store.getChunks(ns, key, batch));
   }
 
+  /**
+   * Bytes `[from, to)` of the content `chunks` make, in order, joined: each chunk the range
+   * spans read by the part of it the range needs, verified (`FILES` reads the whole chunk,
+   * rechecks its hash and answers the part: review L7), so a range holds only itself. A range
+   * past the chunks is a bug.
+   */
+  async range(chunks: readonly ChunkRef[], from: number, to: number): Promise<Uint8Array> {
+    const reads: ChunkGet[] = [];
+    let at = 0;
+    for (const { sha256, size } of chunks) {
+      const start = Math.max(from, at);
+      const end = Math.min(to, at + size);
+      if (start < end) {
+        reads.push({ sha256, offset: start - at, length: end - start });
+      }
+      at += size;
+    }
+    if (to > at) {
+      throw new Error("a range runs past its chunks");
+    }
+    return joined(await this.fetch(reads));
+  }
+
   /** What `FILES` finds of each chunk, in order (`ChunkCheck`), `GET_READS` a call at most. */
   check(sha256s: readonly string[]): Promise<ChunkCheck[]> {
     return this.#reads(sha256s, (ns, key, batch) => this.#store.checkChunks(ns, key, batch));
@@ -1124,7 +1146,7 @@ export class Files {
    * The owner's counters (the object's real storage) and limits, and the caller's own
    * scope's: an outside client's share, or the owner's own writers'.
    */
-  usage(writer = "owner"): Usage {
+  usage(writer = OWNER): Usage {
     const { entries, history, chunk_bytes, inline_bytes, manifest_bytes, body_bytes, stored,
             intents, intent_chunks } = this.#space();
     return { entries, history, chunk_bytes, inline_bytes, manifest_bytes, body_bytes, stored,
@@ -1589,7 +1611,7 @@ export class Files {
     const counts = new Map<string, number>();
     for (const { chunks } of this.#sql.exec<{ chunks: string }>(
            "SELECT chunks FROM file_intents WHERE writer = ? OR (? = ? AND writer NOT GLOB ?)",
-           scope, scope, OWNER_SCOPE, CLIENT_WRITER)) {
+           scope, scope, OWNER, CLIENT_WRITER)) {
       for (const sha256 of new Set(hashes(chunks))) {
         counts.set(sha256, (counts.get(sha256) ?? 0) + 1);
       }
@@ -2126,14 +2148,10 @@ export class Files {
    */
   leaseAcquire(authority: unknown, holder: unknown, tokens: LeaseTokens,
                generation: number): Lease {
-    if (typeof authority !== "string"
-        || (authority !== OWNER_AUTHORITY && !/^[!-~]{64}$/.test(authority))) {
+    if (typeof authority !== "string" || !AUTHORITY.test(authority)) {
       throw new Refusal("invalid", "a lease's authority is the owner's or one outside client's");
     }
-    if (typeof holder !== "string" || !holder || codePoints(holder) > 128
-        || !isPrintable(holder)) {
-      throw new Refusal("invalid", "a lease holder is 1 to 128 printable characters");
-    }
+    printable(holder, 128, "a lease holder");
     const hashes = [tokens.egress, tokens.sync, tokens.runner];
     if (hashes.some((hash) => typeof hash !== "string" || !HEX64.test(hash))
         || new Set(hashes).size !== 3) {
@@ -2335,7 +2353,7 @@ export class Files {
    */
   syncWriter(leaseId: unknown, epoch: unknown): string {
     const lease = this.#fenced(leaseId, epoch, clock());
-    return lease.authority !== OWNER_AUTHORITY ? `client:${lease.authority}`
+    return lease.authority !== OWNER ? scopeOf(lease.authority)
       : `lease:${lease.epoch}`;
   }
 
@@ -2375,9 +2393,9 @@ export class Files {
     const { epoch, authority } = this.#fenced(request.lease_id, request.epoch, now);
     // A client's sandbox writes as that client, into the owner's agent trees only while
     // its grant is full, the default; a narrowed one's never (the founder's rule).
-    const client = authority !== OWNER_AUTHORITY;
+    const client = authority !== OWNER;
     const trees = !client || fullGrant(authority);
-    const writer = client ? `client:${authority}` : `lease:${epoch}`;
+    const writer = client ? scopeOf(authority) : `lease:${epoch}`;
     const seen = new Set<string>();
     const outcomes = ops.map((raw) => {
       const op = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
@@ -2588,7 +2606,7 @@ export class Files {
    * is a unit of the gate of its own, between the calls, never the whole pass. The `files`
    * lane's pass.
    */
-  async run(now: number, until: number = Infinity): Promise<void> {
+  async run(now: number, until: number): Promise<void> {
     const sql = this.#sql;
     await this.#write(() => this.#change(null, () => {
       this.#reretain();
@@ -2608,7 +2626,7 @@ export class Files {
         this.#prune(now);
       }
     }));
-    if (until - clockMs() < DELETE_FLOOR_MS) {
+    if ((until - clock()) * 1000 < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one
     }
     // Read and marked in one unit: a chunk read due outside it could be held again (an
@@ -2651,7 +2669,7 @@ export class Files {
       // Bounded by the pass's budget: a late delete is tried again, as a failed one is.
       const { ns, key } = await this.space();
       if (await inTime(this.#store.deleteChunks(ns, key, due),
-                       until - clockMs()) === "late") {
+                       (until - clock()) * 1000) === "late") {
         throw new Error("the chunk delete ran past its pass");
       }
     } catch {
@@ -2764,7 +2782,7 @@ export class Files {
 
 /** Who a file change is by, in its history: the owner, or the outside client it came through. */
 function fileWriter(account: Account): string {
-  return account.origin === null ? "owner" : `client:${account.origin.client}`;
+  return scopeOf(account.origin?.client ?? null);
 }
 
 /** The owner app's page of the folder holding `path`: where a citation of it points. */
@@ -2774,13 +2792,7 @@ export function fileUrl(path: string): string {
 
 /** A non-negative whole number of a request, or its default. */
 export function whole(value: unknown, what: string, fallback: number, high: number): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > high) {
-    throw new Refusal("invalid", `${what} is a whole number from 0 to ${high}`);
-  }
-  return value;
+  return value === undefined ? fallback : count(value, what, 0, high);
 }
 
 /**
@@ -3186,29 +3198,8 @@ async function textWindow(o: OwnerState, content: Content, offset: number, max: 
     Promise<{ text: string | null; next: number | null }> {
   const size = content.entry.size;
   const want = Math.min(size, offset + max + 4);  // a character's tail past the window
-  let bytes: Uint8Array;
-  if (content.inline !== undefined) {
-    bytes = content.inline.subarray(offset, want);
-  } else {
-    const reads: { sha256: string; offset: number; length: number }[] = [];
-    let at = 0;
-    for (const chunk of content.chunks ?? []) {
-      const from = Math.max(offset, at);
-      const to = Math.min(want, at + chunk.size);
-      if (from < to) {
-        // Verified (review L7): `FILES` rechecks the whole chunk and answers the range.
-        reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from });
-      }
-      at += chunk.size;
-    }
-    const parts = await o.files.fetch(reads);
-    bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-    let put = 0;
-    for (const part of parts) {
-      bytes.set(part, put);
-      put += part.byteLength;
-    }
-  }
+  const bytes = content.inline !== undefined ? content.inline.subarray(offset, want)
+    : await o.files.range(content.chunks ?? [], offset, want);
   const end = windowEnd(bytes, 0, max);
   if (end === null) {
     throw new Refusal("invalid", "offset is inside a character: start at a window's next_offset");
@@ -3319,7 +3310,7 @@ function writerNamed(o: Told, writer: string): string {
     const name = o.grants.name(client);
     return `the outside client ${name !== "" ? `"${name}"` : client.slice(0, 12)}`;
   }
-  return writer === "owner" ? "you" : writer;
+  return writer === OWNER ? "you" : writer;
 }
 
 /** The `files` doors' handlers, by door. */

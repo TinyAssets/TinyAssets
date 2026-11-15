@@ -1,7 +1,7 @@
 /**
  * The cutover's import doors (`import_research.md` §3, slice 3): every existing owner's
  * data, carried from the old stack's backup into the owner's own object while it is still
- * `pending`, by the doors' import consumer (`doors/src/import.ts`) from the bundle the
+ * `pending`, by the doors' import consumer (`doors/src/import/`) from the bundle the
  * importer's job built (`platform/import/bundle.ts`). Deleted at the cutover with the job,
  * the consumer and their bindings (tasks.md §9).
  *
@@ -48,7 +48,7 @@
  * and body is skipped, any other refused; the policy is set only while it is the default,
  * and skipped once it is the imported one; the notice is added once; an upload of the same
  * file still open is resumed, never begun again. So a delivery killed at any step converges
- * when it runs again. Everything it writes is the owner's own (`IMPORT_WRITER`), and each
+ * when it runs again. Everything it writes is the owner's own (`OWNER`), and each
  * file keeps its mtime from the old stack (`mtime_ms`, the files plane's own column).
  */
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
@@ -65,11 +65,10 @@ import { Refusal } from "../../contract/src/refusal";
 import { utf8Bytes } from "../../contract/src/text";
 
 import { clock } from "./clock";
-import { checkBody, OWNER_FILER } from "./collections";
+import { checkBody } from "./collections";
+import { OWNER } from "./authority";
 import type { Call, Door, OwnerState } from "./owner-do";
 
-/** Whose the imported files and rows are: the owner's own. */
-const IMPORT_WRITER = OWNER_FILER;
 /** The imported rows' history op, and the notice's type. */
 const IMPORT_OP = "import";
 export const IMPORT_NOTICE = "imported";
@@ -337,11 +336,11 @@ export const importDoors = Object.freeze({
       const wrote = await o.placing((): { body: unknown; writer: string } | { done: boolean } => {
         const { account } = door.check();
         return rowThere(o, account.owner, row) ? { done: false }
-          : { body: row.body, writer: IMPORT_WRITER };
+          : { body: row.body, writer: OWNER };
       }, (placed) => {
         const { account } = door.check();
         o.collections.write(account.owner, account.owner, row.collection, row.row_id, row.body,
-                            "", row.private === 1, IMPORT_OP, placed, IMPORT_WRITER);
+                            "", row.private === 1, IMPORT_OP, placed, OWNER);
         return true;
       }, { synced: true });
       written += wrote ? 1 : 0;
@@ -355,14 +354,14 @@ export const importDoors = Object.freeze({
     for (const entry of entries) {
       if (entry.kind === "dir") {
         if (!there(o, entry.path, "dir")) {
-          o.files.mkdir(entry.path, { expected: "", parents: true, writer: IMPORT_WRITER });
+          o.files.mkdir(entry.path, { expected: "", parents: true, writer: OWNER });
           written += 1;
         }
         continue;
       }
       if (!there(o, entry.path, entry)) {
         o.files.writeSmall(entry.path, entry.bytes, { expected: "", mode: entry.mode,
-                                                      writer: IMPORT_WRITER,
+                                                      writer: OWNER,
                                                       mtime_ms: entry.mtime_ms });
         written += 1;
       }
@@ -381,11 +380,11 @@ export const importDoors = Object.freeze({
       if (there(o, file.path, file)) {
         return null;
       }
-      const { open, same } = o.files.openUploads(file.size, file.chunks, IMPORT_WRITER);
+      const { open, same } = o.files.openUploads(file.size, file.chunks, OWNER);
       if (same === null && open >= IMPORT_INTENTS) {
         throw new Refusal("refused", TOO_MANY_UPLOADS);
       }
-      const intentId = same ?? o.files.begin(file.size, file.chunks, IMPORT_WRITER).intent_id;
+      const intentId = same ?? o.files.begin(file.size, file.chunks, OWNER).intent_id;
       return { intent_id: intentId, ...o.files.uploadPlan(intentId) };
     });
     if (begun === null) {
@@ -428,7 +427,7 @@ export const importDoors = Object.freeze({
     if (there(o, path, { content_id: r["content_id"], size, mode })) {
       return { written: 0, skipped: 1 };
     }
-    o.files.commit(intentId, path, { expected: "", mode, writer: IMPORT_WRITER, parents: true,
+    o.files.commit(intentId, path, { expected: "", mode, writer: OWNER, parents: true,
                                      mtime_ms: mtime });
     return { written: 1, skipped: 0 };
   },

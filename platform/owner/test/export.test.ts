@@ -932,7 +932,7 @@ describe("the sweep of generations no row names", () => {
     const pass = (store: (state: DurableObjectState) => ChunkStore) =>
       runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
         const { backups } = storesOn(state, store(state));
-        await backups.run(clock(), Date.now() + 60_000);
+        await backups.run(clock(), clock() + 60);
         return { next: backups.next(clock()), now: clock(), ...state.storage.sql.exec<{
           sweep: number; sweep_retry: number | null }>(
           "SELECT sweep, sweep_retry FROM owner_backup_state").one() };
@@ -986,7 +986,7 @@ describe("the sweep of generations no row names", () => {
                                  fresh, clock());
           return { deleted: 0, cursor: "the next page" };
         } }));
-      await backups.run(clock(), Date.now() + 60_000);
+      await backups.run(clock(), clock() + 60);
     });
     expect(pages).toBe(1);
     for (const gen of [pinned.gen, fresh]) {
