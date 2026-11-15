@@ -4,15 +4,17 @@
  * key. Every refusal the brief names fails closed: a wrong `iss` (named with the value seen),
  * a wrong `client_id`, no `auth_time`, a `sub` that is not the answer's `user.id`, a bad
  * signature; and the rest of the checks (`sid` required, a user's token, one key per `kid`,
- * the key's own `alg` and `use`, algorithm, time), the authorize URL's exact parameters, the
- * exchange's exact body sent to `api.workos.com` and never through a redirect, the record's
+ * the key's own `alg` and `use`, algorithm, time, a segment that is not base64url), the
+ * authorize URL's exact parameters, the exchange's exact body sent to `api.workos.com` and
+ * never through a redirect, an answer past its bound, the record's
  * grammar (`contract/src/signin.ts`, the secret's one origin among it), the
  * half-configured Worker, and the identity's deletion. An `auth_time` past the 600 s window
  * is the callback's to refuse (`oauth.test.ts`, "older than ten minutes").
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { now } from "../src/config";
+import { base64url } from "../../contract/src/envelope";
 import { UPSTREAM_CALLBACK } from "../../contract/src/identity";
 import { upstreamConfig, type UpstreamConfig } from "../../contract/src/signin";
 import type { DoorsEnv } from "../src/env";
@@ -35,13 +37,18 @@ const CONFIG: UpstreamConfig = upstreamConfig(JSON.stringify({
 }));
 const SECRET = "sk_test_secret";
 
-function b64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_")
-    .replace(/=+$/, "");
+/** The live upstream, its issuer answering as `answering` does (the Worker's `fetch`, spied). */
+function reaching(answering: typeof fetch): ReturnType<typeof oidcUpstream> {
+  vi.spyOn(globalThis, "fetch").mockImplementation(answering);
+  return oidcUpstream(ISSUER, CONFIG, SECRET);
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 function text(value: unknown): string {
-  return b64url(new TextEncoder().encode(JSON.stringify(value)));
+  return base64url(new TextEncoder().encode(JSON.stringify(value)));
 }
 
 async function rsa(): Promise<{ keys: CryptoKeyPair; jwk: JsonWebKey }> {
@@ -56,7 +63,7 @@ async function sign(key: CryptoKey, header: unknown, claims: unknown): Promise<s
   const head = `${text(header)}.${text(claims)}`;
   const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key,
                                              new TextEncoder().encode(head));
-  return `${head}.${b64url(new Uint8Array(signature))}`;
+  return `${head}.${base64url(new Uint8Array(signature))}`;
 }
 
 interface Issued {
@@ -151,6 +158,20 @@ describe("the access token", () => {
       `the access token's issuer is "https://api.issuer.test/", not "${CONFIG.token_issuer}"`);
   });
 
+  it("is refused, in its own words, with a segment that is not unpadded base64url",
+     async () => {
+    // RFC 7515 §2: each segment is base64url without padding. The contract's reader refuses
+    // a length no encoding has (1 mod 4) and an empty segment as it refuses a stray
+    // character; the words are the check's, never the runtime's decoder's.
+    const { answer, jwks } = await issued();
+    const [head, body, signature] = answer.access_token.split(".");
+    for (const token of [`a.${body}.${signature}`, `.${body}.${signature}`, `${head}.${body}.`,
+                         `${head}+.${body}.${signature}`, `${head}.${body}.${signature}=`]) {
+      await expect(verifiedAccessToken({ ...answer, access_token: token }, ISSUER, CONFIG, jwks))
+        .rejects.toThrow(/^the access token is not base64url$/);
+    }
+  });
+
   it("is refused when another key signed it", async () => {
     const { answer } = await issued();
     const other = await issued();
@@ -203,7 +224,7 @@ describe("the live upstream", () => {
       }
       return new Response("no", { status: 404 });
     }) as typeof fetch;
-    const upstream = oidcUpstream(ISSUER, CONFIG, SECRET, fetcher);
+    const upstream = reaching(fetcher);
     const signed = await upstream.finish({ code: "code-1", code_verifier: "verifier-1",
                                            redirect_uri: UPSTREAM_CALLBACK });
     expect(signed).toEqual({ issuer: ISSUER, subject: "user_01ALICE",
@@ -223,10 +244,10 @@ describe("the live upstream", () => {
     const answering = (status: number) => (async (input: RequestInfo | URL) =>
       String(input) === CONFIG.jwks_uri ? Response.json(jwks)
         : Response.json(answer, { status })) as typeof fetch;
-    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(400)).finish({
+    await expect(reaching(answering(400)).finish({
       code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
       .rejects.toThrow(/400/);
-    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(200)).finish({
+    await expect(reaching(answering(200)).finish({
       code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
       .rejects.toThrow(/user\.id/);
   });
@@ -238,17 +259,25 @@ describe("the live upstream", () => {
         seen.push(String(input));
         return new Response(null, { status, headers: { Location: "https://evil.test/t" } });
       }) as typeof fetch;
-      await expect(oidcUpstream(ISSUER, CONFIG, SECRET, redirecting).finish({
+      await expect(reaching(redirecting).finish({
         code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
         .rejects.toThrow(new RegExp(`answered ${status}$`));
     }
     expect(seen).toEqual(Array(4).fill(CONFIG.token_endpoint));
   });
 
+  it("refuses an answer past its bound, read no further", async () => {
+    const answering = (async () => new Response(`{"access_token":"${"a".repeat(1 << 20)}"}`)) as
+      unknown as typeof fetch;
+    await expect(reaching(answering).finish({
+      code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
+      .rejects.toThrow(/^the upstream's token answer is too large$/);
+  });
+
   it("names a refused exchange's error code, and nothing else of its answer", async () => {
     const refusing = (body: unknown) => (async () =>
       Response.json(body, { status: 400 })) as unknown as typeof fetch;
-    const finish = (body: unknown) => oidcUpstream(ISSUER, CONFIG, SECRET, refusing(body))
+    const finish = (body: unknown) => reaching(refusing(body))
       .finish({ code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK });
     await expect(finish({ error: "invalid_client", error_description: `bad ${SECRET}` }))
       .rejects.toThrow(/^the upstream's token endpoint answered 400 \(invalid_client\)$/);
@@ -264,9 +293,9 @@ describe("the live upstream", () => {
       seen.push(new Request(input, init));
       return new Response(null, { status });
     }) as typeof fetch;
-    await oidcUpstream(ISSUER, CONFIG, SECRET, answering(202)).forget("user_01ALICE");
-    await oidcUpstream(ISSUER, CONFIG, SECRET, answering(404)).forget("user_01ALICE");
-    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(500)).forget("user_01ALICE"))
+    await reaching(answering(202)).forget("user_01ALICE");
+    await reaching(answering(404)).forget("user_01ALICE");
+    await expect(reaching(answering(500)).forget("user_01ALICE"))
       .rejects.toThrow(/500/);
     expect(seen[0]!.method).toBe("DELETE");
     expect(seen[0]!.url).toBe("https://api.workos.com/user_management/users/user_01ALICE");

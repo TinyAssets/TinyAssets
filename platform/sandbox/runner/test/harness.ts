@@ -11,7 +11,7 @@
  * its build makes it (`template/pair.ts`), installed; `Doors` is a fake doors server for the
  * run's event door, the sign-in report and the sync doors.
  */
-import { execFileSync, spawn, type SpawnSyncReturns, spawnSync } from "node:child_process";
+import { spawn, type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, chownSync, closeSync, mkdirSync, mkdtempSync, openSync, readdirSync,
          readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -61,7 +61,7 @@ let bundled: string | null = null;
 function built(): string {
   if (bundled === null) {
     const out = mkdtempSync(join(tmpdir(), "ta-runner-bundle-"));
-    bundles(execFileSync, out);
+    bundles(out);
     bundled = out;
   }
   return bundled;
