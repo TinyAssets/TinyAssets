@@ -378,11 +378,9 @@ describe("the erasure", () => {
     for (const op of ["owner.rewrap", "owner.reseal"]) {
       expect((await operated(who, op, {})).answer, op).toMatchObject({ result: { left: 0 } });
     }
-    const stub = env.OWNER.getByName(who);
-    expect((await failure(() => stub.dataKeyRewrap(ownerBinding(who)))).message)
-      .toBe(PLATFORM_ONLY);
-    expect((await failure(() => stub.gatewayReseal(ownerBinding(who)))).message)
-      .toBe(PLATFORM_ONLY);
+    for (const door of ["dataKeyRewrap", "gatewayReseal"]) {
+      await expect(ownDoor(who, door)).rejects.toMatchObject({ message: PLATFORM_ONLY });
+    }
   });
 
   it("erases nothing without the session or the owner's words", async () => {

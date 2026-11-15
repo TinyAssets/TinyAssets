@@ -375,15 +375,17 @@ describe("a key rotation's owner.rewrap and owner.reseal, on a real owner object
     expect(rewrap).toMatchObject({ result: { left: 0 } });
     expect(await asked(owner, "owner.reseal"))
       .toMatchObject({ result: { resealed: 0, left: 0, kid: null } });
-    // Held for a restore: answered at once, its generation left, acknowledged, nothing retried.
-    await sqlIn(owner, "INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
-                       "'pinned', 0)", "a".repeat(32), "b".repeat(16));
-    expect(await asked(owner, "owner.rewrap"))
-      .toMatchObject({ result: { rewrapped: false, roots: 0, left: 1 } });
+    // Held for a restore: answered at once, its generation left, acknowledged, nothing retried
+    // (that a hold's generations count left is the owner's test, `owner/test/restore.test.ts`).
+    const holding = { rewrapped: false, roots: 0, left: 1, kid: null };
+    await env.OWNER_GATE.arm({ method: "dataKeyRewrap", name: owner, answer: holding });
+    expect(await asked(owner, "owner.rewrap")).toMatchObject({ result: holding });
   });
 
+  // That a sweep asked again changes nothing more is the owner's test
+  // (`owner/test/export.test.ts`, `connections.test.ts`).
   it.each(["owner.rewrap", "owner.reseal"])(
-    "%s: delivered again after its sweep but before its answer, changes nothing more; a " +
+    "%s: delivered again after its sweep but before its answer, answers as it stands; a " +
     "forged or unsigned one is dropped with nothing written", async (op) => {
       const owner = fresh();
       await asked(owner, "owner.admit");
@@ -391,12 +393,11 @@ describe("a key rotation's owner.rewrap and owner.reseal, on a real owner object
       const logged = logs();
       expect(await deliver(message, answerFailingOnce(message.ask)))
         .toEqual({ acked: 0, retried: 1 });
-      const rows = await everyRow(owner);
       expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
       const { result } = operatorAnswer((await held(message.ask)).answer, message) as
         { result: unknown };
       expect(await asked(owner, op)).toMatchObject({ result });
-      expect(await everyRow(owner)).toEqual(rows);
+      await doorsCalled(owner);
       const forged = await sign(owner, op, {}, OTHER);
       const { mac: _mac, ...unsigned } = await sign(owner, op);
       for (const body of [forged, unsigned]) {
@@ -407,7 +408,7 @@ describe("a key rotation's owner.rewrap and owner.reseal, on a real owner object
         "an operator message failed; the queue tries again",
         "an operator message has a MAC that does not hold under its kid; dropped",
         "an operator message is out of shape; dropped"]);
-      expect(await everyRow(owner)).toEqual(rows);
+      expect(await doorsCalled(owner)).toEqual([]);
     });
 });
 
