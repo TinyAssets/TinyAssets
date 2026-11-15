@@ -28,7 +28,7 @@ import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY } from "../src/owner-do";
 import { SYNC_FENCED } from "../src/files";
 import { priced } from "../src/usage";
 import {
-  ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
+  ANTHROPIC, catalog, type Gated, gated, keySealed, OAUTH, OPENAI, scopeOf,
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
 import { admittedOwner, drainDue, failure, gateFor, TIERS, unseededObject } from "./support";
@@ -1332,9 +1332,7 @@ describe("a reservation", () => {
     const prepared = await r.stub.connectionPrepare(r.session(), {
       source: "openai", kind: "api_key", display_name: "Old", provider: "openai",
       revocable: false });
-    const blob = await sealedAs("k1", r.name, prepared.connection, 1, {
-      kind: "api_key", secret: "sk-old", upstream: OPENAI.upstream,
-      endpoints: OPENAI.endpoints, sealed_at: 1 });
+    const blob = await keySealed("k1", r.name, prepared.connection, "sk-old", OPENAI);
     await r.stub.connectionCommit(r.session(), {
       connection: prepared.connection, version: 1, blob, kid: "k1",
       models: await catalog(OPENAI), egress: await scopeOf(OPENAI) });

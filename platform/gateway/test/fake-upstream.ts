@@ -328,13 +328,16 @@ async function token(request: Request): Promise<Response> {
       return Response.json({ access_token: "at-huge", token_type: "Bearer",
                              padding: "x".repeat(70 * 1024) });
     }
-    if (form.get("code") !== "good-code" || form.get("code_verifier") === null) {
+    // `good-code` buys the refresh token `rt-1`; `good-code:<token>` buys `<token>`, one the
+    // refresh grant below answers as it is named (`rt-dead`, `rt-down`, `rt-lapsed`).
+    const [code, refresh = "rt-1"] = (form.get("code") ?? "").split(":");
+    if (code !== "good-code" || form.get("code_verifier") === null) {
       return Response.json({ error: "invalid_grant",
                              error_description: `code ${form.get("code")} is not valid` },
                            { status: 400 });
     }
     return Response.json({ access_token: `at-1|${client}|${form.get("resource") ?? ""}`,
-                           token_type: "Bearer", expires_in: 3600, refresh_token: "rt-1",
+                           token_type: "Bearer", expires_in: 3600, refresh_token: refresh,
                            scope: "models.read" });
   }
   if (grant === "refresh_token") {
