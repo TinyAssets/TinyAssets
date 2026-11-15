@@ -50,11 +50,11 @@
  *   (`sweepManifests`). So what a crash between a put and its record left (a part past the
  *   recorded count, a segment never acknowledged) goes too. A pass is the only writer of a
  *   generation's objects, one pass at a time (`run`), and the sweep is a step of it, so it
- *   never meets a put in flight. While a restore holds the owner only its pin's own pass runs,
- *   before the wipe, so none sweeps a wiped object, whose namespace and generations only the
- *   restore's record names. A sweep that fails backs off in its row (`sweep_retry`); one cut
- *   short is still owed, so an unnamed generation stands only until the lane's next pass that
- *   reaches R2.
+ *   never meets a put in flight. None sweeps while a restore holds the owner (`pinned`, read
+ *   in the unit that names each page's keep), so none sweeps a wiped object, whose namespace
+ *   and generations only the restore's record names, a wipe landing mid-sweep included. A
+ *   sweep that fails backs off in its row (`sweep_retry`); one cut short is still owed, so an
+ *   unnamed generation stands only until the lane's next pass that reaches R2.
  * - **Erasure.** The generations carry the owner's wrapped key, so the erasure's prefix
  *   delete takes them with the chunks, and the mark has already halted this lane.
  *
@@ -695,12 +695,14 @@ export class Backups {
    * the object does not name deleted, root first, the names read afresh, after a prune, for
    * each page. Then the sweeps owed are settled, unless another was owed meanwhile (a prune
    * between pages), which the next pass sweeps for from the start. An R2 call that fails backs
-   * the sweep off in its row (`sweep_retry`). Whether the pass goes on: false when it ran out
-   * of time or the lane halted, the sweep still owed.
+   * the sweep off in its row (`sweep_retry`). None is made while a restore holds the owner,
+   * the names read in the unit that asks: its wipe deletes every row, and only its record
+   * names what it restores from. Whether the pass goes on: false when it ran out of time or
+   * the lane halted, the sweep still owed.
    */
   async #sweep(until: number): Promise<boolean> {
     const { sweep: owed, sweep_retry: retry } = this.#sweepState();
-    if (owed === 0 || (retry !== null && retry > clock())) {
+    if (owed === 0 || (retry !== null && retry > clock()) || this.#parts.pinned() !== null) {
       return true;
     }
     const { ns } = await this.#parts.space();
@@ -709,7 +711,11 @@ export class Backups {
       if (Date.now() >= until || this.#parts.halted()) {
         return false;
       }
-      const names = await this.#write(() => this.#prune(clock()));
+      const names = await this.#write(() => this.#parts.pinned() === null
+        ? this.#prune(clock()) : null);
+      if (names === null) {
+        return true;  // a hold begun since: owed still, made once the restore is done
+      }
       try {
         ({ cursor } = await this.#parts.store.sweepManifests(ns, names, cursor));
       } catch {

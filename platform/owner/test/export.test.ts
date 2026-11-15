@@ -935,4 +935,37 @@ describe("the sweep of generations no row names", () => {
     expect([settled.sweep, settled.sweep_retry]).toEqual([0, null]);
     expect(await objectsOf(ns, kept.gen)).toContain(manifestKey(ns, kept.gen));
   });
+
+  it("stops, still owed, at a restore's hold begun while it runs: a wipe between its pages " +
+     "leaves no row, and neither generation the record names is swept", async () => {
+    const o = await owner();
+    await write(o, `${W}/a.bin`, filled(INLINE_BYTES + 10, 51));
+    const pinned = await generate(o.stub);
+    const { ns, key } = await spaceOf(o);
+    const fresh = "3".repeat(16);
+    await unnamed(ns, key, fresh);  // the pin's own, its row gone with the wipe
+    await sqlIn(o.stub, "UPDATE owner_backup_state SET sweep = 1");
+    let pages = 0;
+    await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const { backups } = storesOn(state, through({
+        sweepManifests: async (space, keep) => {
+          pages += 1;
+          if (pages > 1) {
+            return env.FILES.sweepManifests(space, keep, null);
+          }
+          // The wipe lands while the first page is under way: every row gone, the record wiped.
+          state.storage.sql.exec("DELETE FROM owner_backups");
+          state.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, fresh, " +
+                                 "since) VALUES (1, ?, ?, 'wiped', 0, ?, ?)", ns, pinned.gen,
+                                 fresh, clock());
+          return { deleted: 0, cursor: "the next page" };
+        } }));
+      await backups.run(clock(), Date.now() + 60_000);
+    });
+    expect(pages).toBe(1);
+    for (const gen of [pinned.gen, fresh]) {
+      expect([gen, await objectsOf(ns, gen)]).toEqual([gen, expect.arrayContaining([
+        manifestKey(ns, gen)])]);
+    }
+  });
 });
