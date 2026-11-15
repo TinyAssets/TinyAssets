@@ -16,7 +16,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { until } from "../../ci/workerd";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { type Credential } from "../../gateway/src/credential";
-import { type Source, SUPPORTED_APIS } from "../../contract/src/egress-scope";
+import { supportedApis } from "../../contract/src/api-rules";
+import type { Source } from "../../contract/src/egress-scope";
 import { recordOf } from "../../gateway/src/catalog";
 import { open } from "../../gateway/src/keyring";
 import { PLATFORM_ONLY } from "../src/admission";
@@ -735,7 +736,7 @@ describe("the largest built-in catalog", () => {
         byApi.set(model.api, { ...seen, count: seen.count + 1 });
       }
       for (const [api, { count, baseUrl }] of byApi) {
-        if (SUPPORTED_APIS.includes(api) && count > (largest?.count ?? 0)) {
+        if (supportedApis().includes(api) && count > (largest?.count ?? 0)) {
           largest = { provider: provider.id, api, baseUrl, count };
         }
       }

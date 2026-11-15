@@ -18,7 +18,7 @@
  * The scope follows promises and timers, not events: a listener registered with an
  * `EventTarget` inside a scope but dispatched from outside it runs unscoped, so a fetch
  * it makes reaches the network unguarded. An adapter that fetches from an event
- * listener must be checked in review before its API joins `SUPPORTED_APIS`.
+ * listener must be checked in review before its API gets a row in `contract/src/api-rules.ts`.
  */
 import type { FetchFunction } from "@earendil-works/pi-ai";
 import { AsyncLocalStorage } from "node:async_hooks";

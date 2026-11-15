@@ -1,8 +1,9 @@
 /**
- * What a metered sandbox call must look like for each model API, as data keyed by pi-ai's
- * API id (tasks 4 G4, review round 2): no provider is named here and no code branches on
- * one. `meter.ts` holds every rule against pi-ai's own call, learned with no network, so the
- * data cannot drift from what pi-ai sends:
+ * The one table of the model APIs the gateway runs, keyed by pi-ai's API id (`APIS`): each
+ * row says how its adapter fetches, whether a declared endpoint may speak it, and what a
+ * metered sandbox call must look like (tasks 4 G4, review round 2): no provider is named
+ * here and no code branches on one. `meter.ts` holds every rule against pi-ai's own call,
+ * learned with no network, so the data cannot drift from what pi-ai sends:
  *
  * - `outputs`: every body field the API reads as the output-token cap. The one pi-ai sets
  *   must be among them (else the call is not metered), and the gateway clamps each one the
@@ -224,48 +225,77 @@ const ANTHROPIC: ApiRules = Object.freeze({
   })]),
 });
 
-/** Mistral's chat completions: as OpenAI's, but its stream reports its usage unasked. */
-const MISTRAL: ApiRules = Object.freeze({
-  outputs: Object.freeze([Object.freeze(["max_tokens"]), Object.freeze(["max_completion_tokens"])]),
-  counts: Object.freeze([Object.freeze(["n"])]),
-  stream: Object.freeze(["stream"]),
-  usage: Object.freeze([]),
-  tools: Object.freeze({ list: Object.freeze(["tools"]),
-                         kind: Object.freeze({ field: "type", allowed: Object.freeze(["function"]) }) }),
-  paid: Object.freeze([Object.freeze(["web_search_options"]), Object.freeze(["plugins"])]),
-  fallbacks: Object.freeze([Object.freeze(["models"])]),
-  model: "model",
-  tier: null,
-  unpriced: Object.freeze([
-    Object.freeze({ path: Object.freeze(["service_tier"]), allowed: Object.freeze([]) }),
-    Object.freeze({ path: Object.freeze(["modalities"]), allowed: Object.freeze(["text"]) }),
-    Object.freeze({ path: Object.freeze(["audio"]), allowed: Object.freeze([]) }),
-  ]),
-  served: null,
-  betas: Object.freeze([]),
-  free: Object.freeze([]),
-});
-
 /**
- * The rules for each API a sandbox call may be metered on, and so each API a credential may
- * be sealed for (`SUPPORTED_APIS`): every one some source record speaks.
+ * Mistral's chat completions: as OpenAI's, but its stream reports its usage unasked, and its
+ * answer names no tier.
  */
-const RULES: Readonly<Record<string, ApiRules>> = Object.freeze({
-  "anthropic-messages": ANTHROPIC,
-  "openai-completions": COMPLETIONS,
-  "mistral-conversations": MISTRAL,
-  "openai-responses": RESPONSES,
-  "google-generative-ai": GOOGLE,
-});
+const MISTRAL: ApiRules = Object.freeze({ ...COMPLETIONS, usage: Object.freeze([]), served: null });
 
-/** Every API a sandbox call may be metered on: the ids the rules are keyed by. */
-export function ruledApis(): readonly string[] {
-  return Object.keys(RULES);
+/** What the gateway holds of one pi-ai API it runs. */
+interface ApiRow {
+  /**
+   * Whether pi-ai's adapter takes `options.fetch`. One that refuses it (Google's,
+   * `google-generative-ai.js:36-38`) calls the global `fetch`, which the gateway interposes
+   * (`gateway/src/egress.ts`), so the call's endpoint guard sees every request either way.
+   */
+  readonly takesFetch: boolean;
+  /**
+   * Whether a declared endpoint (`custom`, with its own models) may speak it: the gateway
+   * holds pi-ai's lazy adapter for each such API (`gateway/src/catalog.ts` `DECLARED`, keyed
+   * by `DeclaredApi`, so the two cannot differ).
+   */
+  readonly declared: boolean;
+  readonly rules: ApiRules;
 }
 
-/** The API's rules, or null: a call on it is never metered. */
+/**
+ * The pi-ai 1.4.0 APIs the gateway runs, by API id: those a sandbox call can be metered on,
+ * since egress is the one model path and an API with no rules could be sealed but never
+ * used. Each is one some source record speaks, and a credential is sealed only for an API
+ * with a row (`egress-scope.ts` `upstream`). Each sends every request through `fetch`
+ * (`takesFetch`; `anthropic-messages.js:422`, `openai-responses.js:138`,
+ * `openai-completions.js:186`, `mistral-conversations.js:180`). Every other API is refused as
+ * `invalid_source`: Bedrock signs with a Node HTTP handler outside `fetch`, and
+ * `openai-codex-responses` is the legacy ChatGPT backend (research §2.6: Sign in with ChatGPT
+ * reaches only `POST /v1/responses`, through `openai-responses`), with a WebSocket transport
+ * and per-session caches kept in module state.
+ */
+const APIS = Object.freeze({
+  "anthropic-messages": Object.freeze({ takesFetch: true, declared: true, rules: ANTHROPIC }),
+  "openai-completions": Object.freeze({ takesFetch: true, declared: true, rules: COMPLETIONS }),
+  "mistral-conversations": Object.freeze({ takesFetch: true, declared: false, rules: MISTRAL }),
+  "openai-responses": Object.freeze({ takesFetch: true, declared: true, rules: RESPONSES }),
+  "google-generative-ai": Object.freeze({ takesFetch: false, declared: true, rules: GOOGLE }),
+}) satisfies Readonly<Record<string, ApiRow>>;
+
+/** An API a declared endpoint may speak (`ApiRow.declared`). */
+export type DeclaredApi = {
+  [Api in keyof typeof APIS]: (typeof APIS)[Api]["declared"] extends true ? Api : never;
+}[keyof typeof APIS];
+
+/** Every API the gateway runs: the ids the table is keyed by. */
+export function supportedApis(): readonly string[] {
+  return Object.keys(APIS);
+}
+
+/** The API's row, or null: the gateway does not run it, and no credential is sealed for it. */
+function row(api: string): ApiRow | null {
+  return Object.hasOwn(APIS, api) ? APIS[api as keyof typeof APIS] : null;
+}
+
+/** The API's rules, or null: the gateway does not run it, so a call on it is never metered. */
 export function apiRules(api: string): ApiRules | null {
-  return Object.hasOwn(RULES, api) ? RULES[api]! : null;
+  return row(api)?.rules ?? null;
+}
+
+/** Whether pi-ai's adapter for `api` takes `options.fetch` (`ApiRow.takesFetch`). */
+export function takesFetch(api: string): boolean {
+  return row(api)?.takesFetch === true;
+}
+
+/** Whether a declared endpoint may speak `api` (`ApiRow.declared`). */
+export function declaredApi(api: string): api is DeclaredApi {
+  return row(api)?.declared === true;
 }
 
 /** The methods that read and carry no body: a sealed endpoint's reads (a model list). */

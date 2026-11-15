@@ -69,6 +69,7 @@ describe("module-state guard", () => {
     "const byOwner = {} as Record<string, number>;",
     "const nested = Object.freeze({ list: [] });",
     "const spread = Object.freeze([...other]);",
+    "const spreadMade = Object.freeze({ ...build() });",
     "const made = build();",
     "const sticky = /a/g;",
     "class Holder { static last = 0; }",
@@ -175,6 +176,7 @@ describe("module-state guard", () => {
     "export const KEYS = Object.freeze({ Math: 1, console: 2 });",
     "export function f(o: { Math: number }) { return o.Math + typeof Math; }",
     "export function f(x: object) { return Object.freeze({ ...x }); }",
+    "const DERIVED = Object.freeze({ ...BASE, usage: Object.freeze([]), served: null });",
   ])("allows %s", (source) => {
     expect(moduleState("probe.ts", source)).toEqual([]);
   });

@@ -33,11 +33,11 @@
 import type { Api, AssistantMessageEvent, Context, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 
-import { apiRules, type ApiRules } from "../../contract/src/api-rules";
+import { apiRules, type ApiRules, takesFetch } from "../../contract/src/api-rules";
 import { valueAtPath } from "../../contract/src/checks";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
-import { GLOBAL_FETCH_APIS, type Meter, type Upstream } from "../../contract/src/egress-scope";
+import type { Meter, Upstream } from "../../contract/src/egress-scope";
 
 import { within } from "./egress";
 
@@ -80,11 +80,10 @@ async function run(catalog: Catalog, upstream: Upstream, apiKey: string, model: 
                    respond: FetchFunction, maxTokens: number): Promise<AssistantMessageEvent[]> {
   const models = createModels({ authContext: NO_AMBIENT });
   models.setProvider(providerFor(catalog, upstream));
-  const takesFetch = !GLOBAL_FETCH_APIS.includes(upstream.api);
   const events: AssistantMessageEvent[] = [];
   await within(respond, async () => {
     const stream = models.streamSimple(model, context(), {
-      apiKey, maxTokens, maxRetries: 0, ...(takesFetch ? { fetch: respond } : {}),
+      apiKey, maxTokens, maxRetries: 0, ...(takesFetch(upstream.api) ? { fetch: respond } : {}),
     } as never);
     for await (const event of stream) {
       events.push(event);
