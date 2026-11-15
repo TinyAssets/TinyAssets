@@ -41,10 +41,10 @@ tokens searching, break less without noticing, and find root causes faster.
   declared change. Read only what applies. One PR in flight per lane, never
   stacked. Merge `origin/main` in; never rebase a pushed branch. A diff touching
   `platform/` also runs every `ci` guard (`npx vitest run --root ci guards/` in
-  `platform/`, about 10 s): the layers, kit and kernels no workspace's tests cover.
+  `platform/`): the layers, kit and kernels no workspace covers.
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
-  within about 20% of its ceiling lands with its fix, never before it; a
-  reviewer who finds one blocks.
+  within about 20% of its ceiling lands with its fix; a reviewer who finds one
+  blocks.
 
 ## 1. Scope
 
@@ -132,7 +132,7 @@ You're done when:
 - A typical change lands in one place.
 - Every import is reasonable, and nothing imports anything more volatile than itself.
 - Subagents have no issues left that are worth fixing.
-- Intended behavior is the same as when you started, apart from bugs the refactor fixed. Test this at the end.
+- Intended behavior is the same as when you started, apart from bugs the refactor fixed. Test this at the end: in `platform/`, `npm run record -- <dir>` on base and head, then `npm run record:diff -- <base> <head>`.
 
 **Tips**
 
