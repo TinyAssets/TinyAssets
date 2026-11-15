@@ -265,7 +265,8 @@ jobs:
   # timeout-minutes is a watchdog, never a design figure: about 3 x the slowest leg's
   # measured time. Whole, the owner's leg took 8m42s of job in merge-group run 43749136142,
   # the slowest in runs 43736045737, 43749136142 and 43751240226; its shard 2/2 holds about
-  # 59% of its tests' time, so about 5m17s there. Re-derived from the shards' own times.
+  # 59% of its tests' time, so an estimated 5m17s there, until three merge-group runs
+  # measure the shards (`live:`, docs/decisions/untangle-2026-11/budgets-ci-3.md).
   platform-tests:
     name: platform-tests
     runs-on: ubuntu-latest
@@ -373,7 +374,8 @@ jobs:
   # owner's shard 2/2 took 6m12s of job in merge-group run 43736045737, the slowest in runs
   # 43736045737, 43749136142 and 43751240226, longer than the medium legs' critical path; in
   # three, its shard 3/3 holds about two thirds of that and its 4-minute archive-move file,
-  # so about 4m35s. Re-derived from the shards' own times.
+  # so an estimated 4m35s, until three merge-group runs measure the shards (`live:`,
+  # docs/decisions/untangle-2026-11/budgets-ci-3.md).
   platform-sizes:
     name: platform-sizes
     runs-on: ubuntu-latest
