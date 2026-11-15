@@ -62,7 +62,7 @@ describe("schema migration on wake", () => {
   });
 
   it("ends an object migrated from each earlier version with a fresh object's schema",
-     async () => {
+     { tags: ["large"] }, async () => {
     // Every table, index, trigger and view of the owner's, as `sqlite_master` holds it; not
     // the runtime's own (`_cf_*`), which workerd makes as it needs them (one appears after
     // migration 8's column rebuild from version 6, holding nothing of the owner's).

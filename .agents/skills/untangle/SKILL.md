@@ -44,7 +44,10 @@ tokens searching, break less without noticing, and find root causes faster.
   `platform/`): the layers, kit and kernels no workspace covers.
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
   within about 20% of its ceiling lands with its fix; a reviewer who finds one
-  blocks.
+  blocks. Measure at CI's scale, about 2.7x slower than a local host: a test
+  past a third of its budget locally is near its ceiling there. A test that
+  writes a full page of objects, or grows with each migration, is a size test:
+  tag it `large`.
 
 ## 1. Scope
 
@@ -55,8 +58,8 @@ Comments and Tests are both in scope, every time (step 4).
 Don't change anything yet.
 
 Go through the code asking one thing: **should these pieces change together?**
-Write down every place the code gets the answer wrong, as in the decision log
-example below. There are only three ways to get it wrong.
+Write down every place the code gets the answer wrong, as in the example
+below. There are three ways to get it wrong.
 
 **Hidden links:** pieces that must change together, where the code doesn't show it.
 
@@ -98,9 +101,8 @@ like them. Don't fix special cases one by one.
 
 Ask the same thing of every fix, even one that looks better in the code: pieces
 that change together end up together, pieces that don't aren't tied, and
-everything depends on what changes less.
-
-Write each fix above the problems it solves, as in the decision log example.
+everything depends on what changes less. Write each fix above the problems it
+solves, as in the example.
 
 ## 4. Fix everything on the list
 
@@ -119,12 +121,11 @@ a regression, and only then:
 
 - Tests that repeat the implementation only change when it does, so they have no reason of their own to change. They check the same interpretation against itself, so remove them.
 - Tests tied to internals break when the code changes but behavior doesn't, so they change for the wrong reason. Rewrite them to depend on behavior, which changes less.
-- Tests that can't fail pass whatever the code does, so no change ever affects them. They aren't checking anything, so remove them.
+- Tests that can't fail, whatever the code does, check nothing: remove them.
 
 ## 5. Check, and repeat until done
 
-Have subagents search for special cases, hidden links, needless links and
-surplus. **Do not stop until there is nothing worth fixing left.**
+Have subagents search for all four kinds. **Do not stop until there is nothing worth fixing left.**
 
 You're done when:
 
@@ -136,11 +137,11 @@ You're done when:
 
 **Tips**
 
-- **Start from a skeleton:** script away the function bodies, so the whole codebase fits in context.
-- **Summarize with subagents:** have them summarize parts of the codebase, so you can reason across all of it at once.
-- **Check the dependency graph often:** script one that shows what imports what, and rerun it as you go.
-- **Enter where leverage is highest:** start looking there first.
-- **Keep a decision log:** compaction is less of a problem that way.
+- **Start from a skeleton:** script away the function bodies, so the codebase fits in context.
+- **Summarize with subagents:** so you can reason across the whole codebase at once.
+- **Check the dependency graph often:** script it, and rerun it as you go.
+- **Enter where leverage is highest.**
+- **Keep a decision log:** it outlasts compaction.
 - **Use Git as evidence:** for how often pieces change, and what changes together.
 
 ## Decision log example
