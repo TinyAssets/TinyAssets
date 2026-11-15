@@ -38,7 +38,13 @@ tokens searching, break less without noticing, and find root causes faster.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run: run only what the diff can break, one mutation per
-  declared change. Read only what applies. One PR in flight per lane, never
+  declared change. A diff touching any `platform/*/src` file also runs the
+  kernel guard, `npx vitest run --root ci guards/kernels.test.ts`: it lives in
+  `ci`, so the touched workspace's own tests don't cover it.
+- A change that brings a measured time or size within about 20% of its ceiling
+  (a watchdog, a budget, a quota) lands with its fix, never before it: CI's
+  variance turns a thin margin into a red main for every PR. A reviewer who
+  finds one blocks. Read only what applies. One PR in flight per lane, never
   stacked. Merge `origin/main` in; never rebase a pushed branch.
 
 ## 1. Scope
