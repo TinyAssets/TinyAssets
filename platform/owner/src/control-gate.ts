@@ -19,6 +19,7 @@ import {
 } from "../../contract/src/control";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsRead } from "../../sources/src/signin";
+import { clockMs } from "./clock";
 
 /** How long one read of the control record serves a script's calls, in ms. */
 export const CONTROL_FRESH_MS = 1_000;
@@ -36,7 +37,7 @@ export class ControlGate {
   }
 
   async #read(): Promise<ControlRead> {
-    const now = Date.now();
+    const now = clockMs();
     if (this.#last === null || now - this.#last.at >= CONTROL_FRESH_MS) {
       this.#last = { at: now, read: await readControl(this.#store) };
     }

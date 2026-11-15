@@ -61,8 +61,8 @@
  */
 import { keyed, object, whole } from "../../contract/src/checks";
 import { CONNECTION_ID, randomHex } from "../../contract/src/ids";
-import { sha256Hex } from "../../contract/src/digest";
-import { createHash, randomBytes } from "node:crypto";
+import { sha256, sha256Hex } from "../../contract/src/digest";
+import { randomBytes } from "node:crypto";
 
 
 import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
@@ -85,7 +85,7 @@ import { codePoints, isPrintable, SOURCE_ID, utf8Bytes } from "../../contract/sr
 import type {
   Call, Door, OwnerState,
 } from "./owner-do";
-import { clock } from "./clock";
+import { clock, clockMs } from "./clock";
 
 interface ConnectionLimits {
   readonly maxConnections: number;
@@ -521,7 +521,7 @@ export class Connections {
       NonNullable<Prepared["flow"]> {
     const state = base64url(randomBytes(32));
     const verifier = base64url(randomBytes(32));
-    const challenge = createHash("sha256").update(verifier, "ascii").digest("base64url");
+    const challenge = sha256(verifier).toString("base64url");
     const until = now + CONNECTION_LIMITS.flowTtlS;
     this.#sql.exec("INSERT INTO connection_flows (flow, connection_id, session_id, verifier, " +
                      "redirect_uri, created_at, expires_at, status) " +
@@ -652,7 +652,7 @@ export class Connections {
    */
   async fresh(id: string): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (!this.#refreshing.has(id) && !this.#expiring(id, Date.now())) {
+      if (!this.#refreshing.has(id) && !this.#expiring(id, clockMs())) {
         return;  // most calls: nothing to refresh, so no unit is taken for it
       }
       const running = this.#refreshing.get(id);
@@ -661,7 +661,7 @@ export class Connections {
         continue;
       }
       const holder = randomHex(12);
-      const step = await this.#write(() => this.#lease(id, holder, Date.now()));
+      const step = await this.#write(() => this.#lease(id, holder, clockMs()));
       if (step === null) {
         return;  // fresh, or not an OAuth credential, or not usable (the reserve refuses)
       }
@@ -860,7 +860,7 @@ export class Connections {
         continue;
       }
       const kept = await this.#write(() => this.#keepResealed(
-        id, version, answer, Date.now(), (row) => this.#sql.exec(
+        id, version, answer, clockMs(), (row) => this.#sql.exec(
           "SELECT 1 FROM connection_secrets WHERE connection_id = ? AND version = ? " +
             "AND blob = ?", row.id, version, blob).toArray().length > 0));
       if (kept) {
@@ -894,7 +894,7 @@ export class Connections {
   async run(_now: number, until: number): Promise<void> {
     await this.#write(() => this.#sweep(this.#clock()));
     for (const id of this.#dueRevokes(this.#clock())) {
-      if (Date.now() >= until) {
+      if (clockMs() >= until) {
         break;
       }
       const owed = await this.#write(() => this.#owed(id, this.#clock()));

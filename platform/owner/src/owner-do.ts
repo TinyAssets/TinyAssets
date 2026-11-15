@@ -1324,7 +1324,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     if (!may(account.run !== null ? { run: account.run.scopes } : account.grant,
              capability, account.run !== null ? "anywhere"
                : { universe: typeof universe === "string" ? universe : null, agent })) {
-      throw new Refusal("refused", NOT_GRANTED);
+      throw new Refusal("not_granted", NOT_GRANTED);
     }
   }
 
@@ -2210,7 +2210,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         return readable({ lease: lease.lease_id, scope: "*", test: () => true });
       }
       if (door !== "read") {
-        throw new Refusal("refused", NOT_GRANTED);
+        throw new Refusal("not_granted", NOT_GRANTED);
       }
       const agents = this.#runs.liveAgents(lease.authority)
         .map((agent) => `${AGENTS_DIR}/${agent}`);
@@ -2757,7 +2757,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#scope(account, need);
     const universe = account.run.stamp?.universe ?? null;
     if (account.grant?.mode === "scoped" && !may(account.grant, need, { universe, agent })) {
-      throw new Refusal("refused", NOT_GRANTED);
+      throw new Refusal("not_granted", NOT_GRANTED);
     }
     return universe;
   }

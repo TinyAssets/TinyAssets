@@ -187,7 +187,7 @@ function checkActions(actions: unknown): void {
  * it last wrote, its history rows, its temporary directories) and once for each content and
  * chunk they or its open uploads reference, whoever else references them too
  * (`manifest.ts`). The index's ceiling itself is no setting: it is the object's room
- * (`owner/src/files.ts` `INDEX_BYTES`).
+ * (`owner/src/manifest.ts` `INDEX_BYTES`).
  *
  * The sync agent's exclude list is not here: it is the owner's file
  * `/workspace/.ta/sync-ignore`, whose defaults come with the sync agent (tasks 6).

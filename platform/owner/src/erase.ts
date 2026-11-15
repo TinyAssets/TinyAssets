@@ -27,6 +27,7 @@ import {
 import {
   ERASE_RETRY_MS, erasureStartedAt, erasureStep, markErasing, PUT_GRACE_MS, runsEnded,
 } from "./erasure";
+import { clockMs } from "./clock";
 import type { OwnerStorage, Write } from "./gate";
 
 /** The erasure's Lifecycle capability id, and its job's function. */
@@ -95,7 +96,7 @@ export class Erasure extends LifecycleCapability {
    */
   erase(): Promise<void> {
     if (this.#running === undefined) {
-      this.#lastStart = Date.now();
+      this.#lastStart = clockMs();
       this.#running = this.#erase().finally(() => {
         this.#running = undefined;
       });
@@ -113,7 +114,7 @@ export class Erasure extends LifecycleCapability {
     const jobs = this.lifecycle.jobs;
     const [rearmed] = await write((): [Promise<unknown>] => {
       markErasing(storage, clock());
-      return [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + ERASE_RETRY_MS })];
+      return [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: clockMs() + ERASE_RETRY_MS })];
     });
     await rearmed;
     this.resume();
@@ -127,7 +128,7 @@ export class Erasure extends LifecycleCapability {
    */
   resume(fromDoor = false): void {
     if (this.#erased || this.#running !== undefined
-        || (fromDoor && Date.now() - this.#lastStart < ERASE_RETRY_MS)) {
+        || (fromDoor && clockMs() - this.#lastStart < ERASE_RETRY_MS)) {
       return;
     }
     queueMicrotask(() => {
@@ -147,7 +148,7 @@ export class Erasure extends LifecycleCapability {
       const jobs = this.lifecycle.jobs;
       const [rearmed] = await write((): [Promise<unknown>] => {
         markErasing(storage, clock());
-        return [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + ERASE_RETRY_MS })];
+        return [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: clockMs() + ERASE_RETRY_MS })];
       });
       await rearmed;
       // 2. The outside record: the doors told (again, should this be a resume).
@@ -165,7 +166,7 @@ export class Erasure extends LifecycleCapability {
     // again); then the owner wiped whole, Lifecycle's alarm disabled first so nothing is
     // written after; then the prefix deleted once more.
     const due = erasureStartedAt(storage) * 1000 + PUT_GRACE_MS;
-    if (due > Date.now()) {
+    if (due > clockMs()) {
       // Not yet: the erasure's job wakes it when the grace is up (a day), held in storage,
       // so no in-memory wait carries it and a restart loses nothing.
       const jobs = this.lifecycle.jobs;
@@ -179,7 +180,7 @@ export class Erasure extends LifecycleCapability {
     if (!await outside()) {
       const jobs = this.lifecycle.jobs;
       const [rearmed] = await write((): [Promise<unknown>] =>
-        [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + ERASE_RETRY_MS })]);
+        [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: clockMs() + ERASE_RETRY_MS })]);
       await rearmed;
       return;
     }
@@ -224,6 +225,6 @@ export class Erasure extends LifecycleCapability {
       return undefined;
     }
     console.error("the owner's erasure failed; it is tried again later");  // no ids
-    return { rescheduleAt: Date.now() + ERASE_RETRY_MS };
+    return { rescheduleAt: clockMs() + ERASE_RETRY_MS };
   }
 }

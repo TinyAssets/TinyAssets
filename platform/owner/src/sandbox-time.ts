@@ -35,8 +35,9 @@
  * Bounds (`limits-audit.md`): `SPANS_KEPT` spans, the oldest closed one dropped past it
  * (a technical ceiling: years of an always-renewing sandbox); `DAYS_KEPT` days of sums.
  */
-import { createHash } from "node:crypto";
+import { sha256 } from "../../contract/src/digest";
 
+import { clock, clockMs } from "./clock";
 import type { OwnerStorage, Write } from "./gate";
 import type { Call, Door, OwnerState } from "./owner-do";
 import { keyed, whole } from "../../contract/src/checks";
@@ -91,8 +92,7 @@ export const LIVE_KEPT = 2_001;
 
 /** 8 bytes of an E2B execution id's SHA-256: what is kept to count it once. */
 function digest(executionId: string): ArrayBuffer {
-  return Uint8Array.from(createHash("sha256").update(executionId).digest().subarray(0, 8))
-    .buffer;
+  return Uint8Array.from(sha256(executionId).subarray(0, 8)).buffer;
 }
 
 const KINDS = Object.freeze(["start", "resume", "pause", "kill"]);
@@ -155,12 +155,12 @@ export class SandboxTime {
     do {
       const { after } = this.cursor();
       let read: { events: ReturnType<typeof meterRead>["events"]; next: number };
-      const readAt = Date.now();
+      const readAt = clockMs();
       try {
         read = meterRead(await this.#source.read(after), after);
       } catch {
         console.error("the sandbox meter's read failed; it is tried again later");
-        await this.#source.write(() => this.failed(Date.now() / 1000));
+        await this.#source.write(() => this.failed(clock()));
         return;
       }
       await this.#source.write(() => this.#storage.transactionSync(
@@ -168,7 +168,7 @@ export class SandboxTime {
       if (read.events.length < METER_BATCH) {
         return;
       }
-    } while (Date.now() < until);
+    } while (clockMs() < until);
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -369,7 +369,7 @@ export const sandboxTimeDoors = Object.freeze({
       return { counted: false };
     }
     const checked = billedEvent(door.request);
-    return o.door(() => ({ counted: o.sandboxTime.billed(checked, Date.now()) }));
+    return o.door(() => ({ counted: o.sandboxTime.billed(checked, clockMs()) }));
   },
   sandboxDays(o: OwnerState, { request }: Call<{ days?: number }>): {
     days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;

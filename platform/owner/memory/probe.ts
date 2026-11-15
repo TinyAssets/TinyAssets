@@ -189,6 +189,9 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
   async getManifestSegment(): Promise<never> { throw new Error("not in the leg"); }
   async deleteSegments(): Promise<never> { throw new Error("not in the leg"); }
   async sweepManifests(): Promise<never> { throw new Error("not in the leg"); }
+  async chunkNames(): Promise<never> { throw new Error("not in the leg"); }
+  async listChunks(): Promise<never> { throw new Error("not in the leg"); }
+  async deleteListed(): Promise<never> { throw new Error("not in the leg"); }
 }
 
 /**
@@ -232,6 +235,9 @@ function received(env: LegEnv): ChunkStore {
       store.getManifestSegment(ns, key, gen, a, b, sha256),
     deleteSegments: (ns, gen, segments) => store.deleteSegments(ns, gen, segments),
     sweepManifests: (ns, keep, cursor) => store.sweepManifests(ns, keep, cursor),
+    chunkNames: (ns, key, sha256s) => store.chunkNames(ns, key, sha256s),
+    listChunks: (ns, after) => store.listChunks(ns, after),
+    deleteListed: (ns, names) => store.deleteListed(ns, names),
   };
 }
 

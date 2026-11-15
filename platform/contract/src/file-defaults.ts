@@ -7,7 +7,7 @@
  * object reads them, and the cutover's importer holds each imported owner to them, never
  * raising one. An object, so not among `limits.ts`'s numbers (its frozen bounds' guard reads
  * every export there as one). The files plane's room in the object is no setting: it is the
- * index's ceiling (`owner/src/files.ts` `INDEX_BYTES`).
+ * index's ceiling (`owner/src/manifest.ts` `INDEX_BYTES`).
  */
 import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "./limits.ts";
 

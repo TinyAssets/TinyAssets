@@ -430,9 +430,9 @@ describe("a client's run doors", () => {
       command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
       recipe_id: null });
     await r.stub.registerAgent(r.session(), { card_id, digest });
-    expect((await failure(() => r.stub.agentSubmit({ ...client, tiers: TIERS }, {
-      message: "hi", client_send_id: "n-1" }))).message)
-      .toBe("outside client capability not granted");
+    expect(await failure(() => r.stub.agentSubmit({ ...client, tiers: TIERS }, {
+      message: "hi", client_send_id: "n-1" })))
+      .toMatchObject({ code: "not_granted", message: "outside client capability not granted" });
     expect((await failure(() => r.stub.agentRun({ ...client, tiers: TIERS }, {
       agent: "main", input: "x" }))).message).toBe("outside client capability not granted");
     expect((await recorder(r.stub)).starts).toEqual([]);

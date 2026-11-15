@@ -10,7 +10,7 @@
  *
  * The file manifest is bounded in bytes, not rows: every row of its tables is charged what
  * SQLite lays it out in, path bytes and overflow pages included (`manifest.ts`), by triggers
- * this guard finds in the schema, against the index's ceiling (`files.ts` `INDEX_BYTES`), every
+ * this guard finds in the schema, against the index's ceiling (`manifest.ts` `INDEX_BYTES`), every
  * index on them charged too (`MANIFEST_INDEXES`). The charge counts a page at three quarters
  * full; a thinned page may stay a third full, so the guard counts the manifest at its ceiling
  * times
@@ -25,7 +25,7 @@
  * files (ADR-034), so what the owner's object holds is its own bounded rows only.
  *
  * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is
- * 44.99% of the limit (4,499,205,219.5 bytes), 500.8 MB under half; the starter slice's
+ * what this guard prints, under half the limit; the starter slice's
  * receipts (`STARTER_FILES_MAX` paths) and its one state row take 361,189 of it. Slice S's columns
  * (a run's `sandbox_wait`, one byte in `runs`, in place of a recheck time) move no term
  * at its page share, and it adds no table: the sandbox Worker keeps its own. Slice W added
@@ -63,9 +63,10 @@ import {
   SIGNIN_URL_MAX, SOCKET_TICKETS, SPEND_KEPT, SUBSCRIPTIONS_PER_AGENT,
 } from "../../contract/src/limits";
 import {
-  INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, RECORD_FIXED,
+  INDEX_BYTES, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, RECORD_FIXED,
   recordLayout, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
+import { FILTER_BYTES } from "../src/names-filter";
 import { AUTOINDEXES } from "./autoindexes";
 import { NOTICES_KEPT } from "../src/notices";
 import { MIGRATIONS } from "../src/schema";
@@ -184,8 +185,6 @@ const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOw
                               "maxScopesBytes");
 const POLICY_LIMITS = declared(POLICY_DOCUMENT, "POLICY_LIMITS", "maxDocument", "maxChange",
                                "pendingProposals", "appliedProposals", "receiptsPerBucket");
-/** The file index's one ceiling, in its charge's bytes (`files.ts`). */
-const INDEX_BYTES = constant("files", "INDEX_BYTES");
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
@@ -631,6 +630,9 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                        + 4 * (MAX_PATH_BYTES + KIB), by: "one row" },
     restore_rows: { rows: 1, bytes: 2 * LOG_BYTES + IMAGE_MAX,
                     by: "a log of at most LOG_BYTES, each line with its key, and one past it" },
+    // Its sweep's filter of its chunk rows' names (`names-filter.ts`), one row until `clear`.
+    restore_filter: { rows: 1, bytes: ROW + FILTER_BYTES(),
+                      by: "one row: FILTER_BYTES, the filter sized for CHUNK_ROWS_MAX" },
     // Slice P: the sandbox meter (`sandbox-time.ts`).
     sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
     owner_backup_state: { rows: 1, bytes: ROW + 3 * 8,

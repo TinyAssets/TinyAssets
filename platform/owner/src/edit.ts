@@ -25,8 +25,7 @@
  * is reads: about four a changed chunk.
  */
 import { utf8Decoder } from "../../contract/src/text";
-import { sha256Hex } from "../../contract/src/digest";
-import { createHash } from "node:crypto";
+import { sha256Hex, sha256Stream } from "../../contract/src/digest";
 
 /** The source: its chunks in order, each read whole and verified (`read`). */
 export interface Source {
@@ -208,7 +207,7 @@ export async function planEdit(source: Source, old: string, replacement: string,
   const hashes = source.chunks.slice(0, changedFrom).map((each) => each.sha256);
   const from = changedFrom * chunk;
   const to = sizes.slice(0, changedTo + 1).reduce((sum, each) => sum + each, 0);
-  let hash = createHash("sha256");
+  let hash = sha256Stream();
   let left = sizes[changedFrom] ?? 0;
   await outRange(from, Math.max(from, to), (piece) => {
     for (let at = 0; at < piece.byteLength;) {
@@ -218,7 +217,7 @@ export async function planEdit(source: Source, old: string, replacement: string,
       left -= take;
       if (left === 0) {
         hashes.push(hash.digest("hex"));
-        hash = createHash("sha256");
+        hash = sha256Stream();
         left = sizes[hashes.length] ?? 0;
       }
     }

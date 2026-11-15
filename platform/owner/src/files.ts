@@ -17,7 +17,7 @@
  *   with no tombstone kept. Each write is a compare-and-swap on the entry's etag, as on
  *   the board (S34): `expected` null writes unconditionally, `""` only creates, and
  *   anything else must be the current etag; a lost swap is answered with the entry as it
- *   stands ({@link FileConflict}).
+ *   stands ({@link fileConflict}).
  * - Content. A content id names its kind and size with its bytes (inline, or a chunk
  *   list), so no content of one kind can name another's; content already stored under
  *   an id is reused only when it is the same content, else the write fails loudly. A
@@ -90,9 +90,9 @@ import {
 } from "../../contract/src/limits";
 
 import { letGo, planEdit } from "./edit";
-import { FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
+import { type Facts, FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage, Write } from "./gate";
-import { CLIENT_WRITER, CLIENTS, OWNER_SCOPE } from "./manifest";
+import { CLIENT_WRITER, CLIENTS, INDEX_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
 import { refuseErasing } from "./erasure";
 import { refuseRestoring } from "./restore";
@@ -121,7 +121,7 @@ import {
   words,
 } from "./file-search";
 import { windowEnd } from "./bodies";
-import { clock } from "./clock";
+import { clock, clockMs } from "./clock";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { slotted } from "../../contract/src/slots";
 import { APP_RESOURCE } from "../../contract/src/identity";
@@ -138,15 +138,6 @@ export const FILE_QUOTA = "file_quota" satisfies RefusalCode;
 export const FILE_SHARE = "file_share" satisfies RefusalCode;
 export const FILE_INDEX_FULL = "file_index_full" satisfies RefusalCode;
 const FILE_TOO_LARGE = `${FILE_QUOTA}: the file is larger than the owner's file size quota`;
-/**
- * The file index's ceiling: the most the index takes in the owner's object, in the bytes its
- * rows are charged as SQLite lays them out (`manifest_bytes`, each small file's inline bytes
- * in its content's row). The files plane's one technical ceiling (`limits-audit.md`): the
- * object's 10 GB, of which the owner-bound guard gives the index this at `WORST_FILL`
- * (1,208 MB, its largest term). It is no setting, and no upgrade raises it: past it a change
- * is refused (`file_index_full`) and room comes only from deleting files or old versions.
- */
-export const INDEX_BYTES = 512 * 1024 ** 2;
 /** The refusal at the index's ceiling, in plain words: what is full, and what frees it. */
 const INDEX_FULL = `${FILE_INDEX_FULL}: your file index is full: it holds as many files and ` +
   "versions as one owner's index can. Delete files or old versions of files you no longer " +
@@ -403,12 +394,17 @@ export type SyncOutcome =
     readonly code: string;
   };
 
-/** The expected etag is not the entry's; `current` is the entry as stored, or null. */
-export class FileConflict extends Error {
-  override readonly name = "FileConflict";
-  constructor(readonly current: Entry | null) {
-    super("conflict");
-  }
+/**
+ * The expected etag is not the entry's: a `conflict` refusal whose facts carry `current`, the
+ * entry as stored, or null ({@link lostSwap}).
+ */
+function fileConflict(current: Entry | null): Refusal {
+  return new Refusal("conflict", "conflict", { facts: { current } });
+}
+
+/** Whether `error` is a lost compare-and-swap ({@link fileConflict}). */
+export function lostSwap(error: unknown): error is Refusal & { readonly facts: Facts } {
+  return error instanceof Refusal && error.code === "conflict" && error.facts !== undefined;
 }
 
 type StoredEntry = {
@@ -592,8 +588,11 @@ export class Files {
   readonly #protectsSince: () => number | null;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
-  /** The `FILES` puts in flight on this instance, which the erasure waits for. */
-  readonly #puts = new Set<Promise<unknown>>();
+  /**
+   * The `FILES` writes in flight on this instance (its puts, and a restore sweep's deletes),
+   * which the erasure and a restore's `clear` wait for (`settled`).
+   */
+  readonly #writes = new Set<Promise<unknown>>();
   /**
    * Told of each workspace path a change makes or takes away, in that change's own unit:
    * what follows a path (an agent's ledger identity its `agent.json`). A refusal refuses
@@ -694,7 +693,7 @@ export class Files {
     try {
       return this.#storage.transactionSync(() => {
         const before = this.#before(writer);
-        const value = act(Date.now() / 1000);
+        const value = act(clock());
         if (!freeing) {
           this.#bounds(before, writer);
         }
@@ -1017,6 +1016,38 @@ export class Files {
     return this.#reads(sha256s, (ns, key, batch) => this.#store.checkChunks(ns, key, batch));
   }
 
+  /** Each chunk's name in the bucket, in order (`FILES.chunkNames`), `DELETE_BATCH` a call. */
+  async names(sha256s: readonly string[]): Promise<string[]> {
+    if (sha256s.length === 0) {
+      return [];
+    }
+    const { ns, key } = await this.space();
+    const out: string[] = [];
+    for (let at = 0; at < sha256s.length; at += DELETE_BATCH) {
+      out.push(...await this.#store.chunkNames(ns, key, sha256s.slice(at, at + DELETE_BATCH)));
+    }
+    return out;
+  }
+
+  /**
+   * A restore's sweep's delete of the chunks `names` names (`FILES.deleteListed`), held in
+   * flight until it ends (`#sent`), so the restore's `clear` waits for it: a delete another
+   * call of this instance issued never lands after `done` (`restore.ts`).
+   */
+  sweep(ns: string, names: string[]): Promise<{ deleted: number }> {
+    return this.#sent(this.#store.deleteListed(ns, names));
+  }
+
+  /** `write`, a `FILES` write, held among this instance's in flight until it ends. */
+  async #sent<T>(write: Promise<T>): Promise<T> {
+    this.#writes.add(write);
+    try {
+      return await write;
+    } finally {
+      this.#writes.delete(write);
+    }
+  }
+
   /** `read`'s answers to `items` in order, `GET_READS` items a call under the owner's key. */
   async #reads<I, O>(items: readonly I[],
                      read: (ns: string, key: string, batch: I[]) => Promise<O[]>): Promise<O[]> {
@@ -1173,7 +1204,7 @@ export class Files {
   /** The compare-and-swap: `expected` null passes, `""` needs no entry, else its etag. */
   #swap(current: StoredEntry | undefined, expected: string | null): void {
     if (expected !== null && (current === undefined ? "" : etag(current)) !== expected) {
-      throw new FileConflict(current === undefined ? null : shown(current));
+      throw fileConflict(current === undefined ? null : shown(current));
     }
   }
 
@@ -1408,14 +1439,8 @@ export class Files {
       return this.ns();
     });
     const { key } = await this.space();
-    const put = this.#store.putChunks(ns, key,
-                                      chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
-    this.#puts.add(put);
-    try {
-      await put;
-    } finally {
-      this.#puts.delete(put);
-    }
+    await this.#sent(this.#store.putChunks(ns, key,
+                                           chunks.map(({ sha256, bytes }) => ({ sha256, bytes }))));
     await this.#write(() => this.#recordStored(new Set(chunks.map(({ sha256 }) => sha256)),
                                                intentId));
   }
@@ -1443,7 +1468,7 @@ export class Files {
    */
   uploadPlan(intentId: unknown): { chunks: { sha256: string; size: number }[];
                                    pending: string[] } {
-    const intent = this.#intent(intentId, Date.now() / 1000);
+    const intent = this.#intent(intentId, clock());
     const plan = chunkPlan(intent.size);
     return { chunks: intent.chunks.map((sha256, index) => ({ sha256, size: plan[index]! })),
              pending: intent.pending };
@@ -1455,7 +1480,7 @@ export class Files {
    * records its own puts. Only the intent's own chunks are taken.
    */
   stored(intentId: unknown, chunks: unknown): { stored: number } {
-    const intent = this.#intent(intentId, Date.now() / 1000);
+    const intent = this.#intent(intentId, clock());
     const held = new Set(intent.chunks);
     if (!Array.isArray(chunks) || chunks.length === 0 || chunks.length > MAX_INTENT_CHUNKS
         || chunks.some((sha256) => typeof sha256 !== "string" || !held.has(sha256))) {
@@ -1493,13 +1518,23 @@ export class Files {
   }
 
   /**
+   * A read for a restore's sweep (`restore.ts`): `limit` of the hashes of every chunk row, in
+   * any state, after the hash `after` (null: from the first), in order.
+   */
+  chunksAfter(after: string | null, limit: number): string[] {
+    return this.#sql.exec<{ sha256: string }>(
+      "SELECT sha256 FROM file_chunks WHERE sha256 > ? ORDER BY sha256 LIMIT ?", after ?? "",
+      limit).toArray().map((row) => row.sha256);
+  }
+
+  /**
    * A read: the open uploads, and the live one of `writer` that is a file of `size` bytes
    * made of exactly `chunks`, if any. The cutover's import resumes that upload rather than
    * begin another (`import.ts`), so a delivery killed mid-file leaves no second intent.
    */
   openUploads(size: number, chunks: readonly string[], writer: string):
       { open: number; same: string | null } {
-    const now = Date.now() / 1000;
+    const now = clock();
     const open = this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM file_intents WHERE expires_at > ?", now).one().n;
     const same = this.#sql.exec<{ intent_id: string }>(
@@ -1720,7 +1755,7 @@ export class Files {
    * intent declared; each is recorded stored, in a unit, once `FILES` accepted it.
    */
   async upload(intentId: unknown, chunks: unknown): Promise<{ created: number }> {
-    const held = new Set(this.#intent(intentId, Date.now() / 1000).chunks);
+    const held = new Set(this.#intent(intentId, clock()).chunks);
     if (!Array.isArray(chunks) || chunks.length === 0) {
       throw new Refusal("invalid", "an upload sends a list of chunks");
     }
@@ -1927,7 +1962,7 @@ export class Files {
       const there = this.#entry(target);
       if (there !== undefined) {
         if (!options.replace) {
-          throw new FileConflict(shown(there));
+          throw fileConflict(shown(there));
         }
         if (moving.kind === "file" && there.kind === "dir") {
           throw new FileFault("is_directory", "a file never replaces a directory");
@@ -2275,14 +2310,14 @@ export class Files {
    * commit may take it. A read.
    */
   syncWriter(leaseId: unknown, epoch: unknown): string {
-    const lease = this.#fenced(leaseId, epoch, Date.now() / 1000);
+    const lease = this.#fenced(leaseId, epoch, clock());
     return lease.authority !== OWNER_AUTHORITY ? `client:${lease.authority}`
       : `lease:${lease.epoch}`;
   }
 
   /** Who began an open upload (`begin`'s writer). A read. */
   intentWriter(intentId: unknown): string {
-    return this.#intent(intentId, Date.now() / 1000).writer;
+    return this.#intent(intentId, clock()).writer;
   }
 
   /**
@@ -2341,10 +2376,9 @@ export class Files {
           return outcome;
         });
       } catch (error) {
-        if (error instanceof Refusal || error instanceof FileFault
-            || error instanceof FileConflict) {
+        if (error instanceof Refusal || error instanceof FileFault) {
           return { path: named, outcome: "refused" as const, reason: error.message,
-                   code: error instanceof FileConflict ? "conflict" : error.code };
+                   code: error.code };
         }
         throw error;
       }
@@ -2550,7 +2584,7 @@ export class Files {
         this.#prune(now);
       }
     }));
-    if (until - Date.now() < DELETE_FLOOR_MS) {
+    if (until - clockMs() < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one
     }
     // Read and marked in one unit: a chunk read due outside it could be held again (an
@@ -2593,7 +2627,7 @@ export class Files {
       // Bounded by the pass's budget: a late delete is tried again, as a failed one is.
       const { ns, key } = await this.space();
       if (await inTime(this.#store.deleteChunks(ns, key, due),
-                       until - Date.now()) === "late") {
+                       until - clockMs()) === "late") {
         throw new Error("the chunk delete ran past its pass");
       }
     } catch {
@@ -2632,10 +2666,10 @@ export class Files {
     return this.#space().ns;
   }
 
-  /** Once every `FILES` put this instance has in flight has landed or failed. */
+  /** Once every `FILES` write this instance has in flight has landed or failed. */
   async settled(): Promise<void> {
-    while (this.#puts.size > 0) {
-      await Promise.allSettled([...this.#puts]);
+    while (this.#writes.size > 0) {
+      await Promise.allSettled([...this.#writes]);
     }
   }
 
@@ -2779,8 +2813,8 @@ function fileConflicted<T>(act: () => T): T | FileConflicted {
   try {
     return act();
   } catch (error) {
-    if (error instanceof FileConflict) {
-      return { conflict: error.current };
+    if (lostSwap(error)) {
+      return { conflict: error.facts["current"] as Entry | null };
     }
     throw error;
   }
@@ -2790,8 +2824,8 @@ async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileCo
   try {
     return await act();
   } catch (error) {
-    if (error instanceof FileConflict) {
-      return { conflict: error.current };
+    if (lostSwap(error)) {
+      return { conflict: error.facts["current"] as Entry | null };
     }
     throw error;
   }

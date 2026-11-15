@@ -65,7 +65,7 @@ import {
   type LifecycleJob, LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
 } from "agents/lifecycle";
 
-import { clock } from "./clock";
+import { clock, clockMs } from "./clock";
 import type { Write } from "./gate";
 
 /** The schedule's Lifecycle capability id, and the prefix of its job ids. */
@@ -113,7 +113,7 @@ export interface Lane {
   next(now: number): number | null;
   /**
    * One short, bounded pass over what is due at `now`, taking no new row once the wall
-   * clock (`Date.now()`, ms) reaches `until`. Each outside call's failure is kept in its
+   * clock (`clockMs()`) reaches `until`. Each outside call's failure is kept in its
    * own row, backed off there; a throw is a bug, and fails the whole pass. Each of its
    * writes is a unit of the object's write gate. A pass that could take none of its due
    * rows for a reason outside them (the `wakes` lane's kill switch, closed) answers
@@ -216,7 +216,7 @@ export class Schedule extends LifecycleCapability {
     if (lane === undefined || job.id !== laneJob(job.fn) || this.#halted()) {
       return undefined;  // no lane of this code's, or none runs: done
     }
-    const answer = await lane.run(this.#clock(), Date.now() + LANE_PASS_S * 1000);
+    const answer = await lane.run(this.#clock(), clockMs() + LANE_PASS_S * 1000);
     await this.#set(job.fn, heldUntil(answer));
     return undefined;  // superseded by the set above
   }

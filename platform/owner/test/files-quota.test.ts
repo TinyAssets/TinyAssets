@@ -13,7 +13,8 @@ import { storageFull, storageFullRefusal } from "../src/storage-full";
 import { refusalOf } from "../../contract/src/refusal";
 import { CHUNK_BYTES, INLINE_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
 import { FILE_DEFAULTS, KEEP_CEILING } from "../../contract/src/file-defaults";
-import { FILE_INDEX_FULL, INDEX_BYTES } from "../src/files";
+import { FILE_INDEX_FULL } from "../src/files";
+import { INDEX_BYTES } from "../src/manifest";
 import { canonical } from "../../contract/src/canonical";
 import {
   DEFAULT_POLICY_JSON, FILE_SETTINGS, type FileSettings,

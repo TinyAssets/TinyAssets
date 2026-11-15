@@ -179,12 +179,12 @@ export interface Changes {
   readonly reset?: true;
 }
 
-/** The expected etag is not the row's; `current` is the row as stored, or null. */
-export class Conflict extends Error {
-  override readonly name = "Conflict";
-  constructor(readonly current: Row | null) {
-    super("conflict");
-  }
+/**
+ * The expected etag is not the row's: a `conflict` refusal whose facts carry `current`, the
+ * row as stored, or null ({@link conflicted} answers it).
+ */
+function conflict(current: Row | null): Refusal {
+  return new Refusal("conflict", "conflict", { facts: { current } });
 }
 
 type StoredRow = {
@@ -254,10 +254,6 @@ export function changedSql(where: "collection" | "prefix"): string {
     "ORDER BY change LIMIT ?";
 }
 
-function now(): number {
-  return Date.now() / 1000;
-}
-
 export class Collections {
   readonly #storage: OwnerStorage;
   /** How a writing unit adopts a placed body's content (`Bodies.adopt`). */
@@ -313,7 +309,7 @@ export class Collections {
   /**
    * Commit `body` only while `expectedEtag` is the row's; `""` creates the row.
    *
-   * A mismatch throws {@link Conflict} with the row as stored and changes nothing.
+   * A mismatch is a `conflict` refusal with the row as stored, and changes nothing.
    * `historyOp` names the change in the row's history (the board's `claim`, say). `filer` is
    * the writer's files scope (the owner's, or an outside writer's `client:<id>`): the row's
    * bytes count in its share, and a body past `PLACE_BYTES` comes `placed` (ADR-035), its
@@ -344,7 +340,7 @@ export class Collections {
         throw new Refusal("invalid", "a row keeps the privacy it was created with");
       }
       if ((row === undefined ? "" : row.etag) !== expectedEtag) {
-        throw new Conflict(row === undefined ? null : shown(row));
+        throw conflict(row === undefined ? null : shown(row));
       }
       // A row made again goes on past every revision an erase gave, so none repeats.
       const revision = 1 + (row !== undefined ? row.revision : sql.exec<{ floor: number }>(
@@ -358,7 +354,7 @@ export class Collections {
           "INSERT INTO collection_seqs VALUES (?, ?) ON CONFLICT (collection) " +
             "DO UPDATE SET seq = excluded.seq", collection, seq,
         );
-        const at = now();
+        const at = clock();
         const change = this.#tick();
         // An upsert on the row's key alone: a seq collision fails loudly on
         // UNIQUE (collection, seq) instead of replacing another row.
@@ -632,7 +628,7 @@ export class Collections {
       "INSERT INTO collection_seqs VALUES (?, ?) ON CONFLICT (collection) " +
         "DO UPDATE SET seq = excluded.seq", collection, this.#top(collection),
     );
-    const at = now();
+    const at = clock();
     for (const { row_id: rowId, revision, private: hidden, writer, change } of rows) {
       sql.exec("DELETE FROM collection_history WHERE collection = ? AND key = ?",
                collection, rowId);
@@ -660,7 +656,7 @@ export class Collections {
   /**
    * Delete one row only while `expectedEtag` is its etag (the owner's act alone).
    *
-   * A mismatch throws {@link Conflict} with the row as `get` shows it, and changes
+   * A mismatch is a `conflict` refusal with the row as `get` shows it, and changes
    * nothing. Like a clear, a delete never lowers the collection's `seq` and a pull
    * never shows it.
    */
@@ -675,7 +671,7 @@ export class Collections {
       if (!this.#erase(caller, collection, "delete",
                        " AND row_id = ? AND etag = ? AND (private = 0 OR writer = ?)",
                        [rowId, expectedEtag, caller])) {
-        throw new Conflict(this.get(caller, collection, rowId).row);
+        throw conflict(this.get(caller, collection, rowId).row);
       }
       return { deleted: 1 };
     });
@@ -744,8 +740,8 @@ export function conflicted<T>(act: () => T): T | Conflicted {
   try {
     return act();
   } catch (error) {
-    if (error instanceof Conflict) {
-      return { conflict: error.current };
+    if (error instanceof Refusal && error.code === "conflict" && error.facts !== undefined) {
+      return { conflict: error.facts["current"] as Row | null };
     }
     throw error;
   }

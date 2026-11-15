@@ -180,6 +180,12 @@ export interface ChunkStore {
    */
   sweepManifests(ns: string, keep: string[], cursor: string | null):
     Promise<{ deleted: number; cursor: string | null }>;
+  /** The names of chunks (at most 1,000) in the bucket, by hash under the owner's key. */
+  chunkNames(ns: string, key: string, sha256s: string[]): Promise<string[]>;
+  /** One page of the namespace's chunk names after `after` (null: the first); whether more. */
+  listChunks(ns: string, after: string | null): Promise<{ names: string[]; more: boolean }>;
+  /** Chunks deleted (at most 1,000) by their names: a restore's sweep's alone. */
+  deleteListed(ns: string, names: string[]): Promise<{ deleted: number }>;
 }
 
 /** `FilesUpload`, as the upload door binds it: chunks put, and nothing read. */

@@ -11,8 +11,8 @@
  *
  * Read from the syntax tree, by name (an error base is any name ending in `Error`, and the
  * contract's `Refusal` and `FileFault`): a tripwire for our own code, not proof against
- * deliberate evasion. `ci/guards/refusals.test.ts` holds it over the tree, with what each
- * workspace owes (`owed.ts`) the only exceptions.
+ * deliberate evasion. `ci/guards/refusals.test.ts` holds it over the tree, with no exception
+ * (`owed.ts` holds none).
  */
 import ts from "typescript";
 

@@ -398,7 +398,7 @@ export interface Fit {
  * unique bytes inline, counted for the report; its largest file (`max_file_bytes`), and
  * every byte stored against the tier's storage. An owner past one is refused before the
  * window (research §3: the import never raises a setting; the fix is the owner's, told).
- * The file index's ceiling (`owner/src/files.ts` `INDEX_BYTES`) is the object's, which
+ * The file index's ceiling (`owner/src/manifest.ts` `INDEX_BYTES`) is the object's, which
  * refuses past it loudly as the import writes (`file_index_full`).
  */
 export function fitOf(owner: Owner, built: Built, tiers: Tiers): Fit {

@@ -187,8 +187,7 @@ describe("an agent's deletion", () => {
       }
     });
     expect(refused).toBe("storage_busy: earlier deleted agents' mail is still being removed " +
-                         `from the archive; try again in ${STORAGE_BUSY_RETRY_S} seconds. ` +
-                         JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S }));
+                         `from the archive; try again in ${STORAGE_BUSY_RETRY_S} seconds.`);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_purges"))
       .toEqual([{ n: maxAgentRows }]);
     expect((await chained(r, first!))).toBe("m 0");  // the muse and its mail kept
