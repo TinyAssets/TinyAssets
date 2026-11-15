@@ -12,7 +12,7 @@ A restore took only a generation of the object's own schema (`restore.ts` `resto
    - **The staged count** keeps counting each line's bytes as its object holds them, before any bringing-forward: the capture's measure, so the pin's judgment and the log step agree for any schema.
 3. **The guard** (`owner/guards/migrations.test.ts`):
    - one `FORWARD` entry a migration;
-   - a null entry's migration text names no exported table (`\b<table>\b`);
+   - a null entry's migration text names no exported table (`\b<table>\b`), nor a table whose triggers write one (review: `file_scope_chunks_removed` writes `file_chunks`, so a null migration deleting scope chunks passed the text alone);
    - generations are brought forward from 9 to the code's schema, and none before or after;
    - the export's shape (`exported()`'s digest) pinned with its schema count, so the export changed with no migration fails it. That was a hidden link: two readings of one schema number. Each new migration pins it again.
 4. **The record keeps both schemas** (migration 16): `owner_restore.schema`, the object's when the restore was begun, and `source`, the generation's. `restoreBegin` writes both on its insert and its upsert; the pin's upsert clears them.

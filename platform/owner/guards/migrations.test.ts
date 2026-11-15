@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { exported } from "../src/export";
+import { exported, NOT_EXPORTED } from "../src/export";
 import type { Migration } from "../../contract/src/migrate";
 import { FORWARD, MIGRATIONS, unforwardable } from "../src/schema";
 import { holdLocks } from "../../ci/kit/locks";
@@ -95,12 +95,32 @@ const EXPORT_SHAPE = { schema: 16, sha256:
   "15f28c74a9c665073bd86deed1f6f4556e0cb3df9f5937298e24bb47074d97bf" };
 
 describe("every migration says how a generation from before it is brought forward", () => {
-  it("one entry a migration, null only where its text names no exported table", () => {
+  it("one entry a migration, null only where its text names no exported table, nor reaches " +
+     "one through a trigger", () => {
     expect(FORWARD).toHaveLength(MIGRATIONS.length);
-    const tables = Object.keys(exported());
+    const exportedTables = new Set(Object.keys(exported()));
+    const tables = [...exportedTables, ...Object.keys(NOT_EXPORTED)];
+    // Each table's triggers' writes, from every trigger a migration made: a write to a table
+    // reaches what they write, as `file_scope_chunks_removed` reaches `file_chunks`.
+    const writes = new Map<string, string[]>();
+    for (const sql of MIGRATIONS.flat()) {
+      const on = /^CREATE TRIGGER \w+ [^;]*? ON (\w+)/.exec(sql)?.[1];
+      if (on !== undefined) {
+        writes.set(on, [...writes.get(on) ?? [], ...[...sql.slice(sql.indexOf(" BEGIN "))
+          .matchAll(/\b(?:UPDATE|INTO|DELETE FROM)\s+(\w+)/g)].map((write) => write[1]!)]);
+      }
+    }
+    const reached = (from: string[]): Set<string> => {
+      const seen = new Set(from);
+      for (const table of seen) {
+        (writes.get(table) ?? []).forEach((write) => seen.add(write));
+      }
+      return seen;
+    };
     const named = MIGRATIONS.flatMap((migration, at) => FORWARD[at] !== null ? []
-      : tables.filter((table) => migration.some((sql) => new RegExp(`\\b${table}\\b`).test(sql)))
-        .map((table) => `migration ${at + 1} names ${table}`));
+      : [...reached(tables.filter((table) => migration.some((sql) =>
+          new RegExp(`\\b${table}\\b`).test(sql))))].filter((table) => exportedTables.has(table))
+        .map((table) => `migration ${at + 1} names or reaches ${table}`));
     expect(named).toEqual([]);
   });
 

@@ -2390,8 +2390,8 @@ const UNREPLAYABLE = "before a restore could bring a generation forward: migrati
  * null where the migration changes no exported table (`export.ts` `exported`), so each line
  * of the schema before is the same line after it; else why no generation from before it can
  * be brought forward, in the words a restore refuses it with. The migrations guard holds one
- * entry a migration, and a null one's text to naming no exported table
- * (`guards/migrations.test.ts`). A migration that changes an exported table declares a form
+ * entry a migration, and a null one's text to naming no exported table, nor a table whose
+ * triggers write one (`guards/migrations.test.ts`). A migration that changes an exported table declares a form
  * that brings each line forward alone, built in its own PR; declaring one refused after the
  * cutover strands every owner's kept generations, which is the founder's call.
  */
