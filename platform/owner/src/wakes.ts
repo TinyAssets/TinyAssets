@@ -241,13 +241,24 @@ export class Doorbell implements WakeSender, Lane {
    * (`ledger.resealed`), each in a unit of its own; one the gateway found under its active
    * kid is left as it is. A replaced secret still signing beside it (`previous_blob`) is
    * bound to its own version, so it is not resealed: it counts under its own kid until its
-   * window lapses.
+   * window lapses. A blob the gateway refuses (one that no longer opens or passes its record,
+   * which a ring answers `refused`, never sent) is counted left, as it is, and the rest are
+   * swept all the same.
    */
   async reseal(): Promise<Swept[]> {
     const { ledger, write, clock } = this.#deps;
     const swept: Swept[] = [];
     for (const held of ledger.sealedCallbacks(clock())) {
-      const answer = await this.#deps.reseal(held.subscription_id, held.version, held.blob);
+      let answer: Resealed;
+      try {
+        answer = await this.#deps.reseal(held.subscription_id, held.version, held.blob);
+      } catch (error) {
+        if ((refusalOf(error)?.status ?? 500) >= 500) {
+          throw error;
+        }
+        swept.push({ active: null, under: null, resealed: false });
+        continue;
+      }
       const kept = answer.kid !== held.kid
         && await write(() => ledger.resealed(held.subscription_id, held, answer));
       swept.push({ active: answer.kid, under: answer.kid === held.kid || kept ? answer.kid : null,

@@ -849,6 +849,26 @@ describe("a gateway key rotation's sweep of the doorbell", () => {
     expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 0, kid: "k2" });
   });
 
+  it("counts a blob the gateway refuses left, and sweeps the other subscriptions all the same",
+     async () => {
+    const r = await rung();
+    await r.register(MUSE, "Muse", "mcp_event");
+    await subscribed(r, MUSE, {}, "chat", null, true);
+    await subscribed(r, MUSE, {}, "chat2", null, true);
+    const [first, second] = await r.sql(
+      "SELECT subscription_id, blob FROM wake_callbacks ORDER BY subscription_id");
+    // The first's blob is the second's: it opens for no binding of its own, as a ring finds it.
+    await r.sql("UPDATE wake_callbacks SET blob = ? WHERE subscription_id = ?", second!["blob"]!,
+                first!["subscription_id"]!);
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 1, kid: "k2" });
+    expect(await r.sql("SELECT kid FROM wake_callbacks ORDER BY subscription_id"))
+      .toEqual([{ kid: "k1" }, { kid: "k2" }]);
+    // Every blob refused: the gateway named no kid, and both are still left.
+    await r.sql("UPDATE wake_callbacks SET blob = ? WHERE subscription_id = ?", second!["blob"]!,
+                second!["subscription_id"]!);
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 0, left: 2, kid: null });
+  });
+
   it("keeps a refresh that lands while the gateway reseals, counting it left, and counts the " +
      "replaced secret left until its window lapses", async () => {
     const r = await rung();

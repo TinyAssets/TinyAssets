@@ -168,11 +168,11 @@ export interface ResealAnswer {
 
 /**
  * One blob sealed under the gateway's ring, as the owner's sweep left it: the active kid the
- * gateway answered for it, the kid it is under now (null: it lost its swap, or went), and
- * whether this sweep resealed it.
+ * gateway answered for it (null: it refused the blob, naming none), the kid it is under now
+ * (null: it lost its swap, went, or was refused), and whether this sweep resealed it.
  */
 export interface Swept {
-  readonly active: string;
+  readonly active: string | null;
   readonly under: string | null;
   readonly resealed: boolean;
 }
@@ -183,9 +183,9 @@ export interface Swept {
  * before the change left too.
  */
 export function resealAnswer(swept: readonly Swept[]): ResealAnswer {
-  const kid = swept.at(-1)?.active ?? null;
+  const kid = swept.findLast((blob) => blob.active !== null)?.active ?? null;
   return { resealed: swept.filter((blob) => blob.resealed).length,
-           left: swept.filter((blob) => blob.under !== kid).length, kid };
+           left: swept.filter((blob) => blob.under === null || blob.under !== kid).length, kid };
 }
 
 /** A restore's generation (`owner/src/restore.ts`): its namespace (32 hex) and id (16 hex). */
