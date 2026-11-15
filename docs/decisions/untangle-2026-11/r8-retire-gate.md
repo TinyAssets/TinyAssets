@@ -15,7 +15,7 @@ Lane R's owed item from the rotation driver (`r7-rotation-driver.md` item 11): a
 
    So the fix is a rule on a record alone: the gate reads when the latest write from the copy into R2 began.
 3. **The shapes weighed.**
-   - **Refuse to restore during a rotation: rejected.** A `FILES_KEYRING` rotation lasts at least 24 days (a pass, a night, then 23 days), and the copy keeps a hidden version 22 days. A mistaken deletion found early in a rotation could not be restored until its versions were gone, so its data would be lost. After an account loss the control namespace is gone too, so the refusal would have nothing to read.
+   - **Refuse to restore during a rotation: rejected.** A `FILES_KEYRING` rotation lasts more than 23 days (a pass, the next night, then 23 days), and the copy keeps a hidden version 22 days. A mistaken deletion found early in a rotation could not be restored until its versions were gone, so its data would be lost. After an account loss the control namespace is gone too, so the refusal would have nothing to read.
    - **Mark the rotation's record: rejected.** R8 would have to find every rotation record (one per keyring and active kid), parse and rewrite another module's record, and race a rotation run writing the same key.
    - **Read R8's workflow runs from GitHub, as the nights are read: rejected.** It names a workflow and job nothing defines yet.
    - **List the copy's root versions and read each one's kid: rejected.** The deploy job would need the B2 keys and a read of every root version of every owner. The time gate is exact while each night holds the bucket's lock and lifecycle (`held`).
@@ -42,7 +42,7 @@ Lane R's owed item from the rotation driver (`r7-rotation-driver.md` item 11): a
    - `copied` and `copy` carried one fact twice, with a throw for when they disagreed ("its copy's nights were not read"). Now `copy` is null exactly when the copy never holds the ring.
    - `copy.night` was null before any pass swept. That case is gone too.
    - Three tests each faked GitHub's record of the copy's nights: `canary.test.ts`, `rotation.test.ts` and the new `retire` test. They now share one fake, `deploy/guards/copy-nights.ts`.
-7. **Owed: R8, `untangle/r8-copy-restore` (`tasks.md`).** Every write from the copy into R2 puts the record before its first byte and runs in the kit's concurrency group, and every erasure the copy can't show is applied first (`r4.md` item 13). A copy back by hand records nothing, so R8's steps never tell the founder to copy back by hand, as research §4.6 step 1 did. R8 adds the record's writer beside `restoreBegan`.
+7. **Owed: R8, `untangle/r8-copy-restore` (`tasks.md`).** Every write from the copy into R2 puts the record before its first byte and runs in the kit's concurrency group, and every erasure the copy can't show is applied first (`r4.md` item 13). A copy back by hand records nothing, so R8's steps never tell the founder to copy back by hand, as research §4.6 step 1 did, and `checklist.md` forbids it meanwhile. R8 adds the record's writer beside `restoreBegan`.
 8. **The proof.** Fakes and fixed times only; nothing live.
    - `rotation.test.ts`, `retirement`:
      - one pass and 23 days after its next night hold;

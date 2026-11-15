@@ -656,7 +656,10 @@ The steps, on your own computer (about $0.50 a month at today's size):
 **The first copied nights** show, in the run's summary, both sides' counts and bytes and how
 many objects were compared byte for byte. A restore from the copy is a later step of its own.
 For it you mint an R2 write key on `tinyassets-files`, ending the next day, and revoke it
-after. No standing key can write the files bucket.
+after. No standing key can write the files bucket. Never copy back by hand, even before that
+step exists: it writes the restore record (`deploy:offsite:restore`) before its first byte, and
+a copy back that records nothing lets mode `retire` pass while R2 and the copy still hold roots
+under a retiring kid of `FILES_KEYRING`.
 
 ## Registrations you make by hand at the providers
 
