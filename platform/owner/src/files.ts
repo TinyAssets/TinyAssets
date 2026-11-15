@@ -109,8 +109,10 @@ import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./ho
 import {
   AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
 } from "../../contract/src/sync-ignore";
-import type { Account, Call, Door } from "./door";
-import type { OwnerState } from "./owner-do";
+import type { Backups } from "./backup";
+import type { Collections } from "./collections";
+import type { Account, Call, Door, DoorUnits, ObjectReads } from "./door";
+import type { Notices } from "./notices";
 import type { Binding } from "../../contract/src/binding";
 import type { Edited, EditRefusal } from "./edit";
 import {
@@ -244,13 +246,24 @@ export interface ChunkSpace {
 export type HeldBack = { readonly kept: number; readonly changed: number };
 
 /**
- * A workspace path a change made or took away, in that change's own unit: whether it is
- * there now, and the change itself (its writer, a file's content and size, and what the sync
- * commit that made it says its sync agent counted held back, else null).
+ * A change of the owner's files: its writer, a file's content and size, and what the sync
+ * commit that made it says its sync agent counted held back, else null.
  */
-export type Changed = (path: string, present: boolean, now: number,
-                       change: { writer: string; content_id: string | null; size: number;
-                                 held_back: HeldBack | null })
+export interface FileChange {
+  readonly writer: string;
+  readonly content_id: string | null;
+  readonly size: number;
+  readonly held_back: HeldBack | null;
+}
+
+/**
+ * What a module does when a workspace path a change made or took away is one it follows,
+ * in that change's own unit: whether the path is there now, and the change. Each reaction
+ * holds its own path's test, the files' table of them (`Files`' `reactions`) none: the
+ * ledger's follows each agent's `agent.json` (`Ledger.agentFiles`), and the sync's ignore
+ * list's tells the owner (`syncIgnoreReaction`). A refusal refuses the change.
+ */
+export type FileReaction = (path: string, present: boolean, now: number, change: FileChange)
   => void;
 
 /**
@@ -607,12 +620,8 @@ export class Files {
    * which the erasure and a restore's `clear` wait for (`settled`).
    */
   readonly #writes = new Set<Promise<unknown>>();
-  /**
-   * Told of each workspace path a change makes or takes away, in that change's own unit:
-   * what follows a path (an agent's ledger identity its `agent.json`). A refusal refuses
-   * the change.
-   */
-  readonly #changed: Changed;
+  /** What follows a workspace path a change makes or takes away (`FileReaction`). */
+  readonly #reactions: () => readonly FileReaction[];
   /**
    * The refusal at the storage figure (`storage-full.ts`): the one wall, its message naming
    * what is stored, what the change needs, what open uploads hold apart, the whole, how to
@@ -631,13 +640,14 @@ export class Files {
   #heldBack: HeldBack | null = null;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write, full: Full, changed: Changed, protectsSince: () => number | null) {
+              write: Write, full: Full, reactions: () => readonly FileReaction[],
+              protectsSince: () => number | null) {
     this.#storage = storage;
     this.#protectsSince = protectsSince;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
-    this.#changed = changed;
+    this.#reactions = reactions;
     this.#full = full;
   }
 
@@ -1179,8 +1189,10 @@ export class Files {
       version, path, op, kind, contentId, size, mode, writer, now,
     );
     this.#retain(path, kind !== null);
-    this.#changed(path, kind === "file", now, { writer, content_id: contentId, size,
-                                                 held_back: this.#heldBack });
+    const change = { writer, content_id: contentId, size, held_back: this.#heldBack };
+    for (const react of this.#reactions()) {
+      react(path, kind === "file", now, change);
+    }
     return version;
   }
 
@@ -2905,9 +2917,6 @@ export function flag(value: unknown, what: string): boolean {
   return value;
 }
 
-/** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
-const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
-
 /**
  * What a sync commit's write of the sync-ignore list says of the files it holds back, as its
  * sync agent counted them (`sync.ts`): the kept files its lines name, and those with changes.
@@ -3096,17 +3105,37 @@ export interface FileConflicted {
 
 // -- THE DOORS: the `files` rows' handlers (`contract/doors.json`) --------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`FilesDoorNeeds`) once the row's steps held: the bind, the account, the scope
+// and the fields.
 //
 // These doors move at most two chunks a call. The HTTP and MCP doors (tasks 2) stream
 // larger files from the binder to `FILES` itself. Another RPC may run in the object
 // whenever one awaits `FILES`, so a door that crosses to it writes its account first,
 // in a unit, and its later steps through units of their own (`Files`).
 
+/**
+ * What the `files` doors reach: the files; the grants a client's full authority and the
+ * owner's session a tree only the owner reads are checked against, and the refusal receipt
+ * of one that is not; what the storage figure counts beside the files (the mail, the
+ * collections, the generations kept).
+ */
+export interface FilesDoorNeeds extends Pick<DoorUnits, "door" | "sync">,
+                                        Pick<ObjectReads, "storage"> {
+  readonly files: Files;
+  readonly grants: { full(client: string): boolean };
+  /** The owner's live session checked: its hash, never a proof (the runner's alone). */
+  readonly sessions: { live(proof: unknown, now: number): string };
+  readonly policy: {
+    refusal(action: string, request: unknown, now: number): void;
+  };
+  readonly ledger: { storedBytes(): number };
+  readonly collections: Pick<Collections, "storedBytes">;
+  readonly backups: Pick<Backups, "manifests">;
+}
+
 /** A directory's page (`fileList`). */
-function listed(o: OwnerState, { r, readable }: Call):
+function listed(o: FilesDoorNeeds, { r, readable }: Call):
     { entries: (Entry & { head?: string })[]; next: string | null } {
   const listed = o.files.list(r["dir"], r["after"] ?? null, r["limit"]);
   const entries = listed.entries.filter((entry) => readable?.test(entry.path) ?? true);
@@ -3136,7 +3165,7 @@ function listed(o: OwnerState, { r, readable }: Call):
  * changes nothing there: it is a widening, taken only in the owner's live session and
  * receipted when refused, against a leaked app token.
  */
-function ownersTree(o: OwnerState, binding: Binding, account: Account, action: string,
+function ownersTree(o: FilesDoorNeeds, binding: Binding, account: Account, action: string,
                     request: unknown, ...paths: unknown[]): void {
   if (!paths.some((path) => ownersOnly(storedPath(path)))) {
     return;
@@ -3167,7 +3196,7 @@ function ownersTree(o: OwnerState, binding: Binding, account: Account, action: s
 }
 
 /** A search's page (`fileSearch`). */
-function searched(o: OwnerState, { r }: Call):
+function searched(o: FilesDoorNeeds, { r }: Call):
     { results: SearchResult[]; next_cursor: string | null; note?: string } {
   const query = r["query"];
   if (typeof query !== "string" || utf8Bytes(query) > SEARCH_QUERY_BYTES) {
@@ -3195,7 +3224,7 @@ function searched(o: OwnerState, { r }: Call):
  * sees every path, the sync agent its lease's readable set (`#syncer`), so no content door
  * shows a path its change feed would not.
  */
-function visible(o: OwnerState, call: Call, path: unknown): void {
+function visible(o: FilesDoorNeeds, call: Call, path: unknown): void {
   if (typeof path === "string" && call.readable !== null && !call.readable.test(path)) {
     throw new FileFault("not_found", "no such file");
   }
@@ -3205,7 +3234,7 @@ function visible(o: OwnerState, call: Call, path: unknown): void {
  * The text of `content` from `offset`, at most `max` bytes cut back to a character: its
  * inline bytes, or the chunks the window spans (at most two reads).
  */
-async function textWindow(o: OwnerState, content: Content, offset: number, max: number):
+async function textWindow(o: FilesDoorNeeds, content: Content, offset: number, max: number):
     Promise<{ text: string | null; next: number | null }> {
   const size = content.entry.size;
   const want = Math.min(size, offset + max + 4);  // a character's tail past the window
@@ -3220,42 +3249,38 @@ async function textWindow(o: OwnerState, content: Content, offset: number, max: 
 }
 
 /**
- * What a file change tells, as the object's stores wire it (`ownerStores`): its ledger, policy
- * receipts, notices, grants' names and files, and the agents of the runs under a sandbox
- * lease (`runs.ts` `agentsAt`).
+ * What a change of the sync's ignore list tells, as the object's stores wire it
+ * (`ownerStores`): the policy's receipts, the notices, the grants' names, the files' own
+ * contents, and the agents of the runs under a sandbox lease (`runs.ts` `agentsAt`).
  */
-export type Told = Pick<OwnerState, "ledger" | "policy" | "notices" | "grants" | "files"> & {
+export interface SyncIgnoreTold {
+  readonly policy: {
+    receipt(kind: "write", fields: { rule: string; outcome: string; decision: string },
+            now: number): void;
+  };
+  readonly notices: Pick<Notices, "add">;
+  readonly grants: { name(client: string): string };
+  readonly files: Pick<Files, "inlineOf" | "contentBefore" | "lastVersion">;
   readonly agentsAt: (epoch: number, most: number) => string[];
-};
-
-/**
- * A file change, in its own unit, as the owner's other modules follow it: each agent's ledger
- * identity follows its `agent.json`; and every agent may edit the sync's ignore list (the
- * founder's every-agent-full-power rule), but never unseen: each change is a receipt and one
- * notice for the owner.
- */
-export function fileChanged(o: Told, ...[path, present, now, change]: Parameters<Changed>):
-    void {
-  const agent = AGENT_FILE.exec(path)?.[1];
-  if (agent !== undefined) {
-    if (present) {
-      o.ledger.appear(agent, now);
-    } else {
-      o.ledger.retire(agent, now);
-    }
-  }
-  if (path === SYNC_IGNORE) {
-    syncIgnoreChanged(o, present, now, change);
-  }
 }
 
 /**
- * A change to the sync's ignore list, in its own unit: a receipt and one notice naming
- * who changed it (the owner, an agent's run, or an outside client), and, when a line it
- * adds stops files the owner already keeps from syncing their changes, how many and which.
+ * The sync's ignore list's reaction: every agent may edit it (the founder's
+ * every-agent-full-power rule), but never unseen. Each change, in its own unit, is a
+ * receipt and one notice naming who changed it (the owner, an agent's run, or an outside
+ * client), and, when a line it adds stops files the owner already keeps from syncing their
+ * changes, how many and which.
  */
-function syncIgnoreChanged(o: Told, present: boolean, now: number,
-                           change: Parameters<Changed>[3]): void {
+export function syncIgnoreReaction(o: SyncIgnoreTold): FileReaction {
+  return (path, present, now, change) => {
+    if (path === SYNC_IGNORE) {
+      syncIgnoreChanged(o, present, now, change);
+    }
+  };
+}
+
+function syncIgnoreChanged(o: SyncIgnoreTold, present: boolean, now: number,
+                           change: FileChange): void {
   const outcome = present ? "changed" : "removed";
   const who = writerNamed(o, change.writer);
   o.policy.receipt("write", { rule: "sync_ignore", outcome, decision: who }, now);
@@ -3307,7 +3332,7 @@ function syncIgnoreChanged(o: Told, present: boolean, now: number,
  * Who a file change's writer is, in words the owner reads: the owner; the agents whose
  * runs hold the owner's sandbox lease it was synced under; or an outside client by name.
  */
-function writerNamed(o: Told, writer: string): string {
+function writerNamed(o: SyncIgnoreTold, writer: string): string {
   const epoch = /^lease:([0-9]+)$/.exec(writer)?.[1];
   if (epoch !== undefined) {
     // The agents named at most three, so the receipt stays its size.
@@ -3326,14 +3351,14 @@ function writerNamed(o: Told, writer: string): string {
 
 /** The `files` doors' handlers, by door. */
 export const filesDoors = Object.freeze({
-  fileStat(o: OwnerState, { r }: Call<FileRequest>): { entry: Entry | null } {
+  fileStat(o: FilesDoorNeeds, { r }: Call<FileRequest>): { entry: Entry | null } {
     return { entry: o.files.stat(r["path"]) };
   },
   /**
    * A directory's entries by name; with `head_chars`, each small file's (inline, so no
    * bucket is read) first characters of its text, enough for its frontmatter.
    */
-  async fileList(o: OwnerState, door: Door<FileListRequest>):
+  async fileList(o: FilesDoorNeeds, door: Door<FileListRequest>):
       Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
     return o.door(() => listed(o, door.check()));
   },
@@ -3343,7 +3368,7 @@ export const filesDoors = Object.freeze({
    * unit, a technical ceiling), cut back to a character boundary, and where the next window
    * starts (null at the end). A file that is not UTF-8 text is refused as such.
    */
-  async fileText(o: OwnerState, door: Door<FileTextRequest>):
+  async fileText(o: FilesDoorNeeds, door: Door<FileTextRequest>):
       Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
     const asked = await o.door(() => {
       const { r } = door.check();
@@ -3379,7 +3404,7 @@ export const filesDoors = Object.freeze({
    * one answered or the last entry read, null at the end; a query of at most
    * `SEARCH_QUERY_BYTES`.
    */
-  async fileSearch(o: OwnerState, door: Door<FileSearchRequest>):
+  async fileSearch(o: FilesDoorNeeds, door: Door<FileSearchRequest>):
       Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
     return o.door(() => searched(o, door.check()));
   },
@@ -3388,7 +3413,7 @@ export const filesDoors = Object.freeze({
    * chunk's, the files plane's own unit; `file_read` reads past it), the app's url for a
    * citation, and its metadata.
    */
-  async fileFetch(o: OwnerState, door: Door<FileFetchRequest>):
+  async fileFetch(o: FilesDoorNeeds, door: Door<FileFetchRequest>):
       Promise<{ id: string; title: string; text: string; url: string;
                                         metadata: FetchMetadata }> {
     const content = await o.door(() => o.files.open(door.check().r["id"]));
@@ -3453,7 +3478,7 @@ export const filesDoors = Object.freeze({
    * caller's authority and the agent trees each try, at most `APPEND_TRIES` times, past which
    * it is refused `file_busy`.
    */
-  async fileAppend(o: OwnerState, door: Door<FileAppendRequest>): Promise<{ entry: Entry }> {
+  async fileAppend(o: FilesDoorNeeds, door: Door<FileAppendRequest>): Promise<{ entry: Entry }> {
     const { account, path, added } = await o.door(() => {
       const { account, r } = door.check();
       ownersTree(o, door.binding, account, "FILES.append", door.request, r["path"]);
@@ -3550,7 +3575,7 @@ export const filesDoors = Object.freeze({
    * is absent, never with no etag at all (review H1): a replacement never lands over a file
    * the agent did not read. The owner's own app may still write with none.
    */
-  async fileWrite(o: OwnerState, door: Door<FileWriteRequest>):
+  async fileWrite(o: FilesDoorNeeds, door: Door<FileWriteRequest>):
       Promise<{ entry: Entry } | FileConflicted> {
     const { account, r, content } = await o.door(() => {
       const { account, r } = door.check();
@@ -3587,7 +3612,7 @@ export const filesDoors = Object.freeze({
    * (`edit.ts`, ADR-037), each chunk read or made in a step of the isolate's units of its
    * own, at most `EDIT_BYTES_MAX`; a small one, whole.
    */
-  async fileEdit(o: OwnerState, door: Door<FileEditRequest>):
+  async fileEdit(o: FilesDoorNeeds, door: Door<FileEditRequest>):
       Promise<{ entry: Entry } | FileConflicted> {
     const asked = await o.door(() => {
       const { account, r } = door.check();
@@ -3686,17 +3711,17 @@ export const filesDoors = Object.freeze({
       await o.sync();
     }
   },
-  fileHistory(o: OwnerState, { r }: Call<FileHistoryRequest>):
+  fileHistory(o: FilesDoorNeeds, { r }: Call<FileHistoryRequest>):
       { changes: Change[]; next: number | null } {
     // One answer holds the page (`pages.ts`): when versions are left, `next` the last's.
     const kept = o.files.history(r["path"], r["before"] ?? null, r["limit"]);
     return fitList(kept, kept.changes, { changes: [], next: Number.MAX_SAFE_INTEGER },
                    (changes) => ({ changes, next: changes.at(-1)!.version }));
   },
-  fileUsage(o: OwnerState, { account }: Call<undefined>): Usage {
+  fileUsage(o: FilesDoorNeeds, { account }: Call<undefined>): Usage {
     return o.files.usage(fileWriter(account));
   },
-  fileMkdir(o: OwnerState, { account, r, binding, request }: Call<MkdirRequest>):
+  fileMkdir(o: FilesDoorNeeds, { account, r, binding, request }: Call<MkdirRequest>):
       { entry: Entry } | FileConflicted {
     ownersTree(o, binding, account, "FILES.mkdir", request, r["path"]);
     return fileConflicted(() => ({
@@ -3704,7 +3729,7 @@ export const filesDoors = Object.freeze({
                                             writer: fileWriter(account) }),
     }));
   },
-  fileRemove(o: OwnerState, { account, r, binding, request }: Call<RemoveRequest>):
+  fileRemove(o: FilesDoorNeeds, { account, r, binding, request }: Call<RemoveRequest>):
       { removed: number } | FileConflicted {
     ownersTree(o, binding, account, "FILES.remove", request, r["path"]);
     heldToRead(account, r["expected_etag"]);
@@ -3712,7 +3737,7 @@ export const filesDoors = Object.freeze({
       expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
       writer: fileWriter(account) }));
   },
-  fileRename(o: OwnerState, { account, r, binding, request }: Call<RenameRequest>):
+  fileRename(o: FilesDoorNeeds, { account, r, binding, request }: Call<RenameRequest>):
       { entry: Entry } | FileConflicted {
     ownersTree(o, binding, account, "FILES.rename", request, r["from"], r["to"]);
     heldToRead(account, r["expected_etag"]);
@@ -3722,7 +3747,7 @@ export const filesDoors = Object.freeze({
         writer: fileWriter(account) }),
     }));
   },
-  fileRestore(o: OwnerState, { account, r, binding, request }: Call<RestoreRequest>):
+  fileRestore(o: FilesDoorNeeds, { account, r, binding, request }: Call<RestoreRequest>):
       { entry: Entry } | FileConflicted {
     ownersTree(o, binding, account, "FILES.restore", request, r["path"]);
     heldToRead(account, r["expected_etag"]);
@@ -3739,7 +3764,7 @@ export const filesDoors = Object.freeze({
    * mail (`messages`), collection rows and their history (`collections`), and files, the
    * rest. Platform bookkeeping (indexes, receipts, counters) is not user content.
    */
-  storageUsage(o: OwnerState, _call: Call<undefined>): {
+  storageUsage(o: FilesDoorNeeds, _call: Call<undefined>): {
     used_bytes: number; limit_bytes: number | null;
     breakdown: { files: number; messages: number; collections: number };
     deleted_content: { kept_bytes: number; kept_up_to_days: number } } {
@@ -3763,7 +3788,7 @@ export const filesDoors = Object.freeze({
    * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is. While a restore holds the
    * owner, its generations are counted left, so a rotation never finishes past a hold.
    */
-  async dataKeyRewrap(o: OwnerState, door: Door<undefined>): Promise<RewrapAnswer> {
+  async dataKeyRewrap(o: FilesDoorNeeds, door: Door<undefined>): Promise<RewrapAnswer> {
     const { held, gens } = await o.door(() => {
       door.check();
       // A restore's generations are under its record's namespace, which a wiped object no
@@ -3783,7 +3808,7 @@ export const filesDoors = Object.freeze({
    * binder is the trust root, already reaching every owner's object, so handing it this
    * owner's namespace weakens no isolation.
    */
-  async fileUploadTarget(o: OwnerState, door: Door<IntentRequest>):
+  async fileUploadTarget(o: FilesDoorNeeds, door: Door<IntentRequest>):
       Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
                 pending: string[] }> {
     const plan = await o.door(() => o.files.uploadPlan(door.check().r["intent_id"]));
@@ -3795,14 +3820,14 @@ export const filesDoors = Object.freeze({
    * The binder's word that `FILES` accepted these of the intent's chunks (each put verified
    * its hash): recorded as `fileUploadChunks` records its own puts.
    */
-  fileUploadStored(o: OwnerState, { r }: Call<UploadStoredRequest>): { stored: number } {
+  fileUploadStored(o: FilesDoorNeeds, { r }: Call<UploadStoredRequest>): { stored: number } {
     return o.files.stored(r["intent_id"], r["chunks"]);
   },
   /**
    * A file's entry and content: its bytes when small, else its chunk list for
    * `fileReadChunks`. With `etag` still current, only the entry (`not_modified`).
    */
-  fileRead(o: OwnerState, call: Call<FileReadRequest>):
+  fileRead(o: FilesDoorNeeds, call: Call<FileReadRequest>):
       { entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] } {
     const { r } = call;
     visible(o, call, r["path"]);
@@ -3814,7 +3839,7 @@ export const filesDoors = Object.freeze({
     return shown;
   },
   /** One or two of a kept version's chunks, from `first`, so a read pins its version. */
-  async fileReadChunks(o: OwnerState, door: Door<FileChunksRequest>):
+  async fileReadChunks(o: FilesDoorNeeds, door: Door<FileChunksRequest>):
       Promise<{ chunks: Uint8Array[] }> {
     const reads = await o.door(() => {
       const call = door.check();
@@ -3836,19 +3861,19 @@ export const filesDoors = Object.freeze({
    * Begin an upload of one file: its size and chunk hashes, and back the ones whose bytes
    * to send.
    */
-  fileUploadBegin(o: OwnerState, { account, r }: Call<UploadBeginRequest>):
+  fileUploadBegin(o: FilesDoorNeeds, { account, r }: Call<UploadBeginRequest>):
       { intent_id: string; missing: string[]; expires_at: number } {
     return o.files.begin(r["size"], r["chunks"], fileWriter(account));
   },
   /** Send an upload's chunk bytes, at most two chunks a call; R2 checks each hash. */
-  async fileUploadChunks(o: OwnerState, door: Door<UploadChunksRequest>):
+  async fileUploadChunks(o: FilesDoorNeeds, door: Door<UploadChunksRequest>):
       Promise<{ created: number }> {
     const { r } = await o.door(() => door.check());
     // `Files.upload` records each chunk stored, once `FILES` took it, in a unit of its own.
     return o.files.upload(r["intent_id"], r["chunks"]);
   },
   /** Commit an upload whose chunks are all stored as the file it declared. */
-  fileUploadCommit(o: OwnerState, { account, r, binding }: Call<UploadCommitRequest>):
+  fileUploadCommit(o: FilesDoorNeeds, { account, r, binding }: Call<UploadCommitRequest>):
       { entry: Entry } | FileConflicted {
     ownersTree(o, binding, account, "FILES.write", { path: r["path"] }, r["path"]);
     return fileConflicted(() => ({
@@ -3856,21 +3881,21 @@ export const filesDoors = Object.freeze({
         expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
     }));
   },
-  fileUploadAbort(o: OwnerState, { r }: Call<IntentRequest>): { aborted: boolean } {
+  fileUploadAbort(o: FilesDoorNeeds, { r }: Call<IntentRequest>): { aborted: boolean } {
     return o.files.abort(r["intent_id"]);
   },
   /** Drop a kept version's content: the owner's own act, never an outside client's. */
-  fileRedact(o: OwnerState, { r }: Call<VersionRequest>): { redacted: number } {
+  fileRedact(o: FilesDoorNeeds, { r }: Call<VersionRequest>): { redacted: number } {
     return o.files.redact(r["path"], r["version"]);
   },
   /**
    * Drop a path's kept versions but its current one: the owner's own act, never an
    * outside client's, and never refused for a quota.
    */
-  fileHistoryPurge(o: OwnerState, { r }: Call<FileRequest>): { purged: number } {
+  fileHistoryPurge(o: FilesDoorNeeds, { r }: Call<FileRequest>): { purged: number } {
     return o.files.purge(r["path"]);
   },
-  fileChanges(o: OwnerState, { r, readable }: Call<ChangesRequest>):
+  fileChanges(o: FilesDoorNeeds, { r, readable }: Call<ChangesRequest>):
       { changes: Change[]; cursor: number; reset: boolean } {
     const changes = o.files.changes(r["after"], r["limit"]);
     if (readable === null) {
@@ -3885,7 +3910,7 @@ export const filesDoors = Object.freeze({
     return { ...changes, reset: changes.reset || moved,
              changes: changes.changes.filter((change) => test(change.path)) };
   },
-  fileSyncCommit(o: OwnerState, { r }: Call<SyncCommitRequest>): { outcomes: SyncOutcome[] } {
+  fileSyncCommit(o: FilesDoorNeeds, { r }: Call<SyncCommitRequest>): { outcomes: SyncOutcome[] } {
     return o.files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"], ops: r["ops"] },
                               (authority) => o.grants.full(authority));
   },
@@ -3894,12 +3919,12 @@ export const filesDoors = Object.freeze({
    * files plane's own upload (slice S review M-6): begun as the lease's own writer, so its
    * sync commit (`intent_id`) takes it, fenced by the live lease.
    */
-  fileSyncUploadBegin(o: OwnerState, { r }: Call<SyncUploadBeginRequest>):
+  fileSyncUploadBegin(o: FilesDoorNeeds, { r }: Call<SyncUploadBeginRequest>):
       { intent_id: string; missing: string[]; expires_at: number } {
     return o.files.syncBegin(r["lease_id"], r["epoch"], r["size"], r["chunks"]);
   },
   /** The sync agent's chunk bytes for its own upload, at most two chunks a call. */
-  async fileSyncUploadChunks(o: OwnerState, door: Door<SyncUploadChunksRequest>):
+  async fileSyncUploadChunks(o: FilesDoorNeeds, door: Door<SyncUploadChunksRequest>):
       Promise<{ created: number }> {
     const r = await o.door(() => {
       const { r: fields } = door.check();
@@ -3916,7 +3941,7 @@ export const filesDoors = Object.freeze({
    * now rather than holding the owner's storage until it expires; fenced by the live lease,
    * and only the lease's own upload. One already gone is no error.
    */
-  fileSyncUploadAbort(o: OwnerState, { r }: Call<SyncUploadAbortRequest>): { aborted: boolean } {
+  fileSyncUploadAbort(o: FilesDoorNeeds, { r }: Call<SyncUploadAbortRequest>): { aborted: boolean } {
     const writer = o.files.syncWriter(r["lease_id"], r["epoch"]);
     let owner: string | null;
     try {

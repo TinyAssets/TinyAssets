@@ -588,6 +588,14 @@ export async function failure(call: () => Promise<unknown>): Promise<Failed> {
   throw new Error("expected the call to fail");
 }
 
+/** `act` on `stub`'s own stores (`storesOn`), in one unit of their gate. */
+export function inStores<R>(stub: Stub, act: (stores: TestStores) => R): Promise<R> {
+  return runInDurableObject(stub, (_instance: OwnerDO, state) => {
+    const stores = storesOn(state);
+    return stores.gate.write(() => act(stores));
+  });
+}
+
 /**
  * The primitive on `stub`'s own storage, as the object builds it (`storesOn`), `act` run in
  * one unit of the test's gate, as a door runs the collections.

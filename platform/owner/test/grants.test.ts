@@ -7,20 +7,17 @@
  * API-key mint (the binder's, tasks 2): here every outside call is admitted in the
  * object, against its grant, before any door acts.
  */
-import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { GRANT_LIMITS, Grants } from "../src/grants";
+import { GRANT_LIMITS } from "../src/grants";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
-import type { OwnerDO } from "../src/owner-do";
 import { POLICY_LIMITS, policyDigest } from "../../contract/src/policy-document";
-import { Policy } from "../src/policy";
 import {
   DOT, MCP, MUSE, rig, type Rig, signedIn, subscription,
 } from "./ledger-support";
-import { atClock, failure, storesOn } from "./support";
+import { atClock, failure, inStores } from "./support";
 
 const CHATGPT: Origin = Object.freeze({ client: "1".repeat(64), family: "2".repeat(64) });
 const CLAUDE: Origin = Object.freeze({ client: "3".repeat(64), family: "4".repeat(64) });
@@ -217,8 +214,7 @@ describe("an outside client's grant", () => {
      async () => {
     const r = await rig();
     const id = filler;
-    const out = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage));
+    const out = await inStores(r.stub, ({ grants }) => {
       for (let n = 0; n < GRANT_LIMITS.maxFreeClients; n++) {
         grants.admit(id(n), "mcp", null, 1000 + n);
       }
@@ -260,8 +256,7 @@ describe("an outside client's grant", () => {
     }
     // The free rows at their bound, CHATGPT's seen least recently: CLAUDE's takes its place.
     const free = Array.from({ length: GRANT_LIMITS.maxFreeClients - 1 }, (_, n) => filler(n));
-    await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage));
+    await inStores(r.stub, ({ grants }) => {
       const t = clock() + 1;
       free.forEach((client, n) => grants.admit(client, "mcp", null, t + n));
       grants.admit(CLAUDE.client, "mcp", null, t + free.length);  // CHATGPT's free row goes
@@ -273,13 +268,10 @@ describe("an outside client's grant", () => {
     await r.sql("DELETE FROM outside_clients WHERE client = ?", MUSE.client);
     // A client recorded after an agent of it was (as a store change could leave it)
     // still counts that agent, so its row is held, not free.
-    await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const { grants, ledger, gate } = storesOn(state);
-      return gate.write(() => {
-        ledger.register(DOT, MCP, { command_center_id: "alpha", display_name: "Dot",
-                                    delivery_method: "pull", recipe_id: null });
-        grants.admit(DOT.client, "mcp", null, clock());
-      });
+    await inStores(r.stub, ({ grants, ledger }) => {
+      ledger.register(DOT, MCP, { command_center_id: "alpha", display_name: "Dot",
+                                  delivery_method: "pull", recipe_id: null });
+      grants.admit(DOT.client, "mcp", null, clock());
     });
     expect((await rows())[DOT.client]).toEqual([0, 1]);
     const [usage] = await r.sql("SELECT owner_clients, free_clients FROM policy_usage");
@@ -323,9 +315,9 @@ describe("an outside client's grant", () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
     const standing = (generation: unknown, signed: number | null = 100) =>
-      runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      inStores(r.stub, ({ grants }) => {
         try {
-          return new Grants(state.storage, new Policy(state.storage))
+          return grants
             .standing(CHATGPT.client, generation, signed).mode;
         } catch (error) {
           return (error as Error).message;
@@ -341,9 +333,9 @@ describe("an outside client's grant", () => {
     await grant(r, CHATGPT, "full");
     expect(await standing(4)).toBe("a fresh sign-in is required after a revoke");
     expect(await standing(4, 2 ** 40)).toBe("full");
-    expect(await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+    expect(await inStores(r.stub, ({ grants }) => {
       try {
-        return new Grants(state.storage, new Policy(state.storage))
+        return grants
           .standing(DOT.client, 1, null).mode;
       } catch (error) {
         return (error as Error).message;
@@ -354,8 +346,7 @@ describe("an outside client's grant", () => {
 
   it("records a client's last call coarsely, so admission is a read most calls", async () => {
     const r = await rig();
-    const seen = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage));
+    const seen = await inStores(r.stub, ({ grants }) => {
       const at = (now: number) => {
         grants.admit(CHATGPT.client, "mcp", null, now);
         return grants.list()[0]!.last_seen;
@@ -503,8 +494,7 @@ describe("every door admits an outside client against its grant (review L1, L4)"
     await r.stub.outsideAgents(r.bind(CHATGPT));
     const { pendingProposals: most, pendingPerClient: share } = POLICY_LIMITS;
     const owners = most - share - 1;
-    await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage);
+    await inStores(r.stub, ({ policy, gate }) => {
       const now = clock();
       policy.propose({ n: 1 }, "a", CHATGPT.client, now);
       for (let n = 1; n < share; n++) {
@@ -521,7 +511,7 @@ describe("every door admits an outside client against its grant (review L1, L4)"
         .toThrow("too many pending policy proposals");
       // An applied card frees its proposer's share.
       const { digest } = policy.held("a", now)!;
-      state.storage.sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?",
+      gate.storage.sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?",
                              now, "a");
       expect(digest).toMatch(/^sha256:/);
       policy.propose({ n: 7 }, "g", CHATGPT.client, now);
@@ -536,8 +526,8 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
   const MONTH = 30 * DAY;
   /** Revoke `origin` at `at` around the doors, as an old revoke would stand. */
   const revokedAt = (r: Rig, origin: Origin, at: number) =>
-    runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      new Grants(state.storage, new Policy(state.storage)).revoke(origin.client, at);
+    inStores(r.stub, ({ grants }) => {
+      grants.revoke(origin.client, at);
     });
   const forgetRevoked = (r: Rig, clients: string[], binding = r.session(null)) =>
     r.stub.grantForgetRevoked(binding, { clients });
@@ -852,9 +842,9 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
      "change", async () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
-    const standing = (generation: number) => runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+    const standing = (generation: number) => inStores(r.stub, ({ grants }) => {
       try {
-        return new Grants(state.storage, new Policy(state.storage))
+        return grants
           .standing(CHATGPT.client, generation, 100).mode;
       } catch (error) {
         return (error as Error).message;

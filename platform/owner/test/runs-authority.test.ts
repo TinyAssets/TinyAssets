@@ -23,6 +23,7 @@ import {
   EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate,
 } from "../../contract/src/run-events";
 import { TIER_UNREAD } from "../src/files";
+import { eraseBegun, finished, wipedWhole } from "./erasure-support";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
@@ -892,6 +893,16 @@ describe("the reviewer's untested cases (review M-6)", () => {
     });
     expect(refused).toBe(AGENT_CHANGED);
     expect(await r.sql("SELECT id FROM runs")).toEqual([]);
+  });
+
+  it("ends every live run in the sandbox when the owner is erased", async () => {
+    const r = await gated();
+    const { run } = await ownerRun(r.stub, r.bind(), { ...SIGNED_IN, scopes: ["read_files"] });
+    await eraseBegun(r.stub, r.session());
+    await finished(r.stub, r.name);
+    // The erasure's step 3 (`ended`): its live run's CLI stopped, before the wipe.
+    expect((await recorder(r.stub)).cancels.map((cancel) => cancel.run)).toEqual([run.run_id]);
+    expect(await wipedWhole(r.stub)).toBe(true);
   });
 
   it("ends every live run in the sandbox when the owner is suspended", async () => {

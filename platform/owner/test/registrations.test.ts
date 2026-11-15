@@ -3,17 +3,14 @@
  * own verified call, so the object captured its origin, and applied by the owner in its
  * session by card id and the digest it was shown, as a held policy proposal is.
  */
-import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { GRANT_LIMITS, Grants } from "../src/grants";
+import { GRANT_LIMITS, type Grants } from "../src/grants";
 import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
-import type { OwnerDO } from "../src/owner-do";
-import { Policy } from "../src/policy";
-import { CARD_LIMITS, CARD_TTL_S, Registrations } from "../src/registrations";
+import { CARD_LIMITS, CARD_TTL_S, type Registrations } from "../src/registrations";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
-import { atClock, failure } from "./support";
+import { atClock, failure, inStores } from "./support";
 
 const REQUEST = Object.freeze({ command_center_id: "alpha", display_name: "Muse",
                                 delivery_method: "mcp_event", recipe_id: null });
@@ -26,12 +23,9 @@ const held = async (r: Rig, origin: Origin) => (await r.sql(
 /** The `n`th of the many clients, or families, a test fills a bound with. */
 const filler = (n: number, pad = "0") => n.toString(16).padStart(64, pad);
 
-/** The object's registrations on its own storage. */
+/** The object's registrations on its own storage (`storesOn`), in one unit. */
 function inCards<R>(r: Rig, act: (cards: Registrations, grants: Grants) => R): Promise<R> {
-  return runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-    const grants = new Grants(state.storage, new Policy(state.storage));
-    return act(new Registrations(state.storage, grants), grants);
-  });
+  return inStores(r.stub, ({ registrations, grants }) => act(registrations, grants));
 }
 
 describe("an MCP client's agent registration", () => {
@@ -161,8 +155,7 @@ describe("an MCP client's agent registration", () => {
     // The free rows at their bound, each seen after MUSE's: DOT's makes room by the least
     // recently seen of them, never by MUSE's row, which its card holds.
     const free = Array.from({ length: GRANT_LIMITS.maxFreeClients }, (_, n) => filler(n));
-    await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage));
+    await inStores(r.stub, ({ grants }) => {
       const t = clock() + 1;
       free.forEach((client, n) => grants.admit(client, "mcp", null, t + n));
       grants.admit(DOT.client, "mcp", null, t + free.length);
@@ -215,8 +208,8 @@ describe("an MCP client's agent registration", () => {
     const r = await rig();
     const filed = await r.stub.registerPropose(r.bind(MUSE), REQUEST);
     // A grant change made around the object's doors, so only the apply's recheck sees it.
-    await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());
+    await inStores(r.stub, ({ grants }) => {
+      grants.revoke(MUSE.client, clock());
     });
     expect((await failure(() => r.stub.registerAgent(r.session(null), {
       card_id: filed.card_id, digest: filed.digest }))).message).toBe("outside client revoked");

@@ -582,7 +582,7 @@ function scheduleOf(row: ScheduleRow): RunSchedule {
 
 /**
  * The agents of `storage`'s runs under the lease taken at `epoch`, at most `most`, by name: a
- * read, which names a sync's writer to the owner (`files.ts` `fileChanged`).
+ * read, which names a sync's writer to the owner (`files.ts` `syncIgnoreReaction`).
  */
 export function agentsAt(storage: OwnerStorage, epoch: number, most: number): string[] {
   return storage.sql.exec<{ agent: string }>(

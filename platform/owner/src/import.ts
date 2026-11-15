@@ -67,8 +67,11 @@ import { utf8Bytes } from "../../contract/src/text";
 import { clock } from "./clock";
 import { checkBody } from "./collections";
 import { OWNER } from "./authority";
-import type { Call, Door } from "./door";
-import type { OwnerState } from "./owner-do";
+import type { Bodies } from "./bodies";
+import type { Collections } from "./collections";
+import type { Call, Door, DoorUnits, ImportLine, ObjectReads } from "./door";
+import type { Files } from "./files";
+import type { Notices } from "./notices";
 
 /** The imported rows' history op, and the notice's type. */
 const IMPORT_OP = "import";
@@ -267,11 +270,34 @@ function chunkedOf(r: Record<string, unknown>): ImportFileBeginRequest {
 }
 
 /**
+ * What the `import` doors reach: the files, collections and bodies they write and check, the
+ * notices they carry over, the policy they import (with the import line) and read, the
+ * admission and tier the check answers, and the discard.
+ */
+export interface ImportDoorNeeds extends Pick<DoorUnits, "door" | "synced" | "filing" | "sync">,
+                                         Pick<ObjectReads, "discard"> {
+  readonly files: Pick<Files, "abort" | "begin" | "check" | "chunksPage" | "commit"
+    | "entriesPage" | "mkdir" | "open" | "openUploads" | "space" | "stat" | "stored"
+    | "uploadPlan" | "usage" | "writeSmall">;
+  readonly collections: Pick<Collections, "get" | "rowsPage" | "write">;
+  readonly bodies: Pick<Bodies, "placing">;
+  readonly notices: Pick<Notices, "add" | "list">;
+  readonly policy: {
+    read(): { readonly digest: string };
+    imported(importing: ImportLine, document: unknown, now: number): boolean;
+  };
+  readonly admission: {
+    row(): { readonly state: string; readonly reasons: readonly string[] };
+    tier(): string;
+  };
+}
+
+/**
  * In a unit: whether `want` is at `path` already (true), or nothing is (false); anything
  * else there is refused loudly, since on a pending owner only an earlier import of other
  * bytes can have put it there (`conflict`; the fix is a discard and a run again).
  */
-function there(o: OwnerState, path: string,
+function there(o: ImportDoorNeeds, path: string,
                want: "dir" | { content_id: string; size: number; mode: number }): boolean {
   const entry = o.files.stat(path);
   if (entry === null) {
@@ -297,7 +323,7 @@ function there(o: OwnerState, path: string,
  * absent (false); any other row at its key is refused loudly. A placed body is compared by
  * its content's id, which names its bytes (`bodies.ts`).
  */
-function rowThere(o: OwnerState, owner: string,
+function rowThere(o: ImportDoorNeeds, owner: string,
                   row: Extract<ImportRow, { kind: "collection" }>): boolean {
   const held = o.collections.get(owner, row.collection, row.row_id).row;
   if (held === null) {
@@ -315,14 +341,14 @@ function rowThere(o: OwnerState, owner: string,
 
 // -- THE DOORS: the `import` rows' handlers (`contract/doors.json`) --------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind (the platform's import binding,
-// the owner pending), and the fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`ImportDoorNeeds`) once the row's steps held: the bind (the platform's
+// import binding, the owner pending), and the fields.
 
 /** The `import` doors' handlers, by door. */
 export const importDoors = Object.freeze({
   /** The policy, then collection rows, each in its own unit, a body placed past its size. */
-  async importRows(o: OwnerState, door: Door<ImportRowsRequest, "import">): Promise<Imported> {
+  async importRows(o: ImportDoorNeeds, door: Door<ImportRowsRequest, "import">): Promise<Imported> {
     const rows = await o.door(() => rowsOf(door.check().r["rows"]));
     let written = 0;
     for (const row of rows) {
@@ -353,7 +379,7 @@ export const importDoors = Object.freeze({
     return { written, skipped: rows.length - written };
   },
   /** Folders and inline files, in the caller's one unit, each created only where none is. */
-  importFiles(o: OwnerState, { r }: Call<ImportFilesRequest>): Imported {
+  importFiles(o: ImportDoorNeeds, { r }: Call<ImportFilesRequest>): Imported {
     const entries = entriesOf(r["entries"]);
     let written = 0;
     for (const entry of entries) {
@@ -378,7 +404,7 @@ export const importDoors = Object.freeze({
    * one begun; then its plan, the chunks it still needs, and the owner's namespace and wrapped
    * data key, which only `FILES` opens, for the doors to put its bytes with.
    */
-  async importFileBegin(o: OwnerState, door: Door<ImportFileBeginRequest>):
+  async importFileBegin(o: ImportDoorNeeds, door: Door<ImportFileBeginRequest>):
       Promise<ImportUpload> {
     const begun = await o.filing(() => {
       const file = chunkedOf(door.check().r);
@@ -399,7 +425,7 @@ export const importDoors = Object.freeze({
     return { skipped: false, namespace: ns, key, ...begun };
   },
   /** The doors' word that `FILES` took these chunks of the upload, each put by its hash. */
-  importFileStored(o: OwnerState, { r }: Call<ImportFileStoredRequest>): { stored: number } {
+  importFileStored(o: ImportDoorNeeds, { r }: Call<ImportFileStoredRequest>): { stored: number } {
     if (typeof r["intent_id"] !== "string" || !HEX32.test(r["intent_id"])) {
       throw invalid("an intent id is 32 lowercase hex characters");
     }
@@ -409,7 +435,7 @@ export const importDoors = Object.freeze({
    * The upload committed as its path, created there; skipped (its upload let go) when the file
    * is there already, which a delivery killed after its commit leaves.
    */
-  importFileCommit(o: OwnerState, { r }: Call<ImportFileCommitRequest>): Imported {
+  importFileCommit(o: ImportDoorNeeds, { r }: Call<ImportFileCommitRequest>): Imported {
     const path = importPath(r["path"]);
     const mode = modeOf(r["mode"]);
     const mtime = mtimeOf(r["mtime_ms"]);
@@ -437,7 +463,7 @@ export const importDoors = Object.freeze({
     return { written: 1, skipped: 0 };
   },
   /** The owner's one notice of the import, added once. */
-  importNotice(o: OwnerState, { r }: Call<ImportNoticeRequest>): { added: boolean } {
+  importNotice(o: ImportDoorNeeds, { r }: Call<ImportNoticeRequest>): { added: boolean } {
     const detail = r["detail"];
     if (typeof detail !== "string" || detail === "" || [...detail].length > NOTICE_DETAIL) {
       throw invalid(`a notice is text of at most ${NOTICE_DETAIL} characters`);
@@ -456,7 +482,7 @@ export const importDoors = Object.freeze({
    * Worker's answer, recorded as not read; a throw (a refusal or a lost answer) fails the slice
    * to the import queue (`doors/src/import/index.ts`), and verify waits for its page loudly.
    */
-  async importCheck(o: OwnerState, door: Door<ImportCheckRequest>): Promise<ImportCheckAnswer> {
+  async importCheck(o: ImportDoorNeeds, door: Door<ImportCheckRequest>): Promise<ImportCheckAnswer> {
     const { part, page } = await o.door(() => checkOf(door.check().r));
     if (part === "files") {
       const entries = await o.door(() => o.files.entriesPage(page * CHECK_FILES, CHECK_FILES + 1));
@@ -492,7 +518,7 @@ export const importDoors = Object.freeze({
    * tombstone, no erased record, no issuer's deletion; the namespace it deleted, for the job's
    * proof that the files bucket lists nothing under it.
    */
-  async importDiscard(o: OwnerState, door: Door<undefined>):
+  async importDiscard(o: ImportDoorNeeds, door: Door<undefined>):
       Promise<{ discarded: true; namespace: string | null }> {
     await o.door(() => door.check());
     return { discarded: true, namespace: await o.discard() };
