@@ -2375,7 +2375,7 @@ export class Files {
     // its grant is full, the default; a narrowed one's never (the founder's rule).
     const client = authority !== OWNER;
     const trees = !client || fullGrant(authority);
-    const writer = client ? `client:${authority}` : `lease:${epoch}`;
+    const writer = client ? scopeOf(authority) : `lease:${epoch}`;
     const seen = new Set<string>();
     const outcomes = ops.map((raw) => {
       const op = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
