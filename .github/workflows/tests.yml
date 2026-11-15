@@ -261,11 +261,12 @@ jobs:
   # Full history: the owner's migration lock is held against the event's base.
   #
   # timeout-minutes is a watchdog, never a design figure: about 3 x the slowest leg's
-  # measured time (owner, 4m40s in merge-group run 41893742929 with its large tests in it).
+  # measured time (owner, 5m48s of job in merge-group run 43672673096, the slowest in runs
+  # 43670721849, 43670840686 and 43672673096).
   platform-tests:
     name: platform-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
     strategy:
       fail-fast: false
       matrix:
@@ -325,12 +326,13 @@ jobs:
   # the owner's workerd memory leg (each chunk-wise path O(1) in its data's size, by
   # differences at checkpoints, ADR-037). Required through `required-tests`' needs.
   #
-  # timeout-minutes is a watchdog: about 3 x the slowest leg's measured time (memory, 2m23s
-  # with its install in push run 43637311483).
+  # timeout-minutes is a watchdog: about 3 x the slowest leg's measured time (memory, 3m53s
+  # of job in merge-group run 43672673096, the slowest in runs 43670721849, 43670840686 and
+  # 43672673096).
   platform-checks:
     name: platform-checks
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -363,11 +365,12 @@ jobs:
   # `test:sizes` here, every shard, `1/1` when whole (platform/ci/guards/legs.test.ts).
   #
   # timeout-minutes is a watchdog: about 3 x the slowest shard's measured time (owner 2/2,
-  # 178 s in one local run, 2026-11-04; re-derive from the first CI run's shard times).
+  # 5m00s of job in merge-group run 43670840686, the slowest in runs 43670721849,
+  # 43670840686 and 43672673096).
   platform-sizes:
     name: platform-sizes
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

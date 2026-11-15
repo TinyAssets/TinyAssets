@@ -7,9 +7,9 @@
 // entrypoint, the owner object's (OWNER_FILES here) its whole service, so a new owner's
 // starter seed really writes its files.
 //
-// The browser believes it talks to https://tinyassets.io: every request it makes is caught
-// (`context.route`) and handed to the doors with `dispatchFetch`, the app's live socket
-// likewise (`routeWebSocket`). Two other hosts answer, each a top-level navigation by
+// The browser believes it talks to https://tinyassets.io: its resolver sends our hosts to the
+// local workerd (`--host-resolver-rules`), so every request it makes, the app's live socket
+// too, reaches the doors over the network. Two other hosts answer, each a top-level navigation by
 // design: the identity provider (`upstream.test`, which signs the owner in at once) and the
 // test OAuth source's authorization server (`auth.test`, which approves). Any other request
 // is refused and fails the test: the app makes no third-party request.
@@ -1018,15 +1018,21 @@ async function handled(from, ...steps) {
 }
 
 /**
- * Answers to `pattern` held until `release()`: each request reaches the doors as it comes,
- * and its answer, as they gave it then, reaches the page only after the release. `first`
- * resolves once the first answer is held.
+ * `body` run with the answers to `pattern` held until its `release()`: each request reaches
+ * the doors as it comes, and its answer, as they gave it then, reaches the page only after
+ * the release. `first` resolves once the first answer is held.
+ *
+ * The route lives as long as `body`, which waits on what the released answers made the page
+ * do: Playwright loses a request the page makes while a route is being taken away (never
+ * sent, never answered), so the route never goes while a released answer is still being
+ * acted on. Taking it away first is no better: that lets a held request go on to the doors a
+ * second time.
  */
-async function holding(pattern) {
+async function holding(pattern, body) {
   let release;
   const released = new Promise((resolve) => { release = resolve; });
-  let seen;
-  const first = new Promise((resolve) => { seen = resolve; });
+  let held;
+  const first = new Promise((resolve) => { held = resolve; });
   const going = new Set();
   const handler = async (route) => {
     const request = route.request();
@@ -1035,23 +1041,27 @@ async function holding(pattern) {
     const sent = (async () => {
       const answer = await mf.dispatchFetch(request.url(), { method: request.method(), headers,
         body: request.postDataBuffer() ?? undefined });
-      const body = Buffer.from(await answer.arrayBuffer());
-      seen();
+      const bytes = Buffer.from(await answer.arrayBuffer());
+      held();
       await released;
       // The body as read: its length and encoding are the fulfilment's own.
-      await route.fulfill({ status: answer.status, body, headers: Object.fromEntries(
+      await route.fulfill({ status: answer.status, body: bytes, headers: Object.fromEntries(
         [...answer.headers].filter(([name]) => !/^content-(?:length|encoding)$/.test(name))) });
     })();
     going.add(sent);
     await sent;
   };
   await page.route(pattern, handler);
-  return { first, release: async () => {
+  const answered = async () => {
     release();
-    // Every request held goes on before the route is taken away, so none is handled twice.
     await Promise.all(going);
+  };
+  try {
+    await body({ first, release: answered });
+  } finally {
+    await answered();
     await page.unroute(pattern, handler);
-  } };
+  }
 }
 
 test("a save re-lists its own folder, never the folder the owner went to since (review L2)",
@@ -1061,21 +1071,23 @@ test("a save re-lists its own folder, never the folder the owner went to since (
   await page.getByRole("heading", { name: `Files in ${folder}` }).waitFor();
   await page.getByRole("link", { name: "AGENTS.md" }).click();
   await page.locator("textarea.editor").waitFor();
-  const save = await holding("**/app/api/files/write");
-  await page.getByRole("button", { name: "Save" }).click();
-  await save.first;
-  // The owner moves on while the save is in flight; then it lands, and re-lists its folder.
-  await page.goto(`${ORIGIN}/app#data`);
-  await page.getByRole("heading", { name: "Files in /workspace" }).waitFor();
-  const relisted = page.waitForResponse((response) =>
-    response.url().endsWith("/app/api/tools/file_list")
-    && response.request().postData()?.includes("agents/helper"));
-  const from = await parsedSoFar();
-  await save.release();
-  await page.locator(".message.good", { hasText: "Saved" }).waitFor();
-  await relisted;
-  // The save's answer, then the re-list's two, handled.
-  await handled(from, ["/app/api/files/write"], ["/app/api/tools/file_list", "/app/api/account"]);
+  await holding("**/app/api/files/write", async (save) => {
+    await page.getByRole("button", { name: "Save" }).click();
+    await save.first;
+    // The owner moves on while the save is in flight; then it lands, and re-lists its folder.
+    await page.goto(`${ORIGIN}/app#data`);
+    await page.getByRole("heading", { name: "Files in /workspace" }).waitFor();
+    const relisted = page.waitForResponse((response) =>
+      response.url().endsWith("/app/api/tools/file_list")
+      && response.request().postData()?.includes("agents/helper"));
+    const from = await parsedSoFar();
+    await save.release();
+    await page.locator(".message.good", { hasText: "Saved" }).waitFor();
+    await relisted;
+    // The save's answer, then the re-list's two, handled.
+    await handled(from, ["/app/api/files/write"],
+                  ["/app/api/tools/file_list", "/app/api/account"]);
+  });
   assert.equal(await page.getByRole("heading", { name: "Files in /workspace" }).count(), 1);
   assert.equal(await page.getByRole("heading", { name: `Files in ${folder}` }).count(), 0);
 });
@@ -1084,19 +1096,20 @@ test("a screen still loading never paints over the signed-out view (review L1)",
      { timeout: 60_000 }, async () => {
   await page.goto(`${ORIGIN}/app#home`);
   await page.getByRole("heading", { name: "Home", exact: true }).waitFor();
-  const grants = await holding("**/app/api/grants");
-  const from = await parsedSoFar();
-  await page.goto(`${ORIGIN}/app#keys`);
-  await grants.first;
-  // Signed out while API keys still loads; then its answer comes.
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await page.getByRole("heading", { name: "Your TinyAssets" }).waitFor();
-  const answered = page.waitForResponse((response) =>
-    response.url().endsWith("/app/api/grants"));
-  await grants.release();
-  await answered;
-  // The keys screen's two answers handled, the held one last.
-  await handled(from, ["/app/api/grants", "/app/api/capabilities"]);
+  await holding("**/app/api/grants", async (grants) => {
+    const from = await parsedSoFar();
+    await page.goto(`${ORIGIN}/app#keys`);
+    await grants.first;
+    // Signed out while API keys still loads; then its answer comes.
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.getByRole("heading", { name: "Your TinyAssets" }).waitFor();
+    const answered = page.waitForResponse((response) =>
+      response.url().endsWith("/app/api/grants"));
+    await grants.release();
+    await answered;
+    // The keys screen's two answers handled, the held one last.
+    await handled(from, ["/app/api/grants", "/app/api/capabilities"]);
+  });
   assert.equal(await page.getByRole("heading", { name: "Your TinyAssets" }).count(), 1);
   assert.equal(await page.getByRole("heading", { name: "API keys", exact: true }).count(), 0);
 });

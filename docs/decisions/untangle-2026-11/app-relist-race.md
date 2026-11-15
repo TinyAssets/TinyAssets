@@ -1,0 +1,7 @@
+# app-relist-race as built (2026-11-15)
+
+The app browser test "a save re-lists its own folder" (review L2) timed out on #5615's runners: the app made its re-list (`tools/file_list` for the save's own folder, and `account`), and neither request was ever answered or reached workerd.
+
+The cause is the test's `holding` from #5612 (`test-waits-2.md`). It answered the held save by `route.fulfill`, which reaches the page at once, and then took its route away. The page's re-list is made in that same moment, and Playwright loses a request the page makes while a page route is being taken away: never sent, never answered. The old `route.continue()` had hidden this, because the save's answer then came from the network only after the route was gone. A bare Playwright page against a plain HTTP server shows it without the doors: 12 of 400 follow-up requests were lost when the route was taken away after the fulfil. Taking the route away before the fulfil hands the held request on to the server a second time (`Route is already handled`).
+
+`holding(pattern, body)` now runs the test's own steps with the answers held. The route is taken away only when `body` is done, and `body` ends by waiting on the records of what the released answers made the page do (`handled`), so no request is being made when the route goes. Both callers (review L2, and the signed-out view's L1) use it. The app is unchanged: it re-lists the save's own folder, which the test still reads from the re-list's own request.
