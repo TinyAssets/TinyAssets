@@ -2,109 +2,109 @@
   "factor": 4,
   "medium": {
     "ci/guards": {
-      "slowest_ms": 1614,
-      "test": "ci/guards/timeouts.test.ts > test timeouts no platform test sets one",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 3910,
+      "test": "ci/guards/kernels.test.ts > the kernel guard finds every kernel's work outside its home, but for exactly what is owed",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "ci/workerd": {
-      "slowest_ms": 346,
-      "test": "ci/test/gate.test.ts > the owner Worker as an auxiliary, behind the owner gate holds the owner's own files call at the files gate its FILES binding reaches",
-      "measured": "two local runs of untangle T0 under the host lock (load 4.8), 2026-11-12, until a CI measurement replaces it"
+      "slowest_ms": 770,
+      "test": "ci/test/gate.test.ts > the owner Worker as an auxiliary, behind the owner gate refuses one owner's door once as armed, and records each owner's doors",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "codemode/guards": {
-      "slowest_ms": 51,
-      "test": "codemode/guards/isolation.test.ts > codemode isolation, by its rules > finds nothing over the whole import closure",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 97,
+      "test": "codemode/guards/isolation.test.ts > codemode isolation, by its rules finds nothing over the whole import closure",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "codemode/workerd": {
-      "slowest_ms": 882,
+      "slowest_ms": 929,
       "test": "codemode/test/codemode.test.ts > the codemode Worker stops a script whose VM computes past the budget its request carries, as a timeout",
-      "measured": "two local runs of untangle B25 under the host lock (load 4.4 to 5), 2026-11-12, until a CI measurement replaces it"
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "contract/guards": {
-      "slowest_ms": 6777,
-      "test": "contract/guards/sync-ignore.test.ts > what it remembers of a tree, and what that buys holds its names within `REMEMBERED_NAME_BYTES` under a path near its most",
-      "measured": "a local run of untangle C4 under the host lock (load under 2), 2026-11-14, once the sync-ignore matcher's tests moved there (B19), until a CI measurement replaces it"
+      "slowest_ms": 16442,
+      "test": "contract/guards/sync-ignore.test.ts > its ceilings, each line past one said in file order applies the list to `LIST_BYTES`, every line past it said",
+      "measured": "CI run 43668466020 (merge group of #5610, after #5609; sync-ignore unchanged since), its tests-report-8 (platform-tests' contract leg, on a runner that ran the whole leg in about twice its usual time): the slowest of the ten successful push and merge-group runs after #5609, which three runs' 4,552 ms would leave at 87% of its budget, 2026-11-15"
     },
     "deploy/guards": {
-      "slowest_ms": 529,
-      "test": "deploy/guards/deploy.test.ts > the parts of a run takes the keyring the founder's setup makes in memory, in keyring-new's own shape",
-      "measured": "a local run of untangle A3 part b, 2026-11-07, until a CI measurement replaces it"
+      "slowest_ms": 381,
+      "test": "deploy/guards/deploy.test.ts > the deploy kit's facts prints the import job's names for its bundle, each storage this kit makes",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "doors/guards": {
-      "slowest_ms": 1756,
+      "slowest_ms": 2063,
       "test": "doors/guards/binder.test.ts > binder guard finds the binder alone binding, in every Worker's source",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "doors/workerd": {
-      "slowest_ms": 1726,
-      "test": "doors/test/runs.test.ts > a run's live events keep a settled run's tail no longer: the live runs' tails have its room",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 3494,
+      "test": "doors/test/import.test.ts > the import consumer's own bounds converges when two copies of one owner's import run at once",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "files/guards": {
-      "slowest_ms": 2121,
+      "slowest_ms": 1612,
       "test": "files/guards/r2-keys.test.ts > r2-keys guard finds every R2 key built by chunkKey, and the bucket named only by the files Worker",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "files/workerd": {
-      "slowest_ms": 388,
-      "test": "files/test/chunks.test.ts > putChunks takes a full batch of two 4 MiB chunks",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 342,
+      "test": "files/test/chunks.test.ts > sealed objects charges every range the whole chunk it opens and checks: a batch holds no more",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "gateway/guards": {
-      "slowest_ms": 570,
-      "test": "gateway/guards/isolation.test.ts > gateway isolation, by its rules > finds nothing over the whole import closure",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 517,
+      "test": "gateway/guards/isolation.test.ts > gateway isolation, by its rules finds nothing over the whole import closure",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "gateway/workerd": {
-      "slowest_ms": 11017,
-      "test": "gateway/test/held.test.ts > the verification's cases (rveg2) never counts a wait for a unit against the sender (V-M2)",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 3904,
+      "test": "gateway/test/held.test.ts > a key past ASCII, or a body model where the path names it (M1, M2) never sends the long-s cap: the call is refused before any reserve",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "import/guards": {
-      "slowest_ms": 5725,
+      "slowest_ms": 6347,
       "test": "import/guards/host.test.ts > the dispatch's kind a host of the other kind is never adopted, reached or destroyed, in any mode",
-      "measured": "a local run of untangle F1 under the host lock (load 4.7), once its slowest test, the census's max_entries fill, was deleted with the setting, 2026-11-14, until a CI measurement replaces it"
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "owner/guards": {
-      "slowest_ms": 2367,
-      "test": "owner/guards/alarm.test.ts > alarm guard finds no alarm reach past Lifecycle in any Worker's source",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 2212,
+      "test": "owner/guards/alarm.test.ts > alarm guard finds no alarm reach past Lifecycle in any source the owner Worker bundles",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "owner/workerd": {
-      "slowest_ms": 9438,
-      "test": "owner/test/export.test.ts > a generation ends as the owner at E though the owner writes at every outside call and after every unit (review R4-3)",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 14858,
+      "test": "owner/test/restore.test.ts > a restore reads a generation the owner wrote through, its log's rows given way to by the base's",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "sandbox/guards": {
-      "slowest_ms": 227,
-      "test": "sandbox/guards/template.test.ts > the template is given the runner the Worker ships, the same bytes every build",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 4059,
+      "test": "sandbox/guards/template.test.ts > the image is versioned by its build's inputs: image.py, its SDK's lock, the spec, the staged files",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "sandbox/runner": {
-      "slowest_ms": 8611,
+      "slowest_ms": 14320,
       "test": "sandbox/runner/pid-lock.test.ts > the runner's lock is taken over by one taker alone, however many race for a gone holder's lock",
-      "measured": "a local run of untangle w2-s1 (`node root-tests.mjs --tags-filter='!large' --reporter=json`, behind the host lock at load under 4), 2026-11-11, once the git-oracle tree test became large, until a CI measurement replaces it"
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "sandbox/workerd": {
-      "slowest_ms": 926,
-      "test": "sandbox/test/sandbox.test.ts > cancel and release reaps an idle sandbox whose release's pause did not land (E2B busy)",
-      "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05"
+      "slowest_ms": 1120,
+      "test": "sandbox/test/sandbox.test.ts > the platform's line tries the create when E2B gives no count, and waits only on its refusal (M-4)",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "sources/guards": {
-      "slowest_ms": 259,
-      "test": "sources/guards/isolation.test.ts > the source records are read where they live, by the Workers that read them",
-      "measured": "a local run of their first commit (untangle C5, B8), 2026-11-14, until a CI measurement replaces it"
+      "slowest_ms": 323,
+      "test": "sources/guards/isolation.test.ts > sources isolation, by its rules finds nothing over the whole import closure",
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     },
     "starter/guards": {
-      "slowest_ms": 8,
+      "slowest_ms": 9,
       "test": "starter/guards/okf-watch.test.ts > the starter's OKF spec hides no text in anything the agent reads",
-      "measured": "a local run of their first commit (untangle C5, B8), 2026-11-14, until a CI measurement replaces it"
+      "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
     }
   },
   "large": {
-    "slowest_ms": 61292,
+    "slowest_ms": 61305,
     "test": "sandbox/runner/runner.test.ts > the store's generation and its lock (review round 2: N2, N3) waits a bounded time on a lock its live holder keeps, heartbeating, then fails loudly",
-    "measured": "CI runs 43637311483 (push of 970cba4df), 43636832920 (push of e567763bf) and 43636584703 (merge group of #5599), each one's platform-sizes reports sizes-report-0 to sizes-report-6, the slowest across the three, 2026-11-14"
+    "measured": "CI runs 43670721849, 43670840686 and 43672673096 (merge groups of #5612, #5613 and #5614, after #5609 and #5612), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-6 (platform-sizes), the slowest across the three, 2026-11-15"
   }
 }
