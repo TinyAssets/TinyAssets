@@ -16,9 +16,10 @@ Untangle the code a change touches, or a whole area, and finish the job.
   guard or rule never blocks a fix: change or delete it in the same PR, with a
   `Test-Removal:` line for a test.
 - **Process first.** A fix to how we build (CI, gates, guards, skills, briefs,
-  tooling, the review flow) comes before product work: on discovery, in its own
-  PR or the process PR at hand, with Fact 17's retro-check done now. A reviewer
-  blocks any change that defers a process fix or moves it behind other work.
+  tooling, the review flow) takes priority over product work, whose lanes keep
+  running: once found, it takes the next free slot, in its own PR or the
+  process PR at hand, with Fact 17's retro-check done now. A reviewer blocks
+  any change that defers one or puts it behind product work.
   Next, before the cutover, come untangling, security and what code or a stored
   record builds on. The cutover rule never defers a process fix: any other fix
   waits until after the cutover only when nothing builds on it, it works after
@@ -58,7 +59,7 @@ Untangle the code a change touches, or a whole area, and finish the job.
 - On a shared host, heavy runs (`test:root`, `test:sizes`, `test:memory`, the
   deploy harness, the recorders) take the host's run lock; a timeout under load
   is rerun under it, never a finding. When done, delete what you wrote outside
-  the repo (recorder output is 60–75 MB a run) and your `node_modules`.
+  the repo and your `node_modules`.
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
   within about 20% of its ceiling lands with its fix; a reviewer who finds one
   blocks. Measure at CI's scale, about 2.7x slower than a local host: a test

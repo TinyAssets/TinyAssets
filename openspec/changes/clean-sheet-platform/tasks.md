@@ -226,10 +226,10 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 
 ## 10. The remaining work, in order (d3 §D)
 
-### Process first: now, ahead of every step below (d3 §B5)
+### Process first: priority over every step below (d3 §B5)
 
-Each in its own PR, ahead of product work (the untangle skill's "Process first", founder
-2026-11-15).
+Each in its own PR, taking the next free slot, never behind product work; the product lanes
+keep running (the untangle skill's "Process first", founder 2026-11-15).
 
 - [ ] P2 in order: reviews posted as the App's `review` check reads them and seen green on a
   real PR, then `review` required, then the receipt half deleted, with the ADR that every PR is
