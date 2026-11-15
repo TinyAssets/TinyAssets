@@ -115,13 +115,16 @@ It never counts as "absent".
    (the routing key, the doors' and the owner's) is set on both or neither.
 
    A held secret is never replaced unless `rotate` names it. A held keyring is never
-   generated or replaced. It is rotated only by adding a key: run `keyring-add` on your copy
+   generated, and its old kids leave it only by mode `retire` (below). It is rotated only by
+   adding a key: run `keyring-add` on your copy
    of the stored keyring, store the result, then run with `rotate` naming it. The
    kit refuses a rotated keyring with fewer than two keys, or whose active key is not among
    them. **Residual:** Cloudflare never shows a held secret, so the kit cannot read the
    deployed keyring back. A two-key ring that dropped the deployed key would pass its check
    and make every sealed credential (or, for `FILES_KEYRING`, every chunk) unreadable. `keyring-add` keeps every old key by
-   construction, so rotate only with it, on your copy of the stored keyring.
+   construction, so rotate only with it, on your copy of the stored keyring. Mode `rotation`
+   then reads the deployed active kid back: every owner's answer names it, and a kid other
+   than the stored ring's stops the run.
 4. **Every Worker deployed with no public route,** each after the Workers it binds (`WORKERS`,
    `deploy/facts.ts`). None has a `workers.dev` or preview URL. A Worker's first deploy is
    `wrangler deploy`. Later deploys upload a version, then deploy it (`wrangler versions
@@ -356,6 +359,33 @@ It never counts as "absent".
   key rotation sweep (`FILES_KEYRING`, `GATEWAY_KEYRING`): they change no meaning, only the
   kid a blob is under, and answer `left`, what is still under another kid (a restore's hold
   counts), so run one again until `left` is 0. It needs `OPERATOR_KEYRING` in `production`.
+- **Rotating `FILES_KEYRING` or `GATEWAY_KEYRING`, and retiring the old kid,** your steps in
+  order. Only steps 5 and 6 are irreversible, and only if the old ring file is lost: keep it
+  offline, and the retired key can always go back under its own name.
+  1. `keyring-add` on your offline copy of the stored ring, store the result as that
+     `production` secret, then dispatch `dark` with `rotate` naming it. The new kid is active;
+     every old one still opens.
+  2. Dispatch **`rotation`** with `keyring` naming it, again until a run says the pass swept
+     every owner to `left` 0. Each run asks every owner the directory lists, a page of 100 at
+     a time, and stops by itself after 20 minutes. Its progress is kept in the control
+     namespace (`deploy:rotation:<keyring>:<active kid>`), so a run again goes on where it
+     stopped. An owner held by a restore, or with a blob that no longer opens, stays owing,
+     named with its restore step; the next run asks it first. Every answer must name the
+     stored ring's active kid, or the run stops: then the deployed ring is not the one you
+     stored. It refuses while the doors hold `IMPORT_KEY` (the import window).
+  3. **`GATEWAY_KEYRING`:** go on once one pass has swept. **`FILES_KEYRING`:** the off-account
+     copy keeps versions under the old kid for 22 days after the first night that copies the
+     rewrapped roots. Wait 23 days after that night, then dispatch `rotation` again for a
+     second pass, until it sweeps. Mode `retire` reads that night from the copy's own runs and
+     says the date. Don't retire `FILES_KEYRING` before the copy's lifecycle rule is seen
+     deleting a hidden version live (the copy's first nights, `tasks.md`).
+  4. `keyring-retire` on your copy: it writes `<file>.retire`, the active key alone, and leaves
+     your file as it is. Keep the old file offline.
+  5. Store `<file>.retire` as the `production` secret.
+  6. Dispatch **`retire`** with `keyring`. Its apply job checks the record and the copy, then
+     names the words, `retire-<keyring>-<kids>`, and changes nothing. Dispatch it again with
+     `confirm` those words: it sets the stored ring on the keyring's Workers, then runs the
+     canary.
 - **Later deploys change the Workers one after another, never at once.** The kit deploys
   them in turn, each after the Workers it binds (`WORKERS` in `deploy/facts.ts`), so
   between two of them old and new versions serve together. A change to a contract between

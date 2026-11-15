@@ -25,7 +25,7 @@
  * doors' own rule: the lane asks `open()` once a pass, before it claims, and claims nothing
  * on closed, a failure or no answer.
  */
-import { Refusal, refusalOf } from "../../contract/src/refusal";
+import { orRefused, Refusal, refusalOf } from "../../contract/src/refusal";
 import { parseBlob } from "../../contract/src/envelope";
 import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
 import { clock, inTime } from "./clock";
@@ -249,13 +249,9 @@ export class Doorbell implements WakeSender, Lane {
     const { ledger, write } = this.#deps;
     const swept: Swept[] = [];
     for (const held of ledger.sealedCallbacks(clock())) {
-      let answer: Resealed;
-      try {
-        answer = await this.#deps.reseal(held.subscription_id, held.version, held.blob);
-      } catch (error) {
-        if ((refusalOf(error)?.status ?? 500) >= 500) {
-          throw error;
-        }
+      const answer = await orRefused(
+        this.#deps.reseal(held.subscription_id, held.version, held.blob), null);
+      if (answer === null) {
         swept.push({ active: null, under: null, resealed: false });
         continue;
       }

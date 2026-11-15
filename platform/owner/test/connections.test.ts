@@ -973,6 +973,16 @@ describe("the platform's reseal sweep", () => {
     expect(await kids(r)).toEqual(swept);
   });
 
+  it("counts a blob the gateway refuses left, and reseals the other all the same", async () => {
+    const r = await gated();
+    const [a, b] = [await keyUnder(r, "k1"), await keyUnder(r, "k1")].sort();
+    // The first's blob is the second's: it opens for no binding of its own.
+    await r.sql("UPDATE connection_secrets SET blob = (SELECT blob FROM connection_secrets " +
+                "WHERE connection_id = ?) WHERE connection_id = ?", b!, a!);
+    expect(await r.stub.gatewayReseal(platform(r))).toEqual({ resealed: 1, left: 1, kid: "k2" });
+    expect(await kids(r)).toEqual([[a, 1, "k1"], [b, 2, "k2"]]);
+  });
+
   it("leaves a blob a refresh holds, and counts it left for the next sweep", async () => {
     const r = await gated();
     const connection = await keyUnder(r, "k1");

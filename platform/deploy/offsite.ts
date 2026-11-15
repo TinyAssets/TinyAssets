@@ -312,6 +312,32 @@ export interface Watch {
   readonly line: string;
 }
 
+/** One completed night of the copy: its run, and its settings and copy jobs. */
+interface Night {
+  readonly run: Json;
+  readonly read: Json;
+  readonly copied: Json;
+}
+
+/** The copy's completed nights on `NIGHTLY.ref`, newest first, each with its two jobs. */
+async function* nights(reach: Reach): AsyncGenerator<Night> {
+  for await (const runs of pages(reach, `/actions/workflows/${NIGHTLY.workflow}/runs?branch=${
+    NIGHTLY.ref}&status=completed`, "workflow_runs")) {
+    for (const run of runs) {
+      const { jobs } = await github(reach, "GET", `/actions/runs/${run["id"]}/jobs`) as
+        { jobs: Json[] };
+      const job = (name: string): Json => {
+        const found = jobs.find((each) => each["name"] === name);
+        if (found === undefined) {
+          throw new Error(`${NIGHTLY.workflow}'s run ${run["id"]} has no ${name} job`);
+        }
+        return found;
+      };
+      yield { run, read: job(NIGHTLY.settings), copied: job(NIGHTLY.copy) };
+    }
+  }
+}
+
 /**
  * The copy as its nights on `NIGHTLY.ref` show it, newest first. A night owes nothing when its
  * copy job passed, or when its settings job found no setting stored, so the copy job was
@@ -325,43 +351,51 @@ export async function watch(reach: Reach, now: Date): Promise<Watch> {
     `no night of ${NIGHTLY.workflow} has passed ${since}, past two nights: an erased owner's ` +
     `objects must be hidden in the copy within ${HIDE_NIGHTS} nights (deploy/offsite.ts)` });
   let newest = true;
-  for await (const runs of pages(reach, `/actions/workflows/${NIGHTLY.workflow}/runs?branch=${
-    NIGHTLY.ref}&status=completed`, "workflow_runs")) {
-    for (const run of runs) {
-      const { jobs } = await github(reach, "GET", `/actions/runs/${run["id"]}/jobs`) as
-        { jobs: Json[] };
-      const job = (name: string): Json => {
-        const found = jobs.find((each) => each["name"] === name);
-        if (found === undefined) {
-          throw new Error(`${NIGHTLY.workflow}'s run ${run["id"]} has no ${name} job`);
-        }
-        return found;
-      };
-      const [read, copied] = [job(NIGHTLY.settings), job(NIGHTLY.copy)];
-      const passed = copied["conclusion"] === "success";
-      const dark = read["conclusion"] === "success" && copied["conclusion"] === "skipped";
-      if (dark && newest) {
-        return { state: "waiting", line: `not configured: the night of ${run["created_at"]} ` +
-                 "found none of the copy's settings stored, so nothing is owed" };
-      }
-      if (passed || dark) {
-        const at = String((passed ? copied : read)["completed_at"]);
-        if (Date.parse(at) < due) {
-          return overdue(`since ${at}`);
-        }
-        return passed ? { state: "passed", line: `a night last passed at ${at}` }
-          : { state: "waiting", line: `configured since the night of ${at}; its first pass is ` +
-              `due by ${new Date(Date.parse(at) + OVERDUE_MS).toISOString()}` };
-      }
-      if (Date.parse(String(run["updated_at"])) < due) {
-        return overdue(`since before ${run["updated_at"]}`);
-      }
-      newest = false;
+  for await (const { run, read, copied } of nights(reach)) {
+    const passed = copied["conclusion"] === "success";
+    const dark = read["conclusion"] === "success" && copied["conclusion"] === "skipped";
+    if (dark && newest) {
+      return { state: "waiting", line: `not configured: the night of ${run["created_at"]} ` +
+               "found none of the copy's settings stored, so nothing is owed" };
     }
+    if (passed || dark) {
+      const at = String((passed ? copied : read)["completed_at"]);
+      if (Date.parse(at) < due) {
+        return overdue(`since ${at}`);
+      }
+      return passed ? { state: "passed", line: `a night last passed at ${at}` }
+        : { state: "waiting", line: `configured since the night of ${at}; its first pass is ` +
+            `due by ${new Date(Date.parse(at) + OVERDUE_MS).toISOString()}` };
+    }
+    if (Date.parse(String(run["updated_at"])) < due) {
+      return overdue(`since before ${run["updated_at"]}`);
+    }
+    newest = false;
   }
   return newest ? { state: "waiting", line: `no night of ${NIGHTLY.workflow} has completed on ` +
                     `${NIGHTLY.ref}, so nothing says the copy is configured` }
     : overdue("ever");
+}
+
+/**
+ * When the copy first held what R2 held after `at` (a key rotation's pass, `deploy.ts` mode
+ * `retire`): `first`, the copy job's `completed_at` of the first night on `NIGHTLY.ref` that
+ * passed and whose run was made after `at` (so it listed R2 after it), or null when none has;
+ * and `ever`, whether any night has passed at all. A copy that never passed holds nothing.
+ */
+export async function firstNightAfter(reach: Reach, at: Date):
+    Promise<{ readonly first: Date | null; readonly ever: boolean }> {
+  let first: Date | null = null;
+  for await (const { run, copied } of nights(reach)) {
+    if (copied["conclusion"] !== "success") {
+      continue;
+    }
+    if (Date.parse(String(run["created_at"])) <= at.getTime()) {
+      return { first, ever: true };
+    }
+    first = new Date(String(copied["completed_at"]));
+  }
+  return { first, ever: first !== null };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

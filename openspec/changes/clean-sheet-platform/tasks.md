@@ -318,10 +318,23 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `gatewayReseal` `{resealed, left, kid}`, resealing doorbell subscriptions' blobs
     (`wake_callbacks`) too, since an idle one otherwise broke at a gateway kid's retirement;
     the operator ops `owner.rewrap` and `owner.reseal`.
-  - [ ] The rotation's PR 2 (`untangle/r7-rotation-driver`): kit mode `rotation` over the
+  - [x] The rotation's PR 2 (`untangle/r7-rotation-driver`): kit mode `rotation` over the
     directory's owners with its progress record in CONTROL, and mode `retire` with the
     founder's words, for `FILES_KEYRING` only after a second pass begun `KEEP_DAYS` + 1 days
-    after the first copy night that followed the first (`r7-rotation.md` item 6).
+    after the first copy night that followed the first (`r7-rotation.md` item 6;
+    `r7-rotation-driver.md`).
+  - [ ] An owner a blob that no longer opens keeps owing (a refused data key, root,
+    connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
+    exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
+    then its build (`untangle/r7-unopenable`).
+  - [ ] An imported owner whose admit never ran keeps its data and no `o:` record after the
+    window, so no rotation reaches it: the window's close checks every bundle is admitted or
+    discarded, the founder's decision in `r7-rotation-driver.md` item 8
+    (`untangle/i-window-close`).
+  - [ ] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
+    old-kid roots back and restarts the copy's expiry, so `retire`'s gate is read from that
+    night: R8 marks the rotation's record or refuses to restore during one
+    (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
     (`live:` after `untangle/r7-rotation-driver`).
   - [x] `restore.wipe`, a live owner brought to pending and empty for a restore, the
