@@ -130,7 +130,9 @@ import {
 } from "../contract/src/signin.ts";
 import { principal } from "../contract/src/text.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
-import { bundles, checksArgv, pairTag, pinned, treeImage } from "../sandbox/template/pair.ts";
+import {
+  bundles, type Bundles, checksArgv, pairTag, pinned, treeImage,
+} from "../sandbox/template/pair.ts";
 import { type JobRun, maskLine, runOf, set, summarize } from "./actions.ts";
 import {
   Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback, handover, type Kept,
@@ -175,6 +177,9 @@ export interface Io {
   readonly fetch: Fetch;
   readonly spawn: typeof spawnSync;
   readonly exec: typeof execFileSync;
+  /** The runner and the probes this tree builds, and its image (`sandbox/template/pair.ts`). */
+  readonly bundles: () => Bundles;
+  readonly treeImage: () => string;
   readonly log: (line: string) => void;
   /** The clock: a route record's time, and how long the operator's answer is waited for. */
   readonly now: () => Date;
@@ -186,6 +191,8 @@ export const IO: Io = Object.freeze({
   spawn: ((...args: Parameters<typeof spawnSync>) => spawnSync(...args)) as typeof spawnSync,
   exec: ((...args: Parameters<typeof execFileSync>) => execFileSync(...args)) as
     typeof execFileSync,
+  bundles,
+  treeImage,
   log: (line: string) => console.log(line),
   now: () => new Date(),
   sleep: (ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }),
@@ -509,8 +516,8 @@ export async function registerRedirect(key: string, apply: boolean, fetcher: Fet
  * The pair this checkout deploys: the pinned template, the runner the sandbox Worker ships
  * and the probes beside it, built as its build makes them (`sandbox/template/pair.ts`).
  */
-function shippedPair(exec: Io["exec"]): string {
-  const { runner, probes } = bundles(exec);
+function shippedPair(io: Io): string {
+  const { runner, probes } = io.bundles();
   return pairTag(pinned(), runner.sha, probes.sha);
 }
 
@@ -997,7 +1004,7 @@ const e2b = step<never, "e2b">(({ run }) => ({
  */
 function pinnedTree({ run, say }: Context): string {
   const pin = pinned();
-  const tree = treeImage(run.io.exec);
+  const tree = run.io.treeImage();
   if (tree !== pin) {
     const why = `the pinned template ${pin} is not this tree's image ${tree}: build it ` +
       "(sandbox-template.yml, build) and pin its passed pair";
@@ -1024,7 +1031,7 @@ const templateLater = step((ctx) => {
 
 /** The pair this deploy makes (`shippedPair`), passed. */
 const pairReady = step<"e2b">(async ({ run, say }, { e2b: admin }) => {
-  const pair = shippedPair(run.io.exec);
+  const pair = shippedPair(run.io);
   if (await admin.ready(pair)) {
     say(`the pair ${pair} passed its standing checks in this E2B team`);
   } else if (!run.apply) {
@@ -1037,7 +1044,7 @@ const pairReady = step<"e2b">(async ({ run, say }, { e2b: admin }) => {
 });
 
 const pairLater = step(({ run, say }) => {
-  say(`the pair ${shippedPair(run.io.exec)} passed its standing checks: ${LATER}`);
+  say(`the pair ${shippedPair(run.io)} passed its standing checks: ${LATER}`);
 });
 
 /** E2B's lifecycle webhook, listed and checked before anything is changed. */
@@ -1696,7 +1703,7 @@ const h2 = step(({ run }) => {
  * secrets). A failure, or no tag after it, throws.
  */
 const pairCheck = step<"e2b">(async ({ run }, { e2b: admin }) => {
-  const tag = shippedPair(run.io.exec);
+  const tag = shippedPair(run.io);
   if (await admin.ready(tag)) {
     run.io.log(`the pair ${tag} passed its standing checks in this E2B team`);
     return;

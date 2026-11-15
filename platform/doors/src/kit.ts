@@ -3,7 +3,8 @@
  *
  * A body is read to its door's bound (`contract/src/limits.ts`): a declared `Content-Length`
  * over it is refused before anything is read, and a body that grows past it while read is
- * refused there. Either is `413`, never a parse of the rest.
+ * refused there. Either is `413`, never a parse of the rest. An upstream's answer the doors
+ * read (`oidc.ts`) is read by the same bounded reader.
  *
  * Every JSON and text answer is `Cache-Control: no-store`: each is one owner's, or one
  * request's, and no cache may keep it.
@@ -62,19 +63,19 @@ export function randomToken(bytes: number): string {
 }
 
 /**
- * The body read to `max` bytes, each part handed to `take`: false once it is over, nothing
- * past `max` read.
+ * The body of a request or an answer read to `max` bytes, each part handed to `take`: false
+ * once it is over, nothing past `max` read.
  */
-async function bounded(request: Request, max: number,
+async function bounded(message: Request | Response, max: number,
                        take: (part: Uint8Array) => void): Promise<boolean> {
-  const declared = request.headers.get("Content-Length");
+  const declared = message.headers.get("Content-Length");
   if (declared !== null && !(/^\d+$/.test(declared) && Number(declared) <= max)) {
     return false;
   }
-  if (request.body === null) {
+  if (message.body === null) {
     return true;
   }
-  const reader = request.body.getReader();
+  const reader = message.body.getReader();
   let size = 0;
   for (;;) {
     const { done, value } = await reader.read();
@@ -94,11 +95,12 @@ async function bounded(request: Request, max: number,
  * The body as UTF-8 text, or null when it is over `max` bytes: decoded as it is read, so no
  * copy of its bytes is held beside the text.
  */
-export async function boundedText(request: Request, max: number): Promise<string | null> {
+export async function boundedText(message: Request | Response, max: number):
+    Promise<string | null> {
   const decoder = new TextDecoder();
   // Its parts joined once (a string built by `+=` is a rope its parse would copy again).
   const parts: string[] = [];
-  if (!await bounded(request, max, (part) => parts.push(decoder.decode(part, { stream: true })))) {
+  if (!await bounded(message, max, (part) => parts.push(decoder.decode(part, { stream: true })))) {
     return null;
   }
   parts.push(decoder.decode());

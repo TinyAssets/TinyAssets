@@ -56,7 +56,9 @@ import {
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, routedConfig,
   type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
-import { BUNDLES, bundles, pairTag, treeImage } from "../../sandbox/template/pair";
+import {
+  type Bundle, type Bundles, BUNDLES, bundles, pairTag, treeImage,
+} from "../../sandbox/template/pair";
 import {
   boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS,
   MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers,
@@ -87,10 +89,11 @@ const ROTATED = ringSecret("k2", ["k1", "k2"]);
 const E2B_KEY = "e2b_test_key";
 const ACCOUNT = "a".repeat(32);
 const TEMPLATE = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
-/** The runner and probes the fake bundle writes, and the pair they make with the pin. */
+/** The runner and probes the fake build makes, and the pair they make with the pin. */
 const RUNNER = "the runner";
 const PROBE_BUNDLE = "the probes";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const bundled = (text: string): Bundle => ({ bytes: Buffer.from(text), sha: sha(text) });
 const PAIR = pairTag(TEMPLATE, sha(RUNNER), sha(PROBE_BUNDLE));
 
 /** A Cloudflare answer, as a fake gives it: its status and its JSON body. */
@@ -531,19 +534,18 @@ function world(options: WorldOptions = {}) {
   }) as unknown as Io["spawn"];
   const exec = ((_command: string, argv: readonly string[] = [],
                  options_: { env?: Record<string, string> } = {}) => {
-    if (String(argv[0]).endsWith("bundle.mjs")) {
-      events.push("bundle the runner and the probes");
-      writeFileSync(argv[1]!, RUNNER);
-      writeFileSync(argv[2]!, PROBE_BUNDLE);
-    } else if (String(argv.at(-1)).endsWith("image.ts")) {
-      events.push("the tree's image");
-      return `${options.image ?? TEMPLATE}\n`;
-    } else {
-      events.push(`exec ${basename(String(argv.at(-1)))} env has ${[...H2_INPUTS_LIST, "E2B_API_KEY"]
-        .filter((name) => options_.env?.[name] !== undefined).join(",")}`);
-    }
+    events.push(`exec ${basename(String(argv.at(-1)))} env has ${[...H2_INPUTS_LIST, "E2B_API_KEY"]
+      .filter((name) => options_.env?.[name] !== undefined).join(",")}`);
     return "";
   }) as unknown as Io["exec"];
+  const bundles = (): Bundles => {
+    events.push("bundle the runner and the probes");
+    return { runner: bundled(RUNNER), probes: bundled(PROBE_BUNDLE) };
+  };
+  const treeImage = (): string => {
+    events.push("the tree's image");
+    return options.image ?? TEMPLATE;
+  };
   // What the kit prints joins the one timeline, by its first line.
   const log = (line: string) => {
     logs.push(line);
@@ -551,8 +553,8 @@ function world(options: WorldOptions = {}) {
   };
   // The clock moves on only while the kit waits for an answer.
   let clock = NOW.getTime();
-  const io: Io = { fetch: fetcher, spawn, exec, log, now: () => new Date(clock),
-                   sleep: async (ms) => { clock += ms; } };
+  const io: Io = { fetch: fetcher, spawn, exec, bundles, treeImage, log,
+                   now: () => new Date(clock), sleep: async (ms) => { clock += ms; } };
   return { io, events, logs, secretsPut, routes, hooks, accounts, kv, tables, kill, domains,
            inert, dns, created, sent };
 }
@@ -3332,7 +3334,7 @@ describe("platform-deploy.yml", () => {
     // The probes' own plan, as checks.ts runs it: each sandbox's lifetime, one after another.
     const out = mkdtempSync(join(tmpdir(), "ta-plan-"));
     try {
-      bundles(execFileSync, out);
+      bundles(out);
       const probes = JSON.parse(execFileSync(process.execPath, [join(out, BUNDLES.probes), "plan"],
                                              { encoding: "utf8" })) as
         { sandboxes: { timeout_s: number }[] };

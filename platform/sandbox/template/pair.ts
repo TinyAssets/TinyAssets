@@ -55,16 +55,21 @@ export function checksArgv(mode: "pair" | "build"): string[] {
   return [...tsTool("checks.ts"), mode];
 }
 
+/** The runner the Worker ships and the probes beside it (`bundles`). */
+export interface Bundles {
+  readonly runner: Bundle;
+  readonly probes: Bundle;
+}
+
 /**
  * The runner the Worker ships and the probes beside it, as the Worker's build makes them
  * (`BUILD`), into `out` by their names (`BUNDLES`) if given (else a temporary directory,
- * deleted), by `exec`.
+ * deleted).
  */
-export function bundles(exec: typeof execFileSync = execFileSync, out?: string):
-    { runner: Bundle; probes: Bundle } {
+export function bundles(out?: string): Bundles {
   const dir = out ?? mkdtempSync(join(tmpdir(), "ta-bundles-"));
   try {
-    exec(process.execPath, [BUILD, join(dir, BUNDLES.runner), join(dir, BUNDLES.probes)],
+    execFileSync(process.execPath, [BUILD, join(dir, BUNDLES.runner), join(dir, BUNDLES.probes)],
          { stdio: "ignore" });
     const read = (name: string): Bundle => {
       const bytes = readFileSync(join(dir, name));
@@ -91,7 +96,7 @@ export function pairTag(template: string, runner: string, probes: string): strin
   return `${template}-r${runner.slice(0, 16)}-p${probes.slice(0, 16)}`;
 }
 
-/** This tree's image, `name:tag`, as `image.ts` computes it, by `exec`. */
-export function treeImage(exec: typeof execFileSync = execFileSync): string {
-  return String(exec(process.execPath, tsTool("image.ts"), { encoding: "utf8" })).trim();
+/** This tree's image, `name:tag`, as `image.ts` computes it. */
+export function treeImage(): string {
+  return execFileSync(process.execPath, tsTool("image.ts"), { encoding: "utf8" }).trim();
 }
