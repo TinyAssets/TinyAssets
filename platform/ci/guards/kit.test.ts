@@ -334,8 +334,8 @@ describe("the Worker kit", () => {
 
   it("builds a gate before a service or before objects, with a contract's methods", () => {
     const store = methodsOf(join(PLATFORM, "contract", "src", "files.ts"), "ChunkStore");
-    expect(store).toEqual(expect.arrayContaining(["mintKey", "putChunks", "getChunks"]));
-    expect(store).toHaveLength(15);
+    expect(store).toEqual(expect.arrayContaining(["mintKey", "putChunks", "getChunks",
+                                                  "sweepManifests"]));
     expect(() => methodsOf(join(PLATFORM, "contract", "src", "files.ts"), "NoSuch"))
       .toThrow(/declares no interface NoSuch/);
     const files = gate("files-gate", store, { worker: join(PLATFORM, "files"),

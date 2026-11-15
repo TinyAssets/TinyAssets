@@ -171,8 +171,15 @@ export interface ChunkStore {
     Promise<Uint8Array>;
   getManifestSegment(ns: string, key: string, gen: string, a: number, b: number,
                      sha256: string): Promise<Uint8Array>;
-  deleteManifest(ns: string, gen: string, parts: number,
-                 segments: readonly { a: number; b: number }[]): Promise<void>;
+  /** A generation's log segments deleted: a finished one's tail past E. */
+  deleteSegments(ns: string, gen: string, segments: readonly { a: number; b: number }[]):
+    Promise<void>;
+  /**
+   * One page of the namespace's generations from `cursor` (null: the first), every object of
+   * one `keep` does not name deleted, roots first; where the next page starts, or null.
+   */
+  sweepManifests(ns: string, keep: string[], cursor: string | null):
+    Promise<{ deleted: number; cursor: string | null }>;
 }
 
 /** `FilesUpload`, as the upload door binds it: chunks put, and nothing read. */

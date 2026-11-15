@@ -321,7 +321,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `dataKeyRewrap` (or `gatewayReseal`) for every owner until each has answered (`left` 0), and
-  only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`).
+  only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`), no sooner than the
+  off-account copy's versions under it expire (`r7-sweep.md` item 10; the driver,
+  `untangle/r7-rotation`).
   - [ ] `restore.wipe`, a live owner brought to pending and empty for a restore, the
     generation to restore pinned first, since a fresh generation's finish prunes every older
     unpinned one (`r5r.md` item 14). Restore (#5587) and owner migration 10's pin (#5589) landed.
@@ -329,6 +331,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] The sweep's rotation counts a restore record's `gen` and `fresh` (a wiped or failed
     restore's object knows neither), or does not finish while any owner is held
     (`r5w.md` item 14, `untangle/r7-sweep`).
+  - [ ] Owner migration 13's pin PR, after the generations' sweep merges (`r7-sweep.md` item 5,
+    `untangle/r7-sweep-pin13`).
+  - [ ] A restore's unnamed chunks swept: those the owner put after E have no row in the
+    restored object, so nothing collects them; the files plane maps a listed chunk's name back
+    to the object's hashes (`r7-sweep.md` item 10, `untangle/r-restore-chunks`).
   - [ ] A restore's kept generations' chunks kept from early collection: the files plane
     collects early only garbage the newest generation does not name, so the fallback a
     restore loads can lose a chunk and its restore fails at its chunks step (`r5w.md`
