@@ -17,13 +17,14 @@ import {
   archiveDue, hotFull, LEDGER_LIMITS, type Ledger, moveTake, OWNER, postRoom,
   sealable,
 } from "../src/ledger";
+import { sqlIn } from "../../ci/workerd";
 import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import { STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
 import type { OwnerDO } from "../src/owner-do";
 import { MOVE_BYTES, RECORD_TRAILER_BYTES } from "../src/segments";
 import { ballast, counters, DOT, MUSE, origin, registerOn, rig } from "./ledger-support";
-import { drainDue, failure, sqlIn, starterSeed, storesOn } from "./support";
+import { drainDue, failure, starterSeed, storesOn } from "./support";
 
 const PULL = { command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
                recipe_id: null };

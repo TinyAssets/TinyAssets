@@ -347,6 +347,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
     `facet-probe.md` Q8 never sampled it).
+  - [ ] `owner.erase`, the email route's erasure (the site's `/account`, the Play Data safety
+    answers): mode `erase` asks it only with `--confirm erase-<owner>`, and the doors begin the
+    owner's own erasure for an owner the directory signed up (`owner-erase-op.md`).
+  - [ ] Live: `owner.erase`'s first real use, the founder's call for each request; the stage's
+    end uses the owner's own door (d3 §H).
   - [ ] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
     (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, unblocked since
     T1c merged (`r3.md` item 9).

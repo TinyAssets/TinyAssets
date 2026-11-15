@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { rewrap } from "../../files/src/datakey";
 import { manifestKey } from "../../files/src/keys";
 import {
@@ -40,7 +41,7 @@ import { MUSE } from "./ledger-support";
 import { erasedWhole } from "./erasure-support";
 import { clock } from "../src/clock";
 import { markErasing } from "../src/erasure";
-import { drainDue, failure, laneAt, sqlIn, starterSeed, storesOn, through } from "./support";
+import { drainDue, failure, laneAt, starterSeed, storesOn, through } from "./support";
 import { carried } from "../src/starter-package";
 
 afterEach(() => {

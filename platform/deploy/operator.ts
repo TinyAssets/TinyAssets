@@ -10,6 +10,8 @@
  * - **`restore`** asks the doors `restore.source` for an owner, or, given a generation
  *   (`--generation`, `restoreFrom`), its restore from it (`owner/src/restore.ts`): begun,
  *   stepped until done, then the owner admitted, each op through the operator channel.
+ * - **`erase`** asks the doors `owner.erase` for an owner, only with the words that confirm it
+ *   (`eraseWords`), which `--act` never carries.
  * - **`owner`** asks the doors one op of `OPERATOR_OPS` (`--act`, `ownerAct`) through the
  *   operator channel (`contract/src/operator-message.ts`): a message MAC'd under
  *   `OPERATOR_KEYRING`'s active kid and put on the operator queue (`QUEUES.OPERATOR`) over the
@@ -150,17 +152,23 @@ export interface Act {
 
 const OWNER_OP = "owner.";
 
-/** Each act `--act` takes: an `owner.` op of `OPERATOR_OPS` by its last word, with its arg. */
-const ACTS: readonly string[] = Object.freeze(Object.entries(OPERATOR_OPS)
-  .filter(([op]) => op.startsWith(OWNER_OP))
+/**
+ * The ops `--act` asks, each by its args: the `owner.` ops of `OPERATOR_OPS` but one that
+ * words confirm (`confirm`), which is a mode's own, with its `--confirm` (`erase`).
+ */
+const OWNER_OPS: Readonly<Record<string, readonly string[]>> = Object.freeze(Object.fromEntries(
+  Object.entries(OPERATOR_OPS).filter(([op, args]) => op.startsWith(OWNER_OP)
+    && !(args as readonly string[]).includes("confirm"))));
+
+/** Each act `--act` takes: an op of `OWNER_OPS` by its last word, with its arg. */
+const ACTS: readonly string[] = Object.freeze(Object.entries(OWNER_OPS)
   .map(([op, args]) => `${op.slice(OWNER_OP.length)}${args.map((arg) => `=<${arg}>`).join("")}`));
 
 /** `--act`'s op: `<verb>=<value>` for an op of one arg (`tier=paid`), `<verb>` for one of none. */
 export function ownerAct(text: string): Act {
   const at = text.indexOf("=");
   const op = `${OWNER_OP}${at < 0 ? text : text.slice(0, at)}`;
-  const names: readonly string[] | undefined = Object.hasOwn(OPERATOR_OPS, op)
-    ? OPERATOR_OPS[op as OperatorOp] : undefined;
+  const names = Object.hasOwn(OWNER_OPS, op) ? OWNER_OPS[op] : undefined;
   if (names === undefined || names.length > 1 || (at < 0) !== (names.length === 0)) {
     throw new Error(`--act is one of ${ACTS.join(", ")}`);
   }
@@ -184,6 +192,11 @@ export function restoreFrom(text: string): Generation {
   }
   return Object.freeze({ namespace: namespace!, gen: gen! });
 }
+
+/** What an erasure does, which its plan says (`owner/src/erasure.ts`, `doors/src/erase.ts`). */
+export const ERASE_LOSES = "every door of the owner closed at once and every run ended, then " +
+  "its keys, inbound URLs, grants and identity deleted, its R2 copies and database deleted " +
+  "once the erasure's grace is past, and its name never admitted again: no restore takes it back";
 
 /** What an owner loses at a restore (`operator_research.md` §3.3), which its plan says. */
 export const RESTORE_LOSES = "the owner loses its sessions (it signs in again), every agent's " +

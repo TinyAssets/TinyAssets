@@ -12,11 +12,12 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { until } from "../../ci/workerd";
 import { SANDBOX_WAITING } from "../../contract/src/sandbox";
 import { gated } from "./gateway-support";
 import { defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf,
          TIERS } from "./runs-support";
-import { drainDue, until } from "./support";
+import { drainDue } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });

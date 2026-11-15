@@ -7,6 +7,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
 import { type Entry } from "../src/files";
 import { sha256Hex } from "../../contract/src/digest";
@@ -16,7 +17,7 @@ import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import {
-  failure, fileCounters, inFiles, laneAt, ownerObject, setFiles, sqlIn, starterSeed, text,
+  failure, fileCounters, inFiles, laneAt, ownerObject, setFiles, starterSeed, text,
 } from "./support";
 
 const W = "/workspace";

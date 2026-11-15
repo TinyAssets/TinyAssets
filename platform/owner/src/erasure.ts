@@ -40,10 +40,12 @@
  * After step 3 the instance answers nothing (its in-memory mark), and the database holds
  * the tombstone alone: an object a later `getByName` starts finds it before anything else,
  * migrates nothing, starts no Lifecycle and refuses every door (`OWNER_ERASED`), so
- * nothing ever makes owner state there again. The erasure door is the owner's
- * `ownerErase` (slice L), which marks the owner and leaves the rest to the job.
+ * nothing ever makes owner state there again. Two doors mark the owner and leave the rest
+ * to the job: the owner's own `ownerErase` (slice L), and the platform's `erasureBegin`, the
+ * operator's `owner.erase` for an owner who cannot sign in (`doors/src/operator.ts`).
  */
 import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
+import { type EraseRequest, eraseWords } from "../../contract/src/owner";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import type {
@@ -140,14 +142,18 @@ export const NO_ERASURE = "no erasure of this owner is under way";
 /** What the owner types to erase its account. */
 export const ERASE_CONFIRM = "erase my account";
 
-function erasureConfirmed(r: Record<string, unknown>): void {
-  if (r["confirm"] !== ERASE_CONFIRM) {
-    throw new Refusal("invalid", `an erasure is confirmed by ${JSON.stringify(ERASE_CONFIRM)}`);
-  }
-}
-
-export interface EraseRequest {
-  readonly confirm: string;
+/**
+ * In a unit: the door's call checked, holding the words `words` names for its owner and no
+ * others. Both erasure doors then begin the one erasure (`Erasure.begin`: the mark and its
+ * job, durable before they answer); everything after the mark is the job's.
+ */
+function confirmed(door: Door<EraseRequest>, words: (owner: string) => string): void {
+  door.within(({ r, account }) => {
+    const confirm = words(account.owner);
+    if (r["confirm"] !== confirm) {
+      throw new Refusal("invalid", `an erasure is confirmed by ${JSON.stringify(confirm)}`);
+    }
+  });
 }
 
 // -- THE DOORS: the `erasure` rows' handlers (`contract/doors.json`) ------------------------------
@@ -158,14 +164,18 @@ export interface EraseRequest {
 
 /** The `erasure` doors' handlers, by door. */
 export const erasureDoors = Object.freeze({
+  /** The owner's own erasure, in its live session, confirmed by its typed words. */
   async ownerErase(o: OwnerState, door: Door<EraseRequest>): Promise<{ erasing: true }> {
-    const confirmed = await o.door(() => door.within(({ r }) => {
-      erasureConfirmed(r);
-      return true;
-    }));
-    if (!confirmed) {
-      throw new Error("an erasure's widening returned without confirming it");
-    }
+    await o.door(() => confirmed(door, () => ERASE_CONFIRM));
+    await o.erasure.begin();
+    return { erasing: true as const };
+  },
+  /**
+   * The platform's erasure of the owner, by its reserved caller (the operator's
+   * `owner.erase`, for an owner who asked by other means), confirmed by `erase-<owner>`.
+   */
+  async erasureBegin(o: OwnerState, door: Door<EraseRequest>): Promise<{ erasing: true }> {
+    await o.door(() => confirmed(door, eraseWords));
     await o.erasure.begin();
     return { erasing: true as const };
   },

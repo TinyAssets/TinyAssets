@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_ONLY, PLATFORM_RESERVED, tombstoned, writeTombstone,
 } from "../src/admission";
+import { sqlIn, until } from "../../ci/workerd";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
 import { Erasure } from "../src/erase";
@@ -36,9 +37,7 @@ import {
 } from "./erasure-support";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { later, recorder } from "./runs-support";
-import {
-  admittedOwner, alarmOf, failure, gateFor, sqlIn, storesOn, TIERS, until,
-} from "./support";
+import { admittedOwner, alarmOf, failure, gateFor, storesOn, TIERS } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();

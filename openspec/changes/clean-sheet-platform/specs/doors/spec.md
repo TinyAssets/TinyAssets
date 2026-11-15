@@ -521,7 +521,7 @@ Before any Cloudflare change, the deploy SHALL list the callback at WorkOS (regi
 - **THEN** `dark` registers it and then runs the check, and the plan, which cannot list it, reports a `redirect-uri-invalid` answer as `dark`'s to register rather than stopping
 
 ### Requirement: Sign-up is the platform's explicit admit, and erasure its outside record
-The sign-in callback SHALL admit an owner the directory has no `o:` record of (the object first, then the record), and refuse an owner whose record says erased or whose object is marked erasing. The erasure door SHALL only mark the object erasing, durable before it answers. The object's erasure job SHALL then put the owner on the erasure queue at its mark and at each attempt until the doors confirm, and the doors' consumer SHALL, each step safe to run again, write the owner's `o:` record erased, delete its `k:`, `h:` and `i:` entries, revoke its every OAuth grant and delete the identity at the issuer, then confirm; the object SHALL wipe only after that confirmation, so a half-done erasure always finishes.
+The sign-in callback SHALL admit an owner the directory has no `o:` record of (the object first, then the record), and refuse an owner whose record says erased or whose object is marked erasing. The erasure door, the owner's own in its live session or the platform's from the operator channel (`owner.erase`, for an owner who asked by other means), SHALL only mark the object erasing, durable before it answers; the platform's SHALL take only the words `erase-<owner>` and only an owner the directory signed up. The object's erasure job SHALL then put the owner on the erasure queue at its mark and at each attempt until the doors confirm, and the doors' consumer SHALL, each step safe to run again, write the owner's `o:` record erased, delete its `k:`, `h:` and `i:` entries, revoke its every OAuth grant and delete the identity at the issuer, then confirm; the object SHALL wipe only after that confirmation, so a half-done erasure always finishes.
 
 #### Scenario: An erasure interrupted after its mark
 - **WHEN** the request that marked an owner erasing is lost, or a consumer step fails
@@ -530,6 +530,10 @@ The sign-in callback SHALL admit an owner the directory has no `o:` record of (t
 #### Scenario: An erased owner's name
 - **WHEN** an erased owner's key, capability URL, refresh token or sign-in is presented, or a stale `getByName` reaches its wiped object
 - **THEN** each is refused, and the object refuses every door, never admitted again
+
+#### Scenario: The operator erases an owner who cannot sign in
+- **WHEN** a signed `owner.erase` names an owner the directory signed up, with `erase-<owner>`
+- **THEN** the owner is erased exactly as its own door erases it; other words, another ring's MAC, or a name never signed up erase nothing
 
 ### Requirement: Inbound events are proved and routed by the binder
 `/hooks/inbound/<token>` SHALL exist only while the control record's `inbound` gate is on, take a body within the platform's one request ceiling, prove a shared app's request by the platform's signing secret its data record names (an HMAC over the timestamp and raw bytes within its skew) and route its single installation by the directory's `i:` entry, and route a capability URL by its token's hash (`h:`).

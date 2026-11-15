@@ -7,6 +7,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { type RunReceipt, runMeter } from "../src/runs";
@@ -15,7 +16,7 @@ import { BILLED_KEPT, DAYS_KEPT, LIVE_KEPT, meterRead, SandboxTime } from "../sr
 import { rig } from "./ledger-support";
 import { gated } from "./gateway-support";
 import { ownerRun, runnerBinding, scripted } from "./runs-support";
-import { drainDue, failure, sqlIn } from "./support";
+import { drainDue, failure } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });

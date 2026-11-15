@@ -7,6 +7,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { MANIFEST_LOG_OVERFLOW } from "../src/backup";
 import { ChangeLog, LOG_WIDE } from "../src/changelog";
 import { exported } from "../src/export";
@@ -17,7 +18,7 @@ import { MIGRATIONS } from "../src/schema";
 import {
   BURST, digest, generate, type Line, owner, PAGE, replay, standing,
 } from "./generation-support";
-import { sqlIn, storesOn } from "./support";
+import { storesOn } from "./support";
 
 const W = "/workspace";
 const text = (body: string) => new TextEncoder().encode(body);

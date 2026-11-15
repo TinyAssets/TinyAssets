@@ -18,6 +18,7 @@ import { GATEWAY_POOL_SLOTS, gatewaySlots } from "../src/held";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { doorbellSecret, sealDoorbell } from "../src/doorbell";
 import { open, openValue } from "../src/keyring";
+import { until } from "../../ci/workerd";
 import { ALICE, ANTHROPIC, OPENAI, sealed } from "./support";
 import type { Metering, Reserve } from "../../contract/src/gateway";
 
@@ -68,19 +69,10 @@ async function anthropicModel(): Promise<{ id: string }> {
   throw new Error("no metered Messages model in the catalog");
 }
 
-async function until(check: () => boolean | Promise<boolean>): Promise<void> {
-  for (let tries = 0; tries < 500; tries++) {
-    if (await check()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("timed out");
-}
-
 /** Once the provider has the request sent with `x-fake-id: id` (the fake records it). */
 const arrived = (id: string) => until(async () => (await (await fetch(
-  `https://status.test/cancelled?id=${id}`)).json() as { arrived: boolean }).arrived);
+  `https://status.test/cancelled?id=${id}`)).json() as { arrived: boolean }).arrived,
+  `the request ${id}`);
 
 async function rejected(run: () => Promise<unknown>): Promise<string> {
   const error = await run().then(() => undefined, (caught: unknown) => caught);
@@ -533,14 +525,14 @@ describe("the gateway Worker", () => {
       await pending;
       return granting()(call);
     }, new ReadableStream());
-    await until(() => pool.state().held === GATEWAY_POOL_SLOTS);
+    await until(() => pool.state().held === GATEWAY_POOL_SLOTS, "the pool held");
     // The next waits, first come first served, as many as may wait; one more is `busy`.
     const small = JSON.stringify({ model: model.id, input: "hi" });
     const refusing: Reserve = async () => ({ refused: "egress_spend_refused" });
     const waiting = Array.from({ length: 4 * GATEWAY_POOL_SLOTS }, () => egress.forward(
       "alice", "c1", 1, blob, posted("/v1/responses", small), refusing,
       new ReadableStream()));
-    await until(() => pool.state().waiting === 4 * GATEWAY_POOL_SLOTS);
+    await until(() => pool.state().waiting === 4 * GATEWAY_POOL_SLOTS, "the waiters");
     const busy = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses", small),
                                       refusing, new ReadableStream());
     expect([busy.response.status, busy.response.headers.get("retry-after"),

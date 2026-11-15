@@ -11,6 +11,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, onTestFinished } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { RESULT_CHARS } from "../../contract/src/encoded";
 import type { Ledger } from "../src/ledger";
@@ -25,7 +26,7 @@ import {
 } from "./archive-support";
 import { digest, generate, replay } from "./generation-support";
 import { MUSE, rig } from "./ledger-support";
-import { drainDue, failure, gateFor, spaceOf, sqlIn, storesOn } from "./support";
+import { drainDue, failure, gateFor, spaceOf, storesOn } from "./support";
 
 /** The recipient a dm with an outside agent goes to from the owner: that agent. */
 const MUSE_ID = (rows: Record<string, Record<string, unknown>>) =>

@@ -17,12 +17,15 @@
  *    name the message's op, owner and args digest, so a redelivery goes on and a used ask
  *    is never given another meaning.
  * Then the message is answered (`answers/<ask>.json`, a put that only makes): refused
- * (`refused`) when the directory's `o:` record says the owner is erased; otherwise by its op
- * in `OPS`, its result or its refusal, and refused (`invalid`) when `OPS` takes no such op or
- * its args are not exactly the op's (`OPERATOR_OPS`).
+ * (`owner_erased`, as the object and the sign-in refuse it) when the directory's `o:` record
+ * says the owner is erased; otherwise by its op in `OPS`, its result or its refusal, and
+ * refused (`invalid`) when `OPS` takes no such op or its args are not exactly the op's
+ * (`OPERATOR_OPS`).
  * A refusal of the moment, or any failure, is retried by the queue, and then left in the
  * dead-letter queue the kit names when no answer comes. Every op is idempotent from the
- * owner's own state, since the queue delivers at least once.
+ * owner's own state, since the queue delivers at least once: an erasure's redelivery is
+ * answered by the state its first delivery left, `erasing`, or `owner_erased` once the
+ * outside step wrote the directory's record.
  */
 import {
   acceptance, acceptanceKey, acceptanceOf, answerKey, answerOf, macHolds, type OperatorArgs,
@@ -32,9 +35,9 @@ import {
 import { keyed } from "../../contract/src/checks";
 import { parseRing } from "../../contract/src/envelope";
 import type {
-  RestoreBeginRequest, RestorePinRequest, RestoreWipeRequest, TierRequest,
+  EraseRequest, RestoreBeginRequest, RestorePinRequest, RestoreWipeRequest, TierRequest,
 } from "../../contract/src/owner";
-import { refusalOf } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 
 import { admit } from "./authorize";
 import { bindPlatformFor } from "./binder";
@@ -65,6 +68,18 @@ const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
   "owner.suspend": (env, owner, args) => suspension(env, owner, args, true),
   "owner.lift": (env, owner, args) => suspension(env, owner, args, false),
   "owner.admit": (env, owner) => admit(env, owner),
+  // The owner's erasure, for an owner who asked by other means (it cannot sign in): its
+  // object's mark and job, as its own door begins them; the erasure queue's outside step and
+  // the job's wipe then run as for any erasure (`erase.ts`). Only an owner the platform
+  // signed up: an erasure bars its name for good, so a mistyped one is never barred.
+  "owner.erase": async (env, owner, args) => {
+    if (await readOwner(env, owner) === null) {
+      throw new Refusal("refused", "the platform holds no owner of that name: only an owner " +
+                                   "who signed up is erased");
+    }
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.erasureBegin(binding, args as unknown as EraseRequest);
+  },
   "restore.source": (env, owner) => {
     const { binding, stub } = bindPlatformFor(env, owner);
     return stub.restoreSource(binding);
@@ -136,7 +151,7 @@ async function verdict(env: DoorsEnv, message: OperatorMessage):
     Promise<{ result: unknown } | { refused: Refused }> {
   const refused = (code: Refused["code"], text: string) => ({ refused: { code, message: text } });
   if ((await readOwner(env, message.owner))?.s === "erased") {
-    return refused("refused", "the owner is erased");
+    return refused("owner_erased", "the owner is erased");
   }
   if (!Object.hasOwn(OPS, message.op)) {
     return refused("invalid", `the operator channel takes no op ${message.op}`);

@@ -26,6 +26,7 @@ import { defineAgent, later, secretOf } from "../../owner/test/runs-support";
 import type { DoorsEnv } from "../src/env";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
+import { until } from "../../ci/workerd";
 import worker from "./entry";
 import { EGRESS_CHUNKS, EGRESS_USAGE } from "./fake-providers";
 import {
@@ -208,16 +209,6 @@ async function upstreamCancelled(id: string): Promise<boolean> {
     .json<{ cancelled: boolean }>()).cancelled;
 }
 
-async function until(check: () => Promise<boolean>, what: string): Promise<void> {
-  for (let tries = 0; tries < 200; tries++) {
-    if (await check()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`timed out waiting for ${what}`);
-}
-
 /** Read until the stream ends: "done", or the message it was errored with. */
 async function drained(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
   for (;;) {
@@ -232,7 +223,8 @@ async function drained(reader: ReadableStreamDefaultReader<Uint8Array>): Promise
 }
 
 async function settledOf(owner: string): Promise<void> {
-  await until(async () => (await reservations(owner))[0]!["state"] === "settled", "the settle");
+  await until(async () => (await reservations(owner))[0]!["state"] === "settled", "the settle",
+              400);
 }
 
 /**
@@ -333,7 +325,7 @@ describe("the egress door", () => {
     expect(await upstreamCancelled("stream")).toBe(false);
     await reader.cancel();
     await settledOf(box.owner);
-    await until(() => upstreamCancelled("stream"), "the upstream cancel");
+    await until(() => upstreamCancelled("stream"), "the upstream cancel", 400);
   });
 
   it("forwards a read of a sealed endpoint free: no charge, no metering", async () => {
@@ -357,7 +349,7 @@ describe("the egress door", () => {
       expect(response.status).toBe(200);
       expect(await response.text()).toContain("one ");
       await until(async () => (await reservations(box.owner))
-        .filter((row) => row["state"] === "settled").length === i + 1, "the settle");
+        .filter((row) => row["state"] === "settled").length === i + 1, "the settle", 400);
     }
     const charged = await spends(box.owner);
     for (const row of charged) {
@@ -777,7 +769,7 @@ describe("a policy write mid-stream", () => {
       state: "settled", ended: "policy", outcome: "ended", status: 200, bytes: first }]);
     // A cut stream's usage cannot be read: its whole reservation is kept.
     expect(await spends(box.owner)).toMatchObject([{ state: "unknown", cost: null }]);
-    await until(() => upstreamCancelled("policy"), "the upstream cancel");
+    await until(() => upstreamCancelled("policy"), "the upstream cancel", 400);
     const old = await send(egressRequest(box));
     expect([old.status, await codeOf(old)]).toEqual([409, "egress_policy_stale"]);
     // The `runs` lane the write woke re-applied the lease's network under generation 2 (the
@@ -804,7 +796,7 @@ describe("settlement", () => {
     expect(await reservations(box.owner)).toMatchObject([{ outcome: "aborted", ended: null,
                                                            status: 200 }]);
     expect(await spends(box.owner)).toMatchObject([{ state: "unknown" }]);
-    await until(() => upstreamCancelled("abort"), "the upstream cancel");
+    await until(() => upstreamCancelled("abort"), "the upstream cancel", 400);
   });
 
   it("trusts the meter only for an answer that completed: a cut one keeps its whole charge",
@@ -840,7 +832,7 @@ describe("settlement", () => {
                   passThroughOnException: () => undefined, props: {} } as unknown as
       ExecutionContext;
     const pending = serveEgress(egressRequest(box), slow, ctx);
-    await until(async () => (await reservations(box.owner)).length === 1, "the open");
+    await until(async () => (await reservations(box.owner)).length === 1, "the open", 400);
     expect(waits.length).toBe(1);
     expect((await reservations(box.owner))[0]!["state"]).toBe("open");
     release({ response: new Response("ok"),
@@ -877,12 +869,12 @@ describe("settlement", () => {
         return new Promise(() => undefined);  // the provider never answers
       } } };
     const pending = send(egressRequest(box), holding);
-    await until(async () => (await reservations(box.owner)).length === 1, "the open");
+    await until(async () => (await reservations(box.owner)).length === 1, "the open", 400);
     expect(stopped).toBe(false);
     await over(box);
     const response = await pending;
     expect([response.status, await codeOf(response)]).toEqual([503, "egress_ended"]);
-    await until(async () => stopped, "the stop");
+    await until(async () => stopped, "the stop", 400);
     await settledOf(box.owner);
     // The gateway never asked for the reserve: nothing was held, so nothing is charged.
     expect(await spends(box.owner)).toMatchObject([{ state: "settled", est_cost: null }]);
@@ -901,11 +893,11 @@ describe("settlement", () => {
         return new Promise(() => undefined);
       } } };
     const pending = send(egressRequest(box), holding);
-    await until(async () => (await reservations(box.owner)).length === 1, "the open");
+    await until(async () => (await reservations(box.owner)).length === 1, "the open", 400);
     await over(box);
     const response = await pending;
     expect([response.status, await codeOf(response)]).toEqual([503, "egress_ended"]);
-    await until(async () => late !== null, "the late reserve");
+    await until(async () => late !== null, "the late reserve", 400);
     expect(late).toEqual({ refused: "egress_ended" });
     await settledOf(box.owner);
     expect(await spends(box.owner)).toMatchObject([{ state: "settled", est_cost: null }]);
@@ -923,7 +915,7 @@ describe("settlement", () => {
     const leaving = new AbortController();
     const request = new Request(egressRequest(box), { signal: leaving.signal });
     const pending = send(request, holding);
-    await until(async () => (await reservations(box.owner)).length === 1, "the open");
+    await until(async () => (await reservations(box.owner)).length === 1, "the open", 400);
     leaving.abort();
     const response = await pending;
     expect([response.status, await codeOf(response)]).toEqual([503, "egress_aborted"]);
@@ -954,7 +946,7 @@ describe("settlement", () => {
     expect(await drained(reader)).toBe("egress_deadline");
     await settledOf(box.owner);
     expect(await reservations(box.owner)).toMatchObject([{ outcome: "deadline", status: 200 }]);
-    await until(() => upstreamCancelled("deadline"), "the upstream cancel");
+    await until(() => upstreamCancelled("deadline"), "the upstream cancel", 400);
   });
 
   it("ends a stream when its run ends, or its connection is revoked", async () => {

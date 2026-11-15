@@ -1,10 +1,10 @@
 /**
  * Slice L's doors, in workerd through the real owner object: the platform's explicit admit
  * at sign-up and the erasure's outside record (an erased owner's name resolving nothing
- * again); the key store; `/hooks/inbound`'s
- * two shapes (a bad HMAC, a replay, the gate, the breaker); no caller counted or capped by
- * the doors (slice L's review, N1); and the file door's bytes, streamed to `FILES` by the
- * binder.
+ * again), whether the owner's own door or the operator's `owner.erase` began it; the key
+ * store; `/hooks/inbound`'s two shapes (a bad HMAC, a replay, the gate, the breaker); no
+ * caller counted or capped by the doors (slice L's review, N1); and the file door's bytes,
+ * streamed to `FILES` by the binder.
  */
 import { createHash, createHmac } from "node:crypto";
 
@@ -14,7 +14,12 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
+import { parseRing } from "../../contract/src/envelope";
+import {
+  type OperatorAnswer, operatorAnswer, type OperatorArgs, signOperator,
+} from "../../contract/src/operator-message";
+import { eraseWords } from "../../contract/src/owner";
+import { OWNER_ERASED, OWNER_UNADMITTED, PLATFORM_ONLY } from "../../owner/src/admission";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
 import { ERASE_CONFIRM, NO_ERASURE, PUT_GRACE_MS } from "../../owner/src/erasure";
@@ -31,12 +36,12 @@ import { eraseOutside, erasureQueue } from "../src/erase";
 import { contentDigest } from "../src/file-bytes";
 import { sharedApps } from "../src/inbound";
 import { type OwnerDO, refuseOnce } from "./entry";
-import { writeControl } from "../../ci/fixtures";
+import { keyring, writeControl } from "../../ci/fixtures";
 import { slotBusy } from "../../contract/src/slots";
 import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
 import {
- appCallback, appPost, call, connect, doorsEnv, NAVIGATE, OPEN, refresh, registerClient,
- serveFirstPartyDocument, setControl, signInApp, sqlIn, url,
+ appCallback, appPost, call, connect, deliver, doorsEnv, held, NAVIGATE, OPEN, refresh,
+ registerClient, serveFirstPartyDocument, setControl, signInApp, sqlIn, url,
 } from "./support";
 
 const SCOPES = [{ universe: "cc", agent: "main", capability: "read_graph" }];
@@ -153,8 +158,39 @@ describe("the erasure", () => {
     await runDurableObjectAlarm(env.OWNER.getByName(who));
   }
 
-  it("marks the object first; its job's outside record then leaves the name resolving nothing",
-     async () => {
+  const RING = parseRing(doorsEnv.OPERATOR_KEYRING)!;
+
+  /** `op` with `args` for `who`, signed under `ring` and delivered once; the bucket's records. */
+  async function operated(who: string, args: OperatorArgs, ring = RING) {
+    const message = await signOperator(ring, "owner.erase", who, args, now());
+    expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
+    const records = await held(message.ask);
+    return { ...records, answer: records.answer === null ? null
+      : operatorAnswer(records.answer, message) as OperatorAnswer & Record<string, unknown> };
+  }
+
+  /** The two ways an erasure begins: the owner's own door, in its session, and the operator's. */
+  const BEGINS = [
+    ["the owner's own door", async (who: string, app: Awaited<ReturnType<typeof signInApp>>) => {
+      const erased = await appPost("account/erase", app.access_token, app.session,
+                                   { confirm: ERASE_CONFIRM });
+      expect(erased.status).toBe(200);
+      expect(await erased.json()).toEqual({ erasing: true });
+      expect(erased.headers.getSetCookie().join()).toMatch(/__Host-ta-owner=;/);
+    }],
+    // The email route: an owner who cannot sign in, erased by the operator channel's signed
+    // message and its words; the operator log keeps the ask and its answer.
+    ["the operator's owner.erase", async (who: string) => {
+      const { accepted, answer } = await operated(who, { confirm: eraseWords(who) });
+      expect(accepted).toMatchObject({ op: "owner.erase", owner: who });
+      expect(answer).toMatchObject({ op: "owner.erase", owner: who,
+                                     args: { confirm: eraseWords(who) },
+                                     result: { erasing: true } });
+    }],
+  ] as const;
+
+  it.each(BEGINS)("begun at %s, marks the object first; its job's outside record then leaves " +
+                  "the name resolving nothing", async (_how, begin) => {
     const { who, app } = await owned();
     // A key, an inbound URL and an MCP client, each a way back to the owner.
     const minted = await json<{ key: string; key_id: string }>(
@@ -164,11 +200,7 @@ describe("the erasure", () => {
     const client = await registerClient();
     const tokens = await connect(client, { owner: who });
     FORGOTTEN.length = 0;
-    const erased = await appPost("account/erase", app.access_token, app.session,
-                                 { confirm: ERASE_CONFIRM });
-    expect(erased.status).toBe(200);
-    expect(await erased.json()).toEqual({ erasing: true });
-    expect(erased.headers.getSetCookie().join()).toMatch(/__Host-ta-owner=;/);
+    await begin(who, app);
     // The mark first: every door refuses from the answer on.
     expect((await failure(() => env.OWNER.getByName(who).grantList(ownerBinding(who)))).message)
       .toBe(ERASING);
@@ -292,6 +324,60 @@ describe("the erasure", () => {
       .toBe("access_denied");
     expect((await failure(() => remade.grantList(ownerBinding(who)))).message)
       .toMatch(OWNER_UNADMITTED);
+  });
+
+  it("erases by the operator only an owner the platform signed up, by a message its ring " +
+     "signed, with its exact words, and only at the platform's own door", async () => {
+    const { who } = await owned();
+    const other = owner();
+    for (const [args, refused] of [
+      [{}, { code: "invalid", message: "owner.erase takes exactly confirm" }],
+      [{ confirm: ERASE_CONFIRM }, { code: "invalid" }],
+      [{ confirm: eraseWords(other) }, { code: "invalid" }],
+      [{ confirm: `${eraseWords(who)} ` }, { code: "invalid" }],
+      [{ confirm: eraseWords(who).toUpperCase() }, { code: "invalid" }],
+    ] as const) {
+      const { answer } = await operated(who, args);
+      expect(answer?.["refused"], JSON.stringify(args)).toMatchObject(refused);
+    }
+    // Another ring's MAC, or none: dropped at the gate, nothing kept in the log.
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(await operated(who, { confirm: eraseWords(who) }, parseRing(keyring())!))
+      .toEqual({ accepted: null, answer: null });
+    const signed = await signOperator(RING, "owner.erase", who, { confirm: eraseWords(who) },
+                                      now());
+    const { mac: _mac, ...unsigned } = signed;
+    expect(await deliver(unsigned)).toEqual({ acked: 1, retried: 0 });
+    expect(await held(signed.ask)).toEqual({ accepted: null, answer: null });
+    expect(logged.mock.calls.map((each) => String(each[0]))).toEqual([
+      "an operator message has a MAC that does not hold under its kid; dropped",
+      "an operator message is out of shape; dropped"]);
+    logged.mockRestore();
+    // The owner's own binding at the platform's door.
+    expect((await failure(() => env.OWNER.getByName(who).erasureBegin(
+      ownerBinding(who), { confirm: eraseWords(who) }))).message).toBe(PLATFORM_ONLY);
+    // A name the platform never signed up, with its own words: never barred.
+    expect((await operated(other, { confirm: eraseWords(other) })).answer?.["refused"])
+      .toEqual({ code: "refused", message: "the platform holds no owner of that name: only " +
+                                           "an owner who signed up is erased" });
+    expect(await readOwner(doorsEnv, other)).toBeNull();
+    for (const name of [who, other]) {
+      expect(await sqlIn(name, "SELECT COUNT(*) AS n FROM owner_erasure")).toEqual([{ n: 0 }]);
+    }
+    expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
+  });
+
+  it("answers the operator's erasure asked again by the state it left: erasing, then erased",
+     async () => {
+    const { who } = await owned();
+    await BEGINS[1][1](who);
+    expect((await operated(who, { confirm: eraseWords(who) })).answer?.["refused"])
+      .toMatchObject({ code: "erasing" });
+    expect(await consume(who)).toContain("done");
+    expect((await operated(who, { confirm: eraseWords(who) })).answer?.["refused"])
+      .toEqual({ code: "owner_erased", message: "the owner is erased" });
+    await finish(who);
+    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
   });
 
   it("erases nothing without the session or the owner's words", async () => {

@@ -6,6 +6,8 @@ import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
 import { PLATFORM_CALLER } from "../../contract/src/binding";
+import { acceptanceKey, answerKey } from "../../contract/src/operator-message";
+import { QUEUES } from "../../contract/src/queue-names";
 import { writeControl } from "../../ci/fixtures";
 import { type Row, sqlIn as rowsIn } from "../../ci/workerd";
 import { now } from "../src/config";
@@ -14,6 +16,7 @@ import {
   APP_RESOURCE, MCP_RESOURCE, ORIGIN, WEB_CLIENT, WEB_REDIRECT,
 } from "../../contract/src/identity";
 import { serve } from "../src/doors";
+import doors from "../src/index";
 import { authorizationServer } from "../src/oauth";
 import type { Sources } from "../../sources/src/schema";
 import worker from "./entry";
@@ -42,6 +45,26 @@ export async function call(request: Request, environment: DoorsEnv = doorsEnv,
     : await serve(request, environment, ctx, FAKE_UPSTREAM, sources);
   await waitOnExecutionContext(ctx);
   return response;
+}
+
+/** One delivery of `body` to the operator queue through the doors' own entry, and how it ended. */
+export async function deliver(body: unknown, environment: DoorsEnv = doorsEnv) {
+  const acked: number[] = [];
+  const retried: number[] = [];
+  const batch = { queue: QUEUES.OPERATOR, ackAll: () => undefined, retryAll: () => undefined,
+                  messages: [{ id: "0", timestamp: new Date(), attempts: 1, body,
+                               ack: () => acked.push(0), retry: () => retried.push(0) }] };
+  await doors.queue(batch as unknown as MessageBatch<unknown>, environment);
+  return { acked: acked.length, retried: retried.length };
+}
+
+/** What the operator bucket holds for `ask`: its acceptance record and its answer, or null. */
+export async function held(ask: string) {
+  const read = async (key: string) => {
+    const object = await doorsEnv.OPERATOR_LOG.get(key);
+    return object === null ? null : await object.json() as Record<string, unknown>;
+  };
+  return { accepted: await read(acceptanceKey(ask)), answer: await read(answerKey(ask)) };
 }
 
 /**

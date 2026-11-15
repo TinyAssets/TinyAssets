@@ -58,6 +58,7 @@ export interface DoorRequests {
   readonly grantForgetRevoked: DoorFields<"clients">;
   readonly keyMint: DoorFields<"key_id" | "name" | "scopes", "proposal">;
   readonly ownerErase: DoorFields<"confirm">;
+  readonly erasureBegin: DoorFields<"confirm">;
   readonly inboundAccept: DoorFields<"event_id" | "event_at" | "body" | "headers">;
   readonly fileUploadTarget: DoorFields<"intent_id">;
   readonly fileUploadStored: DoorFields<"intent_id" | "chunks">;

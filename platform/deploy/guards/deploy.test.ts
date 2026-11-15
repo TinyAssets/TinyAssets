@@ -65,7 +65,7 @@ import {
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
-import { PIN_WAIT_MS, POLL_MS, RESTORE_LOSES } from "../operator";
+import { ERASE_LOSES, PIN_WAIT_MS, POLL_MS, RESTORE_LOSES } from "../operator";
 import platform from "../platform.json" with { type: "json" };
 
 type Json = Record<string, unknown>;
@@ -140,7 +140,7 @@ const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]
 /** The options of its own each mode needs, by the dispatch's input that gives each. */
 const NEEDED: Partial<Record<Mode, Readonly<Record<string, string>>>> = {
   handback: { RECORD: "7001" }, owner: { OWNER: "user_alice", ACT: "tier=paid" },
-  restore: { OWNER: "user_alice" } };
+  restore: { OWNER: "user_alice" }, erase: { OWNER: "user_alice" } };
 /** `mode`'s needed options, as its command line gives them. */
 const needed = (mode: Mode): string[] => Object.entries(NEEDED[mode] ?? {})
   .flatMap(([name, value]) => [`--${name.toLowerCase()}`, value]);
@@ -738,7 +738,7 @@ describe("the command line", () => {
 
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
     expect(Object.keys(MODES)).toEqual(["plan", "dark", "probe", "routes", "h2", "pair",
-                                        "handback", "control", "owner", "restore"]);
+                                        "handback", "control", "owner", "restore", "erase"]);
     for (const mode of Object.keys(MODES) as Mode[]) {
       expect(parse(["--mode", mode, ...needed(mode)], ENV, w.io).mode).toBe(mode);
     }
@@ -2887,7 +2887,7 @@ describe("the operator path's modes", () => {
     expect(() => parse(["--mode", "owner", "--owner", " x", "--act", "admit"], ENV, w.io))
       .toThrow("--owner is the owner principal the op is asked for");
     expect(() => parse(["--mode", "control", "--owner", "user_alice"], ENV, w.io))
-      .toThrow("mode control takes no --owner: it is mode owner and restore's");
+      .toThrow("mode control takes no --owner: it is mode owner and restore and erase's");
   });
 });
 
@@ -3043,7 +3043,71 @@ describe("mode restore", () => {
     expect(() => parse(["--mode", "restore", "--owner", "user_alice", "--confirm", "yes"],
                        ENV, w.io)).toThrow(
       "--confirm is the words that confirm a restore's wipe, wipe-<owner>-<gen> as " +
-      "restore.pin answers them, or give its pin up, release-<owner>");
+      "restore.pin answers them, or give its pin up, release-<owner>, or an erasure, " +
+      "erase-<owner>");
+  });
+});
+
+describe("mode erase", () => {
+  const WORDS = "erase-user_alice";
+  const sent = (w: ReturnType<typeof world>) =>
+    w.sent.map(({ message }) => [message.op, message.owner, message.args]);
+
+  it("without its words ends naming them, asking nothing, though the run says --yes",
+     async () => {
+    for (const flags of [["--public"], ["--yes"]]) {
+      const w = world({ held: true });
+      const work = await runMode(w, "erase", [...flags, "--owner", "user_alice"],
+                                 flags[0] === "--public" ? PUBLIC : ENV);
+      expect(work.plan.at(-1)).toBe(
+        `erase user_alice only with its words: run again with --confirm ${WORDS}`);
+      expect(w.sent).toEqual([]);
+    }
+  });
+
+  it("stops on words that are not the owner's, asking nothing", async () => {
+    for (const words of ["erase-user_bob", "erase-user_alice2", "wipe-user_alice-x",
+                         "release-user_alice"]) {
+      const w = world({ held: true });
+      await expect(runMode(w, "erase", ["--yes", "--owner", "user_alice", "--confirm", words]),
+                   words).rejects.toThrow(
+        `--confirm ${words} is not the erasure's words for user_alice: ${WORDS}`);
+      expect(w.sent).toEqual([]);
+    }
+  });
+
+  it("plans the erasure with its words, and with --yes sends owner.erase MAC'd with them " +
+     "and says the doors' answer", async () => {
+    const flags = ["--owner", "user_alice", "--confirm", WORDS];
+    const planned = world({ held: true });
+    expect((await runMode(planned, "erase", ["--public", ...flags], PUBLIC)).plan).toEqual([
+      `erase user_alice through the operator channel, as its own door erases it: ${
+        ERASE_LOSES}`]);
+    expect(planned.sent).toEqual([]);
+    const w = world({ held: true, doors: () => ({ result: { erasing: true } }) });
+    const work = await runMode(w, "erase", ["--yes", ...flags]);
+    expect(sent(w)).toEqual([["owner.erase", "user_alice", { confirm: WORDS }]]);
+    expect(await macHolds(parseRing(RING)!, w.sent[0]!.message)).toBe(true);
+    expect(work.plan.at(-1)).toBe('the doors answered owner.erase for user_alice: ' +
+                                  '{"erasing":true}');
+    const refusing = world({ held: true, doors: () => ({
+      refused: { code: "refused", message: "the platform holds no owner of that name" } }) });
+    await expect(runMode(refusing, "erase", ["--yes", ...flags])).rejects.toThrow(
+      "the doors refused owner.erase for user_alice (refused): the platform holds no owner " +
+      "of that name");
+  });
+
+  it("is mode erase's alone: --act never asks owner.erase", () => {
+    const w = world();
+    for (const act of ["erase", `erase=${WORDS}`]) {
+      expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", act], ENV, w.io),
+             act).toThrow(/^--act is one of tier=<tier>, suspend=<reason>, lift=<reason>, admit$/);
+    }
+    expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", "admit",
+                        "--confirm", WORDS], ENV, w.io))
+      .toThrow("mode owner takes no --confirm: it is mode restore and erase's");
+    expect(() => parse(["--mode", "erase", "--confirm", WORDS], ENV, w.io))
+      .toThrow("mode erase needs --owner: the owner principal the op is asked for");
   });
 });
 
@@ -3201,7 +3265,8 @@ describe("platform-deploy.yml", () => {
                    { ...dispatchOf("control"), SET: "outside=on canary+=user_bob",
                      REPLACE: JSON.stringify(DARK) },
                    { ...dispatchOf("restore"), GENERATION: FROM,
-                     CONFIRM: `wipe-user_alice-${"c".repeat(16)}` }];
+                     CONFIRM: `wipe-user_alice-${"c".repeat(16)}` },
+                   { ...dispatchOf("erase"), CONFIRM: "erase-user_alice" }];
   /** What the kit reads of a run's own options. */
   const ownOf = (run: ReturnType<typeof parse>) =>
     [run.record, run.edits.length, run.replace, run.owner, run.act?.op ?? null,

@@ -139,7 +139,7 @@ describe("a pool of units", () => {
     const done = await Promise.all(Array.from({ length: 4 }, (_, n) =>
       slotted(pool, 1, async () => {
         most = Math.max(most, pool.state().held);
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 0));
         return n;
       })));
     expect(done).toEqual([0, 1, 2, 3]);

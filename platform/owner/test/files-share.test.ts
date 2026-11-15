@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import {
   CALLS_OPEN, CHUNK_BYTES, INLINE_BYTES, MAX_PATH_BYTES, SPEND_KEPT,
 } from "../../contract/src/limits";
+import { sqlIn } from "../../ci/workerd";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import {
   FILE_INDEX_FULL, FILE_QUOTA, FILE_SHARE, type Files, INDEX_BYTES, MAX_OPEN_INTENTS,
@@ -26,8 +27,7 @@ import { FILE_SETTINGS } from "../../contract/src/policy-document";
 import { MIGRATIONS } from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
 import {
-  crowd, failure, fileCounters, inFiles, namedCode, setFiles, sqlIn, starterSeed, storesOn,
-  text,
+  crowd, failure, fileCounters, inFiles, namedCode, setFiles, starterSeed, storesOn, text,
 } from "./support";
 
 const W = "/workspace";

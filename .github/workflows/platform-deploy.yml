@@ -29,7 +29,8 @@ name: Platform deploy (manual, founder-approved)
 # makes the same in memory) and rotated with `keyring-add`, then stored here.
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
-# probe, routes, h2, handback, control, owner and restore here; pair is its own job.
+# probe, routes, h2, handback, control, owner, restore and erase here; pair is its
+# own job.
 # `routes` keeps a record of what it changes (the zone's routes, the egress
 # custom domain, E2B's lifecycle webhook) before any change, and its job
 # summary names the record's id (the run's); `handback` takes that id as
@@ -40,18 +41,20 @@ name: Platform deploy (manual, founder-approved)
 # channel; `restore` restores `owner` from `generation` through it (a live
 # owner's object wiped only once `confirm` names the generation its pin wrote),
 # or with no `generation` asks the owner's namespace and finished generations
-# (`confirm` release-<owner> gives a pin up). Each shares
+# (`confirm` release-<owner> gives a pin up); `erase` erases `owner` as its own
+# door does, for an owner who asked by other means, only once `confirm` is
+# erase-<owner> (a run without it names the words). Each shares
 # this file's concurrency group, so no operator run ever interleaves with a deploy.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | probe | routes | h2 | handback | control | owner | restore'
+        description: 'plan | dark | probe | routes | h2 | handback | control | owner | restore | erase'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, probe, routes, h2, handback, control, owner, restore]
+        options: [plan, dark, probe, routes, h2, handback, control, owner, restore, erase]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -78,7 +81,7 @@ on:
         default: ''
         type: string
       owner:
-        description: 'owner and restore: the owner principal'
+        description: 'owner, restore and erase: the owner principal'
         required: false
         default: ''
         type: string
@@ -93,7 +96,7 @@ on:
         default: ''
         type: string
       confirm:
-        description: 'restore: wipe-<owner>-<gen> as restore.pin answers it, or release-<owner>'
+        description: 'restore: wipe-<owner>-<gen> as restore.pin answers it, or release-<owner>; erase: erase-<owner>'
         required: false
         default: ''
         type: string

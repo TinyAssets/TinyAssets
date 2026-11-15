@@ -139,6 +139,11 @@ before(async () => {
     // refused (`CertificateUnknown`), and now and then the socket itself died before it
     // opened (1006), so the sign-in panel never saw its end (the merge queue's red run).
     "--ignore-certificate-errors",
+    // The attack tests' own pages are public origins, and our hosts resolve to this machine:
+    // the browser's local-network checks would refuse their frames and requests before the
+    // doors' own answer (frame-ancestors, the session's checks) is ever read, as no public
+    // page meets the public app.
+    "--disable-features=LocalNetworkAccessChecks",
     // Our hosts and the two hand-off hosts to the local workerd; nothing else resolves.
     `--host-resolver-rules=${local}, MAP * ~NOTFOUND`,
   ] });
@@ -160,6 +165,39 @@ before(async () => {
       window.__replaced.push({ search: location.search, hash: location.hash,
                                scripts: [...document.scripts].map((s) => s.src) });
       return replace(...args);
+    };
+    // Every element made with an inline handler (`on…`) or as inline script, as it is added
+    // or given one: what a payload would have to become to run.
+    window.__markup = [];
+    const made = (el) => {
+      if (el.nodeType !== Node.ELEMENT_NODE) {
+        return;
+      }
+      for (const each of [el, ...el.querySelectorAll("*")]) {
+        if ((each.tagName === "SCRIPT" && !each.src)
+            || [...each.attributes].some((attr) => attr.name.startsWith("on"))) {
+          window.__markup.push(each.outerHTML.slice(0, 200));
+        }
+      }
+    };
+    new MutationObserver((records) => {
+      for (const record of records) {
+        record.addedNodes.forEach(made);
+        if (record.type === "attributes" && record.attributeName.startsWith("on")) {
+          made(record.target);
+        }
+      }
+    }).observe(document, { childList: true, subtree: true, attributes: true });
+    // Each JSON answer the page parsed, by URL, recorded a task after the code that awaited
+    // it had its turn (which runs in the parse's own microtasks).
+    window.__parsed = [];
+    const json = Response.prototype.json;
+    Response.prototype.json = function parsed() {
+      const url = this.url;
+      return json.call(this).then((value) => {
+        setTimeout(() => window.__parsed.push(url), 0);
+        return value;
+      });
     };
   });
   page = await context.newPage();
@@ -734,6 +772,15 @@ test("the CSP refuses inline script, inline style, HTML sinks, string code and j
     d.setAttribute("style", "color: rgb(1, 2, 3)");
     document.body.append(d);
     out.style = getComputedStyle(d).color;
+    // The javascript: link is the one attempt the page makes later, on its own task: its
+    // refusal (inline script, refused) is the record that it never ran.
+    const refused = new Promise((resolve) => {
+      document.addEventListener("securitypolicyviolation", (event) => {
+        if (event.effectiveDirective === "script-src-elem" && event.blockedURI === "inline") {
+          resolve();
+        }
+      });
+    });
     const a = document.createElement("a");
     a.href = "javascript:window.__xss=97";
     document.body.append(a);
@@ -745,7 +792,7 @@ test("the CSP refuses inline script, inline style, HTML sinks, string code and j
       attempt("Function", () => new Function("return 1")());
       resolve();
     }, 0));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await refused;
     out.inline = window.__inline ?? null;
     out.xss = window.__xss ?? null;
     return out;
@@ -819,7 +866,8 @@ test("no payload runs through file names, file text, frames, results, posts or t
     await page.goto(`${ORIGIN}/app${hash}`);
     await page.locator("main p.muted", { hasText: "Loading" }).waitFor({ state: "detached" });
   }
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  // Nothing a payload made was markup that could run, in any view this document showed.
+  assert.deepEqual(await page.evaluate(() => window.__markup), []);
   assert.equal(await page.evaluate(() => window.__xss ?? 0), 0, "a payload ran");
   assert.deepEqual(dialogs, []);
   page.off("dialog", onDialog);
@@ -840,8 +888,11 @@ test("the app refuses to be framed", { timeout: 30_000 }, async () => {
     contentType: "text/html", body: `<iframe src="${ORIGIN}/app"></iframe>` +
       `<iframe src="${ORIGIN}/app/connected"></iframe>` }));
   await evil.goto("https://evil.test/");
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  for (const frame of evil.frames().slice(1)) {
+  // Each frame read once it holds its own document, the app's or the browser's refusal.
+  const framed = evil.frames().slice(1);
+  assert.equal(framed.length, 2);
+  await Promise.all(framed.map((frame) => frame.waitForLoadState("load")));
+  for (const frame of framed) {
     const rendered = await frame.evaluate(() => document.getElementById("main") !== null
       || document.getElementById("status") !== null).catch(() => false);
     assert.equal(rendered, false, frame.url());
@@ -852,34 +903,39 @@ test("the app refuses to be framed", { timeout: 30_000 }, async () => {
 test("no cross-site post changes anything (CSRF)", { timeout: 60_000 }, async () => {
   const policy = await api("policy");
   const generation = policy.body.generation;
-  const evil = await context.newPage();
-  await evil.route("https://evil.test/**", (route) => route.fulfill({ status: 200,
-    contentType: "text/html", body: "<p>hi</p>" }));
-  await evil.goto("https://evil.test/");
-  const body = JSON.stringify({ expected_generation: generation,
-                                policy: { ...policy.body.policy, codemode: { on: true } } });
-  await evil.evaluate(async ([origin, b]) => {
-    for (const init of [
-      { mode: "no-cors", credentials: "include", headers: { "Content-Type": "text/plain" } },
-      { mode: "cors", credentials: "include", headers: { "Content-Type": "application/json" } }]) {
-      await fetch(`${origin}/app/api/policy/write`, { method: "POST", body: b, ...init })
-        .catch(() => undefined);
-    }
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.enctype = "text/plain";
-    form.action = `${origin}/app/api/policy/write`;
-    const input = document.createElement("input");
-    input.name = b.slice(0, -1);
-    input.value = "}";
-    form.append(input);
-    document.body.append(form);
-    form.submit();
-  }, [ORIGIN, body]);
-  await evil.waitForLoadState("load").catch(() => undefined);
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  await evil.close();
-  assert.equal((await api("policy")).body.generation, generation);
+  // A cross-site page, and a sibling host: that one is same-site, so the Strict cookie rides
+  // its posts and only the doors' own check (`sessionOf`) refuses them.
+  for (const attacker of ["https://evil.test", "https://evil.tinyassets.io"]) {
+    const evil = await context.newPage();
+    await evil.route(`${attacker}/**`, (route) => route.fulfill({ status: 200,
+      contentType: "text/html", body: "<p>hi</p>" }));
+    await evil.goto(`${attacker}/`);
+    const body = JSON.stringify({ expected_generation: generation,
+                                  policy: { ...policy.body.policy, codemode: { on: true } } });
+    await evil.evaluate(async ([origin, b]) => {
+      for (const init of [
+        { mode: "no-cors", credentials: "include", headers: { "Content-Type": "text/plain" } },
+        { mode: "cors", credentials: "include",
+          headers: { "Content-Type": "application/json" } }]) {
+        await fetch(`${origin}/app/api/policy/write`, { method: "POST", body: b, ...init })
+          .catch(() => undefined);
+      }
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.enctype = "text/plain";
+      form.action = `${origin}/app/api/policy/write`;
+      const input = document.createElement("input");
+      input.name = b.slice(0, -1);
+      input.value = "}";
+      form.append(input);
+      document.body.append(form);
+      form.submit();
+    }, [ORIGIN, body]);
+    // The form's post, the last of the three, answered and shown: then the policy is read.
+    await evil.waitForURL(`${ORIGIN}/app/api/policy/write`);
+    await evil.close();
+    assert.equal((await api("policy")).body.generation, generation, attacker);
+  }
 });
 
 test("the return pages exchange no stranger's code and send no one off-site", { timeout: 60_000 },
@@ -939,7 +995,33 @@ test("a leaked token alone changes no agent's definition, and a missing door is 
   }
 });
 
-/** Requests to `pattern` held until `release()`; `seen` resolves when the first one comes. */
+/** How many JSON answers the page has parsed (`__parsed`). */
+const parsedSoFar = () => page.evaluate(() => window.__parsed.length);
+
+/**
+ * Once the page parsed, after the `from`th answer, each step's answers, every step after
+ * the one before it, and the code awaiting them had its turn.
+ */
+async function handled(from, ...steps) {
+  await page.waitForFunction(([n, wanted]) => {
+    let at = n;
+    for (const step of wanted) {
+      const found = step.map((path) => window.__parsed.findIndex((url, i) =>
+        i >= at && new URL(url).pathname === path));
+      if (found.includes(-1)) {
+        return false;
+      }
+      at = Math.max(...found) + 1;
+    }
+    return true;
+  }, [from, steps]);
+}
+
+/**
+ * Answers to `pattern` held until `release()`: each request reaches the doors as it comes,
+ * and its answer, as they gave it then, reaches the page only after the release. `first`
+ * resolves once the first answer is held.
+ */
 async function holding(pattern) {
   let release;
   const released = new Promise((resolve) => { release = resolve; });
@@ -947,8 +1029,19 @@ async function holding(pattern) {
   const first = new Promise((resolve) => { seen = resolve; });
   const going = new Set();
   const handler = async (route) => {
-    seen();
-    const sent = released.then(() => route.continue());
+    const request = route.request();
+    const headers = Object.fromEntries(Object.entries(await request.allHeaders())
+      .filter(([name]) => !name.startsWith(":")));
+    const sent = (async () => {
+      const answer = await mf.dispatchFetch(request.url(), { method: request.method(), headers,
+        body: request.postDataBuffer() ?? undefined });
+      const body = Buffer.from(await answer.arrayBuffer());
+      seen();
+      await released;
+      // The body as read: its length and encoding are the fulfilment's own.
+      await route.fulfill({ status: answer.status, body, headers: Object.fromEntries(
+        [...answer.headers].filter(([name]) => !/^content-(?:length|encoding)$/.test(name))) });
+    })();
     going.add(sent);
     await sent;
   };
@@ -977,10 +1070,12 @@ test("a save re-lists its own folder, never the folder the owner went to since (
   const relisted = page.waitForResponse((response) =>
     response.url().endsWith("/app/api/tools/file_list")
     && response.request().postData()?.includes("agents/helper"));
+  const from = await parsedSoFar();
   await save.release();
   await page.locator(".message.good", { hasText: "Saved" }).waitFor();
   await relisted;
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // The save's answer, then the re-list's two, handled.
+  await handled(from, ["/app/api/files/write"], ["/app/api/tools/file_list", "/app/api/account"]);
   assert.equal(await page.getByRole("heading", { name: "Files in /workspace" }).count(), 1);
   assert.equal(await page.getByRole("heading", { name: `Files in ${folder}` }).count(), 0);
 });
@@ -990,6 +1085,7 @@ test("a screen still loading never paints over the signed-out view (review L1)",
   await page.goto(`${ORIGIN}/app#home`);
   await page.getByRole("heading", { name: "Home", exact: true }).waitFor();
   const grants = await holding("**/app/api/grants");
+  const from = await parsedSoFar();
   await page.goto(`${ORIGIN}/app#keys`);
   await grants.first;
   // Signed out while API keys still loads; then its answer comes.
@@ -999,7 +1095,8 @@ test("a screen still loading never paints over the signed-out view (review L1)",
     response.url().endsWith("/app/api/grants"));
   await grants.release();
   await answered;
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // The keys screen's two answers handled, the held one last.
+  await handled(from, ["/app/api/grants", "/app/api/capabilities"]);
   assert.equal(await page.getByRole("heading", { name: "Your TinyAssets" }).count(), 1);
   assert.equal(await page.getByRole("heading", { name: "API keys", exact: true }).count(), 0);
 });

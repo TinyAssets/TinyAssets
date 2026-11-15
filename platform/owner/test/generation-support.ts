@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { sqlIn } from "../../ci/workerd";
 import { GENERATION_SIZES } from "../src/backup";
 import { exported } from "../src/export";
 import type { Files } from "../src/files";
@@ -19,7 +20,7 @@ import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { manifestKey } from "../../files/src/keys";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { admittedOwner, drainDue, sqlIn, storesOn, through, TIERS } from "./support";
+import { admittedOwner, drainDue, storesOn, through, TIERS } from "./support";
 
 export type Line = Record<string, unknown> & { t: string };
 

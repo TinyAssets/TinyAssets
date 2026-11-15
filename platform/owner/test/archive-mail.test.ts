@@ -14,6 +14,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { LEDGER_LIMITS, type Ledger, mailParts, mailRecord } from "../src/ledger";
 import { nativeId } from "../../contract/src/binding";
@@ -29,7 +30,7 @@ import {
 import { batchOf, hotSources, noRead } from "./archive-support";
 import { MUSE, rig } from "./ledger-support";
 import { referenceSegment, storedContent, streamed } from "./segment-support";
-import { sqlIn, storesOn } from "./support";
+import { storesOn } from "./support";
 
 describe("segments", () => {
   it("encode records as export lines with a trailer, each read back by its range", () => {

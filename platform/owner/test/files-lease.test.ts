@@ -6,6 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { type Entry, type Lease } from "../src/files";
 import type { SyncOp } from "../../contract/src/owner";
 import { INLINE_BYTES } from "../../contract/src/limits";
@@ -13,7 +14,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
 import { later } from "./runs-support";
-import { failure, fileCounters, inFiles, setFiles, sqlIn, starterSeed, text } from "./support";
+import { failure, fileCounters, inFiles, setFiles, starterSeed, text } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();

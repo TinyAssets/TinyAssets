@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
 import {
   DELETE_FLOOR_MS, type Entry, HOUSEKEEPING_SLACK_S, INTENT_TTL_S,
@@ -23,7 +24,7 @@ import { type OwnerDO, ownerStores } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
 import {
-  alarmOf, drainDue, failure, faulty, fileCounters, inFiles, laneAt, lostContent, setFiles, sqlIn,
+  alarmOf, drainDue, failure, faulty, fileCounters, inFiles, laneAt, lostContent, setFiles,
   starterSeed, STORAGE_FAULT, storesOn, text, through,
 } from "./support";
 
