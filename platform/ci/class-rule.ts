@@ -4,11 +4,24 @@
  * `class-check.ts` applies it before every test; `classes.ts` provides the figures.
  */
 
-/** What a project's tests are held to, provided to the test pool (`inject`). */
+/**
+ * The runner a run is on: its calibration's least round, in ms, and how many times slower that
+ * is than the runners the budgets were measured on, never under 1 (`classes.ts` `RUNNER`).
+ */
+export interface Runner {
+  readonly calibration_ms: number;
+  readonly speed: number;
+}
+
+/**
+ * What a project's tests are held to, and the runner it was scaled for, provided to the test
+ * pool (`inject`).
+ */
 export interface ClassTimeouts {
   readonly project: string;
   readonly medium: number;
   readonly large: number;
+  readonly runner: Runner;
 }
 
 /** What is wrong with one test's resolved timeout, or null. */
