@@ -235,7 +235,7 @@ const WAKE_SETTINGS = Object.freeze({
  * write is refused at, or a retention the ledger prunes to inside the same transaction,
  * so no sweeper is needed and no table grows without bound. Each is read from a counter
  * the schema's triggers keep (`ledger_usage`, `ledger_readers`, `outside_agents`) or an
- * index range, never a scan (`archive-mail.test.ts`, "the ledger at its production
+ * index range, never a scan (`ledger-bounds.test.ts`, "the ledger at its production
  * limits": a post's rows read and written at 1 hot and at 49,999 are the same).
  *
  * Mail is bounded by two technical ceilings, never by a mailbox's count (slice STORE item
@@ -249,7 +249,7 @@ const WAKE_SETTINGS = Object.freeze({
  * named, and reading or acking makes room. Being owner-wide, one noisy sender can fill it. Disabling an agent releases its unacked mail,
  * and deleting one purges it, archived mail included (`archive_purges`). Both ceilings are
  * held at these figures, the busy post landing after one lane pass, by "the ledger at its
- * production limits" (`archive-mail.test.ts`), and a move's CPU at the seal by
+ * production limits" (`ledger-bounds.test.ts`), and a move's CPU at the seal by
  * `guards/move-cpu.test.ts`.
  *
  * How they were chosen (ADR-035; `limits-audit.md`). Bodies past `PLACE_BYTES` live in R2,
