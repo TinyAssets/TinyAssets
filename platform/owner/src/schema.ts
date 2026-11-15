@@ -2285,4 +2285,25 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE owner_restore_next RENAME TO owner_restore",
     "ALTER TABLE owner_backups ADD COLUMN seq INTEGER NOT NULL DEFAULT 0 CHECK (seq >= 0)",
   ]),
+  // 12 (lane R, `untangle-2026-11/r-fallback-chunks.md`): each generation's first change
+  // since it began (`changed_at`, seconds; null while none), which no later begin clears, so a
+  // given-up generation leaves the newest known stale and the deleted rows it holds go within
+  // 30 days; one from before counts from its start, but the newest of an owner unchanged since.
+  // The owner's one change mark it replaces goes. When the last generation was begun
+  // (`began_at`), from which the next night is counted, so a given-up one is tried the next
+  // night, never at once. And whether the owner was told none can be restored (`lost`; null
+  // until a generation first finished), apart from `told`, the give-ups'.
+  Object.freeze([
+    "ALTER TABLE owner_backups ADD COLUMN changed_at REAL",
+    "UPDATE owner_backups SET changed_at = started_at WHERE (SELECT changed FROM " +
+      "owner_backup_state) = 1 OR (state = 'done' AND (gen != (SELECT gen FROM owner_backups " +
+      "WHERE state = 'done' ORDER BY seq DESC, started_at DESC LIMIT 1) OR EXISTS (SELECT 1 " +
+      "FROM owner_backups WHERE state = 'writing')))",
+    "ALTER TABLE owner_backup_state ADD COLUMN began_at REAL",
+    "UPDATE owner_backup_state SET began_at = (SELECT max(started_at) FROM owner_backups)",
+    "ALTER TABLE owner_backup_state ADD COLUMN lost INTEGER CHECK (lost IN (0, 1))",
+    "UPDATE owner_backup_state SET lost = 0 WHERE EXISTS (SELECT 1 FROM owner_backups WHERE " +
+      "state = 'done')",
+    "ALTER TABLE owner_backup_state DROP COLUMN changed",
+  ]),
 ]);

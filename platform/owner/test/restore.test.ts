@@ -336,11 +336,13 @@ describe("a restore", () => {
         LOG_BYTES + 1, first.gen));
     } });
     await drainDue(o.stub);
-    // Nothing changed since, so no later generation is begun to take the fallback's place.
-    await sqlIn(o.stub, "UPDATE owner_backup_state SET changed = 0");
-    const [kept] = await sqlIn(o.stub, "SELECT started_at FROM owner_backups WHERE gen = ?",
+    // Nothing changed since the newest began, so no later generation takes the fallback's
+    // place; and a give-up's notice was given since (review F1), which must not silence this.
+    await sqlIn(o.stub, "UPDATE owner_backups SET changed_at = NULL WHERE gen = ?", second.gen);
+    await sqlIn(o.stub, "UPDATE owner_backup_state SET told = 1");
+    const [kept] = await sqlIn(o.stub, "SELECT changed_at FROM owner_backups WHERE gen = ?",
                                first.gen);
-    const ends = (kept!["started_at"] as number) + RESTORABLE_LIFE_S;
+    const ends = (kept!["changed_at"] as number) + RESTORABLE_LIFE_S;
     const restorable = async () => (await o.stub.restoreSource(platform(o.name))).generations
       .map((each) => [each.gen, each.restorable]);
     // The lane's next night finds no change: its only work left is the fallback's end.
@@ -358,6 +360,44 @@ describe("a restore", () => {
     expect(await restorable()).toEqual([[second.gen, false]]);
     expect(await sqlIn(o.stub, "SELECT type FROM owner_notices WHERE type = ?",
                        MANIFEST_UNRESTORABLE)).toEqual([{ type: MANIFEST_UNRESTORABLE }]);
+  });
+
+  it("tries a given-up generation again the next night, and lets a stale newest go once the " +
+     "change it lacks is RESTORABLE_LIFE_S old", async () => {
+    const o = await owner();
+    await o.stub.fileWrite(o.bind(), { path: `${W}/gone.txt`, expected_etag: null,
+                                       content: "to be deleted" });
+    const newest = await generate(o.stub);
+    // Three days on, the owner deletes a file, and the generation begun for it is given up
+    // (its log overflowed, as in an R2 outage), with nothing written during it.
+    const start = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: start + 3 * 86_400_000 });
+    await o.stub.fileRemove(o.bind(), { path: `${W}/gone.txt`, expected_etag: null,
+                                        recursive: false });
+    const lost = await generate(o.stub, { duringCall: async ({ gate, n }) => {
+      if (n === 1) {
+        await gate.quiet(() => gate.storage.sql.exec("UPDATE log_capture SET overflow = 1"));
+      }
+    } });
+    expect(lost.notices).toEqual(["manifest_log_overflow"]);
+    await drainDue(o.stub);
+    const restorable = async () => (await o.stub.restoreSource(platform(o.name))).generations
+      .map((each) => [each.gen, each.restorable]);
+    // Tried again the next night after the one given up began, never at once.
+    const today = Math.floor(Date.now() / 86_400_000);
+    expect(await laneAt(o.stub, "manifest")).toBeGreaterThanOrEqual((today + 1) * 86_400);
+    expect(await restorable()).toEqual([[newest.gen, true]]);
+    // Every try since failed: once the change it lacks is RESTORABLE_LIFE_S old, the newest is
+    // offered no more, and the lane deletes it with what it holds of the deleted file.
+    const [row] = await sqlIn(o.stub, "SELECT changed_at FROM owner_backups WHERE gen = ?",
+                              newest.gen);
+    vi.setSystemTime(((row!["changed_at"] as number) + RESTORABLE_LIFE_S) * 1000);
+    expect(await restorable()).toEqual([[newest.gen, false]]);
+    expect((await failure(() => o.stub.restorePin(platform(o.name), { gen: newest.gen })))
+      .code).toBe("refused");
+    await drainDue(o.stub);
+    expect(await sqlIn(o.stub, "SELECT gen FROM owner_backups WHERE gen = ?", newest.gen))
+      .toEqual([]);
   });
 
   it("keeps the owner's admission as it stood at E: a suspension holds", async () => {

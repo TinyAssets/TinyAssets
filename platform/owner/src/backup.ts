@@ -10,9 +10,10 @@
  * (`schedule.ts`): no platform cron looks at every owner.
  *
  * - **Only on change.** Every write unit of the object but a quiet one (this lane's own, an
- *   export's bookkeeping, a session's renewal: `gate.ts`) marks the owner changed (`mark`);
- *   a generation begins by clearing it. With one finished and no change since, the lane has
- *   no job: an idle owner's object is never woken for it.
+ *   export's bookkeeping, a session's renewal: `gate.ts`) marks each generation with no
+ *   change yet changed (`mark`, `changed_at`): a generation begun since has none, and no
+ *   begin clears a mark, so a given-up one leaves the newest marked. With the newest unmarked,
+ *   the lane has no job: an idle owner's object is never woken for it.
  * - **When.** Nightly, from its day's start in UTC plus the owner's own offset in the night
  *   (`MANIFEST_SPREAD_S`), the first the night after the object first serves its owner; or
  *   at once, when an export asks and none is running or reusable. One a pass did not finish
@@ -27,17 +28,20 @@
  *   what was logged past E meanwhile is shipped as the tail (no segment spans E), so a later
  *   E finds it, and the root never names it.
  * - **Given up, never looped.** Past `MANIFEST_PARTS` objects, or when the unshipped log
- *   passed `LOG_BYTES` (an R2 outage), its objects are deleted, the owner is told once, and
- *   the lane waits for the owner's next change. The owner's writes always land.
+ *   passed `LOG_BYTES` (an R2 outage), its objects are deleted and the owner is told once.
+ *   The newest still lacks the change, so the lane tries the next night after the one given
+ *   up began (`began_at`), never at once. The owner's writes always land.
  * - **Kept.** The newest finished generation, the one being written, each an open export
  *   pins (`owner_exports`, `EXPORT_LIFE_S`), and the one a restore holds (`pinned`, from its
  *   pin to its end, `restore.ts`); and, while the newest's log is past `LOG_BYTES`
  *   (which a restore refuses to stage, `restore.ts`), the latest older one a restore can load
- *   (`fallback`, `restorableAt`): its log within, begun within `RESTORABLE_LIFE_S`. That is
- *   the one list, `#retained`. Every other is deleted from R2, root first. No garbage a kept
- *   one names is collected early (`protectsSince`), and plain collection reaches none a
- *   restorable superseded one names. With none a restore can load, the owner is told
- *   (`MANIFEST_UNRESTORABLE`) and `restore.source` names none restorable.
+ *   (`fallback`, `restorableAt`): its log within, and whole (`wholeAt`: unchanged since it
+ *   began, or changed within `RESTORABLE_LIFE_S`). That is the one list, `#retained`. Every
+ *   other, the newest too once it is not whole, is deleted from R2, root first, so no row the
+ *   owner deleted outlives `RESTORABLE_LIFE_S` in one. No garbage a kept one names is
+ *   collected early (`protectsSince`), and plain collection reaches none a whole one names.
+ *   With none a restore can load, the owner is told (`MANIFEST_UNRESTORABLE`, `lost`) and
+ *   `restore.source` names none restorable.
  * - **Erasure.** The generations carry the owner's wrapped key, so the erasure's prefix
  *   delete takes them with the chunks, and the mark has already halted this lane.
  *
@@ -116,29 +120,31 @@ const MANIFEST_SCHEMA = "manifest_schema";
 /**
  * The notice an owner is given, once, when one line of its stream (one row, as JSON) is
  * longer than any part may be (`CHUNK_BYTES`): the files Worker takes no such part, so the
- * generation is given up, loudly, and the lane waits for the owner's next change.
+ * generation is given up, loudly, and the lane tries again the next night.
  * Unreachable by the schema's bounds (the widest row image, `IMAGE_MAX`, is under a
  * chunk), kept so a later wider column fails loudly.
  */
 export const MANIFEST_LINE = "manifest_line";
 /**
  * The notice an owner is given, once until one can be restored again, when no generation can
- * be (`restorableAt`): each since the last that could was written while more than
- * `LOG_BYTES` changed, and that one passed `RESTORABLE_LIFE_S`.
+ * be (`restorableAt`): each since the last that could was given up or written while more
+ * than `LOG_BYTES` changed, and that one passed `RESTORABLE_LIFE_S` since its first change.
+ * Its own mark (`lost`), apart from the give-ups' (`told`), so neither silences the other.
  */
 export const MANIFEST_UNRESTORABLE = "manifest_unrestorable";
 /** A generation's recorded cursor once its base is read: only its log is left. */
 const ENDED = "ended";
 const DAY_S = 86_400;
 /**
- * How long a superseded generation stands as one a restore can load, from its start: a day
- * inside `GC_GRACE_S`. Every chunk it names was live when it began, so plain collection
- * reaches none before it is `GC_GRACE_S` old, and garbage is never kept longer: deleted data
- * leaves within the 30 days the owner is promised. Past it the generation is not offered,
- * pinned or kept as the fallback, and the lane, woken at that time, prunes it; the day is the
- * lane's nightly cadence, so even a missed wake prunes it before then. No later generation
- * can be made restorable instead: one is begun each night after a change, and the fallback
- * stands only while every one since was written while more than `LOG_BYTES` changed.
+ * How long a generation stands, from the owner's first change since it began (`changed_at`):
+ * a day inside `GC_GRACE_S`. Every row and chunk it names that the owner has deleted since
+ * went at that change or later, so plain collection reaches no chunk before then, and garbage
+ * is never kept longer: deleted data leaves within the 30 days the owner is promised. Past it
+ * the generation is not offered or pinned, nor kept, the newest included, and the lane, woken
+ * at that time, prunes it; the day is the lane's nightly cadence, so even a missed wake prunes
+ * it before then. No later generation can be made restorable instead: one is tried each night
+ * after a change, and a generation ages out only while every one since was given up or
+ * written while more than `LOG_BYTES` changed.
  */
 export const RESTORABLE_LIFE_S = GC_GRACE_S - DAY_S;
 
@@ -247,6 +253,11 @@ type GenerationRow = {
   readonly log_bytes: number;
   /** Its place in the order generations were begun or adopted (`NEXT_SEQ`). */
   readonly seq: number;
+  /**
+   * The owner's first change since it began (s), or null while none (`mark`): from then the
+   * rows and chunks it names may be deleted from the owner, so it stands `RESTORABLE_LIFE_S`.
+   */
+  readonly changed_at: number | null;
 };
 
 /**
@@ -283,13 +294,21 @@ function segmentsOf(list: string): { a: number; b: number; sha256: string; size:
 }
 
 /**
- * Whether finished generation `row` of `done` can be restored at `now`: its log within
- * `LOG_BYTES`, which a restore stages (`restore.ts`), and, once superseded, begun within
- * `RESTORABLE_LIFE_S`, so plain collection has reached no chunk it names.
+ * Whether generation `row` is whole at `now`: nothing changed since it began, or the first
+ * change was within `RESTORABLE_LIFE_S`. Every row and chunk it names that the owner has since
+ * deleted went at that change or later, so plain collection has reached none, and it holds
+ * none deleted more than `RESTORABLE_LIFE_S` ago.
  */
-function restorableAt(row: GenerationRow, done: readonly GenerationRow[], now: number): boolean {
-  return row.log_bytes <= LOG_BYTES
-    && (row.gen === done.at(-1)?.gen || row.started_at > now - RESTORABLE_LIFE_S);
+function wholeAt(row: GenerationRow, now: number): boolean {
+  return row.changed_at === null || row.changed_at > now - RESTORABLE_LIFE_S;
+}
+
+/**
+ * Whether finished generation `row` can be restored at `now`: whole, and its log within
+ * `LOG_BYTES`, which a restore stages (`restore.ts`).
+ */
+function restorableAt(row: GenerationRow, now: number): boolean {
+  return row.log_bytes <= LOG_BYTES && wholeAt(row, now);
 }
 
 /**
@@ -299,10 +318,10 @@ function restorableAt(row: GenerationRow, done: readonly GenerationRow[], now: n
  */
 function fallback(done: readonly GenerationRow[], now: number): GenerationRow | null {
   const newest = done.at(-1);
-  if (newest === undefined || restorableAt(newest, done, now)) {
+  if (newest === undefined || restorableAt(newest, now)) {
     return null;
   }
-  return done.slice(0, -1).reverse().find((row) => restorableAt(row, done, now)) ?? null;
+  return done.slice(0, -1).reverse().find((row) => restorableAt(row, now)) ?? null;
 }
 
 /** What the manifest lane runs on. */
@@ -347,17 +366,23 @@ export class Backups {
 
   /**
    * In a unit that wrote (the write gate's `onChange`, never a quiet unit): the owner changed
-   * since the generation began. Whether this was the first change since, which sets the job.
+   * since each generation that had no change yet began (`changed_at`). Whether this was the
+   * first change since one, which sets the job.
    */
   mark(sql: Pick<SqlStorage, "exec">): boolean {
-    return sql.exec(
-      "UPDATE owner_backup_state SET changed = 1 WHERE changed = 0 RETURNING changed")
-      .toArray().length > 0;
+    return sql.exec("UPDATE owner_backups SET changed_at = ? WHERE changed_at IS NULL " +
+                      "RETURNING gen", Date.now() / 1000).toArray().length > 0;
   }
 
-  #changed(): boolean {
-    return this.#sql.exec<{ changed: number }>("SELECT changed FROM owner_backup_state").one()
-      .changed === 1;
+  /** When (s) the last generation was begun, given up or not, or null for none. */
+  #began(): number | null {
+    return this.#sql.exec<{ began_at: number | null }>(
+      "SELECT began_at FROM owner_backup_state").one().began_at;
+  }
+
+  /** Whether the owner changed since the newest finished generation began. */
+  #changed(done: readonly GenerationRow[]): boolean {
+    return done.at(-1)?.changed_at != null;
   }
 
   #rows(): GenerationRow[] {
@@ -377,39 +402,44 @@ export class Backups {
    * fallback. A read.
    */
   #prunable(done: readonly GenerationRow[], now: number): GenerationRow[] {
-    const kept = [fallback(done, now)?.gen, this.#parts.pinned()];
-    return done.slice(0, -1).filter((row) => !kept.includes(row.gen));
+    const newest = done.at(-1);
+    const kept = [newest !== undefined && wholeAt(newest, now) ? newest.gen : null,
+                  fallback(done, now)?.gen, this.#parts.pinned()];
+    return done.filter((row) => !kept.includes(row.gen));
   }
 
-  /** The prunable generations no export pins at `now`: the prune's to delete. A read. */
+  /**
+   * The prunable generations the prune deletes at `now`: those no export pins, and every one
+   * no longer whole, an export's too, so no deleted row outlives `RESTORABLE_LIFE_S` in one.
+   * A read.
+   */
   #superseded(done: readonly GenerationRow[], now: number): GenerationRow[] {
-    return this.#prunable(done, now).filter((row) => this.#pinned(row.gen, now) === null);
+    return this.#prunable(done, now).filter((row) => this.#pinned(row.gen, now) === null
+                                                      || !wholeAt(row, now));
   }
 
   /** Whether finished generation `gen` can be restored at `now` (`restorableAt`). A read. */
   restorable(gen: string, now: number): boolean {
-    const done = this.#rows().filter((row) => row.state === "done");
-    const row = done.find((each) => each.gen === gen);
-    return row !== undefined && restorableAt(row, done, now);
+    const row = this.#rows().find((each) => each.gen === gen && each.state === "done");
+    return row !== undefined && restorableAt(row, now);
   }
 
   /**
-   * In a quiet unit: the owner told once, and the log written, when generations are finished
-   * but none can be restored at `now`; told again only once one can be (`#finish`).
+   * In a quiet unit: the owner told, and the log written, when none can be restored at `now`
+   * once a generation has finished (`lost`, its own mark: 0 from the first finish); told
+   * again only once one can be (`#finish`).
    */
   #tellUnrestorable(now: number): void {
-    const done = this.#rows().filter((row) => row.state === "done");
-    if (done.length === 0 || done.some((row) => restorableAt(row, done, now))
-        || this.#sql.exec("UPDATE owner_backup_state SET told = 1 WHERE told = 0 RETURNING told")
+    if (this.#rows().some((row) => row.state === "done" && restorableAt(row, now))
+        || this.#sql.exec("UPDATE owner_backup_state SET lost = 1 WHERE lost = 0 RETURNING lost")
           .toArray().length === 0) {
       return;
     }
     console.error("no generation of this owner can be restored");
     this.#parts.notice(MANIFEST_UNRESTORABLE, "No recovery copy of your data can be restored " +
-      `right now: more than ${LOG_BYTES / 2 ** 20} MB of your data changed while each recent ` +
-      "copy was taken, more than a restore takes, and no older copy is recent enough to keep. " +
-      "Your data is intact; export it to keep a copy. A new copy is taken each night your " +
-      "data changes.");
+      "right now: no recent copy could be written whole, or each was taken while more than " +
+      `${LOG_BYTES / 2 ** 20} MB of your data changed, more than a restore takes. Your data is ` +
+      "intact; export it to keep a copy. A new copy is tried each night.");
   }
 
   /**
@@ -456,16 +486,21 @@ export class Backups {
       return retry(writing.retry_at);
     }
     const done = rows.filter((row) => row.state === "done");
-    // A superseded generation goes once no export pins it, but a restore's and the fallback,
-    // which goes once it passes RESTORABLE_LIFE_S.
-    const older = this.#prunable(done, now).map((row) => this.#pinned(row.gen, now) ?? now);
-    const kept = fallback(done, now);
-    const nightly = done.length > 0 && !this.#changed() ? null
-      : Math.max(now, dayStart(done.at(-1)?.day ?? manifestDay(now)) + DAY_S
-                 + spread(this.#parts.owner()));
-    const times = [...older.map(retry), nightly,
-                   kept === null ? null : retry(kept.started_at + RESTORABLE_LIFE_S)]
-      .filter((at): at is number => at !== null);
+    // A prunable generation goes once no export pins it (`#superseded`); a kept one once it is
+    // no longer whole.
+    const older = this.#prunable(done, now)
+      .map((row) => wholeAt(row, now) ? this.#pinned(row.gen, now) ?? now : now);
+    const ends = done.filter((row) => row.changed_at !== null)
+      .map((row) => row.changed_at! + RESTORABLE_LIFE_S);
+    // The night after the later of the newest's day and the last begun's, so one given up is
+    // tried the next night, not at once.
+    const began = this.#began();
+    const day = [done.at(-1)?.day ?? manifestDay(now), began === null ? "" : manifestDay(began)]
+      .sort().at(-1)!;
+    const nightly = done.length > 0 && !this.#changed(done) ? null
+      : Math.max(now, dayStart(day) + DAY_S + spread(this.#parts.owner()));
+    const times = [...older, ...ends, nightly].filter((at): at is number => at !== null)
+      .map(retry);
     return times.length === 0 ? null : Math.min(...times);
   }
 
@@ -479,8 +514,8 @@ export class Backups {
     if (writing !== undefined) {
       return writing.gen;
     }
-    const newest = rows.filter((row) => row.state === "done").at(-1);
-    return newest !== undefined && !this.#changed() ? newest.gen : this.#open(now);
+    const done = rows.filter((row) => row.state === "done");
+    return done.length > 0 && !this.#changed(done) ? done.at(-1)!.gen : this.#open(now);
   }
 
   /**
@@ -568,9 +603,9 @@ export class Backups {
       }
       const due = this.next(now);
       let writing = this.#rows().find((row) => row.state === "writing");
-      if (writing === undefined && due !== null && now >= due && (
-            this.#rows().filter((row) => row.state === "done").length === 0
-            || this.#changed())) {
+      const done = this.#rows().filter((row) => row.state === "done");
+      if (writing === undefined && due !== null && now >= due
+          && (done.length === 0 || this.#changed(done))) {
         const gen = await this.#write(() => this.#open(now));
         writing = this.#rows().find((row) => row.gen === gen);
       }
@@ -629,7 +664,7 @@ export class Backups {
   /** In a unit: a new generation begun at `now`, its capture on; its id. */
   #open(now: number): string {
     const gen = randomHex(8);
-    this.#sql.exec("UPDATE owner_backup_state SET changed = 0");
+    this.#sql.exec("UPDATE owner_backup_state SET began_at = ?", now);
     const s = this.#parts.log.begin(gen);
     this.#sql.exec(
       "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, bytes, s, " +
@@ -642,9 +677,9 @@ export class Backups {
   /**
    * The generation of `gen` given up (past `MANIFEST_PARTS`, its log past `LOG_BYTES`, a
    * migration while it ran, or its capture lost): its objects deleted, its row and its log
-   * gone, and the owner told once (`why`, unless null) until one a restore can load is
-   * written again (`#finish`). The lane waits for a change, but after a migration, which
-   * begins a fresh one at once.
+   * gone, and the owner told once (`why`, unless null) until one is written again. The newest
+   * still lacks what it would have held, so the lane tries the next night, or at once after a
+   * migration, which begins a fresh one.
    */
   async #abandon(ns: string, row: GenerationRow, why: string | null): Promise<void> {
     console.error(`a generation was given up (${why ?? "its capture was lost"})`);
@@ -664,14 +699,14 @@ export class Backups {
             "was not written. Your data is intact; export it to keep a copy."
           : why === MANIFEST_LINE
           ? "The nightly recovery copy of your data was not written: one of your records is " +
-            "too large for one part of it. Your data is intact; it is tried again after your " +
-            "next change."
+            "too large for one part of it. Your data is intact; it is tried again the next " +
+            "night."
           : why === MANIFEST_SCHEMA
           ? "The recovery copy of your data under way was begun again: an update changed how " +
             "your data is stored while it ran. Your data is intact."
           : "The nightly recovery copy of your data could not be written: storage was " +
             "unavailable for too long while it ran. Your data is intact; it is tried again " +
-            "after your next change.");
+            "the next night.");
       }
     }));
   }
@@ -695,10 +730,8 @@ export class Backups {
       this.#sql.exec("UPDATE owner_backups SET state = 'done', finished_at = ?, part_list = " +
                        "'', segment_list = '', log_bytes = ? WHERE gen = ?", Date.now() / 1000,
                      logBytes, gen);
-      if (logBytes <= LOG_BYTES) {
-        this.#sql.exec("UPDATE owner_backup_state SET told = 0");
-      }
-      this.#tellUnrestorable(Date.now() / 1000);
+      this.#sql.exec("UPDATE owner_backup_state SET told = 0, lost = CASE WHEN ? <= ? THEN 0 " +
+                       "ELSE coalesce(lost, 0) END", logBytes, LOG_BYTES);
       this.#parts.log.stop();
     }));
   }
