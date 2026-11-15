@@ -581,9 +581,51 @@ describe("manifests", () => {
     expect((await failure(() => service().getManifestPart(space, second, "0123456789abcdef", 0,
                                                           written[0]!.sha256))).message)
       .toBe("a stored object does not open under its owner's key");
-    await service().deleteManifest(space, "0123456789abcdef", 2, [segment]);
+    expect(await service().sweepManifests(space, [], null)).toEqual({ deleted: 4, cursor: null });
     expect(await keys(space)).toEqual([]);
     expect(manifestKey(space, "0123456789abcdef", 3)).toBe(`o/${space}/m/0123456789abcdef/3`);
+  });
+
+  it("sweeps a namespace's generations a page at a time, deleting each one not kept, every " +
+     "root before its objects", async () => {
+    const space = ns();
+    const key = await keyOf(space);
+    const [kept, gone, rootless] = ["a".repeat(16), "b".repeat(16), "c".repeat(16)];
+    const keptPart = await service().putManifestPart(space, key, kept, 0, bytes("kept"));
+    await service().putManifestRoot(space, key, kept, [keptPart], [], { s: 1, e: 0 });
+    const goneParts = [await service().putManifestPart(space, key, gone, 0, bytes("one")),
+                       await service().putManifestPart(space, key, gone, 1, bytes("two"))];
+    const segment = { a: 0, b: 3, ...await service().putManifestSegment(space, key, gone, 0, 3,
+                                                                        bytes("log")) };
+    await service().putManifestRoot(space, key, gone, goneParts, [segment], { s: 1, e: 3 });
+    // A pass's put that landed with no record, its generation then let go: no root names it.
+    await service().putManifestPart(space, key, rootless, 0, bytes("orphan"));
+    // Pages of two keys, so a generation's root and its objects fall on different pages; and
+    // at every delete, no root is left naming an object gone.
+    const roots = async () => (await keys(space)).filter((at) => at.split("/").length === 4);
+    const dangling: string[] = [];
+    const paged = {
+      list: (options: R2ListOptions) => env.BLOBS.list({ ...options, limit: 2 }),
+      delete: async (at: string[]) => {
+        await env.BLOBS.delete(at);
+        const standing = await roots();
+        dangling.push(...at.filter((each) => standing.some((root) => each.startsWith(`${root}/`))));
+      },
+    } as unknown as R2Bucket;
+    let cursor: string | null = null;
+    let deleted = 0;
+    let pages = 0;
+    do {
+      const page: { deleted: number; cursor: string | null } =
+        await service(paged).sweepManifests(space, [kept], cursor);
+      ({ cursor } = page);
+      deleted += page.deleted;
+      pages += 1;
+    } while (cursor !== null);
+    expect([deleted, pages > 1, dangling]).toEqual([5, true, []]);
+    expect(await keys(space)).toEqual([manifestKey(space, kept), manifestKey(space, kept, 0)]);
+    expect(await refused(() => service().sweepManifests(space, ["not a generation"], null)))
+      .toBe("invalid");
   });
 
   it("writes a root under the active kid, and wraps an old root's key again in place",

@@ -37,8 +37,11 @@
  *   for keys in its own chunk table.
  * - `deleteNamespace` deletes every object under one owner's namespace prefix, listing it
  *   1,000 keys at a time: the owner's erasure alone, so a chunk whose row was lost, or
- *   whose put landed late, goes with the rest. It is the only list of the bucket, and only
- *   ever of one namespace's prefix.
+ *   whose put landed late, goes with the rest.
+ * - `sweepManifests` lists one page of one namespace's generations and deletes every object
+ *   of a generation the owner's object no longer names, each root before its objects: the
+ *   manifest lane's sweep alone. These two are the only lists of the bucket, each only ever
+ *   of one namespace's prefix.
  *
  * Every object is sealed in this Worker under its owner's data key (`datakey.ts`), by the
  * envelope's per-object seal (`contract/src/envelope.ts` `sealObject`: AES-256-GCM, the
@@ -73,8 +76,8 @@ import { keyed } from "../../contract/src/checks";
 import { base64, fromBase64, hex, openObject, sealObject } from "../../contract/src/envelope";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
-  chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedManifest, type ManifestAt,
-  manifestKey, manifestObjectKey, manifestPart, manifestPrefix, segmentKey,
+  chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedGeneration, listedManifest,
+  type ManifestAt, manifestKey, manifestObjectKey, manifestPrefix, segmentKey,
 } from "./keys";
 import { Refusal } from "../../contract/src/refusal";
 import {
@@ -465,25 +468,39 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     return this.#getObject(ns, key, gen, { a, b }, sha256);
   }
 
-  /**
-   * A generation deleted (`parts` of its base parts, the `segments` named, and its root): the
-   * root first, so none dangles.
-   */
-  async deleteManifest(ns: string, gen: string, parts: number,
+  /** A generation's log segments deleted: a finished one's tail past E, which no root names. */
+  async deleteSegments(ns: string, gen: string,
                        segments: readonly { a: number; b: number }[]): Promise<void> {
-    if (parts !== 0) {
-      manifestPart(parts - 1);
-    }
-    await this.env.BLOBS.delete(manifestKey(ns, gen));
-    const all = Array.from({ length: parts }, (_, part) => part);
-    for (let at = 0; at < all.length; at += DELETE_BATCH) {
-      await this.env.BLOBS.delete(all.slice(at, at + DELETE_BATCH)
-        .map((part) => manifestKey(ns, gen, part)));
-    }
     for (let at = 0; at < segments.length; at += DELETE_BATCH) {
       await this.env.BLOBS.delete(segments.slice(at, at + DELETE_BATCH)
         .map((segment) => segmentKey(ns, gen, segment.a, segment.b)));
     }
+  }
+
+  /**
+   * One page of a sweep of `ns`'s generations: the next `DELETE_BATCH` keys under its manifest
+   * prefix after `cursor`, and every one of a generation `keep` does not name deleted, the
+   * roots first. The bucket lists keys in order, and a root's key begins each of its objects',
+   * so a root is listed no later than its objects and never names one gone. Where the next
+   * page starts, or null after the last.
+   */
+  async sweepManifests(ns: string, keep: string[], cursor: string | null):
+      Promise<{ deleted: number; cursor: string | null }> {
+    namespace(ns);
+    if (!Array.isArray(keep) || (cursor !== null && typeof cursor !== "string")) {
+      throw new Refusal("invalid", "a sweep names the generations it keeps and where it goes on");
+    }
+    const kept = new Set(keep.map((gen) => generation(gen)));
+    const listed = await this.env.BLOBS.list({ prefix: manifestPrefix(ns), limit: DELETE_BATCH,
+                                               ...(cursor === null ? {} : { cursor }) });
+    const gone = listed.objects.map((object) => listedGeneration(ns, object.key))
+      .filter((at) => !kept.has(at.gen));
+    const roots = gone.filter((at) => at.root).map((at) => at.key);
+    const objects = gone.filter((at) => !at.root).map((at) => at.key);
+    for (const keys of [roots, objects].filter((each) => each.length > 0)) {
+      await this.env.BLOBS.delete(keys.map((key) => listedManifest(ns, key)));
+    }
+    return { deleted: gone.length, cursor: listed.truncated ? listed.cursor : null };
   }
 }
 

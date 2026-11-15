@@ -17,10 +17,17 @@ import type { Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
 import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
+import { manifestKey } from "../../files/src/keys";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { admittedOwner, drainDue, sqlIn, storesOn, through, TIERS } from "./support";
 
 export type Line = Record<string, unknown> & { t: string };
+
+/** The keys R2 holds of generation `gen` in namespace `ns`: its root and its objects. */
+export async function objectsOf(ns: string, gen: string): Promise<string[]> {
+  return (await env.BLOBS.list({ prefix: manifestKey(ns, gen) })).objects
+    .map((object) => object.key);
+}
 
 /**
  * Notices of a thousand characters enough for a generation's page, and for its burst, at the

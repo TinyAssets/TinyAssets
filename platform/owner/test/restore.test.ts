@@ -22,8 +22,9 @@ import { MIGRATIONS } from "../src/schema";
 const LOAD = loadOrder();
 import { erasedWhole } from "./erasure-support";
 import {
-  BURST, digest, type Generated, generate, type Owner, owner, PAGE, standing,
+  BURST, digest, type Generated, generate, objectsOf, type Owner, owner, PAGE, standing,
 } from "./generation-support";
+import { manifestKey } from "../../files/src/keys";
 import { MUSE, registerOn } from "./ledger-support";
 import {
   drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, sqlIn, storesOn, TIERS,
@@ -224,9 +225,11 @@ describe("a restore", () => {
     expect(await countersOf(stub)).toEqual(counters);
     expect(await stub.storageUsage(o.bind())).toEqual(usage);
     // Every chunk a content names was checked as stored, and nothing was put to R2 or deleted
-    // from it.
+    // from it but by the lane's sweep once done, which keeps the generation restored.
     const crossed = (await files.calls()).slice(earlier);
-    expect(crossed.filter((call) => !/^(?:get|check)/.test(call.method))).toEqual([]);
+    expect(crossed.filter((call) => !/^(?:get|check)/.test(call.method)
+      && !(call.method === "sweepManifests"
+           && (call.args as [string, string[]])[1].includes(gen.gen)))).toEqual([]);
     const named = await sqlIn(stub, "SELECT DISTINCT sha256 FROM file_content_chunks");
     expect(named.length).toBeGreaterThan(1);
     expect((done as { chunks: number }).chunks).toBe(named.length);
@@ -404,6 +407,8 @@ describe("a restore", () => {
     await drainDue(o.stub);
     expect(await sqlIn(o.stub, "SELECT gen FROM owner_backups WHERE gen = ?", newest.gen))
       .toEqual([]);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    expect(await objectsOf(space!["ns"] as string, newest.gen)).toEqual([]);
   });
 
   it("maps each generation of migration 12 as changed from its start, but the newest of an " +
@@ -830,5 +835,38 @@ describe("a restore into a live owner", () => {
     await erasedWhole(o.stub, o.name, o.session());
     expect((await failure(() => o.stub.restorePin(platform(o.name), { gen: gen.gen }))).code)
       .toBe("owner_erased");
+  });
+
+  it("keeps in R2 the generation its pin wrote while held, and sweeps it once the restore is " +
+     "done, keeping the one restored", async () => {
+    const { o, gen, ns } = await source();
+    await o.stub.fileWrite(o.bind(), { path: `${W}/after.txt`, expected_etag: null,
+                                       content: `${PLAIN} after` });
+    const hold = await pinnedTo(o.stub, o.name, gen.gen);
+    const stub = await wipedWith(o.stub, o.name, hold.confirm!);
+    // Held: no lane runs, and only the record names the pin's generation, the undo.
+    expect(await objectsOf(ns, hold.fresh!)).toContain(manifestKey(ns, hold.fresh!));
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
+    await stub.admissionSet(platform(o.name), { admit: true });
+    await drainDue(stub);
+    expect(await objectsOf(ns, hold.fresh!)).toEqual([]);
+    expect(await objectsOf(ns, gen.gen)).toContain(manifestKey(ns, gen.gen));
+    expect(await sqlIn(stub, "SELECT sweep FROM owner_backup_state")).toEqual([{ sweep: 0 }]);
+  });
+
+  it("refuses a rotation's rewrap while a restore holds the owner, through the wipe, so no kid " +
+     "is retired under the roots it restores from; and answers once it is done", async () => {
+    const { o, gen, ns } = await source();
+    const hold = await pinnedTo(o.stub, o.name, gen.gen);
+    const pinned = await failure(() => o.stub.dataKeyRewrap(platform(o.name)));
+    expect([pinned.code, pinned.message]).toEqual(["restoring", RESTORING]);
+    // Wiped, the object holds neither the namespace nor a row of either generation.
+    const stub = await wipedWith(o.stub, o.name, hold.confirm!);
+    expect((await failure(() => stub.dataKeyRewrap(platform(o.name)))).code).toBe("restoring");
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    expect((await failure(() => stub.dataKeyRewrap(platform(o.name)))).code).toBe("restoring");
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
+    expect(await stub.dataKeyRewrap(platform(o.name))).toEqual({ rewrapped: false, roots: 1 });
   });
 });

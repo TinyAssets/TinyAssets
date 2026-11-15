@@ -2309,4 +2309,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "state = 'done')",
     "ALTER TABLE owner_backup_state DROP COLUMN changed",
   ]),
+  // 13 (lane R's sweep, `backup.ts`; `untangle-2026-11/r7-sweep.md`): the sweeps owed for
+  // generations in R2 no row names any more (`sweep`, counted, so one owed while a sweep ran
+  // outlives its settling), and when a failed one is tried again (`sweep_retry`, seconds;
+  // null: at once). An object that ever began or held a generation owes one: what a prune
+  // or a give-up before this left in R2 is found by none other.
+  Object.freeze([
+    "ALTER TABLE owner_backup_state ADD COLUMN sweep INTEGER NOT NULL DEFAULT 0 CHECK " +
+      "(sweep >= 0)",
+    "ALTER TABLE owner_backup_state ADD COLUMN sweep_retry REAL",
+    "UPDATE owner_backup_state SET sweep = 1 WHERE began_at IS NOT NULL OR EXISTS (SELECT 1 " +
+      "FROM owner_backups)",
+  ]),
 ]);

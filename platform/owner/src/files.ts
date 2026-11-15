@@ -94,6 +94,7 @@ import type { OwnerStorage, Write } from "./gate";
 import { CLIENT_WRITER, CLIENTS, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
 import { refuseErasing } from "./erasure";
+import { refuseRestoring } from "./restore";
 import { TIER_UNREAD } from "./tier";
 import { AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
 import {
@@ -984,11 +985,11 @@ export class Files {
 
   /**
    * A key rotation's sweep for this owner (`files/src/datakey.ts`): its wrapped data key
-   * wrapped again under the ring's active kid and kept, then each manifest root of `days`
-   * wrapped again in place, so no copy of the key under a retiring kid outlives the sweep,
-   * an idle owner's included. Whether the object's copy changed, and the roots found.
+   * wrapped again under the ring's active kid and kept, then the manifest root of each of
+   * `gens` wrapped again in place, so no copy of the key under a retiring kid outlives the
+   * sweep, an idle owner's included. Whether the object's copy changed, and the roots found.
    */
-  async rewrap(days: readonly string[]): Promise<{ rewrapped: boolean; roots: number }> {
+  async rewrap(gens: readonly string[]): Promise<{ rewrapped: boolean; roots: number }> {
     const { ns, data_key: held } = this.#space();
     if (ns === null || held === null) {
       return { rewrapped: false, roots: 0 };  // nothing was ever stored under a key
@@ -999,8 +1000,8 @@ export class Files {
         "UPDATE file_space SET data_key = ? WHERE data_key = ?", key, held));
     }
     let roots = 0;
-    for (const day of days) {
-      roots += await this.#store.rewrapManifestRoot(ns, day) === null ? 0 : 1;
+    for (const gen of gens) {
+      roots += await this.#store.rewrapManifestRoot(ns, gen) === null ? 0 : 1;
     }
     return { rewrapped: key !== held, roots };
   }
@@ -3645,11 +3646,15 @@ export const filesDoors = Object.freeze({
   },
   async dataKeyRewrap(o: OwnerState, door: Door<undefined>):
       Promise<{ rewrapped: boolean; roots: number }> {
-    const days = await o.door(() => {
+    const gens = await o.door(() => {
       door.check();
+      // A restore's generations are under its record's namespace, which a wiped object no
+      // longer holds, so a rotation waits for the hold to end: a retiring kid is never
+      // removed while the only roots that restore the owner may be under it.
+      refuseRestoring(o.storage);
       return o.backups.manifests().map((manifest) => manifest.gen);
     });
-    return o.files.rewrap(days);
+    return o.files.rewrap(gens);
   },
   async fileUploadTarget(o: OwnerState, door: Door<IntentRequest>):
       Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
