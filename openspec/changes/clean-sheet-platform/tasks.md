@@ -608,9 +608,8 @@ Measured on the stage as it runs:
 
 ### After the cutover: fixes for rare failures nothing builds on
 
-Each is rare, loud when it happens and recoverable, and no other code builds on its fix, so it
-is not built before the cutover (founder, 2026-11-15; the untangle skill). A PR that finds one
-adds it here, named with its branch.
+The fixes the untangle skill's cutover rule holds until after the cutover (founder,
+2026-11-15), each named with its branch.
 
 - [ ] An owner a blob that no longer opens keeps owing (a refused data key, root,
   connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
@@ -622,9 +621,8 @@ adds it here, named with its branch.
   (`untangle/i-window-close`).
 - [ ] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
   old-kid roots back and restarts the copy's expiry, so `retire`'s gate is read from that
-  night: R8 marks the rotation's record or refuses to restore during one
-  (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`, built and parked: its gate reads a restore record that R8 writes,
-  so it waits for R8's restore from the copy).
+  night (`r7-rotation-driver.md` item 11). Built and parked on `untangle/r8-retire-gate`:
+  `retire` reads a restore record the copy's restore (R8) writes, so it waits for R8.
 
 ### Step 17. Restore and the off-account copy
 
