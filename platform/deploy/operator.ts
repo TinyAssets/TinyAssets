@@ -366,8 +366,9 @@ const inOrder = (a: string, b: string): number => Buffer.compare(Buffer.from(a),
 /**
  * Why `owner` still owes after `answer` (null: it owes nothing): no answer, a refusal (but
  * `owner_erased`: an erased owner's keys went with its object), or blobs `left` under another
- * kid. An answer naming a kid other than `active` stops the run: the deployed ring is not the
- * stored one.
+ * kid. An answer that left nothing yet names a kid other than `active` stops the run: the
+ * deployed ring is not the stored one. One that left some names the kid the owner's own key
+ * is still under (a restore's hold, a key that no longer opens), which proves no ring.
  */
 export function owes(owner: string, answer: OperatorAnswer | null, active: string):
     string | null {
@@ -385,7 +386,7 @@ export function owes(owner: string, answer: OperatorAnswer | null, active: strin
     throw new Error(`the doors answered ${answer.op} for ${owner} out of shape: ` +
                     JSON.stringify(result));
   }
-  if (result["kid"] !== null && result["kid"] !== active) {
+  if (result["left"] === 0 && result["kid"] !== null && result["kid"] !== active) {
     throw new Error(`the doors answered ${answer.op} for ${owner} under ${result["kid"]}, not ` +
                     `the stored ring's active kid ${active}: the deployed ring is not the ` +
                     "stored one (deploy it with --rotate), and nothing of this page is recorded");
@@ -528,6 +529,11 @@ export async function rotate(sweep: Sweep): Promise<RotationRecord> {
     return written;
   }
   for (const owners of pages(pass.owing)) {
+    if (waiting.now().getTime() >= until) {
+      say(`${pass.owing.length} owners still owe, the rest unnamed past ${RUN_MS / 60_000} ` +
+          "minutes: the record holds them, and the next run asks them first");
+      break;
+    }
     const states = await askOwners(cloudflare, account, sweep.operator, "owner.state", owners,
                                    waiting);
     say(...owners.map((owner, at) => {

@@ -202,15 +202,16 @@ describe("a rotation's sweep of the directory", () => {
   });
 
   it("stops at an answer under a kid other than the stored ring's active one, recording " +
-     "nothing of its page", async () => {
+     "nothing of its page; one left over, its key still under k1, owes", async () => {
     const owners = Array.from({ length: 150 }, (_, n) => owner(n));
-    const a = account(owners, (message) => ({ result: { rewrapped: false, roots: 1, left: 0,
-      kid: message.owner === owner(120) ? "k1" : "k2" } }));
+    const a = account(owners, (message) => ({ result: { rewrapped: false, roots: 1,
+      left: message.owner === owner(10) ? 2 : 0,
+      kid: [owner(10), owner(120)].includes(message.owner) ? "k1" : "k2" } }));
     await expect(a.sweep()).rejects.toThrow(
       `the doors answered owner.rewrap for ${owner(120)} under k1, not the stored ring's ` +
       "active kid k2: the deployed ring is not the stored one");
     expect(a.puts).toHaveLength(1);
-    expect(a.record()!.passes[0]!.through).toBe(owner(99));
+    expect(a.record()!.passes[0]).toMatchObject({ through: owner(99), owing: [owner(10)] });
   });
 
   it("refuses a record begun with another ring under the same active kid", async () => {
@@ -244,6 +245,21 @@ describe("a rotation's sweep of the directory", () => {
     expect(a.said).toContain(`${owner(3)} still owes (no answer within 120 s (the dead-letter ` +
                              `queue ${OPERATOR_NAMES.dead_letter_queue} may hold it)): ` +
                              "owner.state unanswered");
+  });
+
+  it("names no owner's restore step past its time, leaving them owing for the next run",
+     async () => {
+    const a = account([owner(1), owner(2)], (message) => {
+      if (message.op === "owner.rewrap" && a.batches.length > 0) {
+        a.tick(RUN_MS);  // the run's last ask of who owes outlasts its time
+      }
+      return { result: { rewrapped: false, roots: 0, left: 1, kid: "k1" } };
+    });
+    const record = await a.sweep();
+    expect(record.passes[0]).toMatchObject({ owing: [owner(1), owner(2)], swept: null });
+    expect(a.asked("owner.state")).toEqual([]);
+    expect(a.said.at(-1)).toBe("2 owners still owe, the rest unnamed past 20 minutes: the " +
+                               "record holds them, and the next run asks them first");
   });
 });
 
