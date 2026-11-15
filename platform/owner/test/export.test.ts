@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { sqlIn } from "../../ci/workerd";
 import { rewrap } from "../../files/src/datakey";
 import {
-  CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY,
+  CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, LOG_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY,
 } from "../../contract/src/limits";
 import { PLATFORM_ONLY } from "../src/admission";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
@@ -27,19 +27,20 @@ import {
   readPage,
 } from "../src/export";
 import type FilesService from "../../files/src/index";
+import type { ChunkStore } from "../../contract/src/files";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import {
-  type At, BURST, digest, exportFrom, generate, type Line, type Owner, owner, PAGE, replay,
-  standing,
+  type At, BURST, digest, exportFrom, generate, type Line, objectsOf, type Owner, owner, PAGE,
+  replay, standing,
 } from "./generation-support";
 import { MUSE } from "./ledger-support";
 import { erasedWhole } from "./erasure-support";
 import { clock } from "../src/clock";
 import { markErasing } from "../src/erasure";
-import { drainDue, failure, laneAt, starterSeed } from "./support";
+import { drainDue, failure, laneAt, starterSeed, storesOn, through } from "./support";
 import { carried } from "../src/starter-package";
 
 afterEach(() => {
@@ -788,5 +789,182 @@ describe("the nightly manifest", () => {
     expect(await bucket().getManifestRoot(ns, gen)).toBeNull();
     expect(await sqlIn(o.stub, "SELECT name FROM sqlite_master WHERE name = 'file_space'"))
       .toEqual([]);
+  });
+});
+
+/** The owner's namespace and wrapped key. */
+const spaceOf = async (o: Owner) => {
+  const [row] = await sqlIn(o.stub, "SELECT ns, data_key FROM file_space");
+  return { ns: row!["ns"] as string, key: row!["data_key"] as string };
+};
+
+/** A generation put as a pass puts one, a part and its root, that no row of the object names. */
+async function unnamed(ns: string, key: string, gen: string): Promise<void> {
+  const part = await env.FILES.putManifestPart(ns, key, gen, 0, new TextEncoder().encode("left"));
+  await env.FILES.putManifestRoot(ns, key, gen, [part], [], { s: 1, e: 0 });
+}
+
+const sweepState = (o: Owner) => sqlIn(o.stub,
+                                       "SELECT sweep, sweep_retry FROM owner_backup_state");
+
+describe("the sweep of generations no row names", () => {
+  it("deletes, in the next pass, what a generation given up left in R2: a part that landed " +
+     "with its answer lost", async () => {
+    const o = await owner();
+    await write(o, `${W}/a.bin`, filled(INLINE_BYTES + 10, 21));
+    const kept = await generate(o.stub);
+    const { ns } = await spaceOf(o);
+    await write(o, `${W}/b.bin`, filled(INLINE_BYTES + 10, 22));
+    let lost: string | null = null;
+    let left: string[] | null = null;
+    const given = await generate(o.stub, {
+      failAt: { call: 1, when: "after" },
+      duringCall: async ({ gate, n }) => {
+        if (n === 1) {
+          // Its first put lands and its answer is lost, nothing of it recorded; the next pass
+          // gives it up, its log having overflowed meanwhile, as in an R2 outage.
+          lost = gate.storage.sql.exec<{ gen: string }>(
+            "SELECT gen FROM owner_backups WHERE state = 'writing'").one().gen;
+          await gate.quiet(() => gate.storage.sql.exec("UPDATE log_capture SET overflow = 1"));
+        }
+      },
+      afterUnit: async ({ gate }) => {
+        if (lost !== null && left === null && gate.storage.sql.exec(
+              "SELECT 1 FROM owner_backups WHERE gen = ?", lost).toArray().length === 0) {
+          left = await objectsOf(ns, lost);  // as the give-up left it
+        }
+      } });
+    expect(given.notices).toEqual(["manifest_log_overflow"]);
+    expect(left).toEqual(["0"]);
+    expect(await objectsOf(ns, lost!)).toEqual([]);
+    expect(await objectsOf(ns, kept.gen)).toContain("root");
+    expect(await sweepState(o)).toEqual([{ sweep: 0, sweep_retry: null }]);
+  });
+
+  it("keeps every object of a generation the one list names: the one a pass is writing, its " +
+     "put landed unrecorded, an open export's, the fallback and the newest", async () => {
+    const o = await owner();
+    await write(o, `${W}/a.bin`, filled(INLINE_BYTES + 10, 31));
+    const exported = await generate(o.stub);
+    await exportFrom(o, null);  // open: it pins the newest, unchanged since it began
+    await write(o, `${W}/b.bin`, filled(INLINE_BYTES + 10, 32));
+    const fallback = await generate(o.stub);
+    await write(o, `${W}/c.bin`, filled(INLINE_BYTES + 10, 33));
+    // The newest's log as a busy pass's would be, recorded as its finish records it, before the
+    // same pass prunes: the one before it is then kept, as the fallback.
+    const newest = await generate(o.stub, { afterUnit: async ({ gate }) => {
+      await gate.write(() => gate.storage.sql.exec(
+        "UPDATE owner_backups SET log_bytes = ? WHERE state = 'done' AND gen NOT IN (?, ?)",
+        LOG_BYTES + 1, exported.gen, fallback.gen));
+    } });
+    const { ns, key } = await spaceOf(o);
+    const orphan = "0123012301230123";
+    await write(o, `${W}/d.bin`, filled(INLINE_BYTES + 10, 34));
+    let writing: string | null = null;
+    let seen: Map<string, string[]> | null = null;
+    await generate(o.stub, {
+      // The pass's first put lands with its answer lost: the pass ends, its part unrecorded.
+      failAt: { call: 1, when: "after" },
+      afterUnit: async ({ gate }) => {
+        // Once that pass backed off: a generation no row names in R2, and a sweep owed.
+        const row = gate.storage.sql.exec<{ gen: string; retry_at: number | null }>(
+          "SELECT gen, retry_at FROM owner_backups WHERE state = 'writing'").toArray()[0];
+        if (writing === null && row !== undefined && row.retry_at !== null) {
+          writing = row.gen;
+          await unnamed(ns, key, orphan);
+          await gate.write(() => gate.storage.sql.exec(
+            "UPDATE owner_backup_state SET sweep = sweep + 1"));
+        }
+      },
+      // The next pass sweeps before it puts again: what R2 holds then.
+      duringCall: async ({ n }) => {
+        if (n === 2) {
+          seen = new Map(await Promise.all([writing!, exported.gen, fallback.gen, newest.gen,
+                                            orphan].map(async (gen) =>
+            [gen, await objectsOf(ns, gen)] as const)));
+        }
+      } });
+    expect(seen!.get(orphan)).toEqual([]);
+    expect(seen!.get(writing!)).toEqual(["0"]);
+    for (const gen of [exported.gen, fallback.gen, newest.gen]) {
+      expect([gen, seen!.get(gen)]).toEqual([gen, expect.arrayContaining(["root"])]);
+    }
+    expect(await sweepState(o)).toEqual([{ sweep: 0, sweep_retry: null }]);
+  });
+
+  it("stays owed when its answer is lost after its deletes landed, backing off in its row, " +
+     "and is made again from the start when another is owed while it runs", async () => {
+    const o = await owner();
+    await write(o, `${W}/a.bin`, filled(INLINE_BYTES + 10, 41));
+    const kept = await generate(o.stub);
+    const { ns, key } = await spaceOf(o);
+    const [first, second] = ["1".repeat(16), "2".repeat(16)];
+    await unnamed(ns, key, first);
+    await sqlIn(o.stub, "UPDATE owner_backup_state SET sweep = 1");
+    /** One pass of the lane over the object's own storage, its store as `store` makes it. */
+    const pass = (store: (state: DurableObjectState) => ChunkStore) =>
+      runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+        const { backups } = storesOn(state, store(state));
+        await backups.run(clock(), Date.now() + 60_000);
+        return { next: backups.next(clock()), now: clock(), ...state.storage.sql.exec<{
+          sweep: number; sweep_retry: number | null }>(
+          "SELECT sweep, sweep_retry FROM owner_backup_state").one() };
+      });
+    const lostAnswer = await pass(() => through({
+      sweepManifests: async (...args) => {
+        await env.FILES.sweepManifests(...args);
+        throw new Error("the answer was lost");
+      } }));
+    expect(await objectsOf(ns, first)).toEqual([]);
+    expect(lostAnswer.sweep).toBe(1);
+    expect(lostAnswer.sweep_retry).toBeGreaterThan(lostAnswer.now);
+    expect(lostAnswer.next).toBe(lostAnswer.sweep_retry);
+    // At its retry, on the fake clock: another owed while it runs (a prune between pages) is
+    // not settled by it.
+    await unnamed(ns, key, second);
+    vi.useFakeTimers({ toFake: ["Date"], now: lostAnswer.sweep_retry! * 1000 });
+    const meanwhile = await pass((state) => through({
+      sweepManifests: (...args) => {
+        state.storage.sql.exec("UPDATE owner_backup_state SET sweep = sweep + 1");
+        return env.FILES.sweepManifests(...args);
+      } }));
+    expect(await objectsOf(ns, second)).toEqual([]);
+    expect([meanwhile.sweep, meanwhile.next]).toEqual([2, meanwhile.now]);
+    const settled = await pass(() => env.FILES);
+    expect([settled.sweep, settled.sweep_retry]).toEqual([0, null]);
+    expect(await objectsOf(ns, kept.gen)).toContain("root");
+  });
+
+  it("stops, still owed, at a restore's hold begun while it runs: a wipe between its pages " +
+     "leaves no row, and neither generation the record names is swept", async () => {
+    const o = await owner();
+    await write(o, `${W}/a.bin`, filled(INLINE_BYTES + 10, 51));
+    const pinned = await generate(o.stub);
+    const { ns, key } = await spaceOf(o);
+    const fresh = "3".repeat(16);
+    await unnamed(ns, key, fresh);  // the pin's own, its row gone with the wipe
+    await sqlIn(o.stub, "UPDATE owner_backup_state SET sweep = 1");
+    let pages = 0;
+    await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const { backups } = storesOn(state, through({
+        sweepManifests: async (space, keep) => {
+          pages += 1;
+          if (pages > 1) {
+            return env.FILES.sweepManifests(space, keep, null);
+          }
+          // The wipe lands while the first page is under way: every row gone, the record wiped.
+          state.storage.sql.exec("DELETE FROM owner_backups");
+          state.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, fresh, " +
+                                 "since) VALUES (1, ?, ?, 'wiped', 0, ?, ?)", ns, pinned.gen,
+                                 fresh, clock());
+          return { deleted: 0, cursor: "the next page" };
+        } }));
+      await backups.run(clock(), Date.now() + 60_000);
+    });
+    expect(pages).toBe(1);
+    for (const gen of [pinned.gen, fresh]) {
+      expect([gen, await objectsOf(ns, gen)]).toEqual([gen, expect.arrayContaining([
+        "root"])]);
+    }
   });
 });

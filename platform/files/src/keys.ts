@@ -93,7 +93,10 @@ export function listedChunk(ns: unknown, key: unknown): string {
   return chunkHash(key.slice(prefix.length));
 }
 
-/** The prefix every manifest key of one owner's namespace starts with: the erasure's list. */
+/**
+ * The prefix every manifest key of one owner's namespace starts with: the erasure's list, and
+ * the sweep's.
+ */
 export function manifestPrefix(ns: unknown): string {
   return `${objectPrefix(ns)}m/`;
 }
@@ -116,4 +119,15 @@ export function listedManifest(ns: unknown, key: unknown): string {
     throw new Error("a listed manifest key is out of shape");
   }
   return manifestKey(ns, gen, part === undefined ? undefined : Number(part));
+}
+
+/**
+ * A key listed under `manifestPrefix(ns)`, rebuilt (`listedManifest`), with the generation it
+ * belongs to and whether it is that generation's root; a loud failure for any other key.
+ */
+export function listedGeneration(ns: unknown, key: unknown):
+    { key: string; gen: string; root: boolean } {
+  const rebuilt = listedManifest(ns, key);
+  const [gen, ...rest] = rebuilt.slice(manifestPrefix(ns).length).split("/");
+  return { key: rebuilt, gen: gen!, root: rest.length === 0 };
 }

@@ -1442,7 +1442,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * A key rotation's sweep for this owner (`files/src/datakey.ts`, tasks.md): its wrapped
    * data key, and every nightly manifest root it keeps, wrapped again under the files
    * keyring's active kid; an idle owner's too, since nothing else rewrites its root. The
-   * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is.
+   * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is. Refused (`restoring`, for the
+   * moment) while a restore holds the owner, so a rotation never finishes past a hold.
    */
   async dataKeyRewrap(binding: Binding): Promise<{ rewrapped: boolean; roots: number }> {
     return this.#units("dataKeyRewrap", binding, undefined, filesDoors.dataKeyRewrap);

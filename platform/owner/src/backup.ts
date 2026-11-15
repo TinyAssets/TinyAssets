@@ -28,20 +28,33 @@
  *   what was logged past E meanwhile is shipped as the tail (no segment spans E), so a later
  *   E finds it, and the root never names it.
  * - **Given up, never looped.** Past `MANIFEST_PARTS` objects, or when the unshipped log
- *   passed `LOG_BYTES` (an R2 outage), its objects are deleted and the owner is told once.
- *   The newest still lacks the change, so the lane tries the next night after the one given
- *   up began (`began_at`), never at once. The owner's writes always land.
+ *   passed `LOG_BYTES` (an R2 outage), its row goes, its objects with the sweep, and the
+ *   owner is told once. The newest still lacks the change, so the lane tries the next night
+ *   after the one given up began (`began_at`), never at once. The owner's writes always land.
  * - **Kept.** The newest finished generation, the one being written, each an open export
  *   pins (`owner_exports`, `EXPORT_LIFE_S`), and the one a restore holds (`pinned`, from its
- *   pin to its end, `restore.ts`); and, while the newest's log is past `LOG_BYTES`
- *   (which a restore refuses to stage, `restore.ts`), the latest older one a restore can load
+ *   pin to its end, `restore.ts`); and, while the newest's log is past `LOG_BYTES` (which a
+ *   restore refuses to stage, `restore.ts`), the latest older one a restore can load
  *   (`fallback`, `restorableAt`): its log within, and whole (`wholeAt`: unchanged since it
  *   began, or changed within `RESTORABLE_LIFE_S`). That is the one list, `#retained`. Every
- *   other, the newest too once it is not whole, is deleted from R2, root first, so no row the
+ *   other row, the newest too once it is not whole, is deleted (`#prune`), so no row the
  *   owner deleted outlives `RESTORABLE_LIFE_S` in one. No garbage a kept one names is
  *   collected early (`protectsSince`), and plain collection reaches none a whole one names.
  *   With none a restore can load, the owner is told (`MANIFEST_UNRESTORABLE`, `lost`) and
  *   `restore.source` names none restorable.
+ * - **Swept.** R2 holds a generation's objects only while the list names it. Each row the
+ *   prune or a give-up deletes, and each generation a restore adopts (whose namespace holds
+ *   others the object never knew), owes a sweep (`owner_backup_state.sweep`), in the unit
+ *   that does it. The pass that owes it, or the next, lists the namespace's generations a
+ *   page at a time and deletes every object of one the list does not name, root first
+ *   (`sweepManifests`). So what a crash between a put and its record left (a part past the
+ *   recorded count, a segment never acknowledged) goes too. A pass is the only writer of a
+ *   generation's objects, one pass at a time (`run`), and the sweep is a step of it, so it
+ *   never meets a put in flight. None sweeps while a restore holds the owner (`pinned`, read
+ *   in the unit that names each page's keep), so none sweeps a wiped object, whose namespace
+ *   and generations only the restore's record names, a wipe landing mid-sweep included. A
+ *   sweep that fails backs off in its row (`sweep_retry`); one cut short is still owed, so an
+ *   unnamed generation stands only until the lane's next pass that reaches R2.
  * - **Erasure.** The generations carry the owner's wrapped key, so the erasure's prefix
  *   delete takes them with the chunks, and the mark has already halted this lane.
  *
@@ -500,7 +513,9 @@ export class Backups {
       .sort().at(-1)!;
     const nightly = done.length > 0 && !this.#changed(done) ? null
       : Math.max(now, dayStart(day) + DAY_S + spread(this.#parts.owner()));
-    const times = [...older, ...ends, nightly].filter((at): at is number => at !== null)
+    const { sweep, sweep_retry: sweepRetry } = this.#sweepState();
+    const swept = sweep > 0 ? sweepRetry ?? now : null;
+    const times = [...older, ...ends, nightly, swept].filter((at): at is number => at !== null)
       .map(retry);
     return times.length === 0 ? null : Math.min(...times);
   }
@@ -568,6 +583,9 @@ export class Backups {
       root.segments.reduce((sum, segment) => sum + segment.size, 0));
     // A generation finished here: from now on, none restorable is told (`#tellUnrestorable`).
     this.#sql.exec("UPDATE owner_backup_state SET lost = coalesce(lost, 0)");
+    // Its namespace holds every generation the object had before it was lost or wiped, and
+    // the one the restore's pin wrote: none named once the restore is done.
+    this.#owe();
   }
 
   /** Whether generation `gen` is finished (its root holds its lists). A read. */
@@ -586,11 +604,11 @@ export class Backups {
   }
 
   /**
-   * One pass: superseded generations no export pins deleted, then the one due begun or
-   * carried on, until the wall clock reaches `until` (ms). One it did not finish goes on
-   * `MANIFEST_CONTINUE_S` later; an R2 call that fails backs the lane off in its row
-   * (`MANIFEST_RETRY_S`); the pass itself completes. One at a time: a pass asked while one runs
-   * (the lane's, or a restore's pin carrying its fresh generation) joins it.
+   * One pass: the rows of generations no longer kept deleted and any sweep owed made, then the
+   * one due begun or carried on, until the wall clock reaches `until` (ms). One it did not
+   * finish goes on `MANIFEST_CONTINUE_S` later; an R2 call that fails backs the lane off in its
+   * row (`MANIFEST_RETRY_S`); the pass itself completes. One at a time: a pass asked while one
+   * runs (the lane's, or a restore's pin carrying its fresh generation) joins it.
    */
   run(now: number, until: number): Promise<void> {
     this.#pass ??= this.#run(now, until).finally(() => {
@@ -601,7 +619,8 @@ export class Backups {
 
   async #run(now: number, until: number): Promise<void> {
     try {
-      if (!await this.#prune(until)) {
+      await this.#write(() => this.#prune(clock()));
+      if (!await this.#sweep(until)) {
         return;
       }
       const due = this.next(now);
@@ -629,8 +648,7 @@ export class Backups {
       // An R2 call that failed, kept in the rows: the lane comes back after its retry.
       console.error("the generation's pass failed; it is tried again later");
       await this.#write(() => this.#sql.exec(
-        "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing' OR gen = " +
-          "(SELECT gen FROM owner_backups ORDER BY seq, started_at LIMIT 1)",
+        "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing'",
         Date.now() / 1000 + MANIFEST_RETRY_S));
     } finally {
       // After what the pass did, so a give-up's own notice, the more telling one, comes first.
@@ -640,19 +658,75 @@ export class Backups {
     }
   }
 
-  /** Every superseded generation no export pins deleted, root first; whether none is left. */
-  async #prune(until: number): Promise<boolean> {
-    const done = this.#rows().filter((row) => row.state === "done");
-    for (const old of this.#superseded(done, clock())) {
+  /**
+   * In a quiet unit: the row of every generation not kept at `now` (`#retained`) deleted, and a
+   * sweep owed for its objects; the generations kept, the only ones whose objects R2 keeps
+   * (`#sweep`).
+   */
+  #prune(now: number): string[] {
+    const rows = this.#rows();
+    const kept = this.#retained(rows, now);
+    const gone = rows.filter((row) => !kept.includes(row));
+    if (gone.length > 0) {
+      this.#parts.storage.transactionSync(() => {
+        for (const row of gone) {
+          this.#sql.exec("DELETE FROM owner_backups WHERE gen = ?", row.gen);
+        }
+        this.#owe();
+      });
+    }
+    return kept.map((row) => row.gen);
+  }
+
+  /** In a unit: a sweep owed, for objects in R2 of a generation no longer named. */
+  #owe(): void {
+    this.#sql.exec("UPDATE owner_backup_state SET sweep = sweep + 1");
+  }
+
+  /** The sweeps owed (0 for none) and when a failed one is tried again. A read. */
+  #sweepState(): { sweep: number; sweep_retry: number | null } {
+    return this.#sql.exec<{ sweep: number; sweep_retry: number | null }>(
+      "SELECT sweep, sweep_retry FROM owner_backup_state").one();
+  }
+
+  /**
+   * The sweep owed, unless one failed and its retry is not yet due: the owner's namespace's
+   * generations listed a page at a time (`sweepManifests`), and every object of a generation
+   * the object does not name deleted, root first, the names read afresh, after a prune, for
+   * each page. Then the sweeps owed are settled, unless another was owed meanwhile (a prune
+   * between pages), which the next pass sweeps for from the start. An R2 call that fails backs
+   * the sweep off in its row (`sweep_retry`). None is made while a restore holds the owner,
+   * the names read in the unit that asks: its wipe deletes every row, and only its record
+   * names what it restores from. Whether the pass goes on: false when it ran out of time or
+   * the lane halted, the sweep still owed.
+   */
+  async #sweep(until: number): Promise<boolean> {
+    const { sweep: owed, sweep_retry: retry } = this.#sweepState();
+    if (owed === 0 || (retry !== null && retry > clock()) || this.#parts.pinned() !== null) {
+      return true;
+    }
+    const { ns } = await this.#parts.space();
+    let cursor: string | null = null;
+    do {
       if (Date.now() >= until || this.#parts.halted()) {
         return false;
       }
-      const { ns } = await this.#parts.space();
-      const root = await this.#parts.store.getManifestRoot(ns, old.gen);
-      await this.#parts.store.deleteManifest(ns, old.gen, old.parts, root?.segments ?? []);
-      await this.#write(() => this.#sql.exec("DELETE FROM owner_backups WHERE gen = ?",
-                                             old.gen));
-    }
+      const names = await this.#write(() => this.#parts.pinned() === null
+        ? this.#prune(clock()) : null);
+      if (names === null) {
+        return true;  // a hold begun since: owed still, made once the restore is done
+      }
+      try {
+        ({ cursor } = await this.#parts.store.sweepManifests(ns, names, cursor));
+      } catch {
+        console.error("the sweep of generations no longer named failed; it is tried again later");
+        await this.#write(() => this.#sql.exec("UPDATE owner_backup_state SET sweep_retry = ?",
+                                               clock() + MANIFEST_RETRY_S));
+        return true;
+      }
+    } while (cursor !== null);
+    await this.#write(() => this.#sql.exec(
+      "UPDATE owner_backup_state SET sweep = 0, sweep_retry = NULL WHERE sweep = ?", owed));
     return true;
   }
 
@@ -679,18 +753,16 @@ export class Backups {
 
   /**
    * The generation of `gen` given up (past `MANIFEST_PARTS`, its log past `LOG_BYTES`, a
-   * migration while it ran, or its capture lost): its objects deleted, its row and its log
-   * gone, and the owner told once (`why`, unless null) until one is written again. The newest
-   * still lacks what it would have held, so the lane tries the next night, or at once after a
-   * migration, which begins a fresh one.
+   * migration while it ran, or its capture lost): its row and its log gone, a sweep owed for
+   * its objects, and the owner told once (`why`, unless null) until one is written again. The
+   * newest still lacks what it would have held, so the lane tries the next night, or at once
+   * after a migration, which begins a fresh one.
    */
-  async #abandon(ns: string, row: GenerationRow, why: string | null): Promise<void> {
+  async #abandon(row: GenerationRow, why: string | null): Promise<void> {
     console.error(`a generation was given up (${why ?? "its capture was lost"})`);
-    const now = this.#rows().find((each) => each.gen === row.gen) ?? row;
-    await this.#parts.store.deleteManifest(ns, row.gen, now.parts,
-                                           segmentsOf(now.segment_list));
     await this.#write(() => this.#parts.storage.transactionSync(() => {
       this.#sql.exec("DELETE FROM owner_backups WHERE gen = ?", row.gen);
+      this.#owe();
       if (this.#parts.log.state().gen === row.gen) {
         this.#parts.log.stop();
       }
@@ -723,7 +795,7 @@ export class Backups {
     const segments = segmentsOf(row.segment_list);
     const tail = segments.filter((segment) => segment.b > row.e!);
     if (tail.length > 0) {
-      await this.#parts.store.deleteManifest(ns, gen, 0, tail);  // no root is put yet
+      await this.#parts.store.deleteSegments(ns, gen, tail);  // no root is put yet
     }
     const logged = segments.filter((segment) => segment.b <= row.e!);
     await this.#parts.store.putManifestRoot(ns, key, gen, partsOf(row.part_list), logged,
@@ -855,12 +927,12 @@ export class Backups {
     if (row.schema !== this.#parts.schema) {
       // A migration ran while it was under way: its base and log are the old schema's, so it
       // is given up, loudly, and a fresh one begun under the new (review L5-2).
-      await this.#abandon(ns, row, MANIFEST_SCHEMA);
+      await this.#abandon(row, MANIFEST_SCHEMA);
       const gen = await this.#write(() => this.#open(Date.now() / 1000));
       return this.#carry(this.#rows().find((each) => each.gen === gen)!, until);
     }
     if (log.state().gen !== row.gen) {
-      await this.#abandon(ns, row, null);  // a generation whose capture is not its own
+      await this.#abandon(row, null);  // a generation whose capture is not its own
       return true;
     }
     while (Date.now() < until) {
@@ -868,14 +940,14 @@ export class Backups {
         return true;
       }
       if (log.state().overflow === 1) {
-        await this.#abandon(ns, row, MANIFEST_LOG_OVERFLOW);
+        await this.#abandon(row, MANIFEST_LOG_OVERFLOW);
         return true;
       }
       const at = this.#rows().find((each) => each.gen === row.gen)!;
       if (at.cursor === ENDED) {
         const shipped = await this.#ship(ns, key, at, at.e!, until);
         if (shipped === null) {
-          await this.#abandon(ns, at, MANIFEST_CEILING);
+          await this.#abandon(at, MANIFEST_CEILING);
           return true;
         }
         if (!shipped) {
@@ -885,14 +957,16 @@ export class Backups {
           return true;  // the root carries the key: none is written once the erasure began
         }
         await this.#finish(ns, key, at.gen);
-        await this.#prune(until);
+        // What it supersedes goes in the same pass.
+        await this.#write(() => this.#prune(clock()));
+        await this.#sweep(until);
         return true;
       }
       // The log so far first: what a pass that ended mid-burst, and the wait for the next,
       // left unshipped never waits on another burst too.
       const first = await this.#ship(ns, key, at, log.state().last, until);
       if (first === null) {
-        await this.#abandon(ns, at, MANIFEST_CEILING);
+        await this.#abandon(at, MANIFEST_CEILING);
         return true;
       }
       if (!first) {
@@ -911,7 +985,7 @@ export class Backups {
       // And the log written while the burst's parts were put and recorded, before the next
       // burst, each segment under its own hold (cut at E once fixed).
       if (await this.#ship(ns, key, at, log.state().last, until, e) === null) {
-        await this.#abandon(ns, at, MANIFEST_CEILING);
+        await this.#abandon(at, MANIFEST_CEILING);
         return true;
       }
     }
@@ -961,11 +1035,11 @@ export class Backups {
       }
       lines.length = 0;
       if (parts.some((bytes) => bytes.byteLength > CHUNK_BYTES)) {
-        await this.#abandon(ns, at, MANIFEST_LINE);
+        await this.#abandon(at, MANIFEST_LINE);
         return "ended";
       }
       if (at.parts + at.segments + parts.length > MANIFEST_PARTS) {
-        await this.#abandon(ns, at, MANIFEST_CEILING);
+        await this.#abandon(at, MANIFEST_CEILING);
         return "ended";
       }
       const written: { sha256: string; size: number }[] = [];
