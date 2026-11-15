@@ -10,12 +10,14 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import { migrate } from "../../contract/src/migrate";
 import { INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import type { RestoreAnswer, RestoreHold } from "../../contract/src/owner";
 import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
 import { exported, NOT_EXPORTED } from "../src/export";
 import type { OwnerDO } from "../src/owner-do";
 import { loadOrder, RESTORING, SEEDED } from "../src/restore";
+import { MIGRATIONS } from "../src/schema";
 
 const LOAD = loadOrder();
 import { erasedWhole } from "./erasure-support";
@@ -23,7 +25,9 @@ import {
   BURST, digest, type Generated, generate, type Owner, owner, PAGE, standing,
 } from "./generation-support";
 import { MUSE, registerOn } from "./ledger-support";
-import { drainDue, failure, gateFor, laneAt, laneJobs, sqlIn, storesOn, TIERS } from "./support";
+import {
+  drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, sqlIn, storesOn, TIERS,
+} from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const W = "/workspace";
@@ -214,6 +218,8 @@ describe("a restore", () => {
     // Once done, the operator's admit is answered: the owner as the restore left it.
     expect(await stub.admissionSet(platform(o.name), { admit: true }))
       .toEqual({ state: "admitted", reasons: [] });
+    // The generation it read is this object's newest: none restorable is told from here on.
+    expect(await sqlIn(stub, "SELECT lost FROM owner_backup_state")).toEqual([{ lost: 0 }]);
     expect(await rowsOf(stub, FENCED)).toBe(rows);
     expect(await countersOf(stub)).toEqual(counters);
     expect(await stub.storageUsage(o.bind())).toEqual(usage);
@@ -398,6 +404,34 @@ describe("a restore", () => {
     await drainDue(o.stub);
     expect(await sqlIn(o.stub, "SELECT gen FROM owner_backups WHERE gen = ?", newest.gen))
       .toEqual([]);
+  });
+
+  it("maps each generation of migration 12 as changed from its start, but the newest of an " +
+     "owner with no change marked, none being written and no give-up told since", async () => {
+    for (const told of [0, 1]) {
+      const { stub } = await ownerObject();
+      const marks = await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+        const sql = state.storage.sql;
+        for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+            "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+            "AND name NOT GLOB 'cf_*'").toArray()) {
+          sql.exec(`DROP TABLE "${name}"`);
+        }
+        migrate(state.storage, MIGRATIONS.slice(0, 11));
+        for (const at of [100, 200]) {
+          sql.exec("INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
+                     "bytes, s, schema, started_at, finished_at, seq) VALUES (?, '20261101', " +
+                     "'done', 'ended', 0, '', 0, 1, 11, ?, ?, ?)", String(at).padStart(16, "0"),
+                   at, at, at);
+        }
+        sql.exec("UPDATE owner_backup_state SET changed = 0, told = ?", told);
+        migrate(state.storage, MIGRATIONS);
+        return sql.exec("SELECT changed_at FROM owner_backups ORDER BY seq").toArray()
+          .map((row) => row["changed_at"]);
+      });
+      // A give-up told since the newest finished was begun for a change the newest lacks.
+      expect(marks).toEqual([100, told === 1 ? 200 : null]);
+    }
   });
 
   it("keeps the owner's admission as it stood at E: a suspension holds", async () => {

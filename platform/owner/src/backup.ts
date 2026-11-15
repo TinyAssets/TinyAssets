@@ -565,6 +565,8 @@ export class Backups {
       [...root.parts, ...root.segments].reduce((sum, object) => sum + object.size, 0), root.s,
       this.#parts.schema, root.e, at, at, at,
       root.segments.reduce((sum, segment) => sum + segment.size, 0));
+    // A generation finished here: from now on, none restorable is told (`#tellUnrestorable`).
+    this.#sql.exec("UPDATE owner_backup_state SET lost = coalesce(lost, 0)");
   }
 
   /** Whether generation `gen` is finished (its root holds its lists). A read. */

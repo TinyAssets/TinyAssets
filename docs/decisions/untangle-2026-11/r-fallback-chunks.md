@@ -42,13 +42,13 @@
 7. **The loud state, with its own mark (review F1).**
    - `manifest_unrestorable` gates on `owner_backup_state.lost` (migration 12), apart from `told`, the give-ups' mark. Before, it shared `told`, so a give-up after the fallback finished silenced it for good.
    - `told` is back to resetting at every finish, as on main.
-   - `lost` is null until a generation first finishes. A finish within `LOG_BYTES` sets it to 0, and any other finish arms it at 0 if it was null.
+   - `lost` is null until a generation first finishes or is adopted by a restore (re-review: a restored owner's adopted generation would otherwise go unannounced). A finish within `LOG_BYTES` sets it to 0, and any other finish, or an adoption, arms it at 0 if it was null.
    - The check runs at the end of each pass (a finish is always within one), after any give-up, so a give-up's own notice comes first.
    - The log says it too, and `restore.source` names every generation not restorable.
    - No per-owner operator alarm exists, since no part of the platform reads every owner (`r5w.md` item 14).
    - **Corrects `r5r.md` item 2's "a generation a restore can load always stands":** one stands while one meets the rule above, and the owner is told when none does.
 8. **Migration 12** adds `owner_backups.changed_at`, `owner_backup_state.began_at` and `owner_backup_state.lost`, and drops `owner_backup_state.changed`.
-   - It maps existing rows conservatively: every generation counts as changed from its start, except the newest of an owner with no change marked and none being written.
+   - It maps existing rows conservatively: every generation counts as changed from its start, except the newest of an owner with no change marked, none being written and no give-up told since it finished. A give-up's begin had cleared the mark, so `told` is the only trace of review F3's stale newest (re-review). `restore.test.ts` "maps each generation of migration 12" holds it.
    - It is unpinned here. The pin follows the merge, as for migrations 10 and 11.
 9. **The proof, on the fake clock:**
    - `restore.test.ts`, "lets the fallback go a day before plain collection could reach a chunk it names, and tells the owner none can be restored". A give-up's `told = 1` is set first (the review's reproduction). The lane's next pass finds no change, and its job is then due at the fallback's end. A minute before the end, the fallback is restorable. At the end it is not, and a pin of it is refused. The lane then prunes it, and the owner gets the notice.
