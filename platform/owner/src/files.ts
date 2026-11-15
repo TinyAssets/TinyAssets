@@ -79,7 +79,7 @@
  * cross to `FILES` open their own, one for each step around a call, so no write waits on
  * the files Worker.
  */
-import { HEX32, HEX64, randomHex } from "../../contract/src/ids";
+import { AUTHORITY, HEX32, HEX64, randomHex } from "../../contract/src/ids";
 import type { SyncOp } from "../../contract/src/owner";
 
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
@@ -102,7 +102,7 @@ import {
   ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within,
   WORKSPACE,
 } from "../../contract/src/paths";
-import { codePoints, isPrintable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
+import { isPrintable, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
 import {
   AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
@@ -2124,14 +2124,10 @@ export class Files {
    */
   leaseAcquire(authority: unknown, holder: unknown, tokens: LeaseTokens,
                generation: number): Lease {
-    if (typeof authority !== "string"
-        || (authority !== OWNER && !/^[!-~]{64}$/.test(authority))) {
+    if (typeof authority !== "string" || !AUTHORITY.test(authority)) {
       throw new Refusal("invalid", "a lease's authority is the owner's or one outside client's");
     }
-    if (typeof holder !== "string" || !holder || codePoints(holder) > 128
-        || !isPrintable(holder)) {
-      throw new Refusal("invalid", "a lease holder is 1 to 128 printable characters");
-    }
+    printable(holder, 128, "a lease holder");
     const hashes = [tokens.egress, tokens.sync, tokens.runner];
     if (hashes.some((hash) => typeof hash !== "string" || !HEX64.test(hash))
         || new Set(hashes).size !== 3) {

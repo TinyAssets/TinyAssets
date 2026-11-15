@@ -28,7 +28,7 @@
  * call (`Binding.signins`), kept for the runs the object's own lane starts
  * (`platform_signins`). None kept, none is on.
  */
-import { HEX64, randomHex, SIGNIN_ID } from "../../contract/src/ids";
+import { AUTHORITY, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 
 import { bundledSources } from "../../sources/src/catalog";
 import {
@@ -351,10 +351,10 @@ export function switchedOn(storage: OwnerStorage, handed: unknown, now: number):
 
 /** The authority a sign-in is for: the owner's own sandbox, or one client's. */
 function signinAuthority(value: unknown): string {
-  if (value === undefined || value === OWNER) {
+  if (value === undefined) {
     return OWNER;
   }
-  if (typeof value !== "string" || !HEX64.test(value)) {
+  if (typeof value !== "string" || !AUTHORITY.test(value)) {
     throw new Refusal("invalid", "a sign-in's sandbox is the owner's own, or one client's id");
   }
   return value;

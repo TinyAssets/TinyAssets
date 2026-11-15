@@ -38,7 +38,7 @@ const W = "/workspace";
 const FILE = 6_000;
 const TOKENS = { egress: "a".repeat(64), sync: "b".repeat(64), runner: "c".repeat(64) };
 const OTHER = { egress: "d".repeat(64), sync: "e".repeat(64), runner: "f".repeat(64) };
-const CLIENT = "k".repeat(64);
+const CLIENT = "e".repeat(64);
 const open = async (r: Rig) =>
   (await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_intents"))[0]!["n"];
 

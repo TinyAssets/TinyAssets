@@ -69,7 +69,6 @@ import { checkBody } from "./collections";
 import { OWNER } from "./authority";
 import type { Call, Door, OwnerState } from "./owner-do";
 
-/** Whose the imported files and rows are: the owner's own. */
 /** The imported rows' history op, and the notice's type. */
 const IMPORT_OP = "import";
 export const IMPORT_NOTICE = "imported";

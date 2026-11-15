@@ -94,7 +94,6 @@ export interface Shares {
   readonly owner_reserve: number;
 }
 
-
 /** Python's `str.isidentifier()`. */
 const IDENTIFIER = /^[\p{XID_Start}_]\p{XID_Continue}*$/u;
 const LONE_SURROGATE = /\p{Cs}/u;
