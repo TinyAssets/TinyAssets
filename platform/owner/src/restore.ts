@@ -109,10 +109,10 @@ import { MIGRATIONS } from "./schema";
 
 /**
  * What a restore reaches in the bucket (`FILES`): a generation's manifest reads, and its
- * sweep's list and delete of the chunks no row names.
+ * sweep's list of the chunks; it deletes those no row names through `Files.sweep`.
  */
 type Bucket = Pick<ChunkStore, "getManifestRoot" | "getManifestPart" | "getManifestSegment"
-  | "listChunks" | "deleteListed">;
+  | "listChunks">;
 
 const FORMAT = "tinyassets-export";
 const VERSION = 3;
@@ -752,7 +752,7 @@ async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
         return true;
       }
       if (unnamed.length > 0) {
-        await source.deleteListed(held.ns, unnamed);
+        await o.files.sweep(held.ns, unnamed);
       }
       await o.door(() => {
         if (still()) {
@@ -766,6 +766,9 @@ async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
       return true;
     }
     case "clear": {
+      // A sweep's delete another call of this instance still has in flight lands first, so
+      // none lands after `done` (`Files.sweep`).
+      await o.files.settled();
       const cleared = await o.door(() => {
         if (!still() || sql.exec("DELETE FROM restore_rows WHERE (tbl, k) IN (SELECT tbl, k " +
                                    "FROM restore_rows LIMIT ?)", SLICE_ROWS).rowsWritten

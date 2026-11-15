@@ -14,6 +14,7 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { migrate } from "../../contract/src/migrate";
 import { sha256Hex } from "../../contract/src/digest";
 import { GET_READS } from "../../contract/src/files";
+import { HELD_WAIT_MS } from "../../ci/fixtures";
 import { DELETE_BATCH, INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import type { RestoreAnswer, RestoreHold } from "../../contract/src/owner";
 import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
@@ -1072,6 +1073,39 @@ describe("a restore's sweep of the chunks no row names", () => {
     const named = (await sqlIn(again, "SELECT DISTINCT sha256 FROM file_content_chunks"))
       .map((row) => row["sha256"] as string);
     expect(new Set(await bucketed(again, named))).toEqual(new Set(["stored"]));
+  });
+
+  it("holds clear while a second call's sweep delete is in flight, so none lands after done",
+     async () => {
+    const { o, gen, ns } = await source();
+    const stub = await lose(o);
+    const orphans = Array.from({ length: 3 }, (_, n) => sha256Hex(`orphan ${n}`));
+    await Promise.all(orphans.map((name) => env.BLOBS.put(`o/${ns}/c/${name}`, "x")));
+    const files = gateFor(env.FILES_GATE, ns);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    // One call held at its sweep page's delete; a second on the same page goes on to clear.
+    const { cut } = await heldAt(stub, o.name, files, "listChunks");
+    await files.arm("deleteListed", { hold: "before" });
+    await files.release("listChunks");
+    await files.held("deleteListed");
+    const second = stub.restoreStep(platform(o.name));
+    // The record shows the second call past its sweep (read until it moves, a liveness bound
+    // only), and the gate still holds the first call's delete: both events.
+    const step = async () => (await sqlIn(stub, "SELECT step FROM owner_restore"))[0]!["step"];
+    for (let waited = 0; waited < HELD_WAIT_MS && await step() === "sweep"; waited += 5) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(await step()).toBe("clear");
+    expect(await files.held("deleteListed")).toHaveLength(1);
+    // After the gate's own answer, every other pending task has run: the second call is
+    // still pending, as its race against an already-resolved marker shows.
+    const PENDING = Symbol("pending");
+    expect(await Promise.race([second, Promise.resolve(PENDING)])).toBe(PENDING);
+    await files.release("deleteListed");
+    expect(await second).toMatchObject({ step: "done" });
+    await cut;
+    const left = (await env.BLOBS.list({ prefix: `o/${ns}/c/` })).objects.map((each) => each.key);
+    expect(orphans.filter((name) => left.includes(`o/${ns}/c/${name}`))).toEqual([]);
   });
 
   it("maps a record of migration 13 unchanged through migration 14", async () => {

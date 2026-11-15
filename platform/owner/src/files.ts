@@ -583,8 +583,11 @@ export class Files {
   readonly #protectsSince: () => number | null;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
-  /** The `FILES` puts in flight on this instance, which the erasure waits for. */
-  readonly #puts = new Set<Promise<unknown>>();
+  /**
+   * The `FILES` writes in flight on this instance (its puts, and a restore sweep's deletes),
+   * which the erasure and a restore's `clear` wait for (`settled`).
+   */
+  readonly #writes = new Set<Promise<unknown>>();
   /**
    * Told of each workspace path a change makes or takes away, in that change's own unit:
    * what follows a path (an agent's ledger identity its `agent.json`). A refusal refuses
@@ -1021,6 +1024,25 @@ export class Files {
     return out;
   }
 
+  /**
+   * A restore's sweep's delete of the chunks `names` names (`FILES.deleteListed`), held in
+   * flight until it ends (`#sent`), so the restore's `clear` waits for it: a delete another
+   * call of this instance issued never lands after `done` (`restore.ts`).
+   */
+  sweep(ns: string, names: string[]): Promise<{ deleted: number }> {
+    return this.#sent(this.#store.deleteListed(ns, names));
+  }
+
+  /** `write`, a `FILES` write, held among this instance's in flight until it ends. */
+  async #sent<T>(write: Promise<T>): Promise<T> {
+    this.#writes.add(write);
+    try {
+      return await write;
+    } finally {
+      this.#writes.delete(write);
+    }
+  }
+
   /** `read`'s answers to `items` in order, `GET_READS` items a call under the owner's key. */
   async #reads<I, O>(items: readonly I[],
                      read: (ns: string, key: string, batch: I[]) => Promise<O[]>): Promise<O[]> {
@@ -1412,14 +1434,8 @@ export class Files {
       return this.ns();
     });
     const { key } = await this.space();
-    const put = this.#store.putChunks(ns, key,
-                                      chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
-    this.#puts.add(put);
-    try {
-      await put;
-    } finally {
-      this.#puts.delete(put);
-    }
+    await this.#sent(this.#store.putChunks(ns, key,
+                                           chunks.map(({ sha256, bytes }) => ({ sha256, bytes }))));
     await this.#write(() => this.#recordStored(new Set(chunks.map(({ sha256 }) => sha256)),
                                                intentId));
   }
@@ -2646,10 +2662,10 @@ export class Files {
     return this.#space().ns;
   }
 
-  /** Once every `FILES` put this instance has in flight has landed or failed. */
+  /** Once every `FILES` write this instance has in flight has landed or failed. */
   async settled(): Promise<void> {
-    while (this.#puts.size > 0) {
-      await Promise.allSettled([...this.#puts]);
+    while (this.#writes.size > 0) {
+      await Promise.allSettled([...this.#writes]);
     }
   }
 
