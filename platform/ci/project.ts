@@ -6,7 +6,7 @@
  * files after the class check, a global setup) is `extra`. Each refuses an install that is not
  * the lockfile's first (`deps.ts`).
  */
-import type { TestProjectInlineConfiguration } from "vitest/config";
+import type { TestProjectInlineConfiguration, ViteUserConfig } from "vitest/config";
 
 import { CLASS_CHECK, LARGE, medium, type ProjectName, PROJECTS } from "./classes.ts";
 import { installed } from "./deps.ts";
@@ -35,4 +35,24 @@ export function project(workspace: string, name: ProjectName, extra: Extra = {})
       setupFiles: [CLASS_CHECK, ...setup.filter((file) => file !== CLASS_CHECK)],
     },
   };
+}
+
+/**
+ * A workspace's recorders' folder (`npm run record`, `record.ts`): its `*.record.ts`, which no
+ * project's `include` names, and the config that runs them, `record.config.ts`.
+ */
+export const RECORDS = "test/record";
+
+/**
+ * The config that runs a workspace's recorders: its own config's workerd project, its pool,
+ * class and setup files as they are, running its recorders (`RECORDS`) instead of its tests.
+ */
+export function recording(config: ViteUserConfig): ViteUserConfig {
+  const workerd = config.test?.projects?.find((each): each is Inline =>
+    typeof each === "object" && "test" in each && each.test?.name === "workerd");
+  if (workerd === undefined) {
+    throw new Error("a workspace's recorders run on its workerd project, and it has none");
+  }
+  const include = [`${RECORDS}/*.record.ts`];
+  return { test: { projects: [{ ...workerd, test: { ...workerd.test, include } }] } };
 }
