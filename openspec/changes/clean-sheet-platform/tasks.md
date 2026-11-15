@@ -303,9 +303,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
     depth (Fact 15; the coordinator, 2026-11-12, below).
-  - B2: `owner/src/wakes.ts`'s lost ring answer surfaces: the wake still settles `unknown` (a
-    byte may have left), with `answer_lost` on its row and the cause in the log (Fact 8; d3 §I;
-    `docs/decisions/untangle-2026-11/wakes-lost.md`).
   - Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`, with
     G-H11 and G-SP5 (d3 §O5).
 - [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
@@ -322,22 +319,23 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`), no sooner than the
   off-account copy's versions under it expire (`r7-sweep.md` item 10; the driver,
   `untangle/r7-rotation`).
-  - [ ] `restore.wipe`, a live owner brought to pending and empty for a restore, the
+  - [x] `restore.wipe`, a live owner brought to pending and empty for a restore, the
     generation to restore pinned first, since a fresh generation's finish prunes every older
-    unpinned one (`r5r.md` item 14). Restore (#5587) and owner migration 10's pin (#5589) landed.
-  - [ ] Owner migration 11's pin PR, after `restore.wipe` merges (`r5w.md` item 9).
-  - [ ] The sweep's rotation counts a restore record's `gen` and `fresh` (a wiped or failed
+    unpinned one (`r5r.md` item 14). Restore (#5587) and owner migration 10's pin (#5589) landed;
+    the wipe landed as #5607.
+  - [x] Owner migration 11's pin PR, after `restore.wipe` merges (`r5w.md` item 9): #5608.
+  - [x] The sweep's rotation counts a restore record's `gen` and `fresh` (a wiped or failed
     restore's object knows neither), or does not finish while any owner is held
-    (`r5w.md` item 14, `untangle/r7-sweep`).
-  - [ ] Owner migration 13's pin PR, after the generations' sweep merges (`r7-sweep.md` item 5,
-    `untangle/r7-sweep-pin13`).
+    (`r5w.md` item 14): #5616, the rewrap refused during a hold.
+  - [x] Owner migration 13's pin, after the generations' sweep merges (`r7-sweep.md` item 5):
+    with `owner.state` (`owner-state-op.md`).
   - [ ] A restore's unnamed chunks swept: those the owner put after E have no row in the
     restored object, so nothing collects them; the files plane maps a listed chunk's name back
     to the object's hashes (`r7-sweep.md` item 10, `untangle/r-restore-chunks`).
-  - [ ] A restore's kept generations' chunks kept from early collection: the files plane
+  - [x] A restore's kept generations' chunks kept from early collection: the files plane
     collects early only garbage the newest generation does not name, so the fallback a
     restore loads can lose a chunk and its restore fails at its chunks step (`r5w.md`
-    item 11).
+    item 11): #5611.
   - [ ] A generation's restorability by what a restore stages: `log_bytes` counts every image
     the log appended, but a restore stages only the last per key, so an owner rewriting hot
     rows (`model_spend`, `runs`, `collection_clock`) during a base pass is refused a
@@ -346,12 +344,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
     `facet-probe.md` Q8 never sampled it).
-  - [ ] `owner.erase`, the email route's erasure (the site's `/account`, the Play Data safety
+  - [x] `owner.erase`, the email route's erasure (the site's `/account`, the Play Data safety
     answers): mode `erase` asks it only with `--confirm erase-<owner>`, and the doors begin the
     owner's own erasure for an owner the directory signed up (`owner-erase-op.md`).
   - [ ] Live: `owner.erase`'s first real use, the founder's call for each request; the stage's
     end uses the owner's own door (d3 §H).
-  - [ ] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
+  - [x] `owner.state`, mode `owner`'s before and after: a `reserved` owner door `ownerState`
     (admission, reasons, tier, storage used) and its op in `OPERATOR_OPS`, unblocked since
     T1c merged (`r3.md` item 9).
   - [ ] The off-account copy's first live nights, after the founder's Backblaze steps
@@ -405,7 +403,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
 - [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
-  `owner.state` owed under lane R.
+  and `owner.state` (`owner-state-op.md`).
 - [ ] The manifest's dry run green (d3 §A10).
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).

@@ -38,7 +38,7 @@
  *   the doors; written only when `parseControl` takes it, the record it replaces kept first
  *   and the write read back.
  * - `owner` (the operator path): `--act`'s op asked of the doors for `--owner` through the
- *   operator channel, and their answer said.
+ *   operator channel, and their answer said, with the owner's state before and after.
  * - `restore` (the operator path): `--owner`'s restore from `--generation` through the
  *   operator channel: a live owner pinned, held and its present state written, its object
  *   wiped only with `--confirm` the words that names; then begun, stepped until done and the
@@ -1419,17 +1419,22 @@ async function asked(run: Run, got: Pick<Values, "cloudflare" | "account">, op: 
 
 /**
  * Mode `owner`: `--act`'s op asked of the doors for `--owner` through the operator channel,
- * and their answer said; a refusal stops the run, named. The plan job only plans it.
+ * and their answer said, between the owner's state (`owner.state`) before and after it; a
+ * refusal stops the run, named. The plan job only plans it: it holds no `OPERATOR_KEYRING`.
  */
 const ownerAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   const { op, args } = run.act!;
   const owner = run.owner!;
-  say(`ask the doors ${op} ${argsText(args)} for ${owner}, through the operator channel`);
+  say(`ask the doors ${op} ${argsText(args)} for ${owner}, through the operator channel, ` +
+      "between its state (owner.state) before and after");
   if (!run.apply) {
     return;
   }
+  const state = async () => JSON.stringify(await asked(run, got, "owner.state", owner, {}));
+  say(`${owner} before ${op}: ${await state()}`);
   say(`the doors answered ${op} for ${owner}: ${
     JSON.stringify(await asked(run, got, op, owner, args))}`);
+  say(`${owner} after ${op}: ${await state()}`);
 });
 
 /**

@@ -39,10 +39,12 @@ import type { DoorClass as TableClass } from "../../contract/src/doors";
 import { wiped } from "./erasure";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
-import { refuseRestoring } from "./restore";
+import { holdingStep, refuseRestoring } from "./restore";
 import { ADMISSION_TABLE } from "./schema";
 import type { TierName } from "../../contract/src/control";
-import { type AdmissionRequest, SUSPENSIONS } from "../../contract/src/owner";
+import {
+  type AdmissionRequest, type OwnerStateAnswer, SUSPENSIONS,
+} from "../../contract/src/owner";
 import { tierName } from "./tier";
 import type {
   Door, OwnerState,
@@ -54,8 +56,8 @@ export const OWNER_SUSPENDED = "owner_suspended: the owner's account is suspende
 export const OWNER_ERASED = "owner_erased: the owner's account was erased";
 export const OWNER_UNADMITTED = "owner_unadmitted: the platform has not admitted this owner";
 const NEVER_ADMITTED = "an owner the platform never admitted is not suspended";
-export const PLATFORM_ONLY = "only the platform sets an owner's admission";
-export const PLATFORM_RESERVED = "the platform caller reaches no owner door but admission";
+export const PLATFORM_ONLY = "only the platform calls an owner's reserved doors";
+export const PLATFORM_RESERVED = "the platform caller reaches no owner door but the reserved ones";
 /** The import doors' refusals (`import.ts`): their caller, their binding, the owner's state. */
 export const IMPORT_PLATFORM_ONLY =
   "only the platform imports, with an import binding";
@@ -235,5 +237,18 @@ export const admissionDoors = Object.freeze({
       o.relay.closeAll("suspended");  // reads refused: an abuse suspension
     }
     return set;
+  },
+  /**
+   * The owner's state, for the platform's operator (`owner.state`): its admission, tier and
+   * restore hold, and two counts. A read in one unit, so it changes nothing; an owner being
+   * erased, or erased, is refused it by the binding check, as at every door.
+   */
+  async ownerState(o: OwnerState, door: Door<undefined>): Promise<OwnerStateAnswer> {
+    return o.door(() => {
+      door.check();
+      const { state, reasons } = o.admission();
+      return { state, reasons, tier: o.tier(), restore: holdingStep(o.storage),
+               runs: o.runs.live(), stored_bytes: o.files.storedNow().stored };
+    });
   },
 });

@@ -12,8 +12,9 @@
  *   stepped until done, then the owner admitted, each op through the operator channel.
  * - **`erase`** asks the doors `owner.erase` for an owner, only with the words that confirm it
  *   (`eraseWords`), which `--act` never carries.
- * - **`owner`** asks the doors one op of `OPERATOR_OPS` (`--act`, `ownerAct`) through the
- *   operator channel (`contract/src/operator-message.ts`): a message MAC'd under
+ * - **`owner`** asks the doors one op of `OPERATOR_OPS` (`--act`, `ownerAct`), with
+ *   `owner.state` before and after it, through the operator channel
+ *   (`contract/src/operator-message.ts`): each a message MAC'd under
  *   `OPERATOR_KEYRING`'s active kid and put on the operator queue (`QUEUES.OPERATOR`) over the
  *   Queues API, then its answer read from the operator bucket (`OPERATOR_NAMES`) every
  *   `POLL_MS`, for at most `WAIT_MS`. An answer is held to the message it names; none in time
