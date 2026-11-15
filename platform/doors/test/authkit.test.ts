@@ -11,7 +11,7 @@
  * half-configured Worker, and the identity's deletion. An `auth_time` past the 600 s window
  * is the callback's to refuse (`oauth.test.ts`, "older than ten minutes").
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { now } from "../src/config";
 import { base64url } from "../../contract/src/envelope";
@@ -36,8 +36,16 @@ const CONFIG: UpstreamConfig = upstreamConfig(JSON.stringify({
   authorize_params: { provider: "authkit" },
 }));
 const SECRET = "sk_test_secret";
-/** The fetch of an upstream whose test reaches no issuer. */
-const UNREACHED = (() => Promise.reject(new Error("no issuer is reached"))) as typeof fetch;
+
+/** The live upstream, its issuer answering as `answering` does (the Worker's `fetch`, spied). */
+function reaching(answering: typeof fetch): ReturnType<typeof oidcUpstream> {
+  vi.spyOn(globalThis, "fetch").mockImplementation(answering);
+  return oidcUpstream(ISSUER, CONFIG, SECRET);
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function text(value: unknown): string {
   return base64url(new TextEncoder().encode(JSON.stringify(value)));
@@ -191,7 +199,7 @@ describe("the access token", () => {
 describe("the live upstream", () => {
   it("asks for a fresh sign-in (max_age=0) with exactly our challenge, state and callback",
      () => {
-    const upstream = oidcUpstream(ISSUER, CONFIG, SECRET, UNREACHED);
+    const upstream = oidcUpstream(ISSUER, CONFIG, SECRET);
     const sent = new URL(upstream.authorizeUrl({ state: "s1", code_challenge: "c1",
                                                  redirect_uri: UPSTREAM_CALLBACK }));
     expect(`${sent.origin}${sent.pathname}`).toBe(CONFIG.authorization_endpoint);
@@ -216,7 +224,7 @@ describe("the live upstream", () => {
       }
       return new Response("no", { status: 404 });
     }) as typeof fetch;
-    const upstream = oidcUpstream(ISSUER, CONFIG, SECRET, fetcher);
+    const upstream = reaching(fetcher);
     const signed = await upstream.finish({ code: "code-1", code_verifier: "verifier-1",
                                            redirect_uri: UPSTREAM_CALLBACK });
     expect(signed).toEqual({ issuer: ISSUER, subject: "user_01ALICE",
@@ -236,10 +244,10 @@ describe("the live upstream", () => {
     const answering = (status: number) => (async (input: RequestInfo | URL) =>
       String(input) === CONFIG.jwks_uri ? Response.json(jwks)
         : Response.json(answer, { status })) as typeof fetch;
-    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(400)).finish({
+    await expect(reaching(answering(400)).finish({
       code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
       .rejects.toThrow(/400/);
-    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(200)).finish({
+    await expect(reaching(answering(200)).finish({
       code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
       .rejects.toThrow(/user\.id/);
   });
@@ -251,7 +259,7 @@ describe("the live upstream", () => {
         seen.push(String(input));
         return new Response(null, { status, headers: { Location: "https://evil.test/t" } });
       }) as typeof fetch;
-      await expect(oidcUpstream(ISSUER, CONFIG, SECRET, redirecting).finish({
+      await expect(reaching(redirecting).finish({
         code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
         .rejects.toThrow(new RegExp(`answered ${status}$`));
     }
@@ -261,7 +269,7 @@ describe("the live upstream", () => {
   it("refuses an answer past its bound, read no further", async () => {
     const answering = (async () => new Response(`{"access_token":"${"a".repeat(1 << 20)}"}`)) as
       unknown as typeof fetch;
-    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering).finish({
+    await expect(reaching(answering).finish({
       code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
       .rejects.toThrow(/^the upstream's token answer is too large$/);
   });
@@ -269,7 +277,7 @@ describe("the live upstream", () => {
   it("names a refused exchange's error code, and nothing else of its answer", async () => {
     const refusing = (body: unknown) => (async () =>
       Response.json(body, { status: 400 })) as unknown as typeof fetch;
-    const finish = (body: unknown) => oidcUpstream(ISSUER, CONFIG, SECRET, refusing(body))
+    const finish = (body: unknown) => reaching(refusing(body))
       .finish({ code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK });
     await expect(finish({ error: "invalid_client", error_description: `bad ${SECRET}` }))
       .rejects.toThrow(/^the upstream's token endpoint answered 400 \(invalid_client\)$/);
@@ -285,9 +293,9 @@ describe("the live upstream", () => {
       seen.push(new Request(input, init));
       return new Response(null, { status });
     }) as typeof fetch;
-    await oidcUpstream(ISSUER, CONFIG, SECRET, answering(202)).forget("user_01ALICE");
-    await oidcUpstream(ISSUER, CONFIG, SECRET, answering(404)).forget("user_01ALICE");
-    await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(500)).forget("user_01ALICE"))
+    await reaching(answering(202)).forget("user_01ALICE");
+    await reaching(answering(404)).forget("user_01ALICE");
+    await expect(reaching(answering(500)).forget("user_01ALICE"))
       .rejects.toThrow(/500/);
     expect(seen[0]!.method).toBe("DELETE");
     expect(seen[0]!.url).toBe("https://api.workos.com/user_management/users/user_01ALICE");
@@ -295,7 +303,7 @@ describe("the live upstream", () => {
   });
 
   it("is never built without its secret", () => {
-    expect(() => oidcUpstream(ISSUER, CONFIG, "", UNREACHED)).toThrow(/WORKOS_API_KEY/);
+    expect(() => oidcUpstream(ISSUER, CONFIG, "")).toThrow(/WORKOS_API_KEY/);
   });
 });
 

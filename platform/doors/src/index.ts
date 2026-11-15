@@ -35,7 +35,7 @@ export function upstreamOf(env: DoorsEnv): Upstream {
   if (issuer || record) {
     throw new Error("OWNER_ISSUER and UPSTREAM are configured together, or neither is");
   }
-  return oidcUpstream(env.OWNER_ISSUER, upstreamConfig(env.UPSTREAM), env.WORKOS_API_KEY, fetch);
+  return oidcUpstream(env.OWNER_ISSUER, upstreamConfig(env.UPSTREAM), env.WORKOS_API_KEY);
 }
 
 export default Object.freeze({
