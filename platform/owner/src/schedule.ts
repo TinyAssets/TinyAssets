@@ -16,12 +16,15 @@
  *   set is a billed row written. Every door that changes a lane's rows calls it, and the
  *   object calls it on wake, so a deploy re-derives the jobs from the rows as stored. A
  *   job held later than its work (the lane's own backoff, or the memory-limit breaker's)
- *   is kept unless the rows now have work earlier than the job was set for.
+ *   is kept unless the rows now have work earlier than the job was set for. A job already
+ *   due is left alone too, since its pass may be running: Lifecycle keeps a job's
+ *   single-flight mark in its row, and a push or a cancel of that row clears it (agents
+ *   `job-queue.ts`, `push`), so an overlapping alarm would run the lane a second time
+ *   beside its pass.
  * - A run is one bounded pass (each lane takes a batch). It ends by setting its own job
  *   from the rows as they then stand, so more due work wakes the object again at once,
- *   and a door that changed the rows while it ran is never lost to a stale result: a
- *   same-id push made while the job dispatches supersedes the drive result (agents
- *   `job-queue.ts`, `applyOutcome`).
+ *   and a door that changed the rows while it ran is never lost: the run's own set reads
+ *   them, and supersedes the drive result (agents `job-queue.ts`, `applyOutcome`).
  * - A pass contains every outside call's failure in its own rows: a failing row is backed
  *   off in its row (a wake's or work row's due time, a chunk's retry time), so it neither
  *   loops the alarm nor rethrows. Lifecycle reads a rethrown transport error ("network
@@ -166,8 +169,8 @@ export class Schedule extends LifecycleCapability {
 
   /**
    * Set lane `name`'s job from its rows: due at its next work, or cancelled. `hold` is a
-   * run's own word: `undefined` for a door, which keeps a job in place or held later
-   * (unless the rows now have earlier work); null for a pass that ended, which always
+   * run's own word: `undefined` for a door, which keeps a job already due, in place, or held
+   * later (unless the rows now have earlier work); null for a pass that ended, which always
    * writes (its drive result would otherwise complete and delete the job) and clears any
    * hold; a time for a pass that failed or was held ({@link Held}), held until then. The
    * rows are read and the job row written in one unit of the write gate; Lifecycle
@@ -178,6 +181,9 @@ export class Schedule extends LifecycleCapability {
     const id = laneJob(name);
     const [rearmed] = await this.#write((): [Promise<unknown>] | [] => {
       const job = jobs.get(id);
+      if (hold === undefined && job !== undefined && job.time <= Date.now()) {
+        return [];  // due by Lifecycle's clock, so maybe running: its run sets it at its end
+      }
       const next = this.#lanes.get(name)!.next(this.#clock());
       if (next === null) {
         return job === undefined ? [] : [jobs.cancel(id)];
