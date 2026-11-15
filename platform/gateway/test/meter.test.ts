@@ -7,13 +7,11 @@ import { describe, expect, it } from "vitest";
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import {
-  apiRules, fallbackList, freeCall, manyChoices, paidTool, ruledApis, servedPriced, tierMultiplier,
-  unpricedOption,
+  apiRules, fallbackList, freeCall, manyChoices, paidTool, servedPriced, supportedApis,
+  tierMultiplier, unpricedOption,
 } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
-import {
-  egressTarget, meteredCall, meteredModel, SUPPORTED_APIS,
-} from "../../contract/src/egress-scope";
+import { egressTarget, meteredCall, meteredModel } from "../../contract/src/egress-scope";
 import {
   clamped, describes, learnMeter, meteredRecord, meteredUsage, Meters, sentHeaders, snapshotOf,
 } from "../src/meter";
@@ -88,11 +86,9 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
       says: "Token counting is free to use but subject to requests per minute rate limits" }]);
   });
 
-  it("cites a page and the day it was read for every free call, and lists only sealed ones", () => {
-    expect(ruledApis()).toContain("anthropic-messages");
-    // A credential is sealed only for an API a call on it can be metered on (untangle v:S5).
-    expect([...SUPPORTED_APIS].sort()).toEqual([...ruledApis()].sort());
-    for (const api of ruledApis()) {
+  it("cites a page and the day it was read for every free call", () => {
+    expect(supportedApis()).toContain("anthropic-messages");
+    for (const api of supportedApis()) {
       for (const call of apiRules(api)!.free) {
         expect(call.cite, api).toMatch(/^https:\/\/[^/]+\//);
         expect(call.read, api).toMatch(/^20\d\d-\d\d-\d\d$/);

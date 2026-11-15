@@ -42,11 +42,15 @@ The sealed plaintext SHALL carry the secret together with its source data: the p
 - **THEN** it is refused as `invalid_source`, so what is sealed is what every later parse reads
 
 ### Requirement: Only APIs whose every request goes through fetch run
-The gateway SHALL run only the pi-ai APIs whose every request goes through `fetch` and on which a sandbox call can be metered (each has its API's rules, so egress, the one model path, can use it), and SHALL refuse any other (Bedrock, the legacy Codex backend, an API with no rules) when it is sealed and when it is called.
+The gateway SHALL run only the pi-ai APIs whose every request goes through `fetch` and on which a sandbox call can be metered, each a row of one contract table (`api-rules.ts`) with its rules, how its adapter fetches and whether a declared endpoint may speak it, and SHALL refuse any other API, and a declared endpoint on an API its row does not allow, when it is sealed and when it is opened.
 
 #### Scenario: A source on Bedrock or the legacy Codex backend
 - **WHEN** a source names `bedrock-converse-stream` or `openai-codex-responses`
-- **THEN** sealing it is refused as `invalid_source`, and the catalog refuses it as `unsupported_source`
+- **THEN** sealing it is refused as `invalid_source`, and opening a credential sealed on it is refused as `credential_refused`
+
+#### Scenario: A declared endpoint on an API with no declared adapter
+- **WHEN** a custom source declares its models on `mistral-conversations`
+- **THEN** sealing it is refused as `invalid_source`, though a built-in Mistral source seals
 
 ### Requirement: An adapter's requests go through the scope's guard
 Each run of a pi-ai adapter the gateway makes (the meter's learning runs, `meter.ts`) SHALL run inside its own `AsyncLocalStorage` scope in which the global `fetch` is that run's own fetch, so an adapter that refuses `options.fetch` (pi-ai's Google adapters) reaches only it. Outside any scope the global `fetch` SHALL be the runtime's own. The gateway serves no model call of its own: sandbox egress is forwarded raw (`forward.ts`), never following a redirect.

@@ -122,6 +122,22 @@ describe("source", () => {
     expect(source(custom, false).upstream.models).toHaveLength(1);
   });
 
+  it("seals a declared endpoint only on an API the gateway holds a declared adapter for", () => {
+    const on = (api: string) => {
+      const record = declared({ id: "local-1", name: "Local", reasoning: false, input: ["text"],
+                                contextWindow: 32000, maxTokens: 4096,
+                                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+      return { ...record, upstream: { ...record.upstream, api } };
+    };
+    for (const api of ["anthropic-messages", "google-generative-ai", "openai-completions",
+                       "openai-responses"]) {
+      expect(source(on(api), false).upstream.api).toBe(api);
+    }
+    // Mistral's API has rules, so a built-in Mistral source seals, but no declared adapter:
+    // a declared endpoint on it would seal and then never serve.
+    expect(() => source(on("mistral-conversations"), false)).toThrow("invalid_source");
+  });
+
   /** A declared endpoint whose one model is `model`. */
   function declared(model: Record<string, unknown>) {
     return {
@@ -209,6 +225,14 @@ describe("credential", () => {
     for (const broken of [{ ...good, kind: "oauth2" }, { ...good, secret: "a b" },
                           { ...good, oauth: {} }, { ...good, sealed_at: -1 }, null, []]) {
       expect(() => credential(broken)).toThrow("credential_refused");
+    }
+  });
+
+  it("refuses at open a plaintext sealed on an API the gateway no longer runs", () => {
+    const good = apiKey("sk", ANTHROPIC);
+    for (const api of ["bedrock-converse-stream", "openai-codex-responses"]) {
+      expect(() => credential({ ...good, upstream: { ...good.upstream, api } }))
+        .toThrow("credential_refused");
     }
   });
 });
