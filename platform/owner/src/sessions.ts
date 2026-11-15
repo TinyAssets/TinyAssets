@@ -44,7 +44,7 @@ import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
 import {
-  type Call, type Door, type DoorUnits, type LiveSession, type OwnerSelf, proven,
+  type Call, type Door, type DoorUnits, type OwnerSelf, proven,
 } from "./door";
 import type { Relay } from "./relay";
 import { clock } from "./clock";
@@ -114,10 +114,10 @@ export class Sessions {
   }
 
   /**
-   * The live session `proof` opens, by its hash (the receipts' session id), or refused: the
-   * one maker of a `LiveSession`, which every widening in the owner's session takes.
+   * The live session `proof` opens, by its hash (the receipts' session id), or refused: a
+   * check, of whose hash the runner's session step alone makes a `LiveSession` (`#within`).
    */
-  live(proof: unknown, now: number): LiveSession {
+  live(proof: unknown, now: number): string {
     const cookie = proofOf(proof);
     const row = cookie === null ? undefined : this.#sql.exec<{ session_hash: string }>(
       "SELECT session_hash FROM owner_sessions WHERE session_hash = ? AND expires_at > ?",
@@ -126,7 +126,7 @@ export class Sessions {
     if (row === undefined) {
       throw new Refusal("refused", SESSION_REQUIRED);
     }
-    return Object.freeze({ proved: "session", hash: row.session_hash }) as LiveSession;
+    return row.session_hash;
   }
 
   /** The owner slides its live session while its own browser keeps renewing. */
@@ -134,7 +134,7 @@ export class Sessions {
     proven(owner, "owner");
     const expiresAt = now + SESSION_TTL_S;
     return this.#storage.transactionSync(() => {
-      const { hash } = this.live(proof, now);
+      const hash = this.live(proof, now);
       this.#sql.exec("UPDATE owner_sessions SET expires_at = ? WHERE session_hash = ?",
                      expiresAt, hash);
       return { expires_at: expiresAt };
@@ -174,8 +174,7 @@ export class Sessions {
  * the app sockets signing every session out closes.
  */
 export interface SessionsDoorNeeds extends Pick<DoorUnits, "synced"> {
-  /** Never `live`: only the runner's session step makes a live session's proof. */
-  readonly sessions: Pick<Sessions, "open" | "extend" | "id" | "close" | "closeAll">;
+  readonly sessions: Sessions;
   readonly connections: { cancelFlows(session: string | null): void };
   readonly relay: Pick<Relay, "closeAll">;
 }

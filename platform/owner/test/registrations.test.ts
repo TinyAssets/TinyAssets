@@ -13,7 +13,7 @@ import type { OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { CARD_LIMITS, CARD_TTL_S, Registrations } from "../src/registrations";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
-import { failure, inSession } from "./support";
+import { atClock, failure } from "./support";
 
 const REQUEST = Object.freeze({ command_center_id: "alpha", display_name: "Muse",
                                 delivery_method: "mcp_event", recipe_id: null });
@@ -73,16 +73,17 @@ describe("an MCP client's agent registration", () => {
       expect(refused.message).toBe(reason);
     }
     expect((await r.stub.outsideAgents(r.bind(null))).agents).toEqual([]);
-    // Past its life, a card is neither shown nor applied.
-    expect(await inSession(r.stub, r.cookie, ({ registrations: registry }, session) => {
-      const later = clock() + CARD_TTL_S + 1;
-      try {
-        registry.take(session, filed.card_id, filed.digest, later);
-        return "applied";
-      } catch (error) {
-        return [(error as Error).message, registry.card(filed.card_id, later)];
-      }
-    })).toEqual(["registration is not the pending card shown", null]);
+    // Past its life, a card is neither shown nor applied, in a session of that time.
+    const later = clock() + CARD_TTL_S + 1;
+    expect(await atClock(later, async () => [
+      (await failure(async () => r.stub.registerAgent({
+        ...r.bind(null), session: (await r.stub.sessionOpen(r.bind(null, {
+          authenticated_at: Math.floor(later) }))).session }, {
+        card_id: filed.card_id, digest: filed.digest }))).message,
+      (await failure(() => r.stub.registerProposal(r.bind(null), { card_id: filed.card_id })))
+        .message,
+    ])).toEqual(["registration is not the pending card shown",
+                 "no pending registration for this card"]);
   });
 
   it("is filed only by an MCP client, shown only to the owner, and never changes",

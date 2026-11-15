@@ -13,13 +13,14 @@
  * `ImportLine`): `tsc` refuses a call that holds none, and the widening refuses one at run time
  * (`proven`). A row's call carries the proof of its caller alone (`Call<R, K>`, by the row's
  * `caller`), so only the doors whose caller proved it can make the widening it allows. Each
- * proof is made only by its maker: the live session by `Sessions.live`, the others by the
- * runner once its row's caller held (the policy-boundary guard refuses a cast to one anywhere
- * else). No state flows through this module.
+ * proof is minted by the runner alone, once its row's caller held (`proof-mint.ts`, which only
+ * the runner and this check may import; the policy-boundary guard refuses a cast to a proof
+ * anywhere else). No state flows through this module.
  */
 import type { RunCapability } from "../../contract/src/capabilities";
 import type { Binding, Origin } from "../../contract/src/binding";
 import type { CallerKind } from "../../contract/src/doors";
+import { isMinted } from "./proof-mint";
 import type { Grant, Stamped } from "./authority";
 import type { ControlGate } from "./control-gate";
 import type { DoorRows } from "./door-map";
@@ -65,7 +66,7 @@ export interface Bound {
   readonly erased: boolean;
 }
 
-/** A proof's brand: a type's alone, so no value is one but by a cast (its maker's). */
+/** A proof's brand as a type (its run-time brand is `proof-mint.ts`'s): only a cast makes one. */
 declare const minted: unique symbol;
 /**
  * A proof of what a caller proved: its kind (`proved`, read at run time by `proven`), and its
@@ -97,9 +98,12 @@ interface Proofs {
   readonly import: { readonly importing: ImportLine };
 }
 
-/** A proof's run-time check: `proof` is one of `kind`, else the widening is a bug, refused. */
+/**
+ * A proof's run-time check: a proof the runner minted (`proof-mint.ts`), of `kind`, else the
+ * widening is a bug, refused.
+ */
 export function proven<K extends string>(proof: Proof<K>, kind: K): void {
-  if ((proof as { proved?: unknown } | undefined)?.proved !== kind) {
+  if (!isMinted(proof) || proof.proved !== kind) {
     throw new Error(`a widening without its ${kind} proof`);
   }
 }

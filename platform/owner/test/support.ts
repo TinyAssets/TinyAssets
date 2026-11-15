@@ -13,7 +13,6 @@ import {
   CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES,
   HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "../src/manifest";
-import type { LiveSession } from "../src/door";
 import { type OwnerDO, ownerStores } from "../src/owner-do";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { contentIdOf } from "../../contract/src/content";
@@ -157,19 +156,6 @@ export function storesOn(state: Pick<DurableObjectState, "id" | "storage">,
   return { gate, ...ownerStores(gate, { ...env, FILES: files }, state.id) };
 }
 export type TestStores = ReturnType<typeof storesOn>;
-
-/**
- * `act` in one unit of `stub`'s own stores (`storesOn`), handed the owner's live session as
- * `Sessions.live` finds it for `cookie`, a session the owner opened (`sessionOpen`): a
- * widening a test makes on a store itself, with the proof the owner's session door holds.
- */
-export function inSession<R>(stub: DurableObjectStub<OwnerDO>, cookie: string,
-                             act: (stores: TestStores, session: LiveSession) => R): Promise<R> {
-  return runInDurableObject(stub, (_instance: OwnerDO, state) => {
-    const stores = storesOn(state);
-    return stores.gate.write(() => act(stores, stores.sessions.live(cookie, clock())));
-  });
-}
 
 /**
  * The owner's files settings, as the owner sets them in its session (`policyWrite`): `files`,

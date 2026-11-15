@@ -85,20 +85,22 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
 });
 
 /**
- * Each proof's maker (`door.ts`): the owner's live session is `Sessions.live`'s, and the owner
- * itself, the platform's reserved line and its import line are the runner's, once its row's
- * caller held. Their brands are a type's alone and `tsc` takes any cast, so a proof outside
- * its maker is a source fact: a type assertion naming a proof's type, or the name of a
- * proof's kind (`proved`) in any spelling (a key, a shorthand, a computed key, a string, so a
- * JSON text too), is refused anywhere else. A proof whose kind is not named reads as none
- * at run time (`proven`), whatever it is cast to.
+ * Each proof's maker (`door.ts`): the runner, once its row's caller held (the live session
+ * of the row `Sessions.live` found), minting each (`proof-mint.ts`, which only the runner and
+ * the proofs' check may import: the layer table's `SOLE_IMPORTERS`). A proof it did not mint
+ * is refused at run time (`proven`), whatever it holds; and as `tsc` takes any cast, a type
+ * assertion naming a proof's type, or the name of a proof's kind (`proved`) or of its mint
+ * in any spelling (a key, a shorthand, a computed key, a string, so a JSON text too), is
+ * refused anywhere else.
  */
 const MAKERS: Readonly<Record<string, string>> = Object.freeze({
-  LiveSession: "owner/src/sessions.ts", OwnerSelf: OWNER_DO, PlatformLine: OWNER_DO,
-  ImportLine: OWNER_DO,
+  LiveSession: OWNER_DO, OwnerSelf: OWNER_DO, PlatformLine: OWNER_DO, ImportLine: OWNER_DO,
 });
-/** Where the proofs and their kind are declared, and their check reads it (`proven`). */
-const DOOR = "owner/src/door.ts";
+/**
+ * Where the proofs and their kind are declared and checked (`door.ts`), and where they are
+ * minted (`proof-mint.ts`).
+ */
+const HOMES: ReadonlySet<string> = new Set(["owner/src/door.ts", "owner/src/proof-mint.ts"]);
 
 /** Each proof `sources` make outside its maker, as `file:line: what`. */
 export function forged(sources: ReadonlyMap<string, string>): string[] {
@@ -118,7 +120,8 @@ export function forged(sources: ReadonlyMap<string, string>): string[] {
       const word = ts.isIdentifier(node) ? node.text
         : ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node)
           || ts.isTemplateTail(node) ? node.text : null;
-      if (word !== null && /\bproved\b/.test(word) && !makers.has(path) && path !== DOOR) {
+      if (word !== null && /\b(?:proved|mintProof)\b/.test(word) && !makers.has(path)
+          && !HOMES.has(path)) {
         report(node, "names a proof's kind, which only its maker does");
       }
       ts.forEachChild(node, visit);
@@ -232,9 +235,9 @@ describe("policy-boundary guard", () => {
   });
 
   it.each([
-    ["a live session cast outside the sessions",
-     'const forged = { proved: "session", hash: "h" } as LiveSession;', "owner/src/grants.ts",
-     ["casts to LiveSession, which only owner/src/sessions.ts makes",
+    ["a live session cast outside the runner",
+     'const forged = { proved: "session", hash: "h" } as LiveSession;', "owner/src/sessions.ts",
+     ["casts to LiveSession, which only owner/src/owner-do.ts makes",
       "names a proof's kind, which only its maker does"]],
     ["the platform's line cast by the sessions",
      "const line = {} as unknown as PlatformLine;", "owner/src/sessions.ts",
@@ -249,6 +252,8 @@ describe("policy-boundary guard", () => {
      "owner/src/ledger.ts", ["names a proof's kind, which only its maker does"]],
     ["a proof's kind in a JSON text", 'grants.set(JSON.parse(\'{"proved":"session"}\'));',
      "owner/src/ledger.ts", ["names a proof's kind, which only its maker does"]],
+    ["the proofs' mint outside the runner", "grants.set(mintProof({}) as never);",
+     "owner/src/ledger.ts", ["names a proof's kind, which only its maker does"]],
   ])("sees %s", (_what, source, path, problems) => {
     expect(forged(new Map([[path, source]])))
       .toEqual(problems.map((problem) => `${path}:1: ${problem}`));
@@ -256,8 +261,8 @@ describe("policy-boundary guard", () => {
 
   it("lets each maker make its own proof", () => {
     expect(forged(new Map([
-      ["owner/src/sessions.ts", 'const live = { proved: "session", hash: "h" } as LiveSession;'],
-      ["owner/src/owner-do.ts", 'const line = { proved: "reserved" } as PlatformLine;'],
+      ["owner/src/owner-do.ts", 'const live = mintProof({ proved: "session" }) as LiveSession;'],
+      ["owner/src/proof-mint.ts", "export function mintProof() {}"],
     ]))).toEqual([]);
   });
 

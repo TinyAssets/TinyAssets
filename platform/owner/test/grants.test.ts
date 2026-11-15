@@ -20,7 +20,7 @@ import { Policy } from "../src/policy";
 import {
   DOT, MCP, MUSE, rig, type Rig, signedIn, subscription,
 } from "./ledger-support";
-import { failure, inSession, storesOn } from "./support";
+import { atClock, failure, storesOn } from "./support";
 
 const CHATGPT: Origin = Object.freeze({ client: "1".repeat(64), family: "2".repeat(64) });
 const CLAUDE: Origin = Object.freeze({ client: "3".repeat(64), family: "4".repeat(64) });
@@ -296,25 +296,23 @@ describe("an outside client's grant", () => {
     await r.stub.outsideAgents(r.bind(CLAUDE));
     // The rows the owner sets one short of their bound; CHATGPT's then takes the last place.
     const owned = Array.from({ length: GRANT_LIMITS.maxOwnerClients - 1 }, (_, n) => filler(n));
-    await inSession(r.stub, r.cookie, ({ grants }, session) => {
-      const change = (client: string, expected: number) => ({
-        client, source: "mcp", mode: "full", scopes: [], expected_revision: expected, name: "" });
-      for (const client of owned) {
-        grants.set(session, change(client, 0), clock());
-      }
-      grants.set(session, change(CHATGPT.client, 1), clock());
-      grants.set(session, change(CHATGPT.client, 2), clock());  // the same row again
-      for (const client of [CLAUDE.client, DOT.client]) {
-        expect(() => grants.set(session, change(client, client === DOT.client ? 0 : 1),
-                                clock()))
-          .toThrow("the owner's managed outside clients are at their limit");
-      }
-      expect(grants.revoke(CLAUDE.client, clock()).revoked).toBe(true);  // still lands
-      expect(grants.admit(MUSE.client, "mcp", null, clock()).mode).toBe("full");
-    });
-    expect((await clients(r)).map((c) => [c.client, c.owner_set]).sort())
-      .toEqual([[CHATGPT.client, 1], [CLAUDE.client, 1], [MUSE.client, 0],
-                ...owned.map((client) => [client, 1])].sort());
+    const set = (client: string, expected: number) => r.stub.grantSet(r.session(null), {
+      client, source: "mcp", mode: "full", scopes: [], expected_revision: expected, name: "" });
+    for (const client of owned) {
+      await set(client, 0);
+    }
+    await set(CHATGPT.client, 1);
+    await set(CHATGPT.client, 2);  // the same row again
+    for (const client of [CLAUDE.client, DOT.client]) {
+      expect((await failure(() => set(client, client === DOT.client ? 0 : 1))).message)
+        .toContain("the owner's managed outside clients are at their limit");
+    }
+    expect((await r.stub.grantRevoke(r.bind(null), { client: CLAUDE.client })).revoked)
+      .toBe(true);  // still lands
+    await r.stub.outsideAgents(r.bind(MUSE));  // a new client is recorded, never refused
+    expect((await clients(r)).map((c) => [c.client, c.owner_set, c.mode]).sort())
+      .toEqual([[CHATGPT.client, 1, "full"], [CLAUDE.client, 1, "revoked"],
+                [MUSE.client, 0, "full"], ...owned.map((client) => [client, 1, "full"])].sort());
     expect((await failure(() => r.sql("DELETE FROM outside_clients WHERE client = ?",
                                       CHATGPT.client))).message)
       .toMatch(/never deleted/);  // a grant the owner set, standing
@@ -640,23 +638,15 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     const signedBefore = Math.floor(t - 40 * DAY);
     await r.stub.outsideAgents(r.bind(CHATGPT, { authenticated_at: signedBefore }));
     await r.stub.outsideAgents(r.bind(CLAUDE));
-    const out = await inSession(r.stub, r.cookie, ({ grants }, session) => {
-      // The live rows one short of their bound, and a revoked one beside them.
-      for (let n = 0; n < GRANT_LIMITS.maxOwnerClients - 1; n++) {
-        grants.set(session, { client: filler(n), source: "mcp", mode: "full", scopes: [],
-                              expected_revision: 0, name: "" }, t);
-      }
-      grants.revoke(CHATGPT.client, t - 31 * DAY);
-      try {
-        grants.set(session, { client: CLAUDE.client, source: "mcp", mode: "full", scopes: [],
-                              expected_revision: 1, name: "" }, t);
-        return "set";
-      } catch (error) {
-        return (error as Error).message;
-      }
-    });
+    const set = (client: string, expected: number) => r.stub.grantSet(r.session(null), {
+      client, source: "mcp", mode: "full", scopes: [], expected_revision: expected, name: "" });
+    // The live rows one short of their bound, and a revoked one beside them.
+    for (let n = 0; n < GRANT_LIMITS.maxOwnerClients - 1; n++) {
+      await set(filler(n), 0);
+    }
+    await revokedAt(r, CHATGPT, t - 31 * DAY);
     // A revoked row never holds a live client's place (slice L).
-    expect(out).toBe("set");
+    expect(await set(CLAUDE.client, 1)).toMatchObject({ client: CLAUDE.client, mode: "full" });
     expect((await clients(r)).find((c) => c.client === CHATGPT.client)!.mode).toBe("revoked");
     expect((await failure(() => r.stub.outsideAgents(
       r.bind(CHATGPT, { authenticated_at: signedBefore })))).message).toBe("outside client revoked");
@@ -669,18 +659,18 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     const t = clock();
     await r.stub.outsideAgents(r.bind(CHATGPT, { authenticated_at: Math.floor(t - 40 * DAY) }));
     await r.stub.outsideAgents(r.bind(CLAUDE));
-    const evicted = await inSession(r.stub, r.cookie, ({ grants }, session) => {
-      // The revoked rows the owner set one short of their bound, each revoked after CLAUDE's.
-      for (let n = 0; n < GRANT_LIMITS.maxOwnerClients - 1; n++) {
-        grants.set(session, { client: filler(n), source: "mcp", mode: "revoked", scopes: [],
-                              expected_revision: 0, name: "" }, t - 29 * DAY);
-      }
-      grants.revoke(CHATGPT.client, t - 31 * DAY);
-      grants.revoke(CLAUDE.client, t - 30 * DAY);
-      return grants.evictRevoked(t);
-    });
-    expect(evicted).toEqual([CHATGPT.client]);
-    expect((await clients(r)).map((c) => c.client)).not.toContain(CHATGPT.client);
+    await revokedAt(r, CHATGPT, t - 31 * DAY);
+    await revokedAt(r, CLAUDE, t - 30 * DAY);
+    // The revoked rows the owner sets, each after CLAUDE's: the last takes the bound's place
+    // of the oldest revoke, CHATGPT's, which its set forgets.
+    for (let n = 0; n < GRANT_LIMITS.maxOwnerClients - 1; n++) {
+      await r.stub.grantSet(r.session(null), { client: filler(n), source: "mcp",
+                                               mode: "revoked", scopes: [],
+                                               expected_revision: 0, name: "" });
+    }
+    const kept = (await clients(r)).map((c) => c.client);
+    expect(kept).not.toContain(CHATGPT.client);
+    expect(kept).toContain(CLAUDE.client);
     expect(await fence(r)).toBeGreaterThan(0);
   });
 
@@ -820,17 +810,19 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
      async () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
-    expect(await inSession(r.stub, r.cookie, ({ grants }, session) => {
-      const set = (mode: string, expected: number, name: string, now: number) =>
-        grants.set(session, { client: CHATGPT.client, source: "mcp", mode, scopes: [],
-                              expected_revision: expected, name }, now);
-      const fence = () => grants.list()[0]!.revoked_at;
-      const out = [set("revoked", 1, "", 100).moved, fence()];
-      out.push(set("revoked", 2, "Old", 200).moved, fence());
-      out.push(set("full", 3, "", 300).moved, fence());
-      out.push(set("revoked", 4, "", 400).moved, fence());
-      return out;
-    })).toEqual([true, 100, false, 100, true, 100, true, 400]);
+    let generation = (await clients(r))[0]!.generation;
+    /** Whether a set at `at` moved the grant's authority (its generation), and its fence. */
+    const set = async (mode: string, expected: number, name: string, at: number) => {
+      const done = await atClock(at, () => r.stub.grantSet(r.session(null), {
+        client: CHATGPT.client, source: "mcp", mode, scopes: [], expected_revision: expected,
+        name }));
+      const moved = done.generation !== generation;
+      generation = done.generation;
+      return [moved, (await clients(r))[0]!.revoked_at];
+    };
+    expect([...await set("revoked", 1, "", 100), ...await set("revoked", 2, "Old", 200),
+            ...await set("full", 3, "", 300), ...await set("revoked", 4, "", 400)])
+      .toEqual([true, 100, false, 100, true, 100, true, 400]);
   });
 
   it("refuses a stale revision on every set, a rename included", async () => {

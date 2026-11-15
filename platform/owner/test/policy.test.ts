@@ -24,7 +24,7 @@ import {
 } from "../../contract/src/policy-document";
 import { Policy } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, inSession, ownerObject } from "./support";
+import { failure, ownerObject } from "./support";
 
 type Doc = {
   egress: { mode: string; destinations: unknown[] };
@@ -364,16 +364,16 @@ describe("an agent's proposal", () => {
     const r = await rig();
     const kept = POLICY_LIMITS.appliedProposals;
     const applied = Array.from({ length: kept + 2 }, (_, n) => `a${n}`);
-    await inSession(r.stub, r.cookie, ({ policy }, session) => {
-      const now = clock();
-      for (const [n, id] of applied.entries()) {
-        const generation = policy.read().generation;
-        policy.propose(change(generation), id, "owner", now + n);
-        const { digest } = policy.held(id, now + n)!;
-        policy.write(session, generation, defaults(), { request_id: id, digest }, now + n);
-      }
-      policy.propose(change(policy.read().generation), "d", "owner", now + applied.length);
-    });
+    for (const id of applied) {
+      const { generation } = await r.stub.policyRead(r.bind(null));
+      await r.stub.policyPropose(r.bind(null), { change: change(generation), request_id: id });
+      const { digest } = await r.stub.policyProposal(r.bind(null), { request_id: id });
+      await r.stub.policyWrite(r.session(null), { expected_generation: generation,
+                                                  policy: defaults() as never,
+                                                  proposal: { request_id: id, digest } });
+    }
+    const { generation } = await r.stub.policyRead(r.bind(null));
+    await r.stub.policyPropose(r.bind(null), { change: change(generation), request_id: "d" });
     const rows = await r.table("policy_proposals");
     expect(rows.filter((row) => row["applied_at"] !== null).map((row) => row["request_id"])
       .sort()).toEqual(applied.slice(2).sort());

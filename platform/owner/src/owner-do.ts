@@ -113,9 +113,10 @@ import {
 } from "../../contract/src/doors";
 import type { DoorMethods } from "./door-map";
 import type {
-  Account, Bound, Call, Door, DoorsOf, DoorUnits, ImportLine, Module, ObjectReads, OwnerSelf,
-  PlatformLine, Readable, Units,
+  Account, Bound, Call, Door, DoorsOf, DoorUnits, ImportLine, LiveSession, Module, ObjectReads,
+  OwnerSelf, PlatformLine, Readable, Units,
 } from "./door";
+import { mintProof } from "./proof-mint";
 import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
@@ -166,7 +167,7 @@ import { exportDoors } from "./export";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner";
 import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
-import { Sessions, type SessionsDoorNeeds, sessionsDoors } from "./sessions";
+import { Sessions, sessionsDoors } from "./sessions";
 import { Signins, signinsDoors, switchedOn } from "./signins";
 import { Starter, starterDoors } from "./starter";
 import { carried } from "./starter-package";
@@ -215,13 +216,16 @@ function importBinding(binding: Binding): void {
  * (`#ownerOf`), the platform's reserved line, and its import line, while the owner is pending.
  * Only the runner makes them, so only those rows' calls carry them (`Call`), and only their
  * handlers can make the widenings that take them. A session row's proof is its live session,
- * as `Sessions.live` makes it.
+ * made of the row `Sessions.live` found (`#within`). Each is minted per call (`mintProof`).
  */
-const PROVED: Readonly<Record<string, object>> = Object.freeze({
-  owner: Object.freeze({ self: Object.freeze({ proved: "owner" }) as OwnerSelf }),
-  reserved: Object.freeze({ platform: Object.freeze({ proved: "reserved" }) as PlatformLine }),
-  import: Object.freeze({ importing: Object.freeze({ proved: "import" }) as ImportLine }),
-});
+function provedBy(caller: string): object {
+  switch (caller) {
+    case "owner": return { self: mintProof({ proved: "owner" }) as OwnerSelf };
+    case "reserved": return { platform: mintProof({ proved: "reserved" }) as PlatformLine };
+    case "import": return { importing: mintProof({ proved: "import" }) as ImportLine };
+    default: return {};
+  }
+}
 
 /** A bound call with no account of its own (a sandbox's, the platform's, or none). */
 function bound(owner: string, caller: string): Bound {
@@ -313,11 +317,7 @@ export interface OwnerState extends DoorUnits, ObjectReads {
   readonly collections: Collections;
   readonly policy: Policy;
   readonly grants: Grants;
-  /**
-   * The sessions a module reaches: their live check a check alone (the files' own tree),
-   * never the live session's proof, which only the runner's session step hands (`#within`).
-   */
-  readonly sessions: SessionsDoorNeeds["sessions"] & { live(proof: unknown, now: number): void };
+  readonly sessions: Sessions;
   readonly ledger: Ledger;
   readonly files: Files;
   readonly backups: Backups;
@@ -957,7 +957,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   #within<R, T>(row: DoorRow, binding: Binding, request: R, act: (call: Call<R>) => T): T {
     if (row.caller !== "session") {
       return act(this.#checked(row, binding, request, this.#bound(row, binding, request),
-                               Object.hasOwn(PROVED, row.caller) ? PROVED[row.caller]! : {}));
+                               provedBy(row.caller)));
     }
     const account = this.#account(binding, row.class as DoorClass,
                                   { registering: row.registering === true });
@@ -967,7 +967,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       if (typeof row.action === "string" && account.origin !== null) {
         throw new Refusal("refused", `only the owner may ${row.action}`);
       }
-      const session = this.#sessions.live(binding.session, clock());
+      const hash = this.#sessions.live(binding.session, clock());
+      const session = mintProof({ proved: "session", hash }) as LiveSession;
       return act(this.#checked(row, binding, request, { ...bound("", ""), account },
                                { session }));
     } catch (error) {

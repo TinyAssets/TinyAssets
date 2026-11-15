@@ -4,35 +4,51 @@
  * `tsc` the day its call compiles) and at run time (`proven`) without it; and a row's call
  * carries only its own caller's proof, so a door of another caller cannot make the widening.
  */
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { clock } from "../src/clock";
 import type { CallerOf, DoorName, HandlerOf, LiveSession, OwnerSelf } from "../src/door";
 import type { GrantsDoorNeeds } from "../src/grants";
-import type { OwnerState } from "../src/owner-do";
-import { rig } from "./ledger-support";
-import { inSession, type TestStores } from "./support";
+import type { OwnerDO, OwnerState } from "../src/owner-do";
+import { rig, type Rig } from "./ledger-support";
+import { storesOn, type TestStores } from "./support";
 
 /** A proof of `kind` made by hand, as no source may make one (policy-boundary's `forged`). */
 const forged = (kind: string): never => Object.freeze({ proved: kind }) as never;
 const CHANGE = { client: "1".repeat(64), source: "mcp", mode: "full", scopes: [],
                  expected_revision: 0, name: "" };
 
-/** Each widening, called with no proof and with another caller's, refused at run time. */
+/** `act` on the owner's own stores (`storesOn`), in one unit of their gate. */
+function inStores<R>(stub: Rig["stub"], act: (stores: TestStores) => R): Promise<R> {
+  return runInDurableObject(stub, (_instance: OwnerDO, state) => {
+    const stores = storesOn(state);
+    return stores.gate.write(() => act(stores));
+  });
+}
+
+/** What `act` comes to: "made", or the message it was refused with. */
+function outcome(act: () => unknown): string {
+  try {
+    act();
+    return "made";
+  } catch (error) {
+    return (error as Error).message;
+  }
+}
+
+/**
+ * Each widening, called with no proof, another caller's, or its own kind made by hand (not
+ * the runner's mint, `proof-mint.ts`, which no test may import), refused at run time.
+ */
 async function widenings() {
   const r = await rig();
-  return inSession(r.stub, r.cookie, (stores, session) => {
+  return inStores(r.stub, (stores) => {
     const { grants, keys, policy, registrations, sessions, admission } = stores;
     const now = clock();
     const refusals = (call: (proof: never) => unknown, kind: string) =>
-      [undefined as never, forged(kind === "session" ? "owner" : "session")].map((proof) => {
-        try {
-          call(proof);
-          return "made";
-        } catch (error) {
-          return (error as Error).message;
-        }
-      });
+      [undefined as never, forged(kind === "session" ? "owner" : "session"), forged(kind)]
+        .map((proof) => outcome(() => call(proof)));
     const proofs = {
       // In the owner's session (`LiveSession`).
       "grants.set": refusals((proof) => grants.set(proof, CHANGE, now), "session"),
@@ -99,8 +115,9 @@ function untyped({ grants, keys, policy, registrations, sessions, admission }: T
 }
 
 describe("a widening's proof", () => {
-  it("is refused at run time when the call holds none, or another caller's", async () => {
-    const without = (kind: string) => Array(2).fill(`a widening without its ${kind} proof`);
+  it("is refused at run time when the call holds none, another caller's, or an unminted one",
+     async () => {
+    const without = (kind: string) => Array(3).fill(`a widening without its ${kind} proof`);
     expect(await widenings()).toEqual({
       "grants.set": without("session"), "grants.forgetRevoked": without("session"),
       "keys.add": without("session"), "policy.write": without("session"),
@@ -109,6 +126,37 @@ describe("a widening's proof", () => {
       "sessions.extend": without("owner"), "admission.set": without("reserved"),
       "admission.setTier": without("reserved"), "policy.imported": without("import"),
     });
+  });
+
+  it("is none of what a handler can reach or build: the review's forgeries", async () => {
+    const r = await rig();
+    const tried = await inStores(r.stub, ({ grants, policy, sessions, admission }) => {
+      const now = clock();
+      // The session check a handler can reach answers the row's hash, not a proof (A1-A4).
+      const live = sessions.live(r.cookie, now) as never;
+      const generation = policy.read().generation;
+      const { live: unbound } = sessions;
+      return {
+        cast: outcome(() => policy.changed(live, generation, "wake_limits", {}, "rule", now)),
+        reflected: outcome(() => grants.set(
+          Reflect.get(sessions, "live").call(sessions, r.cookie, now) as never, CHANGE, now)),
+        bound: outcome(() => grants.set(unbound.bind(sessions)(r.cookie, now) as never, CHANGE,
+                                        now)),
+        // A kind built at run time: a split key's JSON, a computed key (A5-A7).
+        parsed: outcome(() => admission.setTier(JSON.parse(`{"pro${""}ved":"reserved"}`),
+                                                { tier: "paid" })),
+        computed: outcome(() => admission.set({ ["pro" + "ved"]: "reserved" } as never,
+                                              { admit: true })),
+        coded: outcome(() => sessions.extend(
+          { [String.fromCharCode(112, 114, 111, 118, 101, 100)]: "owner" } as never, r.cookie,
+          now)),
+      };
+    });
+    const session = "a widening without its session proof";
+    expect(tried).toEqual({ cast: session, reflected: session, bound: session,
+                            parsed: "a widening without its reserved proof",
+                            computed: "a widening without its reserved proof",
+                            coded: "a widening without its owner proof" });
   });
 
   it("is carried only by its own caller's rows: an owner's door holds no live session", () => {
