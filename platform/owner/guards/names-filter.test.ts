@@ -32,7 +32,9 @@ describe("a restore's names filter", () => {
                 `for ${rows} chunk rows`);
   });
 
-  it("holds every name it took, and about FILTER_FALSE of those it never took", () => {
+  // At production size, so a large test: its 1.2 million names run past the guards' budget.
+  it("holds every name it took, and about FILTER_FALSE of those it never took",
+     { tags: ["large"] }, () => {
     const filter = emptyFilter();
     const taken = Array.from({ length: CHUNK_ROWS_MAX() }, (_, n) => name("taken", n));
     addNames(filter, taken);
