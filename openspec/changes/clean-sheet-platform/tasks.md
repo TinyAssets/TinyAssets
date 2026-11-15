@@ -249,9 +249,11 @@ Each in its own PR, ahead of product work (the untangle skill's "Process first",
 - [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
   their readers re-pointed, so the window's deletion is smaller (`untangle/p9-openspec`).
 - [ ] `slow-tests`, which collects no test, leaves the ruleset and the classic branch
-  protection, then its job goes (d3 §F4; `untangle/slow-tests`, from `land/3`).
-- [ ] An owed item may name any branch: `drain_review_gate.py` `_NAMES_FIX_RE` takes only
-  `untangle/` and `fix/`, so one naming a `process/` branch is refused (`fix/owed-branch-names`).
+  protection, the founder's admin edit (d3 §E4; the exact command goes on his local-session
+  list when this session can't write it, §F4), then its job goes (`untangle/slow-tests`, from
+  `land/3`).
+- [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
+  one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
 
 ### Step 1. Now: B25, T0b, E2
 

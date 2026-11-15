@@ -17,14 +17,15 @@ Untangle the code a change touches, or a whole area, and finish the job.
   `Test-Removal:` line for a test.
 - **Process first.** A fix to how we build (CI, gates, guards, skills, briefs,
   tooling, the review flow) comes before product work: on discovery, in its own
-  PR, with Fact 17's retro-check done now. A reviewer judges every deferral or
-  reordering by this rule; one that defers or reorders a process fix blocks.
+  PR or the process PR at hand, with Fact 17's retro-check done now. A reviewer
+  blocks any change that defers a process fix or moves it behind other work.
   Next, before the cutover, come untangling, security and what code or a stored
   record builds on. The cutover rule never defers a process fix: any other fix
-  waits only when nothing builds on it, it works after the window closes, and
-  its failure is rare, loud when it happens and recoverable with what exists:
-  `AGENTS.md` Fact 17's one exception, listed with its branch in `tasks.md`'s
-  "After the cutover" (founder, 2026-11-15).
+  waits until after the cutover only when nothing builds on it, it works after
+  the window closes, and its failure is rare, loud when it happens and
+  recoverable with what exists: the one exception to `AGENTS.md` Fact 17,
+  listed with its branch in `tasks.md`'s "After the cutover" (founder,
+  2026-11-15).
 - **The PR body** is the one document. Its **Untangle check** says what was
   found, fixed and left (and why), and that the diff adds none of the four kinds.
   Anything found and left, by builder or reviewer, names the PR, branch or
@@ -50,10 +51,10 @@ Untangle the code a change touches, or a whole area, and finish the job.
 - CI is the one full run, and a coordinator's prompt asks for no check this
   section doesn't: run only what the diff can break, once (the done-check:
   `docs/reference/executable-gates.md`), one mutation per declared change; the
-  recorders (step 5) whenever it touches a Worker's source (`platform/*/src`),
-  meant to change an answer or not; read only what applies. One review a PR, a second only after a security
-  block. One PR in flight per lane, never stacked. Merge `origin/main` in;
-  never rebase a pushed branch.
+  recorders (step 5) whenever it touches `platform/*/src`, meant to change an
+  answer or not; read only what applies. One review a PR, a second only after
+  a security block. One PR in flight per lane, never stacked. Merge
+  `origin/main` in; never rebase a pushed branch.
 - On a shared host, heavy runs (`test:root`, `test:sizes`, `test:memory`, the
   deploy harness, the recorders) take the host's run lock; a timeout under load
   is rerun under it, never a finding. When done, delete what you wrote outside

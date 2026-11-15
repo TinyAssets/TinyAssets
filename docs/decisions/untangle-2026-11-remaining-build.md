@@ -91,7 +91,7 @@ The wave-2 log, [`untangle-2026-11-wave-2.md`](untangle-2026-11-wave-2.md) (`d2`
 1. **A live stage before the cutover** (R1). Today nothing can reach the new doors until the cutover's `routes` run. So the first real model call, the first connector sign-in, H2 and the founder's own test would all happen inside the maintenance window, after every owner has been moved. A stage is the dark platform on its own hostname, open only to the founder and the canary. It needs a live hostname, a WorkOS redirect and an E2B hook. Recommendation: yes.
 2. **The store apps.** Both shells break at `routes`. Are they in users' hands, and is a store review still running on the old app? The choice is to make them work across the cutover, or pause the store launch until the new app is ready.
 3. **Recovery.** After the cutover the new backups sit in the same account, and nothing can read one back into an owner. The choice is whether restore and an off-account copy are built before real data arrives (a spending decision) or first after.
-4. **The ruleset.** Pin the App's `review` check as required now (P2). In the window, remove `slow-tests` from the ruleset and the classic branch protection before the deletion merges.
+4. **The ruleset.** Pin the App's `review` check as required now (P2). Remove `slow-tests` from the ruleset and the classic branch protection now, before its job is deleted (corrected 2026-11-15 from "in the window", §F4).
 5. **Direction 5's "deleted in the same change".** The deletion is over 3,000 files, more than one PR can carry. Is two or three PRs in one window the same change?
 6. **Imported "ask first" rules** (R5), after the research gives the options.
 7. **The Spaces read key** for the rehearsal, already asked.

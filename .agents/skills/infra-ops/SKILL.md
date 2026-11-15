@@ -33,8 +33,9 @@ deploy** (`platform/deploy/checklist.md`); never `wrangler deploy` the old proxy
 (`deploy/cloudflare-worker`) by hand (`tasks.md` §9 R1). Prefer the **API**
 (`scripts/emergency_dns_flip.py` for DNS + Worker-route CRUD) over dashboard
 automation — the dashboard is a one-time gate to mint the API token. The Custom
-Token form uses react-select and is unreliable to automate. Full token scopes, rotation cadence, Monaco/Radix
-selectors, and dashboard gotchas: [references/cloudflare.md](references/cloudflare.md).
+Token form uses react-select and is unreliable to automate. Full token scopes,
+rotation cadence, Monaco/Radix selectors, and dashboard gotchas:
+[references/cloudflare.md](references/cloudflare.md).
 
 ## GoDaddy
 

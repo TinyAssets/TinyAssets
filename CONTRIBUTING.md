@@ -37,6 +37,10 @@ whether any external catalog repository is still a contribution target.
 4. Open the pull request against `main`. Every pull request is reviewed before
    it merges: the scope guard requires a review receipt for its head.
 
+TODO(owner): the public developers page says every change gets a review from
+a second model family (`WebSite/site-react/app/developers/page.tsx`). The rule
+is one review from any family, the other family preferred.
+
 Leave `.github/workflows/` and `deploy/` alone unless the change is
 specifically about them. This repository's production path is easy to break
 from a docs-shaped pull request that also edits a workflow.

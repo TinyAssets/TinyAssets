@@ -5,7 +5,7 @@ description: Use when dispatching a bounded task or independent adversarial revi
 
 # peer-agents
 
-`scripts/peer_agent.py` runs `claude -p` or `codex exec` as a headless peer agent. The peer spends ITS OWN subscription budget (Claude Max / ChatGPT Pro), not your context — your only cost is launching the job and reading back the result file. Both CLIs must be installed and logged in (`claude --version`, `codex login status`).
+`scripts/peer_agent.py` runs `claude -p` or `codex exec` as a headless peer agent. The peer spends ITS OWN subscription budget (Claude Max / ChatGPT Pro), not your context. Both CLIs must be installed and logged in (`claude --version`, `codex login status`).
 
 ## How to dispatch
 
@@ -75,7 +75,7 @@ Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (
 
 ## When to use which peer
 
-- **Every PR is reviewed** (the untangle skill's "How this project uses it"); this skill owns the mechanics. Dispatch a separate reviewer told to break the change: either CLI, any model family, never the authoring session. Prefer the other family when it is available on this host.
+- **Every PR is reviewed** (the untangle skill's "How this project uses it"); this skill owns the mechanics. Dispatch a separate reviewer as soon as the diff is pushed, alongside CI, told to break the change: either CLI, any model family, never the authoring session. Prefer the other family when it is available on this host.
 
 ## Notes
 
