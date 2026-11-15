@@ -22,6 +22,9 @@ export const SIGNIN_ID = /^si_[0-9a-f]{32}$/;
 export const CONNECTION_ID = /^c[0-9a-f]{24}$/;
 /** A doorbell subscription: `sub_` and 32 hex of a SHA-256, derived by the server, never sent. */
 export const SUBSCRIPTION_ID = /^sub_[0-9a-f]{32}$/;
+/** An inbound binding's directory route: a capability URL's (`h:`) or a shared app's (`i:`). */
+export const INBOUND_ROUTE =
+  /^(?:h:[0-9a-f]{64}|i:[a-z][a-z0-9_]{0,31}:(?:workspace|enterprise):[0-9a-f]{64})$/;
 /**
  * Whose authority a sandbox runs under: the owner's own work (`owner`), or an outside
  * client's, by its 64-hex id. One sandbox an authority (`contract/src/sandbox.ts`).

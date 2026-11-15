@@ -27,7 +27,7 @@ import {
 import {
   ERASE_RETRY_MS, erasureStartedAt, erasureStep, markErasing, PUT_GRACE_MS, runsEnded,
 } from "./erasure";
-import { clockMs } from "./clock";
+import { clock, clockMs } from "./clock";
 import type { OwnerStorage, Write } from "./gate";
 
 /** The erasure's Lifecycle capability id, and its job's function. */
@@ -39,7 +39,6 @@ const ERASE_JOB = `${ERASURE}/${ERASE_FN}`;
 interface ErasureParts {
   readonly storage: OwnerStorage;
   readonly write: Write;
-  readonly clock: () => number;
   /** The ending of every run in flight, in a unit (`Egress.drop`: its streams). */
   readonly ended: () => void;
   /** Every sandbox of the owner killed and the sandbox Worker's state of them deleted. */
@@ -110,7 +109,7 @@ export class Erasure extends LifecycleCapability {
    * nothing of it depends on the request that began it.
    */
   async begin(): Promise<void> {
-    const { storage, write, clock } = this.#parts;
+    const { storage, write } = this.#parts;
     const jobs = this.lifecycle.jobs;
     const [rearmed] = await write((): [Promise<unknown>] => {
       markErasing(storage, clock());
@@ -140,7 +139,7 @@ export class Erasure extends LifecycleCapability {
     if (this.#erased) {
       return;
     }
-    const { storage, write, clock, ended, sandboxes, lifecycle, blobs, blobsAgain, wipe,
+    const { storage, write, ended, sandboxes, lifecycle, blobs, blobsAgain, wipe,
             outside } = this.#parts;
     if (erasureStep(storage) < 2) {
       // 1. The mark, and the job that resumes this after a crash (pushed again on a resume,

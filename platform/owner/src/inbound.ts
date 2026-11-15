@@ -34,7 +34,7 @@
  * re-arms it by any change of the binding (a new revision). A capability URL has no
  * breaker: its sender retries on its own `429`.
  */
-import { HEX32, randomHex } from "../../contract/src/ids";
+import { HEX32, INBOUND_ROUTE, randomHex } from "../../contract/src/ids";
 
 import { Refusal } from "../../contract/src/refusal";
 import { INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX } from "../../contract/src/limits";
@@ -49,6 +49,7 @@ import type {
 } from "../../contract/src/owner";
 import { nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
+import { OWNER } from "./authority";
 import { codePoints } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 
@@ -65,7 +66,6 @@ export const INSTALL_PROOF = "install_proof_required: a shared app's installatio
   "its install flow alone";
 
 const BINDING_ID = HEX32;
-const ROUTE = /^(?:h:[0-9a-f]{64}|i:[a-z][a-z0-9_]{0,31}:(?:workspace|enterprise):[0-9a-f]{64})$/;
 const AGENT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 type BindingKind = "capability" | "shared";
@@ -153,7 +153,7 @@ export function created(request: unknown): Created {
     throw new Refusal("install_proof_required", INSTALL_PROOF);
   }
   if (typeof r["route"] !== "string" || r["route"].length > INBOUND_ROUTE_MAX
-      || !ROUTE.test(r["route"])
+      || !INBOUND_ROUTE.test(r["route"])
       || (r["kind"] === "capability") !== r["route"].startsWith("h:")) {
     throw new Refusal("invalid", "an inbound binding's route is its directory entry");
   }
@@ -430,7 +430,7 @@ export const inboundDoors = Object.freeze({
       } catch (error) {
         return { done: inboundRefused(o, event.row, error, now) };
       }
-      return { body: event.envelope, writer: "owner" };
+      return { body: event.envelope, writer: OWNER };
     }, (placed) => {
       const now = clock();
       const event = inboundEvent(o, door.check(), now);
@@ -440,7 +440,7 @@ export const inboundDoors = Object.freeze({
       o.keepTiers(door.binding);
       try {
         const posted = o.ledger.post(null, event.room, event.cmid, event.envelope, null,
-                                         now, null, placed, "owner");
+                                         now, null, placed, OWNER);
         o.inbound.succeeded(event.row);
         return { state: "admitted", receipt: posted.message_id, deduped: false };
       } catch (error) {

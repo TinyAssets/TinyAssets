@@ -120,8 +120,6 @@ interface RelayParts {
   check(state: SocketState): Promise<CloseKind | null>;
   /** The conversation's live runs, oldest first, whose tails a joiner is sent. */
   live(conversation: string): Promise<readonly string[]>;
-  /** The object's clock, in whole seconds. */
-  now(): number;
 }
 
 function tag(conversation: string): string {
@@ -196,7 +194,7 @@ export class Relay extends LifecycleCapability {
     if (job.id !== EXPIRY_JOB) {
       return undefined;
     }
-    const now = this.#parts.now();
+    const now = clock();
     for (const connection of this.#select((state) => state.expires_at <= now)) {
       this.#close(connection, "expired");
     }

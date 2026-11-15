@@ -1,5 +1,6 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { vi } from "vitest";
 
 import { HELD_WAIT_MS, TIERS } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
@@ -19,7 +20,8 @@ import { sha256Hex } from "../../contract/src/digest";
 import { INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { agentFilePath } from "../src/agent-file";
 import { carried, NEWER } from "../src/starter-package";
-import { SCHEDULE } from "../src/schedule";
+import { LANE_PASS_S, SCHEDULE } from "../src/schedule";
+import { clock } from "../src/clock";
 import type { ChunkStore } from "../../contract/src/files";
 import type { FileSettings } from "../../contract/src/policy-document";
 import type { GateControl } from "../../ci/gate";
@@ -35,6 +37,51 @@ export const EVERY_SIGNIN: readonly string[] = Object.freeze(signinsOn(
   bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
 
 export { TIERS };
+
+/** A lane pass's end as the schedule hands it (`Lane.run`'s `until`): `LANE_PASS_S` on. */
+export function passEnd(): number {
+  return clock() + LANE_PASS_S;
+}
+
+/**
+ * The object's clock held at `seconds`, by a fake `Date`, which the object reads as the test
+ * does; the test makes the clock real again after it (`vi.useRealTimers`).
+ */
+export function clockAt(seconds: number): void {
+  const now = Math.round(seconds * 1000);
+  if (vi.isFakeTimers()) {
+    vi.setSystemTime(now);
+  } else {
+    vi.useFakeTimers({ toFake: ["Date"], now });
+  }
+}
+
+/**
+ * `act` run with the object's clock held at `seconds` (`clockAt`), the clock then as it was:
+ * real again, or the fake `Date`'s time before.
+ */
+export async function atClock<T>(seconds: number, act: () => Promise<T>): Promise<T> {
+  const was = vi.isFakeTimers() ? Date.now() : null;
+  clockAt(seconds);
+  try {
+    return await act();
+  } finally {
+    if (was === null) {
+      vi.useRealTimers();
+    } else {
+      vi.setSystemTime(was);
+    }
+  }
+}
+
+/**
+ * The founder's tiers (`TIERS`) with storage figures a test sets, free's and paid's: their
+ * other numbers as the control record holds them.
+ */
+export function tiersAt(free: number, paid: number): typeof TIERS {
+  return Object.freeze({ free: { ...TIERS.free, storage_bytes: free },
+                         paid: { ...TIERS.paid, storage_bytes: paid } });
+}
 
 /**
  * `act` in `stub`'s object, with a write gate of its own over the object's storage: it

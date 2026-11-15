@@ -7,9 +7,10 @@ import { createHash } from "node:crypto";
 
 import { CHUNK_BYTES } from "../../contract/src/limits";
 import {
-  type Content, joined, makeChunk, type Placement, type Plan, recordParts, type SegmentRecord,
+  type Content, makeChunk, type Placement, type Plan, recordParts, type SegmentRecord,
   type Source, type Trailer,
 } from "../src/segments";
+import { joined } from "../src/bytes";
 
 /** A stream's records encoded whole, as the format says (`segments.ts`'s header). */
 export function referenceSegment(stream: string, records: readonly SegmentRecord[]):

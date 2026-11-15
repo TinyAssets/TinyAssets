@@ -23,7 +23,7 @@ import type { OwnerDO, Stores } from "../src/owner-do";
 import {
   DOT, FakeSender, MUSE, origin, registerOn, rig, type Rig, subscription,
 } from "./ledger-support";
-import { drainDue, failure, faulty, laneJobs, storesOn } from "./support";
+import { atClock, drainDue, failure, faulty, laneJobs, storesOn } from "./support";
 
 const RINGS = { command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
                 recipe_id: null };
@@ -364,7 +364,7 @@ describe("a claim settles only by its holder", () => {
         },
       };
       const { ledger, gate } = storesOn(state);
-      return runWakes(ledger, lapsing, () => now, gate.write);
+      return atClock(now, () => runWakes(ledger, lapsing, gate.write));
     });
     expect([accepted, r.sender.sent]).toEqual([0, []]);  // it never got past its mark
     expect((await wakes(r)).map((w) => [w["state"], w["marked"]])).toEqual([["sending", 0]]);
@@ -378,7 +378,7 @@ describe("a claim settles only by its holder", () => {
     // The pass's units: the claim, the mark, then the settle, which fails.
     const accepted = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
       const { ledger, gate } = storesOn(state);
-      return runWakes(ledger, r.sender, () => now, faulty(gate.write, (n) => n === 3));
+      return atClock(now, () => runWakes(ledger, r.sender, faulty(gate.write, (n) => n === 3)));
     });
     expect([accepted, r.sender.sent.length]).toEqual([0, 1]);
     const [wake] = await wakes(r);
@@ -567,8 +567,7 @@ describe("the wakes lane of the object's one schedule", () => {
       const { ledger, gate } = stores;
       await gate.write(() => ledger.post(null, `dm:${ringing(stores)}`, "c1", "hello", null,
                                          t - 100));
-      expect(await runWakes(ledger, r.sender, () => t, gate.write, 16, LANE_CALL_MS,
-                            Date.now() - 1))
+      expect(await runWakes(ledger, r.sender, gate.write, 16, LANE_CALL_MS, clock() - 1))
         .toBe(0);
       return ledger.dueOpen(t, 16).length;
     });
@@ -588,14 +587,15 @@ describe("the wakes lane of the object's one schedule", () => {
                                          t - 100));
       const hanging = new HangingSender();
       const started = Date.now();
-      const accepted = await runWakes(ledger, hanging, () => t, gate.write, WAKES_PER_ALARM, 30);
+      const accepted = await runWakes(ledger, hanging, gate.write, WAKES_PER_ALARM, 30);
       const took = Date.now() - started;
       const late = row();
       hanging.release();  // its answer comes after the pass let it go, and settles nothing
       await new Promise((resolve) => setTimeout(resolve, 0));
       const released = row();
       // Its lease lapses: a byte may have left, so it is unknown, never sent again.
-      await runWakes(ledger, hanging, () => t + WAKE_LEASE_S, gate.write, WAKES_PER_ALARM, 30);
+      await atClock(clock() + WAKE_LEASE_S,
+                    () => runWakes(ledger, hanging, gate.write, WAKES_PER_ALARM, 30));
       return { accepted, took, late, released, after: row(), sent: hanging.sent.length };
     });
     expect(out.accepted).toBe(0);
@@ -616,7 +616,7 @@ describe("the wakes lane of the object's one schedule", () => {
                                          t - 100));
       state.storage.sql.exec("CREATE TRIGGER probe_claim BEFORE UPDATE OF claim_id ON " +
                              "ledger_wakes BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      const sent = await runWakes(ledger, r.sender, () => t, gate.write);
+      const sent = await atClock(t, () => runWakes(ledger, r.sender, gate.write));
       const after = [sent, ledger.nextDue(t, true)];
       // A lapsed claim whose recovery fails waits the same.
       state.storage.sql.exec("DROP TRIGGER probe_claim");
@@ -625,7 +625,7 @@ describe("the wakes lane of the object's one schedule", () => {
       expect(await gate.write(() => ledger.claim(wake!.wake_id, at).outcome)).toBe("claimed");
       state.storage.sql.exec("CREATE TRIGGER probe_settle BEFORE UPDATE OF settled_at ON " +
                              "ledger_wakes BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      await runWakes(ledger, null, () => at + WAKE_LEASE_S, gate.write);
+      await atClock(at + WAKE_LEASE_S, () => runWakes(ledger, null, gate.write));
       state.storage.sql.exec("DROP TRIGGER probe_settle");
       return [...after, ledger.nextDue(at + WAKE_LEASE_S, false)];
     });

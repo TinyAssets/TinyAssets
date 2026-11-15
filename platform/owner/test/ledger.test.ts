@@ -10,7 +10,8 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { displayName, MAX_BODY_BYTES, OWNER } from "../src/ledger";
+import { displayName, MAX_BODY_BYTES } from "../src/ledger";
+import { OWNER } from "../src/authority";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import { apiKeyOrigin } from "../../contract/src/binding";

@@ -22,7 +22,7 @@
  * guard).
  */
 import { keyed } from "../../contract/src/checks";
-import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
+import { HEX16, HEX32, HEX64, INBOUND_ROUTE } from "../../contract/src/ids";
 import { principal } from "../../contract/src/text";
 
 import type { DoorsEnv } from "./env";
@@ -56,8 +56,6 @@ export interface RouteEntry {
   readonly r: number;
 }
 
-const ROUTE = /^(?:h:[0-9a-f]{64}|i:[a-z][a-z0-9_]{0,31}:(?:workspace|enterprise):[0-9a-f]{64})$/;
-
 function ownerName(owner: string): string {
   return `o:${principal(owner)}`;
 }
@@ -80,7 +78,7 @@ export async function putOwner(env: DoorsEnv, owner: string, entry: OwnerEntry):
 }
 
 function routeName(route: string): string {
-  if (!ROUTE.test(route)) {
+  if (!INBOUND_ROUTE.test(route)) {
     throw new Error("an inbound route is h:<64 hex> or i:<app>:<kind>:<64 hex>");
   }
   return route;

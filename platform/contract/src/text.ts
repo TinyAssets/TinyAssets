@@ -92,12 +92,17 @@ export function forbids(list: readonly string[], name: string): boolean {
     : entry === name);
 }
 
-/** A collection, row or writer name: 1 to 256 printable characters. */
-export function name(value: unknown, what: string): string {
-  if (typeof value !== "string" || !value || codePoints(value) > 256 || !isPrintable(value)) {
-    throw new Refusal("invalid", `${what} is 1 to 256 printable characters`);
+/** A request's text `what`: 1 to `max` printable characters, or refused `invalid`. */
+export function printable(value: unknown, max: number, what: string): string {
+  if (typeof value !== "string" || !value || codePoints(value) > max || !isPrintable(value)) {
+    throw new Refusal("invalid", `${what} is 1 to ${max} printable characters`);
   }
   return value;
+}
+
+/** A collection, row or writer name: 1 to 256 printable characters. */
+export function name(value: unknown, what: string): string {
+  return printable(value, 256, what);
 }
 
 /** An owner or caller, as `validate_principal`: trimmed, 1 to 512 printable characters. */

@@ -12,12 +12,11 @@ import { refusalOf } from "../../contract/src/refusal";
 import { GC_GRACE_S, INLINE_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import type { Binding } from "../../contract/src/binding";
 import { MUSE, rig } from "./ledger-support";
-import { drainDue, failure, laneAt, starterSeed, TIERS } from "./support";
+import { drainDue, failure, laneAt, starterSeed, TIERS, tiersAt } from "./support";
 
 /** What every owner's seed holds, its bytes counted in the figure like any file's. */
 const SEED = starterSeed();
-const tiers = (bytes: number) => ({ free: { runs: 5, storage_bytes: bytes },
-                                    paid: { runs: 10, storage_bytes: bytes } });
+const tiers = (bytes: number) => tiersAt(bytes, bytes);
 /**
  * A figure of whole files of `unit` bytes: as many as the seed's bytes take, and `more`.
  * The garbage it keeps is then that many files too, and one more file's passes it.

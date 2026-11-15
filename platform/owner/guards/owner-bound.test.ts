@@ -53,8 +53,9 @@ import { LEDGER_LIMITS } from "../src/ledger";
 import { REFUSALS } from "../../contract/src/refusal";
 import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
 import {
-  ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, CONNECTION_BLOB_MAX,
-  CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, CURSOR_CHARS, DOORBELL_BLOB_CHARS, EGRESS_JSON_MAX,
+  ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, COMMAND_CENTER_MAX,
+  CONNECTION_BLOB_MAX, CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, CURSOR_CHARS,
+  DOORBELL_BLOB_CHARS, EGRESS_JSON_MAX,
   EGRESS_PATH_MAX, ENGINE_SIGNINS, ERROR_BYTES, IMAGE_MAX, INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX,
   INPUT_BYTES, KEY_NAME_MAX, LOG_BYTES, LOG_ROW_BYTES, MANIFEST_PARTS, MAX_PATH_BYTES,
   MESSAGE_ID_CHARS, MODELS_JSON_MAX, NATIVE_ID_CHARS, NOTICE_DETAIL, PART_ENTRY, PLACE_BYTES,
@@ -217,13 +218,13 @@ const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
 /** A grant's scopes' JSON, in bytes: a frozen bound, which the schema's check spells. */
 const SCOPES_BYTES = SCOPES_JSON_MAX;
 /** A room id, in code points (`ledger.ts`), each up to four bytes. */
-const ROOM_CHARS = inline("ledger", /text\(roomId, ([0-9]+), "room_id"\)/);
+const ROOM_CHARS = inline("ledger", /printable\(roomId, ([0-9]+), "room_id"\)/);
 /** A client message id and a parent id, in code points (`ledger.ts`). */
-const CMID_CHARS = inline("ledger", /text\(clientMessageId, ([0-9]+), "client_message_id"\)/);
-const PARENT_CHARS = inline("ledger", /text\(parentId, ([0-9]+), "parent_id"\)/);
+const CMID_CHARS = inline("ledger", /printable\(clientMessageId, ([0-9]+), "client_message_id"\)/);
+const PARENT_CHARS = inline("ledger", /printable\(parentId, ([0-9]+), "parent_id"\)/);
 /** An agent's universe (`command_center_id`) and its recipe id, in code points. */
-const UNIVERSE_CHARS = inline("ledger", /text\(request\.command_center_id, ([0-9]+), /);
-const RECIPE_CHARS = inline("ledger", /text\(request\.recipe_id, ([0-9]+), /);
+const UNIVERSE_CHARS = COMMAND_CENTER_MAX;
+const RECIPE_CHARS = inline("ledger", /printable\(request\.recipe_id, ([0-9]+), /);
 /** An agent's display name, in code points (`ledger.ts`'s `displayName`). */
 const AGENT_NAME_CHARS = 80;
 /** Ids the object mints: an agent's (`agent_` and 16 hex), a message's (`msg_` and 32). */

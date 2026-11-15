@@ -33,7 +33,7 @@ export const OWNER_RESERVE_UNITS = 1;
  * How many larger holds may wait for units at once (`SlotPool`'s waiters), by the memory a
  * waiter holds: no units, but its own request's arguments, which no unit counts yet (owed
  * with PR 3b's request weights, as every RPC argument is), as large as the largest body a
- * door takes: `/api`'s 16 MiB (`API_BODY_MAX`, four units; `/mcp`'s `MCP_BODY_MAX` is one).
+ * door takes: `/api`'s 16 MiB (`EGRESS_BODY_MAX`, four units; `/mcp`'s `MCP_BODY_MAX` is one).
  * Three keep what the waiting calls hold to the pool's own size again (the counts test
  * holds the figure to that derivation). One more is refused `busy` at once.
  */

@@ -76,9 +76,9 @@ import {
 } from "./export";
 import type { ChunkStore, ManifestRoot } from "../../contract/src/files";
 import type { ChunkSpace } from "./files";
-import type { OwnerStorage, Write } from "./gate";
+import { type OwnerStorage, unitsNow, type Write } from "./gate";
 import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
-import { isSlotBusy, type Slot, slotBusy, type SlotPool } from "../../contract/src/slots";
+import { isSlotBusy } from "../../contract/src/slots";
 
 /** The hours of the night owners' manifests spread over, from the day's start in UTC. */
 const MANIFEST_SPREAD_S = 4 * 3600;
@@ -171,21 +171,6 @@ export function manifestDay(at: number): string {
 function dayStart(day: string): number {
   return Date.UTC(Number(day.slice(0, 4)), Number(day.slice(4, 6)) - 1,
                   Number(day.slice(6, 8))) / 1000;
-}
-
-/**
- * `units` of `pool` now, or refused `busy`: inside the alarm a lane never waits on the pool,
- * since the object's other lanes would wait with it (`owner-do.ts`'s `now`). A call that
- * does not fit at once leaves its queue at the next turn of the event loop.
- */
-async function unitsNow(pool: SlotPool, units: number): Promise<Slot> {
-  const turn = new AbortController();
-  const timer = setTimeout(() => turn.abort(slotBusy()), 0);
-  try {
-    return await pool.acquire(units, "", turn.signal);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /** The owner's own offset into the night, in seconds. */
@@ -708,7 +693,7 @@ export class Backups {
     const { ns } = await this.#parts.space();
     let cursor: string | null = null;
     do {
-      if (clockMs() >= until || this.#parts.halted()) {
+      if (clock() >= until || this.#parts.halted()) {
         return false;
       }
       const names = await this.#write(() => this.#parts.pinned() === null
@@ -824,7 +809,7 @@ export class Backups {
               cut: number | null = null): Promise<boolean | null> {
     const log = this.#parts.log;
     while (log.state().shipped < through) {
-      if (clockMs() >= until || this.#parts.halted()) {
+      if (clock() >= until || this.#parts.halted()) {
         return false;
       }
       const at = this.#rows().find((each) => each.gen === row.gen)!;
@@ -849,7 +834,7 @@ export class Backups {
                  cut: number | null): Promise<boolean> {
     const log = this.#parts.log;
     const shipped = log.state().shipped;
-    const slot = await unitsNow(ownerSlots(), SHIP_UNITS);
+    const slot = await unitsNow((signal) => ownerSlots().acquire(SHIP_UNITS, "", signal));
     try {
       const span = await this.#write(() => log.pending(
         cut !== null && shipped < cut ? Math.min(through, cut) : through));
@@ -935,7 +920,7 @@ export class Backups {
       await this.#abandon(row, null);  // a generation whose capture is not its own
       return true;
     }
-    while (clockMs() < until) {
+    while (clock() < until) {
       if (this.#parts.halted()) {
         return true;
       }
@@ -1007,7 +992,7 @@ export class Backups {
     const log = this.#parts.log;
     let e: number | null = null;
     const pool = ownerSlots();
-    const slot = await unitsNow(pool, BURST_UNITS);
+    const slot = await unitsNow((signal) => pool.acquire(BURST_UNITS, "", signal));
     try {
       const lines: Lines[] = [];
       let size = 0;

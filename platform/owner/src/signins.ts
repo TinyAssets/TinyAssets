@@ -28,7 +28,7 @@
  * call (`Binding.signins`), kept for the runs the object's own lane starts
  * (`platform_signins`). None kept, none is on.
  */
-import { HEX64, randomHex, SIGNIN_ID } from "../../contract/src/ids";
+import { AUTHORITY, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 
 import { bundledSources } from "../../sources/src/catalog";
 import {
@@ -39,7 +39,7 @@ import { Refusal } from "../../contract/src/refusal";
 import {
  ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX,
 } from "../../contract/src/limits";
-import { OWNER_AUTHORITY } from "./files";
+import { OWNER } from "./authority";
 import type { OwnerStorage } from "./gate";
 import { isPrintable } from "../../contract/src/text";
 import type {
@@ -351,10 +351,10 @@ export function switchedOn(storage: OwnerStorage, handed: unknown, now: number):
 
 /** The authority a sign-in is for: the owner's own sandbox, or one client's. */
 function signinAuthority(value: unknown): string {
-  if (value === undefined || value === OWNER_AUTHORITY) {
-    return OWNER_AUTHORITY;
+  if (value === undefined) {
+    return OWNER;
   }
-  if (typeof value !== "string" || !HEX64.test(value)) {
+  if (typeof value !== "string" || !AUTHORITY.test(value)) {
     throw new Refusal("invalid", "a sign-in's sandbox is the owner's own, or one client's id");
   }
   return value;
@@ -439,7 +439,7 @@ export const signinsDoors = Object.freeze({
           : `this sign-in takes the owner's choice of region: ${regions.join(", ")}`);
       }
       const authority = signinAuthority(r["authority"]);
-      if (authority !== OWNER_AUTHORITY && !o.grants.live(authority)) {
+      if (authority !== OWNER && !o.grants.live(authority)) {
         throw new Refusal("refused",
                           "no such client: a client's own sandbox is signed in for a client " +
                           "the owner has connected");
@@ -538,7 +538,7 @@ export const signinsDoors = Object.freeze({
     const lease = held!;
     const reports = signinRequest(r);
     const lapsed: string[] = [];
-    if (lease.authority !== OWNER_AUTHORITY) {
+    if (lease.authority !== OWNER) {
       // An outside client's sandbox's own sign-ins, kept on its lease: a login is never
       // copied between sandboxes, so none of the owner's own reaches it.
       const now = new Set(lease.signins);

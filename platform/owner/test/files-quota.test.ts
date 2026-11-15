@@ -25,8 +25,8 @@ import { migrate } from "../../contract/src/migrate";
 import { rig, type Rig } from "./ledger-support";
 import { TIER_UNREAD } from "../src/tier";
 import {
-  crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, setFiles, starterSeed, text,
-  TIERS,
+  crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, passEnd, setFiles,
+  starterSeed, text, TIERS, tiersAt,
 } from "./support";
 
 const W = "/workspace";
@@ -183,7 +183,7 @@ describe("file history", () => {
     expect((await failure(() => write(r, `${W}/b`, "b"))).message).toBe(INDEX_FULL);
     expect(await rows()).toEqual(kept);
     // Housekeeping lets none go either: nothing is due.
-    await inFiles(r.stub, (files) => files.run(Date.now() / 1000 + 400 * 86_400));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000 + 400 * 86_400, passEnd()));
     expect(await rows()).toEqual(kept);
     await back();
     await counted(r);
@@ -268,7 +268,7 @@ describe("file history", () => {
     }
     expect(await r.stub.fileHistoryPurge(r.bind(null), { path: `${W}/n4` }))
       .toEqual({ purged: 2 });  // the floor rises to n4's delete, the seed's versions and 10
-    await inFiles(r.stub, (files) => files.run(Date.now() / 1000 + 1));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000 + 1, passEnd()));
     expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
       .toEqual([{ feed_floor: SEED.entries + 10 }]);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history WHERE path = ?",
@@ -290,7 +290,7 @@ describe("file history", () => {
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = CASE version WHEN ? THEN 1 " +
                           "WHEN ? THEN 2 ELSE 9000000000 END WHERE version > ?", v(4), v(2),
                 SEED.entries);
-    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000, passEnd()));
     expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
       .toEqual([{ feed_floor: v(4) }]);
     expect(await sqlIn(r.stub, "SELECT version FROM file_history WHERE version > ? " +
@@ -353,9 +353,9 @@ describe("file history", () => {
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
     await inFiles(r.stub, async (files) => {
       expect(files.next(1000)).toBe(1000);
-      await files.run(Date.now() / 1000);
+      await files.run(Date.now() / 1000, passEnd());
       expect(files.next(1000)).toBe(1000);  // 500 paths a pass: one more to go
-      await files.run(Date.now() / 1000);
+      await files.run(Date.now() / 1000, passEnd());
       expect(files.next(Date.now() / 1000)).toBe(null);
     });
     expect(await sqlIn(r.stub,
@@ -376,7 +376,7 @@ describe("file history", () => {
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
     await inFiles(r.stub, async (files) => {
       expect(files.next(1000)).toBe(1000);
-      await files.run(1000);
+      await files.run(1000, passEnd());
     });
     expect(await sqlIn(r.stub, "SELECT prune_after - at AS due FROM file_history " +
                                  "WHERE path = ? ORDER BY version", `${W}/a`))
@@ -410,7 +410,7 @@ describe("file history", () => {
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_recent = 5");
     await inFiles(r.stub, async (files) => {
       expect(files.next(1000)).toBe(1000);
-      await files.run(1000);
+      await files.run(1000, passEnd());
     });
     expect(await sqlIn(r.stub, "SELECT op FROM file_history WHERE path = ?", `${W}/a`))
       .toEqual([{ op: "write" }, { op: "write" }]);
@@ -433,15 +433,15 @@ describe("file history", () => {
     // 1 then comes back in force.
     await remarked(r, { keep_versions: 2, retention_days: 30 });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
-    await inFiles(r.stub, (files) => files.run(1000));
+    await inFiles(r.stub, (files) => files.run(1000, passEnd()));
     const paths = [...SEED.paths, ...Array.from({ length: 600 }, (_, i) =>
       `${W}/p${String(i).padStart(3, "0")}`)].sort();
     expect(await sqlIn(r.stub, "SELECT retain_cursor FROM file_space"))
       .toEqual([{ retain_cursor: paths[499] }]);
     await remarked(r, { keep_versions: 1, retention_days: 30 });
     await inFiles(r.stub, async (files) => {
-      await files.run(1000);
-      await files.run(1000);
+      await files.run(1000, passEnd());
+      await files.run(1000, passEnd());
       expect(files.next(1000)).not.toBe(1000);
     });
     // Every path's older version is due again, the first 500's included.
@@ -479,7 +479,7 @@ describe("file history", () => {
     expect(before.history).toBe(SEED.entries + 2);
     const back = await crowd(r.stub, INDEX_BYTES, 0);
     await setFiles(r, { max_bytes: 0 });
-    await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files) => files.run(Date.now() / 1000, passEnd()));
     const after = await r.stub.fileUsage(r.bind(null));
     // All of it goes but the seed, whose files are the owner's own and live.
     expect([after.entries, after.history, after.intents])
@@ -530,7 +530,7 @@ describe("the retention marks' migration (untangle F1, owner migration 8)", () =
         "at, prune_after) SELECT i, '/workspace/p' || i, 'mkdir', 'dir', NULL, 0, 0, " +
         "'owner', 1, 86401 FROM n"), r);
     for (let pass = 0; pass < 2; pass++) {
-      await inFiles(r.stub, (files) => files.run(Date.now() / 1000));
+      await inFiles(r.stub, (files) => files.run(Date.now() / 1000, passEnd()));
     }
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n, COUNT(prune_after) AS due " +
                                  "FROM file_history")).toEqual([{ n: 501, due: 0 }]);
@@ -562,14 +562,13 @@ describe("the files policy", () => {
     // The tier's figure, as the binder hands it from the control record: the seed and one
     // file.
     const room = SEED.bytes + INLINE_BYTES + 1;
-    const small = { free: { runs: 5, storage_bytes: room },
-                    paid: { runs: 10, storage_bytes: 250_000_000_000 } };
+    const small = tiersAt(room, TIERS.paid.storage_bytes);
     await put(`${W}/a`, 1, small);
     expect((await r.stub.fileUsage(r.bind(null, { tiers: small }))).limits.max_bytes)
       .toBe(room);
     expect(refusalOf((await failure(() => put(`${W}/b`, 2, small))))?.facts)
       .toMatchObject({ limit_bytes: room, tier: "free",
-                       upgrade: { tier: "paid", limit_bytes: 250_000_000_000 } });
+                       upgrade: { tier: "paid", limit_bytes: TIERS.paid.storage_bytes } });
     // The owner's own figure binds only below the tier's.
     await setFiles(r, { max_bytes: 10 * INLINE_BYTES });
     expect((await r.stub.fileUsage(r.bind(null))).limits.max_bytes).toBe(10 * INLINE_BYTES);
