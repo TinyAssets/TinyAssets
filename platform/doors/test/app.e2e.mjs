@@ -1041,11 +1041,11 @@ async function holding(pattern, body) {
     const sent = (async () => {
       const answer = await mf.dispatchFetch(request.url(), { method: request.method(), headers,
         body: request.postDataBuffer() ?? undefined });
-      const body = Buffer.from(await answer.arrayBuffer());
+      const bytes = Buffer.from(await answer.arrayBuffer());
       held();
       await released;
       // The body as read: its length and encoding are the fulfilment's own.
-      await route.fulfill({ status: answer.status, body, headers: Object.fromEntries(
+      await route.fulfill({ status: answer.status, body: bytes, headers: Object.fromEntries(
         [...answer.headers].filter(([name]) => !/^content-(?:length|encoding)$/.test(name))) });
     })();
     going.add(sent);
