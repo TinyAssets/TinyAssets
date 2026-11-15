@@ -56,8 +56,8 @@ export const OWNER_SUSPENDED = "owner_suspended: the owner's account is suspende
 export const OWNER_ERASED = "owner_erased: the owner's account was erased";
 export const OWNER_UNADMITTED = "owner_unadmitted: the platform has not admitted this owner";
 const NEVER_ADMITTED = "an owner the platform never admitted is not suspended";
-export const PLATFORM_ONLY = "only the platform sets an owner's admission";
-export const PLATFORM_RESERVED = "the platform caller reaches no owner door but admission";
+export const PLATFORM_ONLY = "only the platform calls an owner's reserved doors";
+export const PLATFORM_RESERVED = "the platform caller reaches no owner door but the reserved ones";
 /** The import doors' refusals (`import.ts`): their caller, their binding, the owner's state. */
 export const IMPORT_PLATFORM_ONLY =
   "only the platform imports, with an import binding";
