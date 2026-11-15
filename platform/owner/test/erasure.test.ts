@@ -30,7 +30,7 @@ import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
 import { clock } from "../src/clock";
 import { OwnerDO } from "../src/owner-do";
-import { doorTable } from "../../contract/src/doors";
+import { doorTable, rpcReserved, UNBOUND_DOORS } from "../../contract/src/doors";
 import {
   eraseBegun, erasedWhole, erasuresSent, finished, outsideConfirmed, pastGrace, tables,
   wipedWhole,
@@ -74,8 +74,7 @@ const ADMISSION_DOORS = doorTable().filter((row) => row.class === "admission")
   .map((row) => row.door);
 /** Every door of the object's, but the platform's. */
 const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
-  .filter((door) => !["constructor", "alarm", "fetch", "webSocketMessage", "webSocketClose",
-                      "webSocketError", "sandboxRung", "sandboxBilled", ...ADMISSION_DOORS,
+  .filter((door) => ![...rpcReserved(), ...UNBOUND_DOORS, ...ADMISSION_DOORS,
                       ...IMPORT_DOORS].includes(door));
 const call = (r: Rig, door: string, binding: Binding) =>
   (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(

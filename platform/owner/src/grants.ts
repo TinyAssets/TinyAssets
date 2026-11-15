@@ -644,7 +644,7 @@ export interface ForgetRequest {
 
 // -- THE DOORS: the `grants` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
@@ -671,6 +671,12 @@ export const grantsDoors = Object.freeze({
   grantList(o: OwnerState, _call: Call<undefined>): { clients: Client[] } {
     return { clients: o.grants.list() };
   },
+  /**
+   * The owner's widening, in its session, against the grant's revision. A set that moves
+   * the grant's authority (its mode or scopes) ends the client's agents' wakes and held
+   * registrations with it, as `grantRevoke` ends them; one that moves only the revision, a
+   * rename, ends nothing: every stamp of the client's still stands.
+   */
   grantSet(o: OwnerState, { session: id, r }: Call<GrantRequest>):
       { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
         revision: number } {
@@ -686,6 +692,10 @@ export const grantsDoors = Object.freeze({
       return set;
     });
   },
+  /**
+   * A narrowing the owner's account makes without a session, as a key's revoke does: the
+   * client's agents' wakes and held registrations end with it, in its unit.
+   */
   grantRevoke(o: OwnerState, { r }: Call<ClientRequest>):
       { client: string; revoked: boolean; generation: number; revision: number } {
     return o.storage.transactionSync(() => {
@@ -696,6 +706,11 @@ export const grantsDoors = Object.freeze({
       return revoked;
     });
   },
+  /**
+   * Forget a revoked API key's grant (slice 3's review L1): the binder calls it once the
+   * directory has deleted the key (tasks 2). A narrowing, since a key with no row is
+   * refused, so the owner's account makes it without a session. Never an MCP client's.
+   */
   grantForget(o: OwnerState, { r }: Call<ClientRequest>): { client: string; forgotten: boolean } {
     return o.storage.transactionSync(() => {
       const forgot = o.grants.forgetKey(r["client"], clock());
@@ -705,6 +720,11 @@ export const grantsDoors = Object.freeze({
       return forgot;
     });
   },
+  /**
+   * The owner, in its session, forgets revoked clients to make room under its bound: a
+   * widening, so it is the only act that lifts an MCP revoke, and even then a forgotten
+   * MCP client comes back only from a sign-in after the revoke (`grants.ts`).
+   */
   grantForgetRevoked(o: OwnerState, { session: id, r }: Call<ForgetRequest>):
       { forgotten: string[]; mcp_fence: number } {
     return o.storage.transactionSync(() => {

@@ -314,7 +314,7 @@ function rowThere(o: OwnerState, owner: string,
 
 // -- THE DOORS: the `import` rows' handlers (`contract/doors.json`) --------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind (the platform's import binding,
 // the owner pending), and the fields.
 

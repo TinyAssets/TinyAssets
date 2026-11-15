@@ -751,13 +751,24 @@ export class Egress {
 
 // -- THE DOORS: the `egress` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
+//
+// The sandbox holds one lease, the file sync lease (`files.ts`): its id is the claim
+// token and its epoch the fencing number, for the sync commits and the egress alike, and
+// it holds the hashes of its two tokens' secrets, the egress token (E2B's transform alone
+// carries it) and the sync token (the in-VM sync agent's). The lease itself is owner-
+// internal (`launch.ts`): no door reaches it. The egress doors take the egress
+// token's binding, the sync doors the sync token's, and no other door takes either.
 
 /** The `egress` doors' handlers, by door. */
 export const egressDoors = Object.freeze({
-  /** A sandbox request admitted at open, its call checked in each unit (`egressOpen`). */
+  /**
+   * One sandbox request, admitted at open (`Egress.open`): its blob, version, generation,
+   * reservation and end signal, or its refusal's fixed code and receipt. An OAuth
+   * credential about to expire is refreshed first, as a model call's is.
+   */
   async egressOpen(o: OwnerState, door: Door<unknown>): Promise<EgressOpened | EgressRefusal> {
     const { r, live } = await o.door(() => {
       door.check();
@@ -787,16 +798,30 @@ export const egressDoors = Object.freeze({
       return o.egress.open(sandboxBinding(door.binding.sandbox), r, clock());
     });
   },
+  /**
+   * An admitted model call's reserve (`Egress.reserve`), which the gateway asks for through
+   * the egress door once its one parse of the body read the model and tier: its metering, or
+   * its refusal's fixed code and receipt. Held to the egress binding that opened the call.
+   */
   egressReserve(o: OwnerState, { binding, request }: Call<unknown>):
       EgressReserved | EgressRefusal {
     return o.egress.reserve(sandboxBinding(binding.sandbox), reserveRequest(request),
                               clock());
   },
+  /**
+   * A streaming call's beat from its door (`EGRESS_BEAT_S`): the open reservation its egress
+   * token opened is still its door's, so it is not settled lost.
+   */
   egressBeat(o: OwnerState, { binding, request }: Call<{ reservation: string }>):
       { beat: boolean } {
     return { beat: o.egress.beat(sandboxBinding(binding.sandbox), request?.reservation,
                                    clock()) };
   },
+  /**
+   * One reservation's end, as the egress door saw it: its outcome, the provider's status
+   * and the bytes it streamed; a blob the gateway resealed meanwhile is kept by the
+   * connection's compare-and-swap.
+   */
   egressSettle(o: OwnerState, { binding, request }: Call<Record<string, unknown>>):
       { settled: boolean } {
     const { resealed, ...rest } = request ?? {};
@@ -816,6 +841,7 @@ export const egressDoors = Object.freeze({
     }
     return { settled: settled.settled };
   },
+  /** The owner's newest egress receipts: what the sandbox asked, and how each ended. */
   egressReceipts(o: OwnerState, _call: Call<undefined>): { receipts: EgressReceipt[] } {
     return { receipts: o.egress.receipts() };
   },

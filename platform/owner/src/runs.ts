@@ -1685,9 +1685,18 @@ export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
 
 // -- THE DOORS: the `runs` rows' handlers (`contract/doors.json`) ---------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
+//
+// A run door starts, reads or cancels a run. Starting one is two units around the agent's
+// file read: the first checks the call and reads what it asks; then `agent.json` is read
+// (its bytes may cross to `FILES`); then one unit binds the call again and admits the run
+// whole (`Launcher.launch`), so nothing between the two can widen what the admission saw. A run's
+// own MCP door never converses (`RUN_STARTS_NONE`): work between agents is mail. It may
+// launch and schedule its owner's agents, and read and cancel runs and schedules, as its
+// initiator: an owner-started or scheduled run as the owner, a client's run as that client,
+// held to that client's grant; whatever it launches runs unattended.
 
 /**
  * Who starts a run: the owner, or a client, with its stamp and origin. A run's own launch
@@ -1713,7 +1722,12 @@ function initiated(o: OwnerState, binding: Binding, account: Account, universe: 
 
 /** The `runs` doors' handlers, by door. */
 export const runsDoors = Object.freeze({
-  /** A message to an agent, its call checked in its units (`agentSubmit`). */
+  /**
+   * A message to one of the owner's agents (`converse`): a run in a new conversation, or in
+   * one of the caller's own (`conversation_id`), resuming its engine's session. A retry with
+   * the same `client_send_id` is the same run. Waits up to `wait_ms` for the run to settle,
+   * then answers the run as it stands; its status is `agentStatus`'s.
+   */
   async agentSubmit(o: OwnerState, door: Door<SubmitRequest>): Promise<RunView> {
     const asked = await o.door(() => {
       const { account, r, agent } = door.check();
@@ -1734,7 +1748,12 @@ export const runsDoors = Object.freeze({
     });
     return fittedRun(await o.launcher.settledWithin(run, asked.waitMs, asked.client));
   },
-  /** A launch of an agent, its call checked in its units (`agentRun`). */
+  /**
+   * A launch of one of the owner's agents on an input (`run_graph`), in a fresh conversation
+   * of its own: now, or as a schedule of the `runs` lane, at a time (`at`) or at each time a
+   * cron names (`cron`). A schedule's run is unattended: its source must allow that
+   * (ADR-033 decision 3). An agent answers mail by being mailed itself (`roomPost`).
+   */
   async agentRun(o: OwnerState, door: Door<LaunchRequest>): Promise<RunView | RunSchedule> {
     const asked = await o.synced(() => {
       const { account, r, agent, universe } = door.check();
@@ -1774,6 +1793,7 @@ export const runsDoors = Object.freeze({
     });
     return fittedRun(await o.launcher.settledWithin(run, 0, asked.client));
   },
+  /** A run of the caller's, from its receipt; or a schedule of the caller's. */
   agentStatus(o: OwnerState, { account, r }: Call<RunRequest>): RunView | RunSchedule {
     const client = account.origin?.client ?? null;
     if (("run_id" in r) === ("schedule_id" in r)) {
@@ -1782,6 +1802,11 @@ export const runsDoors = Object.freeze({
     return "run_id" in r ? fittedRun(o.runs.receipt(r["run_id"], client))
       : o.runs.scheduleView(r["schedule_id"], client);
   },
+  /**
+   * Cancel a run of the caller's: marked, its CLI stopped through the sandbox; it settles
+   * `failed` (`cancelled`) from the runner's end, or `unknown` if the runner is lost. Or a
+   * schedule of the caller's removed. A settled run cancels nothing.
+   */
   async agentCancel(o: OwnerState, door: Door<RunRequest>):
       Promise<RunView | { schedule_id: string; cancelled: true }> {
     const found = await o.synced(() => {
@@ -1804,7 +1829,13 @@ export const runsDoors = Object.freeze({
     }
     return o.door(() => fittedRun(o.runs.receipt(found.run, found.client)));
   },
-  /** A runner's report, its call checked in each unit (`runEvents`). */
+  /**
+   * The runner's report for its run (`EventsRequest`), on the egress host by the egress
+   * token and the run its path names: each new frame read by the run's record (its session
+   * id, result and error kept), relayed to the app sockets on the run's conversation, and
+   * never committed; the batch renews the lease (the runner's heartbeat); the runner's
+   * `end` settles the run.
+   */
   async runEvents(o: OwnerState, door: Door<EventsRequest>):
       Promise<{ accepted: number; settled: string | null }> {
     // A reply this batch's settle would post, past `PLACE_BYTES`, is placed in R2 first, in
@@ -1856,10 +1887,23 @@ export const runsDoors = Object.freeze({
       o.posts.leave();
     }
   },
+  /**
+   * The caller's past runs, newest first, a page at a time (`before`, the last page's
+   * `next`): the owner's every run, an outside client's its own alone, as their receipts show
+   * them (the result is the run's own door's, `agentStatus`).
+   */
   runList(o: OwnerState, { account, r }: Call<RunListRequest>):
       { runs: RunListed[]; next: number | null } {
     return o.runs.list(account.origin?.client ?? null, r["before"], r["limit"]);
   },
+  /**
+   * The platform's line rang this owner (slice S; `sandbox/src/slots.ts`, through the doors
+   * Worker's ring consumer): a sandbox freed, so each run waiting for one starts again
+   * through its whole admission, oldest first. It takes no binding: it carries nothing,
+   * reads nothing and grants nothing, and only the doors' consumer, which binds `OWNER`,
+   * reaches it. With no run waiting the owner leaves the line, so the next owner is rung.
+   * An erased or erasing owner does nothing (its erasure takes it out of the line).
+   */
   async sandboxRung(o: OwnerState, door: Door<undefined>): Promise<{ waiting: number }> {
     if (o.gone()) {
       return { waiting: 0 };

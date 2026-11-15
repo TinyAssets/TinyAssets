@@ -425,12 +425,19 @@ export interface ConversationRequest {
 
 // -- THE DOORS: the `relay` rows' handlers (`contract/doors.json`) --------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `relay` doors' handlers, by door. */
 export const relayDoors = Object.freeze({
+  /**
+   * A socket ticket for one of the owner's own conversations (`read`): a routing-MAC token
+   * of the `socket` kind, single-use, good for `SOCKET_TICKET_S` and never past the token it
+   * was asked with, bound to that token's first-party grant (`binding.grant`,
+   * `binding.expires_at`, the binder's from the verified token). Only its secret's SHA-256
+   * is kept. The ticket, once.
+   */
   socketTicket(o: OwnerState, { r, binding }: Call<ConversationRequest>):
       { ticket: string; conversation_id: string; expires_at: number } {
     const conversation = r["conversation_id"];
@@ -452,6 +459,11 @@ export const relayDoors = Object.freeze({
              expires_at: o.tickets.mint(minted.hash, conversation as string, grant,
                                             tokenExpires, now) };
   },
+  /**
+   * The first-party grant the binding's token was issued under signed out (`reduce`): its
+   * outstanding tickets forgotten and its app sockets closed `signed_out`, every other
+   * device's left open. The doors tell it before they revoke the grant.
+   */
   async socketsEnd(o: OwnerState, door: Door<undefined>): Promise<{ grant: string; ended: true }> {
     const grant = await o.door(() => {
       door.check();

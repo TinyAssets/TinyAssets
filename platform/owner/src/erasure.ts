@@ -158,13 +158,19 @@ function confirmed(door: Door<EraseRequest>, words: (owner: string) => string): 
 
 // -- THE DOORS: the `erasure` rows' handlers (`contract/doors.json`) ------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `erasure` doors' handlers, by door. */
 export const erasureDoors = Object.freeze({
-  /** The owner's own erasure, in its live session, confirmed by its typed words. */
+  /**
+   * The owner erases its account, in its live session, confirmed by its typed words: the
+   * object's mark first, durable before this answers (every door refuses from then on),
+   * then the erasure's own job drives every other step (`erasure.ts`): the outside record
+   * through the doors, the sandboxes, the R2 copies and the wipe, each retried until done,
+   * none of them resting on this request finishing.
+   */
   async ownerErase(o: OwnerState, door: Door<EraseRequest>): Promise<{ erasing: true }> {
     await o.door(() => confirmed(door, () => ERASE_CONFIRM));
     await o.erasure.begin();
@@ -179,10 +185,17 @@ export const erasureDoors = Object.freeze({
     await o.erasure.begin();
     return { erasing: true as const };
   },
+  /**
+   * The erasure's outside step, as the doors take it from the erasure queue: what the
+   * directory holds for the owner (its keys' ids, its inbound routes), read only while the
+   * owner is marked erasing, and only by the platform's reserved caller; null once the
+   * owner is wiped (its outside record confirmed before the wipe).
+   */
   erasureOutside(o: OwnerState, { erased }: Call<undefined>):
       { keys: string[]; routes: string[] } | null {
     return erased ? null : { keys: o.keys.ids(), routes: o.inbound.routes() };
   },
+  /** The doors' confirmation that the outside record is done: the wipe may go on. */
   erasureOutsideDone(o: OwnerState, { erased }: Call<undefined>): { confirmed: true } {
     if (erased) {
       return { confirmed: true } as const;

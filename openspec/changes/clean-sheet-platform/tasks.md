@@ -270,10 +270,15 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 - [ ] The wave-2 lanes (d2 §D): lane O (O1–O5) is left, unblocked since C3 and C4 merged; the
   merged lanes' owed items and d3 §A's changes:
-  - B3 after T1, on the cleaned constructors (d3 §A2, §K1).
-  - B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
+  - B3 after T1, on the cleaned constructors (d3 §A2, §K1), as `o1_research.md`'s option (b′):
+    per-module `DoorNeeds`, four widening proofs, `untangle/o1` to `o1d`
+    (`docs/decisions/untangle-2026-11/o2.md`, "B3's shape").
+  - [x] B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
-    goes (lane O; C2).
+    goes (lane O; C2). Built in O2 (`untangle-2026-11/o2.md`).
+  - [ ] B4's contract half (`untangle/o2b`): `contract/doors.json` split from `owner/doors.json`
+    (the runner's steps), `OwnerDoors` written by the generator from the contract half, and the
+    services guard's name and arity checks as type facts (`o2.md` item 9).
   - Owed to lane O by merged PRs, one line each:
     - S8: the owner adopts `served()` (`s8.md`).
     - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).

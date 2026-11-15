@@ -55,12 +55,13 @@ export class Notices {
 
 // -- THE DOORS: the `notices` rows' handlers (`contract/doors.json`) ------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
 /** The `notices` doors' handlers, by door. */
 export const noticesDoors = Object.freeze({
+  /** The owner's notices, newest first (`notices.ts`). */
   noticeList(o: OwnerState, _call: Call<undefined>): { notices: Notice[] } {
     return { notices: o.notices.list() };
   },

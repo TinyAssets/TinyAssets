@@ -387,7 +387,7 @@ export interface SigninRequest {
 
 // -- THE DOORS: the `signins` rows' handlers (`contract/doors.json`) ------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
 // the object's state once the row's steps held: the bind, the account, the scope and the
 // fields.
 
@@ -409,7 +409,16 @@ export function signinOwned(o: OwnerState, id: unknown): boolean {
 
 /** The `signins` doors' handlers, by door. */
 export const signinsDoors = Object.freeze({
-  /** A vendor sign-in begun, its call checked in its first unit (`signinStart`). */
+  /**
+   * Begin the vendor's own sign-in to `engine` (`mode: "in"`), or its sign-out (`"out"`),
+   * inside the owner's own sandbox or one client's (`authority`, that client's id: a login is
+   * never copied between sandboxes). The owner's own door, on its own account: the object
+   * opens that sandbox's lease with no run (or joins the live one), and the sandbox Worker
+   * starts the record's `cli.login` there (`SandboxService.signin`). The answer is the
+   * sign-in's id, which the owner's app watches on its socket (`ta.signin` frames: the
+   * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
+   * a pasted code), or the code the Worker answered (`sandbox_waiting`, ...).
+   */
   async signinStart(o: OwnerState, door: Door<SigninStartRequest>):
       Promise<SigninView | { started: false; code: string }> {
     const begun = await o.door(() => {
@@ -477,7 +486,13 @@ export const signinsDoors = Object.freeze({
     });
     return { started: false, code: answer === null ? "start_lost" : answer.code };
   },
-  /** A sign-in's frames, its call checked in its unit (`signinEvents`). */
+  /**
+   * The runner's frames of a sign-in (`ta.signin`: its state, the vendor's URL and code),
+   * on the egress host by the egress token and the runner's secret of the live lease that
+   * holds it: the latest prompt kept, the lease renewed (its beat), each frame relayed to the
+   * owner's app sockets on the sign-in's id; its end ends it, and the lease goes once nothing
+   * holds it.
+   */
   async signinEvents(o: OwnerState, door: Door<SigninEventsRequest>):
       Promise<{ accepted: number; ended: boolean }> {
     const { row, ended, stopped, events, frames } = await o.door(() => {
@@ -509,6 +524,10 @@ export const signinsDoors = Object.freeze({
     }
     return { accepted: frames.length, ended };
   },
+  /**
+   * The code the vendor's page showed the owner, pasted back: to the sign-in's CLI's stdin
+   * (`SandboxService.signinInput`). The owner's own door.
+   */
   async signinCode(o: OwnerState, door: Door<SigninCodeRequest>): Promise<{ delivered: boolean }> {
     const { row, code } = await o.door(() => {
       const { r } = door.check();
@@ -522,17 +541,29 @@ export const signinsDoors = Object.freeze({
     return o.env.SANDBOX.signinInput(o.owner(), { authority: row.authority, id: row.id,
                                                   code });
   },
+  /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
   async signinCancel(o: OwnerState, door: Door<SigninRequestById>):
       Promise<{ cancelled: boolean }> {
     const row = await o.door(() => o.signins.get(door.check().r["id"]));
     return o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority, id: row.id });
   },
+  /**
+   * The sign-ins in progress, and each engine's presence in the owner's own sandbox as its
+   * runner last reported it (never a credential). The owner's own door.
+   */
   signinList(o: OwnerState, _call: Call<undefined>): { signins: SigninView[];
                                            engines: ReturnType<Runs["signins"]> } {
     const now = clock();
     o.signins.lost(now, new Set(o.files.liveLeases(now).map((each) => each.lease_id)));
     return { signins: o.signins.list().map(signinView), engines: o.runs.signins() };
   },
+  /**
+   * The runner's report of the engines' sign-ins (`SigninRequest`), on the egress host by
+   * the egress token of the live lease: each engine's row (signed in or not, when it was
+   * checked, the models it offers), never a credential; `auto` ranks the signed-in ones
+   * with the owner's connections. A sign-in that lapsed (signed in, now not) leaves a
+   * "sign in again" notice, and `auto` stops picking that engine.
+   */
   signinReport(o: OwnerState, { lease: held, r }: Call<SigninRequest>):
       { recorded: number; lapsed: string[] } {
     const lease = held!;
