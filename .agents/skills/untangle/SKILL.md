@@ -38,14 +38,13 @@ tokens searching, break less without noticing, and find root causes faster.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run: run only what the diff can break, one mutation per
-  declared change. A diff touching any `platform/*/src` file also runs the
-  kernel guard, `npx vitest run --root ci guards/kernels.test.ts`: it lives in
-  `ci`, so the touched workspace's own tests don't cover it.
-- A change that brings a measured time or size within about 20% of its ceiling
-  (a watchdog, a budget, a quota) lands with its fix, never before it: CI's
-  variance turns a thin margin into a red main for every PR. A reviewer who
-  finds one blocks. Read only what applies. One PR in flight per lane, never
-  stacked. Merge `origin/main` in; never rebase a pushed branch.
+  declared change. Read only what applies. One PR in flight per lane, never
+  stacked. Merge `origin/main` in; never rebase a pushed branch. A diff touching
+  `platform/*/src` also runs the kernel guard (`npx vitest run --root ci
+  guards/kernels.test.ts`), which no workspace's own tests cover.
+- A change that brings a measured time or size (a watchdog, a budget, a quota)
+  within about 20% of its ceiling lands with its fix, never before it; a
+  reviewer who finds one blocks.
 
 ## 1. Scope
 
@@ -146,22 +145,7 @@ You're done when:
 
 ## Decision log example
 
-The list of problems:
-
-```md
-- `ui/LogoutDialog.tsx:30` waits 100ms after closing and hopes the message input can take focus by then.
-- `ui/Toolbar.tsx:40` and `ui/Menu.tsx:22` call the same actions, each with its own check for when they're disabled.
-- `checkout/submit.ts:9` depends directly on `payments/stripe.ts`.
-- `shortcuts/keymap.ts:18` has a switch with one case per action, separate from the menu's list.
-- `ui/CommandPalette.tsx:55` keeps its own list of actions, and it's missing the newer ones.
-- `ui/SettingsDialog.tsx:61` sets a global `skipRefocus` flag to stop the logout dialog it opens from sending focus to the message input.
-- `history/undo.ts:30` has a special case for every action that can be undone.
-- `refunds/refund.ts:22` wraps every Stripe call in `if (order.provider === "paypal")`.
-- Every action handler has to call `track()` by hand, and some don't.
-- `ui/Toolbar.test.tsx` and `ui/Menu.test.tsx` test the same actions separately.
-```
-
-Then with the fixes:
+The list of problems, each under the fix that removes it:
 
 ```md
 - Make the general `Dialog` give focus back to whatever had it before it opened, so the wait and the flag can both go.

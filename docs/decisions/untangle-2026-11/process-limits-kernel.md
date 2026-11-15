@@ -9,3 +9,7 @@ Two rules found on 2026-11-15 were only in the session's briefs. This PR adds th
 
 - **Kernel guard:** the merge queue runs it on every PR, so main can't hold a breach. It passes on main at `a315f1024` (6 of 6). The two misses cost a cycle each and left nothing behind.
 - **Measured limits:** #5615 (`untangle/budgets-ci-2`) re-derives every test budget and watchdog from CI's own reports after the #5609 split, against this rule. It finds the contract leg's budget within 20% and fixes it there, and no `platform-sizes` shard within 20% of its watchdog. That PR is this rule's drift check. Nothing else measured against a ceiling has changed since.
+
+## Room for them
+
+The rulebook ratchet pins the skills' total size, and the two rules did not fit. The skill's decision-log example listed its ten problems twice, once alone and once under their fixes, so the first copy is deleted. That cut makes room for both rules, and the pin is unchanged.
