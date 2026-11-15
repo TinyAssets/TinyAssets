@@ -2828,20 +2828,34 @@ describe("the operator path's modes", () => {
   });
 
   it("owner plans its ask, and with --yes sends it MAC'd to the operator queue and says the " +
-     "doors' answer", async () => {
+     "doors' answer between the owner's state before and after", async () => {
     const flags = ["--owner", "user_alice", "--act", "tier=paid"];
     const planned = world({ held: true });
     expect((await runMode(planned, "owner", ["--public", ...flags], PUBLIC)).plan).toEqual([
-      'ask the doors owner.tier {"tier":"paid"} for user_alice, through the operator channel']);
+      'ask the doors owner.tier {"tier":"paid"} for user_alice, through the operator channel, ' +
+      "between its state (owner.state) before and after"]);
     expect(planned.sent).toEqual([]);
-    const w = world({ held: true, doors: () => ({ result: { tier: "paid" } }) });
+    // The doors' owner as each op leaves it: the tier set between the two reads.
+    let tier = "free";
+    const w = world({ held: true, doors: ({ op, args }) => {
+      if (op === "owner.tier") {
+        tier = String(args["tier"]);
+        return { result: { tier } };
+      }
+      return { result: { state: "admitted", tier } };
+    } });
     const work = await runMode(w, "owner", ["--yes", ...flags]);
-    expect(work.plan.at(-1)).toBe('the doors answered owner.tier for user_alice: {"tier":"paid"}');
-    expect(w.sent).toHaveLength(1);
-    const { queue, message } = w.sent[0]!;
+    expect(work.plan.slice(-3)).toEqual([
+      'user_alice before owner.tier: {"state":"admitted","tier":"free"}',
+      'the doors answered owner.tier for user_alice: {"tier":"paid"}',
+      'user_alice after owner.tier: {"state":"admitted","tier":"paid"}']);
+    expect(w.sent.map(({ message }) => [message.op, message.args])).toEqual([
+      ["owner.state", {}], ["owner.tier", { tier: "paid" }], ["owner.state", {}]]);
+    expect(w.sent[0]!.message.at).toBe(NOW.getTime() / 1000);
+    const { queue, message } = w.sent[1]!;
     expect(queue).toBe(`q${QUEUES.indexOf(QUEUE_NAMES.OPERATOR) + 1}`);
     expect(message).toMatchObject({ op: "owner.tier", owner: "user_alice",
-                                    args: { tier: "paid" }, at: NOW.getTime() / 1000 });
+                                    args: { tier: "paid" } });
     expect(await macHolds(parseRing(RING)!, message)).toBe(true);
   });
 
@@ -2849,20 +2863,30 @@ describe("the operator path's modes", () => {
     ["suspend=abuse", "owner.suspend", { reason: "abuse" }],
     ["lift=billing", "owner.lift", { reason: "billing" }],
     ["admit", "owner.admit", {}],
-  ])("owner sends --act %s as %s", async (act, op, args) => {
+    ["state", "owner.state", {}],
+  ])("owner sends --act %s as %s, between two owner.state", async (act, op, args) => {
     const w = world({ held: true });
     await runMode(w, "owner", ["--yes", "--owner", "user_alice", "--act", act]);
-    expect(w.sent.map(({ message }) => [message.op, message.args])).toEqual([[op, args]]);
+    expect(w.sent.map(({ message }) => [message.op, message.args])).toEqual([
+      ["owner.state", {}], [op, args], ["owner.state", {}]]);
   });
 
   it("owner stops loudly on a refusal, and with no answer in its wait", async () => {
-    const refusing = world({ held: true, doors: () => ({
-      refused: { code: "refused", message: "an owner the platform never admitted is not " +
-                                           "suspended" } }) });
+    const refusing = world({ held: true, doors: ({ op }) => op === "owner.state"
+      ? { result: { state: "pending" } }
+      : { refused: { code: "refused", message: "an owner the platform never admitted is not " +
+                                                "suspended" } } });
     await expect(runMode(refusing, "owner", ["--yes", "--owner", "user_alice", "--act",
                                              "suspend=abuse"])).rejects.toThrow(
       "the doors refused owner.suspend for user_alice (refused): an owner the platform never " +
       "admitted is not suspended");
+    // The state refused first, as an erased owner's is: the op is never sent.
+    const erased = world({ held: true, doors: () => ({
+      refused: { code: "owner_erased", message: "the owner is erased" } }) });
+    await expect(runMode(erased, "owner", ["--yes", "--owner", "user_alice", "--act",
+                                           "tier=paid"])).rejects.toThrow(
+      "the doors refused owner.state for user_alice (owner_erased): the owner is erased");
+    expect(erased.sent.map(({ message }) => message.op)).toEqual(["owner.state"]);
     const silent = world({ held: true, doors: () => null });
     await expect(runMode(silent, "owner", ["--yes", "--owner", "user_alice", "--act", "admit"]))
       .rejects.toThrow(/the doors did not answer the operator message [0-9a-f]{32}/);
@@ -2870,8 +2894,8 @@ describe("the operator path's modes", () => {
 
   it("owner needs one owner and one act, each in its grammar", () => {
     const w = world();
-    const acts = "--act is one of tier=<tier>, suspend=<reason>, lift=<reason>, admit";
-    for (const act of ["tier", "admit=now", "state", "erase=x", "tier=paid=x"]) {
+    const acts = "--act is one of state, tier=<tier>, suspend=<reason>, lift=<reason>, admit";
+    for (const act of ["tier", "admit=now", "state=all", "erase=x", "tier=paid=x"]) {
       const argv = ["--mode", "owner", "--owner", "user_alice", "--act", act];
       if (act === "tier=paid=x") {
         // The value is all after the first =: the owner's door refuses it.
@@ -3101,7 +3125,8 @@ describe("mode erase", () => {
     const w = world();
     for (const act of ["erase", `erase=${WORDS}`]) {
       expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", act], ENV, w.io),
-             act).toThrow(/^--act is one of tier=<tier>, suspend=<reason>, lift=<reason>, admit$/);
+             act).toThrow(
+        /^--act is one of state, tier=<tier>, suspend=<reason>, lift=<reason>, admit$/);
     }
     expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", "admit",
                         "--confirm", WORDS], ENV, w.io))

@@ -161,8 +161,8 @@ describe("the erasure", () => {
   const RING = parseRing(doorsEnv.OPERATOR_KEYRING)!;
 
   /** `op` with `args` for `who`, signed under `ring` and delivered once; the bucket's records. */
-  async function operated(who: string, args: OperatorArgs, ring = RING) {
-    const message = await signOperator(ring, "owner.erase", who, args, now());
+  async function operated(who: string, op: string, args: OperatorArgs, ring = RING) {
+    const message = await signOperator(ring, op, who, args, now());
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     const records = await held(message.ask);
     return { ...records, answer: records.answer === null ? null
@@ -181,7 +181,8 @@ describe("the erasure", () => {
     // The email route: an owner who cannot sign in, erased by the operator channel's signed
     // message and its words; the operator log keeps the ask and its answer.
     ["the operator's owner.erase", async (who: string) => {
-      const { accepted, answer } = await operated(who, { confirm: eraseWords(who) });
+      const { accepted, answer } = await operated(who, "owner.erase",
+                                                  { confirm: eraseWords(who) });
       expect(accepted).toMatchObject({ op: "owner.erase", owner: who });
       expect(answer).toMatchObject({ op: "owner.erase", owner: who,
                                      args: { confirm: eraseWords(who) },
@@ -337,13 +338,13 @@ describe("the erasure", () => {
       [{ confirm: `${eraseWords(who)} ` }, { code: "invalid" }],
       [{ confirm: eraseWords(who).toUpperCase() }, { code: "invalid" }],
     ] as const) {
-      const { answer } = await operated(who, args);
+      const { answer } = await operated(who, "owner.erase", args);
       expect(answer?.["refused"], JSON.stringify(args)).toMatchObject(refused);
     }
     // Another ring's MAC, or none: dropped at the gate, nothing kept in the log.
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    expect(await operated(who, { confirm: eraseWords(who) }, parseRing(keyring())!))
-      .toEqual({ accepted: null, answer: null });
+    expect(await operated(who, "owner.erase", { confirm: eraseWords(who) },
+                          parseRing(keyring())!)).toEqual({ accepted: null, answer: null });
     const signed = await signOperator(RING, "owner.erase", who, { confirm: eraseWords(who) },
                                       now());
     const { mac: _mac, ...unsigned } = signed;
@@ -357,9 +358,11 @@ describe("the erasure", () => {
     expect((await failure(() => env.OWNER.getByName(who).erasureBegin(
       ownerBinding(who), { confirm: eraseWords(who) }))).message).toBe(PLATFORM_ONLY);
     // A name the platform never signed up, with its own words: never barred.
-    expect((await operated(other, { confirm: eraseWords(other) })).answer?.["refused"])
-      .toEqual({ code: "refused", message: "the platform holds no owner of that name: only " +
-                                           "an owner who signed up is erased" });
+    expect((await operated(other, "owner.erase", { confirm: eraseWords(other) }))
+      .answer?.["refused"]).toEqual({
+        code: "refused",
+        message: "the platform holds no owner of that name: only an owner who signed up is erased",
+      });
     expect(await readOwner(doorsEnv, other)).toBeNull();
     for (const name of [who, other]) {
       expect(await sqlIn(name, "SELECT COUNT(*) AS n FROM owner_erasure")).toEqual([{ n: 0 }]);
@@ -371,13 +374,31 @@ describe("the erasure", () => {
      async () => {
     const { who } = await owned();
     await BEGINS[1][1](who);
-    expect((await operated(who, { confirm: eraseWords(who) })).answer?.["refused"])
-      .toMatchObject({ code: "erasing" });
+    expect((await operated(who, "owner.erase", { confirm: eraseWords(who) }))
+      .answer?.["refused"]).toMatchObject({ code: "erasing" });
     expect(await consume(who)).toContain("done");
-    expect((await operated(who, { confirm: eraseWords(who) })).answer?.["refused"])
-      .toEqual({ code: "owner_erased", message: "the owner is erased" });
+    expect((await operated(who, "owner.erase", { confirm: eraseWords(who) }))
+      .answer?.["refused"]).toEqual({ code: "owner_erased", message: "the owner is erased" });
     await finish(who);
     expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
+  });
+
+  it("answers owner.state only at the platform's door; for an owner being erased erasing, " +
+     "and once erased owner_erased, at the channel and at the object's own door", async () => {
+    const { who } = await owned();
+    expect((await operated(who, "owner.state", {})).answer).toMatchObject({
+      result: { state: "admitted", restore: null } });
+    expect((await failure(() => env.OWNER.getByName(who).ownerState(ownerBinding(who))))
+      .message).toBe(PLATFORM_ONLY);
+    await BEGINS[1][1](who);
+    expect((await operated(who, "owner.state", {})).answer?.["refused"])
+      .toMatchObject({ code: "erasing" });
+    expect(await consume(who)).toContain("done");
+    expect((await operated(who, "owner.state", {})).answer?.["refused"])
+      .toEqual({ code: "owner_erased", message: "the owner is erased" });
+    await finish(who);
+    expect((await failure(() => env.OWNER.getByName(who).ownerState(
+      { owner: who, caller: PLATFORM_CALLER, origin: null }))).message).toBe(OWNER_ERASED);
   });
 
   it("erases nothing without the session or the owner's words", async () => {

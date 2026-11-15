@@ -121,6 +121,24 @@ export interface TierRequest {
   readonly tier: TierName;
 }
 
+/**
+ * The owner's state as the platform reads it (`ownerState`, the operator's `owner.state`):
+ * names, codes and counts alone, never its content, a credential or a binding. An owner
+ * being erased, or erased, has none: the door refuses it `erasing` or `owner_erased`.
+ */
+export interface OwnerStateAnswer {
+  /** Its admission (`admission.ts`): `pending`, `admitted` or `suspended`, and why, sorted. */
+  readonly state: string;
+  readonly reasons: readonly string[];
+  readonly tier: TierName;
+  /** The step of the restore that holds it (`owner/src/restore.ts`), or null when none does. */
+  readonly restore: string | null;
+  /** How many of its runs are live. */
+  readonly runs: number;
+  /** The bytes of its content, against its tier's storage. */
+  readonly stored_bytes: number;
+}
+
 /** A restore's generation (`owner/src/restore.ts`): its namespace (32 hex) and id (16 hex). */
 export interface RestoreBeginRequest {
   readonly namespace: string;
@@ -316,6 +334,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   // Sign-in and sign-up (`authorize.ts`), the owner's session (`app.ts`), erasure (`erase.ts`).
   admissionSet(binding: Binding, request: AdmissionRequest): Promise<{ readonly state: string }>;
   tierSet(binding: Binding, request: TierRequest): Promise<{ readonly tier: TierName }>;
+  // The owner's state, the operator channel's (`operator.ts`).
+  ownerState(binding: Binding): Promise<OwnerStateAnswer>;
   // A restore, the operator channel's (`operator.ts`; `owner/src/restore.ts`).
   restoreSource(binding: Binding): Promise<RestoreSource>;
   restoreBegin(binding: Binding, request: Asked<"restoreBegin", RestoreBeginRequest>):

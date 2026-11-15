@@ -379,7 +379,8 @@ export function bindKeyRegistration(env: DoorsEnv, token: ValidatedAccessToken<u
  * The platform's own binding for `owner`: the reserved caller (`PLATFORM_CALLER`, the
  * contract's), which the owner's object takes only at its admit at sign-up (`authorize.ts`,
  * `admissionSet`, for a verified sign-in whose owner the directory has no record of), at its
- * erasure doors while the owner is marked erasing (`erase.ts`), and at the import's doors.
+ * erasure doors while the owner is marked erasing (`erase.ts`), at the operator's ops
+ * (`operator.ts`), and at the import's doors.
  */
 export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
   return bound(env, "reserved", { owner, caller: PLATFORM_CALLER, origin: null });
