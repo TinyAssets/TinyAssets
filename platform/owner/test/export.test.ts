@@ -699,11 +699,13 @@ describe("the nightly manifest", () => {
       && (line["row"] as { name: string }).name === "kept.bin")).toBe(true);
     // A read changes nothing: still no job.
     await o.stub.fileStat(o.bind(), { path: `${W}/kept.bin` });
-    expect(await sqlIn(o.stub, "SELECT changed FROM owner_backup_state")).toEqual([{ changed: 0 }]);
+    expect(await sqlIn(o.stub, "SELECT changed_at FROM owner_backups"))
+      .toEqual([{ changed_at: null }]);
     expect(await laneAt(o.stub, "manifest")).toBeNull();
     // A change sets it due again, the next night.
     await o.stub.fileMkdir(o.bind(), { path: `${W}/later`, expected_etag: null });
-    expect(await sqlIn(o.stub, "SELECT changed FROM owner_backup_state")).toEqual([{ changed: 1 }]);
+    expect((await sqlIn(o.stub, "SELECT changed_at FROM owner_backups"))[0]!["changed_at"])
+      .not.toBeNull();
     for (let i = 0; i < 50 && await laneAt(o.stub, "manifest") === null; i++) {
       await new Promise((resolve) => setTimeout(resolve, 10));  // the mark's own sync
     }
@@ -722,8 +724,8 @@ describe("the nightly manifest", () => {
                         "'writing', NULL, ?, '', 0, 1, ?, ?)", gen, MANIFEST_PARTS,
                 MIGRATIONS.length, Date.now() / 1000);
     await sqlIn(o.stub, "UPDATE log_capture SET gen = ?, capturing = 1", gen);
+    await sqlIn(o.stub, "UPDATE owner_backup_state SET began_at = ?", Date.now() / 1000);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });  // its job set
-    await sqlIn(o.stub, "UPDATE owner_backup_state SET changed = 0");
     await drainDue(o.stub);
     expect(await sqlIn(o.stub, "SELECT gen FROM owner_backups WHERE gen = ?", gen)).toEqual([]);
     const told = await o.stub.noticeList(o.bind());
@@ -731,8 +733,10 @@ describe("the nightly manifest", () => {
     expect(await sqlIn(o.stub, "SELECT told FROM owner_backup_state")).toEqual([{ told: 1 }]);
     expect(await sqlIn(o.stub, "SELECT capturing, gen FROM log_capture"))
       .toEqual([{ capturing: 0, gen: null }]);
-    // No change since: no job, so no retry every few minutes.
-    expect(await laneAt(o.stub, "manifest")).toBeNull();
+    // The newest does not hold the owner's change, so it is tried again: the next night after
+    // the one given up began, never every few minutes.
+    expect(await laneAt(o.stub, "manifest"))
+      .toBeGreaterThanOrEqual((Math.floor(Date.now() / 86_400_000) + 1) * 86_400);
   });
 
   it("is wrapped again, with the object's key, by a rotation's sweep, an idle owner's too " +

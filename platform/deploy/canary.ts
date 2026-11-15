@@ -58,7 +58,11 @@ import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { pinned } from "../sandbox/template/pair.ts";
 import { github, type Reach, TOKEN } from "./actions.ts";
 import { authorizeCheck, heldHook, probeLink, upstreamFrom } from "./deploy.ts";
-import { AUTHORIZE, CALLBACK, E2B_HOOK_URL, EGRESS_DOMAIN, FIRST_PARTY, ORIGIN } from "./facts.ts";
+import identity from "../contract/identity.json" with { type: "json" };
+import {
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT,
+} from "../contract/src/identity.ts";
+import { AUTHORIZE, E2B_HOOK_URL, EGRESS_DOMAIN } from "./facts.ts";
 import { watch } from "./offsite.ts";
 
 type Json = Record<string, unknown>;
@@ -116,8 +120,7 @@ export const INPUTS = Object.freeze({
   github: TOKEN });
 
 /** The resource document `/mcp` names (RFC 9728's path form). */
-const MCP = `${ORIGIN}/mcp`;
-const RESOURCE_DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource/mcp`;
+const RESOURCE_DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource${identity.mcp}`;
 /** A name no side serves: the `404` a profile answers for a tool outside it. */
 const UNKNOWN_TOOL = "no_such_tool";
 /** Each request's limit: GitHub's runners reach some answers slowly. */
@@ -206,7 +209,7 @@ async function sideOf(world: World): Promise<Side> {
 
 /** An anonymous `initialize` of `/mcp`. */
 function anonymous(world: World): Promise<Response> {
-  return send(world, MCP, { method: "POST", body: INITIALIZE, headers: {
+  return send(world, MCP_RESOURCE, { method: "POST", body: INITIALIZE, headers: {
     "Content-Type": "application/json", Accept: "application/json, text/event-stream" } });
 }
 
@@ -232,14 +235,14 @@ async function challenge(world: World): Promise<string> {
                           "stopped partway is run again to the end");
   }
   const document = await json(await send(world, RESOURCE_DOCUMENT), RESOURCE_DOCUMENT, 6);
-  if (document["resource"] !== MCP) {
-    throw new Failure(6, `the resource document's resource is not ${MCP}`);
+  if (document["resource"] !== MCP_RESOURCE) {
+    throw new Failure(6, `the resource document's resource is not ${MCP_RESOURCE}`);
   }
   return "an anonymous initialize is challenged with the doors' resource document";
 }
 
 async function app(world: World): Promise<string> {
-  for (const url of [FIRST_PARTY.resource, `${FIRST_PARTY.resource}?upgrade=1`]) {
+  for (const url of [APP_RESOURCE, `${APP_RESOURCE}?upgrade=1`]) {
     const answer = await send(world, url);
     if (answer.status !== 200 || !/^text\/html/.test(answer.headers.get("Content-Type") ?? "")
         || answer.headers.get("Content-Security-Policy") === null) {
@@ -250,10 +253,10 @@ async function app(world: World): Promise<string> {
 }
 
 async function clientDocument(world: World): Promise<string> {
-  const answer = await send(world, FIRST_PARTY.client);
+  const answer = await send(world, WEB_CLIENT);
   if (answer.status !== 200
-      || (await json(answer, FIRST_PARTY.client, 2))["client_id"] !== FIRST_PARTY.client) {
-    throw new Failure(2, `${FIRST_PARTY.client} is not the first-party client's document`);
+      || (await json(answer, WEB_CLIENT, 2))["client_id"] !== WEB_CLIENT) {
+    throw new Failure(2, `${WEB_CLIENT} is not the first-party client's document`);
   }
   return "the first-party client's document is served";
 }
@@ -272,7 +275,7 @@ async function signIn(world: World): Promise<string> {
   const fetcher = bounded(world).fetch;
   const upstream = await failingAs(5, () =>
     upstreamFrom(world.env[INPUTS.issuer], world.env[INPUTS.client], fetcher));
-  const record = upstream.record as { authorization_endpoint: string; jwks_uri: string };
+  const { record } = upstream;
   const keys = await send(world, record.jwks_uri);
   if (keys.status !== 200 || !Array.isArray((await json(keys, record.jwks_uri, 5))["keys"])) {
     throw new Failure(5, `the issuer's JWKS ${record.jwks_uri} answered ${keys.status}, no keys`);
@@ -282,7 +285,7 @@ async function signIn(world: World): Promise<string> {
   const sent = to === null ? null : new URL(to, AUTHORIZE);
   if (answer.status !== 302 || sent === null
       || `${sent.origin}${sent.pathname}` !== record.authorization_endpoint
-      || sent.searchParams.get("redirect_uri") !== CALLBACK) {
+      || sent.searchParams.get("redirect_uri") !== UPSTREAM_CALLBACK) {
     throw new Failure(5, `${AUTHORIZE} answered ${answer.status}, not a redirect to WorkOS's ` +
                          "authorize with the doors' callback");
   }
@@ -507,7 +510,7 @@ export async function canary(world: World, options: Options): Promise<Result> {
     side = await sideOf(world);
     if (options.side !== null && side !== options.side) {
       throw new Failure(8, `asked for the ${options.side} side, but the ${side} side serves ${
-        MCP}`);
+        MCP_RESOURCE}`);
     }
   } catch (error) {
     if (!(error instanceof Failure)) {

@@ -7,7 +7,8 @@ import { createExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { mcpOrigin } from "../src/binder";
-import { ACCESS_TOKEN_TTL_S, MCP_RESOURCE, now, REFRESH_TOKEN_TTL_S, WEB_REDIRECT } from "../src/config";
+import { ACCESS_TOKEN_TTL_S, now, REFRESH_TOKEN_TTL_S } from "../src/config";
+import { MCP_RESOURCE, WEB_REDIRECT } from "../../contract/src/identity";
 import { serve } from "../src/doors";
 import { authorizationServer } from "../src/oauth";
 import type { Upstream } from "../src/upstream";

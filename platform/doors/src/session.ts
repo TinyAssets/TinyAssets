@@ -22,15 +22,16 @@
  * same-origin POSTs, and a Strict cookie set on the sign-in callback's response is kept
  * though that navigation came from the identity provider.
  */
-import { PUBLIC_ORIGIN } from "./config";
+import { ORIGIN } from "../../contract/src/identity";
 import { sha256Hex } from "../../contract/src/digest";
 import { SESSION_TTL_S } from "../../contract/src/limits";
 import { codePoints } from "../../contract/src/text";
 
+import { APP_PATH } from "./config";
 import { mediaType } from "./kit";
 
 export const COOKIE = "__Host-ta-owner";
-export const OWNER_SURFACE = "/app/api/";
+export const OWNER_SURFACE = `${APP_PATH}/api/`;
 const SAFE_METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "OPTIONS"]);
 
 /** Every value of the cookie `name` the request carries. */
@@ -68,7 +69,7 @@ export function sessionOf(request: Request): string | undefined {
   if (!url.pathname.startsWith(OWNER_SURFACE)
       || SAFE_METHODS.includes(request.method.toUpperCase())
       || mediaType(request) !== "application/json"
-      || request.headers.get("Origin") !== PUBLIC_ORIGIN
+      || request.headers.get("Origin") !== ORIGIN
       || (site !== null && site !== "same-origin")) {
     return undefined;
   }
