@@ -43,8 +43,10 @@ import { SESSION_TTL_S } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
-import type { Call, Door } from "./door";
-import type { OwnerState } from "./owner-do";
+import {
+  type Call, type Door, type DoorUnits, type LiveSession, type OwnerSelf, proven,
+} from "./door";
+import type { Relay } from "./relay";
 import { clock } from "./clock";
 
 interface SessionLimits {
@@ -81,10 +83,12 @@ export class Sessions {
   }
 
   /**
-   * A new session for a verified interactive sign-in at `authenticatedAt`: its cookie,
-   * returned once and never stored, and when it expires.
+   * The owner's new session for a verified interactive sign-in at `authenticatedAt`: its
+   * cookie, returned once and never stored, and when it expires.
    */
-  open(authenticatedAt: unknown, now: number): { session: string; expires_at: number } {
+  open(owner: OwnerSelf, authenticatedAt: unknown, now: number):
+      { session: string; expires_at: number } {
+    proven(owner, "owner");
     const limits = SESSION_LIMITS;
     if (typeof authenticatedAt !== "number" || !Number.isSafeInteger(authenticatedAt)
         || authenticatedAt < now - limits.signInMaxAgeS
@@ -109,8 +113,11 @@ export class Sessions {
     return { session, expires_at: expiresAt };
   }
 
-  /** The live session `proof` opens, by its hash (the receipts' session id), or refused. */
-  live(proof: unknown, now: number): string {
+  /**
+   * The live session `proof` opens, by its hash (the receipts' session id), or refused: the
+   * one maker of a `LiveSession`, which every widening in the owner's session takes.
+   */
+  live(proof: unknown, now: number): LiveSession {
     const cookie = proofOf(proof);
     const row = cookie === null ? undefined : this.#sql.exec<{ session_hash: string }>(
       "SELECT session_hash FROM owner_sessions WHERE session_hash = ? AND expires_at > ?",
@@ -119,16 +126,17 @@ export class Sessions {
     if (row === undefined) {
       throw new Refusal("refused", SESSION_REQUIRED);
     }
-    return row.session_hash;
+    return Object.freeze({ proved: "session", hash: row.session_hash }) as LiveSession;
   }
 
-  /** Slide a live session while its own browser keeps renewing. */
-  extend(proof: unknown, now: number): { expires_at: number } {
+  /** The owner slides its live session while its own browser keeps renewing. */
+  extend(owner: OwnerSelf, proof: unknown, now: number): { expires_at: number } {
+    proven(owner, "owner");
     const expiresAt = now + SESSION_TTL_S;
     return this.#storage.transactionSync(() => {
-      const id = this.live(proof, now);
+      const { hash } = this.live(proof, now);
       this.#sql.exec("UPDATE owner_sessions SET expires_at = ? WHERE session_hash = ?",
-                     expiresAt, id);
+                     expiresAt, hash);
       return { expires_at: expiresAt };
     });
   }
@@ -157,22 +165,32 @@ export class Sessions {
 
 // -- THE DOORS: the `sessions` rows' handlers (`contract/doors.json`) -----------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`SessionsDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `sessions` doors reach: the sessions, the connection flows a sign-out cancels, and
+ * the app sockets signing every session out closes.
+ */
+export interface SessionsDoorNeeds extends Pick<DoorUnits, "synced"> {
+  readonly sessions: Sessions;
+  readonly connections: { cancelFlows(session: string | null): void };
+  readonly relay: Pick<Relay, "closeAll">;
+}
 
 /** The `sessions` doors' handlers, by door. */
 export const sessionsDoors = Object.freeze({
   /** A verified interactive sign-in opens a session; its cookie is returned once. */
-  sessionOpen(o: OwnerState, { binding }: Call<undefined>):
+  sessionOpen(o: SessionsDoorNeeds, call: Call<undefined, "owner">):
       { session: string; expires_at: number } {
-    return o.sessions.open(binding.authenticated_at, clock());
+    return o.sessions.open(call.self, call.binding.authenticated_at, clock());
   },
-  sessionExtend(o: OwnerState, { binding }: Call<undefined>): { expires_at: number } {
-    return o.sessions.extend(binding.session, clock());
+  sessionExtend(o: SessionsDoorNeeds, call: Call<undefined, "owner">): { expires_at: number } {
+    return o.sessions.extend(call.self, call.binding.session, clock());
   },
   /** One session signed out, and the connection flows it began cancelled with it. */
-  sessionClose(o: OwnerState, { binding }: Call<undefined>): { closed: number } {
+  sessionClose(o: SessionsDoorNeeds, { binding }: Call<undefined>): { closed: number } {
     const id = o.sessions.id(binding.session);
     const closed = o.sessions.close(binding.session);
     if (id !== null) {
@@ -184,7 +202,7 @@ export const sessionsDoors = Object.freeze({
    * Every session signed out: account revocation and deletion (`revoke_owner`), every open
    * connection flow cancelled in the same unit, so a late callback finds none.
    */
-  async sessionCloseAll(o: OwnerState, door: Door<undefined>): Promise<{ closed: number }> {
+  async sessionCloseAll(o: SessionsDoorNeeds, door: Door<undefined>): Promise<{ closed: number }> {
     const closed = await o.synced(() => door.within(() => {
       o.connections.cancelFlows(null);
       return o.sessions.closeAll();

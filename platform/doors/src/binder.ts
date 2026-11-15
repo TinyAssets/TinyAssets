@@ -274,7 +274,7 @@ export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generat
  * An account's or an inbound event's binding with what the platform control record holds
  * for this call, as the doors read it to gate the call (`control.ts`): its tier numbers
  * (`tiersOf`; null for none, and the object then forgets the numbers it kept and refuses,
- * `tier.ts`), which the run doors' admission reads, and the served records whose vendor
+ * `admission.ts`), which the run doors' admission reads, and the served records whose vendor
  * sign-in is switched on (`signinsRead`, of the catalog the doors serve, the `sources`
  * route's own), which the object's sign-in doors and its runs' admission hold to. No request
  * names either. Both kinds' parsers take the two as the doors read them, so the binding

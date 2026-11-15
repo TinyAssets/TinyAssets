@@ -18,7 +18,7 @@
  *    with its input (`run_inputs`; `QUEUE_FULL` past `QUEUE_ROWS` or `QUEUE_BYTES`), and
  *    the lane starts it, in order, once the run before it settles (`nextWaiting`);
  * 6. the tier's simultaneous runs hold (`TIER_RUNS`), from the numbers the binder handed
- *    and the owner's own tier (`tier.ts`);
+ *    and the owner's own tier (`admission.ts`);
  * 7. the source is chosen (`choose`): `agent.json`'s engine, or `auto`'s strongest connected
  *    source that has an engine (Direction 4): the owner's connections and its signed-in
  *    engines (`engine_signins`, each as the runner reports its record's `status_argv`)
@@ -85,7 +85,6 @@ import type { OwnerStorage } from "./gate";
 import { periods } from "./money";
 import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF, switchedOn } from "./signins";
-import { TIER_RUNS, tierNumbers } from "./tier";
 import type { TierName, Tiers } from "../../contract/src/control";
 import { utf8Bytes } from "../../contract/src/text";
 import type { Account, Call, Door } from "./door";
@@ -107,6 +106,8 @@ import {
  */
 export const RUNS_KEPT = 2000;
 
+/** Over the tier's simultaneous runs. */
+export const TIER_RUNS = "tier_runs: the owner's tier runs this many runs at once";
 export const NO_CONVERSATION = "no_conversation: no such conversation of the caller's";
 const CONVERSATION_BUSY = "conversation_busy: a run in this conversation is still live";
 /** The inputs waiting for their conversations are at their ceiling (`QUEUE_ROWS`, `QUEUE_BYTES`). */
@@ -171,17 +172,19 @@ export interface OpenedTokens {
 /**
  * What Runs reaches past its own rows: one narrow interface, which the run launcher serves
  * (`launch.ts`, `Launcher`). Runs reads the rest itself, from the storage it is handed: the
- * tier's numbers as last kept (`tier.ts`), the switched-on sign-ins (`signins.ts`) and the
- * served source records (`bundledSources`). The owner's admission and tier are the
- * admission module's, which only the object reads (the policy-boundary guard), so the
- * launcher hands them on from the object's state; the connections, the grants, the model
- * policy's caps and the spend are their modules', each read in the unit it is asked in.
+ * switched-on sign-ins (`signins.ts`) and the served source records (`bundledSources`). The
+ * owner's admission, tier and kept tier numbers are the admission module's, which only the
+ * object reads (the policy-boundary guard), so the launcher hands them on from the object's
+ * state; the connections, the grants, the model policy's caps and the spend are their
+ * modules', each read in the unit it is asked in.
  */
 export interface RunHost {
   /** The owner's `require_work` refusal, or null while it is admitted. */
   unadmitted(): Refusal | null;
   /** The owner's own tier (`admission.ts`). */
   tier(): TierName;
+  /** The tier numbers last kept (`admission.ts`), or null when none were. */
+  tiers(): Tiers | null;
   /** The owner's active connections the sandbox may reach (a stored egress scope), with their models. */
   reachable(): readonly UsableSource[];
   /** A client's grant, standing at its stamp's generation; refused otherwise. */
@@ -597,19 +600,11 @@ export class Runs {
   }
 
   /**
-   * The owner's tier's simultaneous runs, by the numbers last kept (`tierNumbers`, which
-   * reads no time when none are handed), or null when none were: whether a waiting run may
-   * start (the lane's).
+   * The owner's tier's simultaneous runs, by the numbers last kept, or null when none were
+   * (no waiting run starts): whether a waiting run may start (the lane's).
    */
   #capacity(): number | null {
-    try {
-      return tierNumbers(this.#storage, undefined, 0)[this.#host.tier()].runs;
-    } catch (error) {
-      if (error instanceof Refusal && !error.invalid) {
-        return null;  // none handed yet: no waiting run starts
-      }
-      throw error;
-    }
+    return this.#host.tiers()?.[this.#host.tier()].runs ?? null;
   }
 
   /**
@@ -1742,7 +1737,7 @@ export const runsDoors = Object.freeze({
       const { account, universe } = door.check();
       return { ...initiated(o, door.binding, account, universe, asked.agent),
                agent: asked.agent, conversation: asked.conversation, request: asked.request,
-               tiers: tierNumbers(o.storage, door.binding.tiers, clock()), unattended: false,
+               tiers: o.admission.numbers(), unattended: false,
                prompt: asked.prompt, mail: null };
     });
     return fittedRun(await o.launcher.settledWithin(run, asked.waitMs, asked.client));
@@ -1769,9 +1764,6 @@ export const runsDoors = Object.freeze({
       if (at === null && cron === null) {
         return { now: true as const, agent, input, client };
       }
-      if (door.binding.tiers !== undefined) {
-        tierNumbers(o.storage, door.binding.tiers, clock());  // kept for the lane's runs
-      }
       const { stamp, origin } = initiated(o, door.binding, account, universe, agent);
       return { now: false as const, schedule: o.runs.schedule({
         agent, input, at: at as number | null, cron: cron as string | null, stamp, origin },
@@ -1787,8 +1779,8 @@ export const runsDoors = Object.freeze({
       // A run's own launch has no person at it: unattended, as a schedule's run is.
       return { ...initiated(o, door.binding, account, universe, asked.agent),
                agent: asked.agent, conversation: null, request: null,
-               tiers: tierNumbers(o.storage, door.binding.tiers, clock()),
-               unattended: account.run !== null, prompt: asked.input, mail: null };
+               tiers: o.admission.numbers(), unattended: account.run !== null,
+               prompt: asked.input, mail: null };
     });
     return fittedRun(await o.launcher.settledWithin(run, 0, asked.client));
   },

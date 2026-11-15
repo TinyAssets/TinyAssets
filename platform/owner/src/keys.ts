@@ -25,8 +25,8 @@ import { KEY_NAME_MAX, MAX_KEYS } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
-import type { Call } from "./door";
-import type { GrantRequest, OwnerState } from "./owner-do";
+import type { Scope } from "./authority";
+import { type Call, type LiveSession, type ObjectReads, proven } from "./door";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "./clock";
 
@@ -82,10 +82,12 @@ export class Keys {
   }
 
   /**
-   * Inside the mint's unit: refused past the count, then the row, `client` its grant's
-   * (the key's own origin, `ledger.ts`'s `apiKeyOrigin`). Its grant is the caller's.
+   * Inside the mint's unit, in the owner's session: refused past the count, then the row,
+   * `client` its grant's (the key's own origin, `ledger.ts`'s `apiKeyOrigin`). Its grant is
+   * the caller's.
    */
-  add(id: string, client: string, name: string, now: number): ApiKey {
+  add(session: LiveSession, id: string, client: string, name: string, now: number): ApiKey {
+    proven(session, "session");
     const sql = this.#storage.sql;
     const live = sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM owner_keys WHERE revoked_at IS NULL").one().n;
@@ -135,9 +137,23 @@ export interface KeyMintRequest {
 
 // -- THE DOORS: the `keys` rows' handlers (`contract/doors.json`) ---------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`KeysDoorNeeds`) once the row's steps held: the bind, the account, the scope
+// and the fields.
+
+/** What the `keys` doors reach: the keys, and the grant and held request a mint sets. */
+export interface KeysDoorNeeds extends Pick<ObjectReads, "storage"> {
+  readonly keys: Keys;
+  readonly grants: {
+    set(session: LiveSession, change: { readonly client: string; readonly source: "api_key";
+                                        readonly mode: "scoped"; readonly scopes: unknown;
+                                        readonly expected_revision: 0; readonly name: string },
+        now: number): { readonly scopes: Scope[]; readonly revision: number };
+  };
+  readonly policy: {
+    applyKeyRequest(session: LiveSession, proposal: unknown, scopes: unknown, now: number): void;
+  };
+}
 
 /** The `keys` doors' handlers, by door. */
 export const keysDoors = Object.freeze({
@@ -148,25 +164,25 @@ export const keysDoors = Object.freeze({
    * (`proposal`), and the key's row. The binder then writes the key's directory entry and
    * shows its secret once (`doors/src/api-keys.ts`); the object never sees the secret.
    */
-  keyMint(o: OwnerState, { session: id, r }: Call<KeyMintRequest>): ApiKey & { scopes: GrantRequest["scopes"];
-      revision: number } {
+  keyMint(o: KeysDoorNeeds, { session, r }: Call<KeyMintRequest, "session">):
+      ApiKey & { scopes: Scope[]; revision: number } {
     const key = keyId(r["key_id"]);
     const name = keyName(r["name"]);
     const now = Math.floor(clock());  // whole seconds: the directory entry's mint time
     return o.storage.transactionSync(() => {
-      const row = o.keys.add(key, apiKeyOrigin(key).client, name, now);
-      const set = o.grants.set(id, {
+      const row = o.keys.add(session, key, apiKeyOrigin(key).client, name, now);
+      const set = o.grants.set(session, {
         client: apiKeyOrigin(key).client, source: "api_key", mode: "scoped",
-        scopes: r["scopes"] as GrantRequest["scopes"], expected_revision: 0, name,
-      } as unknown as GrantRequest, now);
+        scopes: r["scopes"], expected_revision: 0, name,
+      }, now);
       if (r["proposal"] !== undefined) {
-        o.policy.applyKeyRequest(r["proposal"], set.scopes, now);
+        o.policy.applyKeyRequest(session, r["proposal"], set.scopes, now);
       }
       return { ...row, scopes: set.scopes, revision: set.revision };
     });
   },
   /** The owner's API keys, live and revoked: what its key list shows, and its erasure ends. */
-  keyList(o: OwnerState, _call: Call<undefined>): { keys: ApiKey[] } {
+  keyList(o: KeysDoorNeeds, _call: Call<undefined>): { keys: ApiKey[] } {
     return { keys: o.keys.list() };
   },
 });

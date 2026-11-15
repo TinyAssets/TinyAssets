@@ -24,7 +24,7 @@ import {
 } from "../../contract/src/policy-document";
 import { Policy } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, ownerObject } from "./support";
+import { failure, inSession, ownerObject } from "./support";
 
 type Doc = {
   egress: { mode: string; destinations: unknown[] };
@@ -364,14 +364,13 @@ describe("an agent's proposal", () => {
     const r = await rig();
     const kept = POLICY_LIMITS.appliedProposals;
     const applied = Array.from({ length: kept + 2 }, (_, n) => `a${n}`);
-    await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage);
+    await inSession(r.stub, r.cookie, ({ policy }, session) => {
       const now = clock();
       for (const [n, id] of applied.entries()) {
         const generation = policy.read().generation;
         policy.propose(change(generation), id, "owner", now + n);
         const { digest } = policy.held(id, now + n)!;
-        policy.write("session", generation, defaults(), { request_id: id, digest }, now + n);
+        policy.write(session, generation, defaults(), { request_id: id, digest }, now + n);
       }
       policy.propose(change(policy.read().generation), "d", "owner", now + applied.length);
     });

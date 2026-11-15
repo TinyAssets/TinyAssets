@@ -439,7 +439,7 @@ async function recorded(env: DoorsEnv, message: ImportMessage): Promise<void> {
 /**
  * The control record's tier numbers, read as every account door's binding reads them
  * (`tiersOf`); null for none, so the files plane's quota refuses rather than guesses
- * (`tier.ts`). The import passes no gate: it runs dark, before `routes`.
+ * (`admission.ts`). The import passes no gate: it runs dark, before `routes`.
  */
 async function tiers(env: DoorsEnv): Promise<unknown> {
   return tiersOf(await readControl(env.CONTROL));

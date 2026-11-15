@@ -99,7 +99,7 @@ import { CLIENT_WRITER, CLIENTS, INDEX_BYTES } from "./manifest";
 import { OWNER, scopeOf } from "./authority";
 import { refuseErasing } from "./erasure";
 import { heldGenerations } from "./restore";
-import { TIER_UNREAD } from "./tier";
+import { TIER_UNREAD } from "../../contract/src/owner";
 import { AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
 import {
   ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within,

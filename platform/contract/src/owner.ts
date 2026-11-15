@@ -116,10 +116,16 @@ export type AdmissionRequest =
   | { readonly admit: true }
   | { readonly reason: string; readonly suspended: boolean };
 
-/** The platform's setting of the owner's tier (`tier.ts`; the import's admit step). */
+/** The platform's setting of the owner's tier (`admission.ts`; the import's admit step). */
 export interface TierRequest {
   readonly tier: TierName;
 }
+
+/**
+ * The owner's refusal of a run or a file byte while its object holds no tier numbers
+ * (`admission.ts`): the runs' admission and the files' byte bound both refuse with it.
+ */
+export const TIER_UNREAD = "tier_unread: the platform's tier numbers are not known here";
 
 /**
  * The owner's state as the platform reads it (`ownerState`, the operator's `owner.state`):

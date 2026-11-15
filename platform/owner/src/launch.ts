@@ -50,8 +50,7 @@ import {
 import { started, vendorHosts } from "./sandbox";
 import { LANE_CALL_MS } from "./schedule";
 import { switchedOn } from "./signins";
-import { tierNumbers } from "./tier";
-import type { TierName } from "../../contract/src/control";
+import type { TierName, Tiers } from "../../contract/src/control";
 import {
   type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, SIGNIN_REQUIRED,
   type Started,
@@ -94,8 +93,7 @@ export interface SandboxRun {
 /** What the launcher reaches of the object: its stores, its gate, and its own reads. */
 export type LaunchState = Pick<OwnerState, "env" | "storage" | "owner" | "files" | "connections"
   | "grants" | "policy" | "usage" | "egress" | "relay" | "ledger" | "notices" | "signins"
-  | "bodies" | "starter" | "door" | "sync" | "control" | "admitted" | "unadmitted"
-  | "tier">;
+  | "bodies" | "starter" | "door" | "sync" | "control" | "admitted" | "admission">;
 
 export class Launcher implements RunHost {
   readonly #o: LaunchState;
@@ -117,11 +115,15 @@ export class Launcher implements RunHost {
   // -- RUNHOST: what Runs reaches past its rows -----------------------------------------
 
   unadmitted(): Refusal | null {
-    return this.#o.unadmitted();
+    return this.#o.admission.unadmitted();
   }
 
   tier(): TierName {
-    return this.#o.tier();
+    return this.#o.admission.tier();
+  }
+
+  tiers(): Tiers | null {
+    return this.#o.admission.tiers();
   }
 
   reachable(): readonly UsableSource[] {
@@ -208,6 +210,19 @@ export class Launcher implements RunHost {
     for (const grant of grants) {
       queueMicrotask(() => void this.cancel(grant.run));
     }
+  }
+
+  /**
+   * In a unit: the client's runs ended (`Runs.endClient`), their CLIs stopped once the unit
+   * is over.
+   */
+  endClient(client: string, now: number): void {
+    this.stop(this.runs.endClient(client, now));
+  }
+
+  /** In a unit: every live run cancelled (`Runs.endAll`), its CLI stopped once it is over. */
+  endAll(now: number): void {
+    this.stop(this.runs.endAll(now));
   }
 
   // -- A LAUNCH --------------------------------------------------------------------------
@@ -447,7 +462,7 @@ export class Launcher implements RunHost {
    * Runs' own and a live lease's re-apply coming due (`reapply`).
    */
   next(now: number): number | null {
-    const admitted = this.#o.unadmitted() === null;
+    const admitted = this.#o.admission.unadmitted() === null;
     if (admitted && this.#o.ledger.mailDue(this.runs.queueRoom(MAIL_INPUT_BYTES))) {
       return now;
     }
@@ -482,7 +497,7 @@ export class Launcher implements RunHost {
     await this.reapply();
     while (clock() < until) {
       const waiting = await this.#o.door(() => {
-        const next = this.#o.unadmitted() !== null ? null : this.runs.nextWaiting();
+        const next = this.#o.admission.unadmitted() !== null ? null : this.runs.nextWaiting();
         return next === null ? null : { run: next.id, ask: this.runs.waitingAsk(next.id)! };
       });
       if (waiting === null) {
@@ -493,7 +508,7 @@ export class Launcher implements RunHost {
         const prompt = waiting.ask.mail === null ? waiting.ask.prompt
           : await this.#mailPrompt(waiting.ask.mail.message, waiting.ask.agent);
         await this.launch(read, () => ({
-          ...waiting.ask, prompt, tiers: tierNumbers(this.#o.storage, undefined, clock()) }),
+          ...waiting.ask, prompt, tiers: this.#o.admission.numbers() }),
                           waiting.run);
       } catch (error) {
         if (!(error instanceof Refusal) || error.transient) {
@@ -513,7 +528,7 @@ export class Launcher implements RunHost {
     while (clock() < until) {
       // A placed body (ADR-035) is read from R2 between the lane's units, as a door's.
       const next = (bodies: ReadonlyMap<string, string>) => {
-        if (this.#o.unadmitted() !== null) {
+        if (this.#o.admission.unadmitted() !== null) {
           return null;
         }
         if (this.runs.queueRoom(MAIL_INPUT_BYTES)) {
@@ -536,7 +551,7 @@ export class Launcher implements RunHost {
     // (A unit keeps what it wrote before a throw, `gate.ts`: so the claim is the admission's
     // last write, never its first.)
     while (clock() < until) {
-      const row = await this.#o.door(() => this.#o.unadmitted() !== null
+      const row = await this.#o.door(() => this.#o.admission.unadmitted() !== null
         ? null : this.runs.due(clock()));
       if (row === null) {
         return;
@@ -552,7 +567,7 @@ export class Launcher implements RunHost {
           return {
             initiator: "schedule", ...scheduleAuthority(row), agent: row.agent,
             conversation: null, request: null,
-            tiers: tierNumbers(this.#o.storage, undefined, clock()), unattended: true,
+            tiers: this.#o.admission.numbers(), unattended: true,
             prompt: row.input, mail: null };
         }, null, () => this.runs.claim(row, clock()));
         await this.#o.door(() => this.runs.ran(row.id, run, null));
@@ -630,7 +645,7 @@ export class Launcher implements RunHost {
         conversation: this.runs.kept(conversation, mail.agent, origin?.client ?? null)
           ? conversation : null,
         request: sha256Hex(`mail\0${mail.message_id}\0${mail.agent_id}`),
-        tiers: tierNumbers(this.#o.storage, undefined, clock()), unattended: !mail.attended,
+        tiers: this.#o.admission.numbers(), unattended: !mail.attended,
         prompt, mail: { message: mail.message_id, conversation } }), null,
                         () => this.#o.ledger.taken(mail.message_id, mail.agent_id, clock()));
     } catch (error) {
@@ -737,7 +752,7 @@ export class Launcher implements RunHost {
   async reapply(): Promise<void> {
     const sandbox = this.#o.env.SANDBOX;
     const sent = await this.#o.door(() => {
-      if (this.#o.unadmitted() !== null) {
+      if (this.#o.admission.unadmitted() !== null) {
         return [];
       }
       const now = clock();
