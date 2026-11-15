@@ -323,8 +323,8 @@ const OWN_UNITS: ReadonlySet<string> = new Set([
   // The manifest lane's pass, which a restore's pin drives for its fresh generation.
   "backups.run",
   // Each reads in units of its own, or R2 alone.
-  "files.fetch", "files.check", "files.names", "archive.archived", "archive.chain", "launcher.readAgent",
-  "launcher.settledWithin",
+  "files.fetch", "files.check", "files.names", "archive.archived", "archive.chain",
+  "launcher.readAgent", "launcher.settledWithin",
   // A placed body sent to R2 before its unit, and released after it.
   "bodies.send", "bodies.release",
   // An export's page: its generation's rows read once its own unit read the export.

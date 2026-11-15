@@ -6,11 +6,12 @@
  * for it (`doors/src/operator.ts`, ops `restore.*`).
  *
  * **What it reads.** The generation's root, its base parts and its log segments, through the
- * files Worker's manifest reads (`Bucket`, `FILES`), the same reads an export makes.
- * The files Worker opens each under the owner's data key; nothing here holds a key or puts
- * to R2, and what it deletes is only what its `sweep` step finds no row names. A restore from the off-account copy (lane R's eighth PR) puts the copy's bytes back
- * at the same R2 keys first (the seal binds the key, `r4.md` item 6), so this reads them
- * unchanged: only where `{namespace, gen}` comes from differs.
+ * files Worker's manifest reads (`Bucket`, `FILES`), the same reads an export makes. The
+ * files Worker opens each under the owner's data key; nothing here holds a key or puts to R2,
+ * and it deletes only the chunks its `sweep` step finds no row names. A restore from the
+ * off-account copy (lane R's eighth PR) puts the copy's bytes back at the same R2 keys first
+ * (the seal binds the key, `r4.md` item 6), so this reads them unchanged: only where
+ * `{namespace, gen}` comes from differs.
  *
  * **The object takes the generation's namespace and wrapped key** (`file_space`), so every
  * chunk a content names is found where it is, under the same key: no chunk moves.

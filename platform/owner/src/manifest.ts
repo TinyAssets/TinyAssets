@@ -126,8 +126,8 @@ export const CONTENT_BYTES = (row: string): string =>
  * 71 bytes) and its entry in the due index. The same for every chunk, so a change of holder
  * moves no charge.
  */
-const CHUNK_RECORDS: readonly (readonly number[])[] = Object.freeze([Object.freeze([HASH, 9, 71]),
-                                                                     Object.freeze([HASH, 8])]);
+const CHUNK_RECORDS: readonly (readonly number[])[] = Object.freeze([
+  Object.freeze([HASH, 9, 71]), Object.freeze([HASH, 8])]);
 
 /** A chunk: its two records (`CHUNK_RECORDS`). */
 export const CHUNK_ROW_BYTES = (): string =>

@@ -331,9 +331,15 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`r5w.md` item 14): #5616, the rewrap refused during a hold.
   - [x] Owner migration 13's pin, after the generations' sweep merges (`r7-sweep.md` item 5):
     with `owner.state` (`owner-state-op.md`).
-  - [ ] A restore's unnamed chunks swept: those the owner put after E have no row in the
-    restored object, so nothing collects them; the files plane maps a listed chunk's name back
-    to the object's hashes (`r7-sweep.md` item 10, `untangle/r-restore-chunks`).
+  - [x] A restore's unnamed chunks swept: those the owner put after E have no row in the
+    restored object, so nothing collects them. Two restore steps under the hold, between
+    `chunks` and `clear`: `names` (every `file_chunks` row's name from `FILES.chunkNames`, in a
+    Bloom filter sized for the file index's most chunk rows, one row) and `sweep`
+    (`FILES.listChunks` from the last name, each name the filter says no row has deleted by
+    `deleteListed`; a false positive leaks at most about 1% of them until erasure); owner
+    migration 14, its pin after (`r-restore-chunks.md`, `untangle/r-restore-chunks`).
+  - [ ] Owner migration 14's pin PR, after the restore's chunk sweep merges
+    (`r-restore-chunks.md`, `untangle/r-restore-chunks-pin14`).
   - [x] A restore's kept generations' chunks kept from early collection: the files plane
     collects early only garbage the newest generation does not name, so the fallback a
     restore loads can lose a chunk and its restore fails at its chunks step (`r5w.md`
