@@ -4,7 +4,6 @@
  * and the guards run: tests run what deploys, and the template guard holds `dist/` to it. A
  * global setup, so loading the config builds nothing.
  */
-import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,5 +12,5 @@ import { bundles } from "./template/pair";
 const SANDBOX = dirname(fileURLToPath(import.meta.url));
 
 export function setup(): void {
-  bundles(execFileSync, join(SANDBOX, "dist"));
+  bundles(join(SANDBOX, "dist"));
 }

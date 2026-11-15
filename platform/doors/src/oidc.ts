@@ -25,11 +25,15 @@
  * Any failure throws, its message naming the check or the status (a refused exchange's
  * error code with it) and never a token or a secret; a wrong issuer names the issuer the
  * token carries, which is no secret. A sign-in is never taken on less than every check.
+ * The token's segments are read by the contract's base64url reader and the upstream's answers
+ * by the doors' bounded reader (`kit.ts`); each refusal's words are this module's.
  */
 import { whole } from "../../contract/src/checks";
+import { fromBase64url } from "../../contract/src/envelope";
 import { authorizeUrl, type UpstreamConfig } from "../../contract/src/signin";
 import { utf8Decoder } from "../../contract/src/text";
 import { CLOCK_MARGIN_S, now } from "./config";
+import { boundedText } from "./kit";
 import type { SignIn, Upstream } from "./upstream";
 
 /** An access token's largest size we read, and a JWKS's. */
@@ -50,13 +54,14 @@ const REFUSAL_CODES: readonly string[] = Object.freeze([
   "application_consent_required"]);
 /** A claim value short and plain enough to name on the page: visible ASCII. */
 const SHOWN = /^[\x21-\x7e]{1,256}$/;
-function unbase64url(text: string): Uint8Array {
-  if (!/^[A-Za-z0-9_-]*$/.test(text)) {
+
+/** One segment of the access token, as its bytes (RFC 7515: unpadded base64url). */
+function segment(text: string): Uint8Array<ArrayBuffer> {
+  const bytes = fromBase64url(text);
+  if (bytes === null) {
     throw new Error("the access token is not base64url");
   }
-  const padded = text.replace(/-/g, "+").replace(/_/g, "/")
-    + "=".repeat((4 - (text.length % 4)) % 4);
-  return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+  return bytes;
 }
 
 function json(bytes: Uint8Array, what: string): Record<string, unknown> {
@@ -72,32 +77,14 @@ function json(bytes: Uint8Array, what: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/** A response's JSON, read no further than `max` bytes: a larger one is refused while read. */
-async function bounded(response: Response, max: number, what: string): Promise<unknown> {
-  const reader = (response.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() }))
-    .getReader();
-  const parts: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    size += value.byteLength;
-    if (size > max) {
-      await reader.cancel().catch(() => undefined);
-      throw new Error(`the upstream's ${what} is too large`);
-    }
-    parts.push(value);
-  }
-  const whole = new Uint8Array(size);
-  let at = 0;
-  for (const part of parts) {
-    whole.set(part, at);
-    at += part.byteLength;
+/** An answer's JSON, read no further than `max` bytes (`boundedText`): a larger one is refused. */
+async function answerJson(response: Response, max: number, what: string): Promise<unknown> {
+  const text = await boundedText(response, max);
+  if (text === null) {
+    throw new Error(`the upstream's ${what} is too large`);
   }
   try {
-    return JSON.parse(new TextDecoder().decode(whole));
+    return JSON.parse(text);
   } catch {
     throw new Error(`the upstream's ${what} is not JSON`);
   }
@@ -110,7 +97,7 @@ async function bounded(response: Response, max: number, what: string): Promise<u
 async function refusalCode(response: Response): Promise<string> {
   let refusal: { code?: unknown; error?: unknown } | null;
   try {
-    refusal = await bounded(response, REFUSAL_MAX, "refusal") as typeof refusal;
+    refusal = await answerJson(response, REFUSAL_MAX, "refusal") as typeof refusal;
   } catch {
     return "";
   }
@@ -125,8 +112,9 @@ async function refusalCode(response: Response): Promise<string> {
  * checked against the JWKS `keys` holds. Throws on anything short of every check.
  */
 export async function verifiedAccessToken(answer: unknown, issuer: string,
-                                          config: UpstreamConfig, keys: unknown,
-                                          at: number = now()): Promise<SignIn> {
+                                          config: UpstreamConfig, keys: unknown):
+    Promise<SignIn> {
+  const at = now();
   const held = (typeof answer === "object" && answer !== null ? answer : {}) as
     { access_token?: unknown; user?: { id?: unknown } | null };
   const token = held.access_token;
@@ -138,7 +126,7 @@ export async function verifiedAccessToken(answer: unknown, issuer: string,
     throw new Error("the access token is not a signed JWT");
   }
   const [head, body, signature] = parts as [string, string, string];
-  const header = json(unbase64url(head), "header");
+  const header = json(segment(head), "header");
   if (header["alg"] !== "RS256" || typeof header["kid"] !== "string") {
     throw new Error("the access token is not RS256 under a named key");
   }
@@ -160,10 +148,10 @@ export async function verifiedAccessToken(answer: unknown, issuer: string,
     "jwk", { kty: "RSA", n: jwk["n"], e: jwk["e"], alg: "RS256", ext: true },
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
   const signed = new TextEncoder().encode(`${head}.${body}`);
-  if (!await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, unbase64url(signature), signed)) {
+  if (!await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, segment(signature), signed)) {
     throw new Error("the access token's signature does not verify");
   }
-  const claims = json(unbase64url(body), "claims");
+  const claims = json(segment(body), "claims");
   const iss = claims["iss"];
   if (iss !== config.token_issuer) {
     // Signed by the issuer, so the value is the issuer's, and no secret: the probe reads it.
@@ -206,12 +194,10 @@ export async function verifiedAccessToken(answer: unknown, issuer: string,
 
 /**
  * The live upstream for `issuer` (`OWNER_ISSUER`) and `config` (`UPSTREAM`), with the
- * client secret; `fetcher` reaches the issuer (the global fetch, or a test's fake).
+ * client secret; `fetcher` reaches the issuer (the Worker's `fetch`).
  */
 export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: string,
-                             fake?: typeof fetch): Upstream {
-  const fetcher = (url: string, init: RequestInit): Promise<Response> =>
-    fake === undefined ? fetch(url, init) : fake(url, init);
+                             fetcher: typeof fetch): Upstream {
   if (typeof secret !== "string" || secret === "") {
     throw new Error("WORKOS_API_KEY, the upstream's client secret, is not set");
   }
@@ -233,13 +219,14 @@ export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: str
         throw new Error(`the upstream's token endpoint answered ${exchanged.status}${
           await refusalCode(exchanged)}`);
       }
-      const answer = await bounded(exchanged, TOKEN_MAX * 4, "token answer");
+      const answer = await answerJson(exchanged, TOKEN_MAX * 4, "token answer");
       const keys = await fetcher(config.jwks_uri, { headers: { Accept: "application/json" },
                                                     redirect: "manual" });
       if (keys.status !== 200) {
         throw new Error(`the issuer's JWKS answered ${keys.status}`);
       }
-      return verifiedAccessToken(answer, issuer, config, await bounded(keys, JWKS_MAX, "JWKS"));
+      return verifiedAccessToken(answer, issuer, config,
+                                 await answerJson(keys, JWKS_MAX, "JWKS"));
     },
     forget: async (subject: string): Promise<void> => {
       const url = config.user_delete.replace("{sub}", encodeURIComponent(subject));

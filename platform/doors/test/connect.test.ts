@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OwnerDO } from "../../owner/src/owner-do";
 import { CONNECT_CALLBACK, CONNECTED_PAGE, now } from "../src/config";
+import { base64url } from "../../contract/src/envelope";
 import { ORIGIN } from "../../contract/src/identity";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import type { DoorsEnv } from "../src/env";
@@ -431,8 +432,7 @@ describe("an OAuth connect", () => {
     expect(form.get("redirect_uri")).toBe(TEST_CALLBACK);
     const digest = await crypto.subtle.digest("SHA-256",
                                               new TextEncoder().encode(form.get("code_verifier")!));
-    expect(btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, "-")
-      .replace(/\//g, "_").replace(/=+$/, "")).toBe(params["code_challenge"]);
+    expect(base64url(new Uint8Array(digest))).toBe(params["code_challenge"]);
     expect(sent[1]!.headers["authorization"]).toBe("Bearer at-good");
     for (const secret of ["good-code", "at-good", "rt-good"]) {
       await keptFromObject(app.owner, secret, calls, text);

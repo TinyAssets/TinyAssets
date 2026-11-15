@@ -6,6 +6,7 @@ import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
 import { PLATFORM_CALLER } from "../../contract/src/binding";
+import { base64url } from "../../contract/src/envelope";
 import { acceptanceKey, answerKey } from "../../contract/src/operator-message";
 import { QUEUES } from "../../contract/src/queue-names";
 import { writeControl } from "../../ci/fixtures";
@@ -107,11 +108,6 @@ export class Jar {
   header(): string {
     return [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ");
   }
-}
-
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_")
-    .replace(/=+$/, "");
 }
 
 export async function pkce(): Promise<{ verifier: string; challenge: string }> {

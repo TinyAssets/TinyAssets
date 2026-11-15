@@ -179,7 +179,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const e2b = new E2bAdmin(key, runtimeFetch);
   const out = mkdtempSync(join(tmpdir(), "ta-checks-"));
   try {
-    const { runner, probes } = bundles(execFileSync, out);
+    const { runner, probes } = bundles(out);
     const plan = JSON.parse(execFileSync(process.execPath, [join(out, BUNDLES.probes), "plan"],
                                          { encoding: "utf8" })) as Plan;
     if (plan.runner !== runner.sha) {

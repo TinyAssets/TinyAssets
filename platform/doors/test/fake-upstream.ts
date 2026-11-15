@@ -6,6 +6,7 @@
  * provider would issue it. `finish` checks the doors' verifier against that challenge,
  * as AuthKit's token endpoint does, so a flow whose PKCE is wrong fails here.
  */
+import { base64url, fromBase64url } from "../../contract/src/envelope";
 import type { SignIn, Upstream } from "../src/upstream";
 
 export const UPSTREAM_AUTHORIZE = "https://upstream.test/authorize";
@@ -17,11 +18,6 @@ interface FakeCode {
   readonly subject: string;
   readonly authenticated_at: number;
   readonly challenge: string;
-}
-
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_")
-    .replace(/=+$/, "");
 }
 
 /** The code the fake provider issues for this sign-in and challenge. */
@@ -45,8 +41,11 @@ export const FAKE_UPSTREAM: Upstream = Object.freeze({
   },
   finish: async ({ code, code_verifier }: { code: string; code_verifier: string }):
       Promise<SignIn> => {
-    const padded = code.replace(/-/g, "+").replace(/_/g, "/");
-    const parsed = JSON.parse(atob(padded)) as FakeCode;
+    const bytes = fromBase64url(code);
+    if (bytes === null) {
+      throw new Error("the fake upstream issued no such code");
+    }
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as FakeCode;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code_verifier));
     if (base64url(new Uint8Array(digest)) !== parsed.challenge) {
       throw new Error("the fake upstream refuses a PKCE verifier that misses its challenge");
