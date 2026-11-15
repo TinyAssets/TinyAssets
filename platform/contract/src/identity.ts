@@ -1,8 +1,8 @@
 /**
  * The doors' public identity, the facts more than one Worker serves by (`identity.json`, its
  * one copy, which the doors' config, the deploy kit and the plugins read too): the public
- * origin; where the upstream sign-in returns the browser; the first-party app's client
- * document and redirect, which the doors serve and the deploy kit's probe signs in with; the
+ * origin; the MCP door's resource; where the upstream sign-in returns the browser; the
+ * first-party app's client document and redirect, which the doors serve and the deploy kit's probe signs in with; the
  * first-party resource, where the owner's own app is, whose tokens the doors take for
  * `/app/api/*` and whose pages the owner's object cites a file by (`owner/src/files.ts`); and
  * how a route of its `routes` takes a URL.
@@ -19,6 +19,8 @@ export const UPSTREAM_CALLBACK = `${ORIGIN}${identity.signin.callback}`;
 export const WEB_CLIENT = `${ORIGIN}${identity.first_party.client}`;
 /** Where the first-party app finishes its sign-in. */
 export const WEB_REDIRECT = `${ORIGIN}${identity.first_party.redirect}`;
+/** The MCP door: the outside resource MCP clients' tokens are bound to. */
+export const MCP_RESOURCE = `${ORIGIN}${identity.mcp}`;
 /** The first-party resource: the owner's own app, and its tokens' audience. */
 export const APP_RESOURCE = `${ORIGIN}${identity.first_party.resource}`;
 

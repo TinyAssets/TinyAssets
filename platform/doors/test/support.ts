@@ -8,9 +8,11 @@ import { vi } from "vitest";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { writeControl } from "../../ci/fixtures";
 import { type Row, sqlIn as rowsIn } from "../../ci/workerd";
-import { MCP_RESOURCE, now } from "../src/config";
+import { now } from "../src/config";
 import type { DoorsEnv } from "../src/env";
-import { APP_RESOURCE, ORIGIN, WEB_CLIENT, WEB_REDIRECT } from "../../contract/src/identity";
+import {
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, WEB_CLIENT, WEB_REDIRECT,
+} from "../../contract/src/identity";
 import { serve } from "../src/doors";
 import { authorizationServer } from "../src/oauth";
 import type { Sources } from "../../sources/src/schema";

@@ -32,6 +32,7 @@ import { workflow } from "../../ci/workflows";
 import { deployProblems, locksOf, migrated, readLock } from "../../ci/kit/locks";
 import { WRANGLER, workerFolders } from "../../ci/wrangler";
 import identity from "../../contract/identity.json" with { type: "json" };
+import { ZONE } from "../../contract/src/egress";
 import { type Domain, openBlob, parseRing, sealBlob } from "../../contract/src/envelope";
 import {
   APP_RESOURCE, ORIGIN, routeTakes, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
@@ -60,7 +61,7 @@ import {
   boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS,
   MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers,
   ROUTES,
-  SECRET_INPUTS, SECRETS, WORKERS, ZONE,
+  SECRET_INPUTS, SECRETS, WORKERS,
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";

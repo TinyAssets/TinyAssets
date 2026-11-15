@@ -59,7 +59,9 @@ import { pinned } from "../sandbox/template/pair.ts";
 import { github, type Reach, TOKEN } from "./actions.ts";
 import { authorizeCheck, heldHook, probeLink, upstreamFrom } from "./deploy.ts";
 import identity from "../contract/identity.json" with { type: "json" };
-import { APP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT } from "../contract/src/identity.ts";
+import {
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT,
+} from "../contract/src/identity.ts";
 import { AUTHORIZE, E2B_HOOK_URL, EGRESS_DOMAIN } from "./facts.ts";
 import { watch } from "./offsite.ts";
 
@@ -118,7 +120,6 @@ export const INPUTS = Object.freeze({
   github: TOKEN });
 
 /** The resource document `/mcp` names (RFC 9728's path form). */
-const MCP = `${ORIGIN}${identity.mcp}`;
 const RESOURCE_DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource${identity.mcp}`;
 /** A name no side serves: the `404` a profile answers for a tool outside it. */
 const UNKNOWN_TOOL = "no_such_tool";
@@ -208,7 +209,7 @@ async function sideOf(world: World): Promise<Side> {
 
 /** An anonymous `initialize` of `/mcp`. */
 function anonymous(world: World): Promise<Response> {
-  return send(world, MCP, { method: "POST", body: INITIALIZE, headers: {
+  return send(world, MCP_RESOURCE, { method: "POST", body: INITIALIZE, headers: {
     "Content-Type": "application/json", Accept: "application/json, text/event-stream" } });
 }
 
@@ -234,8 +235,8 @@ async function challenge(world: World): Promise<string> {
                           "stopped partway is run again to the end");
   }
   const document = await json(await send(world, RESOURCE_DOCUMENT), RESOURCE_DOCUMENT, 6);
-  if (document["resource"] !== MCP) {
-    throw new Failure(6, `the resource document's resource is not ${MCP}`);
+  if (document["resource"] !== MCP_RESOURCE) {
+    throw new Failure(6, `the resource document's resource is not ${MCP_RESOURCE}`);
   }
   return "an anonymous initialize is challenged with the doors' resource document";
 }
@@ -509,7 +510,7 @@ export async function canary(world: World, options: Options): Promise<Result> {
     side = await sideOf(world);
     if (options.side !== null && side !== options.side) {
       throw new Failure(8, `asked for the ${options.side} side, but the ${side} side serves ${
-        MCP}`);
+        MCP_RESOURCE}`);
     }
   } catch (error) {
     if (!(error instanceof Failure)) {

@@ -27,10 +27,11 @@ import { sha256Hex } from "../../contract/src/digest";
 import { SESSION_TTL_S } from "../../contract/src/limits";
 import { codePoints } from "../../contract/src/text";
 
+import { APP_PATH } from "./config";
 import { mediaType } from "./kit";
 
 export const COOKIE = "__Host-ta-owner";
-export const OWNER_SURFACE = "/app/api/";
+export const OWNER_SURFACE = `${APP_PATH}/api/`;
 const SAFE_METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "OPTIONS"]);
 
 /** Every value of the cookie `name` the request carries. */

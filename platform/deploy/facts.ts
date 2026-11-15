@@ -18,6 +18,7 @@ import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/wrangler.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import { CLOCK_SECRETS } from "../contract/src/canary.ts";
+import { ZONE } from "../contract/src/egress.ts";
 import { ORIGIN, routeTakes, UPSTREAM_CALLBACK } from "../contract/src/identity.ts";
 import type { ImportNames } from "../contract/src/import-names.ts";
 import platform from "./platform.json" with { type: "json" };
@@ -181,8 +182,6 @@ export const IDENTITY = (() => {
 /** The doors Worker, which serves the identity: the routes are handed to it. */
 export const DOORS = NAMES[IDENTITY]!;
 
-/** The zone the doors serve (`identity.json`). */
-export const ZONE = identity.host;
 /** The doors' public routes (mode `routes`, the cutover's), on the zone. */
 export const ROUTES: readonly string[] = Object.freeze(
   identity.routes.map((path) => `${ZONE}${path}`));

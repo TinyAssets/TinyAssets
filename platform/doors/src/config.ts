@@ -22,13 +22,10 @@ import type { DoorsEnv } from "./env";
 
 // Each fact of the identity is read as text (a template), so this module holds strings
 // alone, never the shared file object (`ci/kit/module-state.ts`).
-/** The public origin's host. */
-export const PUBLIC_HOST = `${identity.host}`;
 /** The authorization server's RFC 8414 issuer: our own, not the identity vendor's. */
 export const ISSUER = ORIGIN;
-/** The MCP door's path, and the outside resource MCP clients' tokens are bound to. */
+/** The MCP door's path. */
 export const MCP_PATH = `${identity.mcp}`;
-export const MCP_RESOURCE = `${ORIGIN}${MCP_PATH}`;
 /** Where a sign-in starts. */
 export const AUTHORIZE_PATH = `${identity.signin.authorize}`;
 /** Where the upstream sign-in returns the browser. */

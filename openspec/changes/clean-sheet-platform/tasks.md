@@ -288,10 +288,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - D4: `import.ts:4` cites `doors/src/import.ts`, now `doors/src/import/` (comments pass).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
-  - B13's sign-in half (`x4.md`): `contract/src/signin.ts`, `connected` and the app's page
-    paths, with `deploy/guards/rules.ts:9-10`'s owed `deploy.test.ts` edge into the doors.
   - Lane X, owed: `doors/src/oidc.ts:53` `unbase64url` is `fromBase64url`, and `:76`
-    `bounded` the doors kit's (D1); `deploy/deploy.ts:507` `bundles(exec)` (S6's N39).
+    `bounded` the doors kit's (D1); `deploy/deploy.ts:508` `bundles(exec)` (S6's N39).
   - V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`).
   - B14's keyring half, owed (`x5.md` item 10): `scripts/platform_setup.py` calling the kit's
     `keyring-new` in place of its own `make_keyring`. X5 left it, since it would make the
