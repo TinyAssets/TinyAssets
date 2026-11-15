@@ -9,8 +9,9 @@
  * tier and the owner's own limits, never a cap of the platform's. The review's attack tests
  * (H1, H2, H3, M1, M2) are here as the fixed behaviour.
  */
+import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { toolsNamed } from "../../contract/src/doors";
 import {
@@ -23,11 +24,13 @@ import { mailConversation, type RunReceipt, UNATTENDED_REFUSED } from "../src/ru
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, registerOn, rig, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf,
-         TIERS } from "./runs-support";
+         TIERS, whileOut } from "./runs-support";
+import { clock } from "../src/clock";
+import { LANE_PASS_S } from "../src/schedule";
 import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { OWNER_WAITERS, ownerSlots } from "../src/holds";
 import { writeControl } from "../../ci/fixtures";
-import { drainDue, failure, starterSeed } from "./support";
+import { clockAt, drainDue, failure, starterSeed } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */
@@ -445,6 +448,29 @@ describe("mail to an agent", () => {
                                                                       input: "x" })))
       .toMatchObject({ code: "not_granted", message: "outside client capability not granted" });
     expect((await recorder(r.stub)).starts.map((each) => each.agent)).toEqual(["main"]);
+  });
+
+  it("starts no run past its pass's end: the mail after it waits for the lane's next pass",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const main = await identity(r, "main");
+    // The owner's clock held ahead of the host's, so only the test runs the object's alarm.
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    clockAt(clock() + 600);
+    for (let i = 0; i < 3; i++) {
+      await ownerMail(r, `dm:${main.agent_id}`, `job ${i}`);
+    }
+    // The pass's first start is out at the sandbox while the clock passes the pass's end.
+    await whileOut(r.name, "start", () => runDurableObjectAlarm(r.stub), async () => {
+      clockAt(clock() + LANE_PASS_S + 1);
+    });
+    expect((await starts(r)).map((start) => told(start).body)).toEqual(["job 0"]);
+    await runDurableObjectAlarm(r.stub);
+    expect((await starts(r)).map((start) => told(start).body))
+      .toEqual(["job 0", "job 1", "job 2"]);
   });
 
   it("past the tier's simultaneous runs waits its turn, never refused", async () => {

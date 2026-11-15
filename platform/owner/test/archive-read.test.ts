@@ -124,6 +124,7 @@ describe("the archive lane", () => {
     for (let read = 1; read <= READ_TRIES; read++) {
       await files.held("getChunks");
       const before = await mark();
+      await sentAndAcked(r, MUSE, room, 4, `c${read}`);
       await sealed(r, MUSE, room);
       await settle(r);
       expect(await mark()).not.toBe(before);

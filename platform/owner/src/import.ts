@@ -1,7 +1,7 @@
 /**
  * The cutover's import doors (`import_research.md` §3, slice 3): every existing owner's
  * data, carried from the old stack's backup into the owner's own object while it is still
- * `pending`, by the doors' import consumer (`doors/src/import.ts`) from the bundle the
+ * `pending`, by the doors' import consumer (`doors/src/import/`) from the bundle the
  * importer's job built (`platform/import/bundle.ts`). Deleted at the cutover with the job,
  * the consumer and their bindings (tasks.md §9).
  *
