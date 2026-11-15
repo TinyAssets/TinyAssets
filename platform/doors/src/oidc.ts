@@ -2,13 +2,11 @@
  * The owner's upstream sign-in, live (tasks 2, "Live AuthKit wiring"): AuthKit's User
  * Management authorization-code flow with PKCE, for the environment's own client, as data
  * (ADR-032, "the owner's sign-in"). Its endpoints, client, token issuer and identity-deletion
- * URL are the `UPSTREAM` record, which the deploy writes after holding the owner issuer's
- * discovery to `OWNER_ISSUER` exactly for the JWKS (`deploy/deploy.ts` `upstreamFrom`). The
- * client secret is the Worker secret `WORKOS_API_KEY`.
+ * URL are the `UPSTREAM` record (`contract/src/signin.ts`: its type, its parser and its
+ * authorize URL, which the deploy kit writes and checks too). The client secret is the Worker
+ * secret `WORKOS_API_KEY`.
  *
- * - `authorizeUrl`: `response_type=code`, our `state`, the S256 challenge and `max_age=0`,
- *   which forces a fresh sign-in; the record's `authorize_params` add the provider's own
- *   (`provider=authkit`), never one of ours.
+ * - `authorizeUrl`: the contract's, for the record.
  * - `finish`: the code exchanged (JSON) at the token endpoint, on `api.workos.com` alone
  *   and never through a redirect, with the verifier and the client secret. No ID token
  *   comes back, so the answer's access token is checked whole: RS256 under the one key the
@@ -29,29 +27,11 @@
  * token carries, which is no secret. A sign-in is never taken on less than every check.
  */
 import { whole } from "../../contract/src/checks";
+import { authorizeUrl, type UpstreamConfig } from "../../contract/src/signin";
 import { utf8Decoder } from "../../contract/src/text";
 import { CLOCK_MARGIN_S, now } from "./config";
 import type { SignIn, Upstream } from "./upstream";
 
-/** The `UPSTREAM` record: the issuer's endpoints and our client at it. */
-export interface UpstreamConfig {
-  readonly client_id: string;
-  readonly authorization_endpoint: string;
-  readonly token_endpoint: string;
-  readonly jwks_uri: string;
-  /** The access token's `iss`, exactly: the deploy derives it, in one place. */
-  readonly token_issuer: string;
-  /** The identity-deletion URL, `{sub}` in place of the subject. */
-  readonly user_delete: string;
-  /** A provider's own authorize parameters (AuthKit's `provider`), never a flow one. */
-  readonly authorize_params?: Readonly<Record<string, string>>;
-}
-
-/** The parameters our flow sets, or that would change what it asks: never a record's. */
-const FLOW_PARAMS: readonly string[] = Object.freeze([
-  "response_type", "client_id", "redirect_uri", "state", "code_challenge",
-  "code_challenge_method", "max_age", "prompt", "scope", "nonce"]);
-const HTTPS = /^https:\/\/[^\s/?#]+(?:\/[^\s?#]*)?$/;
 /** An access token's largest size we read, and a JWKS's. */
 const TOKEN_MAX = 16 * 1024;
 const JWKS_MAX = 64 * 1024;
@@ -70,72 +50,6 @@ const REFUSAL_CODES: readonly string[] = Object.freeze([
   "application_consent_required"]);
 /** A claim value short and plain enough to name on the page: visible ASCII. */
 const SHOWN = /^[\x21-\x7e]{1,256}$/;
-/**
- * The only origin the client secret (WorkOS's API key) is ever sent to: the record's token
- * endpoint and identity-deletion URL must be on it, so a mis-edited `UPSTREAM` cannot send
- * the key anywhere else.
- */
-const SECRET_ORIGIN = "https://api.workos.com";
-
-function https(value: unknown, what: string): string {
-  if (typeof value !== "string" || !HTTPS.test(value)) {
-    throw new Error(`UPSTREAM's ${what} is an https URL`);
-  }
-  return value;
-}
-
-/** An https URL on `SECRET_ORIGIN`, the one origin the secret may go to. */
-function secretBearing(value: unknown, what: string): string {
-  const url = https(value, what);
-  if (new URL(url).origin !== SECRET_ORIGIN) {
-    throw new Error(`UPSTREAM's ${what} is on ${SECRET_ORIGIN}, the only origin the secret ` +
-                    "is sent to");
-  }
-  return url;
-}
-
-/** The `UPSTREAM` record checked whole, or a throw naming what is wrong. */
-export function upstreamConfig(text: string): UpstreamConfig {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("UPSTREAM is a JSON object");
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("UPSTREAM is a JSON object");
-  }
-  const record = value as Record<string, unknown>;
-  const allowed = ["client_id", "authorization_endpoint", "token_endpoint", "jwks_uri",
-                   "token_issuer", "user_delete", "authorize_params"];
-  if (Object.keys(record).some((key) => !allowed.includes(key))) {
-    throw new Error(`UPSTREAM holds only ${allowed.join(", ")}`);
-  }
-  const clientId = record["client_id"];
-  if (typeof clientId !== "string" || !/^[\x21-\x7e]{1,256}$/.test(clientId)) {
-    throw new Error("UPSTREAM's client_id is visible ASCII");
-  }
-  const userDelete = secretBearing(record["user_delete"], "user_delete");
-  if (userDelete.split("{sub}").length !== 2) {
-    throw new Error("UPSTREAM's user_delete names {sub} once");
-  }
-  const params = record["authorize_params"] ?? {};
-  if (typeof params !== "object" || params === null || Array.isArray(params)
-      || Object.entries(params).some(([key, val]) => FLOW_PARAMS.includes(key)
-                                                    || typeof val !== "string")) {
-    throw new Error("UPSTREAM's authorize_params are strings, never a flow parameter");
-  }
-  return Object.freeze({
-    client_id: clientId,
-    authorization_endpoint: https(record["authorization_endpoint"], "authorization_endpoint"),
-    token_endpoint: secretBearing(record["token_endpoint"], "token_endpoint"),
-    jwks_uri: https(record["jwks_uri"], "jwks_uri"),
-    token_issuer: https(record["token_issuer"], "token_issuer"),
-    user_delete: userDelete,
-    authorize_params: Object.freeze({ ...(params as Record<string, string>) }),
-  });
-}
-
 function unbase64url(text: string): Uint8Array {
   if (!/^[A-Za-z0-9_-]*$/.test(text)) {
     throw new Error("the access token is not base64url");
@@ -301,22 +215,8 @@ export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: str
   if (typeof secret !== "string" || secret === "") {
     throw new Error("WORKOS_API_KEY, the upstream's client secret, is not set");
   }
-  return Object.freeze({
-    authorizeUrl: ({ state, code_challenge, redirect_uri }: {
-      state: string; code_challenge: string; redirect_uri: string;
-    }): string => {
-      const url = new URL(config.authorization_endpoint);
-      for (const [name, value] of Object.entries(config.authorize_params ?? {})) {
-        url.searchParams.set(name, value);
-      }
-      for (const [name, value] of Object.entries({
-        response_type: "code", client_id: config.client_id, redirect_uri, state,
-        code_challenge, code_challenge_method: "S256", max_age: "0",
-      })) {
-        url.searchParams.set(name, value);
-      }
-      return url.href;
-    },
+  return Object.freeze<Upstream>({
+    authorizeUrl: (request) => authorizeUrl(config, request),
     finish: async ({ code, code_verifier }: {
       code: string; code_verifier: string; redirect_uri: string;
     }): Promise<SignIn> => {

@@ -60,8 +60,9 @@ import {
 import type { Bound } from "./binder";
 import { navigation } from "./authorize";
 import {
-  CONNECT_CALLBACK, CONNECT_CALLBACK_PATH, CONNECTED_PAGE, now, PUBLIC_ORIGIN,
+  CONNECT_CALLBACK, CONNECT_CALLBACK_PATH, CONNECTED_PAGE, now,
 } from "./config";
+import { ORIGIN } from "../../contract/src/identity";
 import type { DoorsEnv } from "./env";
 import { answer, plain, redirect } from "./kit";
 import { clearedConnectCookie, connectBound, connectCookie } from "./session";
@@ -308,7 +309,7 @@ export async function connectCallback(request: Request, sources: Sources): Promi
     return page(400, "This authorization did not come from this source's issuer.");
   }
   const code = url.searchParams.get("code");
-  const redirectUri = `${PUBLIC_ORIGIN}${url.pathname}`;
+  const redirectUri = `${ORIGIN}${url.pathname}`;
   const handed = code !== null && CODE.test(code) && !url.searchParams.has("error")
     ? { state: flow.state, code, redirect_uri: redirectUri }
     : { state: flow.state, error: "access_denied", redirect_uri: redirectUri };

@@ -7,12 +7,13 @@
  * fails loudly.
  */
 import { QUEUES } from "../../contract/src/queue-names";
+import { upstreamConfig } from "../../contract/src/signin";
 
 import { canaryClock } from "./canary-clock";
 import { NOT_CONFIGURED } from "./config";
 import type { DoorsEnv } from "./env";
 import { serve } from "./doors";
-import { oidcUpstream, upstreamConfig } from "./oidc";
+import { oidcUpstream } from "./oidc";
 import { ringQueue } from "./ring";
 import { erasureQueue } from "./erase";
 import { importQueue } from "./import";

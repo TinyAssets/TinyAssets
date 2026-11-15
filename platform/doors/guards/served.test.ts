@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../../ci/paths";
 import { appList } from "../../contract/src/apps";
 import { toolTable } from "../../contract/src/doors";
-import { MCP_RESOURCE } from "../src/config";
+import { MCP_RESOURCE } from "../../contract/src/identity";
 import { CLIENT_INSTRUCTIONS } from "../src/instructions";
 
 const PLUGINS = join(PLATFORM, "plugins");

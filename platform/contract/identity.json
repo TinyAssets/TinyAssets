@@ -7,6 +7,8 @@
   "signin": { "authorize": "/authorize", "callback": "/oauth/upstream/callback" },
   "first_party": { "client": "/oauth/clients/web.json", "redirect": "/app/signed-in",
                    "resource": "/app" },
+  "connect_callback": "/oauth/connect/callback",
+  "connected": "/app/connected",
   "hook": "/hooks/e2b/lifecycle",
   "legal": "/legal/"
 }
