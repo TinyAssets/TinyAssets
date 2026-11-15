@@ -7,7 +7,8 @@
  * level a module may import, export, declare types, functions and classes, and bind
  * `const` names to values that cannot change: primitives, functions, regexes without
  * `g` or `y` (whose `lastIndex` is state), and `Object.freeze` of literals made of the
- * same. Anything else (`let`, `var`, a bare object, array, `new`, a call, a static
+ * same (an object literal may spread a name, as it may hold one: one record derived from
+ * another). Anything else (`let`, `var`, a bare object, array, `new`, a call, a static
  * class field, a statement that runs at load) is refused.
  *
  * The global object is shared the same way, so nothing anywhere in a source, at top
@@ -60,7 +61,8 @@ function frozenLiteral(node: ts.Expression): boolean {
   if (ts.isObjectLiteralExpression(value)) {
     return value.properties.every((property) =>
       ts.isShorthandPropertyAssignment(property) || ts.isMethodDeclaration(property)
-      || (ts.isPropertyAssignment(property) && immutable(property.initializer)));
+      || (ts.isPropertyAssignment(property) && immutable(property.initializer))
+      || (ts.isSpreadAssignment(property) && ts.isIdentifier(unwrap(property.expression))));
   }
   return false;
 }

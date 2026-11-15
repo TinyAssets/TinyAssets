@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { aliased, apiRules, ruledApis } from "../../contract/src/api-rules";
+import { aliased, apiRules, supportedApis } from "../../contract/src/api-rules";
 import { valueAtPath } from "../../contract/src/checks";
 import type { Meter } from "../../contract/src/egress-scope";
 import {
@@ -128,7 +128,7 @@ describe("the clamp in place", () => {
     const texts = ["", "hi", "— em", "😀", "q\"uote", "back\\slash", "\u0000",
                    "line\nbreak", "x".repeat(300)];
     let cases = 0;
-    for (const api of ruledApis()) {
+    for (const api of supportedApis()) {
       const rules = apiRules(api)!;
       const meter: Meter = { method: "POST", path: "/x",
                              model_field: rules.model === null ? null : [rules.model],
@@ -168,7 +168,7 @@ describe("the clamp in place", () => {
         cases++;
       }
     }
-    expect(cases).toBe(ruledApis().length * 1500);
+    expect(cases).toBe(supportedApis().length * 1500);
   });
 });
 

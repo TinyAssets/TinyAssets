@@ -34,7 +34,7 @@
  * supplies a known provider's base URL and models, and a record of one restates them
  * (the sources guard holds the two equal); only a `custom` record declares its own models.
  * Those values are what the gateway seals with the secret. They are checked by the
- * gateway's own `source` (so its `SUPPORTED_APIS`, its endpoint and URL grammar are the
+ * gateway's own `source` (so its API table, its endpoint and URL grammar are the
  * one rule), in the checker and again in the gateway when it seals.
  *
  * A record from outside the platform's own (an MCP server's authorization server, a source
