@@ -28,8 +28,11 @@
  *    line per key winning and a `gone` line's key held as gone: the stream read as the owner
  *    at E (`export.ts`, "Read last line per key wins"). The base is fuzzy, so a base row the
  *    log names never goes to its table; staging the log alone keeps the object's rows at one
- *    copy, the log's at most `LOG_BYTES` (a generation whose log passed it is refused: a
- *    recorded ceiling, `r5r.md`).
+ *    copy. Each staged line's bytes as its segment holds it are counted (`restore_rows.n`),
+ *    and their sum's peak at a segment's end (`staged`, `peak`): once it passes `LOG_BYTES`
+ *    the restore fails, named (a recorded ceiling, `r5r.md`), so the staged log is at most
+ *    that and one segment. The capture counts the same peak as it writes the segments
+ *    (`changelog.ts`), which is how the object judges a generation restorable before a pin.
  * 4. **apply**: table by table in `loadOrder`'s order, a base part's rows of the table but those
  *    the log names, a unit a part, then the log's rows of it, a slice a unit. The schema's
  *    triggers rebuild every counter the export leaves out, and each exported column a
@@ -81,7 +84,9 @@
  *   is. A failed restore is wiped the same way, to be restored again.
  * - `restoreRelease`: a pin not yet wiped given up, the owner as it was.
  * A wiped object takes a restore only of the generation it was pinned for, or of the one its
- * pin wrote (the undo).
+ * pin wrote (the undo). One no pin held (a lost object's failed restore) takes any generation
+ * of its namespace, as the lost object did: a log that stages past `LOG_BYTES` fails only at
+ * its `log` step, and the one kept before it is then restored.
  *
  * From the pin until done, or once a restore failed, no lane runs (`restoring`, the schedule's
  * halt), every door but the restore's refuses (`refuseRestoring`), and so do the platform's
@@ -207,6 +212,9 @@ type Held = {
   readonly fresh: string | null;
   /** When the hold began, in seconds: the pin, or a lost object's begin. */
   readonly since: number;
+  /** The bytes of the log's lines staged (`restore_rows.n`), and their most at a segment's end. */
+  readonly staged: number;
+  readonly peak: number;
 };
 
 type Step = "pinned" | "wiped" | "index" | "log" | "apply" | "check" | "chunks" | "names"
@@ -223,8 +231,8 @@ const ADMITS: readonly string[] = Object.freeze(["admitted", "suspended"]);
 
 /** The restore's record, or null when none was begun. A read. */
 function record(sql: Pick<SqlStorage, "exec">): Held | null {
-  return sql.exec<Held>("SELECT ns, gen, step, at, after, held, spans, failed, fresh, since " +
-                          "FROM owner_restore").toArray()[0] ?? null;
+  return sql.exec<Held>("SELECT ns, gen, step, at, after, held, spans, failed, fresh, since, " +
+                          "staged, peak FROM owner_restore").toArray()[0] ?? null;
 }
 
 /**
@@ -309,11 +317,13 @@ function emptiness(o: OwnerState): string | null {
 const refused = (why: string) => new Refusal("refused", why);
 
 /**
- * Refused unless a wiped object (`held` at `wiped`) is begun from its own namespace and from
- * the generation it was pinned for or the one its pin wrote; any other object passes.
+ * Refused unless a wiped object (`held` at `wiped`) is begun from its own namespace and, when
+ * a pin held it (`fresh`), from the generation it was pinned for or the one its pin wrote; any
+ * other object passes.
  */
 function wipedFor(held: Held | null, ns: string, gen: string): void {
-  if (held?.step === "wiped" && (ns !== held.ns || (gen !== held.gen && gen !== held.fresh))) {
+  if (held?.step === "wiped" && (ns !== held.ns
+      || (held.fresh !== null && gen !== held.gen && gen !== held.fresh))) {
     throw refused(`this object was wiped to restore generation ${held.gen} of its namespace` +
                   `${held.fresh === null ? "" : `, or ${held.fresh}, the one its pin wrote`}`);
   }
@@ -341,8 +351,14 @@ const schemaTables = (): string[] => [...Object.keys(exported()), ...Object.keys
 type Line = { readonly t: string } & Readonly<Record<string, unknown>>;
 
 function lines(bytes: Uint8Array): Line[] {
+  return sized(bytes).map(({ line }) => line);
+}
+
+/** An object's lines, each with its bytes as the object holds it, its newline included. */
+function sized(bytes: Uint8Array): { line: Line; n: number }[] {
+  const encoder = new TextEncoder();
   return new TextDecoder().decode(bytes).trimEnd().split("\n")
-    .map((line) => JSON.parse(line) as Line);
+    .map((text) => ({ line: JSON.parse(text) as Line, n: encoder.encode(text).byteLength + 1 }));
 }
 
 /** The generation's root, read through the source: refused when there is none. */
@@ -418,17 +434,23 @@ function rowOf(line: Line): { table: string; k: string; row: Record<string, unkn
 
 /**
  * In a unit: a log segment's lines staged, the last line per key winning, a `gone` line's key
- * held as gone (a null row), so the base row it replaces is never loaded.
+ * held as gone (a null row), so the base row it replaces is never loaded; each with its bytes
+ * (`n`). What the staged lines' bytes grew by.
  */
-function stageLog(sql: Pick<SqlStorage, "exec">, segment: readonly Line[]): void {
-  for (const line of segment) {
+function stageLog(sql: Pick<SqlStorage, "exec">, segment: readonly { line: Line; n: number }[]):
+    number {
+  let grown = 0;
+  for (const { line, n } of segment) {
     const held = rowOf(line);
     if (held !== null) {
-      sql.exec("INSERT INTO restore_rows (tbl, k, row) VALUES (?, ?, ?) ON CONFLICT (tbl, k) " +
-                 "DO UPDATE SET row = excluded.row", held.table, held.k,
-               held.row === null ? null : JSON.stringify(held.row));
+      grown += n - (sql.exec<{ n: number }>("SELECT n FROM restore_rows WHERE tbl = ? AND k = ?",
+                                            held.table, held.k).toArray()[0]?.n ?? 0);
+      sql.exec("INSERT INTO restore_rows (tbl, k, row, n) VALUES (?, ?, ?, ?) ON CONFLICT " +
+                 "(tbl, k) DO UPDATE SET row = excluded.row, n = excluded.n", held.table, held.k,
+               held.row === null ? null : JSON.stringify(held.row), n);
     }
   }
+  return grown;
 }
 
 /**
@@ -625,7 +647,7 @@ async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
         });
         return true;
       }
-      const read = lines(await objectAt(source, held.ns, root,
+      const read = sized(await objectAt(source, held.ns, root,
                                         index ? held.at : root.parts.length + held.at));
       await o.door(() => {
         if (!still()) {
@@ -633,9 +655,18 @@ async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
         }
         if (index) {
           const spans = JSON.parse(held.spans ?? "[]") as unknown[];
-          sql.exec("UPDATE owner_restore SET spans = ?", JSON.stringify([...spans, spanOf(read)]));
+          sql.exec("UPDATE owner_restore SET spans = ?", JSON.stringify(
+            [...spans, spanOf(read.map(({ line }) => line))]));
         } else {
-          stageLog(sql, read);
+          const staged = held.staged + stageLog(sql, read);
+          const peak = Math.max(held.peak, staged);
+          sql.exec("UPDATE owner_restore SET staged = ?, peak = ?", staged, peak);
+          if (peak > LOG_BYTES) {
+            move("failed", held.at, null, `the generation's log stages past the ${LOG_BYTES} ` +
+                 "bytes a restore takes: wipe it and restore the one kept before it, or the " +
+                 "one its pin wrote");
+            return;
+          }
         }
         move(held.step, held.at + 1, null);
       });
@@ -820,7 +851,7 @@ function finish(o: OwnerState, held: Held, root: ManifestRoot): void {
   o.files.restored();
   o.collections.restored();
   o.ledger.restored();
-  o.backups.adopt(root);
+  o.backups.adopt(root, held.peak);
   const kept = JSON.parse(held.held ?? "{}") as Record<string, Record<string, SqlStorageValue>>;
   for (const load of loadOrder().filter((each) => each.held !== undefined)) {
     const columns = load.held!;
@@ -887,12 +918,6 @@ export const restoreDoors = Object.freeze({
     const { ns, gen } = asked;
     const source: Bucket = o.env.FILES;
     const root = await rootOf(source, ns, gen);
-    const logged = root.segments.reduce((sum, segment) => sum + segment.size, 0);
-    if (logged > LOG_BYTES) {
-      throw refused(`the generation's log is ${logged} bytes, past the ${LOG_BYTES} a restore ` +
-                    "stages: restore the one kept before it, which restore.source names " +
-                    "restorable");
-    }
     let header: Line | undefined;
     try {
       header = lines(await objectAt(source, ns, root, 0))[0];
@@ -921,7 +946,8 @@ export const restoreDoors = Object.freeze({
       // A wiped object's record goes on, its pin's fresh generation kept: the undo.
       o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) VALUES " +
                            "(1, ?, ?, 'index', 0, ?) ON CONFLICT (only) DO UPDATE SET gen = " +
-                           "excluded.gen, step = 'index', at = 0", ns, gen, clock());
+                           "excluded.gen, step = 'index', at = 0, staged = 0, peak = 0", ns, gen,
+                         clock());
       return answer(o, record(o.storage.sql)!);
     });
   },
@@ -955,7 +981,8 @@ export const restoreDoors = Object.freeze({
       }
       const now = record(o.storage.sql);
       if (now !== null && now.step !== "done") {
-        if (gen !== now.gen && gen !== now.fresh) {
+        // A failed restore no pin held (a lost object's) is wiped for any generation.
+        if (gen !== now.gen && gen !== now.fresh && (now.step !== "failed" || now.fresh !== null)) {
           throw refused(`a restore of this owner from generation ${now.gen} holds it: release ` +
                         "it, or restore that one");
         }
@@ -976,7 +1003,8 @@ export const restoreDoors = Object.freeze({
                            "(1, ?, ?, 'pinned', 0, ?) ON CONFLICT (only) DO UPDATE SET ns = " +
                            "excluded.ns, gen = excluded.gen, step = 'pinned', at = 0, after = " +
                            "NULL, held = NULL, spans = NULL, failed = NULL, fresh = NULL, since " +
-                           "= excluded.since", o.files.storedNamespace(), gen, clock());
+                           "= excluded.since, staged = 0, peak = 0", o.files.storedNamespace(),
+                         gen, clock());
       o.egress.end("admission");
       o.launcher.stop(o.runs.endAll(clock()));
       return { held: record(o.storage.sql)!, began: true };

@@ -33,9 +33,10 @@
  *   after the one given up began (`began_at`), never at once. The owner's writes always land.
  * - **Kept.** The newest finished generation, the one being written, each an open export
  *   pins (`owner_exports`, `EXPORT_LIFE_S`), and the one a restore holds (`pinned`, from its
- *   pin to its end, `restore.ts`); and, while the newest's log is past `LOG_BYTES` (which a
- *   restore refuses to stage, `restore.ts`), the latest older one a restore can load
- *   (`fallback`, `restorableAt`): its log within, and whole (`wholeAt`: unchanged since it
+ *   pin to its end, `restore.ts`); and, while what a restore stages of the newest's log
+ *   (the last line per key, at its most: `staged`, `changelog.ts`) is past `LOG_BYTES`, the
+ *   latest older one a restore can load (`fallback`, `restorableAt`): its staged log within,
+ *   and whole (`wholeAt`: unchanged since it
  *   began, or changed within `RESTORABLE_LIFE_S`). That is the one list, `#retained`. Every
  *   other row, the newest too once it is not whole, is deleted (`#prune`), so no row the
  *   owner deleted outlives `RESTORABLE_LIFE_S` in one. No garbage a kept one names is
@@ -248,8 +249,12 @@ type GenerationRow = {
   readonly started_at: number;
   readonly finished_at: number | null;
   readonly retry_at: number | null;
-  /** A finished generation's log through E, in bytes: its segments' sizes. */
-  readonly log_bytes: number;
+  /**
+   * What a restore of it stages of its log at its most, in bytes as its segments write it
+   * (`changelog.ts`, the capture's peak; a restore's own, for one it adopted). One finished
+   * before migration 15 holds its segments' sizes instead, never less.
+   */
+  readonly staged: number;
   /** Its place in the order generations were begun or adopted (`NEXT_SEQ`). */
   readonly seq: number;
   /**
@@ -303,11 +308,11 @@ function wholeAt(row: GenerationRow, now: number): boolean {
 }
 
 /**
- * Whether finished generation `row` can be restored at `now`: whole, and its log within
- * `LOG_BYTES`, which a restore stages (`restore.ts`).
+ * Whether finished generation `row` can be restored at `now`: whole, and what a restore stages
+ * of its log within `LOG_BYTES` (`restore.ts`).
  */
 function restorableAt(row: GenerationRow, now: number): boolean {
-  return row.log_bytes <= LOG_BYTES && wholeAt(row, now);
+  return row.staged <= LOG_BYTES && wholeAt(row, now);
 }
 
 /**
@@ -467,10 +472,10 @@ export class Backups {
 
   /** The finished generations, oldest first. A read. */
   manifests(): { gen: string; day: string; parts: number; segments: number;
-                 started_at: number; finished_at: number; log_bytes: number }[] {
+                 started_at: number; finished_at: number }[] {
     return this.#rows().filter((row) => row.state === "done").map((row) => ({
       gen: row.gen, day: row.day, parts: row.parts, segments: row.segments,
-      started_at: row.started_at, finished_at: row.finished_at!, log_bytes: row.log_bytes }));
+      started_at: row.started_at, finished_at: row.finished_at! }));
   }
 
   /** When the lane next has work, in seconds, never before `now`; null before any owner. */
@@ -553,19 +558,18 @@ export class Backups {
 
   /**
    * In a unit: the generation a restore read this object from (`restore.ts`), recorded as its
-   * newest finished one, as its root lists it: kept, read by an export, and superseded by the
-   * next one as any is.
+   * newest finished one, as its root lists it, with what the restore staged of its log at its
+   * most (`staged`): kept, read by an export, and superseded by the next one as any is.
    */
-  adopt(root: ManifestRoot): void {
+  adopt(root: ManifestRoot, staged: number): void {
     const at = root.at / 1000;
     this.#sql.exec(
       "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, segments, " +
-        "segment_list, bytes, s, schema, e, ended_at, started_at, finished_at, log_bytes, seq) " +
+        "segment_list, bytes, s, schema, e, ended_at, started_at, finished_at, staged, seq) " +
         `VALUES (?, ?, 'done', ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ${NEXT_SEQ})`, root.gen,
       manifestDay(at), ENDED, root.parts.length, root.segments.length,
       [...root.parts, ...root.segments].reduce((sum, object) => sum + object.size, 0), root.s,
-      this.#parts.schema, root.e, at, at, at,
-      root.segments.reduce((sum, segment) => sum + segment.size, 0));
+      this.#parts.schema, root.e, at, at, at, staged);
     // A generation finished here: from now on, none restorable is told (`#tellUnrestorable`).
     this.#sql.exec("UPDATE owner_backup_state SET lost = coalesce(lost, 0)");
     // Its namespace holds every generation the object had before it was lost or wiped, and
@@ -773,7 +777,9 @@ export class Backups {
 
   /**
    * The generation finished: its tail (segments past E) deleted, its root put naming the
-   * segments through E, its row done (its lists in the root), its log gone.
+   * segments through E, its row done (its lists in the root) with what a restore stages of its
+   * log (the capture's peak), its log gone; from here on none restorable is told (`lost`, 0
+   * while this one can be restored).
    */
   async #finish(ns: string, key: string, gen: string): Promise<void> {
     const row = this.#rows().find((each) => each.gen === gen)!;
@@ -785,13 +791,14 @@ export class Backups {
     const logged = segments.filter((segment) => segment.b <= row.e!);
     await this.#parts.store.putManifestRoot(ns, key, gen, partsOf(row.part_list), logged,
                                             { s: row.s, e: row.e! });
-    const logBytes = logged.reduce((sum, segment) => sum + segment.size, 0);
     await this.#write(() => this.#parts.storage.transactionSync(() => {
+      const now = clock();
       this.#sql.exec("UPDATE owner_backups SET state = 'done', finished_at = ?, part_list = " +
-                       "'', segment_list = '', log_bytes = ? WHERE gen = ?", clock(),
-                     logBytes, gen);
-      this.#sql.exec("UPDATE owner_backup_state SET told = 0, lost = CASE WHEN ? <= ? THEN 0 " +
-                       "ELSE coalesce(lost, 0) END", logBytes, LOG_BYTES);
+                       "'', segment_list = '', staged = ? WHERE gen = ?", now,
+                     this.#parts.log.state().peak, gen);
+      const done = this.#rows().find((each) => each.gen === gen)!;
+      this.#sql.exec("UPDATE owner_backup_state SET told = 0, lost = CASE WHEN ? THEN 0 " +
+                       "ELSE coalesce(lost, 0) END", restorableAt(done, now) ? 1 : 0);
       this.#parts.log.stop();
     }));
   }

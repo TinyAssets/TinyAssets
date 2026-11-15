@@ -16,11 +16,20 @@
  * Capture is on only while a generation runs (always-on capture is the founder's cost dial,
  * tasks.md). The one bound is `LOG_BYTES` of unshipped log in the object: past it capture
  * stops and the generation fails with one notice; the write that passed it lands.
+ *
+ * **What a restore stages** of it (`restore.ts`, the last line per key, a segment at a time)
+ * is counted as each segment is acknowledged, in its unit: each key's last line's bytes as the
+ * segment wrote it (`log_staged`), their sum, and the sum's peak at a segment's end, which is
+ * the most a restore of it holds staged at once (`Backups` judges a generation restorable by
+ * it). A key rewritten in many segments counts once, at its last line. No segment past E is
+ * counted (the root never names one). Once the peak passes `LOG_BYTES` the generation can
+ * never be restored, so the count stops and its keys go: `log_staged` holds at most
+ * `LOG_BYTES` of lines and one segment past it, each key's record no wider than its line.
  */
 import { Buffer } from "node:buffer";
 
 import { exported } from "./export";
-import { CHUNK_BYTES } from "../../contract/src/limits";
+import { CHUNK_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 
 /** What the log holds in place of an image past `IMAGE_MAX`. */
@@ -38,6 +47,10 @@ export type Capture = {
   readonly shipped: number;
   readonly pending_a: number | null;
   readonly pending_b: number | null;
+  /** What a restore stages of the log acknowledged so far, in bytes as the segments wrote it. */
+  readonly staged: number;
+  /** The most `staged` was at a segment's end. */
+  readonly peak: number;
 };
 
 export class ChangeLog {
@@ -54,16 +67,18 @@ export class ChangeLog {
   /** The capture as it stands. A read. */
   state(): Capture {
     return this.#sql.exec<Capture>("SELECT gen, s, last, e, capturing, bytes, overflow, " +
-                                    "shipped, pending_a, pending_b FROM log_capture").one();
+                                    "shipped, pending_a, pending_b, staged, peak FROM log_capture")
+      .one();
   }
 
   /** In a unit: capture on for generation `gen`, from the next seq; what is left goes. */
   begin(gen: string): number {
     this.#sql.exec("DELETE FROM change_log");
+    this.#sql.exec("DELETE FROM log_staged");
     const { last } = this.state();
     this.#sql.exec("UPDATE log_capture SET gen = ?, s = ?, e = NULL, capturing = 1, " +
-                     "bytes = 0, overflow = 0, shipped = ?, pending_a = NULL, pending_b = NULL", gen,
-                   last + 1, last);
+                     "bytes = 0, overflow = 0, shipped = ?, pending_a = NULL, pending_b = NULL, " +
+                     "staged = 0, peak = 0", gen, last + 1, last);
     return last + 1;
   }
 
@@ -77,6 +92,7 @@ export class ChangeLog {
     this.#sql.exec("UPDATE log_capture SET gen = NULL, e = NULL, capturing = 0, " +
                      "pending_a = NULL, pending_b = NULL");
     this.#sql.exec("DELETE FROM change_log");
+    this.#sql.exec("DELETE FROM log_staged");
   }
 
   /**
@@ -171,27 +187,58 @@ export class ChangeLog {
     return out.slice(0, at);
   }
 
-  /** Each key's last seq after `a` through `b`, and its stored bytes (`keyOf`). A read. */
-  #kept(a: number, b: number): { seq: number; n: number }[] {
-    return this.#sql.exec<{ seq: number; n: number }>(
-      "SELECT max(seq) AS seq, n FROM (SELECT seq, length(CAST(line AS BLOB)) AS n, " +
+  /**
+   * Each key's last seq after `a` through `b`, its table and key (`keyOf`), and its stored
+   * bytes. A read.
+   */
+  #kept(a: number, b: number): { seq: number; n: number; tbl: string; k: string }[] {
+    return this.#sql.exec<{ seq: number; n: number; tbl: string; k: string }>(
+      "SELECT max(seq) AS seq, n, tbl, k FROM (SELECT seq, length(CAST(line AS BLOB)) AS n, " +
         `json_extract(line, '$.table') AS tbl, ${keyOf()} AS k FROM change_log WHERE seq > ? ` +
         "AND seq <= ?) GROUP BY tbl, k ORDER BY seq", a, b).toArray();
+  }
+
+  /**
+   * Each line the segment after `a` through `b` keeps, its table and key, and its bytes as
+   * written (with its newline), read one row at a time. A read.
+   */
+  *#written(a: number, b: number): Generator<{ tbl: string; k: string; n: number }> {
+    for (const { seq, tbl, k } of this.#kept(a, b)) {
+      const stored = this.#sql.exec<{ line: string }>(
+        "SELECT line FROM change_log WHERE seq = ?", seq).one().line;
+      yield { tbl, k, n: Buffer.byteLength(writtenLine(seq, stored), "utf8") + 1 };
+    }
   }
 
   /** The bytes the segment after `a` through `b` takes as written, each kept line once. */
   #writtenBytes(a: number, b: number): number {
     let bytes = 0;
-    for (const { seq } of this.#kept(a, b)) {
-      const stored = this.#sql.exec<{ line: string }>(
-        "SELECT line FROM change_log WHERE seq = ?", seq).one().line;
-      bytes += Buffer.byteLength(writtenLine(seq, stored), "utf8") + 1;
+    for (const { n } of this.#written(a, b)) {
+      bytes += n;
     }
     return bytes;
   }
 
-  /** In a unit: the segment through `b` acknowledged: shipped, and its lines gone. */
+  /**
+   * In a unit: the segment through `b` acknowledged: what a restore stages of it counted
+   * (unless it is past E, or the peak already passed `LOG_BYTES`), shipped, and its lines gone.
+   */
   acknowledge(b: number): void {
+    const at = this.state();
+    if ((at.e === null || b <= at.e) && at.peak <= LOG_BYTES) {
+      let staged = at.staged;
+      for (const { tbl, k, n } of this.#written(at.shipped, b)) {
+        staged += n - (this.#sql.exec<{ n: number }>(
+          "SELECT n FROM log_staged WHERE tbl = ? AND k = ?", tbl, k).toArray()[0]?.n ?? 0);
+        this.#sql.exec("INSERT INTO log_staged (tbl, k, n) VALUES (?, ?, ?) ON CONFLICT " +
+                         "(tbl, k) DO UPDATE SET n = excluded.n", tbl, k, n);
+      }
+      const peak = Math.max(at.peak, staged);
+      if (peak > LOG_BYTES) {
+        this.#sql.exec("DELETE FROM log_staged");
+      }
+      this.#sql.exec("UPDATE log_capture SET staged = ?, peak = ?", staged, peak);
+    }
     this.#sql.exec("UPDATE log_capture SET shipped = ?, pending_a = NULL, pending_b = NULL", b);
     this.#sql.exec("DELETE FROM change_log WHERE seq <= ?", b);
   }

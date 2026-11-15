@@ -211,7 +211,7 @@ export type RestoreAnswer =
 /** What a restore could read for an owner (`restoreSource`): as its object holds it. */
 export interface RestoreSource {
   readonly namespace: string | null;
-  /** Each finished generation, and whether a restore stages its log (`LOG_BYTES`). */
+  /** Each finished generation, and whether a restore can load it (`backup.ts` `restorableAt`). */
   readonly generations: readonly { readonly gen: string; readonly finished_at: number;
                                    readonly restorable: boolean }[];
   readonly state: string;

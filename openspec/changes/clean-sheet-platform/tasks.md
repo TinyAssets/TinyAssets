@@ -378,11 +378,19 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     collects early only garbage the newest generation does not name, so the fallback a
     restore loads can lose a chunk and its restore fails at its chunks step (`r5w.md`
     item 11): #5611.
-  - [ ] A generation's restorability by what a restore stages: `log_bytes` counts every image
+  - [x] A generation's restorability by what a restore stages: `log_bytes` counts every image
     the log appended, but a restore stages only the last per key, so an owner rewriting hot
     rows (`model_spend`, `runs`, `collection_clock`) during a base pass is refused a
     generation that would fit; the capture keeps the staged size, an owner migration
-    (`r-fallback-chunks.md` item 5, `untangle/r-log-staged-bytes`).
+    (`r-fallback-chunks.md` item 5, `untangle/r-log-staged-bytes`): the capture's peak of
+    each key's last line at a segment's end (`log_staged`), the restore's own count failing its
+    log step past `LOG_BYTES`, owner migration 15 (`r-log-staged-bytes.md`).
+  - [ ] Owner migration 15's pin PR, after the staged count merges (`r-log-staged-bytes.md`,
+    `untangle/r-log-staged-bytes-pin15`).
+  - [ ] A restore under way when a migration lands: its generation's schema is checked only at
+    `restoreBegin`, so its later steps load the old schema's lines into the new; migration 15
+    fails its own (`r-log-staged-bytes.md` item 5), the rule for every migration is owed
+    (`untangle/r-restore-migration`).
   - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
     `facet-probe.md` Q8 never sampled it).

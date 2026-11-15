@@ -219,9 +219,10 @@ export const CURSOR_CHARS = 16_384;
  * each slice still to land (`limits-audit.test.ts` derives it: the largest whole MiB within
  * that share). The room is there so a generation's held changes survive an R2 outage; it
  * binds only while R2 refuses puts, or when one unit changes more than it. It also bounds the
- * log a restore stages (`owner/src/restore.ts`): a generation whose whole log through E passed
- * it, which an owner writing 68 MB of rows during one base pass makes, is refused, and the
- * latest older one within it is kept while it is the newest's only fallback (`backup.ts`).
+ * log a restore stages (`owner/src/restore.ts`), the last line per key, at its most at a
+ * segment's end: a generation past it, which an owner writing 68 MB of distinct rows during
+ * one base pass makes, cannot be restored, and the latest older one within it is kept while
+ * it is the newest's only fallback (`backup.ts`).
  */
 export const LOG_BYTES = 68 * 1024 * 1024;
 /** A change log row's own bytes past its line, as the log counts it: its seq and record. */
