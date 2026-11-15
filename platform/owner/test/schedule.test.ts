@@ -183,14 +183,44 @@ describe("a lane's job", () => {
     p.alarmFault = null;
   }));
 
-  it("is never set before now, nor before the lane's work", () => withProbe(["a"], async (p) => {
+  it("is never set before now, nor before the lane's work",
+     () => withProbe(["a", "b"], async (p) => {
     p.lanes["a"]!.due = p.now - 600;
     await p.schedule.sync();
     expect(p.jobs()["a"]!.time).toBe(ms(p.now));
     const due = Math.floor(p.now) + 100.0004;  // work due part-way through a millisecond
-    p.lanes["a"]!.due = due;
+    p.lanes["b"]!.due = due;
     await p.schedule.sync();
-    expect(p.jobs()["a"]!.time / 1000).toBeGreaterThanOrEqual(due);
+    expect(p.jobs()["b"]!.time / 1000).toBeGreaterThanOrEqual(due);
+  }));
+
+  it("is moved earlier by a door whose rows have earlier work, and later while not yet due",
+     () => withProbe(["a"], async (p) => {
+    const a = p.lanes["a"]!;
+    a.due = p.now + 100;
+    await p.schedule.sync();
+    a.due = p.now + 50;
+    await p.schedule.sync();
+    expect(p.jobs()["a"]).toEqual(at(p.now + 50));
+    a.due = p.now + 300;
+    await p.schedule.sync();
+    expect(p.jobs()["a"]).toEqual(at(p.now + 300));
+  }));
+
+  it("is left alone by a door once due, its run setting it from the rows",
+     () => withProbe(["a"], async (p) => {
+    const a = p.lanes["a"]!;
+    a.due = p.now - 10;
+    await p.schedule.sync();
+    const due = p.jobs()["a"];
+    a.due = p.now + 300;  // a door moves the rows' work later, and none at all
+    await p.schedule.sync();
+    a.due = null;
+    await p.schedule.sync();
+    expect(p.jobs()["a"]).toEqual(due);
+    a.after = p.now + 300;
+    await p.alarm();
+    expect([a.runs, p.jobs()["a"]]).toEqual([1, at(p.now + 300)]);
   }));
 
   it("is kept where Lifecycle moved it later, unless the rows have earlier work",
@@ -287,6 +317,36 @@ describe("a lane's run", () => {
     const first = p.alarm();
     await until(() => a.runs === 1, "the first alarm's run");
     await p.alarm();
+    release();
+    await first;
+    expect([a.runs, a.mostAtOnce]).toEqual([1, 1]);
+  }));
+
+  it("stays single-flight past a door: an overlapping alarm skips a run a door's sync met",
+     () => withProbe(["a"], async (p) => {
+    const a = p.lanes["a"]!;
+    p.now -= 5;  // the job is set a while before its run's door
+    a.due = p.now - 10;
+    a.after = p.now - 10;  // work still due while the run goes on, as a long purge's is
+    let met!: () => void;
+    const doorMet = new Promise<void>((resolve) => { met = resolve; });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    a.during = async () => {
+      if (a.runs === 1) {
+        p.now += 5;  // the run goes on a while: the rows' work is now, past the job's time
+        await p.schedule.sync();  // a door's sync while the first run is in its pass
+        met();
+        await held;
+      }
+    };
+    await p.schedule.sync();
+    const first = p.alarm();
+    await doorMet;
+    // The run's single-flight mark, Lifecycle's, still on its row past the door.
+    expect(p.read("SELECT running FROM cf_agents_jobs WHERE id = ?", laneJob("a")))
+      .toEqual([{ running: 1 }]);
+    await p.alarm();  // an overlapping alarm: the deadman's, or the platform's re-fire
     release();
     await first;
     expect([a.runs, a.mostAtOnce]).toEqual([1, 1]);
