@@ -15,6 +15,7 @@ import {
   CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, LOG_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY,
 } from "../../contract/src/limits";
 import { PLATFORM_ONLY } from "../src/admission";
+import { Refusal } from "../../contract/src/refusal";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
   GENERATION_SIZES, MANIFEST_BUSY_RETRY_S, MANIFEST_CEILING, MANIFEST_CONTINUE_S, spread,
@@ -740,6 +741,38 @@ describe("the nightly manifest", () => {
       .toBeGreaterThanOrEqual((Math.floor(Date.now() / 86_400_000) + 1) * 86_400);
   });
 
+  it("counts a root a pass wrote again during the rewrap left, and none once asked again; " +
+     "its kid is the one the object's key is under; a key or a root the ring refuses is left " +
+     "and the rest wrapped all the same", async () => {
+    const o = await owner();
+    const ring = JSON.parse(env.FILES_TEST_RING) as { keys: Record<string, string> };
+    const older = JSON.stringify({ active: "k1", keys: ring.keys });
+    const [held] = await sqlIn(o.stub, "SELECT ns, data_key FROM file_space");
+    const ns = held!["ns"] as string;
+    await sqlIn(o.stub, "UPDATE file_space SET data_key = ?",
+                await rewrap(older, ns, held!["data_key"]));
+    await write(o, `${W}/kept.bin`, filled(INLINE_BYTES + 10, 12));
+    await sqlIn(o.stub, LAST_YEARS);
+    await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });
+    await drainDue(o.stub);
+    const [{ gen }] = await sqlIn(o.stub, "SELECT gen FROM owner_backups") as [{ gen: string }];
+    const swept = (overrides: Partial<ChunkStore>) => runInDurableObject(o.stub,
+      (_instance: OwnerDO, state) => storesOn(state, through(overrides)).files.rewrap([gen]));
+    const refused = async (): Promise<never> => { throw new Refusal("data_key_refused"); };
+    // The key the ring refuses stays under k1, and the root under k2 is counted against it.
+    expect(await swept({ rewrapKey: refused }))
+      .toEqual({ rewrapped: false, roots: 1, left: 2, kid: "k1" });
+    // The files Worker's answer when a pass wrote the root between its read and its put
+    // (`files/test/chunks.test.ts`): the root left as the pass wrote it.
+    expect(await swept({ rewrapManifestRoot: async () => ({ key: null }) }))
+      .toEqual({ rewrapped: true, roots: 1, left: 1, kid: "k2" });
+    expect(await swept({ rewrapManifestRoot: refused }))
+      .toEqual({ rewrapped: false, roots: 1, left: 1, kid: "k2" });
+    const platform: Binding = { owner: o.name, caller: PLATFORM_CALLER, origin: null };
+    expect(await o.stub.dataKeyRewrap(platform))
+      .toEqual({ rewrapped: false, roots: 1, left: 0, kid: "k2" });
+  });
+
   it("is wrapped again, with the object's key, by a rotation's sweep, an idle owner's too " +
      "(review M4)", async () => {
     const o = await owner();
@@ -764,10 +797,12 @@ describe("the nightly manifest", () => {
     expect(await laneAt(o.stub, "manifest")).toBeNull();
     expect((await failure(() => o.stub.dataKeyRewrap(o.bind()))).message).toBe(PLATFORM_ONLY);
     const platform: Binding = { owner: o.name, caller: PLATFORM_CALLER, origin: null };
-    expect(await o.stub.dataKeyRewrap(platform)).toEqual({ rewrapped: true, roots: 1 });
+    expect(await o.stub.dataKeyRewrap(platform))
+      .toEqual({ rewrapped: true, roots: 1, left: 0, kid: "k2" });
     const [space] = await sqlIn(o.stub, "SELECT data_key FROM file_space");
     expect((space!["data_key"] as string).startsWith("v1.k2.")).toBe(true);
-    expect(await o.stub.dataKeyRewrap(platform)).toEqual({ rewrapped: false, roots: 1 });
+    expect(await o.stub.dataKeyRewrap(platform))
+      .toEqual({ rewrapped: false, roots: 1, left: 0, kid: "k2" });
     // The same data key: what was put under the older wrap reads under the new one.
     const { lines, exportId } = await exportFrom(o, null);
     expect(bytesOf(lines, `${W}/kept.bin`, await fetched(o, lines, exportId)))

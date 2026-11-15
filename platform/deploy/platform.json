@@ -25,6 +25,11 @@
     "why": "The R2 buckets whose every object is kept, unchangeable and undeletable, for so many days, by the binding that binds each: a config names a bucket, not a lock on it. OPERATOR_LOG is the operator channel's audit log (doors/src/operator.ts): each message's acceptance record and answer, kept a year (d3 §G). dark's storage step makes each the bucket's one lock rule, over every object, when the bucket holds no rule or another.",
     "days": { "OPERATOR_LOG": 365 }
   },
+  "keyrings": {
+    "why": "The keyrings the platform seals stored blobs under, each by the operator op that brings one owner's blobs under its active kid (contract/src/operator-message.ts), which mode rotation asks of every owner the directory lists, and whether the off-account copy holds blobs under it (deploy/offsite.ts copies the files bucket: every generation's root carries the data key wrapped under FILES_KEYRING), so mode retire waits out the copy's versions under a retiring kid. A keyring with no stored blob (OPERATOR_KEYRING, a MAC key) is not here: retiring one of its kids strands nothing.",
+    "rotated": { "FILES_KEYRING": { "op": "owner.rewrap", "copied": true },
+                 "GATEWAY_KEYRING": { "op": "owner.reseal", "copied": false } }
+  },
   "made": {
     "why": "The secrets the founder's setup makes (scripts/platform_setup.py), each by its kind: mac is 32 random bytes in base64url, token a random URL-safe token, keyring a first keyring in keyring-new's shape (rotated only by adding a key). A config names a secret, not how its value is made; every other secret comes from its vendor or a shared app.",
     "secrets": { "ROUTING_MAC_KEY": "mac", "E2B_WEBHOOK_SECRET": "token",

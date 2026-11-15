@@ -80,22 +80,25 @@
  * the files Worker.
  */
 import { AUTHORITY, HEX32, HEX64, randomHex } from "../../contract/src/ids";
-import type { SyncOp } from "../../contract/src/owner";
+import type { RewrapAnswer, SyncOp } from "../../contract/src/owner";
 
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
+import { blobMax, KEY_BYTES, parseBlob } from "../../contract/src/envelope";
 import {
   BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, GC_GRACE_S, INLINE_BYTES, INTENT_ID_BYTES, LEASE_TTL_S,
   MAX_INTENT_CHUNKS, MAX_LIST, MAX_PATH_BYTES, MAX_SYNC_OPS,
 } from "../../contract/src/limits";
 
 import { letGo, planEdit } from "./edit";
-import { type Facts, FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
+import {
+  type Facts, FileFault, orRefused, Refusal, type RefusalCode,
+} from "../../contract/src/refusal";
 import type { OwnerStorage, Write } from "./gate";
 import { CLIENT_WRITER, CLIENTS, INDEX_BYTES } from "./manifest";
 import { OWNER, scopeOf } from "./authority";
 import { refuseErasing } from "./erasure";
-import { refuseRestoring } from "./restore";
+import { heldGenerations } from "./restore";
 import { TIER_UNREAD } from "./tier";
 import { AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
 import {
@@ -562,6 +565,15 @@ function conflictName(name: string, epoch: number, n: number): string {
   return points.join("") + suffix;
 }
 
+/** The kid a wrapped data key is under, from its envelope's header; a throw for no blob. */
+function kidOf(wrapped: string): string {
+  const parts = parseBlob(wrapped, blobMax(KEY_BYTES));
+  if (parts === null) {
+    throw new Error("a wrapped data key is not a sealed blob");
+  }
+  return parts.kid;
+}
+
 /**
  * A write's mtime as its caller gives it (the cutover's import keeps each file's, `import.ts`),
  * a whole number of milliseconds, or null for the write's own time.
@@ -986,23 +998,38 @@ export class Files {
    * A key rotation's sweep for this owner (`files/src/datakey.ts`): its wrapped data key
    * wrapped again under the ring's active kid and kept, then the manifest root of each of
    * `gens` wrapped again in place, so no copy of the key under a retiring kid outlives the
-   * sweep, an idle owner's included. Whether the object's copy changed, and the roots found.
+   * sweep, an idle owner's included. Whether the object's copy changed, the roots found, the
+   * kid the object's copy is now under (`keyKid`), and how many roots are not under it
+   * (`left`: one a pass wrote again meanwhile), which the platform asks again until none is.
+   * The key or a root the ring refuses is left as it is and counted (`orRefused`).
    */
-  async rewrap(gens: readonly string[]): Promise<{ rewrapped: boolean; roots: number }> {
+  async rewrap(gens: readonly string[]): Promise<RewrapAnswer> {
     const { ns, data_key: held } = this.#space();
     if (ns === null || held === null) {
-      return { rewrapped: false, roots: 0 };  // nothing was ever stored under a key
+      return { rewrapped: false, roots: 0, left: 0, kid: null };  // nothing stored under a key
     }
-    const { key } = await this.#store.rewrapKey(ns, held);
-    if (key !== held) {
+    const { key } = await orRefused(this.#store.rewrapKey(ns, held), { key: null });
+    if (key !== null && key !== held) {
       await this.#write(() => this.#sql.exec(
         "UPDATE file_space SET data_key = ? WHERE data_key = ?", key, held));
     }
+    const kid = this.keyKid();
     let roots = 0;
+    let left = key === null ? 1 : 0;
     for (const gen of gens) {
-      roots += await this.#store.rewrapManifestRoot(ns, gen) === null ? 0 : 1;
+      const root = await orRefused(this.#store.rewrapManifestRoot(ns, gen), { key: null });
+      if (root !== null) {
+        roots++;
+        left += root.key !== null && kidOf(root.key) === kid ? 0 : 1;
+      }
     }
-    return { rewrapped: key !== held, roots };
+    return { rewrapped: key !== null && key !== held, roots, left, kid };
+  }
+
+  /** The kid the object's wrapped data key is under, read from its header; null with none. */
+  keyKid(): string | null {
+    const held = this.#space().data_key;
+    return held === null ? null : kidOf(held);
   }
 
   /** Chunk bytes in order, fetched from `FILES` `GET_READS` reads a call at most. */
@@ -3670,17 +3697,19 @@ export const filesDoors = Object.freeze({
              deleted_content: { kept_bytes: o.files.garbageBytes(),
                                 kept_up_to_days: GC_GRACE_S / 86_400 } };
   },
-  async dataKeyRewrap(o: OwnerState, door: Door<undefined>):
-      Promise<{ rewrapped: boolean; roots: number }> {
-    const gens = await o.door(() => {
+  async dataKeyRewrap(o: OwnerState, door: Door<undefined>): Promise<RewrapAnswer> {
+    const { held, gens } = await o.door(() => {
       door.check();
       // A restore's generations are under its record's namespace, which a wiped object no
-      // longer holds, so a rotation waits for the hold to end: a retiring kid is never
-      // removed while the only roots that restore the owner may be under it.
-      refuseRestoring(o.storage);
-      return o.backups.manifests().map((manifest) => manifest.gen);
+      // longer holds: while it holds the owner they are left (`left`), so no pass reads the
+      // owner done and no kid is retired under the only roots that restore it. Said at once,
+      // never refused, so one held owner never stops the other owners' sweep.
+      const holding = heldGenerations(o.storage).length;
+      return { held: holding === 0 ? null
+                 : { rewrapped: false, roots: 0, left: holding, kid: o.files.keyKid() },
+               gens: o.backups.manifests().map((manifest) => manifest.gen) };
     });
-    return o.files.rewrap(gens);
+    return held ?? o.files.rewrap(gens);
   },
   async fileUploadTarget(o: OwnerState, door: Door<IntentRequest>):
       Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];

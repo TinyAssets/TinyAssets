@@ -25,7 +25,9 @@
  * doors' own rule: the lane asks `open()` once a pass, before it claims, and claims nothing
  * on closed, a failure or no answer.
  */
-import { Refusal, refusalOf } from "../../contract/src/refusal";
+import { orRefused, Refusal, refusalOf } from "../../contract/src/refusal";
+import { parseBlob } from "../../contract/src/envelope";
+import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
 import { clock, inTime } from "./clock";
 import { OWNER } from "./authority";
 import type { Write } from "./gate";
@@ -36,7 +38,8 @@ import { type Lane, LANE_CALL_MS } from "./schedule";
 import {
   type Change, doorbellRequest, type WakeContent,
 } from "../../contract/src/wake-kinds";
-import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
+import type { Resealed, RingAnswer, RingRequest } from "../../contract/src/gateway";
+import type { Swept } from "../../contract/src/owner";
 import { kindNamed } from "../../contract/src/wake-records";
 
 /** At most this many rows per pass per lane run; a run with more due runs again at once. */
@@ -148,6 +151,9 @@ export type Ring = (subscription: string, version: number, blob: string,
                     previous: { readonly version: number; readonly blob: string } | null,
                     request: RingRequest) => Promise<RingAnswer>;
 
+/** One subscription's blob resealed by the gateway under its active kid, at the next version. */
+export type Reseal = (subscription: string, version: number, blob: string) => Promise<Resealed>;
+
 /** What the doorbell reads and calls: the object's, handed in by the object. */
 interface DoorbellDeps {
   readonly ledger: Ledger;
@@ -165,6 +171,7 @@ interface DoorbellDeps {
   /** The kill switch: whether the control record lets this owner's outside work go now. */
   readonly gate: () => Promise<boolean>;
   readonly ring: Ring;
+  readonly reseal: Reseal;
 }
 
 /** What a wake says to one subscription: just the changes it follows. */
@@ -225,6 +232,39 @@ export class Doorbell implements WakeSender, Lane {
 
   constructor(deps: DoorbellDeps) {
     this.#deps = deps;
+  }
+
+  /**
+   * The doorbell's half of the platform's sweep before a gateway kid leaves the ring
+   * (`gatewayReseal`): each subscription's blob, an idle one's included, resealed by the
+   * gateway and stored by the ring's own compare-and-swap on its version
+   * (`ledger.resealed`), each in a unit of its own; one the gateway found under its active
+   * kid is left as it is. A replaced secret still signing beside it (`previous_blob`) is
+   * bound to its own version, so it is not resealed: it counts under its own kid until its
+   * window lapses. A blob the gateway refuses (one that no longer opens or passes its record,
+   * which a ring answers `refused`, never sent) is counted left, as it is, and the rest are
+   * swept all the same.
+   */
+  async reseal(): Promise<Swept[]> {
+    const { ledger, write } = this.#deps;
+    const swept: Swept[] = [];
+    for (const held of ledger.sealedCallbacks(clock())) {
+      const answer = await orRefused(
+        this.#deps.reseal(held.subscription_id, held.version, held.blob), null);
+      if (answer === null) {
+        swept.push({ active: null, under: null, resealed: false });
+        continue;
+      }
+      const kept = answer.kid !== held.kid
+        && await write(() => ledger.resealed(held.subscription_id, held, answer));
+      swept.push({ active: answer.kid, under: answer.kid === held.kid || kept ? answer.kid : null,
+                   resealed: kept });
+      if (held.previous !== null) {
+        swept.push({ active: answer.kid, resealed: false,
+                     under: parseBlob(held.previous, CONNECTION_BLOB_MAX)?.kid ?? null });
+      }
+    }
+    return swept;
   }
 
   /**
@@ -346,9 +386,8 @@ export class Doorbell implements WakeSender, Lane {
         continue;  // never sent: its blob or URL no longer passes
       }
       if (rung.resealed !== undefined) {
-        const { blob, kid, version } = rung.resealed;
-        await this.#deps.write(() => this.#deps.ledger.resealed(callback.subscription_id, blob,
-                                                                 kid, version));
+        const resealed = rung.resealed;
+        await write(() => ledger.resealed(callback.subscription_id, callback, resealed));
       }
       const status = rung.status;
       await write(() => ledger.answered(callback.subscription_id, wake, status));

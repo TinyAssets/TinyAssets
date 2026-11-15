@@ -9,9 +9,10 @@
  *
  *   node --experimental-strip-types platform/deploy/deploy.ts --mode <mode> [--public | --yes]
  *        [--rotate <secrets>] [--migrate <Workers>] [--record <id>] [--set <edits>]
- *        [--replace <record>] [--owner <owner> --act <act>]
+ *        [--replace <record>] [--owner <owner> --act <act>] [--keyring <keyring>]
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
+ *   node --experimental-strip-types platform/deploy/deploy.ts keyring-retire <file>
  *
  * - `plan`: `dark`'s checks and plan, never a change.
  * - `dark`: storage, secrets and every Worker with no public route, the control record when
@@ -47,6 +48,17 @@
  * - `erase` (the operator path): `--owner` erased through the operator channel as its own
  *   door erases it, for an owner who asked by other means; only with `--confirm` its words,
  *   `erase-<owner>`, which a run without them names.
+ * - `rotation` (the operator path, `operator.ts` `rotate`): after a keyring's rotation
+ *   (`keyring-add`, then a deploy with `--rotate`), `--keyring`'s op (`platform.json`
+ *   `keyrings`) asked of every owner the directory lists, its progress kept in the control
+ *   namespace, until a pass answers `left` 0 for every owner; every answer's kid held to the
+ *   stored ring's active kid. Never while the doors hold the import window's key.
+ * - `retire`: `--keyring` as `keyring-retire` wrote it (its active kid alone), stored by the
+ *   founder, set on its Workers, then the canary, only once its rotation's latest pass swept
+ *   every owner (for a keyring the off-account copy holds, a pass begun `KEEP_DAYS` + 1 days
+ *   after the first night that copied the first pass), and only with `--confirm` its words,
+ *   `retire-<keyring>-<kids>`, which its apply job names. Irreversible unless the old ring is
+ *   kept offline.
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -69,7 +81,8 @@
  *   account's Workers listing lacks (whether a Worker exists is that listing's word alone);
  *   the kit never makes a secret's value (`keyring-new` makes a first keyring,
  *   `scripts/platform_setup.py` stores one). A held one is never replaced
- *   unless `--rotate` names it, a keyring only by adding a key; Cloudflare never shows a held
+ *   unless `--rotate` names it, a keyring only by adding a key (mode `retire` alone takes its
+ *   old kids out); Cloudflare never shows a held
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
@@ -119,6 +132,7 @@ import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract
 import {
   APP_RESOURCE, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
 } from "../contract/src/identity.ts";
+import { IMPORT_KEY } from "../contract/src/import-message.ts";
 import {
   argsText, OPERATOR_KEYRING, type OperatorArgs,
 } from "../contract/src/operator-message.ts";
@@ -133,20 +147,22 @@ import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import {
   bundles, type Bundles, checksArgv, pairTag, pinned, treeImage,
 } from "../sandbox/template/pair.ts";
-import { type JobRun, maskLine, runOf, set, summarize } from "./actions.ts";
+import { type JobRun, maskLine, runOf, set, summarize, TOKEN } from "./actions.ts";
 import {
-  Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback, handover, type Kept,
+  BATCH, Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback, handover, type Kept,
   type LockRule, type Moved, narrower, type Route, type RouteChange, unlike,
 } from "./cloudflare.ts";
 import {
   AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
   IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES,
-  RETIRED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS,
+  RETIRED, ROTATED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS,
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
+import { firstNightAfter, KEEP_DAYS, type Watch, watch } from "./offsite.ts";
 import {
   type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
-  ERASE_LOSES, ownerAct, PIN_WAIT_MS, RESTORE_LOSES, restoreFrom,
+  ERASE_LOSES, heldRotation, keyHashes, ownerAct, RESTORE_LOSES, restoreFrom, rotate,
+  type RotationRecord, rotationKey, rotationRecord, RUN_MS,
 } from "./operator.ts";
 /**
  * The control record a first deploy writes when there is none: every outside door closed, and
@@ -199,7 +215,7 @@ export const IO: Io = Object.freeze({
 });
 
 export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback" | "control"
-  | "owner" | "restore" | "erase";
+  | "owner" | "restore" | "erase" | "rotation" | "retire";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -228,8 +244,10 @@ export interface Run {
   readonly act: Act | null;
   /** `--generation`: the generation `restore` restores `--owner` from; none asks its source. */
   readonly generation: Generation | null;
-  /** `--confirm`: the words that confirm `restore`'s wipe, give its pin up, or `erase`. */
+  /** `--confirm`: the words that confirm `restore`'s wipe, give its pin up, `erase` or `retire`. */
   readonly confirm: string | null;
+  /** `--keyring`: the keyring `rotation` sweeps, or `retire` retires the old kids of. */
+  readonly keyring: string | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly io: Io;
@@ -1483,11 +1501,11 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
     return;
   }
   if (!source.begins) {
-    const until = run.io.now().getTime() + PIN_WAIT_MS;
+    const until = run.io.now().getTime() + RUN_MS;
     let hold = await ask("restore.pin", { gen: from.gen }) as RestoreHold;
     while (!hold.written) {
       if (run.io.now().getTime() >= until) {
-        throw new Error(`${owner}'s present state was not written within ${PIN_WAIT_MS / 60_000} ` +
+        throw new Error(`${owner}'s present state was not written within ${RUN_MS / 60_000} ` +
                         "minutes, and the owner stays held: run again to carry it on, or give " +
                         `the pin up with --confirm release-${owner} and no --generation`);
       }
@@ -1551,8 +1569,224 @@ const eraseAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
     JSON.stringify(await asked(run, got, "owner.erase", owner, { confirm: words }))}`);
 });
 
-/** What `--confirm` takes: a wipe's, a release's or an erasure's words, each naming the owner. */
-const CONFIRM = /^(?:wipe|release|erase)-\S+$/;
+// --- Key rotation (`operator.ts` `rotate`) ------------------------------------------------
+
+/**
+ * The control and directory namespaces' ids, or a loud stop while no dark run made them; and,
+ * with `window`, a loud stop while the doors hold the import window's key: an imported owner
+ * has data in its object and no directory record until the window's admit writes it, so no
+ * rotation reaches it.
+ */
+async function rotationNamespaces({ cloudflare, account }: Pick<Values, "cloudflare" | "account">):
+    Promise<{ control: string; directory: string }> {
+  const listed = await cloudflare.namespaces(account);
+  const [control, directory] = ["CONTROL", "DIRECTORY"].map((binding) =>
+    listed.get(NAMESPACES[binding]!));
+  if (control === undefined || directory === undefined) {
+    throw new Error(`the account holds no ${NAMESPACES["CONTROL"]} or ${NAMESPACES["DIRECTORY"]}` +
+                    ": no dark deploy made them");
+  }
+  if (!(await cloudflare.workers(account)).includes(NAMES["doors"]!)) {
+    throw new Error(`the account holds no ${NAMES["doors"]}: no dark deploy made it`);
+  }
+  if ((await cloudflare.secrets(account, NAMES["doors"]!)).includes(IMPORT_KEY)) {
+    throw new Error(`${NAMES["doors"]} holds ${IMPORT_KEY}: the import window is open, and an ` +
+                    "owner it imports has no directory record until its admit, so no rotation " +
+                    "would reach it; nothing is asked");
+  }
+  return { control, directory };
+}
+
+/** `--keyring` as the run's production secrets hold it. */
+const storedRing = (run: Run): Ring => keyring(input(run, run.keyring!), run.keyring!);
+
+/**
+ * Mode `rotation`: `--keyring`'s op asked of every owner the directory lists, through the
+ * operator channel (`operator.ts` `rotate`), its progress in the control namespace. The plan
+ * job only plans it: it holds no keyring, so no active kid. A run with the secrets and no
+ * `--yes` says where the record stands and asks nothing.
+ */
+const rotationSweep = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const name = run.keyring!;
+  const { op } = ROTATED[name]!;
+  const { control, directory } = await rotationNamespaces(got);
+  say(`ask the doors ${op} for every owner the directory lists, through the operator channel, ` +
+      `a page of ${BATCH} at a time, keeping the pass's progress in ${NAMESPACES["CONTROL"]} ` +
+      `under deploy:rotation:${name}:<the stored ring's active kid>: every answer's kid held to ` +
+      "that kid, and an owner still holding a blob under another kid left owing, asked first " +
+      `by the next run (${LATER})`);
+  if (run.reach === "public") {
+    return;
+  }
+  const stored = storedRing(run);
+  if (!run.apply) {
+    const record = await heldRotation(got.cloudflare, got.account, control, name, stored);
+    const pass = record.passes.at(-1);
+    say(pass === undefined ? `no pass of ${name}'s rotation to ${stored.active} has begun`
+      : `pass ${record.passes.length} of ${name}'s rotation to ${stored.active}: after ${
+        pass.through ?? "no owner yet"}, ${pass.owing.length} owing, ${pass.swept === null
+        ? "not swept" : `swept at ${new Date(pass.swept * 1000).toISOString()}`}`);
+    return;
+  }
+  await rotate({ cloudflare: got.cloudflare, account: got.account,
+                 operator: keyring(input(run, OPERATOR_KEYRING), OPERATOR_KEYRING), keyring: name,
+                 op, stored, directory, control, waiting: run.io, say });
+});
+
+/** What mode `retire` holds a keyring's retirement to (`retirement`). */
+export interface Retiring {
+  readonly keyring: string;
+  /** Whether the off-account copy holds blobs under the keyring (`platform.json` `keyrings`). */
+  readonly copied: boolean;
+  /** The keyring as stored, which `keyring-retire` wrote: its active kid alone. */
+  readonly stored: Ring;
+  /** The rotation's record under the stored ring's active kid, or undefined when none is kept. */
+  readonly record: RotationRecord | undefined;
+  /**
+   * For a copied keyring, the copy as it stands (`watch`) and its first night after the first
+   * pass swept (`firstNightAfter`), or null before any pass swept.
+   */
+  readonly copy: { readonly watch: Watch;
+                   readonly night: { readonly first: Date | null; readonly ever: boolean } | null }
+    | null;
+  readonly now: Date;
+}
+
+/**
+ * A keyring's retirement, or a loud stop naming why not: the kids it retires and the words that
+ * confirm it, with what its gates read. It holds only when:
+ * 1. the stored ring is the rotation record's ring less every kid but the active one;
+ * 2. the record's latest pass swept every owner to `left` 0;
+ * 3. for a keyring the off-account copy holds, the copy is not overdue, and either it never
+ *    passed a night (so it holds no blob of the keyring) or the latest pass began at least
+ *    `KEEP_DAYS` + 1 days after T, the first night that copied R2 after the first pass swept:
+ *    that night uploaded every rewrapped root, so each version under a retiring kid, and every
+ *    one hidden before it, is gone by then (`offsite.ts`: the lock runs from upload, and never
+ *    outlasts the lifecycle's `KEEP_DAYS` and its daily pass). Until then a restore from an older
+ *    copy could bring a root under a retiring kid back, which only a pass after the gate finds.
+ */
+export function retirement({ keyring: name, copied, stored, record, copy, now }: Retiring):
+    { readonly kids: readonly string[]; readonly words: string; readonly lines: readonly string[] } {
+  const key = rotationKey(name, stored.active);
+  if (record === undefined) {
+    throw new Error(`${NAMESPACES["CONTROL"]} holds no rotation record ${key}: rotate first, ` +
+                    "then store the ring keyring-retire writes; nothing is changed");
+  }
+  const kids = Object.keys(record.keys).filter((kid) => kid !== record.active).sort();
+  const kept = keyHashes(stored)[stored.active];
+  if (kids.length === 0) {
+    throw new Error(`the rotation record ${key} holds no kid but ${record.active}: nothing to ` +
+                    "retire; nothing is changed");
+  }
+  if (stored.keys.size !== 1 || kept !== record.keys[record.active]) {
+    throw new Error(`the stored ${name} is not the rotation record's ring less ${
+      kids.join(", ")}: store the ring keyring-retire wrote; nothing is changed`);
+  }
+  const latest = record.passes.at(-1);
+  if (latest?.swept === null || latest === undefined) {
+    throw new Error(`pass ${record.passes.length} of ${key} has not swept every owner to left 0: ` +
+                    "run mode rotation until it does; nothing is changed");
+  }
+  const at = (seconds: number) => new Date(seconds * 1000).toISOString();
+  const lines = [`pass ${record.passes.length} of ${key} swept every owner to left 0 at ${
+    at(latest.swept)}`];
+  if (copied) {
+    const first = record.passes.find((pass) => pass.swept !== null)!;
+    if (copy === null || copy.night === null) {
+      throw new Error(`${name} is copied off the account, and its copy's nights were not read`);
+    }
+    if (copy.watch.state === "overdue") {
+      throw new Error(`the off-account copy is overdue (${copy.watch.line}): its versions under ` +
+                      `${kids.join(", ")} expire only after nights pass; nothing is changed`);
+    }
+    if (copy.night.first === null) {
+      if (copy.night.ever) {
+        throw new Error(`no night of the off-account copy has passed since pass 1 swept at ${
+          at(first.swept!)}: retire waits ${KEEP_DAYS + 1} days after the first that does; ` +
+                        "nothing is changed");
+      }
+      lines.push("the off-account copy has never passed a night, so it holds no blob under " +
+                 `${kids.join(", ")}`);
+    } else {
+      const gate = copy.night.first.getTime() + (KEEP_DAYS + 1) * 86_400_000;
+      if (now.getTime() < gate) {
+        throw new Error(`the off-account copy's versions under ${kids.join(", ")} expire by ${
+          new Date(gate).toISOString()}, ${KEEP_DAYS + 1} days after its night of ${
+          copy.night.first.toISOString()}: retire waits until then; nothing is changed`);
+      }
+      if (latest.began! * 1000 < gate) {
+        throw new Error(`pass ${record.passes.length} of ${key} began at ${at(latest.began!)}, ` +
+                        `before the copy's versions under ${kids.join(", ")} expired at ${
+          new Date(gate).toISOString()}: run mode rotation again for a pass begun after it; ` +
+                        "nothing is changed");
+      }
+      lines.push(`the off-account copy's versions under ${kids.join(", ")} expired at ${
+        new Date(gate).toISOString()}, before pass ${record.passes.length} began`);
+    }
+  }
+  return { kids, words: `retire-${name}-${kids.join(",")}`, lines };
+}
+
+/**
+ * Mode `retire`: `--keyring`, stored as `keyring-retire` wrote it, set on each Worker that holds
+ * it, once `retirement` holds and only with `--confirm` its words; without them the run ends
+ * saying them. Irreversible unless the old ring is kept offline, so the plan job only plans it,
+ * and the apply job names the words before a second run applies them.
+ */
+const retireAsk = step<"cloudflare" | "account" | "wrangler">(async ({ run, say }, got) => {
+  const name = run.keyring!;
+  const holders = Object.keys(SECRETS).filter((worker) => SECRETS[worker]!.includes(name));
+  const { control } = await rotationNamespaces(got);
+  say(`retire every kid of ${name} but its active one: set the stored ${name} on ${
+    holders.map((worker) => NAMES[worker]).join(" and ")} only once its rotation's record shows ` +
+      "every owner swept to left 0 after the off-account copy's versions under the kids expired, " +
+      `and only with its words, which the apply job names (${LATER}). Irreversible unless the ` +
+      "old ring is kept offline");
+  if (run.reach === "public") {
+    return;
+  }
+  const stored = storedRing(run);
+  const key = rotationKey(name, stored.active);
+  const held = await got.cloudflare.value(got.account, control, key);
+  const record = held === undefined ? undefined : rotationRecord(held, key);
+  const copied = ROTATED[name]!.copied;
+  const first = record?.passes.find((pass) => pass.swept !== null)?.swept ?? null;
+  const reach = { fetch: run.io.fetch, env: run.env };
+  const now = run.io.now();
+  const { kids, words, lines } = retirement({
+    keyring: name, copied, stored, record, now,
+    copy: !copied ? null : { watch: await watch(reach, now), night: first === null ? null
+      : await firstNightAfter(reach, new Date(first * 1000)) } });
+  say(...lines);
+  const deployed = await got.cloudflare.workers(got.account);
+  for (const worker of holders) {
+    if (!deployed.includes(NAMES[worker]!)
+        || !(await got.cloudflare.secrets(got.account, NAMES[worker]!)).includes(name)) {
+      throw new Error(`${NAMES[worker]} holds no ${name}: retire only shrinks a deployed ring; ` +
+                      "nothing is changed");
+    }
+  }
+  if (run.confirm === null) {
+    say(`retire ${kids.join(", ")} from ${name} only with its words: keep the old ring file ` +
+        `offline, then run again with --confirm ${words}`);
+    return;
+  }
+  if (run.confirm !== words) {
+    throw new Error(`--confirm ${run.confirm} is not the retirement's words for ${name}: ${words}`);
+  }
+  for (const worker of holders) {
+    say(`set the secret ${name} on ${NAMES[worker]}, ${kids.join(", ")} retired`);
+    if (run.apply) {
+      got.wrangler(["secret", "put", name, "--name", NAMES[worker]!], input(run, name));
+    }
+  }
+});
+
+/**
+ * What `--confirm` takes: a wipe's, a release's or an erasure's words, each naming the owner,
+ * or a retirement's, naming the keyring and its kids.
+ */
+const CONFIRM = /^(?:wipe|release|erase|retire)-\S+$/;
 
 /**
  * E2B's lifecycle webhook, registered or changed once the doors hold E2B_WEBHOOK_SECRET:
@@ -1970,6 +2204,8 @@ const CONTROL = Steps.none.then(zone).then(controlEdit).list;
 const OWNER = Steps.none.then(zone).then(ownerAsk).list;
 const RESTORE = Steps.none.then(zone).then(restoreAsk).list;
 const ERASE = Steps.none.then(zone).then(eraseAsk).list;
+const ROTATION = Steps.none.then(zone).then(rotationSweep).list;
+const RETIRE = Steps.none.then(zone).then(retireAsk).list;
 
 /** What the plan job holds: the Cloudflare token, its one `production` secret, and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
@@ -2042,6 +2278,19 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
     deploys: false, applies: true, own: ["--owner", "--confirm"],
     steps: { public: ERASE, secrets: ERASE }, report: { unchanged: NOTHING, after: [] },
+  },
+  rotation: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"],
+              secret: [OPERATOR_KEYRING, ...Object.keys(ROTATED)], optional: [] },
+    deploys: false, applies: true, own: ["--keyring"],
+    steps: { public: ROTATION, secrets: ROTATION }, report: { unchanged: NOTHING, after: [] },
+  },
+  // The copy's nights are read with the job's own token, as the canary after it reads them.
+  retire: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [...Object.keys(ROTATED), TOKEN],
+              optional: [] },
+    deploys: false, applies: true, own: ["--keyring", "--confirm"],
+    steps: { public: RETIRE, secrets: RETIRE }, report: { unchanged: NOTHING, after: [canary()] },
   },
 });
 
@@ -2167,8 +2416,29 @@ export function keyringAdd(file: string, log: Io["log"]): void {
       "--rotate naming that keyring");
 }
 
+/**
+ * `keyring-retire <file>`: the keyring in `file` with its active key alone, written beside it
+ * (`<file>.retire`) for the founder to store before mode `retire`; the old file is left as it is,
+ * the one way back for the kids retired (a kid's name is never used again, `ringWith`). A ring
+ * of one key is refused: it has nothing to retire.
+ */
+export function keyringRetire(file: string, log: Io["log"]): void {
+  const ring = keyring(readFileSync(file, "utf8"), "the keyring");
+  if (ring.keys.size < 2) {
+    throw new Error(`the keyring in ${file} holds its active key ${ring.active} alone: nothing ` +
+                    "to retire");
+  }
+  const retired = [...ring.keys.keys()].filter((kid) => kid !== ring.active);
+  writeFileSync(`${file}.retire`, ringText({ active: ring.active,
+                                             keys: new Map([[ring.active, ring.keys.get(ring.active)!]]) }),
+                { mode: 0o600, flag: "wx" });
+  log(`wrote ${file}.retire, ${ring.active} alone (${retired.join(", ")} retired): keep ${file} ` +
+      "offline, the one way back for them, store the new file as the keyring it was, then run " +
+      "mode retire");
+}
+
 const TOOLS: Readonly<Record<string, (file: string, log: Io["log"]) => void>> = Object.freeze({
-  "keyring-new": keyringNew, "keyring-add": keyringAdd });
+  "keyring-new": keyringNew, "keyring-add": keyringAdd, "keyring-retire": keyringRetire });
 
 // --- The command line -------------------------------------------------------------------
 
@@ -2197,9 +2467,12 @@ const OWN = Object.freeze({
   "--generation": { names: "the generation to restore from, <namespace>/<gen> as " +
                            "restore.source answers them", needed: false },
   "--confirm": { names: "the words that confirm a restore's wipe, wipe-<owner>-<gen> as " +
-                        "restore.pin answers them, or give its pin up, release-<owner>, or " +
-                        "an erasure, erase-<owner>",
+                        "restore.pin answers them, or give its pin up, release-<owner>, " +
+                        "an erasure, erase-<owner>, or a keyring's retirement, " +
+                        "retire-<keyring>-<kids> as its apply job names them",
                  needed: false },
+  "--keyring": { names: `the keyring swept or retired: ${Object.keys(ROTATED).join(" or ")}`,
+                 needed: true },
 });
 export type Own = keyof typeof OWN;
 
@@ -2239,6 +2512,11 @@ function ownValue(name: Own, text: string): unknown {
         throw refused();
       }
       return text;
+    case "--keyring":
+      if (!Object.hasOwn(ROTATED, text)) {
+        throw refused();
+      }
+      return text;
   }
 }
 
@@ -2267,8 +2545,9 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
       }
       own[name] = text === "" ? undefined : ownValue(name, text);
     } else if (text !== "" && row.report !== null) {
-      throw new Error(`mode ${mode} takes no ${name}: it is mode ${(Object.keys(MODES) as Mode[])
-        .filter((each) => MODES[each].own.includes(name)).join(" and ")}'s`);
+      const takers = (Object.keys(MODES) as Mode[]).filter((each) => MODES[each].own.includes(name));
+      throw new Error(`mode ${mode} takes no ${name}: it is mode ${takers.length < 2 ? takers[0]
+        : `${takers.slice(0, -1).join(", ")} and ${takers.at(-1)}`}'s`);
     }
   }
   const run: Run = Object.freeze({
@@ -2280,7 +2559,8 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
     owner: (own["--owner"] as string | undefined) ?? null,
     act: (own["--act"] as Act | undefined) ?? null,
     generation: (own["--generation"] as Generation | undefined) ?? null,
-    confirm: (own["--confirm"] as string | undefined) ?? null, env, io });
+    confirm: (own["--confirm"] as string | undefined) ?? null,
+    keyring: (own["--keyring"] as string | undefined) ?? null, env, io });
   if (row.report !== null) {
     if (run.apply && run.reach === "public") {
       throw new Error("--public is the plan job's: it never changes anything");

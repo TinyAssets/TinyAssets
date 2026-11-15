@@ -33,6 +33,8 @@ import { deployProblems, locksOf, migrated, readLock } from "../../ci/kit/locks"
 import { WRANGLER, workerFolders } from "../../ci/wrangler";
 import identity from "../../contract/identity.json" with { type: "json" };
 import { ZONE } from "../../contract/src/egress";
+import { OWNER_ENTRY } from "../../contract/src/ids";
+import { IMPORT_KEY } from "../../contract/src/import-message";
 import { type Domain, openBlob, parseRing, sealBlob } from "../../contract/src/envelope";
 import {
   APP_RESOURCE, ORIGIN, routeTakes, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
@@ -51,7 +53,7 @@ import {
 } from "../cloudflare";
 import {
   authorizeCheck, deployedConfig,
-  E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
+  E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
   lifecycleHook, lockRefusal, type Mode, MODES, parse,
   perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, routedConfig,
   type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
@@ -67,7 +69,9 @@ import {
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
-import { ERASE_LOSES, PIN_WAIT_MS, POLL_MS, RESTORE_LOSES } from "../operator";
+import {
+  ERASE_LOSES, keyHashes, POLL_MS, RESTORE_LOSES, rotationKey, RUN_MS,
+} from "../operator";
 import platform from "../platform.json" with { type: "json" };
 
 type Json = Record<string, unknown>;
@@ -143,7 +147,8 @@ const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]
 /** The options of its own each mode needs, by the dispatch's input that gives each. */
 const NEEDED: Partial<Record<Mode, Readonly<Record<string, string>>>> = {
   handback: { RECORD: "7001" }, owner: { OWNER: "user_alice", ACT: "tier=paid" },
-  restore: { OWNER: "user_alice" }, erase: { OWNER: "user_alice" } };
+  restore: { OWNER: "user_alice" }, erase: { OWNER: "user_alice" },
+  rotation: { KEYRING: "FILES_KEYRING" }, retire: { KEYRING: "GATEWAY_KEYRING" } };
 /** `mode`'s needed options, as its command line gives them. */
 const needed = (mode: Mode): string[] => Object.entries(NEEDED[mode] ?? {})
   .flatMap(([name, value]) => [`--${name.toLowerCase()}`, value]);
@@ -202,6 +207,10 @@ interface WorldOptions {
    * never answered). Each is answered at once by default, with its args as its result.
    */
   readonly doors?: (message: OperatorMessage) => Parameters<typeof answerOf>[2] | null;
+  /** The owners the directory holds a record of. */
+  readonly owners?: readonly string[];
+  /** The doors hold the import window's key. */
+  readonly windowOpen?: boolean;
 }
 
 /** The world's clock. */
@@ -227,6 +236,9 @@ function world(options: WorldOptions = {}) {
   if (held) {
     secrets.set(NAMES["codemode"]!, []);
   }
+  if (options.windowOpen === true) {
+    secrets.get(NAMES["doors"]!)!.push(IMPORT_KEY);
+  }
   for (const name of options.retired === true ? RETIRED : []) {
     secrets.set(name, []);
   }
@@ -238,7 +250,10 @@ function world(options: WorldOptions = {}) {
                                   events: [...E2B_HOOK.events] }] : [];
   /** KV, by namespace id and key: the control record when held. */
   const kv = new Map<string, string>(held
-    ? [[`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(DARK)]] : []);
+    ? [[`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(DARK)],
+       ...(options.owners ?? []).map((owner): [string, string] =>
+         [`ns-${NAMESPACES["DIRECTORY"]}/${OWNER_ENTRY}${owner}`, '{"s":"admitted","t":1}'])]
+    : []);
   /** The zone's routes after each route change, in order. */
   const tables: Route[][] = [];
   /** The egress host's custom domains, by id. */
@@ -308,15 +323,25 @@ function world(options: WorldOptions = {}) {
       return json({ success: true, result: method === "POST" ? {}
         : { buckets: [...buckets].map((name) => ({ name })) } });
     }
-    const sending = /^\/accounts\/a+\/queues\/([^/]+)\/messages$/.exec(path);
+    const sending = /^\/accounts\/a+\/queues\/([^/]+)\/messages(\/batch)?$/.exec(path);
     if (sending !== null && method === "POST") {
-      const message = operatorMessage((JSON.parse(body!) as { body: unknown }).body);
-      sent.push({ queue: sending[1]!, message });
-      const outcome = (options.doors ?? ((m) => ({ result: m.args })))(message);
-      if (outcome !== null) {
-        answers.set(answerKey(message.ask), answerOf(message, message.at, outcome));
+      const given = JSON.parse(body!) as { body?: unknown; messages?: { body: unknown }[] };
+      for (const each of sending[2] === undefined ? [given] : given.messages!) {
+        const message = operatorMessage(each.body);
+        sent.push({ queue: sending[1]!, message });
+        const outcome = (options.doors ?? ((m) => ({ result: m.args })))(message);
+        if (outcome !== null) {
+          answers.set(answerKey(message.ask), answerOf(message, message.at, outcome));
+        }
       }
       return json({ success: true, result: null });
+    }
+    const listingKeys = /^\/accounts\/a+\/storage\/kv\/namespaces\/([^/]+)\/keys\?prefix=(.*)$/
+      .exec(path);
+    if (listingKeys !== null) {
+      const under = `${listingKeys[1]}/${decodeURIComponent(listingKeys[2]!)}`;
+      return json({ success: true, result: [...kv.keys()].filter((key) => key.startsWith(under))
+        .map((key) => ({ name: key.slice(listingKeys[1]!.length + 1) })) });
     }
     const object = `${account}/r2/buckets/${OPERATOR_NAMES.bucket}/objects/`;
     if (path.startsWith(object) && method === "GET") {
@@ -740,7 +765,8 @@ describe("the command line", () => {
 
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
     expect(Object.keys(MODES)).toEqual(["plan", "dark", "probe", "routes", "h2", "pair",
-                                        "handback", "control", "owner", "restore", "erase"]);
+                                        "handback", "control", "owner", "restore", "erase",
+                                        "rotation", "retire"]);
     for (const mode of Object.keys(MODES) as Mode[]) {
       expect(parse(["--mode", mode, ...needed(mode)], ENV, w.io).mode).toBe(mode);
     }
@@ -2419,6 +2445,32 @@ describe("the parts of a run", () => {
       rmSync(out, { recursive: true, force: true });
     }
   });
+
+  it("retires a keyring's kids but its active one beside the old file, which it keeps, and " +
+     "refuses a ring of one key", () => {
+    const out = mkdtempSync(join(tmpdir(), "keyring-"));
+    const logged: string[] = [];
+    try {
+      const file = join(out, "ring.json");
+      const old = ringSecret("k3", ["k1", "k2", "k3"]);
+      writeFileSync(file, old);
+      keyringRetire(file, (line) => logged.push(line));
+      const kept = keyring(readFileSync(`${file}.retire`, "utf8"), "the keyring");
+      const before = keyring(old, "the keyring");
+      expect([kept.active, [...kept.keys.keys()]]).toEqual(["k3", ["k3"]]);
+      expect(kept.keys.get("k3")).toEqual(before.keys.get("k3"));
+      expect(readFileSync(file, "utf8")).toBe(old);
+      expect(logged).toEqual([`wrote ${file}.retire, k3 alone (k1, k2 retired): keep ${file} ` +
+        "offline, the one way back for them, store the new file as the keyring it was, then " +
+        "run mode retire"]);
+      // Never over a retired ring written before.
+      expect(() => keyringRetire(file, NONE)).toThrow(/EEXIST/);
+      expect(() => keyringRetire(`${file}.retire`, NONE)).toThrow(
+        `the keyring in ${file}.retire holds its active key k3 alone: nothing to retire`);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
 });
 
 /** A fake of E2B's webhooks API: its hooks, and every call as `METHOD path body`. */
@@ -2866,6 +2918,8 @@ describe("the operator path's modes", () => {
     ["lift=billing", "owner.lift", { reason: "billing" }],
     ["admit", "owner.admit", {}],
     ["state", "owner.state", {}],
+    ["rewrap", "owner.rewrap", {}],
+    ["reseal", "owner.reseal", {}],
   ])("owner sends --act %s as %s, between two owner.state", async (act, op, args) => {
     const w = world({ held: true });
     await runMode(w, "owner", ["--yes", "--owner", "user_alice", "--act", act]);
@@ -2896,7 +2950,8 @@ describe("the operator path's modes", () => {
 
   it("owner needs one owner and one act, each in its grammar", () => {
     const w = world();
-    const acts = "--act is one of state, tier=<tier>, suspend=<reason>, lift=<reason>, admit";
+    const acts = "--act is one of state, tier=<tier>, suspend=<reason>, lift=<reason>, admit, " +
+                 "rewrap, reseal";
     for (const act of ["tier", "admit=now", "state=all", "erase=x", "tier=paid=x"]) {
       const argv = ["--mode", "owner", "--owner", "user_alice", "--act", act];
       if (act === "tier=paid=x") {
@@ -2913,7 +2968,7 @@ describe("the operator path's modes", () => {
     expect(() => parse(["--mode", "owner", "--owner", " x", "--act", "admit"], ENV, w.io))
       .toThrow("--owner is the owner principal the op is asked for");
     expect(() => parse(["--mode", "control", "--owner", "user_alice"], ENV, w.io))
-      .toThrow("mode control takes no --owner: it is mode owner and restore and erase's");
+      .toThrow("mode control takes no --owner: it is mode owner, restore and erase's");
   });
 });
 
@@ -3023,12 +3078,12 @@ describe("mode restore", () => {
                       fresh: FRESH, written: false, confirm: null } }
         : restoring(LIVE)(message) });
     await expect(runMode(writing, "restore", ["--yes", ...flags, "--confirm", CONFIRMED]))
-      .rejects.toThrow(`user_alice's present state was not written within ${PIN_WAIT_MS /
+      .rejects.toThrow(`user_alice's present state was not written within ${RUN_MS /
         60_000} minutes, and the owner stays held: run again to carry it on, or give the pin ` +
         "up with --confirm release-user_alice and no --generation");
     const pins = ops(writing).filter(([op]) => op === "restore.pin").length;
     expect(pins).toBeGreaterThan(1);
-    expect(pins).toBeLessThanOrEqual(PIN_WAIT_MS / POLL_MS + 1);
+    expect(pins).toBeLessThanOrEqual(RUN_MS / POLL_MS + 1);
     expect(ops(writing).map(([op]) => op)).not.toContain("restore.wipe");
     const failing = world({ held: true, doors: restoring(LOST, true) });
     await expect(runMode(failing, "restore", ["--yes", ...flags])).rejects.toThrow(
@@ -3069,8 +3124,9 @@ describe("mode restore", () => {
     expect(() => parse(["--mode", "restore", "--owner", "user_alice", "--confirm", "yes"],
                        ENV, w.io)).toThrow(
       "--confirm is the words that confirm a restore's wipe, wipe-<owner>-<gen> as " +
-      "restore.pin answers them, or give its pin up, release-<owner>, or an erasure, " +
-      "erase-<owner>");
+      "restore.pin answers them, or give its pin up, release-<owner>, an erasure, " +
+      "erase-<owner>, or a keyring's retirement, retire-<keyring>-<kids> as its apply job " +
+      "names them");
   });
 });
 
@@ -3127,14 +3183,91 @@ describe("mode erase", () => {
     const w = world();
     for (const act of ["erase", `erase=${WORDS}`]) {
       expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", act], ENV, w.io),
-             act).toThrow(
-        /^--act is one of state, tier=<tier>, suspend=<reason>, lift=<reason>, admit$/);
+             act).toThrow(new RegExp("^--act is one of state, tier=<tier>, suspend=<reason>, " +
+                                     "lift=<reason>, admit, rewrap, reseal$"));
     }
     expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", "admit",
                         "--confirm", WORDS], ENV, w.io))
-      .toThrow("mode owner takes no --confirm: it is mode restore and erase's");
+      .toThrow("mode owner takes no --confirm: it is mode restore, erase and retire's");
     expect(() => parse(["--mode", "erase", "--confirm", WORDS], ENV, w.io))
       .toThrow("mode erase needs --owner: the owner principal the op is asked for");
+  });
+});
+
+describe("modes rotation and retire", () => {
+  const OWNERS = ["user_alice", "user_bob", "user_carol"];
+  const FILES = { ...ENV, FILES_KEYRING: ROTATED };
+  const ACTIVE = parseRing(ROTATED)!;
+  /** `ROTATED` less k1, as keyring-retire writes it. */
+  const SHRUNK = JSON.stringify({ active: "k2", keys: { k2: Buffer.from(
+    ACTIVE.keys.get("k2")!).toString("base64") } });
+  const rewrapped = () => ({ result: { rewrapped: true, roots: 1, left: 0, kid: "k2" } });
+  const recordIn = (w: ReturnType<typeof world>, name: string) =>
+    JSON.parse(w.kv.get(`${CONTROL_NS}/${rotationKey(name, "k2")}`) ?? "null") as
+      { passes: { swept: number | null; owing: string[] }[] } | null;
+
+  it("plans the sweep with the token alone, and never sweeps while the doors hold the import " +
+     "window's key", async () => {
+    const planned = world({ held: true, owners: OWNERS });
+    expect((await runMode(planned, "rotation", ["--public", "--keyring", "FILES_KEYRING"],
+                          PUBLIC)).plan).toEqual([expect.stringMatching(
+      /^ask the doors owner\.rewrap for every owner the directory lists, through the operator /)]);
+    expect(planned.sent).toEqual([]);
+    for (const flags of [["--public"], ["--yes"]]) {
+      const open = world({ held: true, owners: OWNERS, windowOpen: true });
+      await expect(runMode(open, "rotation", [...flags, "--keyring", "FILES_KEYRING"],
+                           flags[0] === "--public" ? PUBLIC : FILES)).rejects.toThrow(
+        `${NAMES["doors"]} holds IMPORT_KEY: the import window is open`);
+      expect(open.sent).toEqual([]);
+    }
+  });
+
+  it("asks every owner the directory lists, its record swept; with no --yes says where the " +
+     "record stands and asks nothing", async () => {
+    const w = world({ held: true, owners: OWNERS, doors: rewrapped });
+    const work = await runMode(w, "rotation", ["--yes", "--keyring", "FILES_KEYRING"], FILES);
+    expect(w.sent.map(({ message }) => [message.op, message.owner]))
+      .toEqual(OWNERS.map((owner) => ["owner.rewrap", owner]));
+    expect(work.plan.at(-1)).toMatch(/^pass 1 swept every owner to left 0, the last at /);
+    expect(recordIn(w, "FILES_KEYRING")!.passes).toEqual([expect.objectContaining({
+      owing: [], swept: expect.any(Number) })]);
+    const read = await runMode(w, "rotation", ["--keyring", "FILES_KEYRING"], FILES);
+    expect(read.plan.at(-1)).toMatch(
+      /^pass 1 of FILES_KEYRING's rotation to k2: after user_carol, 0 owing, swept at /);
+    expect(w.sent).toHaveLength(OWNERS.length);
+  });
+
+  it("retires a gateway kid only with the words its apply job names, setting the stored ring " +
+     "on the gateway, then the canary", async () => {
+    const w = world({ held: true });
+    const key = rotationKey("GATEWAY_KEYRING", "k2");
+    w.kv.set(`${CONTROL_NS}/${key}`, JSON.stringify({
+      kind: "tinyassets-rotation", keyring: "GATEWAY_KEYRING", active: "k2",
+      keys: keyHashes(ACTIVE), passes: [{ began: 1, through: "user_carol", owing: [], swept: 2 }] }));
+    const env = { ...ENV, GATEWAY_KEYRING: SHRUNK, GITHUB_TOKEN: "gh-token" };
+    const words = "retire-GATEWAY_KEYRING-k1";
+    const named = await runMode(w, "retire", ["--yes", "--keyring", "GATEWAY_KEYRING"], env);
+    expect(named.plan.at(-1)).toBe("retire k1 from GATEWAY_KEYRING only with its words: keep " +
+                                   `the old ring file offline, then run again with --confirm ${words}`);
+    for (const wrong of ["retire-GATEWAY_KEYRING-k2", "retire-FILES_KEYRING-k1"]) {
+      await expect(runMode(w, "retire", ["--yes", "--keyring", "GATEWAY_KEYRING", "--confirm",
+                                         wrong], env)).rejects.toThrow(
+        `--confirm ${wrong} is not the retirement's words for GATEWAY_KEYRING: ${words}`);
+    }
+    // The full ring still stored: nothing is set.
+    await expect(runMode(w, "retire", ["--yes", "--keyring", "GATEWAY_KEYRING", "--confirm",
+                                       words], { ...env, GATEWAY_KEYRING: ROTATED }))
+      .rejects.toThrow("the stored GATEWAY_KEYRING is not the rotation record's ring less k1");
+    expect(w.events.filter((event) => event.startsWith("wrangler"))).toEqual([]);
+    w.events.splice(0);
+    const work = await runMode(w, "retire", ["--yes", "--keyring", "GATEWAY_KEYRING",
+                                             "--confirm", words], env);
+    expect(work.plan.slice(-1)).toEqual([`set the secret GATEWAY_KEYRING on ${
+      NAMES["gateway"]}, k1 retired`]);
+    expect(w.events.filter((event) => /^(wrangler|node)/.test(event))).toEqual([
+      `wrangler secret put GATEWAY_KEYRING --name ${NAMES["gateway"]}`,
+      expect.stringMatching(/^node canary\.ts/)]);
+    expect(Object.values(w.secretsPut)).toEqual([SHRUNK]);
   });
 });
 
@@ -3281,7 +3414,7 @@ describe("platform-deploy.yml", () => {
   const PLAN = ["--plan", `${RUNNER_TEMP}/deploy-plan.json`];
   /** The dispatch's inputs, each handed to the kit as its option of the same name. */
   const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "SET", "REPLACE", "OWNER", "ACT",
-                    "GENERATION", "CONFIRM"];
+                    "GENERATION", "CONFIRM", "KEYRING"];
   const dispatched = (inputs: Record<string, string>) =>
     DISPATCH.flatMap((name) => [`--${name.toLowerCase()}`, inputs[name]!]);
   /** `mode` dispatched with what it needs and nothing else. */
@@ -3293,17 +3426,18 @@ describe("platform-deploy.yml", () => {
                      REPLACE: JSON.stringify(DARK) },
                    { ...dispatchOf("restore"), GENERATION: FROM,
                      CONFIRM: `wipe-user_alice-${"c".repeat(16)}` },
-                   { ...dispatchOf("erase"), CONFIRM: "erase-user_alice" }];
+                   { ...dispatchOf("erase"), CONFIRM: "erase-user_alice" },
+                   { ...dispatchOf("retire"), CONFIRM: "retire-GATEWAY_KEYRING-k1" }];
   /** What the kit reads of a run's own options. */
   const ownOf = (run: ReturnType<typeof parse>) =>
     [run.record, run.edits.length, run.replace, run.owner, run.act?.op ?? null,
-     run.generation?.gen ?? null, run.confirm];
+     run.generation?.gen ?? null, run.confirm, run.keyring];
   const wanted = (inputs: Record<string, string>) =>
     [inputs["RECORD"] || null, inputs["SET"]!.split(" ").filter(Boolean).length,
      inputs["REPLACE"] ? JSON.parse(inputs["REPLACE"]) : undefined, inputs["OWNER"] || null,
      inputs["ACT"] ? `owner.${inputs["ACT"].split("=")[0]}` : null,
      inputs["GENERATION"] ? inputs["GENERATION"].split("/")[1] : null,
-     inputs["CONFIRM"] || null];
+     inputs["CONFIRM"] || null, inputs["KEYRING"] || null];
 
   it("plans in a job of its own, with the Cloudflare token alone, the chosen mode's plan", () => {
     expect(plan!.environment).toBe("production");

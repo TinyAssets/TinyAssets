@@ -29,8 +29,8 @@ name: Platform deploy (manual, founder-approved)
 # makes the same in memory) and rotated with `keyring-add`, then stored here.
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
-# probe, routes, h2, handback, control, owner, restore and erase here; pair is its
-# own job.
+# probe, routes, h2, handback, control, owner, restore, erase, rotation and
+# retire here; pair is its own job.
 # `routes` keeps a record of what it changes (the zone's routes, the egress
 # custom domain, E2B's lifecycle webhook) before any change, and its job
 # summary names the record's id (the run's); `handback` takes that id as
@@ -43,18 +43,21 @@ name: Platform deploy (manual, founder-approved)
 # or with no `generation` asks the owner's namespace and finished generations
 # (`confirm` release-<owner> gives a pin up); `erase` erases `owner` as its own
 # door does, for an owner who asked by other means, only once `confirm` is
-# erase-<owner> (a run without it names the words). Each shares
+# erase-<owner> (a run without it names the words); `rotation` asks every
+# owner the directory lists to bring its blobs under `keyring`'s active kid,
+# its progress kept in the control namespace; `retire` sets `keyring` with its
+# old kids gone, only once `confirm` is the words its apply job names. Each shares
 # this file's concurrency group, so no operator run ever interleaves with a deploy.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | probe | routes | h2 | handback | control | owner | restore | erase'
+        description: 'plan | dark | probe | routes | h2 | handback | control | owner | restore | erase | rotation | retire'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, probe, routes, h2, handback, control, owner, restore, erase]
+        options: [plan, dark, probe, routes, h2, handback, control, owner, restore, erase, rotation, retire]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -96,7 +99,12 @@ on:
         default: ''
         type: string
       confirm:
-        description: 'restore: wipe-<owner>-<gen> as restore.pin answers it, or release-<owner>; erase: erase-<owner>'
+        description: 'restore: wipe-<owner>-<gen> as restore.pin answers it, or release-<owner>; erase: erase-<owner>; retire: retire-<keyring>-<kids> as its apply job names it'
+        required: false
+        default: ''
+        type: string
+      keyring:
+        description: 'rotation and retire: FILES_KEYRING or GATEWAY_KEYRING'
         required: false
         default: ''
         type: string
@@ -128,6 +136,7 @@ jobs:
       ACT: ${{ inputs.act }}
       GENERATION: ${{ inputs.generation }}
       CONFIRM: ${{ inputs.confirm }}
+      KEYRING: ${{ inputs.keyring }}
     steps:
       - uses: actions/checkout@v4
 
@@ -145,7 +154,7 @@ jobs:
           --plan "${RUNNER_TEMP}/deploy-plan.json"
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
-          --generation "${GENERATION}" --confirm "${CONFIRM}"
+          --generation "${GENERATION}" --confirm "${CONFIRM}" --keyring "${KEYRING}"
 
       # The plan the apply job is held to, kept by this run alone (a re-run of the plan job
       # writes it again).
@@ -229,6 +238,7 @@ jobs:
       ACT: ${{ inputs.act }}
       GENERATION: ${{ inputs.generation }}
       CONFIRM: ${{ inputs.confirm }}
+      KEYRING: ${{ inputs.keyring }}
     steps:
       - uses: actions/checkout@v4
 
@@ -253,4 +263,4 @@ jobs:
           --plan "${RUNNER_TEMP}/deploy-plan.json"
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
-          --generation "${GENERATION}" --confirm "${CONFIRM}"
+          --generation "${GENERATION}" --confirm "${CONFIRM}" --keyring "${KEYRING}"

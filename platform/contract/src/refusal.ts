@@ -137,10 +137,8 @@ export const REFUSALS = Object.freeze({
   erasing: QUIET_REFUSED,
   message_body: QUIET_INVALID,
   post_conflict: QUIET_REFUSED,
-  // The files plane: a wrapped data key that does not open for its namespace; a manifest
-  // root that changed while its key was wrapped again, so the rewrap is run again.
+  // The files plane: a wrapped data key that does not open for its namespace.
   data_key_refused: QUIET_INVALID,
-  root_changed: Object.freeze({ status: 409, transient: true }),
 
   // The platform gates (`control.ts`), closed: the maintenance gate (`MAINTENANCE`) or the
   // outside switch (`OUTSIDE_OFF`), each the refusal's message.
@@ -366,6 +364,22 @@ export function refusalOf(error: unknown): Refusal | null {
   return new Refusal(code as RefusalCode, error.message, {
     ...(retryAfterS === undefined ? {} : { retryAfterS: retryAfterS as number }),
     ...(facts === undefined ? {} : { facts }) });
+}
+
+/**
+ * What `call` answers, or `refused` when it is refused (a fault, 5xx or no refusal, still
+ * throws): a key rotation's sweep counts a blob its ring no longer opens left and goes on, so
+ * one never keeps the owner's other blobs under a retiring kid.
+ */
+export async function orRefused<T, R>(call: Promise<T>, refused: R): Promise<T | R> {
+  try {
+    return await call;
+  } catch (error) {
+    if ((refusalOf(error)?.status ?? 500) >= 500) {
+      throw error;
+    }
+    return refused;
+  }
 }
 
 /**

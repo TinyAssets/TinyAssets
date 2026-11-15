@@ -11,7 +11,7 @@ import { env } from "cloudflare:workers";
 import { ANTHROPIC, OPENAI } from "../../ci/fixtures";
 import type { Credential } from "../../gateway/src/credential";
 import type { EgressScope, Source } from "../../contract/src/egress-scope";
-import { seal } from "../../gateway/src/keyring";
+import { binding, openValue, seal, sealValue } from "../../gateway/src/keyring";
 
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Binding } from "../../contract/src/binding";
@@ -71,6 +71,31 @@ export function keyring(active: "k1" | "k2"): { GATEWAY_KEYRING: string } {
 export async function sealedAs(kid: "k1" | "k2", owner: string, connection: string,
                                version: number, plaintext: Credential): Promise<string> {
   return (await seal(keyring(kid), { owner, connection, version }, plaintext)).blob;
+}
+
+/** The gateway's ring once `k1` is retired from it: the active kid `k2` alone. */
+function retired(): { GATEWAY_KEYRING: string } {
+  const { keys } = JSON.parse(env.TEST_KEYRING) as { keys: Record<string, string> };
+  return { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k2: keys["k2"] } }) };
+}
+
+/**
+ * `blob`, which the real gateway sealed for `connection` at `version`, sealed again by the
+ * gateway's own code under the older kid `k1`, as a blob sealed before a rotation. A doorbell
+ * subscription's blob is bound as `wake.<subscription>`.
+ */
+export async function underOlderKid(owner: string, connection: string, version: number,
+                                    blob: string): Promise<string> {
+  const bound = binding(owner, connection, version);
+  const { value } = await openValue(keyring("k2"), bound, blob, (opened) => opened);
+  return (await sealValue(keyring("k1"), bound, value, (kept) => kept)).blob;
+}
+
+/** Whether `blob` opens for `connection` at `version` once `k1` is retired from the ring. */
+export async function opensRetired(owner: string, connection: string, version: number,
+                                   blob: string): Promise<boolean> {
+  return openValue(retired(), binding(owner, connection, version), blob, (opened) => opened)
+    .then(() => true, () => false);
 }
 
 /**
