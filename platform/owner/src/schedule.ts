@@ -65,6 +65,7 @@ import {
   type LifecycleJob, LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
 } from "agents/lifecycle";
 
+import { clock } from "./clock";
 import type { Write } from "./gate";
 
 /** The schedule's Lifecycle capability id, and the prefix of its job ids. */
@@ -181,8 +182,10 @@ export class Schedule extends LifecycleCapability {
     const id = laneJob(name);
     const [rearmed] = await this.#write((): [Promise<unknown>] | [] => {
       const job = jobs.get(id);
-      if (hold === undefined && job !== undefined && job.time <= Date.now()) {
-        return [];  // due by Lifecycle's clock, so maybe running: its run sets it at its end
+      // Due by Lifecycle's clock, the wall clock in ms (`clock()` is it in seconds; the
+      // lanes' `#clock` may not be), so maybe running: its run sets it at its end.
+      if (hold === undefined && job !== undefined && job.time / 1000 <= clock()) {
+        return [];
       }
       const next = this.#lanes.get(name)!.next(this.#clock());
       if (next === null) {
