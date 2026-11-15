@@ -40,8 +40,8 @@ tokens searching, break less without noticing, and find root causes faster.
 - CI is the one full run: run only what the diff can break, one mutation per
   declared change. Read only what applies. One PR in flight per lane, never
   stacked. Merge `origin/main` in; never rebase a pushed branch. A diff touching
-  `platform/*/src` also runs the kernel guard (`npx vitest run --root ci
-  guards/kernels.test.ts` in `platform/`), which no workspace's own tests cover.
+  `platform/` also runs every `ci` guard (`npx vitest run --root ci guards/` in
+  `platform/`, about 10 s): the layers, kit and kernels no workspace's tests cover.
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
   within about 20% of its ceiling lands with its fix, never before it; a
   reviewer who finds one blocks.
