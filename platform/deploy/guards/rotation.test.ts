@@ -11,7 +11,6 @@
 import { describe, expect, it } from "vitest";
 
 import { keyring } from "../../ci/fixtures";
-import { DISPATCH } from "../../contract/src/canary";
 import { parseRing, type Ring } from "../../contract/src/envelope";
 import { OWNER_ENTRY } from "../../contract/src/ids";
 import {
@@ -22,10 +21,11 @@ import { TOKEN } from "../actions";
 import { Cloudflare } from "../cloudflare";
 import { retirement, type Retiring } from "../deploy";
 import { OPERATOR_NAMES } from "../facts";
-import { firstNightAfter, KEEP_DAYS, NIGHTLY } from "../offsite";
+import { firstNightAfter, KEEP_DAYS } from "../offsite";
 import {
   keyHashes, type Pass, rotate, type RotationRecord, rotationKey, RUN_MS,
 } from "../operator";
+import { night, type Night, nightsAnswer } from "./copy-nights";
 
 const ACCOUNT = "a".repeat(32);
 const OPERATOR = parseRing(keyring("k1"))!;
@@ -362,35 +362,22 @@ describe("a keyring's retirement", () => {
 });
 
 describe("the copy's first night after a pass", () => {
-  /** A GitHub of the copy's completed nights, newest first: when each was made, and its copy. */
-  const reach = (nights: { at: string; copy: string }[]) => ({
+  /** A GitHub of the copy's completed nights, newest first. */
+  const reach = (nights: Night[]) => ({
     env: { [TOKEN]: "gh-token" },
-    fetch: async (url: string) => {
-      const repository = `https://api.github.com/repos/${DISPATCH.repository}`;
-      const at = new URL(url);
-      if (url.startsWith(`${repository}/actions/workflows/${NIGHTLY.workflow}/runs?`)) {
-        return Response.json({ workflow_runs: at.searchParams.get("page") !== "1" ? []
-          : nights.map((night, id) => ({ id, created_at: night.at })) });
-      }
-      const jobs = /\/actions\/runs\/(\d+)\/jobs$/.exec(at.pathname);
-      const night = nights[Number(jobs?.[1])]!;
-      return Response.json({ jobs: [
-        { name: NIGHTLY.settings, conclusion: "success", completed_at: night.at },
-        { name: NIGHTLY.copy, conclusion: night.copy,
-          completed_at: new Date(Date.parse(night.at) + 20 * 60_000).toISOString() }] });
-    },
+    fetch: async (url: string) => nightsAnswer(url, nights)!,
   });
 
   it("is the copy's end of the first night made after it that passed", async () => {
-    const nights = [{ at: "2026-11-18T05:37:00Z", copy: "success" },
-                    { at: "2026-11-17T05:37:00Z", copy: "success" },
-                    { at: "2026-11-16T05:37:00Z", copy: "failure" },
-                    { at: "2026-11-15T05:37:00Z", copy: "success" }];
+    const nights = [night("2026-11-18T05:37:00Z", "success"),
+                    night("2026-11-17T05:37:00Z", "success"),
+                    night("2026-11-16T05:37:00Z", "failure"),
+                    night("2026-11-15T05:37:00Z", "success")];
     expect(await firstNightAfter(reach(nights), new Date("2026-11-15T13:00:00Z")))
       .toEqual({ first: new Date("2026-11-17T05:57:00Z"), ever: true });
     expect(await firstNightAfter(reach(nights), new Date("2026-11-18T06:00:00Z")))
       .toEqual({ first: null, ever: true });
-    expect(await firstNightAfter(reach([{ at: "2026-11-18T05:37:00Z", copy: "skipped" }]),
+    expect(await firstNightAfter(reach([night("2026-11-18T05:37:00Z", "skipped")]),
                                  new Date("2026-11-15T13:00:00Z")))
       .toEqual({ first: null, ever: false });
   });

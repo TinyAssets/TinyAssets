@@ -69,11 +69,12 @@ import {
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
-import { NIGHTLY, RESTORE_KEY } from "../offsite";
+import { RESTORE_KEY } from "../offsite";
 import {
   ERASE_LOSES, keyHashes, POLL_MS, RESTORE_LOSES, rotationKey, RUN_MS,
 } from "../operator";
 import platform from "../platform.json" with { type: "json" };
+import { night, nightsAnswer } from "./copy-nights";
 
 type Json = Record<string, unknown>;
 
@@ -3281,21 +3282,10 @@ describe("modes rotation and retire", () => {
                                           swept: began + 3600 }] }));
     // The copy's nights, newest first: last night, and the morning after the pass.
     const nights = [NOW.getTime() - 12 * 3600_000, (began + 18 * 3600) * 1000]
-      .map((at) => new Date(at).toISOString());
+      .map((at) => night(new Date(at).toISOString(), "success"));
     const fetch = w.io.fetch;
-    const io = { ...w.io, fetch: async (url: string, init?: RequestInit) => {
-      const at = new URL(url);
-      if (at.host !== "api.github.com") {
-        return fetch(url, init);
-      }
-      if (at.pathname.endsWith(`/actions/workflows/${NIGHTLY.workflow}/runs`)) {
-        return Response.json({ workflow_runs: at.searchParams.get("page") !== "1" ? []
-          : nights.map((night, id) => ({ id, created_at: night, updated_at: night })) });
-      }
-      const night = nights[Number(/\/actions\/runs\/(\d+)\/jobs$/.exec(at.pathname)![1])]!;
-      return Response.json({ jobs: [NIGHTLY.settings, NIGHTLY.copy].map((name) =>
-        ({ name, conclusion: "success", completed_at: night })) });
-    } };
+    const io = { ...w.io, fetch: async (url: string, init?: RequestInit) =>
+      nightsAnswer(url, nights) ?? fetch(url, init) };
     const env = { ...ENV, FILES_KEYRING: SHRUNK, GITHUB_TOKEN: "gh-token" };
     const named = await runMode({ ...w, io }, "retire", ["--yes", "--keyring", "FILES_KEYRING"],
                                 env);
