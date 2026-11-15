@@ -422,6 +422,31 @@ describe("mail to an agent", () => {
       parent_id: null }))).message).toBe("an outside agent posts only in its own dm room");
   });
 
+  it("from a client holds its run's run doors to that client's grant, where the run acts",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const main = await identity(r, "main");
+    // Muse's grant holds converse, write_graph and run_graph on main in alpha, and nothing
+    // elsewhere.
+    const { client, agent } = await muse(r, { mode: "scoped", scopes: [
+      { universe: "alpha", agent: "main", capability: "converse" },
+      { universe: "alpha", agent: "main", capability: "write_graph" },
+      { universe: "alpha", agent: "main", capability: "run_graph" }] });
+    await r.stub.roomPost(client, { room_id: `dm:${agent}+${main.agent_id}`,
+                                    client_message_id: "c-1", body: "hi", parent_id: null });
+    await drainDue(r.stub);
+    const start = await newest(r);
+    // The run holds run_graph itself, so its own scope lets the call through ...
+    const [grant] = await r.sql("SELECT scopes FROM run_grants WHERE run = ?", start.run);
+    expect(JSON.parse(grant!["scopes"] as string)).toContain("run_graph");
+    // ... and Muse's grant does not hold it on another agent: the run starts none there.
+    expect(await failure(() => r.stub.agentRun(runBinding(r, start), { agent: "helper",
+                                                                      input: "x" })))
+      .toMatchObject({ code: "not_granted", message: "outside client capability not granted" });
+    expect((await recorder(r.stub)).starts.map((each) => each.agent)).toEqual(["main"]);
+  });
+
   it("past the tier's simultaneous runs waits its turn, never refused", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);

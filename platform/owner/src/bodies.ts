@@ -27,6 +27,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { RESULT_CHARS } from "../../contract/src/encoded";
 import { Refusal } from "../../contract/src/refusal";
 import type { Files } from "./files";
+import { streamChunks } from "./segments";
 import type { OwnerStorage, Write } from "./gate";
 import { bodyUnits, ownerSlots, WINDOW_UNITS } from "./holds";
 import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
@@ -93,27 +94,6 @@ export interface Window {
 
 const BODY_OFFSET_INSIDE =
   "body_offset is inside a character: start at a body_next_offset an answer gave";
-
-/**
- * The verified range reads of a body's bytes `[offset, end)`: each chunk it spans, by the
- * range it needs, which `FILES` reads whole, rechecks and answers alone (review L7).
- */
-function windowReads(chunks: readonly string[], size: number, offset: number,
-                            end: number, base = 0):
-    { sha256: string; offset: number; length: number }[] {
-  const reads: { sha256: string; offset: number; length: number }[] = [];
-  for (const [index, sha256] of chunks.entries()) {
-    // The chunk's bytes as the body's: content byte `x` is body byte `x - base` (0 for a
-    // placed body; an archived one's place in its segment).
-    const at = index * CHUNK_BYTES - base;
-    const from = Math.max(offset, at);
-    const to = Math.min(end, at + CHUNK_BYTES, size);
-    if (from < to) {
-      reads.push({ sha256, offset: from - at, length: to - from });
-    }
-  }
-  return reads;
-}
 
 /** A body its row keeps, as the window from `offset` to its end. */
 export function inlineWindow(body: string, offset: number): Window {
@@ -362,16 +342,7 @@ export class Bodies {
     if (end === offset) {
       return { text: "", offset, end, size };
     }
-    // Each chunk the window spans read by the range it needs, verified: `FILES` reads the
-    // whole chunk, rechecks its hash and answers the range alone (review L7), so a window
-    // holds only itself and its bytes are still the content's.
-    const parts = await this.#files.fetch(windowReads(chunks, size, offset, end, base));
-    const bytes = new Uint8Array(end - offset);
-    let put = 0;
-    for (const part of parts) {
-      bytes.set(part, put);
-      put += part.byteLength;
-    }
+    const bytes = await this.#files.range(streamChunks(chunks), base + offset, base + end);
     const cut = windowEnd(bytes, 0, end === size ? end - offset : max);
     if (cut === null) {
       throw new Refusal("invalid", BODY_OFFSET_INSIDE);

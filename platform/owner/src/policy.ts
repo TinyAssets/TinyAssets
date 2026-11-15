@@ -89,6 +89,7 @@ import type {
   Call, Door, OwnerState,
 } from "./owner-do";
 import { clock } from "./clock";
+import { OWNER } from "./authority";
 
 /**
  * The files settings a document leaves in force: its own, and the defaults for the rest;
@@ -445,7 +446,7 @@ export class Policy {
           const share = sql.exec<{ pending: number }>(
             "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
           ).toArray()[0]?.pending ?? 0;
-          if (proposer !== "owner" && share >= POLICY_LIMITS.pendingPerClient) {
+          if (proposer !== OWNER && share >= POLICY_LIMITS.pendingPerClient) {
             throw new Refusal("refused",
                               "this client's pending policy proposals are at their limit");
           }
@@ -536,7 +537,7 @@ export const policyDoors = Object.freeze({
   policyPropose(o: OwnerState, { account, r }: Call<ProposeRequest>):
       { request_digest: string; generation: number } {
     return o.policy.propose(r["change"], r["request_id"] ?? null,
-                              account.origin?.client ?? "owner", clock());
+                              account.origin?.client ?? OWNER, clock());
   },
   policyRead(o: OwnerState, { account: { owner } }: Call<undefined>): Projection {
     return o.policy.projection(owner);

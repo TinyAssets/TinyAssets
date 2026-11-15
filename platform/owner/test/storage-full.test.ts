@@ -10,7 +10,6 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { TIERS } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
 import {
@@ -23,7 +22,7 @@ import { CHUNK_BYTES } from "../../contract/src/limits";
 import { sha256Hex } from "../../contract/src/digest";
 import { rig, type Rig } from "./ledger-support";
 import { later } from "./runs-support";
-import { failure, inFiles, setFiles, starterSeed, text } from "./support";
+import { failure, inFiles, setFiles, starterSeed, text, TIERS, tiersAt } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -33,8 +32,7 @@ afterEach(() => {
 const SEEDED = starterSeed().bytes;
 const FREE = SEEDED + 10_000;
 const PAID = SEEDED + 100_000;
-const SMALL = Object.freeze({ free: { runs: 5, storage_bytes: FREE },
-                              paid: { runs: 10, storage_bytes: PAID } });
+const SMALL = tiersAt(FREE, PAID);
 const W = "/workspace";
 /** Past the 4 KiB kept inline, so each file's bytes are chunk bytes the figure counts. */
 const FILE = 6_000;
@@ -349,7 +347,8 @@ describe("the sync's ignore list", () => {
 
 describe("the storage_full refusal", () => {
   it("carries its facts and reads plainly", () => {
-    const facts = storageFull(24_500_000_000, 2_000_000_000, 0, 25_000_000_000, "free", TIERS);
+    const facts = storageFull(24_500_000_000, 2_000_000_000, 0, 25_000_000_000, "free",
+                              tiersAt(25_000_000_000, 250_000_000_000));
     const refusal = storageFullRefusal(facts);
     expect(refusal.code).toBe(STORAGE_FULL);
     expect(refusal.facts).toEqual(facts);

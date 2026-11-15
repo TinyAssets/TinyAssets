@@ -168,7 +168,7 @@ export class SandboxTime {
       if (read.events.length < METER_BATCH) {
         return;
       }
-    } while (clockMs() < until);
+    } while (clock() < until);
   }
 
   get #sql(): OwnerStorage["sql"] {

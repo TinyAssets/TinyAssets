@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_DIR, agentId, Authority, AUTHORITY_CHANGED, authorityOf, NO_AUTHORITY, NOT_GRANTED,
-  NOT_OWNER, OWNER_ONLY, type Stamped,
+  NOT_OWNER, OWNER, type Stamped,
 } from "../src/authority";
 import { Refusal } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
@@ -53,7 +53,7 @@ describe("a stamp", () => {
 describe("the authority's checks", () => {
   it("hold the owner to everything and none to nothing", () => {
     const authority = under("scoped");
-    expect(authority.refusal({ by: "owner" }, OWNER_ONLY)).toBeUndefined();
+    expect(authority.refusal({ by: "owner" }, OWNER)).toBeUndefined();
     expect(authority.refusal({ by: "none" }, [])?.message).toBe(NO_AUTHORITY);
     expect(authority.refusal(undefined, [])?.message).toBe(NO_AUTHORITY);
   });
@@ -64,7 +64,7 @@ describe("the authority's checks", () => {
     expect(authority.refusal(CLIENT, [])).toBeUndefined();
     expect(authority.refusal(CLIENT, ["read_files"])).toBeUndefined();
     expect(authority.refusal(CLIENT, ["read_files", "write_files"])?.message).toBe(NOT_GRANTED);
-    expect(authority.refusal(CLIENT, OWNER_ONLY)?.message).toBe(NOT_OWNER);
+    expect(authority.refusal(CLIENT, OWNER)?.message).toBe(NOT_OWNER);
     // Where it acts: another universe, or none, holds nothing.
     expect(authority.refusal({ by: "client", stamp: { ...STAMP, universe: "beta" } },
                              ["read_files"])?.message).toBe(NOT_GRANTED);
@@ -77,7 +77,7 @@ describe("the authority's checks", () => {
       under(mode).refusal(CLIENT, ["read_files"])?.message ?? "runs"))
       .toEqual(["runs", NOT_GRANTED, NOT_GRANTED, NOT_GRANTED]);
     expect(under("full").refusal(CLIENT, ["run_graph", "write_files"])).toBeUndefined();
-    expect(under("full").refusal(CLIENT, OWNER_ONLY)?.message).toBe(NOT_OWNER);
+    expect(under("full").refusal(CLIENT, OWNER)?.message).toBe(NOT_OWNER);
   });
 
   it("refuse with the fixed reason a stamp whose grant no longer stands, and fail loudly " +
@@ -103,7 +103,7 @@ describe("the authority's checks", () => {
   it("hold one of several needs, else the first one's refusal", () => {
     const authority = under("scoped", ["write_files"]);
     expect(() => authority.requireOne(CLIENT, [["read_files"], ["write_files"]])).not.toThrow();
-    expect(() => authority.requireOne(CLIENT, [OWNER_ONLY, ["run_graph"]])).toThrow(NOT_OWNER);
+    expect(() => authority.requireOne(CLIENT, [OWNER, ["run_graph"]])).toThrow(NOT_OWNER);
     expect(() => authority.requireOne(CLIENT, [])).toThrow(NOT_GRANTED);
   });
 });

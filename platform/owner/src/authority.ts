@@ -25,11 +25,17 @@ import type { Account } from "./owner-do";
 import { sha256Hex } from "../../contract/src/digest";
 
 
-/** The need of what only the owner itself may do, whatever grant a client holds. */
-export const OWNER_ONLY = "owner";
+/**
+ * The owner itself, wherever a party may instead be an outside client (by its id): the need
+ * of what only the owner may do, whatever grant a client holds; a write's files scope and a
+ * row's filer (`scopeOf`); a sandbox's authority (`contract/src/ids.ts` `AUTHORITY`); a room
+ * member, a mail's reader or sender, a subscription's principal. Frozen: the owner's schema
+ * spells it (the frozen-bounds guard holds the two equal).
+ */
+export const OWNER = "owner";
 
 /** What an operation needs: each of these capabilities (none: only a standing authority), or the owner itself. */
-type Need = readonly RunCapability[] | typeof OWNER_ONLY;
+type Need = readonly RunCapability[] | typeof OWNER;
 
 /** The fixed reasons work is refused with: the receipts see only these. */
 export const AUTHORITY_CHANGED = "outside client authority no longer stands";
@@ -170,7 +176,7 @@ export class Authority {
     }
     const stamp = state.stamp;
     const grant = this.#standing(stamp);
-    if (need === OWNER_ONLY) {
+    if (need === OWNER) {
       throw new Refusal("not_owner", NOT_OWNER);
     }
     if (grant.mode === "full") {
@@ -220,8 +226,13 @@ export const MAIN_AGENT = "main";
  */
 export function filerOf(account: Account): string {
   if (account.origin !== null) {
-    return `client:${account.origin.client}`;
+    return scopeOf(account.origin.client);
   }
-  return account.caller === account.owner ? "owner"
-    : `client:${sha256Hex(`visitor\n${account.caller}`)}`;
+  return scopeOf(account.caller === account.owner ? null
+    : sha256Hex(`visitor\n${account.caller}`));
+}
+
+/** The files scope of the owner's own work (`OWNER`), or of the outside client `client`. */
+export function scopeOf(client: string | null): string {
+  return client === null ? OWNER : `client:${client}`;
 }

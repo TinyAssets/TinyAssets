@@ -31,8 +31,9 @@ import { PLATFORM } from "../../ci/paths";
 import { LOG_WIDE } from "../src/changelog";
 import {
   CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES, HISTORY_BYTES,
-  OWNER_SCOPE, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
+  SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "../src/manifest";
+import { OWNER } from "../src/authority";
 import type { Migration } from "../../contract/src/migrate";
 import { MIGRATIONS } from "../src/schema";
 import { SEGMENT_LEAST_BYTES } from "../src/segments";
@@ -220,16 +221,16 @@ const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 11, 64: 282, 256: 8, 10
  * charge.
  */
 export const NAMED: readonly (readonly [Head, number, string])[] = Object.freeze([
-  ["CREATE TABLE collection_rows", 1, `filer = '${OWNER_SCOPE}' OR (length(filer) = 71 AND ` +
+  ["CREATE TABLE collection_rows", 1, `filer = '${OWNER}' OR (length(filer) = 71 AND ` +
     `filer GLOB '${CLIENT_WRITER}')`],
   ["CREATE TABLE collection_usage", 1, `who = '${CLIENTS}' OR (length(who) = 71 AND who GLOB ` +
     `'${CLIENT_WRITER}')`],
-  ["CREATE TABLE file_chunks", 1, `holder TEXT NOT NULL DEFAULT '${OWNER_SCOPE}'`],
-  ["CREATE TABLE file_shares", 1, `who IN ('${CLIENTS}', '${OWNER_SCOPE}') OR (length(who) = ` +
+  ["CREATE TABLE file_chunks", 1, `holder TEXT NOT NULL DEFAULT '${OWNER}'`],
+  ["CREATE TABLE file_shares", 1, `who IN ('${CLIENTS}', '${OWNER}') OR (length(who) = ` +
     `71 AND who GLOB '${CLIENT_WRITER}')`],
   ["INSERT INTO file_shares", 1, `VALUES ('${CLIENTS}', 0, 0, 0, 0, ${SHARE_BYTES}, 0), ` +
-    `('${OWNER_SCOPE}', 0, 0, 0, 0, ${SHARE_BYTES}, 0)`],
-  ["CREATE TABLE archive_segments", 1, `filer = '${OWNER_SCOPE}'`],
+    `('${OWNER}', 0, 0, 0, 0, ${SHARE_BYTES}, 0)`],
+  ["CREATE TABLE archive_segments", 1, `filer = '${OWNER}'`],
   ["CREATE TRIGGER file_entries_added", 2, ENTRY_BYTES("NEW")],
   ["CREATE TRIGGER file_entries_removed", 2, ENTRY_BYTES("OLD")],
   ["CREATE TRIGGER file_history_added", 2, HISTORY_BYTES("NEW")],

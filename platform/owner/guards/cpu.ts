@@ -11,7 +11,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readWrangler } from "../../ci/wrangler";
+import { readWrangler } from "../../ci/wrangler.ts";
 
 /**
  * Workers' CPU limit an invocation when the config sets none (30 s,

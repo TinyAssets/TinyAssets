@@ -34,12 +34,12 @@ import { runEnv } from "../../sources/src/run-env";
 import { SourceRecordError } from "../../sources/src/schema";
 
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
-import type { Stamped, StandingGrant } from "./authority";
+import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
 import type { Placed, Placing } from "./bodies";
-import { OWNER_AUTHORITY, type Lease, type SandboxLease } from "./files";
+import { type Lease, type SandboxLease } from "./files";
 import { type Delivery, type MailAuthority, mailInput } from "./ledger";
 import { nativeId } from "../../contract/src/binding";
-import { clock } from "./clock";
+import { clock, inTime } from "./clock";
 import { networkDocument } from "./network";
 import type { OwnerState } from "./owner-do";
 import {
@@ -48,7 +48,7 @@ import {
   type SpendCaps, type UsableSource,
 } from "./runs";
 import { started, vendorHosts } from "./sandbox";
-import { inTime, LANE_CALL_MS } from "./schedule";
+import { LANE_CALL_MS } from "./schedule";
 import { switchedOn } from "./signins";
 import { tierNumbers } from "./tier";
 import type { TierName } from "../../contract/src/control";
@@ -314,7 +314,7 @@ export class Launcher implements RunHost {
         if (answer.code === SIGNIN_REQUIRED) {
           // No login inside that sandbox: the owner signs in there, never copies one.
           this.#o.notices.add(SIGNIN_REQUIRED, `${agent}: sign in to ${admitted.engine} inside ${
-            admitted.authority === OWNER_AUTHORITY ? "your own" : `${admitted.authority}'s`
+            admitted.authority === OWNER ? "your own" : `${admitted.authority}'s`
           } sandbox, through the vendor's own flow`, clock());
         }
       }
@@ -387,8 +387,7 @@ export class Launcher implements RunHost {
    */
   beginReply(answer: MailAnswer): Placing | null {
     try {
-      return this.#o.bodies.begin(answer.result,
-                                  answer.stamp === null ? "owner" : `client:${answer.stamp.client}`);
+      return this.#o.bodies.begin(answer.result, scopeOf(answer.stamp?.client ?? null));
     } catch (error) {
       if (!(error instanceof Refusal) || error.transient) {
         throw error;  // a transient refusal fails the batch, posted again: the reply is kept
@@ -416,11 +415,11 @@ export class Launcher implements RunHost {
   #reply(answer: MailAnswer, authority: MailAuthority | null, placed: Placed | null): void {
     try {
       // The reply is the owner's agents' content: held to the tier's storage too.
-      this.#o.files.held("owner", () => {
+      this.#o.files.held(OWNER, () => {
         if (answer.mail === null) {
           this.#o.ledger.post({ native: answer.agent }, `dm:${nativeId(answer.agent)}`,
                               answer.run, answer.result, null, clock(), authority, placed,
-                              authority === null ? "owner" : `client:${authority.client}`);
+                              scopeOf(authority?.client ?? null));
         } else {
           this.#o.ledger.answer({ native: answer.agent }, answer.mail, answer.run,
                                 answer.result, clock(), authority, placed);

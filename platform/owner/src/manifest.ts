@@ -159,8 +159,6 @@ export const CLIENT_WRITER = "client:*";
 export const SHARE_BYTES = 240;
 /** The share row every outside client's together is counted in. */
 export const CLIENTS = "*";
-/** The scope of the owner's own writers (the owner, its agent, the sync lease, the system). */
-export const OWNER_SCOPE = "owner";
 
 /**
  * What the database may grow by for a charge of one byte, at worst: the charge counts each

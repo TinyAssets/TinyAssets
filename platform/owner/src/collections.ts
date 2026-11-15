@@ -55,7 +55,7 @@ import type {
 } from "./owner-do";
 import { clock } from "./clock";
 import { jsonBytes } from "../../contract/src/encoded";
-import { filerOf, MAIN_AGENT } from "./authority";
+import { filerOf, MAIN_AGENT, OWNER } from "./authority";
 import type { Heads } from "./pages";
 
 interface Limits {
@@ -94,8 +94,6 @@ export interface Shares {
   readonly owner_reserve: number;
 }
 
-/** The owner's own files scope (`manifest.ts`'s `OWNER_SCOPE`). */
-export const OWNER_FILER = "owner";
 
 /** Python's `str.isidentifier()`. */
 const IDENTIFIER = /^[\p{XID_Start}_]\p{XID_Continue}*$/u;
@@ -278,7 +276,7 @@ export class Collections {
       "SELECT charge FROM collection_usage WHERE who = ?", who).toArray()[0]?.charge ?? 0;
     return { owner: sql.exec<{ rows_charge: number }>(
                "SELECT rows_charge FROM collection_space").one().rows_charge,
-             mine: filer === OWNER_FILER ? 0 : usage(filer), outside: usage("*") };
+             mine: filer === OWNER ? 0 : usage(filer), outside: usage("*") };
   }
 
   /**
@@ -296,10 +294,10 @@ export class Collections {
     if (over("owner", most)) {
       throw new Refusal("refused", "the owner's collections are full");
     }
-    if (filer !== OWNER_FILER && over("mine", Math.floor(most * share / 100))) {
+    if (filer !== OWNER && over("mine", Math.floor(most * share / 100))) {
       throw new Refusal("refused", "this writer's share of the owner's collections is full");
     }
-    if (filer !== OWNER_FILER && over("outside", Math.floor(most * (100 - reserve) / 100))) {
+    if (filer !== OWNER && over("outside", Math.floor(most * (100 - reserve) / 100))) {
       throw new Refusal("refused",
                         "outside writers' share of the owner's collections is full; the " +
                         "rest is kept for the owner");
@@ -317,7 +315,7 @@ export class Collections {
    */
   write(owner: string, caller: string, collection: string, rowId: string, body: unknown,
         expectedEtag: unknown, isPrivate: unknown, historyOp: unknown = "write",
-        placed: Placed | null = null, filer = OWNER_FILER): Row {
+        placed: Placed | null = null, filer = OWNER): Row {
     name(collection, "collection");
     name(rowId, "row_id");
     checkBody(body);

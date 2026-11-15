@@ -26,12 +26,13 @@
  * on closed, a failure or no answer.
  */
 import { Refusal, refusalOf } from "../../contract/src/refusal";
-import { clockMs } from "./clock";
+import { clock, inTime } from "./clock";
+import { OWNER } from "./authority";
 import type { Write } from "./gate";
 import {
   type Ledger, type LiveCallback, type Outcome, outcome, WAKE_LEASE_S, type WakeTarget,
 } from "./ledger";
-import { inTime, type Lane, LANE_CALL_MS } from "./schedule";
+import { type Lane, LANE_CALL_MS } from "./schedule";
 import {
   type Change, doorbellRequest, type WakeContent,
 } from "../../contract/src/wake-kinds";
@@ -84,8 +85,8 @@ export interface WakeSender {
  * a settle, a backoff) is one unit through `write`, the object's gate (`gate.ts`), between
  * the sends, never the whole pass.
  */
-export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock: () => number,
-                               write: Write, limit: number = WAKES_PER_ALARM,
+export async function runWakes(ledger: Ledger, sender: WakeSender | null, write: Write,
+                               limit: number = WAKES_PER_ALARM,
                                sendMs: number = LANE_CALL_MS,
                                until: number = Infinity): Promise<number | typeof CLOSED> {
   for (const lapsed of ledger.lapsedClaims(clock(), limit)) {
@@ -109,7 +110,7 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
   }
   let accepted = 0;
   for (const wake of due) {
-    if (clockMs() >= until) {
+    if (clock() >= until) {
       break;  // the rest wait for the lane's next pass, which the job's set brings at once
     }
     try {
@@ -159,7 +160,6 @@ interface DoorbellDeps {
   /** A notice for the owner (`notices.ts`), in a unit of its own. */
   readonly notice: (type: string, detail: string) => Promise<void>;
   readonly write: Write;
-  readonly clock: () => number;
   /** Whether the owner is admitted (`require_work`): read at each use. */
   readonly admitted: () => boolean;
   /** The kill switch: whether the control record lets this owner's outside work go now. */
@@ -240,9 +240,9 @@ export class Doorbell implements WakeSender, Lane {
    * closed claims nothing, and holds the job a retry out.
    */
   async run(_now: number, until: number): Promise<unknown> {
-    const done = await runWakes(this.#deps.ledger, this, this.#deps.clock, this.#deps.write,
-                                WAKES_PER_ALARM, LANE_CALL_MS, until);
-    return done === CLOSED ? { hold: this.#deps.clock() + WAKE_RETRY_S } : done;
+    const done = await runWakes(this.#deps.ledger, this, this.#deps.write, WAKES_PER_ALARM,
+                                LANE_CALL_MS, until);
+    return done === CLOSED ? { hold: clock() + WAKE_RETRY_S } : done;
   }
 
   async open(): Promise<boolean> {
@@ -267,7 +267,7 @@ export class Doorbell implements WakeSender, Lane {
    * is still owed this wake.
    */
   #live(target: WakeTarget): LiveCallback[] | "grant" | "scope" | "no_callback" {
-    const { ledger, live, reads, clock } = this.#deps;
+    const { ledger, live, reads } = this.#deps;
     if (!live(target.client)) {
       return "grant";
     }
@@ -352,9 +352,9 @@ export class Doorbell implements WakeSender, Lane {
       }
       const status = rung.status;
       await write(() => ledger.answered(callback.subscription_id, wake, status));
-      answers.push({ status, retry_after: retryAfterOf(rung.retry_after, this.#deps.clock()) });
+      answers.push({ status, retry_after: retryAfterOf(rung.retry_after, clock()) });
       const dead = kindNamed(callback.kind)?.push?.token_dead ?? [];
-      if (callback.principal === "owner" && dead.includes(status)
+      if (callback.principal === OWNER && dead.includes(status)
           && !dead.includes(callback.status ?? 0)) {
         await this.#deps.notice("doorbell_token_refused",
                                 `${target.agent_id}: ${callback.kind} answered ${rung.status}; ` +

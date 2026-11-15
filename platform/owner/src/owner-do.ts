@@ -115,7 +115,7 @@ import {
   ownerTier, PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import {
-  agentId, AUTHORITY_CHANGED, MAIN_AGENT, may, NOT_GRANTED, type Stamped,
+  agentId, AUTHORITY_CHANGED, MAIN_AGENT, may, NOT_GRANTED, OWNER, type Stamped,
 } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
 import { agentsAt, RUN_ENDED, Runs, type RunSchedule, runsDoors } from "./runs";
@@ -136,7 +136,7 @@ import type { RingAnswer } from "../../contract/src/gateway";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import {
  type Change as FileChange, type ChunkRef, type Entry, fileChanged,
- Files, filesDoors, OWNER_AUTHORITY, type SandboxLease, SYNC_FENCED, type SyncOutcome,
+ Files, filesDoors, type SandboxLease, SYNC_FENCED, type SyncOutcome,
  type Usage,
 } from "./files";
 import { type OwnerStorage, WriteGate } from "./gate";
@@ -623,7 +623,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#sessions = new Sessions(storage);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#starter = new Starter({
-      storage, files: this.#files, write, admitted, clock,
+      storage, files: this.#files, write, admitted,
       // The files' byte quota is the tier's storage: until a door hands the numbers, no write
       // lands, so a seed waits for them rather than failing (the first door's call keeps them).
       ready: () => keptTiers(storage) !== null,
@@ -638,7 +638,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     };
     this.#ownerName = owner;
     this.#sender = new Doorbell({
-      ledger: this.#ledger, live: (client) => this.#grants.live(client), write, clock,
+      ledger: this.#ledger, live: (client) => this.#grants.live(client), write,
       reads: (client, center) => this.#grants.reads(client, { universe: center,
                                                                agent: MAIN_AGENT,
                                                                capability: "read_graph" }),
@@ -651,8 +651,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       ring: (subscription, version, blob, previous, request): Promise<RingAnswer> =>
         env.GATEWAY.ringDoorbell(owner(), subscription, version, blob, previous, request),
     });
-    this.#connections = new Connections(storage, write, env.GATEWAY, owner,
-                                        this.#notices, clock);
+    this.#connections = new Connections(storage, write, env.GATEWAY, owner, this.#notices);
     this.#egress = new Egress(storage, {
       lease: (token, now) => this.#files.leaseByToken("egress", token, now),
       runConnection: (run, secret, lease) => {
@@ -711,7 +710,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       // A sign-in's socket gets its own tail on attach, as a conversation's gets its runs'.
       live: (conversation) => this.#door(() => signinOwned(this.#state, conversation) ? [conversation]
         : this.#runs.liveIn(conversation)),
-      now: clock,
     });
     this.#archive = new Archive({
       storage, door: (act) => this.#door(act), ledger: this.#ledger, files: this.#files,
@@ -726,10 +724,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       wakes: this.#sender, files: this.#files, connections: this.#connections,
       runs: this.#launcher, manifest: this.#backups, sandbox: this.#sandboxTime,
       archive: this.#archive, starter: this.#starter,
-    }, clock, write, () => wiped(storage.sql) || erasing(storage) || restoring(storage));
+    }, write, () => wiped(storage.sql) || erasing(storage) || restoring(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
-      storage, write, clock, lifecycle,
+      storage, write, lifecycle,
       // Every run ended: its streams, its sockets, and its CLI through the sandbox.
       ended: () => {
         this.#egress.drop();
@@ -2189,7 +2187,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     // read-only; the rest of the owner's files only as that client may read them; and writes
     // only what it may write (as itself, never into the owner's trees: `Files.syncCommit`),
     // by its grant as its live run stamped it, standing now.
-    if (lease.authority === OWNER_AUTHORITY) {
+    if (lease.authority === OWNER) {
       return readable({ lease: lease.lease_id, scope: null, test: () => true });
     }
     {
@@ -2239,7 +2237,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     let first: { done: { value: T; located: Located } } | { placing: Placing } | undefined;
     // Whose files scope the write's bodies count in: the tier's one storage number holds
     // them, inline or placed, retention making room first (`Files.held`).
-    let writer = "owner";
+    let writer = OWNER;
     for (let tries = 1; first === undefined; tries++) {
       try {
         first = await this.#door(():

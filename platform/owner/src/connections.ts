@@ -80,12 +80,12 @@ import {
 } from "../../contract/src/limits";
 import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
-import { inTime, LANE_CALL_MS } from "./schedule";
-import { codePoints, isPrintable, SOURCE_ID, utf8Bytes } from "../../contract/src/text";
+import { LANE_CALL_MS } from "./schedule";
+import { printable, SOURCE_ID, utf8Bytes } from "../../contract/src/text";
 import type {
   Call, Door, OwnerState,
 } from "./owner-do";
-import { clock, clockMs } from "./clock";
+import { clock, clockMs, inTime } from "./clock";
 
 interface ConnectionLimits {
   readonly maxConnections: number;
@@ -193,13 +193,6 @@ const STATE = /^[A-Za-z0-9_-]{43}$/;
 
 const INVALID_REQUEST = "invalid connection request";
 
-function text(value: unknown, max: number, what: string): string {
-  if (typeof value !== "string" || !value || codePoints(value) > max || !isPrintable(value)) {
-    throw new Refusal("invalid", `${what} is 1 to ${max} printable characters`);
-  }
-  return value;
-}
-
 function grammar(value: unknown, pattern: RegExp, what: string): string {
   if (typeof value !== "string" || !pattern.test(value)) {
     throw new Refusal("invalid", `invalid ${what}`);
@@ -279,7 +272,6 @@ export class Connections {
   readonly #gateway: GatewayService;
   readonly #owner: () => string;
   readonly #notices: Notices;
-  readonly #clock: () => number;
   /** The refreshes this instance runs, by connection: what concurrent callers wait on. */
   readonly #refreshing = new Map<string, Promise<void>>();
   /** Bumped by every unit that changes a connection, so `usable` re-reads only then. */
@@ -287,13 +279,12 @@ export class Connections {
   #usable: { revision: number; usable: readonly Usable[] } | null = null;
 
   constructor(storage: OwnerStorage, write: Write, gateway: GatewayService,
-              owner: () => string, notices: Notices, clock: () => number) {
+              owner: () => string, notices: Notices) {
     this.#storage = storage;
     this.#write = write;
     this.#gateway = gateway;
     this.#owner = owner;
     this.#notices = notices;
-    this.#clock = clock;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -333,7 +324,7 @@ export class Connections {
                         "an OAuth connection begins its flow at a redirect URI; a key has none");
     }
     const redirect = kind === "oauth2" ? redirectUri(r["redirect_uri"]) : null;
-    const name = text(r["display_name"], 128, "display_name");
+    const name = printable(r["display_name"], 128, "display_name");
     const live = this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM connections WHERE status != 'revoked'").one().n;
     if (live >= CONNECTION_LIMITS.maxConnections) {
@@ -734,7 +725,7 @@ export class Connections {
       throw new Refusal("credential_refresh_failed", `credential_refresh_failed: ${code}`);
     }
     const kept = await this.#write(() => this.#refreshed(id, holder, from.version, refreshed,
-                                                         this.#clock()));
+                                                         clock()));
     if (kept === "malformed") {
       throw new Refusal("credential_refresh_failed", "credential_refresh_failed: malformed");
     }
@@ -892,12 +883,12 @@ export class Connections {
    * `revokeTries` the blob deleted anyway, with a notice.
    */
   async run(_now: number, until: number): Promise<void> {
-    await this.#write(() => this.#sweep(this.#clock()));
-    for (const id of this.#dueRevokes(this.#clock())) {
-      if (clockMs() >= until) {
+    await this.#write(() => this.#sweep(clock()));
+    for (const id of this.#dueRevokes(clock())) {
+      if (clock() >= until) {
         break;
       }
-      const owed = await this.#write(() => this.#owed(id, this.#clock()));
+      const owed = await this.#write(() => this.#owed(id, clock()));
       if (owed === null) {
         continue;
       }
@@ -914,7 +905,7 @@ export class Connections {
       } catch {
         console.error("a connection's provider revoke failed; it is tried again later");
       }
-      await this.#write(() => this.#revokeOutcome(id, owed.version, outcome, this.#clock()));
+      await this.#write(() => this.#revokeOutcome(id, owed.version, outcome, clock()));
     }
   }
 

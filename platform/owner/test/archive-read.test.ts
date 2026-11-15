@@ -14,7 +14,9 @@ import { describe, expect, it, onTestFinished } from "vitest";
 import { sqlIn } from "../../ci/workerd";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { RESULT_CHARS } from "../../contract/src/encoded";
-import type { Ledger } from "../src/ledger";
+import { PLACE_BYTES } from "../../contract/src/limits";
+import { refusalOf } from "../../contract/src/refusal";
+import { type Ledger, READ_TRIES } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { Archive } from "../src/archive";
 import { makeChunk, parseTrailer, planSegment, recordRows } from "../src/segments";
@@ -73,6 +75,67 @@ describe("the archive lane", () => {
       return archive.archivedParent({ parent_id: "not-a-message" });
     }));
     expect(failed.message).toMatch(/no such table: ledger_messages/);
+  });
+
+  it("posts a reply whose parent moved to the archive after its gate, its parent read again",
+     { tags: ["large"] }, async () => {
+    const r = await seeded();
+    const muse = await r.register(MUSE);
+    const room = `dm:${muse}`;
+    const [first] = await sentAndAcked(r, MUSE, room, 4);
+    // The reply's body is placed, so its put to the files plane comes between the unit that
+    // took its parent as hot and the unit that posts it: held there, the parent moves.
+    const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
+    await files.arm("putChunks", { hold: "before" });
+    const body = "late reply".padEnd(PLACE_BYTES + 1, "x");
+    const posting = r.post(MUSE, room, { cmid: "r1", body, parent: first! });
+    try {
+      await files.held("putChunks");
+      await sealed(r, MUSE, room);
+      await settle(r);
+      expect(await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
+                         first!)).toEqual([]);
+    } finally {
+      await files.release("putChunks");
+    }
+    const reply = await posting;
+    const chain = await r.stub.mailChain(r.bind(null), { message_id: reply.message_id,
+                                                         limit: 10 });
+    expect([chain.root, chain.messages.map((m) => [m.message_id, m.body])]).toEqual([
+      first, [[first, "m 0"], [reply.message_id, body]]]);
+  });
+
+  it("answers a read the archive moved under each of its reads storage_busy, again in a second",
+     { tags: ["large"] }, async () => {
+    const r = await seeded();
+    const muse = await r.register(MUSE);
+    const room = `dm:${muse}`;
+    const [first] = await sentAndAcked(r, MUSE, room, 4);
+    await sealed(r, MUSE, room);
+    await settle(r);
+    const mark = async () => JSON.stringify(await sqlIn(r.stub, "SELECT COUNT(*) AS n, " +
+                                                        "MAX(segment) AS newest FROM archive_segments"));
+    // Each read of the archived message held at the files plane while the lane moves more mail
+    // into a new segment, and then its answer lost: read again, the archive having moved.
+    const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
+    await files.arm("getChunks", { hold: "before" });
+    const reading = failure(() => r.stub.mailChain(r.bind(null), { message_id: first!,
+                                                                    limit: 10 }));
+    for (let read = 1; read <= READ_TRIES; read++) {
+      await files.held("getChunks");
+      const before = await mark();
+      await sealed(r, MUSE, room);
+      await settle(r);
+      expect(await mark()).not.toBe(before);
+      if (read < READ_TRIES) {
+        await files.arm("getChunks", { hold: "before" });
+      }
+      await files.lose("getChunks");
+    }
+    const refused = refusalOf(await reading)!;
+    expect([refused.code, refused.message, refused.retryAfter]).toEqual([
+      "storage_busy", `storage_busy: the archive moved this mail under each of ${READ_TRIES} ` +
+      "reads; try again in 1 second.", 1]);
   });
 
   it("pages a chain of large bodies to one answer each, archived and hot, read on by offset",

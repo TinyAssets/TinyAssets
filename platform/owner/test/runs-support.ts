@@ -18,7 +18,7 @@ import type { RunReceipt } from "../src/runs";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import type { Recorded, Script } from "./fake-sandbox";
 
-import { gateFor, TIERS } from "./support";
+import { clockAt, gateFor, TIERS } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 export { TIERS };
@@ -29,12 +29,7 @@ export { TIERS };
  * as the test does; the test makes the clock real again after it (`vi.useRealTimers`).
  */
 export function later(seconds = LEASE_TTL_S + 1): void {
-  const now = Date.now() + seconds * 1000;
-  if (vi.isFakeTimers()) {
-    vi.setSystemTime(now);
-  } else {
-    vi.useFakeTimers({ toFake: ["Date"], now });
-  }
+  clockAt(Date.now() / 1000 + seconds);
 }
 
 /** Every scope a run can hold. */

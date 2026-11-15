@@ -73,12 +73,11 @@ import {
 
 import { AGENT_DISABLED, type AgentFile, AUTO } from "./agent-file";
 import type { RunCapability } from "../../contract/src/capabilities";
-import { AUTHORITY_CHANGED, may, type StandingGrant, type Stamped } from "./authority";
+import { AUTHORITY_CHANGED, may, OWNER, type StandingGrant, type Stamped } from "./authority";
 import {
   CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, LEASE_TTL_S, MAX_LIST, PLACE_BYTES, QUEUE_BYTES,
   QUEUE_ROWS, RESULT_BYTES,
 } from "../../contract/src/limits";
-import { OWNER_AUTHORITY } from "./files";
 import { type Candidate, ranked } from "./auto";
 import { nextOccurrence, parseCron } from "./cron";
 import { Refusal } from "../../contract/src/refusal";
@@ -432,7 +431,7 @@ function id(prefix: string): string {
 /** A secret's SHA-256 hex: all the object keeps of one. */
 /** Whose sandbox a run of `ask` runs in: the client it came through, else the owner's. */
 function authorityOf(origin: { readonly client: string } | null): string {
-  return origin?.client ?? OWNER_AUTHORITY;
+  return origin?.client ?? OWNER;
 }
 
 /**
@@ -985,14 +984,14 @@ export class Runs {
    * the vendor's sign-in is admitted unless its sandbox is known signed out (the owner's
    * own, `SIGNIN_LAPSED`); the sandbox's start checks it (`SIGNIN_REQUIRED`).
    */
-  choose(file: AgentFile, unattended: boolean, authority = OWNER_AUTHORITY, now = 0):
+  choose(file: AgentFile, unattended: boolean, authority = OWNER, now = 0):
       { engine: string; credential: CredentialKind; connection: string | null;
         source: string | null; model: string | null } {
     const sources = bundledSources();
     const keys = this.#host.reachable();
     const candidates = ranked(keys);
     // Each engine its sandbox's runner reported a sign-in for: presence alone.
-    const client = authority !== OWNER_AUTHORITY;
+    const client = authority !== OWNER;
     const signins = new Map<string, SignIn>(client
       ? (this.#host.lease(now, authority)?.signins ?? []).map((engine) =>
         [engine, { engine, signed_in: true, models: [], checked_at: now, changed_at: 0 }])
@@ -1647,7 +1646,7 @@ function requestKey(client: string | null, sendId: unknown): string {
   if (typeof sendId !== "string" || !SEND_ID.test(sendId)) {
     throw new Refusal("invalid", "client_send_id is 1 to 128 letters, digits, - and _");
   }
-  return sha256Hex(`${client ?? "owner"}\0${sendId}`);
+  return sha256Hex(`${client ?? OWNER}\0${sendId}`);
 }
 
 /** A message to an agent: a run in a conversation, new or continued (`agentSubmit`). */

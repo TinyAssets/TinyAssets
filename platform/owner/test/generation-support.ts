@@ -225,8 +225,7 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     }
     let gen = await gate.quiet(() => lane().forExport(Date.now() / 1000));
     for (let pass = 0; pass < 40; pass++) {
-      await lane().run(Date.now() / 1000, harness.onePass === true ? Date.now()
-        : Date.now() + 60_000);
+      await lane().run(Date.now() / 1000, Date.now() / 1000 + (harness.onePass === true ? 0 : 60));
       const row = state.storage.sql.exec<{ state: string }>(
         "SELECT state FROM owner_backups WHERE gen = ?", gen).toArray()[0];
       // One given up for a migration is followed by a fresh one: it is carried on instead.

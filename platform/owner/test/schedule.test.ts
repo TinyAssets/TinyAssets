@@ -9,7 +9,7 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { Lifecycle, LifecycleCapability } from "agents/lifecycle";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sqlIn, until } from "../../ci/workerd";
 import { type Write, WriteGate } from "../src/gate";
@@ -17,12 +17,19 @@ import type { Ledger } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { NOT_BINDER_SHAPE } from "../src/relay";
 import {
-  inTime, type Lane, LANE_HUNG_S, LANE_PASS_S, LANE_RETRY_S, laneJob, Schedule, SCHEDULE,
+  type Lane, LANE_HUNG_S, LANE_PASS_S, LANE_RETRY_S, laneJob, Schedule, SCHEDULE,
 } from "../src/schedule";
 import { Doorbell } from "../src/wakes";
 import { sha256Hex } from "../../contract/src/digest";
 import { MUSE, rig } from "./ledger-support";
-import { alarmOf, failure, laneJobs, ownerObject, unseededObject } from "./support";
+import {
+  alarmOf, clockAt, failure, laneJobs, ownerObject, unseededObject,
+} from "./support";
+import { clock, inTime } from "../src/clock";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /** A lane over a script: its next work, and what each run does. */
 class ScriptedLane implements Lane {
@@ -41,7 +48,7 @@ class ScriptedLane implements Lane {
   held: Promise<void> | null = null;
   #running = 0;
   mostAtOnce = 0;
-  /** The wall-clock budget each run was given, in ms. */
+  /** The end each run was given, on the owner's clock (seconds). */
   readonly untils: number[] = [];
 
   next(now: number): number | null {
@@ -83,7 +90,7 @@ interface Probe {
   /** Set to make each alarm write fail, as a storage fault would. */
   alarmFault: Error | null;
   readonly lanes: Record<string, ScriptedLane>;
-  /** The schedule's clock, in seconds; tests move it. */
+  /** The owner's clock, in seconds, held by a fake `Date`; tests move it. */
   now: number;
   /** Whether the lanes' owner is being erased; tests set it. */
   halted: boolean;
@@ -117,8 +124,15 @@ function probe(state: DurableObjectState, names: string[]): Probe {
     get: (target, key) => key === "storage" ? storage : bound(target, key),
   });
   const lanes = Object.fromEntries(names.map((name) => [name, new ScriptedLane()]));
+  clockAt(clock());
   const p: Probe = {
-    alarms, alarmFault: null, lanes, storage: state.storage, now: Date.now() / 1000,
+    alarms, alarmFault: null, lanes, storage: state.storage,
+    get now() {
+      return clock();
+    },
+    set now(seconds: number) {
+      clockAt(seconds);
+    },
     halted: false,
     alarm: () => p.lifecycle.alarm(),
     sql: (statement, ...params) => void state.storage.sql.exec(statement, ...params).toArray(),
@@ -133,8 +147,7 @@ function probe(state: DurableObjectState, names: string[]): Probe {
       due: row.payload === null ? null : (JSON.parse(row.payload) as { due?: unknown }).due,
     }])),
   };
-  const schedule = new Schedule(lanes, () => p.now, new WriteGate(state.storage).write,
-                                () => p.halted);
+  const schedule = new Schedule(lanes, new WriteGate(state.storage).write, () => p.halted);
   const host = { ctx, constructor: { name: "ProbeHost" } } as unknown as OwnerDO;
   return Object.assign(p, { schedule, lifecycle: new Lifecycle(host).use(schedule) });
 }
@@ -359,11 +372,8 @@ describe("a lane's run", () => {
     const [job] = p.read("SELECT singleflight, hung_timeout_seconds FROM cf_agents_jobs " +
                          "WHERE id = ?", laneJob("a"));
     expect([Boolean(job!["singleflight"]), job!["hung_timeout_seconds"]]).toEqual([true, 60]);
-    const before = Date.now();
     await p.alarm();
-    expect(a.untils).toHaveLength(1);
-    expect(a.untils[0]!).toBeGreaterThanOrEqual(before + LANE_PASS_S * 1000);
-    expect(a.untils[0]!).toBeLessThanOrEqual(Date.now() + LANE_PASS_S * 1000);
+    expect(a.untils).toEqual([p.now + LANE_PASS_S]);
     // A row's outside call fits in what the budget leaves of the hung timeout.
     expect(LANE_HUNG_S).toBe(60);
     expect(await inTime(new Promise(() => undefined), 10)).toBe("late");
@@ -459,7 +469,7 @@ describe("the object's lanes", () => {
     let admitted = true;
     const doorbell = new Doorbell({
       ledger, live: never, reads: never, touched: never, notice: never,
-      write: never as unknown as Write, clock: never, admitted: () => admitted, gate: never,
+      write: never as unknown as Write, admitted: () => admitted, gate: never,
       ring: never });
     expect(doorbell.next(7)).toBe(8);
     admitted = false;

@@ -10,7 +10,7 @@ import type { OwnerDO, Stores } from "../src/owner-do";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
 import {
-  admitted, alarmOf, EVERY_SIGNIN, laneAt, seeded, storesOn, type TestStores, TIERS,
+  admitted, alarmOf, atClock, EVERY_SIGNIN, laneAt, seeded, storesOn, type TestStores, TIERS,
 } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
@@ -231,10 +231,10 @@ export async function unseededRig() {
       state.storage.deleteAll()),
     /** One alarm pass at `now`, with the scripted doorbell. */
     tick: (now: number = clock()): Promise<number | typeof CLOSED> =>
-      runInDurableObject(stub, (_i: OwnerDO, state) => {
+      atClock(now, () => runInDurableObject(stub, (_i: OwnerDO, state) => {
         const { ledger, gate } = storesOn(state);
-        return runWakes(ledger, sender, () => now, gate.write);
-      }),
+        return runWakes(ledger, sender, gate.write);
+      })),
     /** The object's physical alarm in seconds, as Lifecycle armed it, or null. */
     alarmAt: (): Promise<number | null> => alarmOf(stub),
     /** The `wakes` lane's Lifecycle job due time in seconds, or null when it has none. */

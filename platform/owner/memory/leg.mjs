@@ -36,8 +36,8 @@
 //   put within the units it holds (`SHIP_UNITS`);
 // - per unit: two edits at once hold at most one making step's units more than one;
 // - its time: the worst edit's time a chunk, measured with no collections, keeps
-//   `EDIT_BYTES_MAX` inside a request's 30 s of CPU (the time is wall time, at least the CPU
-//   it spent), and each class's full queue turns over within `SLOT_WAIT_MS`.
+//   `EDIT_BYTES_MAX` inside a request's CPU limit (`guards/cpu.ts`; the time is wall time, at
+//   least the CPU it spent), and each class's full queue turns over within `SLOT_WAIT_MS`.
 // Differences cancel the baseline and the probe's own code (review M4); the absolute figure
 // is production's (`memoryUsageBytes`). Run: `npm run test:memory -w owner`. Exits non-zero
 // on any failed check, printing every figure.
@@ -49,6 +49,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { installed } from "../../ci/deps.ts";
+import { CPU_LIMIT_MS } from "../guards/cpu.ts";
 import { egressLeg } from "./egress.mjs";
 import { freePorts } from "./ports.mjs";
 import { ownWorkerd } from "./workerd.mjs";
@@ -59,7 +60,6 @@ const require = createRequire(join(OWNER, "package.json"));
 const MIB = 1024 * 1024;
 const [PORT, INSPECT, DRIVER] = await freePorts(3);
 const HTTP = `http://127.0.0.1:${PORT}`;
-const CPU_MS = 30_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const work = mkdtempSync(join(tmpdir(), "owner-memory-"));
@@ -434,10 +434,10 @@ try {
   rows.push({ check: "edit: time a chunk (wall, no collections), at 96 MiB",
               ms: +msPerChunk.toFixed(2),
               edit_bytes_max_s: +(editChunks * msPerChunk / 1000).toFixed(1),
-              most_s: CPU_MS / 1000, ok: editChunks * msPerChunk <= CPU_MS });
-  if (editChunks * msPerChunk > CPU_MS) {
+              most_s: CPU_LIMIT_MS / 1000, ok: editChunks * msPerChunk <= CPU_LIMIT_MS });
+  if (editChunks * msPerChunk > CPU_LIMIT_MS) {
     problems.push(`EDIT_BYTES_MAX (${editChunks} chunks) at ${msPerChunk} ms a chunk passes ` +
-                  `a request's ${CPU_MS} ms of CPU`);
+                  `a request's ${CPU_LIMIT_MS} ms of CPU`);
   }
   // A full queue's turnover: every waiter ahead a making step, the pool's larger holds'
   // units turning over at the measured time a step (a chunk's three calls, at most).

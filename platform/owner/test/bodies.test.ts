@@ -26,7 +26,8 @@ import { eraseBegun, erasedWhole, finished } from "./erasure-support";
 import { MUSE, rig, signedIn } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import {
-  admittedOwner, failure, ownerObject, setFiles, starterSeed, storesOn, text, TIERS,
+  admittedOwner, failure, ownerObject, passEnd, setFiles, starterSeed, storesOn, text, TIERS,
+  tiersAt,
 } from "./support";
 
 afterEach(() => {
@@ -181,10 +182,10 @@ describe("the placement rule", () => {
       expect(mine()).toEqual([{ state: "uploading", stored: 1, holds: 1, refs: 0 }]);
       // Housekeeping lets the upload go at its expiry, and deletes the chunk past its grace.
       const now = Date.now() / 1000;
-      await files.run(now + 1);
+      await files.run(now + 1, passEnd());
       expect(mine().map((row) => row["state"]))
         .toEqual(["uploading"]);  // not before the upload's expiry
-      await files.run(now + PLACE_TTL_S + GC_GRACE_S + 60);
+      await files.run(now + PLACE_TTL_S + GC_GRACE_S + 60, passEnd());
       expect(sql.exec("SELECT COUNT(*) AS n FROM file_intents").toArray()).toEqual([{ n: 0 }]);
       expect(mine()).toEqual([]);
       expect(await inR2(ns, LARGE)).toMatch(/^missing: /);
@@ -273,8 +274,7 @@ describe("the placement rule", () => {
 });
 
 /** A tier record whose free storage is what the seed stores and `bytes` more. */
-const tiers = (bytes: number) => ({ free: { runs: 5, storage_bytes: SEED.bytes + bytes },
-                                    paid: TIERS.paid });
+const tiers = (bytes: number) => tiersAt(SEED.bytes + bytes, TIERS.paid.storage_bytes);
 
 describe("the placement rule, held to the owner's own limits (review rvlim)", () => {
   it("A1: a conflict on a placed row answers the stored body, as get and pull read it",

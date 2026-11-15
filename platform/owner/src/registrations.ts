@@ -23,7 +23,7 @@
  *   `maxRequest` characters.
  */
 import { sha256Hex } from "../../contract/src/digest";
-import { HEX64 } from "../../contract/src/ids";
+import { HEX64, randomHex } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { CARD_REQUEST_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
@@ -87,12 +87,6 @@ type Row = {
   authenticated_at: number | null; request: string; digest: string; filed_at: number;
 };
 
-function token(bytes: number): string {
-  const raw = new Uint8Array(bytes);
-  crypto.getRandomValues(raw);
-  return Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 export class Registrations {
   readonly #storage: OwnerStorage;
   readonly #grants: StandingReader;
@@ -146,7 +140,7 @@ export class Registrations {
             .pending_cards >= CARD_LIMITS.maxPending) {
         throw new Refusal("refused", "too many pending agent registrations");
       }
-      const cardId = "card_" + token(16);
+      const cardId = "card_" + randomHex(16);
       const shown = sha256Hex(JSON.stringify([cardId, origin.client, origin.family, sourceRef,
                                            body]));
       sql.exec("INSERT INTO agent_cards (card_id, client, family, source_ref, generation, " +

@@ -28,7 +28,7 @@ import { FILE_SETTINGS } from "../../contract/src/policy-document";
 import { MIGRATIONS } from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
 import {
-  crowd, failure, fileCounters, inFiles, namedCode, setFiles, starterSeed, storesOn, text,
+  crowd, failure, fileCounters, inFiles, namedCode, passEnd, setFiles, starterSeed, storesOn, text,
 } from "./support";
 
 const W = "/workspace";
@@ -366,7 +366,7 @@ describe("an outside client's share", () => {
     expect(JSON.parse(kept["shares"] as string)).toHaveProperty(CLIENT);
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1");
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
-    await inFiles(r.stub, (files: Files) => files.run(Date.now() / 1000));
+    await inFiles(r.stub, (files: Files) => files.run(Date.now() / 1000, passEnd()));
     await counted(r);
   });
 });
@@ -679,7 +679,7 @@ describe("a random sequence of changes", () => {
           } else if (op === "drop" && temps.length > 0) {
             await unit(() => files.dropTemps([temps.pop()!], writer));
           } else if (op === "collect") {
-            await files.run(Date.now() / 1000 + 40 * 86_400);
+            await files.run(Date.now() / 1000 + 40 * 86_400, passEnd());
           }
           done++;
         } catch (error) {

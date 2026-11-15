@@ -23,6 +23,7 @@
  * changes nothing a manifest holds: the export's and the manifest's own bookkeeping, and a
  * session's renewal; it marks nothing.
  */
+import { slotBusy } from "../../contract/src/slots";
 
 /** What the object's modules use of its storage: SQL, and `transactionSync`. */
 export interface OwnerStorage {
@@ -39,6 +40,22 @@ const READ = /^\s*SELECT\b[^;]*;?\s*$/i;
 export const OUTSIDE_GATE = "an owner write outside the write gate; run it as a gate unit";
 export const NESTED_UNIT = "a write unit inside another; the outer unit writes it";
 export const ASYNC_UNIT = "a write unit is synchronous; await outside calls before or after it";
+
+/**
+ * What `take` holds of the chunk pool now, or refused `busy`: inside the alarm a lane never
+ * waits on the pool, since the object's other lanes would wait with it (round 11, Low B). A
+ * call that does not fit at once leaves its queue at the next turn of the event loop; the
+ * lane holds and tries again.
+ */
+export async function unitsNow<T>(take: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const turn = new AbortController();
+  const timer = setTimeout(() => turn.abort(slotBusy()), 0);
+  try {
+    return await take(turn.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function thenable(value: unknown): boolean {
   return (typeof value === "object" || typeof value === "function") && value !== null

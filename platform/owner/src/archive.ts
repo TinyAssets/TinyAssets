@@ -11,7 +11,7 @@ import { sha256Hex, sha256Stream } from "../../contract/src/digest";
 import { letGo } from "./edit";
 import { MOVE_PASS_UNITS, moveTableUnits, ownerSlots } from "./holds";
 import {
-  isSlotBusy, type Lease as PoolLease, slotBusy, type SlotPool,
+  isSlotBusy, type Lease as PoolLease, type SlotPool,
 } from "../../contract/src/slots";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";
 
@@ -19,15 +19,16 @@ import { type Bodies, bodyOffset, type Window, WINDOWS_BYTES } from "./bodies";
 import { PAGE_BYTES, type Wants } from "./pages";
 import { Refusal } from "../../contract/src/refusal";
 import type { Files } from "./files";
-import type { OwnerStorage } from "./gate";
+import { type OwnerStorage, unitsNow } from "./gate";
 import {
  archivedHead, type ArchivedMail, archivedMail, archivedRecipients, archiveMoving,
  type ChainMail, type Fence, keptRecord, Ledger, type MailParts, READ_TRIES, recordHead,
 } from "./ledger";
 import { clock } from "./clock";
+import { OWNER } from "./authority";
 import type { Notices } from "./notices";
 import {
-  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_BYTES, MOVE_RECORDS,
+  type Content as Stored, lineAt, makeChunk, streamChunks, MOVE_BYTES, MOVE_RECORDS,
   MoveTable, pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES,
   type Source as Run,
 } from "./segments";
@@ -135,19 +136,11 @@ class MoveReader {
 }
 
 /**
- * `lease` grown to `total` units now, or refused `busy` (everything it holds given back):
- * inside the alarm a pass never waits on the pool, since the object's other lanes would wait
- * with it (round 11, Low B). A call that does not fit at once leaves its queue at the next
- * turn of the event loop; the lane holds and tries again (`ARCHIVE_BUSY_RETRY_S`).
+ * `lease` grown to `total` units now (`unitsNow`), or refused `busy`, everything it holds
+ * given back; the lane tries again at `ARCHIVE_BUSY_RETRY_S`.
  */
-async function now(lease: PoolLease, total: number): Promise<void> {
-  const turn = new AbortController();
-  const timer = setTimeout(() => turn.abort(slotBusy()), 0);
-  try {
-    await lease.grow(total, turn.signal);
-  } finally {
-    clearTimeout(timer);
-  }
+function now(lease: PoolLease, total: number): Promise<void> {
+  return unitsNow((signal) => lease.grow(total, signal));
 }
 
 /**
@@ -399,7 +392,7 @@ export class Archive {
    */
   async #segmentBytes(chunks: readonly string[], offset: number, length: number):
       Promise<Uint8Array> {
-    return joined(await this.#files.fetch(chunkReads(chunks, offset, length)));
+    return this.#files.range(streamChunks(chunks), offset, offset + length);
   }
 
   /** A segment's trailer, read alone by its fence's range. */
@@ -817,7 +810,7 @@ export class Archive {
     const begun = await this.#door(() => {
       const before = this.#files.storedNow().stored;
       const started = pieces.map((piece, n) => this.#files.begin(
-        piece.plan.size, hashes[n]!, "owner", [], true, null, true));
+        piece.plan.size, hashes[n]!, OWNER, [], true, null, true));
       this.#ledger.moveBegun(stream, started[0]?.intent_id ?? "0".repeat(32), digest, clock(),
                              before);
       return { started, before };
@@ -851,7 +844,7 @@ export class Archive {
             this.#ledger.moveEnded(stream);
             return;
           }
-          this.#files.adopt(begun.started[n]!.intent_id, "owner", (contentId) => {
+          this.#files.adopt(begun.started[n]!.intent_id, OWNER, (contentId) => {
             named.push({ content_id: contentId, fence: pieces[n]!.fence });
             adopt(n + 1);
           });
