@@ -4,29 +4,20 @@
  * `tsc` the day its call compiles) and at run time (`proven`) without it; and a row's call
  * carries only its own caller's proof, so a door of another caller cannot make the widening.
  */
-import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 
 import { clock } from "../src/clock";
 import type { CallerOf, DoorName, HandlerOf, LiveSession, OwnerSelf } from "../src/door";
 import type { GrantsDoorNeeds } from "../src/grants";
-import type { OwnerDO, OwnerState } from "../src/owner-do";
+import type { OwnerState } from "../src/owner-do";
 import { Sessions } from "../src/sessions";
 import { rig, type Rig } from "./ledger-support";
-import { storesOn, type TestStores } from "./support";
+import { inStores, type TestStores } from "./support";
 
 /** A proof of `kind` made by hand, as no source may make one (policy-boundary's `forged`). */
 const forged = (kind: string): never => Object.freeze({ proved: kind }) as never;
 const CHANGE = { client: "1".repeat(64), source: "mcp", mode: "full", scopes: [],
                  expected_revision: 0, name: "" };
-
-/** `act` on the owner's own stores (`storesOn`), in one unit of their gate. */
-function inStores<R>(stub: Rig["stub"], act: (stores: TestStores) => R): Promise<R> {
-  return runInDurableObject(stub, (_instance: OwnerDO, state) => {
-    const stores = storesOn(state);
-    return stores.gate.write(() => act(stores));
-  });
-}
 
 /** What `act` comes to: "made", or the message it was refused with. */
 function outcome(act: () => unknown): string {

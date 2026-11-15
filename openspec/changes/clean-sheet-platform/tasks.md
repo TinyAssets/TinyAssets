@@ -278,7 +278,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       `DoorNeeds` (`untangle-2026-11/o1.md`).
     - [x] `untangle/o1b`: the four proofs, the policy stores, the guard cut
       (`untangle-2026-11/o1b.md`).
-    - [ ] `untangle/o1c`: files, collections, ledger, import.
+    - [x] `untangle/o1c`: files, collections, ledger, import (`untangle-2026-11/o1c.md`).
     - [ ] `untangle/o1d`: runs, launch, signins, restore; `OwnerState` deleted.
   - [x] B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`

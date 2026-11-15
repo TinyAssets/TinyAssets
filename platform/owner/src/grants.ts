@@ -89,7 +89,7 @@ import { SCOPES_JSON_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { appList, connectUrl, type Vendor } from "../../contract/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
-import { type Grant, may, type Scope } from "./authority";
+import { type ConnectedApp, type Grant, may, type Scope } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import { keyed } from "../../contract/src/checks";
 import { canonical } from "../../contract/src/canonical";
@@ -165,27 +165,6 @@ type Stored = Omit<Client, "scopes"> & { scopes: string };
 
 /** Whole seconds as ISO 8601. */
 const iso = (seconds: number): string => new Date(seconds * 1000).toISOString();
-
-/**
- * One of the owner's AI apps as any of its agents sees it (`agents_list`): an `apps.json`
- * app, whether a live MCP grant names it (`connections` of them, the latest used at
- * `last_used`), whether a CIMD host verified one, and where its connect step is; or
- * (`id` null) the connected clients no app matched.
- */
-export interface ConnectedApp {
-  readonly id: string | null;
-  readonly name: string;
-  readonly connected: boolean;
-  readonly connections: number;
-  readonly verified: boolean;
-  /**
-   * When one of its clients last called, ISO 8601 (to `GRANT_LIMITS.seenIntervalS`), or null:
-   * an app long unused may have been disconnected in its own app, which TinyAssets is not
-   * told, so an agent asks before taking it as connected.
-   */
-  readonly last_used: string | null;
-  readonly connect_url: string | null;
-}
 
 /** A grant's set, as the owner asks it (`grantSet`), or a key's mint makes it (`keyMint`). */
 export interface GrantChange {
