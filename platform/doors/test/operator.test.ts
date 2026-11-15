@@ -5,7 +5,8 @@
  * unknown kid, a stale or a future time, a replay after its answer, another op under an ask
  * already accepted); an erased owner answered refused; a redelivery of a message accepted
  * but not yet answered going on, past the window too; and a delivery racing another held to
- * the acceptance record and the answer the other made first.
+ * the acceptance record and the answer the other made first. Then each op on a real owner
+ * object: `owner.state` read and changing nothing, the `owner.*` acts, and the restore's.
  */
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
@@ -85,17 +86,17 @@ describe("the operator channel", () => {
   it("answers a signed message once, refusing an op it does not take, and drops its replay",
      async () => {
     const owner = fresh();
-    const message = await sign(owner, "owner.state", { part: "all" });
+    const message = await sign(owner, "owner.rename", { part: "all" });
     const logged = logs();
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     const first = await held(message.ask);
-    expect(first.accepted).toMatchObject({ op: "owner.state", owner, at: message.at,
+    expect(first.accepted).toMatchObject({ op: "owner.rename", owner, at: message.at,
                                            kid: RING.active });
     const answer = operatorAnswer(first.answer, message);
-    expect(answer).toMatchObject({ ask: message.ask, op: "owner.state", owner,
+    expect(answer).toMatchObject({ ask: message.ask, op: "owner.rename", owner,
                                    args: { part: "all" } });
     expect(refusedOf(answer)).toEqual({
-      code: "invalid", message: "the operator channel takes no op owner.state" });
+      code: "invalid", message: "the operator channel takes no op owner.rename" });
     expect(answer.done).toBeGreaterThanOrEqual(message.at);
     const etag = (await doorsEnv.OPERATOR_LOG.head(answerKey(message.ask)))!.etag;
     // The same message again, as a redelivery or a capture: dropped, the answer as it was.
@@ -206,8 +207,8 @@ describe("the operator channel", () => {
     await doorsEnv.OPERATOR_LOG.put(acceptanceKey(message.ask),
                                     JSON.stringify(await acceptanceOf(message)));
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
-    expect(refusedOf(operatorAnswer((await held(message.ask)).answer, message)).code)
-      .toBe("invalid");
+    expect(operatorAnswer((await held(message.ask)).answer, message))
+      .toMatchObject({ result: { state: "pending" } });
   });
 });
 
@@ -223,6 +224,30 @@ async function asked(owner: string, op: string, args: OperatorArgs = {}) {
   const message = await sign(owner, op, args);
   expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
   return operatorAnswer((await held(message.ask)).answer, message);
+}
+
+/** The doors' env with the operator bucket failing `ask`'s answer once: its op has run. */
+function answerFailingOnce(ask: string): DoorsEnv {
+  let failed = false;
+  const bucket = doorsEnv.OPERATOR_LOG;
+  return { ...doorsEnv, OPERATOR_LOG: {
+    head: (key: string) => bucket.head(key), get: (key: string) => bucket.get(key),
+    put: (key: string, value: string, options: R2PutOptions) => {
+      if (key === answerKey(ask) && !failed) {
+        failed = true;
+        return Promise.reject(new Error("the delivery is killed"));
+      }
+      return bucket.put(key, value, options);
+    } } as unknown as R2Bucket };
+}
+
+/** Every row of every table the owner's object holds, by table. */
+async function everyRow(owner: string) {
+  const tables = await sqlIn(owner, "SELECT name FROM sqlite_master WHERE type = 'table' AND " +
+                                    "name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' " +
+                                    "ORDER BY name");
+  return Object.fromEntries(await Promise.all(tables.map(async ({ name }) =>
+    [name, await sqlIn(owner, `SELECT * FROM "${String(name)}"`)])));
 }
 
 describe("the operator's owner ops, on a real owner object", () => {
@@ -271,17 +296,7 @@ describe("the operator's owner ops, on a real owner object", () => {
     await asked(owner, "owner.admit");
     const message = await sign(owner, "owner.suspend", { reason: "billing" });
     // The answer's put fails once, after the op ran: the queue tries again.
-    let failed = false;
-    const bucket = doorsEnv.OPERATOR_LOG;
-    const flaky = { ...doorsEnv, OPERATOR_LOG: {
-      head: (key: string) => bucket.head(key), get: (key: string) => bucket.get(key),
-      put: (key: string, value: string, options: R2PutOptions) => {
-        if (key === answerKey(message.ask) && !failed) {
-          failed = true;
-          return Promise.reject(new Error("the delivery is killed"));
-        }
-        return bucket.put(key, value, options);
-      } } as unknown as R2Bucket };
+    const flaky = answerFailingOnce(message.ask);
     const logged = logs();
     expect(await deliver(message, flaky)).toEqual({ acked: 0, retried: 1 });
     expect(logged()).toEqual(["an operator message failed; the queue tries again"]);
@@ -292,6 +307,63 @@ describe("the operator's owner ops, on a real owner object", () => {
       result: { state: "suspended", reasons: ["billing"] } });
     expect(await admission(owner)).toEqual({ state: "suspended", reasons: ["billing"],
                                              tier: "free" });
+  });
+});
+
+describe("the operator's owner.state, on a real owner object", () => {
+  it("answers the owner's state, its names, codes and counts alone", async () => {
+    const owner = fresh();
+    expect(await asked(owner, "owner.state")).toMatchObject({ result: {
+      state: "pending", reasons: [], tier: "free", restore: null, runs: 0, stored_bytes: 0 } });
+    await asked(owner, "owner.admit");
+    await asked(owner, "owner.tier", { tier: "paid" });
+    await asked(owner, "owner.suspend", { reason: "billing" });
+    const { result } = await asked(owner, "owner.state") as { result: unknown };
+    expect(result).toEqual({ state: "suspended", reasons: ["billing"], tier: "paid",
+                             restore: null, runs: 0, stored_bytes: 0 });
+    // Held for a restore: its every door but the platform's refuses, and its state says why.
+    await sqlIn(owner, "INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
+                       "'pinned', 0)", "a".repeat(32), "b".repeat(16));
+    expect(await asked(owner, "owner.state")).toMatchObject({ result: {
+      state: "suspended", restore: "pinned" } });
+  });
+
+  it("changes nothing: asked again, and delivered again after its read but before its " +
+     "answer, it answers the same over the same rows", async () => {
+    const owner = fresh();
+    await asked(owner, "owner.admit");
+    await asked(owner, "owner.suspend", { reason: "abuse" });
+    const rows = await everyRow(owner);
+    const message = await sign(owner, "owner.state");
+    const logged = logs();
+    expect(await deliver(message, answerFailingOnce(message.ask)))
+      .toEqual({ acked: 0, retried: 1 });
+    expect(logged()).toEqual(["an operator message failed; the queue tries again"]);
+    expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
+    const state = { state: "suspended", reasons: ["abuse"], tier: "free", restore: null,
+                    runs: 0, stored_bytes: 0 };
+    expect(operatorAnswer((await held(message.ask)).answer, message))
+      .toMatchObject({ result: state });
+    expect(await asked(owner, "owner.state")).toMatchObject({ result: state });
+    expect(await everyRow(owner)).toEqual(rows);
+  });
+
+  it("answers only a message its ring signed: another ring's, or none, is dropped with " +
+     "nothing written", async () => {
+    const owner = fresh();
+    await asked(owner, "owner.admit");
+    const rows = await everyRow(owner);
+    const forged = await sign(owner, "owner.state", {}, OTHER);
+    const { mac: _mac, ...unsigned } = await sign(owner, "owner.state");
+    const logged = logs();
+    for (const body of [forged, unsigned]) {
+      expect(await deliver(body)).toEqual({ acked: 1, retried: 0 });
+      expect(await held(body.ask)).toEqual({ accepted: null, answer: null });
+    }
+    expect(logged()).toEqual([
+      "an operator message has a MAC that does not hold under its kid; dropped",
+      "an operator message is out of shape; dropped"]);
+    expect(await everyRow(owner)).toEqual(rows);
   });
 });
 

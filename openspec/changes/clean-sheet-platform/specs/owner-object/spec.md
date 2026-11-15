@@ -922,7 +922,7 @@ The object SHALL hold one admission row: pending, admitted, suspended for billin
 - **THEN** every door refuses `owner_suspended`
 
 #### Scenario: Another caller sets admission
-- **WHEN** the owner, an outside client or a session sends `admissionSet`, or the platform's caller calls any other door
+- **WHEN** the owner, an outside client or a session sends `admissionSet`, or the platform's caller calls a door that is not `reserved`
 - **THEN** each is refused, and the admission is unchanged
 
 ### Requirement: The codemode Worker reaches no owner

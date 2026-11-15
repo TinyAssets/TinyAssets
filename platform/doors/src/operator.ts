@@ -61,6 +61,10 @@ function suspension(env: DoorsEnv, owner: string, { reason }: OperatorArgs,
  * door's own request, which it checks.
  */
 const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
+  "owner.state": (env, owner) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.ownerState(binding);
+  },
   "owner.tier": async (env, owner, args) => {
     const { binding, stub } = bindPlatformFor(env, owner);
     return stub.tierSet(binding, args as unknown as TierRequest);

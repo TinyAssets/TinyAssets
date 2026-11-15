@@ -350,8 +350,9 @@ It never counts as "absent".
   KV itself, never through the doors, so `outside=off`, the kill switch, works when they
   don't. A missing or malformed record is shown as it is; `replace` gives the whole record.
 - **Mode `owner`** asks the doors one op for one owner through the operator channel (`owner`
-  and `act`: `tier=<tier>`, `suspend=<reason>`, `lift=<reason>` or `admit`) and prints their
-  answer, or stops on their refusal. It needs `OPERATOR_KEYRING` in `production`.
+  and `act`: `state`, `tier=<tier>`, `suspend=<reason>`, `lift=<reason>` or `admit`) and
+  prints their answer between the owner's state before and after it, or stops on their
+  refusal. `state` alone only reads. It needs `OPERATOR_KEYRING` in `production`.
 - **Later deploys change the Workers one after another, never at once.** The kit deploys
   them in turn, each after the Workers it binds (`WORKERS` in `deploy/facts.ts`), so
   between two of them old and new versions serve together. A change to a contract between
