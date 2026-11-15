@@ -7,14 +7,13 @@
  * and its stores.
  */
 import { utf8Decoder } from "../../contract/src/text";
-import { sha256Hex } from "../../contract/src/digest";
+import { sha256Hex, sha256Stream } from "../../contract/src/digest";
 import { letGo } from "./edit";
 import { MOVE_PASS_UNITS, moveTableUnits, ownerSlots } from "./holds";
 import {
   isSlotBusy, type Lease as PoolLease, slotBusy, type SlotPool,
 } from "../../contract/src/slots";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";
-import { createHash } from "node:crypto";
 
 import { type Bodies, bodyOffset, type Window, WINDOWS_BYTES } from "./bodies";
 import { PAGE_BYTES, type Wants } from "./pages";
@@ -72,7 +71,7 @@ class MoveReader {
   readonly #table: MoveTable;
   /** Each content's next chunk to hash; its count once checked. */
   readonly #next: Uint32Array;
-  #hashing: { ref: number; hash: ReturnType<typeof createHash> } | null = null;
+  #hashing: { ref: number; hash: ReturnType<typeof sha256Stream> } | null = null;
   #checking = true;
   #last: { sha256: string; bytes: Uint8Array } | null = null;
 
@@ -101,7 +100,7 @@ class MoveReader {
     const ref = Number(content.id);
     if (this.#checking && this.#table.expected(ref) !== null && this.#next[ref] === index) {
       if (this.#hashing?.ref !== ref) {
-        this.#hashing = { ref, hash: createHash("sha256") };
+        this.#hashing = { ref, hash: sha256Stream() };
       }
       this.#hashing.hash.update(bytes);
       this.#next[ref]!++;

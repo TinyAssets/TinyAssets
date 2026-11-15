@@ -414,10 +414,10 @@ describe("a client's sandbox's files (review round 2, M2)", () => {
     expect(paths.filter((path) => path === "/workspace/notes.txt"
                                   || path.startsWith("/workspace/agents/other"))).toEqual([]);
     // It writes nothing back: the client holds no write_files.
-    expect((await failure(() => r.stub.fileSyncCommit(syncOf(r, start), {
+    expect(await failure(() => r.stub.fileSyncCommit(syncOf(r, start), {
       ...start.lease, ops: [{ op: "write", path: "/workspace/x.txt", base: null,
-                              inline: text("x") }] }))).message)
-      .toBe("outside client capability not granted");
+                              inline: text("x") }] })))
+      .toMatchObject({ code: "not_granted", message: "outside client capability not granted" });
   });
 });
 

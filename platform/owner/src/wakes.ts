@@ -26,6 +26,7 @@
  * on closed, a failure or no answer.
  */
 import { Refusal, refusalOf } from "../../contract/src/refusal";
+import { clockMs } from "./clock";
 import type { Write } from "./gate";
 import {
   type Ledger, type LiveCallback, type Outcome, outcome, WAKE_LEASE_S, type WakeTarget,
@@ -108,7 +109,7 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
   }
   let accepted = 0;
   for (const wake of due) {
-    if (Date.now() >= until) {
+    if (clockMs() >= until) {
       break;  // the rest wait for the lane's next pass, which the job's set brings at once
     }
     try {

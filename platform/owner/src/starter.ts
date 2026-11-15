@@ -41,7 +41,7 @@
 import { agentFile } from "./agent-file";
 import { FileFault, Refusal } from "../../contract/src/refusal";
 import { contentIdOf } from "../../contract/src/content";
-import { type Content, FileConflict, type Files } from "./files";
+import { type Content, type Files, lostSwap } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import type { Call, OwnerState } from "./owner-do";
 import { NEWER, type StarterClass, type StarterFile, type StarterPackage } from "./starter-package";
@@ -204,8 +204,7 @@ export class Starter {
                             `could not all be written, and are tried again: ${why}`);
         }
       });
-      if (!(error instanceof Refusal || error instanceof FileFault
-            || error instanceof FileConflict)) {
+      if (!(error instanceof Refusal || error instanceof FileFault)) {
         console.error("the starter pass failed; it runs again later");  // no paths or ids
       }
     }
@@ -399,7 +398,7 @@ export class Starter {
       await this.#deps.files.write(file.path, bytes, { expected, writer: "owner",
                                                        op: STARTER_OP });
     } catch (error) {
-      if (error instanceof FileConflict) {
+      if (lostSwap(error)) {
         return false;
       }
       throw error;
@@ -454,7 +453,7 @@ export class Starter {
       await this.#deps.write(() => this.#deps.files.remove(path, {
         expected: copy.entry.etag, recursive: false, writer: "owner" }));
     } catch (error) {
-      if (error instanceof FileConflict) {
+      if (lostSwap(error)) {
         return;  // changed as the pass ran: the owner's now
       }
       throw error;

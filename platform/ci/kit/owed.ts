@@ -46,14 +46,6 @@ export function imports(fix: string, from: string, to: readonly string[]): Owed[
 }
 
 /**
- * What the Worker source `from` owes the refusal guard (`refusals.ts`) for each break `what`,
- * until `fix` removes them: `from` from the repository root, as the guard names it.
- */
-export function refusals(fix: string, from: string, what: readonly string[]): Owed[] {
-  return what.map((each) => Object.freeze({ guard: "refusals", what: `${from}: ${each}`, fix }));
-}
-
-/**
  * The kernel guard's violation (`kernels.ts`): the source `from`, from the repository root,
  * does `kernel`'s work `count` times outside its home.
  */

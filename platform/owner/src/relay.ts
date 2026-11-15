@@ -61,7 +61,7 @@ import type {
   Call, Door, OwnerState,
 } from "./owner-do";
 import { Tickets } from "./tickets";
-import { clock } from "./clock";
+import { clock, clockMs } from "./clock";
 import { mintToken } from "../../contract/src/routing-mac";
 import { signinOwned } from "./signins";
 
@@ -393,7 +393,7 @@ export class Relay extends LifecycleCapability {
    * attach whose ticket was consumed before is closed as it connects.
    */
   endGrant(grant: string): void {
-    const now = Date.now();
+    const now = clockMs();
     for (const [held, at] of [...this.#signedOut]) {
       if (now - at > ENDED_HELD_MS) {
         this.#signedOut.delete(held);

@@ -25,6 +25,7 @@ import {
 } from "../../contract/src/doors";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { sha256Hex } from "../../contract/src/digest";
+import { clockMs } from "./clock";
 import { PAGE_BYTES } from "./pages";
 
 import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
@@ -192,7 +193,7 @@ async function runScript(parts: ScriptParts): Promise<CodeResult> {
   // The wall bound, held here too: pi-codemode's own deadline is a timer, which a script
   // calling tools back to back starved in workerd, so each call checks the clock, which
   // moves with every call's I/O, and ends the execution past it.
-  const deadline = Date.now() + CODEMODE_TIMEOUT_MS;
+  const deadline = clockMs() + CODEMODE_TIMEOUT_MS;
   const late = new AbortController();
   const sandbox = codemodeSandbox({
     service: parts.service,
@@ -200,7 +201,7 @@ async function runScript(parts: ScriptParts): Promise<CodeResult> {
     tools: parts.tools.map((tool) => ({
       name: tool.name, description: tool.description, inputSchema: tool.input,
       execute: (args: unknown) => {
-        if (Date.now() >= deadline) {
+        if (clockMs() >= deadline) {
           late.abort();
           throw new Error(CODE_TIMED_OUT);
         }

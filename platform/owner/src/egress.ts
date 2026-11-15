@@ -95,7 +95,7 @@ import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Call, Door, OwnerState } from "./owner-do";
-import { clock } from "./clock";
+import { clock, clockMs } from "./clock";
 
 
 /**
@@ -808,7 +808,7 @@ export const egressDoors = Object.freeze({
                                         settleRequest(rest), clock());
     if (settled.settled && resealed !== undefined) {
       try {
-        o.connections.resealed(settled.connection, settled.version, resealed, Date.now());
+        o.connections.resealed(settled.connection, settled.version, resealed, clockMs());
       } catch (error) {
         if (!(error instanceof Refusal && error.invalid)) {
           throw error;

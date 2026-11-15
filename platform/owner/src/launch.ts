@@ -54,6 +54,7 @@ import { tierNumbers } from "./tier";
 import type { TierName } from "../../contract/src/control";
 import {
   type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, SIGNIN_REQUIRED,
+  type Started,
 } from "../../contract/src/sandbox";
 
 /**
@@ -279,7 +280,7 @@ export class Launcher implements RunHost {
     if (admitted.existing) {
       return admitted.run;
     }
-    let answer: { started: true } | { started: false; code: string } | null = null;
+    let answer: Started | null = null;
     try {
       answer = started(await this.#o.env.SANDBOX.start(this.#o.owner(), {
         run: admitted.run, agent, conversation: admitted.conversation,

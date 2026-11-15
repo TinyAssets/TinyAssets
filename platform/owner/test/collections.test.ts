@@ -11,7 +11,7 @@ import type { WrittenRow } from "../src/collections";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { Collections, Conflict, LIMITS, type Row } from "../src/collections";
+import { Collections, LIMITS, type Row } from "../src/collections";
 
 import { MIGRATIONS } from "../src/schema";
 import {
@@ -607,7 +607,7 @@ describe("the bounds' counters", () => {
     });
     // The sequence reaches the bounds, the swaps and the erases, not only plain writes: rows
     // stand at the end, and the steps' entries pruned the fill's.
-    expect(Object.keys(outcomes.counted).sort()).toEqual(["Conflict", "done", "refused"]);
+    expect(Object.keys(outcomes.counted).sort()).toEqual(["conflict", "done", "refused"]);
     expect([outcomes.rows > 0, outcomes.pruned > 0]).toEqual([true, true]);
   });
 
@@ -762,8 +762,8 @@ describe("the primitive's errors", () => {
       expect(thrown(() => store.write(alice, alice, "board", "b", "1", "", false, "write", null,
                                       `client:${"1".repeat(64)}`)))
         .toMatchObject({ name: "Refusal", code: "refused" });
-      expect(() => store.write(alice, alice, "board", "a", "1", "", false))
-        .toThrow(Conflict);
+      expect(thrown(() => store.write(alice, alice, "board", "a", "1", "", false)))
+        .toMatchObject({ name: "Refusal", code: "conflict", facts: { current: { row_id: "a" } } });
       expect(thrown(() => store.write(alice, alice, "board", "a\u0000", "1", "", false)))
         .toMatchObject({ name: "Refusal", code: "invalid" });
       expect(thrown(() => store.write(alice, alice, "board", "a", "\ud800", "", false)))

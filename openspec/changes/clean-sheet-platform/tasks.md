@@ -281,9 +281,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - D1: `ledger.ts:1252`'s `512` is `COMMAND_CENTER_MAX`.
     - C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
     - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
-    - C6: the owner's kernel debt, 8 SHA-256 uses and 43 `Date.now()` (`c6.md`; O4).
-    - X1: the owner tests' literals, then B10's literal guard, which waits on O4 alone.
-    - B2: the owner `Error` classes `Conflict`, `FileConflict` and `ParentMoved` (O4).
+    - X1: the owner tests' literals, then B10's literal guard, which waits on O4b alone (`o4.md` item 7).
     - D1: `holds.ts:36` names `API_BODY_MAX`, now `EGRESS_BODY_MAX`.
     - D4: `import.ts:4` cites `doors/src/import.ts`, now `doors/src/import/` (comments pass).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
