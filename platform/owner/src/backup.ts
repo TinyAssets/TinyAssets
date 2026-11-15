@@ -55,6 +55,7 @@ import {
   CHUNK_BYTES, GC_GRACE_S, LOG_BYTES, MANIFEST_PARTS, SLOT_WAIT_MS,
 } from "../../contract/src/limits";
 import type { ChangeLog } from "./changelog";
+import { clock } from "./clock";
 import {
   chunkLine, type Cursor, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES,
   type Lines,
@@ -634,7 +635,7 @@ export class Backups {
     } finally {
       // After what the pass did, so a give-up's own notice, the more telling one, comes first.
       if (!this.#parts.halted()) {
-        await this.#write(() => this.#tellUnrestorable(Date.now() / 1000));
+        await this.#write(() => this.#tellUnrestorable(clock()));
       }
     }
   }
@@ -642,7 +643,7 @@ export class Backups {
   /** Every superseded generation no export pins deleted, root first; whether none is left. */
   async #prune(until: number): Promise<boolean> {
     const done = this.#rows().filter((row) => row.state === "done");
-    for (const old of this.#superseded(done, Date.now() / 1000)) {
+    for (const old of this.#superseded(done, clock())) {
       if (Date.now() >= until || this.#parts.halted()) {
         return false;
       }
