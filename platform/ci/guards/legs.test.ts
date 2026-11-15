@@ -11,7 +11,8 @@
  * not read them. `process` runs the process's own tests with plain pytest on the runner, with
  * nothing of the old stack installed. Held here: every workspace `platform/package.json`
  * lists has its tests run by a leg, its `test` script whole or each `npm run` part of it;
- * every workspace with a large test has its `test:sizes` run, every shard of it; the
+ * every workspace with a large test has its `test:sizes` run; every Vitest leg names its
+ * shard, `1/1` when whole, and every shard of a command has its leg; the
  * typecheck has its leg; every Vitest leg uploads its report (the input of `ci/budgets.mjs`)
  * and no other leg takes the reporters; no leg is excluded, conditional or allowed to fail;
  * and each leg runs exactly its command.
@@ -55,11 +56,11 @@ function upload(name: string): Data {
 }
 /**
  * Each leg job's steps. The Vitest legs also upload their JSON report, once their tests have
- * passed. A sizes leg's command ends in its shard, after its own `--`; a medium leg's has
- * none, so the step's `--` hands the reporters to its script.
+ * passed. A Vitest leg's command ends in its shard, after its own `--`, so the step's
+ * reporter flags reach Vitest too.
  */
 const STEPS: Record<string, Data[]> = {
-  "platform-tests": [...SETUP, { run: COMMAND + " -- " + REPORTERS }, upload("tests-report")],
+  "platform-tests": [...SETUP, { run: COMMAND + " " + REPORTERS }, upload("tests-report")],
   "platform-checks": [...SETUP, { run: COMMAND }],
   "platform-sizes": [...SETUP, { run: COMMAND + " " + REPORTERS }, upload("sizes-report")],
 };
@@ -119,11 +120,44 @@ function commands(...jobs: Data[]): Set<string> {
     .map((leg: Data) => leg.command)));
 }
 
+/**
+ * The commands a Vitest job's legs run, each whole across its shards, and each way the legs
+ * fall short of that: a leg that names no shard, legs that disagree on a command's shard
+ * count, and a shard no leg runs.
+ */
+export function sharded(job: Data): { whole: Set<string>; found: string[] } {
+  const found: string[] = [];
+  const shards = new Map<string, { n: number; seen: Set<number> }>();
+  for (const command of commands(job)) {
+    const match = /^(npm run [\w:-]+ -w [\w-]+) -- --shard=(\d+)\/(\d+)$/.exec(command);
+    if (match === null) {
+      found.push(`a ${job?.name} leg names no shard (1/1 when whole): ${command}`);
+      continue;
+    }
+    const [, whole, i, n] = match;
+    const entry = shards.get(whole!) ?? { n: Number(n), seen: new Set<number>() };
+    if (entry.n !== Number(n)) {
+      found.push(`${whole}'s legs disagree on their shard count`);
+    }
+    entry.seen.add(Number(i));
+    shards.set(whole!, entry);
+  }
+  for (const [whole, { n, seen }] of shards) {
+    for (let i = 1; i <= n; i++) {
+      if (!seen.has(i)) {
+        found.push(`${whole}'s shard ${i}/${n} has no leg`);
+      }
+    }
+  }
+  return { whole: new Set(shards.keys()), found };
+}
+
 /** Workspaces whose tests no leg of `jobs`' leg jobs runs, or legs no workspace's tests are. */
 export function coverageProblems(jobs: Data): string[] {
-  const found: string[] = [];
+  const tests = sharded(jobs["platform-tests"]);
+  const found: string[] = [...tests.found];
   const manifest = json("package.json");
-  const have = commands(...LEG_JOBS.map((name) => jobs[name]));
+  const have = new Set([...tests.whole, ...commands(jobs["platform-checks"])]);
   if (manifest.scripts.typecheck !== "tsc --noEmit" || !have.has("npm run typecheck")) {
     found.push("the typecheck has no leg");
   }
@@ -176,7 +210,7 @@ function script(command: string): string {
  */
 export function reportProblems(jobs: Data): string[] {
   const found: string[] = [];
-  for (const command of commands(jobs["platform-tests"])) {
+  for (const command of sharded(jobs["platform-tests"]).whole) {
     if (!VITEST.test(script(command))) {
       found.push(`a platform-tests leg is not a Vitest run, so takes no reporter: ${command}`);
     }
@@ -202,36 +236,20 @@ export function workspacesWithLarge(): string[] {
   return [...found].sort();
 }
 
-/**
- * Every workspace with a large test has every shard of its `test:sizes` run, nothing else.
- * Each leg names its shard, `1/1` when whole, so the step's reporter flags reach Vitest.
- */
+/** Every workspace with a large test has every shard of its `test:sizes` run, nothing else. */
 export function sizesProblems(job: Data, withLarge: string[]): string[] {
-  const found: string[] = [];
-  const shards = new Map<string, { n: number; seen: Set<number> }>();
-  for (const command of commands(job)) {
-    const match = /^npm run test:sizes -w ([\w-]+) -- --shard=(\d+)\/(\d+)$/.exec(command);
+  const { whole, found } = sharded(job);
+  const sized = new Set<string>();
+  for (const command of whole) {
+    const match = /^npm run test:sizes -w ([\w-]+)$/.exec(command);
     if (match === null) {
       found.push(`a sizes leg runs something other than a workspace's test:sizes: ${command}`);
-      continue;
-    }
-    const [, ws, i, n] = match;
-    const entry = shards.get(ws!) ?? { n: Number(n), seen: new Set<number>() };
-    if (entry.n !== Number(n)) {
-      found.push(`${ws}'s sizes legs disagree on their shard count`);
-    }
-    entry.seen.add(Number(i));
-    shards.set(ws!, entry);
-  }
-  for (const [ws, { n, seen }] of shards) {
-    for (let i = 1; i <= n; i++) {
-      if (!seen.has(i)) {
-        found.push(`${ws}'s sizes shard ${i}/${n} has no leg`);
-      }
+    } else {
+      sized.add(match[1]!);
     }
   }
   for (const ws of withLarge) {
-    if (!shards.has(ws)) {
+    if (!sized.has(ws)) {
       found.push(`${ws} holds a large test that no sizes leg runs`);
     }
   }
@@ -330,7 +348,10 @@ describe("platform-tests, platform-checks and platform-sizes", () => {
     "runner leg runs workerd twice": (jobs) =>
       command("runner", "npm run test:workerd -w sandbox --silent")(jobs["platform-tests"]),
     "a leg's command swallowed": (jobs) =>
-      command("owner", "npm run test -w owner || true")(jobs["platform-tests"]),
+      command("doors", "npm run test -w doors -- --shard=1/1 || true")(jobs["platform-tests"]),
+    "drop an owner shard": (jobs) => drop("owner 2/2")(jobs["platform-tests"]),
+    "a leg that names no shard": (jobs) =>
+      command("doors", "npm run test -w doors")(jobs["platform-tests"]),
     "the typecheck given the reporters": move("typecheck", "platform-tests"),
     "the memory leg given the reporters": move("memory", "platform-tests"),
     "a Vitest leg that uploads no report": move("doors", "platform-checks"),

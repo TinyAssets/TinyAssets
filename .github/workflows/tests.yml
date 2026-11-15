@@ -257,12 +257,16 @@ jobs:
   # sandbox's `test` split in two (workerd and guards; the runner as root) and the owner's
   # (its suite here, its memory leg in `platform-checks`). Each test's budget is its size
   # class's, one a project (platform/ci/classes.ts); the legs leave the large class out
-  # (`--tags-filter=!large`), which `platform-sizes` runs. Pinned by platform/ci/guards.
+  # (`--tags-filter=!large`), which `platform-sizes` runs. Each leg names its shard, `1/1`
+  # when whole, as the sizes legs do: the owner's suite runs in two, so no leg is twice as
+  # long as the next. Pinned by platform/ci/guards.
   # Full history: the owner's migration lock is held against the event's base.
   #
   # timeout-minutes is a watchdog, never a design figure: about 3 x the slowest leg's
-  # measured time (owner, 5m48s of job in merge-group run 43672673096, the slowest in runs
-  # 43670721849, 43670840686 and 43672673096).
+  # measured time. Whole, the owner's leg took 8m42s of job in merge-group run 43749136142,
+  # the slowest in runs 43736045737, 43749136142 and 43751240226; its shard 2/2 holds about
+  # 59% of its tests' time, so an estimated 5m17s there, until three merge-group runs
+  # measure the shards (`live:`, docs/decisions/untangle-2026-11/budgets-ci-3.md).
   platform-tests:
     name: platform-tests
     runs-on: ubuntu-latest
@@ -271,32 +275,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - leg: owner
-            command: npm run test:workerd -w owner
+          - leg: owner 1/2
+            command: npm run test:workerd -w owner -- --shard=1/2
+          - leg: owner 2/2
+            command: npm run test:workerd -w owner -- --shard=2/2
           - leg: doors
-            command: npm run test -w doors
+            command: npm run test -w doors -- --shard=1/1
           - leg: files
-            command: npm run test -w files
+            command: npm run test -w files -- --shard=1/1
           - leg: gateway
-            command: npm run test -w gateway
+            command: npm run test -w gateway -- --shard=1/1
           - leg: codemode
-            command: npm run test -w codemode
+            command: npm run test -w codemode -- --shard=1/1
           - leg: sandbox
-            command: npm run test:workerd -w sandbox
+            command: npm run test:workerd -w sandbox -- --shard=1/1
           - leg: runner
-            command: npm run test:root -w sandbox
+            command: npm run test:root -w sandbox -- --shard=1/1
           - leg: ci
-            command: npm run test -w ci
+            command: npm run test -w ci -- --shard=1/1
           - leg: contract
-            command: npm run test -w contract
+            command: npm run test -w contract -- --shard=1/1
           - leg: sources
-            command: npm run test -w sources
+            command: npm run test -w sources -- --shard=1/1
           - leg: starter
-            command: npm run test -w starter
+            command: npm run test -w starter -- --shard=1/1
           - leg: import
-            command: npm run test -w import
+            command: npm run test -w import -- --shard=1/1
           - leg: deploy
-            command: npm run test -w deploy
+            command: npm run test -w deploy -- --shard=1/1
     defaults:
       run:
         working-directory: platform
@@ -312,9 +318,9 @@ jobs:
           cache-dependency-path: platform/package-lock.json
       - run: npm ci
       # Each leg's Vitest JSON report, the input of `node ci/budgets.mjs` for the medium
-      # budgets (ci/classes.ts), as `platform-sizes` uploads it for the large one. `--` hands
-      # the reporters to the leg's script, which runs Vitest.
-      - run: ${{ matrix.command }} -- --reporter=default --reporter=github-actions --reporter=json --outputFile.json=${{ runner.temp }}/report.json
+      # budgets (ci/classes.ts), as `platform-sizes` uploads it for the large one. The leg's
+      # own `--` hands its shard and these reporters to its script, which runs Vitest.
+      - run: ${{ matrix.command }} --reporter=default --reporter=github-actions --reporter=json --outputFile.json=${{ runner.temp }}/report.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tests-report-${{ strategy.job-index }}
@@ -326,9 +332,9 @@ jobs:
   # the owner's workerd memory leg (each chunk-wise path O(1) in its data's size, by
   # differences at checkpoints, ADR-037). Required through `required-tests`' needs.
   #
-  # timeout-minutes is a watchdog: about 3 x the slowest leg's measured time (memory, 3m53s
-  # of job in merge-group run 43672673096, the slowest in runs 43670721849, 43670840686 and
-  # 43672673096).
+  # timeout-minutes is a watchdog: about 3 x the slowest leg's measured time (memory, 3m54s
+  # of job in merge-group run 43749136142, the slowest in runs 43736045737, 43749136142 and
+  # 43751240226).
   platform-checks:
     name: platform-checks
     runs-on: ubuntu-latest
@@ -364,9 +370,12 @@ jobs:
   # queue and the hourly run hold main to it. Every workspace with a large test has its
   # `test:sizes` here, every shard, `1/1` when whole (platform/ci/guards/legs.test.ts).
   #
-  # timeout-minutes is a watchdog: about 3 x the slowest shard's measured time (owner 2/2,
-  # 5m00s of job in merge-group run 43670840686, the slowest in runs 43670721849,
-  # 43670840686 and 43672673096).
+  # timeout-minutes is a watchdog: about 3 x the slowest shard's measured time. In two, the
+  # owner's shard 2/2 took 6m12s of job in merge-group run 43736045737, the slowest in runs
+  # 43736045737, 43749136142 and 43751240226, longer than the medium legs' critical path; in
+  # three, its shard 3/3 holds about two thirds of that and its 4-minute archive-move file,
+  # so an estimated 4m35s, until three merge-group runs measure the shards (`live:`,
+  # docs/decisions/untangle-2026-11/budgets-ci-3.md).
   platform-sizes:
     name: platform-sizes
     runs-on: ubuntu-latest
@@ -375,10 +384,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - leg: owner 1/2
-            command: npm run test:sizes -w owner -- --shard=1/2
-          - leg: owner 2/2
-            command: npm run test:sizes -w owner -- --shard=2/2
+          - leg: owner 1/3
+            command: npm run test:sizes -w owner -- --shard=1/3
+          - leg: owner 2/3
+            command: npm run test:sizes -w owner -- --shard=2/3
+          - leg: owner 3/3
+            command: npm run test:sizes -w owner -- --shard=3/3
           - leg: contract
             command: npm run test:sizes -w contract -- --shard=1/1
           - leg: files

@@ -7,9 +7,6 @@ description: Find and remove hidden links, needless links, surplus and special c
 
 Untangle the code a change touches, or a whole area, and finish the job.
 
-**Why:** agents write better code in a well-structured codebase, spend fewer
-tokens searching, break less without noticing, and find root causes faster.
-
 ## How this project uses it
 
 - **Every builder** runs step 2 on the code it touches and its callers before
@@ -38,13 +35,25 @@ tokens searching, break less without noticing, and find root causes faster.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run: run only what the diff can break, one mutation per
-  declared change. Read only what applies. One PR in flight per lane, never
+  declared change; read only what applies. One PR in flight per lane, never
   stacked. Merge `origin/main` in; never rebase a pushed branch. A diff touching
   `platform/` also runs every `ci` guard (`npx vitest run --root ci guards/` in
-  `platform/`): the layers, kit and kernels no workspace covers.
+  `platform/`).
+- A coordinator's prompt asks for no check this section doesn't, and this
+  section wins: no full suite; the recorders (step 5) only when the diff
+  changes what a Worker sends or answers. One review a PR, a second only after
+  a security block.
+- Before the cutover, untangling, security and what code or a stored record
+  builds on come first. A fix waits only when nothing builds on it, it works
+  after the window closes, and its failure is rare, loud when it happens and
+  recoverable with what exists: `AGENTS.md` Fact 17's one exception, listed
+  with its branch in `tasks.md`'s "After the cutover" (founder, 2026-11-15).
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
   within about 20% of its ceiling lands with its fix; a reviewer who finds one
-  blocks.
+  blocks. Measure at CI's scale, about 2.7x slower than a local host: a test
+  past a third of its budget locally is near its ceiling there. A test that
+  writes a full page of objects, or grows with each migration, is a size test:
+  tag it `large`.
 
 ## 1. Scope
 
@@ -55,8 +64,8 @@ Comments and Tests are both in scope, every time (step 4).
 Don't change anything yet.
 
 Go through the code asking one thing: **should these pieces change together?**
-Write down every place the code gets the answer wrong, as in the decision log
-example below. There are only three ways to get it wrong.
+Write down every place the code gets the answer wrong, as in the example
+below. There are three ways to get it wrong.
 
 **Hidden links:** pieces that must change together, where the code doesn't show it.
 
@@ -98,9 +107,8 @@ like them. Don't fix special cases one by one.
 
 Ask the same thing of every fix, even one that looks better in the code: pieces
 that change together end up together, pieces that don't aren't tied, and
-everything depends on what changes less.
-
-Write each fix above the problems it solves, as in the decision log example.
+everything depends on what changes less. Write each fix above the problems it
+solves, as in the example.
 
 ## 4. Fix everything on the list
 
@@ -119,12 +127,11 @@ a regression, and only then:
 
 - Tests that repeat the implementation only change when it does, so they have no reason of their own to change. They check the same interpretation against itself, so remove them.
 - Tests tied to internals break when the code changes but behavior doesn't, so they change for the wrong reason. Rewrite them to depend on behavior, which changes less.
-- Tests that can't fail pass whatever the code does, so no change ever affects them. They aren't checking anything, so remove them.
+- Tests that can't fail, whatever the code does, check nothing: remove them.
 
 ## 5. Check, and repeat until done
 
-Have subagents search for special cases, hidden links, needless links and
-surplus. **Do not stop until there is nothing worth fixing left.**
+Have subagents search for all four kinds. **Do not stop until there is nothing worth fixing left.**
 
 You're done when:
 
@@ -136,11 +143,11 @@ You're done when:
 
 **Tips**
 
-- **Start from a skeleton:** script away the function bodies, so the whole codebase fits in context.
-- **Summarize with subagents:** have them summarize parts of the codebase, so you can reason across all of it at once.
-- **Check the dependency graph often:** script one that shows what imports what, and rerun it as you go.
-- **Enter where leverage is highest:** start looking there first.
-- **Keep a decision log:** compaction is less of a problem that way.
+- **Start from a skeleton:** script away the function bodies, so the codebase fits in context.
+- **Summarize with subagents:** so you can reason across the whole codebase at once.
+- **Check the dependency graph often:** script it, and rerun it as you go.
+- **Enter where leverage is highest.**
+- **Keep a decision log:** it outlasts compaction.
 - **Use Git as evidence:** for how often pieces change, and what changes together.
 
 ## Decision log example
