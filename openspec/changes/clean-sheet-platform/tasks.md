@@ -340,18 +340,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     founder's words, for `FILES_KEYRING` only after a second pass begun `KEEP_DAYS` + 1 days
     after the first copy night that followed the first (`r7-rotation.md` item 6;
     `r7-rotation-driver.md`).
-  - [ ] An owner a blob that no longer opens keeps owing (a refused data key, root,
-    connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
-    exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
-    then its build (`untangle/r7-unopenable`).
   - [ ] An imported owner whose admit never ran keeps its data and no `o:` record after the
     window, so no rotation reaches it: the window's close checks every bundle is admitted or
     discarded, the founder's decision in `r7-rotation-driver.md` item 8
     (`untangle/i-window-close`).
   - [ ] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
     old-kid roots back and restarts the copy's expiry, so `retire`'s gate is read from that
-    night: R8 marks the rotation's record or refuses to restore during one
-    (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`).
+    night (`r7-rotation-driver.md` item 11). Built on `untangle/r8-retire-gate`: `retire` reads the record
+    `deploy:offsite:restore`, which the copy's restore writes (`untangle/r8-copy-restore`).
+  - [ ] R8, the restore from the off-account copy (`r4.md` item 13): erasures applied first,
+    and the record `deploy:offsite:restore` written before its first byte into R2, in the
+    `platform-deploy` concurrency group (`untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
     (`live:` after `untangle/r7-rotation-driver`).
   - [x] `restore.wipe`, a live owner brought to pending and empty for a restore, the
@@ -617,6 +616,16 @@ Measured on the stage as it runs:
   its `deploy/platform.json` entry; mode `handback` and the route record; the handles canary's
   old side; the old proxy Worker `tinyassets-mcp-proxy`, its tunnel, the `mcp.` record and its
   Access token (list3 P23, P24).
+
+### After the cutover: fixes for rare failures nothing builds on
+
+The fixes the untangle skill's cutover rule holds until after the cutover (founder,
+2026-11-15), each named with its branch.
+
+- [ ] An owner a blob that no longer opens keeps owing (a refused data key, root,
+  connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
+  exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
+  then its build (`untangle/r7-unopenable`).
 
 ### Step 17. Restore and the off-account copy
 
