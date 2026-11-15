@@ -116,7 +116,7 @@ import type {
   Account, Bound, Call, Door, DoorsOf, DoorUnits, ImportLine, LiveSession, Module, ObjectReads,
   OwnerSelf, PlatformLine, Readable, Units,
 } from "./door";
-import { mintProof } from "./proof-mint";
+import { type Lease, mintProof } from "./proof-mint";
 import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
@@ -218,11 +218,11 @@ function importBinding(binding: Binding): void {
  * handlers can make the widenings that take them. A session row's proof is its live session,
  * made of the row `Sessions.live` found (`#within`). Each is minted per call (`mintProof`).
  */
-function provedBy(caller: string): object {
+function provedBy(caller: string, lease: Lease): object {
   switch (caller) {
-    case "owner": return { self: mintProof({ proved: "owner" }) as OwnerSelf };
-    case "reserved": return { platform: mintProof({ proved: "reserved" }) as PlatformLine };
-    case "import": return { importing: mintProof({ proved: "import" }) as ImportLine };
+    case "owner": return { self: mintProof({ proved: "owner" }, lease) as OwnerSelf };
+    case "reserved": return { platform: mintProof({ proved: "reserved" }, lease) as PlatformLine };
+    case "import": return { importing: mintProof({ proved: "import" }, lease) as ImportLine };
     default: return {};
   }
 }
@@ -700,10 +700,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         throw new Error(RESET);
       },
       accountAt: (door: string, binding: Binding) =>
-        object.#within(doorRow(door), binding, undefined, ({ account }) => account),
+        object.#within(doorRow(door), binding, undefined, { live: false },
+                       ({ account }) => account),
       invoke: (door: string, binding: Binding, request: unknown) => {
         const row = doorRow(door);
-        return object.#call(row, binding, request, handlerOf(row));
+        return object.#leased(row, binding, request, handlerOf(row));
       },
     });
   }
@@ -892,10 +893,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       Object.defineProperty(this.prototype, row.door, {
         value: row.caller === "none"
           ? function (this: OwnerDO, request: unknown) {
-            return this.#call(row, undefined as unknown as Binding, request, handler);
+            return this.#leased(row, undefined as unknown as Binding, request, handler);
           }
           : function (this: OwnerDO, binding: Binding, request: unknown) {
-            return this.#call(row, binding, request, handler);
+            return this.#leased(row, binding, request, handler);
           },
       });
     }
@@ -906,15 +907,31 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * checked in one unit of that gate, or the door, which its handler checks in each unit it
    * makes. A row that takes no request is handed none, whatever came.
    */
-  #call(row: DoorRow, binding: Binding, request: unknown, handler: Handled): Promise<unknown> {
+  #leased(row: DoorRow, binding: Binding, request: unknown, handler: Handled): Promise<unknown> {
+    // Each proof the call's steps mint is live while the call runs, and none once it settled.
+    const lease: Lease = { live: true };
+    const end = () => {
+      lease.live = false;
+    };
+    try {
+      return this.#call(row, binding, request, handler, lease).finally(end);
+    } catch (error) {
+      end();
+      throw error;
+    }
+  }
+
+  /** The door's call itself, its proofs live for `lease` (`#leased`). */
+  #call(row: DoorRow, binding: Binding, request: unknown, handler: Handled,
+        lease: Lease): Promise<unknown> {
     // The request's type is its handler's, held to the row's fields by the runner's fields
     // step at run time, as `tsc` holds the handler to its row at `HANDLERS`.
     const asked = (takesRequest(row) ? request : undefined) as never;
     if (row.gate === "units") {
       const door: Door<never> = {
         binding, request: asked,
-        check: () => this.#within(row, binding, asked, (call) => call),
-        within: (inner) => this.#within(row, binding, asked, inner),
+        check: () => this.#within(row, binding, asked, lease, (call) => call),
+        within: (inner) => this.#within(row, binding, asked, lease, inner),
         bound: () => this.#bound(row, binding, asked).account,
         authorized: () => {
           const { account } = this.#bound(row, binding, asked);
@@ -933,7 +950,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       return this.#door(() => door.authorized()).then(() => this.#launcher.seeded())
         .then(() => handler(this.#state, door as never));
     }
-    const unit = () => this.#within(row, binding, asked,
+    const unit = () => this.#within(row, binding, asked, lease,
                                     (call) => handler(this.#state, call as never));
     switch (row.gate) {
       case "door":
@@ -954,10 +971,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * refusal after its account is bound leaves a refusal receipt of what was asked (the
    * row's stand-in for it, where it names one), written once the refused change rolled back.
    */
-  #within<R, T>(row: DoorRow, binding: Binding, request: R, act: (call: Call<R>) => T): T {
+  #within<R, T>(row: DoorRow, binding: Binding, request: R, lease: Lease,
+                act: (call: Call<R>) => T): T {
     if (row.caller !== "session") {
       return act(this.#checked(row, binding, request, this.#bound(row, binding, request),
-                               provedBy(row.caller)));
+                               provedBy(row.caller, lease)));
     }
     const account = this.#account(binding, row.class as DoorClass,
                                   { registering: row.registering === true });
@@ -968,7 +986,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         throw new Refusal("refused", `only the owner may ${row.action}`);
       }
       const hash = this.#sessions.live(binding.session, clock());
-      const session = mintProof({ proved: "session", hash }) as LiveSession;
+      const session = mintProof({ proved: "session", hash }, lease) as LiveSession;
       return act(this.#checked(row, binding, request, { ...bound("", ""), account },
                                { session }));
     } catch (error) {

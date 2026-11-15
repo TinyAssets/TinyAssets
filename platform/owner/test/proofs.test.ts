@@ -160,20 +160,22 @@ describe("a widening's proof", () => {
                             coded: "a widening without its owner proof" });
   });
 
-  it("hands its holder no other: a real one re-kinded, remade, copied or wrapped is none",
-     async () => {
+  it("hands its holder no other: a real one kept past its call, re-kinded, remade, copied or " +
+     "wrapped is none", async () => {
     const r = await rig();
-    // The owner's own proof, as the runner hands the session's extend door (`call.self`).
+    // The owner's own proof, as the runner hands the session's extend door (`call.self`),
+    // which it widened with while the call ran.
     const extend = vi.spyOn(Sessions.prototype, "extend");
     await r.stub.sessionExtend(r.bind(null, { session: r.cookie }));
     const real = extend.mock.calls[0]![0] as object;
     extend.mockRestore();
     const kind = JSON.parse(`{"pro${""}ved":"reserved"}`) as object;
-    const tried = await inStores(r.stub, ({ admission }) => {
+    const tried = await inStores(r.stub, ({ admission, sessions }) => {
       const as = (proof: unknown) => outcome(() => admission.setTier(proof as never,
                                                                      { tier: "paid" }));
       const maker = (real as { constructor?: unknown }).constructor;
       return {
+        kept: outcome(() => sessions.extend(real as never, r.cookie, clock())),
         maker: maker === undefined && Object.getPrototypeOf(real) === null,
         rekinded: outcome(() => Object.assign(real, kind)),
         spread: as({ ...real, ...kind }),
@@ -183,7 +185,8 @@ describe("a widening's proof", () => {
       };
     });
     const none = "a widening without its reserved proof";
-    expect(tried).toEqual({ maker: true, spread: none, derived: none, wrapped: none,
+    expect(tried).toEqual({ kept: "a widening without its owner proof", maker: true,
+                            spread: none, derived: none, wrapped: none,
                             rekinded: expect.stringContaining("read only") });
   });
 
