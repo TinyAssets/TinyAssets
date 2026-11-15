@@ -21,8 +21,12 @@
  * run goes on or refuses, never loads a row twice:
  * 1. `restoreBegin {namespace, gen}`: refused unless the object is `pending` and empty
  *    (`emptiness`), and unless the root opens for the namespace and part 0's header names
- *    format `tinyassets-export` version 3, this object's owner, this generation and this
- *    object's schema. Then, in one unit, the namespace and key adopted and the record made.
+ *    format `tinyassets-export` version 3, this object's owner, this generation and a schema
+ *    this code brings forward (`unforwardable`: from 9 on). Then, in one unit, the namespace
+ *    and key adopted and the record made, with this object's schema and the generation's.
+ *    A migration that lands under a restore fails it at its next piece, named: the object's
+ *    tables were migrated half loaded, so it is wiped and begun again, from the same
+ *    generation.
  * 2. **index**: each base part's span of tables (the export's order), one unit a part.
  * 3. **log**: each log segment's lines staged in `restore_rows`, one unit a segment, the last
  *    line per key winning and a `gone` line's key held as gone: the stream read as the owner
@@ -111,7 +115,7 @@ import type { OwnerStorage } from "./gate";
 import type { Door } from "./door";
 import type { OwnerState } from "./owner-do";
 import { addNames, emptyFilter, filterOf, mayHold } from "./names-filter";
-import { MIGRATIONS } from "./schema";
+import { MIGRATIONS, unforwardable } from "./schema";
 
 /**
  * What a restore reaches in the bucket (`FILES`): a generation's manifest reads, and its
@@ -215,6 +219,12 @@ type Held = {
   /** The bytes of the log's lines staged (`restore_rows.n`), and their most at a segment's end. */
   readonly staged: number;
   readonly peak: number;
+  /**
+   * The object's schema when the restore was begun, and its generation's (null for a record
+   * not yet begun, or one from before migration 16 that no step carries on).
+   */
+  readonly schema: number | null;
+  readonly source: number | null;
 };
 
 type Step = "pinned" | "wiped" | "index" | "log" | "apply" | "check" | "chunks" | "names"
@@ -232,7 +242,7 @@ const ADMITS: readonly string[] = Object.freeze(["admitted", "suspended"]);
 /** The restore's record, or null when none was begun. A read. */
 function record(sql: Pick<SqlStorage, "exec">): Held | null {
   return sql.exec<Held>("SELECT ns, gen, step, at, after, held, spans, failed, fresh, since, " +
-                          "staged, peak FROM owner_restore").toArray()[0] ?? null;
+                          "staged, peak, schema, source FROM owner_restore").toArray()[0] ?? null;
 }
 
 /**
@@ -414,7 +424,12 @@ function required(sql: Pick<SqlStorage, "exec">, table: string): string[] {
     .map((column) => column.name);
 }
 
-/** A line's table and row (a `row` line's row, or null for a `gone` line), or null for none. */
+/**
+ * A line's table and row (a `row` line's row, or null for a `gone` line), or null for none:
+ * every line a restore reads passes here. A line of any schema a restore begins
+ * (`unforwardable`) is the same line at this one, since no migration since changes an exported
+ * table (`FORWARD`); the first that does brings each line forward here.
+ */
 function rowOf(line: Line): { table: string; k: string; row: Record<string, unknown> | null }
     | null {
   if (line.t === "header" || line.t === "chunk") {
@@ -632,6 +647,18 @@ async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
     sql.exec("UPDATE owner_restore SET step = ?, at = ?, after = ?, failed = ?", step, at, after,
              failed);
   };
+  // A migration landed under a restore under way: the wake migrated its half-loaded tables.
+  if (Object.hasOwn(NEXT, held.step) && held.schema !== MIGRATIONS.length) {
+    await o.door(() => {
+      if (still()) {
+        console.error("a migration landed under a restore; the owner is not admitted");
+        move("failed", held.at, null, "a migration landed while it was under way: begun at " +
+             `schema ${String(held.schema)}, this object's is ${MIGRATIONS.length}; wipe it and ` +
+             "restore again, from the same generation");
+      }
+    });
+    return true;
+  }
   switch (held.step) {
     case "index":
     case "log": {
@@ -851,7 +878,8 @@ function finish(o: OwnerState, held: Held, root: ManifestRoot): void {
   o.files.restored();
   o.collections.restored();
   o.ledger.restored();
-  o.backups.adopt(root, held.peak);
+  // Begun at this object's schema (`piece`'s check), so its generation's was recorded.
+  o.backups.adopt(root, held.peak, held.source!);
   const kept = JSON.parse(held.held ?? "{}") as Record<string, Record<string, SqlStorageValue>>;
   for (const load of loadOrder().filter((each) => each.held !== undefined)) {
     const columns = load.held!;
@@ -888,8 +916,9 @@ export const restoreDoors = Object.freeze({
   },
   /**
    * A restore begun from generation `gen` in `namespace`: refused unless this object is pending
-   * and empty, and unless the generation opens under the namespace and is this owner's, at this
-   * object's schema. Asked again with the same generation, it answers as it stands.
+   * and empty, and unless the generation opens under the namespace and is this owner's, of a
+   * schema this code brings forward. Asked again with the same generation, it answers as it
+   * stands.
    */
   async restoreBegin(o: OwnerState, door: Door<RestoreBeginRequest>): Promise<RestoreAnswer> {
     const asked = await o.door(() => {
@@ -931,9 +960,10 @@ export const restoreDoors = Object.freeze({
     if (header["owner"] !== o.owner()) {
       throw refused("the generation is another owner's");
     }
-    if (header["schema"] !== MIGRATIONS.length) {
-      throw refused(`the generation is of schema ${String(header["schema"])}, this object's ` +
-                    `is ${MIGRATIONS.length}: a restore loads only its own`);
+    const schema = header["schema"];
+    const unloadable = unforwardable(schema);
+    if (unloadable !== null) {
+      throw refused(unloadable);
     }
     return o.door(() => {
       door.check();
@@ -944,10 +974,11 @@ export const restoreDoors = Object.freeze({
       wipedFor(record(o.storage.sql), ns, gen);
       o.files.adoptSpace(ns, root.key);
       // A wiped object's record goes on, its pin's fresh generation kept: the undo.
-      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) VALUES " +
-                           "(1, ?, ?, 'index', 0, ?) ON CONFLICT (only) DO UPDATE SET gen = " +
-                           "excluded.gen, step = 'index', at = 0, staged = 0, peak = 0", ns, gen,
-                         clock());
+      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since, schema, " +
+                           "source) VALUES (1, ?, ?, 'index', 0, ?, ?, ?) ON CONFLICT (only) DO " +
+                           "UPDATE SET gen = excluded.gen, step = 'index', at = 0, staged = 0, " +
+                           "peak = 0, schema = excluded.schema, source = excluded.source", ns,
+                         gen, clock(), MIGRATIONS.length, schema as number);
       return answer(o, record(o.storage.sql)!);
     });
   },
@@ -1003,7 +1034,8 @@ export const restoreDoors = Object.freeze({
                            "(1, ?, ?, 'pinned', 0, ?) ON CONFLICT (only) DO UPDATE SET ns = " +
                            "excluded.ns, gen = excluded.gen, step = 'pinned', at = 0, after = " +
                            "NULL, held = NULL, spans = NULL, failed = NULL, fresh = NULL, since " +
-                           "= excluded.since, staged = 0, peak = 0", o.files.storedNamespace(),
+                           "= excluded.since, staged = 0, peak = 0, schema = NULL, source = " +
+                           "NULL", o.files.storedNamespace(),
                          gen, clock());
       o.egress.end("admission");
       o.launcher.endAll(clock());
@@ -1038,7 +1070,8 @@ export const restoreDoors = Object.freeze({
    * unit, every table the schema made dropped and migrated afresh, and the record written
    * again at `wiped`; then the instance reset (the call ends with its reset, and the
    * operator channel's redelivery answers it). Nothing in R2 is touched. A wiped or begun
-   * record answers as it stands; a failed restore is wiped again the same way.
+   * record answers as it stands; a failed restore is wiped again the same way. A pin is
+   * refused its wipe once its generation or its undo can no longer be restored.
    */
   async restoreWipe(o: OwnerState, door: Door<RestoreWipeRequest>): Promise<RestoreHold> {
     const wiped = await o.door(() => {
@@ -1058,6 +1091,14 @@ export const restoreDoors = Object.freeze({
       if (r.confirm !== confirm) {
         throw new Refusal("invalid", "a wipe is confirmed by wipe-<owner>-<gen>, as " +
                                      "restore.pin's answer names it");
+      }
+      // A live owner is wiped only for a generation, and an undo, a restore can still load
+      // (a migration since may refuse their schema): else the pin is released, the owner kept.
+      const unloadable = held.step === "pinned"
+        ? [held.gen, held.fresh!].find((gen) => !o.backups.restorable(gen, clock())) : undefined;
+      if (unloadable !== undefined) {
+        throw refused(`generation ${unloadable} can no longer be restored: release the pin, ` +
+                      "and pin one restore.source names restorable");
       }
       // A transaction of its own: a unit that throws keeps what it wrote (`gate.ts`), so a
       // wipe that throws part way would leave the object half made and its pin gone.

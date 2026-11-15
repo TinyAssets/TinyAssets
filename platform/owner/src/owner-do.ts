@@ -289,7 +289,7 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
                             (needed) => files.fullRefusal(needed));
   const backups = new Backups({
     storage, write: units.quiet, store: env.FILES, space: () => files.space(), log,
-    owner: () => id.name ?? "", schema: MIGRATIONS.length,
+    owner: () => id.name ?? "",
     serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
     halted: () => wiped(storage.sql) || erasing(storage),
     pinned: () => pinned(storage),

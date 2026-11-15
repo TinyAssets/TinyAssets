@@ -388,10 +388,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     log step past `LOG_BYTES`, owner migration 15 (`r-log-staged-bytes.md`).
   - [x] Owner migration 15's pin PR, after the staged count merges (`r-log-staged-bytes.md`,
     `untangle/r-log-staged-bytes-pin15`).
-  - [ ] A restore under way when a migration lands: its generation's schema is checked only at
-    `restoreBegin`, so its later steps load the old schema's lines into the new; migration 15
-    fails its own (`r-log-staged-bytes.md` item 5), the rule for every migration is owed
-    (`untangle/r-restore-migration`).
+  - [x] A restore across a migration (`r-restore-schema.md`, `untangle/r-restore-schema`): a
+    generation of an older schema brought forward by each migration's declared form
+    (`FORWARD`; 10–16 change no exported table, so schema 9 on restores; 7 and 9 refused,
+    named), the schema recorded at begin (`owner_restore.schema`, `source`), one check failing a
+    restore a migration lands under, `restoreWipe` refusing a pin it could not load,
+    `restorableAt` and `adopt` reading the generation's schema; owner migration 16.
+  - [ ] Owner migration 16's pin PR, after the schema restore merges
+    (`untangle/r-restore-schema-pin16`).
   - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
     `facet-probe.md` Q8 never sampled it).
