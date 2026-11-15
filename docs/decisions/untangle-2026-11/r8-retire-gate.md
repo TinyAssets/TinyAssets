@@ -41,6 +41,7 @@ Lane R's owed item from the rotation driver (`r7-rotation-driver.md` item 11): a
    - The settled pass was found twice: `retireAsk` found pass 1 to read its night, and `retirement` found it again to judge the gate. Nothing tied the two finds together. Now `retirement` finds it once and asks `copy.nightAfter` for its night.
    - `copied` and `copy` carried one fact twice, with a throw for when they disagreed ("its copy's nights were not read"). Now `copy` is null exactly when the copy never holds the ring.
    - `copy.night` was null before any pass swept. That case is gone too.
+   - Three tests each faked GitHub's record of the copy's nights: `canary.test.ts`, `rotation.test.ts` and the new `retire` test. They now share one fake, `deploy/guards/copy-nights.ts`.
 7. **Owed: R8, `untangle/r8-copy-restore` (`tasks.md`).** Every write from the copy into R2 puts the record before its first byte and runs in the kit's concurrency group, and every erasure the copy can't show is applied first (`r4.md` item 13). A copy back by hand records nothing, so R8's steps never tell the founder to copy back by hand, as research §4.6 step 1 did. R8 adds the record's writer beside `restoreBegan`.
 8. **The proof.** Fakes and fixed times only; nothing live.
    - `rotation.test.ts`, `retirement`:
