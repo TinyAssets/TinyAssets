@@ -393,7 +393,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     named), the schema recorded at begin (`owner_restore.schema`, `source`), one check failing a
     restore a migration lands under, `restoreWipe` refusing a pin it could not load,
     `restorableAt` and `adopt` reading the generation's schema; owner migration 16.
-  - [ ] Owner migration 16's pin PR, after the schema restore merges
+  - [x] Owner migration 16's pin PR, after the schema restore merges
     (`untangle/r-restore-schema-pin16`).
   - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
