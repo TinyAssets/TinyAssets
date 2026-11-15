@@ -11,6 +11,8 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { inject } from "vitest";
+
 import { readWrangler } from "../../ci/wrangler.ts";
 
 /**
@@ -25,12 +27,21 @@ const config = readWrangler(OWNER) as { limits?: { cpu_ms?: number } };
 export const CPU_LIMIT_MS = config.limits?.cpu_ms ?? WORKERS_DEFAULT_CPU_MS;
 
 /**
- * What one invocation's heaviest step may take on the host the guard runs on: a third of
- * the limit. Two thirds are left for a slower host (a CI runner among them) and for the
- * invocation's other work, as the memory leg holds the worst edit (`EDIT_BYTES_MAX`,
- * `limits-audit.md`). A step the code makes quadratic again passes it many times over.
+ * What one invocation's heaviest step may take on the runners the budgets were measured on: a
+ * third of the limit. Two thirds are left for a slower host and for the invocation's other
+ * work, as the memory leg holds the worst edit (`EDIT_BYTES_MAX`, `limits-audit.md`). A step
+ * the code makes quadratic again passes it many times over.
  */
 export const STEP_CPU_MS = CPU_LIMIT_MS / 3;
+
+/**
+ * A bound of `ms` on the budgets' runners as this runner's: times its speed against them
+ * (`ci/classes.ts` `RUNNER`, given to the test pool), so a slow runner fails no step a usual
+ * one passes, and a usual one is held to `ms` itself.
+ */
+export function onThisRunner(ms: number): number {
+  return ms * inject("classTimeouts").runner.speed;
+}
 
 type ThreadClock = (previous?: NodeJS.CpuUsage) => NodeJS.CpuUsage;
 

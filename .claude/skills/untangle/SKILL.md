@@ -10,12 +10,23 @@ Untangle the code a change touches, or a whole area, and finish the job.
 ## How this project uses it
 
 - **Every builder** runs step 2 on the code it touches and its callers before
-  building, 3 and 4 while building, 5 on its diff before pushing. It builds
-  the design its research chose (`AGENTS.md` Fact 14). It fixes problems in
-  scope and adds none: no shim, alias, copy of a value, one-caller parameter,
-  test-only hook, optional binding or special case. A stale test, guard or rule
-  never blocks a fix: change or delete it in the same PR, with a
+  building, 3 and 4 while building, 5 on its diff before pushing. It fixes
+  problems in scope and adds none: no shim, alias, copy of a value, one-caller
+  parameter, test-only hook, optional binding or special case. A stale test,
+  guard or rule never blocks a fix: change or delete it in the same PR, with a
   `Test-Removal:` line for a test.
+- **Process first.** A fix to how we build (CI, gates, guards, skills, briefs,
+  tooling, the review flow) takes priority over product work, whose lanes keep
+  running: once found, it takes the next free slot, in its own PR or the
+  process PR at hand, with Fact 17's retro-check done now. A reviewer blocks
+  any change that defers one or puts it behind product work.
+  Next, before the cutover, come untangling, security and what code or a stored
+  record builds on. The cutover rule never defers a process fix: any other fix
+  waits until after the cutover only when nothing builds on it, it works after
+  the window closes, and its failure is rare, loud when it happens and
+  recoverable with what exists: the one exception to `AGENTS.md` Fact 17,
+  listed with its branch in `tasks.md`'s "After the cutover" (founder,
+  2026-11-15).
 - **The PR body** is the one document. Its **Untangle check** says what was
   found, fixed and left (and why), and that the diff adds none of the four kinds.
   Anything found and left, by builder or reviewer, names the PR, branch or
@@ -28,26 +39,27 @@ Untangle the code a change touches, or a whole area, and finish the job.
   blocks, and so does any of these: an import edge the layer table refuses or a
   new `owed` entry, a literal live name or founder number outside configs and
   data, a code read from message text, a product parameter or binding only a
-  test uses, a copy of a contract value, a per-module allow-list. It commits
-  its own fixes of up to 50 lines and approves that head, posting its verdict
-  as a PR review on the commit it read (first line `APPROVE` or `BLOCK`) as
-  well as the receipt.
+  test uses, a copy of a contract value, a per-module allow-list. It asks only
+  for what makes the code more correct or simpler, reruns two or three of the
+  builder's mutations and one of each new guard's, and calls a departure from
+  the decided design better (the log is updated) or a shortcut. It commits its
+  own fixes of up to 50 lines and approves that head, posting its verdict as a
+  PR review on the commit it read (first line `APPROVE` or `BLOCK`) as well as
+  the receipt; a bigger fix is a `BLOCK` with its diff. A re-confirm after
+  main is merged in reads only its conflicts.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
-- CI is the one full run: run only what the diff can break, one mutation per
-  declared change; read only what applies. One PR in flight per lane, never
-  stacked. Merge `origin/main` in; never rebase a pushed branch. A diff touching
-  `platform/` also runs every `ci` guard (`npx vitest run --root ci guards/` in
-  `platform/`).
-- A coordinator's prompt asks for no check this section doesn't, and this
-  section wins: no full suite; the recorders (step 5) only when the diff
-  changes what a Worker sends or answers. One review a PR, a second only after
-  a security block.
-- Before the cutover, untangling, security and what code or a stored record
-  builds on come first. A fix waits only when nothing builds on it, it works
-  after the window closes, and its failure is rare, loud when it happens and
-  recoverable with what exists: `AGENTS.md` Fact 17's one exception, listed
-  with its branch in `tasks.md`'s "After the cutover" (founder, 2026-11-15).
+- CI is the one full run, and a coordinator's prompt asks for no check this
+  section doesn't: run only what the diff can break, once (the done-check:
+  `docs/reference/executable-gates.md`), one mutation per declared change; the
+  recorders (step 5) whenever it touches `platform/*/src`, meant to change an
+  answer or not; read only what applies. One review a PR, a second only after
+  a security block. One PR in flight per lane, never stacked. Merge
+  `origin/main` in; never rebase a pushed branch.
+- On a shared host, heavy runs (`test:root`, `test:sizes`, `test:memory`, the
+  deploy harness, the recorders) take the host's run lock; a timeout under load
+  is rerun under it, never a finding. When done, delete what you wrote outside
+  the repo and your `node_modules`.
 - A change that brings a measured time or size (a watchdog, a budget, a quota)
   within about 20% of its ceiling lands with its fix; a reviewer who finds one
   blocks. Measure at CI's scale, about 2.7x slower than a local host: a test
