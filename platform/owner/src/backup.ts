@@ -33,8 +33,9 @@
  *   pins (`owner_exports`, `EXPORT_LIFE_S`), and the one a restore holds (`pinned`, from its
  *   pin to its end, `restore.ts`); and, while the newest's log is past `LOG_BYTES`
  *   (which a restore refuses to stage, `restore.ts`), the latest older one whose log is within
- *   it (`fallback`), so a generation a restore can load always stands. Every other is deleted
- *   from R2, root first.
+ *   it (`fallback`), so a generation a restore can load always stands: the one list,
+ *   `#retained`. Every other is deleted from R2, root first. No garbage a kept one names is
+ *   collected early (`protectsSince`), so its chunks stand with it.
  * - **Erasure.** The generations carry the owner's wrapped key, so the erasure's prefix
  *   delete takes them with the chunks, and the mark has already halted this lane.
  *
@@ -62,13 +63,14 @@ import { isSlotBusy, type Slot, slotBusy, type SlotPool } from "../../contract/s
 /** The hours of the night owners' manifests spread over, from the day's start in UTC. */
 const MANIFEST_SPREAD_S = 4 * 3600;
 /**
- * How long a finished generation protects the garbage it names from early collection
- * (`files.ts`): two nights. An owner that changes has a new one each night (one `DAY_S`
- * after the last began, at the same offset), and one more night covers a generation that
- * failed once and ran the next night; the longest generation, the worst stream (22.2 GB) at
- * the reviewer's lowest read rate (10 MB/s) and the lane's duty cycle (45 s a pass, 5 s
- * between), is under 42 minutes, inside it. Past it the generation is no recovery point to
- * keep garbage for, and early collection holds the owner's figure again.
+ * How long after a generation last finished or began the generations kept protect the
+ * garbage they name from early collection (`protectsSince`, `files.ts`): two nights. An
+ * owner that changes has a new one each night (one `DAY_S` after the last began, at the same
+ * offset), and one more night covers a generation that failed once and ran the next night;
+ * the longest generation, the worst stream (22.2 GB) at the reviewer's lowest read rate
+ * (10 MB/s) and the lane's duty cycle (45 s a pass, 5 s between), is under 42 minutes,
+ * inside it. Past it no generation has finished or begun, so none kept is a recovery point
+ * to keep garbage for, and early collection holds the owner's figure again.
  */
 export const MANIFEST_PROTECT_S = 2 * 86_400;
 /** When a pass whose R2 call failed tries again. */
@@ -341,10 +343,42 @@ export class Backups {
       .one().until;
   }
 
-  /** The superseded generations a prune may delete: no restore's, no fallback. A read. */
+  /**
+   * The superseded generations a prune may delete once no export pins them: no restore's, no
+   * fallback. A read.
+   */
   #prunable(done: readonly GenerationRow[]): GenerationRow[] {
     const kept = [fallback(done), this.#parts.pinned()];
     return done.slice(0, -1).filter((row) => !kept.includes(row.gen));
+  }
+
+  /** The prunable generations no export pins at `now`: the prune's to delete. A read. */
+  #superseded(done: readonly GenerationRow[], now: number): GenerationRow[] {
+    return this.#prunable(done).filter((row) => this.#pinned(row.gen, now) === null);
+  }
+
+  /**
+   * The generations kept at `now`, oldest first: the one being written, the newest finished,
+   * each an open export pins, the one a restore holds and the fallback. A read.
+   */
+  #retained(rows: readonly GenerationRow[], now: number): GenerationRow[] {
+    const gone = this.#superseded(rows.filter((row) => row.state === "done"), now)
+      .map((row) => row.gen);
+    return rows.filter((row) => !gone.includes(row.gen));
+  }
+
+  /**
+   * When (s) the oldest generation kept at `now` began, while one finished or began within
+   * `MANIFEST_PROTECT_S`; else null. A kept generation names only chunks live when it began or
+   * since, so garbage let go after this is never collected early (`files.ts`). A read.
+   */
+  protectsSince(now: number): number | null {
+    const rows = this.#rows();
+    if (Math.max(...rows.map((row) => row.finished_at ?? row.started_at))
+          < now - MANIFEST_PROTECT_S) {
+      return null;
+    }
+    return Math.min(...this.#retained(rows, now).map((row) => row.started_at));
   }
 
   /** The finished generations, oldest first. A read. */
@@ -507,11 +541,7 @@ export class Backups {
   /** Every superseded generation no export pins deleted, root first; whether none is left. */
   async #prune(until: number): Promise<boolean> {
     const done = this.#rows().filter((row) => row.state === "done");
-    const now = Date.now() / 1000;
-    for (const old of this.#prunable(done)) {
-      if (this.#pinned(old.gen, now) !== null) {
-        continue;
-      }
+    for (const old of this.#superseded(done, Date.now() / 1000)) {
       if (Date.now() >= until || this.#parts.halted()) {
         return false;
       }

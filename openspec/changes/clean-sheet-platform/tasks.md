@@ -335,6 +335,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     collects early only garbage the newest generation does not name, so the fallback a
     restore loads can lose a chunk and its restore fails at its chunks step (`r5w.md`
     item 11).
+  - [ ] A fallback older than `GC_GRACE_S` kept whole: plain collection takes due garbage
+    whatever names it, and the fallback stands while every newer log passes `LOG_BYTES`
+    (`r-fallback-chunks.md` item 5, `untangle/r-fallback-age`).
   - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
     `facet-probe.md` Q8 never sampled it).
