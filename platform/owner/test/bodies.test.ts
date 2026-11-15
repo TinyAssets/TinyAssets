@@ -11,6 +11,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 
+import { sqlIn, until } from "../../ci/workerd";
 import { refusalOf } from "../../contract/src/refusal";
 import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { LIMITS } from "../src/collections";
@@ -25,8 +26,7 @@ import { eraseBegun, erasedWhole, finished } from "./erasure-support";
 import { MUSE, rig, signedIn } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import {
-  admittedOwner, failure, ownerObject, setFiles, sqlIn, starterSeed, storesOn, text, TIERS,
-  until,
+  admittedOwner, failure, ownerObject, setFiles, starterSeed, storesOn, text, TIERS,
 } from "./support";
 
 afterEach(() => {

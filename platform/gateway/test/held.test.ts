@@ -8,18 +8,19 @@
 import { createExecutionContext } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import { aliased, apiRules } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { EGRESS_BODY_MAX, SLOT_WAIT_MS } from "../../contract/src/limits";
 import {
-  GATEWAY_POOL_SLOTS, gatewaySlots, Hold, heldDeadlineMs, readHeld, Tokens,
+  GATEWAY_POOL_SLOTS, gatewaySlots, Hold, heldDeadlineMs, readHeld, TEXT_COST, Tokens,
 } from "../src/held";
 import { ConnectGateway, EgressGateway } from "../src/index";
 import { learnMeter, meteredRecord } from "../src/meter";
-import { SlotPool } from "../../contract/src/slots";
+import { SlotPool, UNIT_BYTES } from "../../contract/src/slots";
+import { until } from "../../ci/workerd";
 import { GOOGLE, OPENAI } from "./support";
 import type { Reserve } from "../../contract/src/gateway";
 
@@ -36,16 +37,6 @@ async function responsesModel(): Promise<{ id: string }> {
     }
   }
   throw new Error("no metered Responses model in the catalog");
-}
-
-async function until(check: () => boolean, tries = 1500): Promise<void> {
-  for (let n = 0; n < tries; n++) {
-    if (check()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("timed out");
 }
 
 /** A reserve that grants each call as asked, recording each ask. */
@@ -169,7 +160,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
                                         headers: { "content-length": String(EGRESS_BODY_MAX) } }),
       granting(), stop.readable);
     // It holds only what its bytes need: one slot, not the pool.
-    await until(() => pool.state().held === 1);
+    await until(() => pool.state().held === 1, "the unit held", 1500);
     const small = JSON.stringify({ model: model.id, input: "hi" });
     const other = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses", small,
       { "x-fake-mode": "echo" }), granting(), new ReadableStream());
@@ -181,7 +172,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     expect([stopped.response.status, await stopped.response.json()]).toEqual(
       [499, { error: { code: "aborted", message: "aborted" } }]);
     expect(await outcome(stopped)).toEqual({ state: "failed" });
-    await until(() => pool.state().held === 0);
+    await until(() => pool.state().held === 0, "the unit let go", 1500);
   });
 
   it("refuses a body stalled past its deadline, its slots let go", async () => {
@@ -203,11 +194,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
         answer = answered;
         said = await answered.response.json();
       });
-      // Polled on workerd's own timer: `vi.waitFor` would move the fake clock as it polls.
-      for (let tries = 0; tries < 500 && gatewaySlots().state().held === 0; tries++) {
-        await scheduler.wait(10);
-      }
-      expect(gatewaySlots().state().held).toBeGreaterThan(0);
+      await until(() => gatewaySlots().state().held > 0, "the body's unit");
       await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 1);
       expect(said).toBeUndefined();
       await vi.advanceTimersByTimeAsync(heldDeadlineMs(100) - SLOT_WAIT_MS + 1);
@@ -232,7 +219,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
         asked = true;
         return new Promise(() => undefined);  // the owner's object never answers
       }, stop.readable);
-    await until(() => asked);
+    await until(() => asked, "the reserve asked", 1500);
     await stop.writable.getWriter().close();
     const stopped = await answer;
     expect(await stopped.response.json()).toMatchObject({ error: { code: "aborted" } });
@@ -274,36 +261,67 @@ describe("the verification's cases (rveg2)", () => {
     const mallory = (await connect.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const pool = gatewaySlots();
-    const hogs = Array.from({ length: GATEWAY_POOL_SLOTS }, () => egress.forward(
-      "mallory", "c1", 1, mallory, new Request("https://egress/v1/responses", {
-        method: "POST", headers: { "content-length": String(EGRESS_BODY_MAX) },
-        body: new ReadableStream<Uint8Array>({ start() { /* sends nothing */ } }),
-      }), granting(), new ReadableStream()));
-    await until(() => pool.state().held === GATEWAY_POOL_SLOTS);
-    // Alice's ordinary call (one unit), waiting while mallory's silent calls hold the pool.
-    const text = JSON.stringify({ model: model.id, input: "hi" });
-    const answer = await egress.forward("alice", "c1", 1, alice, posted("/v1/responses", text,
-      { "x-fake-mode": "echo" }), granting(), new ReadableStream());
-    expect(answer.response.status).toBe(200);
-    await answer.response.body?.cancel();
-    for (const hog of await Promise.all(hogs)) {
-      expect(await hog.response.json()).toMatchObject({ error: { code: "invalid_request" } });
+    // On the fake clock: the units' deadlines pass on it, not on the host.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const hogs = Array.from({ length: GATEWAY_POOL_SLOTS }, () => egress.forward(
+        "mallory", "c1", 1, mallory, new Request("https://egress/v1/responses", {
+          method: "POST", headers: { "content-length": String(EGRESS_BODY_MAX) },
+          body: new ReadableStream<Uint8Array>({ start() { /* sends nothing */ } }),
+        }), granting(), new ReadableStream()));
+      await until(() => pool.state().held === GATEWAY_POOL_SLOTS, "the pool held", 1500);
+      // Alice's ordinary call (one unit), a moment later, waits while mallory's silent calls
+      // hold the pool, up to their units' deadline; at it they go, and she lands.
+      await vi.advanceTimersByTimeAsync(1);
+      const text = JSON.stringify({ model: model.id, input: "hi" });
+      const asked = egress.forward("alice", "c1", 1, alice, posted("/v1/responses", text,
+        { "x-fake-mode": "echo" }), granting(), new ReadableStream());
+      await until(() => pool.state().waiting === 1, "alice's wait", 1500);
+      await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 2);
+      expect(pool.state()).toMatchObject({ held: GATEWAY_POOL_SLOTS, waiting: 1 });
+      await vi.advanceTimersByTimeAsync(1);
+      await until(() => pool.state().waiting === 0, "alice's unit", 1500);
+      const answer = await asked;
+      expect(answer.response.status).toBe(200);
+      await answer.response.body?.cancel();
+      for (const hog of await Promise.all(hogs)) {
+        expect(await hog.response.json()).toMatchObject({ error: { code: "invalid_request" } });
+      }
+    } finally {
+      vi.useRealTimers();
     }
-    await until(() => pool.state().held === 0);
+    await until(() => pool.state().held === 0, "the pool let go", 1500);
   });
 
   it("never counts a wait for a unit against the sender (V-M2)", async () => {
     const pool = new SlotPool(3, 12_000, 12, 0, 12);
     const blocker = await pool.acquire(2, "x");
-    const text = JSON.stringify({ input: "a".repeat(2 * 1024 * 1024) });
+    const bytes = new TextEncoder().encode(JSON.stringify({ input: "a".repeat(2 * 1024 * 1024) }));
+    // The body is the test's to feed: up to the first byte past one unit's, then the rest.
+    const first = Math.floor(UNIT_BYTES / TEXT_COST) + 1;
+    let feed!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start(controller) { feed = controller; } });
     const hold = new Hold(pool, "a", new AbortController().signal);
-    setTimeout(() => blocker.release(), 11_000);
-    const started = Date.now();
-    const read = await readHeld(posted("/x", text), new TextEncoder().encode(text).byteLength,
-                                hold, new AbortController().signal);
-    expect(read.bytes).toBe(new TextEncoder().encode(text).byteLength);
-    expect(Date.now() - started).toBeGreaterThan(10_500);
-    hold.release();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const read = readHeld(new Request("https://egress/x", { method: "POST", body,
+        headers: { "content-length": String(bytes.byteLength) } }), bytes.byteLength, hold,
+        new AbortController().signal);
+      feed.enqueue(bytes.slice(0, first));
+      // Its second unit waits on the blocker, on the fake clock past the sender's whole
+      // deadline; granted, the sender has its whole deadline again before the rest comes.
+      await until(() => pool.state().waiting === 1, "the second unit's wait");
+      await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS + 1_000);
+      blocker.release();
+      await until(() => hold.units === 2, "the second unit");
+      await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 1);
+      feed.enqueue(bytes.slice(first));
+      feed.close();
+      expect((await read).bytes).toBe(bytes.byteLength);
+    } finally {
+      vi.useRealTimers();
+      hold.release();
+    }
   });
 
   it("refuses a body that cannot fit as soon as its weight passes the pool, not after it",
@@ -329,6 +347,15 @@ describe("the verification's cases (rveg2)", () => {
 });
 
 describe("wait-die under load (rveg2 V-M1)", () => {
+  // On the fake clock: each call's reads and holds take their time on it, and the pool's
+  // wait is its own; nothing here waits on the host.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   /** One call: its read grows a unit at a time to `read`, then it tops up to `weight`. */
   async function call(pool: SlotPool, owner: string, read: number, weight: number,
                       holdMs: number): Promise<"done" | "busy"> {
@@ -354,22 +381,24 @@ describe("wait-die under load (rveg2 V-M1)", () => {
   it("lets a burst through without waiting out the pool's wait: the oldest grows, the others " +
      "give way", async () => {
     const pool = new SlotPool(16, 1000, 64, 0, 64);
-    const started = Date.now();
-    const ends = await Promise.all(["a", "b", "c", "d"].map((owner) =>
-      call(pool, owner, 4, 8, 50)));
-    expect(Date.now() - started).toBeLessThan(1000);
-    expect(ends.filter((end) => end === "done").length).toBeGreaterThanOrEqual(1);
+    let ended = 0;
+    const ends = Promise.all(["a", "b", "c", "d"].map((owner) =>
+      call(pool, owner, 4, 8, 50).finally(() => { ended++; })));
+    // Every call ends before the pool's wait could refuse one.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(ended).toBe(4);
+    expect((await ends).filter((end) => end === "done").length).toBeGreaterThanOrEqual(1);
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
   });
 
   it("keeps a closed loop of 8 owners at least as productive as one call at a time",
      async () => {
     const pool = new SlotPool(16, 500, 64, 0, 64);
-    const until = Date.now() + 4000;
+    const end = Date.now() + 4000;
     let done = 0;
     let busy = 0;
-    await Promise.all(Array.from({ length: 8 }, async (_, n) => {
-      while (Date.now() < until) {
+    const loops = Promise.all(Array.from({ length: 8 }, async (_, n) => {
+      while (Date.now() < end) {
         if (await call(pool, `o${n}`, 5, 9, 50) === "done") {
           done++;
         } else {
@@ -378,6 +407,10 @@ describe("wait-die under load (rveg2 V-M1)", () => {
         }
       }
     }));
+    // Four seconds on the fake clock, then the calls still going end.
+    await vi.advanceTimersByTimeAsync(4000);
+    await vi.runAllTimersAsync();
+    await loops;
     // One at a time (a read of about 0.1 s, a hold of 0.05 s): about 25 in 4 s.
     expect(done).toBeGreaterThanOrEqual(25);
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });

@@ -9,11 +9,11 @@
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { sqlIn, until } from "../../ci/workerd";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { ERASE_CONFIRM, PUT_GRACE_MS } from "../src/erasure";
 import type { OwnerDO } from "../src/owner-do";
 import { later } from "./runs-support";
-import { sqlIn, until } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 

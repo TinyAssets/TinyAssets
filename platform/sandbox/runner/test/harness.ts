@@ -606,8 +606,13 @@ export class Doors {
    * message (a full storage's 507 among them), or null to begin it.
    */
   refuseBegin: (size: number) => { status: number; message: string } | null = () => null;
-  /** How long the first sync commit waits before it is answered: a slow sync-out. */
-  commitDelayMs = 0;
+  /**
+   * Whether the next sync commit is held, unanswered, until the run's heartbeat (an event post
+   * with no frames) comes after it: a sync-out longer than a heartbeat, ended by the heartbeat.
+   */
+  holdCommit = false;
+  /** The held commit's answer, sent at that heartbeat. */
+  #heldCommit: (() => void) | null = null;
   /** Uploads the sync agent aborted, by intent id. */
   readonly aborted: string[] = [];
   #server: Server | null = null;
@@ -636,7 +641,13 @@ export class Doors {
             this.busy -= 1;
             return json(503, { error: { code: "events_busy" } }, { "retry-after": "1" });
           }
-          return json(200, { relayed: (body["frames"] as unknown[]).length });
+          json(200, { relayed: (body["frames"] as unknown[]).length });
+          const held = this.#heldCommit;
+          if (held !== null && (body["frames"] as unknown[]).length === 0) {
+            this.#heldCommit = null;
+            held();
+          }
+          return;
         }
         if (path === "/signin") {
           return json(200, { reported: true });
@@ -686,13 +697,12 @@ export class Doors {
           }
           return json(200, { created: (body["chunks"] as unknown[]).length });
         }
-        if (path === "/sync/commit" && this.commitDelayMs > 0) {
-          const wait = this.commitDelayMs;
-          this.commitDelayMs = 0;
+        if (path === "/sync/commit" && this.holdCommit) {
+          this.holdCommit = false;
           const ops = body["ops"] as { path: string; op: string }[];
-          setTimeout(() => json(200, { outcomes: ops.map((op) => ({ path: op.path,
+          this.#heldCommit = () => json(200, { outcomes: ops.map((op) => ({ path: op.path,
             outcome: "committed",
-            entry: op.op === "remove" ? null : { version: this.#version += 1 } })) }), wait);
+            entry: op.op === "remove" ? null : { version: this.#version += 1 } })) });
           return;
         }
         if (path === "/sync/commit") {

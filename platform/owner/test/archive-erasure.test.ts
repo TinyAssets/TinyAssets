@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
 import { LEDGER_LIMITS, type Ledger } from "../src/ledger";
@@ -18,7 +19,7 @@ import {
   chained, EVE, MIB, overlaps, sealed, seeded, sentAndAcked, seqOf, settle,
 } from "./archive-support";
 import { DOT, MUSE, origin, registerOn, type Rig } from "./ledger-support";
-import { drainDue, failure, spaceOf, sqlIn } from "./support";
+import { drainDue, failure, spaceOf } from "./support";
 
 const { maxAgentRows } = LEDGER_LIMITS;
 

@@ -7,6 +7,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { storageFull, storageFullRefusal } from "../src/storage-full";
 
 import { refusalOf } from "../../contract/src/refusal";
@@ -23,8 +24,8 @@ import { migrate } from "../../contract/src/migrate";
 import { rig, type Rig } from "./ledger-support";
 import { TIER_UNREAD } from "../src/tier";
 import {
-  crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, setFiles, sqlIn,
-  starterSeed, text, TIERS,
+  crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, setFiles, starterSeed, text,
+  TIERS,
 } from "./support";
 
 const W = "/workspace";

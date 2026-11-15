@@ -11,6 +11,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { Lifecycle, LifecycleCapability } from "agents/lifecycle";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn, until } from "../../ci/workerd";
 import { type Write, WriteGate } from "../src/gate";
 import type { Ledger } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
@@ -21,9 +22,7 @@ import {
 import { Doorbell } from "../src/wakes";
 import { sha256Hex } from "../../contract/src/digest";
 import { MUSE, rig } from "./ledger-support";
-import {
-  alarmOf, failure, laneJobs, ownerObject, sqlIn, unseededObject, until,
-} from "./support";
+import { alarmOf, failure, laneJobs, ownerObject, unseededObject } from "./support";
 
 /** A lane over a script: its next work, and what each run does. */
 class ScriptedLane implements Lane {

@@ -10,6 +10,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { until } from "../../ci/workerd";
 import { chunkedId, cut, inlineId } from "../../contract/src/content";
 import {
   bodyId, CHECK_CHUNKS, CHECK_FILES, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_INTENTS,
@@ -28,7 +29,7 @@ import {
 } from "../../contract/src/policy-document";
 import { erasuresSent } from "./erasure-support";
 import { recorder } from "./runs-support";
-import { failure, gateFor, spaceOf, TIERS, until } from "./support";
+import { failure, gateFor, spaceOf, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const BUNDLE = "b".repeat(64);

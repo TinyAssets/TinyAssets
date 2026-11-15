@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import type { RestoreAnswer, RestoreHold } from "../../contract/src/owner";
@@ -22,7 +23,7 @@ import {
   BURST, digest, type Generated, generate, type Owner, owner, PAGE, standing,
 } from "./generation-support";
 import { MUSE, registerOn } from "./ledger-support";
-import { drainDue, failure, gateFor, laneJobs, sqlIn, storesOn, TIERS } from "./support";
+import { drainDue, failure, gateFor, laneJobs, storesOn, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const W = "/workspace";

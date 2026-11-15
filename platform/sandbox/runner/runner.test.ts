@@ -1381,19 +1381,18 @@ describe("the sync", () => {
 
   it("keeps posting its heartbeat through a sync-out longer than a heartbeat, so a long " +
      "sync keeps its lease (verification round 3, R3-1)", { tags: ["large"] }, async () => {
-    // The commit answered after more than a heartbeat's wait (the runner's own, 20 s): the
-    // run's lease is renewed by its event posts alone, so a sync-out that stopped them would
-    // lose it.
-    doors.commitDelayMs = HEARTBEAT_MS + 3_000;
+    // The commit is answered only by the run's heartbeat (the runner's own, 20 s) posted
+    // while the sync-out waits on it: the run's lease is renewed by its event posts alone, so
+    // a sync-out that stopped them would lose it, and here would never end.
+    doors.holdCommit = true;
     box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "notes.md": "long sync" } });
     const start = startDoc(doors, "codex", { config: config("codex") });
     box.start(start);
     expect(box.runner("launch", start.run).code).toBe(0);
     await doors.ended_(HEARTBEAT_MS * 3, start.run);
-    const commit = doors.posts.find((post) => post.path === "/sync/commit")!;
-    const during = doors.posts.filter((post) => post.path === `/r/${start.run}/events`
-      && post.at > commit.at + 1_000 && post.at < commit.at + HEARTBEAT_MS + 3_000);
-    expect(during.length).toBeGreaterThanOrEqual(1);
+    const commit = doors.posts.findIndex((post) => post.path === "/sync/commit");
+    expect(doors.posts.slice(commit).some((post) => post.path === `/r/${start.run}/events`
+      && (post.body["frames"] as unknown[]).length === 0)).toBe(true);
     expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/notes.md");
   });
 
@@ -1859,41 +1858,67 @@ describe("renewal", () => {
   const runState = (run: string) => JSON.parse(readFileSync(
     box.path(`/var/lib/ta/runs/${run}/state.json`), "utf8")) as Record<string, unknown>;
 
-  it("tells a run its renewal once it listens, on its channel, and waits for its answer",
-     async () => {
-    // A live run's runner (a process of the box's) that is not listening yet.
-    const sleeper = box.live();
-    const run = `run_${"7".repeat(32)}`;
-    const files = FORMATS[String(STATE_FORMAT)]!.files;
-    box.write(`/var/lib/ta/runs/${run}/state.json`, JSON.stringify(sample(
-      files["var/lib/ta/runs/<run>/state.json"]!, { pid: sleeper, ended: false })));
-    const heard: string[] = [];
-    let server: Server | null = null;
-    // It begins listening a while after the renewal is asked, and answers each message.
-    const listening = setTimeout(() => {
-      server = createServer({ allowHalfOpen: true }, (socket) => {
-        let text = "";
-        socket.on("data", (data: Buffer) => { text += data.toString("utf8"); });
-        socket.on("end", () => {
-          heard.push(text);
-          setTimeout(() => socket.end("done\n"), 300);  // acting takes a while
+  /** Bytes past a socket's buffers: only a reader still connected takes them all. */
+  const PAST_BUFFERS = 8 * 1024 * 1024;
+
+  /**
+   * A live run's channel, the test's own: it hears each message (`heard`, by run), then sends
+   * bytes past the socket's buffers before its answer (its close), and records whether they
+   * were all taken. The teller reads what comes back until the answer: one that went on
+   * without the answer is gone, and takes nothing.
+   */
+  function channel(run: string, heard: string[], taken: boolean[],
+                   onHeard: () => void = () => undefined): Server {
+    const server = createServer({ allowHalfOpen: true }, (socket) => {
+      let text = "";
+      socket.on("data", (data: Buffer) => { text += data.toString("utf8"); });
+      socket.on("error", () => undefined);
+      socket.on("end", () => {
+        heard.push(`${run} ${text}`);
+        onHeard();
+        socket.write(Buffer.alloc(PAST_BUFFERS), (error) => {
+          taken.push(error === undefined || error === null);
+          socket.end();
         });
       });
-      server.listen(box.path(`/var/lib/ta/runs/${run}/job.sock`));
-    }, 600);
+    });
+    server.listen(box.path(`/var/lib/ta/runs/${run}/job.sock`));
+    return server;
+  }
+
+  it("tells each run its renewal once it listens, on its channel, and waits for its answer",
+     async () => {
+    // Two live runs' runners (processes of the box's): the first listening, the second not yet.
+    const sleepers = [box.live(), box.live()];
+    const runs = [`run_${"7".repeat(32)}`, `run_${"8".repeat(32)}`] as const;
+    const files = FORMATS[String(STATE_FORMAT)]!.files;
+    runs.forEach((run, n) => box.write(`/var/lib/ta/runs/${run}/state.json`, JSON.stringify(
+      sample(files["var/lib/ta/runs/<run>/state.json"]!, { pid: sleepers[n]!, ended: false }))));
+    const heard: string[] = [];
+    const taken: boolean[] = [];
+    const servers: Server[] = [];
+    // `renew-wait` tries both channels at once: the second's try has failed (nothing listens
+    // there) before the first hears anything, and it listens only once the first heard.
+    servers.push(channel(runs[0], heard, taken, () => {
+      if (servers.length === 1) {
+        servers.push(channel(runs[1], heard, taken));
+      }
+    }));
     try {
-      const began = Date.now();
-      expect(await box.runnerAsync("renew-wait", String(Date.now() + 8_000))).toBe(0);
-      expect(heard).toEqual(["renewing\n"]);
-      // It came back on the answer, not at its deadline, and not before the answer.
-      expect(Date.now() - began).toBeGreaterThanOrEqual(900);
-      expect(Date.now() - began).toBeLessThan(6_000);
+      // Back on both answers, each after its run's bytes were taken, long before its deadline.
+      expect(await box.runnerAsync("renew-wait", String(Date.now() + 60_000))).toBe(0);
+      expect(heard).toEqual([`${runs[0]} renewing\n`, `${runs[1]} renewing\n`]);
+      expect(taken).toEqual([true, true]);
       expect(await box.runnerAsync("renewed")).toBe(0);
-      expect(heard).toEqual(["renewing\n", "renewed\n"]);
+      expect(heard.slice(2).sort()).toEqual([`${runs[0]} renewed\n`, `${runs[1]} renewed\n`]);
+      expect(taken).toEqual([true, true, true, true]);
     } finally {
-      clearTimeout(listening);
-      (server as Server | null)?.close();
-      box.kill(sleeper);
+      for (const server of servers) {
+        server.close();
+      }
+      for (const sleeper of sleepers) {
+        box.kill(sleeper);
+      }
     }
   });
 
@@ -1923,12 +1948,25 @@ describe("renewal", () => {
     // names (`JOB_FILES`), and no acknowledgement on disk.
     expect(jobEntries(start.run)).toEqual([JOB_FILES.log, JOB_FILES.socket, JOB_FILES.start,
                                            JOB_FILES.state].sort());
-    const held = doors.events().length;
-    // Past a whole heartbeat (the runner's own, 20 s): one the pause did not hold shows.
-    await new Promise((resolve) => setTimeout(resolve, HEARTBEAT_MS + 1_600));
-    expect(doors.events().length).toBe(held);  // nothing posted while paused, no heartbeat
+    const paused = () => doors.events().filter((post) => post.path === `/r/${start.run}/events`);
+    const held = paused().length;
+    // A control run, started after the pause began and not paused: its heartbeat (the
+    // runner's own, 20 s after its last post) shows a whole heartbeat passed, on the
+    // runner's clock, with the paused run's posts held all along.
+    const releaseControl = "/release-control";
+    box.cli("codex", { lines: [], holdUntil: releaseControl });
+    const control = startDoc(doors, "codex", { config: config("codex") });
+    box.start(control);
+    box.runner("launch", control.run);
+    const controls = () => doors.events()
+      .filter((post) => post.path === `/r/${control.run}/events`);
+    await waitFor(() => controls().length >= 2
+      && (controls().at(-1)!.body["frames"] as unknown[]).length === 0, HEARTBEAT_MS * 3);
+    expect(paused().length).toBe(held);  // nothing posted while paused, no heartbeat
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
     expect(box.runner("renewed").code).toBe(0);
+    box.write(releaseControl, "");
+    await doors.ended_(25_000, control.run);
     expect(runState(start.run).renewing).toBe(false);
     expect(jobEntries(start.run)).toEqual([JOB_FILES.log, JOB_FILES.socket, JOB_FILES.start,
                                            JOB_FILES.state].sort());
@@ -1950,9 +1988,15 @@ describe("renewal", () => {
     box.start(start);
     box.runner("launch", start.run);
     await waitFor(() => box.runner("state").out.includes("\"quiet\":false"));
-    const began = Date.now();
-    expect(await box.runnerAsync("renew-wait", String(Date.now() + 1500))).toBe(0);
-    expect(Date.now() - began).toBeGreaterThanOrEqual(1400);
+    const deadline = Date.now() + 1500;
+    expect(await box.runnerAsync("renew-wait", String(deadline))).toBe(0);
+    // Renewed (its run told, and acted), and not before the deadline it was given: the run's
+    // renewing is stamped by the runner's own clock, which read the deadline come first.
+    expect(runState(start.run).renewing).toBe(true);
+    const renewing = doors.events().flatMap((post) => post.body["frames"] as
+      { at: number; event: { type: string } }[])
+      .find((frame) => frame.event.type === "ta.renewing");
+    expect(renewing!.at).toBeGreaterThanOrEqual(deadline);
     box.runner("renewed");
     box.write(release, "");
     await doors.ended_(25_000, start.run);
