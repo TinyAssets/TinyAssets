@@ -335,7 +335,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `untangle/r7-sweep-pin13`).
   - [ ] A restore's unnamed chunks swept: those the owner put after E have no row in the
     restored object, so nothing collects them; the files plane maps a listed chunk's name back
-    to the object's hashes (`r7-sweep.md` item 10, `untangle/r-restore-chunks`).  - [ ] A restore's kept generations' chunks kept from early collection: the files plane
+    to the object's hashes (`r7-sweep.md` item 10, `untangle/r-restore-chunks`).
+  - [ ] A restore's kept generations' chunks kept from early collection: the files plane
     collects early only garbage the newest generation does not name, so the fallback a
     restore loads can lose a chunk and its restore fails at its chunks step (`r5w.md`
     item 11).
