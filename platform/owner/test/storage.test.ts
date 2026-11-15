@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { sqlIn, until } from "../../ci/workerd";
 import { MANIFEST_PROTECT_S, manifestDay } from "../src/backup";
+import { MIGRATIONS } from "../src/schema";
 import { refusalOf } from "../../contract/src/refusal";
 import { GC_GRACE_S, INLINE_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import type { Binding } from "../../contract/src/binding";
@@ -28,17 +29,18 @@ const ownChunks = async (r: Awaited<ReturnType<typeof rig>>) => SEED.mine(
   (row) => row["sha256"] as string);
 
 /**
- * A generation's row: begun at `started` (s), finished at `finished`, what a restore stages
- * of its log `log` bytes, `seq` its place among the generations. With `finished` null it is
- * being written, its next pass a day off, so no pass of the lane carries it here.
+ * A generation's row, of this object's schema: begun at `started` (s), finished at
+ * `finished`, what a restore stages of its log `log` bytes, `seq` its place among the
+ * generations. With `finished` null it is being written, its next pass a day off, so no pass
+ * of the lane carries it here.
  */
 async function generation(r: Awaited<ReturnType<typeof rig>>, gen: string, started: number,
                           finished: number | null, log = 0, seq = 1): Promise<void> {
   await sqlIn(r.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
                       "bytes, s, schema, started_at, finished_at, retry_at, staged, seq) " +
-                      "VALUES (?, ?, ?, NULL, 0, '', 0, 1, 1, ?, ?, ?, ?, ?)",
+                      "VALUES (?, ?, ?, NULL, 0, '', 0, 1, ?, ?, ?, ?, ?, ?)",
               gen, manifestDay(Date.now() / 1000), finished === null ? "writing" : "done",
-              started, finished, finished === null ? Date.now() / 1000 + 86_400 : null, log, seq);
+              MIGRATIONS.length, started, finished, finished === null ? Date.now() / 1000 + 86_400 : null, log, seq);
 }
 
 /** Each row's etag as the last write left it: a write swaps on it. */

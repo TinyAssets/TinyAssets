@@ -13,12 +13,16 @@ import { env } from "cloudflare:workers";
 
 import { sqlIn } from "../../ci/workerd";
 import { GENERATION_SIZES } from "../src/backup";
-import { exported } from "../src/export";
+import { ChangeLog } from "../src/changelog";
+import { chunkLine, type Cursor, decodeCursor, exported, readPage } from "../src/export";
 import type { Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
 import { type OwnerDO, ownerStores, type Stores } from "../src/owner-do";
+import { MIGRATIONS } from "../src/schema";
 import type { Binding } from "../../contract/src/binding";
 import { objectPrefix } from "../../contract/src/files";
+import { randomHex } from "../../contract/src/ids";
+import { migrate } from "../../contract/src/migrate";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { admittedOwner, drainDue, storesOn, through, TIERS } from "./support";
 
@@ -259,6 +263,98 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       before).toArray().map((row) => row.type);
     return { gen, lines, e: root?.e ?? -1,
              atE: root === null ? undefined : digests.get(root.e), notices, calls };
+  });
+}
+
+/** The tables of an object's schema, every one its migrations made. */
+const TABLES = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' " +
+  "AND name NOT GLOB '_cf_*' AND name NOT GLOB 'cf_*'";
+
+/**
+ * A generation of `stub`'s owner (`name`) as an object at schema `schema` writes it, sealed in
+ * the owner's namespace under its key: the object made again at that schema (every table
+ * dropped and that schema's migrations applied), its exported rows put back as they stood,
+ * column for column, so a column that schema lacks fails it; its base read by the export
+ * (`readPage`) under a header of that schema; and a log that schema's own triggers capture (a
+ * notice changed, two written and one of them gone), shipped as one segment
+ * (`ChangeLog.segment`). Its id, the namespace, and the owner's rows at its E but `except`'s.
+ * The object is left at that schema, its alarm gone: a test loses it next.
+ */
+export function writtenAt(stub: DurableObjectStub<OwnerDO>, name: string, schema: number,
+                          except: readonly string[] = []):
+    Promise<{ gen: string; ns: string; atE: string }> {
+  return runInDurableObject(stub, async (_instance: OwnerDO, state) => {
+    const sql = state.storage.sql;
+    await state.storage.deleteAlarm();
+    const { ns, data_key: key } = sql.exec<{ ns: string; data_key: string }>(
+      "SELECT ns, data_key FROM file_space").one();
+    const tables = Object.keys(exported());
+    const rows = Object.fromEntries(tables.map((table) => [table, sql.exec<Record<string,
+      SqlStorageValue>>(`SELECT * FROM ${table}`).toArray()]));
+    for (const { name: table } of sql.exec<{ name: string }>(TABLES).toArray()) {
+      sql.exec(`DROP TABLE "${table}"`);
+    }
+    migrate(state.storage, MIGRATIONS.slice(0, schema));
+    // Put back with that schema's triggers off, so nothing they keep counts a row twice.
+    const triggers = sql.exec<{ name: string; sql: string }>(
+      "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").toArray();
+    for (const trigger of triggers) {
+      sql.exec(`DROP TRIGGER ${trigger.name}`);
+    }
+    for (const table of tables) {
+      sql.exec(`DELETE FROM ${table}`);
+      for (const row of rows[table]!) {
+        const columns = Object.keys(row);
+        sql.exec(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${
+          columns.map(() => "?").join(", ")})`, ...columns.map((column) => row[column]!));
+      }
+    }
+    for (const trigger of triggers) {
+      sql.exec(trigger.sql);
+    }
+    const gen = randomHex(8);
+    sql.exec("UPDATE log_capture SET gen = ?, s = 1, capturing = 1", gen);
+    const lines: string[] = [];
+    for (let cursor: Cursor | null = decodeCursor(null); cursor !== null;) {
+      const page = readPage(sql, cursor, { schema, owner: name, at: Date.now(), gen, s: 1 },
+                            Number.MAX_SAFE_INTEGER, GENERATION_SIZES.page);
+      lines.push(...page.lines, ...page.chunks.map(chunkLine));
+      cursor = page.next;
+    }
+    sql.exec("INSERT INTO owner_notices (at, type, detail) VALUES (1, 'y', ?), (2, 'y', 'gone')",
+             `written at schema ${schema}`);
+    sql.exec("UPDATE owner_notices SET detail = 'changed' WHERE seq = (SELECT min(seq) FROM " +
+               "owner_notices)");
+    sql.exec("DELETE FROM owner_notices WHERE seq = (SELECT max(seq) FROM owner_notices)");
+    const e = sql.exec<{ e: number }>("SELECT max(seq) AS e FROM change_log").one().e;
+    sql.exec("UPDATE log_capture SET e = ?, capturing = 0", e);
+    const segment = await new ChangeLog(state.storage).segment(0, e);
+    const rowsAtE = standing(sql);
+    for (const table of except) {
+      delete rowsAtE[table];
+    }
+    // Cut into parts as a burst cuts them: whole lines, each part within one.
+    const parts: string[][] = [[]];
+    let size = 0;
+    for (const line of lines) {
+      const n = Buffer.byteLength(line, "utf8") + 1;
+      if (size + n > GENERATION_SIZES.part) {
+        parts.push([]);
+        size = 0;
+      }
+      parts.at(-1)!.push(line);
+      size += n;
+    }
+    const encoder = new TextEncoder();
+    const put = [];
+    for (const [at, part] of parts.entries()) {
+      put.push(await env.FILES.putManifestPart(ns, key, gen, at,
+                                               encoder.encode(`${part.join("\n")}\n`)));
+    }
+    const shipped = await env.FILES.putManifestSegment(ns, key, gen, 0, e, segment);
+    await env.FILES.putManifestRoot(ns, key, gen, put, [{ a: 0, b: e, ...shipped }],
+                                    { s: 1, e });
+    return { gen, ns, atE: digest(rowsAtE) };
   });
 }
 
