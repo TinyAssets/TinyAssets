@@ -19,6 +19,8 @@
   "scripts": {
     "test": "npm run test --workspaces",
     "typecheck": "tsc --noEmit",
+    "record": "node ci/record.ts record",
+    "record:diff": "node ci/record.ts diff",
     "generate": "node contract/requests.ts && node sources/write-records.ts && node ci/kit/types.ts && node starter/bundle.mjs && node plugins/build.mjs"
   },
   "engines": {
