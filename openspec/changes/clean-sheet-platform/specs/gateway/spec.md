@@ -42,7 +42,7 @@ The sealed plaintext SHALL carry the secret together with its source data: the p
 - **THEN** it is refused as `invalid_source`, so what is sealed is what every later parse reads
 
 ### Requirement: Only APIs whose every request goes through fetch run
-The gateway SHALL run only the pi-ai APIs whose every request goes through `fetch` and on which a sandbox call can be metered, each one row of one table in the contract (`contract/src/api-rules.ts`: its rules, so egress, the one model path, can use it; whether its adapter takes `options.fetch`; and whether a declared endpoint may speak it), and SHALL refuse any other (Bedrock, the legacy Codex backend, an API with no rules) when it is sealed and when it is opened. A declared endpoint SHALL be sealed only on an API whose row says the gateway holds pi-ai's adapter for it.
+The gateway SHALL run only the pi-ai APIs whose every request goes through `fetch` and on which a sandbox call can be metered, each a row of one contract table (`api-rules.ts`) with its rules, how its adapter fetches and whether a declared endpoint may speak it, and SHALL refuse any other API, and a declared endpoint on an API its row does not allow, when it is sealed and when it is opened.
 
 #### Scenario: A source on Bedrock or the legacy Codex backend
 - **WHEN** a source names `bedrock-converse-stream` or `openai-codex-responses`
