@@ -182,8 +182,9 @@ import type {
   AdmissionRequest, BeatRequest, BilledEvent, BindingRequest, ConnectionCommitRequest,
   ConnectionPrepareRequest, ConnectionRequest, EgressOpened, EgressRefusal, EgressReserved,
   EraseRequest, FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors,
-  OwnerStateAnswer, RestoreAnswer, RestoreBeginRequest, RestoreHold, RestorePinRequest,
-  RestoreSource, RestoreWipeRequest, SigninEventsRequest, TierRequest,
+  OwnerStateAnswer, ResealAnswer, RestoreAnswer, RestoreBeginRequest, RestoreHold,
+  RestorePinRequest, RestoreSource, RestoreWipeRequest, RewrapAnswer, SigninEventsRequest,
+  TierRequest,
 } from "../../contract/src/owner";
 import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
@@ -452,6 +453,7 @@ export interface OwnerState {
   readonly notices: Notices;
   readonly starter: Starter;
   readonly connections: Connections;
+  readonly doorbell: Doorbell;
   readonly usage: ModelUsage;
   readonly egress: Egress;
   readonly runs: Runs;
@@ -650,6 +652,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       // The secret is the gateway's alone: it opens the blob and makes the send.
       ring: (subscription, version, blob, previous, request): Promise<RingAnswer> =>
         env.GATEWAY.ringDoorbell(owner(), subscription, version, blob, previous, request),
+      reseal: (subscription, version, blob) =>
+        env.GATEWAY.resealDoorbell(owner(), subscription, version, blob),
     });
     this.#connections = new Connections(storage, write, env.GATEWAY, owner, this.#notices);
     this.#egress = new Egress(storage, {
@@ -818,6 +822,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       get notices() { return object.#notices; },
       get starter() { return object.#starter; },
       get connections() { return object.#connections; },
+      get doorbell() { return object.#sender; },
       get usage() { return object.#usage; },
       get egress() { return object.#egress; },
       get runs() { return object.#runs; },
@@ -1441,20 +1446,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * A key rotation's sweep for this owner (`files/src/datakey.ts`, tasks.md): its wrapped
    * data key, and every nightly manifest root it keeps, wrapped again under the files
    * keyring's active kid; an idle owner's too, since nothing else rewrites its root. The
-   * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is. Refused (`restoring`, for the
-   * moment) while a restore holds the owner, so a rotation never finishes past a hold.
+   * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is. While a restore holds the
+   * owner, its generations are counted left, so a rotation never finishes past a hold.
    */
-  async dataKeyRewrap(binding: Binding): Promise<{ rewrapped: boolean; roots: number }> {
+  async dataKeyRewrap(binding: Binding): Promise<RewrapAnswer> {
     return this.#units("dataKeyRewrap", binding, undefined, filesDoors.dataKeyRewrap);
   }
 
   /**
    * A gateway key rotation's sweep for this owner (`gateway/src/keyring.ts`): every model
-   * credential blob it holds resealed under the gateway keyring's active kid, an idle
-   * connection's too, since nothing else reseals it; the platform retires a kid once every
-   * owner's sweep left none. The platform's alone, as `dataKeyRewrap` is.
+   * credential and doorbell subscription blob it holds resealed under the gateway keyring's
+   * active kid, an idle one's too, since nothing else reseals it; the platform retires a kid
+   * once every owner's sweep left none. The platform's alone, as `dataKeyRewrap` is.
    */
-  async gatewayReseal(binding: Binding): Promise<{ resealed: number; left: number }> {
+  async gatewayReseal(binding: Binding): Promise<ResealAnswer> {
     return this.#units("gatewayReseal", binding, undefined, connectionsDoors.gatewayReseal);
   }
 

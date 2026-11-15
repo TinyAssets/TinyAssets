@@ -318,8 +318,8 @@ const UNIT_ARGUMENTS: Readonly<Record<string, readonly number[]>> = Object.freez
 const OWN_UNITS: ReadonlySet<string> = new Set([
   // Each writes in units of its own around its R2, sandbox or gateway calls.
   "files.write", "files.writeChunks", "files.upload", "files.rewrap", "files.space",
-  "connections.fresh", "connections.reseal", "erasure.begin", "launcher.seeded", "launcher.launch",
-  "launcher.cancel",
+  "connections.fresh", "connections.reseal", "doorbell.reseal", "erasure.begin",
+  "launcher.seeded", "launcher.launch", "launcher.cancel",
   // The manifest lane's pass, which a restore's pin drives for its fresh generation.
   "backups.run",
   // Each reads in units of its own, or R2 alone.

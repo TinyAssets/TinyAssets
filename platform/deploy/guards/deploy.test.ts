@@ -2866,6 +2866,8 @@ describe("the operator path's modes", () => {
     ["lift=billing", "owner.lift", { reason: "billing" }],
     ["admit", "owner.admit", {}],
     ["state", "owner.state", {}],
+    ["rewrap", "owner.rewrap", {}],
+    ["reseal", "owner.reseal", {}],
   ])("owner sends --act %s as %s, between two owner.state", async (act, op, args) => {
     const w = world({ held: true });
     await runMode(w, "owner", ["--yes", "--owner", "user_alice", "--act", act]);
@@ -2896,7 +2898,8 @@ describe("the operator path's modes", () => {
 
   it("owner needs one owner and one act, each in its grammar", () => {
     const w = world();
-    const acts = "--act is one of state, tier=<tier>, suspend=<reason>, lift=<reason>, admit";
+    const acts = "--act is one of state, tier=<tier>, suspend=<reason>, lift=<reason>, admit, " +
+                 "rewrap, reseal";
     for (const act of ["tier", "admit=now", "state=all", "erase=x", "tier=paid=x"]) {
       const argv = ["--mode", "owner", "--owner", "user_alice", "--act", act];
       if (act === "tier=paid=x") {
@@ -3127,8 +3130,8 @@ describe("mode erase", () => {
     const w = world();
     for (const act of ["erase", `erase=${WORDS}`]) {
       expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", act], ENV, w.io),
-             act).toThrow(
-        /^--act is one of state, tier=<tier>, suspend=<reason>, lift=<reason>, admit$/);
+             act).toThrow(new RegExp("^--act is one of state, tier=<tier>, suspend=<reason>, " +
+                                     "lift=<reason>, admit, rewrap, reseal$"));
     }
     expect(() => parse(["--mode", "owner", "--owner", "user_alice", "--act", "admit",
                         "--confirm", WORDS], ENV, w.io))

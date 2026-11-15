@@ -84,6 +84,17 @@ const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
     const { binding, stub } = bindPlatformFor(env, owner);
     return stub.erasureBegin(binding, args as unknown as EraseRequest);
   },
+  // A key rotation's sweep of the owner (`deploy/operator.ts`): every blob it holds under
+  // the files keyring's retiring kids, or the gateway's, brought under the active kid; each
+  // answer counts what is left, so the platform asks again, never refused for a hold.
+  "owner.rewrap": (env, owner) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.dataKeyRewrap(binding);
+  },
+  "owner.reseal": (env, owner) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.gatewayReseal(binding);
+  },
   "restore.source": (env, owner) => {
     const { binding, stub } = bindPlatformFor(env, owner);
     return stub.restoreSource(binding);

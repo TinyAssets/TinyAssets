@@ -401,6 +401,19 @@ describe("the erasure", () => {
       { owner: who, caller: PLATFORM_CALLER, origin: null }))).message).toBe(OWNER_ERASED);
   });
 
+  it("answers a key rotation's owner.rewrap and owner.reseal only at the platform's doors",
+     async () => {
+    const { who } = await owned();
+    for (const op of ["owner.rewrap", "owner.reseal"]) {
+      expect((await operated(who, op, {})).answer, op).toMatchObject({ result: { left: 0 } });
+    }
+    const stub = env.OWNER.getByName(who);
+    expect((await failure(() => stub.dataKeyRewrap(ownerBinding(who)))).message)
+      .toBe(PLATFORM_ONLY);
+    expect((await failure(() => stub.gatewayReseal(ownerBinding(who)))).message)
+      .toBe(PLATFORM_ONLY);
+  });
+
   it("erases nothing without the session or the owner's words", async () => {
     const { who, app } = await owned();
     for (const [session, body] of [[null, { confirm: ERASE_CONFIRM }],

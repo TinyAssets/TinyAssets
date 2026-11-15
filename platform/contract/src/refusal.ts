@@ -137,10 +137,8 @@ export const REFUSALS = Object.freeze({
   erasing: QUIET_REFUSED,
   message_body: QUIET_INVALID,
   post_conflict: QUIET_REFUSED,
-  // The files plane: a wrapped data key that does not open for its namespace; a manifest
-  // root that changed while its key was wrapped again, so the rewrap is run again.
+  // The files plane: a wrapped data key that does not open for its namespace.
   data_key_refused: QUIET_INVALID,
-  root_changed: Object.freeze({ status: 409, transient: true }),
 
   // The platform gates (`control.ts`), closed: the maintenance gate (`MAINTENANCE`) or the
   // outside switch (`OUTSIDE_OFF`), each the refusal's message.

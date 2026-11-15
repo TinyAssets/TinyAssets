@@ -83,7 +83,7 @@ describe("a transient refusal", () => {
       .map(([code]) => code).sort();
     expect(transient).toEqual(["busy", "egress_rate", "events_busy", "events_raced",
                                "inbound_app_unconfigured", "mailbox_full", "restoring",
-                               "root_changed", "storage_busy", "unavailable"]);
+                               "storage_busy", "unavailable"]);
     expect(Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { retryAfterS?: number }).retryAfterS !== undefined)
       .map(([code]) => code).sort())
@@ -136,7 +136,6 @@ describe("the code list", () => {
     ["sandbox_runner_mismatch", 502, undefined], ["sandbox_runner_protocol", 502, undefined],
     // The files plane's.
     ["keyring_unavailable", 500, undefined], ["data_key_refused", 400, undefined],
-    ["root_changed", 409, undefined],
   ] as const)("answers %s with %i", (code, status, retry) => {
     const refusal = new Refusal(code);
     expect([refusal.status, refusal.retryAfter]).toEqual([status, retry]);

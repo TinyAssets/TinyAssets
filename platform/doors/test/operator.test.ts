@@ -6,7 +6,8 @@
  * already accepted); an erased owner answered refused; a redelivery of a message accepted
  * but not yet answered going on, past the window too; and a delivery racing another held to
  * the acceptance record and the answer the other made first. Then each op on a real owner
- * object: `owner.state` read and changing nothing, the `owner.*` acts, and the restore's.
+ * object: `owner.state` read and changing nothing, the `owner.*` acts, a key rotation's
+ * `owner.rewrap` and `owner.reseal`, and the restore's.
  */
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
@@ -365,6 +366,56 @@ describe("the operator's owner.state, on a real owner object", () => {
       "an operator message is out of shape; dropped"]);
     expect(await everyRow(owner)).toEqual(rows);
   });
+});
+
+describe("a key rotation's owner.rewrap and owner.reseal, on a real owner object", () => {
+  /** Nothing but names, codes and counts: each answer's keys. */
+  const keysOf = (answer: OperatorAnswer) =>
+    Object.keys((answer as { result: object }).result).sort();
+
+  it("answers each sweep's counts and kid alone; a restore's hold is counted left, never " +
+     "refused, so it never stops the sweep", async () => {
+    const owner = fresh();
+    await asked(owner, "owner.admit");
+    const rewrap = await asked(owner, "owner.rewrap");
+    expect(keysOf(rewrap)).toEqual(["kid", "left", "rewrapped", "roots"]);
+    expect(rewrap).toMatchObject({ result: { left: 0 } });
+    expect(await asked(owner, "owner.reseal"))
+      .toMatchObject({ result: { resealed: 0, left: 0, kid: null } });
+    // Held for a restore: answered at once, its generation left, acknowledged, nothing retried.
+    await sqlIn(owner, "INSERT INTO owner_restore (only, ns, gen, step, at) VALUES (1, ?, ?, " +
+                       "'pinned', 0)", "a".repeat(32), "b".repeat(16));
+    expect(await asked(owner, "owner.rewrap"))
+      .toMatchObject({ result: { rewrapped: false, roots: 0, left: 1 } });
+  });
+
+  it.each(["owner.rewrap", "owner.reseal"])(
+    "%s: delivered again after its sweep but before its answer, changes nothing more; a " +
+    "forged or unsigned one is dropped with nothing written", async (op) => {
+      const owner = fresh();
+      await asked(owner, "owner.admit");
+      const message = await sign(owner, op);
+      const logged = logs();
+      expect(await deliver(message, answerFailingOnce(message.ask)))
+        .toEqual({ acked: 0, retried: 1 });
+      const rows = await everyRow(owner);
+      expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
+      const { result } = operatorAnswer((await held(message.ask)).answer, message) as
+        { result: unknown };
+      expect(await asked(owner, op)).toMatchObject({ result });
+      expect(await everyRow(owner)).toEqual(rows);
+      const forged = await sign(owner, op, {}, OTHER);
+      const { mac: _mac, ...unsigned } = await sign(owner, op);
+      for (const body of [forged, unsigned]) {
+        expect(await deliver(body)).toEqual({ acked: 1, retried: 0 });
+        expect(await held(body.ask)).toEqual({ accepted: null, answer: null });
+      }
+      expect(logged()).toEqual([
+        "an operator message failed; the queue tries again",
+        "an operator message has a MAC that does not hold under its kid; dropped",
+        "an operator message is out of shape; dropped"]);
+      expect(await everyRow(owner)).toEqual(rows);
+    });
 });
 
 describe("the operator's restore ops, on a real owner object", () => {
