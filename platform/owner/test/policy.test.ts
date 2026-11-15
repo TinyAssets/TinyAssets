@@ -22,9 +22,8 @@ import {
   DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, POLICY_LIMITS,
   policyDigest, validate,
 } from "../../contract/src/policy-document";
-import { Policy } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, ownerObject } from "./support";
+import { failure, inStores, ownerObject } from "./support";
 
 type Doc = {
   egress: { mode: string; destinations: unknown[] };
@@ -337,8 +336,7 @@ describe("an agent's proposal", () => {
     expect(await r.table("policy_proposals")).toEqual([]);
     const { pendingProposals: most, proposalTtlS: ttl } = POLICY_LIMITS;
     const ids = (from: number) => Array.from({ length: most }, (_, n) => `p${from + n}`);
-    await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage);
+    await inStores(r.stub, ({ policy }) => {
       const now = clock();
       for (const id of ids(0)) {
         policy.propose(change(1), id, "owner", now);
@@ -406,8 +404,7 @@ describe("the receipts", () => {
     const r = await rig();
     const kept = POLICY_LIMITS.receiptsPerBucket;
     const newest = (prefix: string) => Array.from({ length: kept }, (_, n) => `${prefix}${n + 2}`);
-    await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage);
+    await inStores(r.stub, ({ policy }) => {
       for (let n = 0; n < kept + 2; n++) {
         policy.receipt("write", { rule: `w${n}` }, n);
         policy.receipt("proposal", { rule: `p${n}` }, n);
@@ -428,8 +425,7 @@ describe("the receipts", () => {
 
   it("prunes a full bucket's own oldest rows, never another bucket's", async () => {
     const r = await rig();
-    await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const policy = new Policy(state.storage);
+    await inStores(r.stub, ({ policy }) => {
       for (let n = 0; n < 3; n++) {
         policy.receipt("proposal", { rule: `p${n}` }, n);  // the oldest rows of all
       }
