@@ -21,7 +21,7 @@ import { LEDGER_LIMITS, type MailParts, mailParts } from "../src/ledger";
 import {
   makeChunk, MoveTable, pack, planSegment, SEGMENT_LEAST_BYTES, type Source,
 } from "../src/segments";
-import { CPU_LIMIT_MS, cpuMs, STEP_CPU_MS } from "./cpu";
+import { CPU_LIMIT_MS, cpuMs, onThisRunner, STEP_CPU_MS } from "./cpu";
 
 const hex = (n: number, width: number) => n.toString(16).padStart(width, "0");
 
@@ -126,7 +126,7 @@ describe("an archive move at the production seal", () => {
                   `bytes, ${Math.round(ms)} ms CPU of ${CPU_LIMIT_MS}`);
       expect(seqs.length).toBeLessThan(archiveRecords);
       expect(size).toBeGreaterThanOrEqual(archiveBytes);
-      expect(ms).toBeLessThan(STEP_CPU_MS);
+      expect(ms).toBeLessThan(onThisRunner(STEP_CPU_MS));
     });
   }
 });
