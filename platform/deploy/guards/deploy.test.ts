@@ -69,6 +69,7 @@ import {
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
+import { NIGHTLY, RESTORE_KEY } from "../offsite";
 import {
   ERASE_LOSES, keyHashes, POLL_MS, RESTORE_LOSES, rotationKey, RUN_MS,
 } from "../operator";
@@ -3268,6 +3269,50 @@ describe("modes rotation and retire", () => {
       `wrangler secret put GATEWAY_KEYRING --name ${NAMES["gateway"]}`,
       expect.stringMatching(/^node canary\.ts/)]);
     expect(Object.values(w.secretsPut)).toEqual([SHRUNK]);
+  });
+
+  it("retires a files kid only from a pass begun after the latest restore from the " +
+     "off-account copy, which it reads from the control namespace", async () => {
+    const w = world({ held: true });
+    const began = NOW.getTime() / 1000 - 30 * 86_400;
+    w.kv.set(`${CONTROL_NS}/${rotationKey("FILES_KEYRING", "k2")}`, JSON.stringify({
+      kind: "tinyassets-rotation", keyring: "FILES_KEYRING", active: "k2",
+      keys: keyHashes(ACTIVE), passes: [{ began, through: "user_carol", owing: [],
+                                          swept: began + 3600 }] }));
+    // The copy's nights, newest first: last night, and the morning after the pass.
+    const nights = [NOW.getTime() - 12 * 3600_000, (began + 18 * 3600) * 1000]
+      .map((at) => new Date(at).toISOString());
+    const fetch = w.io.fetch;
+    const io = { ...w.io, fetch: async (url: string, init?: RequestInit) => {
+      const at = new URL(url);
+      if (at.host !== "api.github.com") {
+        return fetch(url, init);
+      }
+      if (at.pathname.endsWith(`/actions/workflows/${NIGHTLY.workflow}/runs`)) {
+        return Response.json({ workflow_runs: at.searchParams.get("page") !== "1" ? []
+          : nights.map((night, id) => ({ id, created_at: night, updated_at: night })) });
+      }
+      const night = nights[Number(/\/actions\/runs\/(\d+)\/jobs$/.exec(at.pathname)![1])]!;
+      return Response.json({ jobs: [NIGHTLY.settings, NIGHTLY.copy].map((name) =>
+        ({ name, conclusion: "success", completed_at: night })) });
+    } };
+    const env = { ...ENV, FILES_KEYRING: SHRUNK, GITHUB_TOKEN: "gh-token" };
+    const named = await runMode({ ...w, io }, "retire", ["--yes", "--keyring", "FILES_KEYRING"],
+                                env);
+    expect(named.plan.at(-1)).toBe("retire k1 from FILES_KEYRING only with its words: keep the " +
+      "old ring file offline, then run again with --confirm retire-FILES_KEYRING-k1");
+    // A restore from the copy after the pass began: no pass has rewrapped what it put back.
+    w.kv.set(`${CONTROL_NS}/${RESTORE_KEY}`, JSON.stringify({
+      kind: "tinyassets-offsite-restore", began: began + 86_400 }));
+    await expect(runMode({ ...w, io }, "retire", ["--yes", "--keyring", "FILES_KEYRING"], env))
+      .rejects.toThrow(`a restore from the off-account copy began at ${
+        new Date((began + 86_400) * 1000).toISOString()}, after every pass of ${
+        rotationKey("FILES_KEYRING", "k2")} that swept began`);
+    // A record out of shape is a loud stop.
+    w.kv.set(`${CONTROL_NS}/${RESTORE_KEY}`, JSON.stringify({ began: began + 86_400 }));
+    await expect(runMode({ ...w, io }, "retire", ["--yes", "--keyring", "FILES_KEYRING"], env))
+      .rejects.toThrow(`the restore record ${RESTORE_KEY} is out of shape`);
+    expect(w.events.filter((event) => event.startsWith("wrangler secret"))).toEqual([]);
   });
 });
 

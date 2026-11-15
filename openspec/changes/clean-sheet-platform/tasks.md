@@ -348,10 +348,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     window, so no rotation reaches it: the window's close checks every bundle is admitted or
     discarded, the founder's decision in `r7-rotation-driver.md` item 8
     (`untangle/i-window-close`).
-  - [ ] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
+  - [x] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
     old-kid roots back and restarts the copy's expiry, so `retire`'s gate is read from that
     night: R8 marks the rotation's record or refuses to restore during one
-    (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`).
+    (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`): `retire` reads the copy's
+    restore record (`deploy:offsite:restore`) and draws the gate from the first pass that swept
+    and began after it, and needs no second pass (`r8-retire-gate.md`).
+  - [ ] R8, restore from the off-account copy and its monthly drill
+    (`untangle/r8-copy-restore`): every write from the copy into R2 puts the restore record
+    before its first byte, in the kit's concurrency group (`r8-retire-gate.md` item 3), and
+    every erasure the copy can't show is applied before any owner is restored (`r4.md`
+    item 13).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
     (`live:` after `untangle/r7-rotation-driver`).
   - [x] `restore.wipe`, a live owner brought to pending and empty for a restore, the

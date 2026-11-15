@@ -375,10 +375,13 @@ It never counts as "absent".
      stored. It refuses while the doors hold `IMPORT_KEY` (the import window).
   3. **`GATEWAY_KEYRING`:** go on once one pass has swept. **`FILES_KEYRING`:** the off-account
      copy keeps versions under the old kid for 22 days after the first night that copies the
-     rewrapped roots. Wait 23 days after that night, then dispatch `rotation` again for a
-     second pass, until it sweeps. Mode `retire` reads that night from the copy's own runs and
-     says the date. Don't retire `FILES_KEYRING` before the copy's lifecycle rule is seen
-     deleting a hidden version live (the copy's first nights, `tasks.md`).
+     rewrapped roots: wait 23 days after that night. Mode `retire` reads that night from the
+     copy's own runs and says the date. A restore from the copy may put roots under the old
+     kid back, which the next night copies again for another 22 days, so it is recorded in the
+     control namespace (`deploy:offsite:restore`) and restarts this step: dispatch `rotation`
+     for a pass begun after it, then wait 23 days after the night that follows that pass.
+     Don't retire `FILES_KEYRING` before the copy's lifecycle rule is seen deleting a hidden
+     version live (the copy's first nights, `tasks.md`).
   4. `keyring-retire` on your copy: it writes `<file>.retire`, the active key alone, and leaves
      your file as it is. Keep the old file offline.
   5. Store `<file>.retire` as the `production` secret.
