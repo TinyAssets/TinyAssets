@@ -673,6 +673,11 @@ missing.
 - **Erasures first.** The namespace is the one the owner's own object names (`restore.source`
   through the operator channel). The doors refuse that for an erased owner, or one being
   erased, so nothing of it is read or written.
+- **Only what the owner's object names.** A chunk or generation no row of it names (one its
+  own collection deleted, a redaction's bytes, a pruned generation) is never written back:
+  nothing would delete it again. Should a row be collected during the run, the run stops
+  after the write, naming how many; then restore the owner (mode `restore`), whose sweep
+  deletes them.
 - **The restore record first.** Before the first byte the run writes `deploy:offsite:restore`.
   That restarts a `FILES_KEYRING` retirement's gate: dispatch `rotation` for a pass begun after
   it.

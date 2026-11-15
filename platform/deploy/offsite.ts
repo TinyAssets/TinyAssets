@@ -574,36 +574,77 @@ function readBack(b: Back, source: string, prefix: string, at: Date | null, io: 
 }
 
 /**
+ * What the owner's object names in its namespace (`restore.names`, `owner/src/restore.ts`
+ * `restoreNames`): the bucket name of each chunk a row of it holds, in any state, and each
+ * finished generation it holds.
+ */
+export interface Referenced {
+  readonly chunks: ReadonlySet<string>;
+  readonly generations: ReadonlySet<string>;
+}
+
+/**
+ * Whether the object `name` under a namespace's prefix is one `named` holds a row of: a chunk
+ * (`c/<name>`) a chunk row names, or a root, part or segment (`m/<gen>…`) of a generation it
+ * holds (`files/src/keys.ts`).
+ */
+function referenced(named: Referenced, name: string): boolean {
+  const [kind, id, ...rest] = name.split("/");
+  return kind === "c" ? rest.length === 0 && named.chunks.has(id!)
+    : kind === "m" && named.generations.has(id!);
+}
+
+/**
  * R8, the restore from the copy: the objects of `namespace` that `source`, the files bucket,
- * lacks, written back from the copy as it stood at `at` (null: as it stands), each at its own
- * key, then each read back byte for byte. Only objects R2 lacks: one R2 holds is never
- * replaced, so no live root goes back to an older wrap. The restore record goes before the
- * first byte, so mode `retire` holds a rotation's gate to a pass begun after it; with nothing
- * lacking, nothing is written and nothing recorded. The caller names a namespace only as the
- * owner's own object answers it (`deploy.ts` mode `copyback`). What it did, as plan lines.
+ * lacks and the owner's object names (`named`, asked once R2 is listed), written back from
+ * the copy as it stood at `at` (null: as it stands), each at its own key, then each read back
+ * byte for byte.
+ * - **Only what a row names.** The files plane's rule is that every object in the bucket has
+ *   a row first, and its collection never lists the bucket, so an object no row names (a
+ *   chunk the owner's own collection deleted, a redaction's bytes, a pruned generation) is
+ *   never written: nothing would ever delete it again. After the write the object is asked
+ *   again, and a written object it no longer names (its row collected during the run) is a
+ *   loud stop, for mode `restore`'s sweep.
+ * - **Never one R2 holds,** so no live root goes back to an older wrap.
+ * - **The restore record before the first byte,** so mode `retire` holds a rotation's gate to
+ *   a pass begun after it. With nothing to write, nothing is written and nothing recorded.
+ *
+ * The caller names a namespace only as the owner's own object answers it (`deploy.ts` mode
+ * `copyback`). What it did, as plan lines.
  */
 export async function copyBack(b: Back, source: string, namespace: string, at: Date | null,
-                               control: RestoreControl, io: Effects): Promise<string[]> {
+                               named: () => Promise<Referenced>, control: RestoreControl,
+                               io: Effects): Promise<string[]> {
   readableAt(at, io.now());
   const prefix = objectPrefix(namespace);
   const as = at === null ? "as the copy stands" : `as the copy held them at ${iso(at)}`;
   const back = readBack(b, source, prefix, at, io);
-  if (back.lacking.length === 0) {
-    return [`R2 lacks no object the copy holds under ${prefix}, ${as}: nothing is written, ` +
-            "and no restore is recorded"];
+  const before = await named();
+  const writes = back.lacking.filter((name) => referenced(before, name));
+  const left = `${back.lacking.length - writes.length} more it lacks no row names`;
+  if (writes.length === 0) {
+    return [`R2 lacks no object the copy holds under ${prefix} that the owner's object names, ` +
+            `${as} (${left}): nothing is written, and no restore is recorded`];
   }
   const began = await recordRestore(control, io.now());
-  withList(back.lacking, (file) => {
+  withList(writes, (file) => {
     back.run("copy back", ["back", "r2"],
              ["copy", back.from, back.to, "--files-from", file, "--ignore-existing",
               "--stats-one-line", "--stats", "1m", "--stats-log-level", "NOTICE"]);
     back.run("byte check of the copy back", ["back", "r2"],
              ["check", back.from, back.to, "--one-way", "--download", "--files-from", file]);
   });
+  const after = await named();
+  const orphans = writes.filter((name) => !referenced(after, name));
+  if (orphans.length > 0) {
+    throw new Error(`the owner's object no longer names ${orphans.length} of the ${
+      writes.length} objects written under ${prefix}, collected during the run: only mode ` +
+      "restore's sweep deletes them (checklist.md, \"A restore from the copy\")");
+  }
   return [`recorded a restore from the copy begun at ${iso(new Date(began * 1000))} in ` +
           `${RESTORE_KEY}, before its first byte`,
-          `wrote ${back.lacking.length} objects under ${prefix} into ${source}, ${as}, each ` +
-          "one R2 lacked, and read each back byte for byte"];
+          `wrote ${writes.length} objects under ${prefix} into ${source}, ${as}, each one R2 ` +
+          `lacked and the owner's object names, and read each back byte for byte (${left})`];
 }
 
 /**

@@ -35,7 +35,8 @@ import {
 import { keyed } from "../../contract/src/checks";
 import { parseRing } from "../../contract/src/envelope";
 import type {
-  EraseRequest, RestoreBeginRequest, RestorePinRequest, RestoreWipeRequest, TierRequest,
+  EraseRequest, RestoreBeginRequest, RestoreNamesRequest, RestorePinRequest,
+  RestoreWipeRequest, TierRequest,
 } from "../../contract/src/owner";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 
@@ -129,6 +130,10 @@ const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
   "restore.release": (env, owner) => {
     const { binding, stub } = bindPlatformFor(env, owner);
     return stub.restoreRelease(binding);
+  },
+  "restore.names": (env, owner, args) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.restoreNames(binding, args as unknown as RestoreNamesRequest);
   },
 });
 

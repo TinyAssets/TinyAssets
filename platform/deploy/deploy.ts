@@ -137,7 +137,7 @@ import {
   argsText, OPERATOR_KEYRING, type OperatorArgs,
 } from "../contract/src/operator-message.ts";
 import {
-  eraseWords, type RestoreAnswer, type RestoreHold, type RestoreSource,
+  eraseWords, type RestoreAnswer, type RestoreHold, type RestoreNames, type RestoreSource,
 } from "../contract/src/owner.ts";
 import {
   authorizeUrl, SECRET_ORIGIN, SIGN_IN_MAX_AGE_S, type UpstreamConfig, upstreamConfig,
@@ -159,8 +159,8 @@ import {
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
-  BACK_INPUTS, backFrom, copyBack, firstNightAfter, KEEP_DAYS, readableAt, RESTORE_KEY,
-  restoreBegan, type Watch, watch,
+  BACK_INPUTS, backFrom, copyBack, firstNightAfter, KEEP_DAYS, readableAt, type Referenced,
+  RESTORE_KEY, restoreBegan, type Watch, watch,
 } from "./offsite.ts";
 import {
   type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
@@ -1563,12 +1563,13 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
 const copyBackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   const owner = run.owner!;
   readableAt(run.at, run.io.now());
-  say(`copy back into ${FILES_BUCKET} the objects of ${owner}'s namespace that it lacks, as the ` +
-      `off-account copy ${run.at === null ? "stands" : `stood at ${run.at.toISOString()}`}, ` +
-      `never one it holds, after writing the restore record ${RESTORE_KEY}: the namespace ` +
-      "the owner's own object names (restore.source through the operator channel, which the " +
-      "doors refuse for an erased or erasing owner), each object written read back byte for " +
-      "byte");
+  say(`copy back into ${FILES_BUCKET} the objects of ${owner}'s namespace that it lacks and ` +
+      "the owner's object names (restore.names: a row of it each, so nothing its own " +
+      "collection deleted comes back), as the off-account copy " +
+      `${run.at === null ? "stands" : `stood at ${run.at.toISOString()}`}, never one it holds, ` +
+      `after writing the restore record ${RESTORE_KEY}: the namespace the owner's own object ` +
+      "names (restore.source through the operator channel, which the doors refuse for an " +
+      "erased or erasing owner), each object written read back byte for byte");
   if (run.reach === "public") {
     return;
   }
@@ -1587,9 +1588,24 @@ const copyBackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
     return;
   }
   say(...await copyBack(backFrom(run.env, got.account), FILES_BUCKET, namespace, run.at,
+                        () => namedBy(run, got, owner),
                         { cloudflare: got.cloudflare, account: got.account, namespace: control },
                         run.io));
 });
+
+/** What `owner`'s object names in its namespace, page by page (`restore.names`). */
+async function namedBy(run: Run, got: Pick<Values, "cloudflare" | "account">, owner: string):
+    Promise<Referenced> {
+  const chunks = new Set<string>();
+  const generations = new Set<string>();
+  for (let from: number | null = 0; from !== null;) {
+    const page = await asked(run, got, "restore.names", owner, { from }) as RestoreNames;
+    page.chunks.forEach((name) => chunks.add(name));
+    page.generations.forEach((gen) => generations.add(gen));
+    from = page.next;
+  }
+  return { chunks, generations };
+}
 
 /**
  * Mode `erase`: `--owner` erased through the operator channel (`owner.erase`), for an owner

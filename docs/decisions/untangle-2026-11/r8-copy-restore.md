@@ -7,10 +7,10 @@ Lane R's eighth PR: the restore from the off-account copy and its monthly drill 
    - **The owner's restore (R5r, R5w).** Mode `restore` loads one generation `{namespace, gen}` from R2 into the owner's own object: `restore.source`, then the pin and wipe for a live owner, then begin, step, admit. It reads only through the files Worker's manifest reads (`r5r.md` item 12: "R8 is a source swap").
    - **The erasure's records.** The object's mark, then the directory's `o:<owner>` erased record (the owner's principal and a time, no namespace), then the issuer's identity deleted, then R2's `o/<ns>/` deleted a day after the mark, then the tombstone. Every one of them is inside the account. The copy shows an erasure only as hides on the next night, and a hide looks the same whatever deleted the object. A view at a time before the hide (`--b2-version-at`) shows the erased namespace whole.
    - **The rotation gate's reader (#5641).** `retire` reads `deploy:offsite:restore` (`restoreBegan`) and holds the gate to the first pass that swept and began at or after its `began`.
-2. **What R8 restores: whole R2 objects of one owner's namespace.** Only the objects the files bucket lacks, as the copy held them at a time the operator gives (`--at`), or as it stands. Each goes back at its own key, and each is read back byte for byte (`copyBack`).
+2. **What R8 restores: whole R2 objects of one owner's namespace.** Only the objects the files bucket lacks and the owner's object names (item 11), as the copy held them at a time the operator gives (`--at`), or as it stands. Each goes back at its own key, and each is read back byte for byte (`copyBack`).
    - **Not one owner's generations.** The copy can't read a generation: it is sealed under the owner's data key, and nothing outside the files Worker opens one. Mode `restore` already reads generations from R2. R8 puts the bytes back where it reads them, then mode `restore` runs unchanged if the database must go back too.
    - **Not the whole bucket.** Only an owner's object maps a namespace to an owner. A whole-bucket copy back would also bring back every erased owner's namespace still in the copy at that time (item 3).
-   - **Only what R2 lacks (`--ignore-existing`, and the list of names R2 lacks).** Every object in the bucket is immutable except a root, which a rotation rewraps in place. Replacing a live root with an older wrap gains nothing and brings an old kid back. So a copy back only ever adds.
+   - **Never one R2 holds (`--ignore-existing`, and the list of names R2 lacks).** Every object in the bucket is immutable except a root, which a rotation rewraps in place. Replacing a live root with an older wrap gains nothing and brings an old kid back. Adding is not enough by itself, though: item 11.
    - **At a time.** A deletion is hidden in the copy at the next night, so the copy as it stands lacks anything R2 lost more than a night ago. The copy keeps a hidden version `KEEP_DAYS` after the hide, so a view at a time inside them is whole. `BACK_DAYS` (21) is the oldest time taken, one day short of that, for the run itself (`readableAt`).
 3. **How erasures are found and applied first: by refusing, before any byte (`r4.md` item 13's second way).**
    - The namespace a copy back writes is only ever the one the owner's own object answers (`restore.source` through the operator channel).
@@ -88,3 +88,24 @@ Lane R's eighth PR: the restore from the off-account copy and its monthly drill 
       - a refused put ignored;
       - the drill's byte check dropped;
       - the copy back's byte check dropped.
+11. **From the review (`rvr8copy_report.md` finding 1): a copy back writes only what the owner's object names.**
+    - **The defect.** The copy holds, at any time in its window, chunks the owner's own collection deleted on purpose: garbage past its grace, garbage collected early, a redaction's or a purge's bytes. A pruned generation's objects are in it too. As first built, `copyBack` wrote back every name R2 lacked. The files plane's rule is that every object in the bucket has a row first, and its collection never lists the bucket (`owner/src/files.ts`), so a chunk written back with no row was never deleted again. That broke "Deleted files are kept up to 30 days" (`contract/src/limits.ts` `GC_GRACE_S`), and it brought redacted bytes back for good. Item 2's "only ever adds" missed it.
+    - **Chosen: one predicate, the files plane's own.** An object is written only if a row of the owner's object names it:
+      - a chunk (`c/<name>`) whose row it holds, in any state, garbage in its grace among them, since the owner may still have that back and the files lane deletes it in time;
+      - a root, part or segment (`m/<gen>…`) of a finished generation it holds.
+    - **How the kit reads it: a new reserved restore door, `restoreNames`** (op `restore.names {from}`).
+      - It answers the bucket names of `NAMES_ROWS` (10,000) chunk rows a page, from an offset in hash order, through `FILES.chunkNames`, the same names the restore's sweep filters by. It also answers the object's finished generations.
+      - The kit pages it after it lists R2 and keeps the lacking names it names (`deploy.ts` `namedBy`, `offsite.ts` `referenced`).
+      - Pages go by offset, not by hash, because the operator log keeps every answer for 365 days and no content hash may stand in it. A row deleted between two pages moves one row past the next page's start. That leaves a name out, never adds one, and a run again still finds it lacking.
+      - It is a restore door, so a restore's hold lets it through: the checklist's case of a restore whose chunks step names chunks missing needs it.
+    - **The run's own window.** A row the files lane collects between the listing and the write would leave its chunk written with no row. So the kit asks again after the write, and stops loudly on any written object no row names any more, for mode `restore`'s sweep. It never deletes the object itself: on a live owner an upload may name the same chunk again at any moment, and only a restore's hold makes a delete safe (`r5r.md`, the sweep).
+    - **Rejected: copy back only while a restore holds the owner,** so that its names and sweep steps follow.
+      - A live owner pays `RESTORE_LOSES` for what may be one lost chunk.
+      - A wiped owner names no namespace, and `begin` needs the root back first, so the copy back would have to run at the pin.
+      - `restoreRelease` would then have to be refused after any copy back.
+      - That is three conditions across the restore's steps, against one predicate.
+    - **Proof.**
+      - `offsite.test.ts`: the copy holds a chunk the owner's collection took and a pruned generation's root and part, the object names neither, and only the named ones are written; with only those lacking, nothing is written or recorded; a written object that stops being named after the write is a loud stop.
+      - `deploy.test.ts`: the names are paged after `restore.source`, before the record, and again after the write.
+      - `owner/test/restore.test.ts`: `restoreNames` names every chunk row, a deleted file's garbage in its grace among them, and no longer names one once the owner's collection takes it; it pages by 10,000 from an offset and refuses an offset out of shape.
+      - **Mutations**, each failing its test: the predicate dropped (every lacking name written); the check after the write dropped; the door answering only the chunks a content references.

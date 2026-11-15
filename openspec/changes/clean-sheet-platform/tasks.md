@@ -355,8 +355,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     before its first byte, in the kit's concurrency group (`r8-retire-gate.md` item 3), and
     every erasure the copy can't show is applied before any owner is restored (`r4.md`
     item 13): mode `copyback`, one owner's namespace as its own object names it, so the doors'
-    erasure records refuse an erased owner first, and the monthly drill, read-only, on the
-    whole bucket (`r8-copy-restore.md`).
+    erasure records refuse an erased owner first, and only the objects a row of it names
+    (`restore.names`), so nothing its own collection deleted comes back; and the monthly
+    drill, read-only, on the whole bucket (`r8-copy-restore.md`).
   - [ ] A lost object, or every owner after an account loss, restored from the copy: `locate`
     and an erasure record that survives the account: option A, a marker per erased namespace
     in the files bucket (`r8-copy-restore.md` item 5; `untangle/r8-account-loss`).

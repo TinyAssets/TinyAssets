@@ -1624,3 +1624,81 @@ describe("a restore's sweep of the chunks no row names", () => {
     }
   });
 });
+
+/** Every page of what `stub`'s object names for a copy back (`restoreNames`), joined. */
+async function namedAll(stub: Stub, name: string):
+    Promise<{ chunks: string[]; generations: string[]; pages: (number | null)[] }> {
+  const chunks: string[] = [];
+  const pages: (number | null)[] = [];
+  let generations: string[] = [];
+  for (let from: number | null = 0; from !== null;) {
+    const page = await stub.restoreNames(platform(name), { from });
+    chunks.push(...page.chunks);
+    generations = [...page.generations];
+    from = page.next;
+    pages.push(from);
+  }
+  return { chunks, generations, pages };
+}
+
+/** The bucket names of `hashes` under `stub`'s namespace and key, sorted. */
+async function bucketNames(stub: Stub, hashes: readonly string[]): Promise<string[]> {
+  const [space] = await sqlIn(stub, "SELECT ns, data_key FROM file_space");
+  return [...await env.FILES.chunkNames(space!["ns"] as string, space!["data_key"] as string,
+                                        [...hashes])].sort();
+}
+
+/** The hashes of every chunk row `stub`'s object holds, the seed's among them. */
+const rowHashes = async (stub: Stub): Promise<string[]> =>
+  (await sqlIn(stub, "SELECT sha256 FROM file_chunks")).map((row) => row["sha256"] as string);
+
+describe("what a copy back may write (restoreNames)", () => {
+  it("names each chunk a row holds, a deleted file's in its grace among them, and no longer " +
+     "one the owner's collection took; and every finished generation", async () => {
+    const o = await owner();
+    const [a, g] = [21, 22].map((seed) => filled(INLINE_BYTES + 100 * seed, seed));
+    await o.stub.fileWrite(o.bind(), { path: `${W}/a.bin`, expected_etag: null, content: a! });
+    const made = await o.stub.fileWrite(o.bind(), { path: `${W}/g.bin`, expected_etag: null,
+                                                    content: g! }) as { entry: { etag: string } };
+    const gen = await generate(o.stub);
+    const [ha, hg] = [a!, g!].map((bytes) => sha256Hex(bytes));
+    // g deleted and its versions purged: a garbage row in its grace, which the owner may still
+    // have back, so named.
+    await o.stub.fileRemove(o.bind(), { path: `${W}/g.bin`, expected_etag: made.entry.etag,
+                                        recursive: false });
+    await o.stub.fileHistoryPurge(o.bind(), { path: `${W}/g.bin` });
+    expect(await sqlIn(o.stub, "SELECT state FROM file_chunks WHERE sha256 = ?", hg!))
+      .toEqual([{ state: "garbage" }]);
+    const [na, ng] = await Promise.all([ha!, hg!].map(async (hash) =>
+      (await bucketNames(o.stub, [hash]))[0]!));
+    const named = await namedAll(o.stub, o.name);
+    expect([[...named.chunks].sort(), named.generations, named.pages])
+      .toEqual([await bucketNames(o.stub, await rowHashes(o.stub)), [gen.gen], [null]]);
+    expect([named.chunks.includes(na!), named.chunks.includes(ng!)]).toEqual([true, true]);
+    // Its grace past, the owner's collection takes it: then it is named no more.
+    await sqlIn(o.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", hg!);
+    await o.stub.fileMkdir(o.bind(), { path: `${W}/x`, expected_etag: null });
+    await drainDue(o.stub);
+    expect(await sqlIn(o.stub, "SELECT state FROM file_chunks WHERE sha256 = ?", hg!)).toEqual([]);
+    const after = (await namedAll(o.stub, o.name)).chunks;
+    expect([[...after].sort(), after.includes(na!), after.includes(ng!)])
+      .toEqual([await bucketNames(o.stub, await rowHashes(o.stub)), true, false]);
+  });
+
+  it("answers by pages of 10,000 rows from an offset, and refuses an offset out of shape",
+     async () => {
+    const o = await owner();
+    await o.stub.fileWrite(o.bind(), { path: `${W}/a.bin`, expected_etag: null,
+                                       content: filled(INLINE_BYTES + 100, 3) });
+    await garbageRows(o.stub, 10_500);
+    const named = await namedAll(o.stub, o.name);
+    const rows = (await rowHashes(o.stub)).length;
+    expect([rows > 10_000, named.pages, named.chunks.length, new Set(named.chunks).size])
+      .toEqual([true, [10_000, null], rows, rows]);
+    for (const from of [-1, 1.5, "0"]) {
+      expect((await failure(() => o.stub.restoreNames(platform(o.name),
+                                                      { from: from as number }))).message)
+        .toBe("a page of names begins at a whole row (from >= 0)");
+    }
+  });
+});

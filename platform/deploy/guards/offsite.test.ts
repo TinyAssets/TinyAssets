@@ -332,12 +332,15 @@ describe("a copy back from the copy (R8)", () => {
     return { held, puts };
   };
   const lacking = { copy: ["c/1", "c/2", "m/3"], r2: ["c/1"] };
+  /** What the owner's object names: the chunks and generations given, the same each ask. */
+  const naming = (chunks: string[] = ["1", "2"], generations: string[] = ["3"]) =>
+    async () => ({ chunks: new Set(chunks), generations: new Set(generations) });
 
   it("records the restore before its first byte, then writes only what R2 lacks, as the " +
      "copy stood at the time asked, and reads each back byte for byte", async () => {
     const fake = world({ back: lacking });
     const { held, puts } = control(fake);
-    const lines = await copyBack(BACK, SOURCE, NS, AT, held, fake.io);
+    const lines = await copyBack(BACK, SOURCE, NS, AT, naming(), held, fake.io);
     expect(puts).toEqual([{ value: { kind: "tinyassets-offsite-restore",
                                      began: Math.floor(START.getTime() / 1000) },
                             after: ["lsf", "lsf"] }]);
@@ -367,19 +370,49 @@ describe("a copy back from the copy (R8)", () => {
         .filter((secret) => call.args.some((arg) => arg.includes(secret)))).toEqual([]);
     }
     expect(lines.at(-1)).toBe(`wrote 2 objects under ${PREFIX} into ${SOURCE}, as the copy ` +
-                              "held them at 2026-11-01T00:00:00Z, each one R2 lacked, and read " +
-                              "each back byte for byte");
+                              "held them at 2026-11-01T00:00:00Z, each one R2 lacked and the " +
+                              "owner's object names, and read each back byte for byte (0 more " +
+                              "it lacks no row names)");
+  });
+
+  it("never writes back what no row of the owner's object names: a chunk its own collection " +
+     "deleted, or a pruned generation, stays out of R2", async () => {
+    // The copy still holds a chunk collected past its grace (or a redaction's) and a pruned
+    // generation's root and part; the object names neither.
+    const fake = world({ back: { copy: ["c/1", "c/2", "c/collected", "m/3", "m/3/0",
+                                        "m/pruned", "m/pruned/0"], r2: ["c/1"] } });
+    const lines = await copyBack(BACK, SOURCE, NS, AT, naming(), control(fake).held, fake.io);
+    expect(fake.calls.filter((call) => call.args[0] !== "lsf").map((call) => call.sample))
+      .toEqual([["c/2", "m/3", "m/3/0"], ["c/2", "m/3", "m/3/0"]]);
+    expect(lines.at(-1)).toMatch(/wrote 3 objects .* \(3 more it lacks no row names\)$/);
+    // Nothing it names lacking: nothing written, nothing recorded.
+    const none = world({ back: { copy: ["c/1", "c/collected"], r2: ["c/1"] } });
+    const { held, puts } = control(none);
+    expect((await copyBack(BACK, SOURCE, NS, AT, naming(), held, none.io)).at(-1))
+      .toMatch(/nothing is written, and no restore is recorded$/);
+    expect([puts, none.calls.map((call) => call.args[0])]).toEqual([[], ["lsf", "lsf"]]);
+  });
+
+  it("stops loudly when the object stops naming what was written, its row collected during " +
+     "the run", async () => {
+    const fake = world({ back: lacking });
+    let asks = 0;
+    const named = async () => (asks++ === 0 ? naming() : naming(["1"]))();
+    await expect(copyBack(BACK, SOURCE, NS, AT, named, control(fake).held, fake.io))
+      .rejects.toThrow(`the owner's object no longer names 1 of the 2 objects written under ` +
+                       `${PREFIX}, collected during the run: only mode restore's sweep deletes ` +
+                       "them");
   });
 
   it("reads the copy as it stands when no time is asked", async () => {
     const fake = world({ back: lacking });
-    await copyBack(BACK, SOURCE, NS, null, control(fake).held, fake.io);
+    await copyBack(BACK, SOURCE, NS, null, naming(), control(fake).held, fake.io);
     expect(Object.keys(fake.calls[2]!.env)).not.toContain("RCLONE_CONFIG_BACK_VERSION_AT");
   });
 
   it("writes nothing when Cloudflare refuses the restore record", async () => {
     const fake = world({ back: lacking });
-    await expect(copyBack(BACK, SOURCE, NS, AT, control(fake, 500).held, fake.io))
+    await expect(copyBack(BACK, SOURCE, NS, AT, naming(), control(fake, 500).held, fake.io))
       .rejects.toThrow(`writing the restore record ${RESTORE_KEY} failed (500): nothing is ` +
                        "written into R2");
     expect(fake.calls.map((call) => call.args[0])).toEqual(["lsf", "lsf"]);
@@ -390,7 +423,7 @@ describe("a copy back from the copy (R8)", () => {
                       new Date(START.getTime() + 1000)]) {
       const fake = world({ back: lacking });
       const { held, puts } = control(fake);
-      await expect(copyBack(BACK, SOURCE, NS, at, held, fake.io))
+      await expect(copyBack(BACK, SOURCE, NS, at, naming(), held, fake.io))
         .rejects.toThrow(/a version older than 22 days since it was hidden is gone/);
       expect([fake.calls, puts]).toEqual([[], []]);
     }

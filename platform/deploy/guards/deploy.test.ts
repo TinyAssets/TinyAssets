@@ -3154,10 +3154,17 @@ describe("mode copyback", () => {
   const BACK = Object.fromEntries([...BACK_INPUTS.public, ...BACK_INPUTS.secret]
     .map((name) => [name, ENV[name]!]));
   /** The doors answering restore.source as an object holding `namespace`, or an erased one. */
+  /**
+   * The doors answering restore.source as an object holding `namespace`, or an erased one, and
+   * restore.names in two pages: the chunk `2` and the generation `3`, then nothing more.
+   */
   const source = (namespace: string | null, erased = false) => (message: OperatorMessage) =>
     erased ? { refused: { code: "owner_erased" as const, message: "the owner is erased" } }
       : { result: message.op === "restore.source"
           ? { namespace, generations: [], state: "admitted", begins: false, restore: null }
+          : message.op === "restore.names"
+          ? message.args["from"] === 0 ? { chunks: ["2"], generations: ["3"], next: 1 }
+            : { chunks: [], generations: ["3"], next: null }
           : message.args };
   const copied = { copy: ["c/1", "c/2", "m/3"], r2: ["c/1"] };
   const recorded = `ns-${NAMESPACES["CONTROL"]}/${RESTORE_KEY}`;
@@ -3171,18 +3178,22 @@ describe("mode copyback", () => {
     const planned = world({ held: true });
     expect((await runMode(planned, "copyback", ["--public", "--owner", "user_alice"],
                           { ...PUBLIC, OFFSITE_BUCKET: BACK["OFFSITE_BUCKET"]! })).plan).toEqual([
-      "copy back into tinyassets-files the objects of user_alice's namespace that it lacks, as " +
-      "the off-account copy stands, never one it holds, after writing the restore record " +
-      `${RESTORE_KEY}: the namespace the owner's own object names (restore.source through the ` +
-      "operator channel, which the doors refuse for an erased or erasing owner), each object " +
-      "written read back byte for byte"]);
+      "copy back into tinyassets-files the objects of user_alice's namespace that it lacks and " +
+      "the owner's object names (restore.names: a row of it each, so nothing its own " +
+      "collection deleted comes back), as the off-account copy stands, never one it holds, " +
+      `after writing the restore record ${RESTORE_KEY}: the namespace the owner's own object ` +
+      "names (restore.source through the operator channel, which the doors refuse for an " +
+      "erased or erasing owner), each object written read back byte for byte"]);
     expect(planned.sent).toEqual([]);
     const w = world({ held: true, doors: source(NS), copied });
     const work = await runMode(w, "copyback", ["--yes", "--owner", "user_alice", "--at", AT],
                                ENV);
-    expect(w.sent.map(({ message }) => message.op)).toEqual(["restore.source"]);
-    expect(JSON.parse(w.kv.get(recorded)!))
-      .toEqual({ kind: "tinyassets-offsite-restore", began: (NOW.getTime() + POLL_MS) / 1000 });
+    // The object's names asked page by page once R2 is listed, and again after the write.
+    expect(w.sent.map(({ message }) => [message.op, message.args])).toEqual([
+      ["restore.source", {}], ...[0, 1, 0, 1].map((from) => ["restore.names", { from }])]);
+    // Begun after three asks: restore.source and the two pages of names.
+    expect(JSON.parse(w.kv.get(recorded)!)).toEqual({ kind: "tinyassets-offsite-restore",
+                                                     began: (NOW.getTime() + 3 * POLL_MS) / 1000 });
     // The restore record before the first byte: the copy back's, and after the listings.
     order(w.events, ["cf POST /accounts/", "rclone lsf", "rclone lsf",
                      `${CONTROL_WRITE}namespaces/ns-${NAMESPACES["CONTROL"]}/values/` +
@@ -3197,8 +3208,9 @@ describe("mode copyback", () => {
         `rclone check back:${bucket}/${PREFIX} r2:tinyassets-files/${PREFIX} --one-way ` +
         "--download --files-from <list> (c/2,m/3)"]);
     expect(work.plan).toContain(`wrote 2 objects under ${PREFIX} into tinyassets-files, as ` +
-                                `the copy held them at ${AT}, each one R2 lacked, and read ` +
-                                "each back byte for byte");
+                                `the copy held them at ${AT}, each one R2 lacked and the ` +
+                                "owner's object names, and read each back byte for byte (0 " +
+                                "more it lacks no row names)");
   });
 
   it("writes nothing and records nothing when R2 lacks nothing the copy holds", async () => {
