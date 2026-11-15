@@ -380,7 +380,7 @@ export class LegOwner extends OwnerDO {
       },
       ...ROOTLESS,
     });
-    await this.#gate.write(() => sql.exec("UPDATE owner_backup_state SET changed = 1"));
+    await this.#gate.write(() => sql.exec("UPDATE owner_backups SET changed_at = ? WHERE changed_at IS NULL", Date.now() / 1000));
     await this.#gate.quiet(() => backups.forExport(Date.now() / 1000));
     await backups.run(Date.now() / 1000, Date.now() + 120_000);
     if (parts < 3) {
@@ -426,7 +426,7 @@ export class LegOwner extends OwnerDO {
       },
       ...ROOTLESS,
     });
-    await this.#gate.write(() => sql.exec("UPDATE owner_backup_state SET changed = 1"));
+    await this.#gate.write(() => sql.exec("UPDATE owner_backups SET changed_at = ? WHERE changed_at IS NULL", Date.now() / 1000));
     await this.#gate.quiet(() => backups.forExport(Date.now() / 1000));
     await this.#gate.write(() => {
       sql.exec(WIDEN);  // the widest row first: the first segment holds it and the rest

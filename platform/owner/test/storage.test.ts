@@ -8,10 +8,10 @@ import { describe, expect, it } from "vitest";
 
 import { MANIFEST_PROTECT_S, manifestDay } from "../src/backup";
 import { refusalOf } from "../../contract/src/refusal";
-import { GC_GRACE_S, INLINE_BYTES } from "../../contract/src/limits";
+import { GC_GRACE_S, INLINE_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import type { Binding } from "../../contract/src/binding";
 import { MUSE, rig } from "./ledger-support";
-import { drainDue, failure, laneAt, sqlIn, starterSeed, TIERS } from "./support";
+import { drainDue, failure, laneAt, sqlIn, starterSeed, TIERS, until } from "./support";
 
 /** What every owner's seed holds, its bytes counted in the figure like any file's. */
 const SEED = starterSeed();
@@ -26,6 +26,20 @@ const wholeFiles = (unit: number, more: number) => unit * (Math.ceil(SEED.bytes 
 const ownChunks = async (r: Awaited<ReturnType<typeof rig>>) => SEED.mine(
   await sqlIn(r.stub, "SELECT sha256, state FROM file_chunks ORDER BY gc_after, sha256"),
   (row) => row["sha256"] as string);
+
+/**
+ * A generation's row: begun at `started` (s), finished at `finished`, its log `log` bytes
+ * through E, `seq` its place among the generations. With `finished` null it is being written,
+ * its next pass a day off, so no pass of the lane carries it here.
+ */
+async function generation(r: Awaited<ReturnType<typeof rig>>, gen: string, started: number,
+                          finished: number | null, log = 0, seq = 1): Promise<void> {
+  await sqlIn(r.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
+                      "bytes, s, schema, started_at, finished_at, retry_at, log_bytes, seq) " +
+                      "VALUES (?, ?, ?, NULL, 0, '', 0, 1, 1, ?, ?, ?, ?, ?)",
+              gen, manifestDay(Date.now() / 1000), finished === null ? "writing" : "done",
+              started, finished, finished === null ? Date.now() / 1000 + 86_400 : null, log, seq);
+}
 
 /** Each row's etag as the last write left it: a write swaps on it. */
 const ETAGS = new Map<string, string>();
@@ -133,10 +147,9 @@ describe("the one storage number", () => {
     await r.stub.fileMkdir(small, { path: "/workspace/x", expected_etag: null });
     await drainDue(r.stub);
     // Until the early delete, wherever it began, has landed.
-    for (let i = 0; i < 100 && (await sqlIn(r.stub, "SELECT 1 FROM file_chunks WHERE " +
-                                                    "state = 'deleting'")).length > 0; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    await until(async () => (await sqlIn(r.stub, "SELECT 1 FROM file_chunks WHERE " +
+                                                 "state = 'deleting'")).length === 0,
+                "the early delete");
     // The oldest goes early (by when it was let go, a tie by hash, as the lane takes them);
     // the rest, within the figure, wait out their grace.
     const oldest = [...letGo].sort((a, b) => a.at - b.at
@@ -185,11 +198,7 @@ describe("the one storage number", () => {
     const figure = wholeFiles(unit, 1);
     const small = r.bind(null, { tiers: tiers(figure) });
     // Last night's manifest began an hour ago: the files below were live then.
-    await sqlIn(r.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, " +
-                        "part_list, bytes, s, schema, started_at, finished_at) VALUES " +
-                        "('0123456789abcdef', ?, 'done', NULL, 0, '', 0, 1, 1, ?, ?)",
-                manifestDay(Date.now() / 1000), Date.now() / 1000 - 3600,
-                Date.now() / 1000 - 3000);
+    await generation(r, "0123456789abcdef", Date.now() / 1000 - 3600, Date.now() / 1000 - 3000);
     for (let i = 0; i <= figure / unit; i++) {
       const path = `/workspace/n${i}.bin`;
       await r.stub.fileWrite(small, { path, expected_etag: null,
@@ -210,6 +219,76 @@ describe("the one storage number", () => {
     expect((await ownChunks(r)).map((row) => row["state"])).toEqual(garbage(figure / unit));
   });
 
+  // A generation kept behind the newest names garbage the newest does not: the fallback, kept
+  // while the newest's log is past what a restore stages, and one an open export reads. Each
+  // is kept by the one list the prune reads, and so is everything it names (r-fallback-chunks).
+  it.each([
+    { kept: "the fallback", log: LOG_BYTES + 1, open: false,
+      release: "UPDATE owner_backups SET log_bytes = 0 WHERE gen = 'fedcba9876543210'" },
+    { kept: "an open export's", log: 0, open: true, release: "DELETE FROM owner_exports" },
+  ])("never collects early a chunk only $kept generation names", async ({ log, open, release }) => {
+    const r = await rig();
+    const unit = INLINE_BYTES + 1000;
+    const figure = wholeFiles(unit, 1);
+    const small = r.bind(null, { tiers: tiers(figure) });
+    // The older generation began an hour ago: the files below were live then.
+    await generation(r, "0123456789abcdef", Date.now() / 1000 - 3600, Date.now() / 1000 - 3000);
+    if (open) {
+      await sqlIn(r.stub, "INSERT INTO owner_exports (export_id, opened_at, ends_at, gen) " +
+                          "VALUES (?, ?, ?, '0123456789abcdef')", "ab".repeat(16),
+                  Date.now() / 1000, Date.now() / 1000 + 3600);
+    }
+    for (let i = 0; i <= figure / unit; i++) {
+      const path = `/workspace/k${i}.bin`;
+      await r.stub.fileWrite(small, { path, expected_etag: null,
+                                      content: new Uint8Array(unit).fill(i + 11) });
+      await r.stub.fileRemove(small, { path, expected_etag: null, recursive: false });
+      await r.stub.fileHistoryPurge(small, { path });
+    }
+    // The newest began after they went, so it names none of them; the older one is kept.
+    const now = Date.now() / 1000;
+    await generation(r, "fedcba9876543210", now + 1, now + 2, log, 2);
+    await r.stub.fileMkdir(small, { path: "/workspace/y", expected_etag: null });
+    await drainDue(r.stub);
+    const garbage = (files: number) => Array.from({ length: files }, () => "garbage");
+    expect((await ownChunks(r)).map((row) => row["state"])).toEqual(garbage(figure / unit + 1));
+    expect(await sqlIn(r.stub, "SELECT gen FROM owner_backups ORDER BY seq"))
+      .toEqual([{ gen: "0123456789abcdef" }, { gen: "fedcba9876543210" }]);
+    // Once nothing keeps it, the prune deletes it and the oldest garbage goes early.
+    await sqlIn(r.stub, release);
+    await r.stub.fileMkdir(small, { path: "/workspace/z", expected_etag: null });
+    await drainDue(r.stub);
+    expect(await sqlIn(r.stub, "SELECT gen FROM owner_backups"))
+      .toEqual([{ gen: "fedcba9876543210" }]);
+    expect((await ownChunks(r)).map((row) => row["state"])).toEqual(garbage(figure / unit));
+  });
+
+  it("never collects early a chunk the generation being written names, none finished yet",
+     async () => {
+    const r = await rig();
+    const unit = INLINE_BYTES + 1000;
+    const figure = wholeFiles(unit, 1);
+    const small = r.bind(null, { tiers: tiers(figure) });
+    // The owner's first generation began an hour ago and is still being written.
+    await generation(r, "0123456789abcdef", Date.now() / 1000 - 3600, null);
+    for (let i = 0; i <= figure / unit; i++) {
+      const path = `/workspace/w${i}.bin`;
+      await r.stub.fileWrite(small, { path, expected_etag: null,
+                                      content: new Uint8Array(unit).fill(i + 13) });
+      await r.stub.fileRemove(small, { path, expected_etag: null, recursive: false });
+      await r.stub.fileHistoryPurge(small, { path });
+    }
+    await r.stub.fileMkdir(small, { path: "/workspace/y", expected_etag: null });
+    await drainDue(r.stub);
+    const garbage = (files: number) => Array.from({ length: files }, () => "garbage");
+    expect((await ownChunks(r)).map((row) => row["state"])).toEqual(garbage(figure / unit + 1));
+    // Once it began after they went, it names none of them, and the oldest goes early.
+    await sqlIn(r.stub, "UPDATE owner_backups SET started_at = ?", Date.now() / 1000 + 1);
+    await r.stub.fileMkdir(small, { path: "/workspace/z", expected_etag: null });
+    await drainDue(r.stub);
+    expect((await ownChunks(r)).map((row) => row["state"])).toEqual(garbage(figure / unit));
+  });
+
   it("stops protecting garbage by a manifest past MANIFEST_PROTECT_S, no recovery point " +
      "(review N3)", async () => {
     const r = await rig();
@@ -218,10 +297,7 @@ describe("the one storage number", () => {
     const small = r.bind(null, { tiers: tiers(figure) });
     // The newest manifest began and finished more than two nights ago: no recovery point.
     const long = Date.now() / 1000 - MANIFEST_PROTECT_S - 60;
-    await sqlIn(r.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, " +
-                        "part_list, bytes, s, schema, started_at, finished_at) VALUES " +
-                        "('0123456789abcdef', ?, 'done', NULL, 0, '', 0, 1, 1, ?, ?)",
-                manifestDay(Date.now() / 1000), long - 60, long);
+    await generation(r, "0123456789abcdef", long - 60, long);
     for (let i = 0; i <= figure / unit; i++) {
       const path = `/workspace/o${i}.bin`;
       await r.stub.fileWrite(small, { path, expected_etag: null,
