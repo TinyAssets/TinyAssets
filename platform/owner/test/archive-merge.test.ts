@@ -7,6 +7,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import type { Ledger } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
@@ -16,7 +17,7 @@ import {
   unballast,
 } from "./archive-support";
 import { DOT, MUSE } from "./ledger-support";
-import { drainDue, failure, sqlIn } from "./support";
+import { drainDue, failure } from "./support";
 
 describe("segments never overlap in key range (review H1)", () => {
   it("are refused by the schema when two would", { tags: ["large"] }, async () => {

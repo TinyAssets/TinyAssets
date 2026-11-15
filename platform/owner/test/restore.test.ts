@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { migrate } from "../../contract/src/migrate";
 import { INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
@@ -26,7 +27,7 @@ import {
 } from "./generation-support";
 import { MUSE, registerOn } from "./ledger-support";
 import {
-  drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, sqlIn, storesOn, TIERS,
+  drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, storesOn, TIERS,
 } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;

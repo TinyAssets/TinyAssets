@@ -6,13 +6,14 @@
  */
 import { expect, onTestFinished } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { LEDGER_LIMITS, type Ledger } from "../src/ledger";
 import type { Origin } from "../../contract/src/binding";
 import { RESULT_CHARS } from "../../contract/src/encoded";
 import { MoveTable, parseTrailer, recordRows } from "../src/segments";
 import { ballast, type MUSE, type Rig, rig } from "./ledger-support";
-import { drainDue, sqlIn } from "./support";
+import { drainDue } from "./support";
 
 const { maxMessages, maxUnacked } = LEDGER_LIMITS;
 

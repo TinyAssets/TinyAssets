@@ -10,6 +10,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
+import { until } from "../../ci/workerd";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
 import { WriteGate } from "../src/gate";
 import { NO_CODE_WANTED, SIGNIN_LIVE, SIGNIN_OFF, Signins } from "../src/signins";
@@ -18,7 +19,7 @@ import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
   defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf, TIERS,
 } from "./runs-support";
-import { drainDue, failure, until } from "./support";
+import { drainDue, failure } from "./support";
 import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */

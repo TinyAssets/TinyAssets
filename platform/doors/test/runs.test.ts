@@ -22,6 +22,7 @@ import { RUN_INSTRUCTIONS } from "../src/instructions";
 import { profileNames } from "../../contract/src/doors";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
 import { SESSION_REFUSED } from "../../owner/src/runs";
+import { until } from "../../ci/workerd";
 import { refuseOnce } from "./entry";
 import {
   answerOf, appPost, call, connect, OPEN, reached, recorded, registerClient, rpcBody,
@@ -396,16 +397,6 @@ function frames(response: Response) {
     closed = event.code;
   });
   return { frames: seen, ws, closed: () => closed };
-}
-
-async function until(check: () => boolean, what: string): Promise<void> {
-  for (let i = 0; i < 500; i++) {
-    if (check()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`timed out waiting for ${what}`);
 }
 
 /**

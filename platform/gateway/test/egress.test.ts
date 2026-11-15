@@ -14,7 +14,7 @@ describe("the interposer", () => {
     const inside = await within(refusing, () => fetch("https://status.test/cancelled?id=x"));
     expect(inside.status).toBe(418);
     const after = await within(refusing, async () => {
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await new Promise((resolve) => setTimeout(resolve, 0));
       return fetch("https://status.test/cancelled?id=x");
     });
     expect(after.status).toBe(418);

@@ -592,7 +592,7 @@ describe("the wakes lane of the object's one schedule", () => {
       const took = Date.now() - started;
       const late = row();
       hanging.release();  // its answer comes after the pass let it go, and settles nothing
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await new Promise((resolve) => setTimeout(resolve, 0));
       const released = row();
       // Its lease lapses: a byte may have left, so it is unknown, never sent again.
       await runWakes(ledger, hanging, () => t + WAKE_LEASE_S, gate.write, WAKES_PER_ALARM, 30);

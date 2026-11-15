@@ -5,10 +5,11 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { type Entry, type Files } from "../src/files";
 import { INLINE_BYTES } from "../../contract/src/limits";
 import { rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, setFiles, sqlIn, starterSeed, text } from "./support";
+import { failure, fileCounters, inFiles, setFiles, starterSeed, text } from "./support";
 
 const W = "/workspace";
 /** What every owner's seed holds before a test writes (`starterSeed`). */

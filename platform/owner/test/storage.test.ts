@@ -6,12 +6,13 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { sqlIn, until } from "../../ci/workerd";
 import { MANIFEST_PROTECT_S, manifestDay } from "../src/backup";
 import { refusalOf } from "../../contract/src/refusal";
 import { GC_GRACE_S, INLINE_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import type { Binding } from "../../contract/src/binding";
 import { MUSE, rig } from "./ledger-support";
-import { drainDue, failure, laneAt, sqlIn, starterSeed, TIERS, until } from "./support";
+import { drainDue, failure, laneAt, starterSeed, TIERS } from "./support";
 
 /** What every owner's seed holds, its bytes counted in the figure like any file's. */
 const SEED = starterSeed();

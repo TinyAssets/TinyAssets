@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
+import { sqlIn } from "../../ci/workerd";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
 import {
   heldOnly, shownBytes, STORAGE_FULL, storageFull, type StorageFull, storageFullRefusal,
@@ -22,7 +23,7 @@ import { CHUNK_BYTES } from "../../contract/src/limits";
 import { sha256Hex } from "../../contract/src/digest";
 import { rig, type Rig } from "./ledger-support";
 import { later } from "./runs-support";
-import { failure, inFiles, setFiles, sqlIn, starterSeed, text } from "./support";
+import { failure, inFiles, setFiles, starterSeed, text } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();

@@ -16,7 +16,7 @@ import { classProblem } from "../class-rule";
 import { BUDGETS, budget, CLASS_CHECK, derived, LARGE, medium, type ProjectName, PROJECTS,
          SMALL_MS } from "../classes";
 import { project } from "../project";
-import { largeTests, timeoutLiterals } from "../timeouts";
+import { largeTests, timeoutLiterals, timerWaits } from "../timeouts";
 import { PLATFORM, REPO } from "../paths";
 import { json } from "../workflows";
 
@@ -110,6 +110,59 @@ describe("test timeouts", () => {
     expect(largeTests('it("a", { tags: ["large"] }, () => {});')).toEqual([1]);
     expect(largeTests('describe("s", { tags: "large" }, () => {});')).toEqual([1]);
     expect(largeTests('it("a", { tags: ["db"] }, () => {});')).toEqual([]);
+  });
+});
+
+describe("test waits", () => {
+  // The untangle skill's rule: a test waits on an event it caused or a record it reads, and
+  // time that must pass is the fake clock's.
+  it("no platform test waits on the host's clock", () => {
+    const found = tracked("platform/*.test.ts", "platform/*.test.mjs", "platform/*.e2e.mjs",
+                          "platform/*/test/*")
+      .filter((file) => /\.(?:ts|mjs|js)$/.test(file))
+      .flatMap((file) => timerWaits(readFileSync(join(REPO, file), "utf8"), file)
+        .map((hit) => `${file}:${hit.line}: ${hit.text}`));
+    expect(found).toEqual([]);
+  });
+
+  it("finds each form of one, outside a poll, a hop, a timer's callback and the fake clock",
+     () => {
+    const hits = (source: string) => timerWaits(source).map((hit) => hit.line);
+    const sleep = "const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));\n";
+    expect(hits("await new Promise((resolve) => setTimeout(resolve, 100));")).toEqual([1]);
+    expect(hits("await new Promise((r) => setTimeout(() => r(), 50));")).toEqual([1]);
+    expect(hits("await new Promise<void>((r) => { setTimeout(r, 50); });")).toEqual([1]);
+    expect(hits(`${sleep}await sleep(20);`)).toEqual([2]);
+    expect(hits("async function pause(ms) { return new Promise((r) => setTimeout(r, ms)); }\n" +
+                "await pause(5);")).toEqual([2]);
+    expect(hits("await scheduler.wait(100);")).toEqual([1]);
+    expect(hits("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);"))
+      .toEqual([1]);
+    // A loop that only counts, or only watches the clock, polls nothing.
+    expect(hits(`${sleep}for (let i = 0; i < n; i++) {\n  await sleep(10);\n}`)).toEqual([3]);
+    expect(hits(`${sleep}while (Date.now() < end) {\n  await sleep(10);\n}`)).toEqual([3]);
+    // A poll of what the test caused or reads, by its condition or its exit.
+    expect(hits(`${sleep}for (let i = 0; i < 100 && !ready(); i++) { await sleep(10); }`))
+      .toEqual([]);
+    expect(hits(`${sleep}for (;;) { if (ready()) { return; } await sleep(10); }`)).toEqual([]);
+    expect(hits(`${sleep}while (!ready()) { await sleep(10); }`)).toEqual([]);
+    expect(hits(`${sleep}do { await sleep(10); } while (pending.size > 0);`)).toEqual([]);
+    // A hop of no length, a timer's own callback, and a promise handed on, not waited.
+    expect(hits("await new Promise((r) => setTimeout(r, 0));")).toEqual([]);
+    expect(hits("const tick = () => new Promise((r) => setTimeout(r, 0));\nawait tick();"))
+      .toEqual([]);
+    expect(hits("setTimeout(() => unlock(), 150);")).toEqual([]);
+    expect(hits("return new Promise((r) => setTimeout(() => r(answer), 10_000));")).toEqual([]);
+    // The fake clock: a test that installs it, or a suite whose hook does.
+    expect(hits(`${sleep}it("a", async () => {\n  vi.useFakeTimers();\n  await sleep(20);\n});`))
+      .toEqual([]);
+    // Before it is installed, and once it is turned off, the clock is the host's.
+    expect(hits(`${sleep}it("a", async () => {\n  await sleep(20);\n  vi.useFakeTimers();\n` +
+                "  vi.useRealTimers();\n  await sleep(20);\n});")).toEqual([3, 6]);
+    expect(hits(`${sleep}describe("s", () => {\n  beforeEach(() => {\n    vi.useFakeTimers();\n` +
+                "  });\n  it(\"a\", async () => {\n    await sleep(20);\n  });\n});")).toEqual([]);
+    expect(hits(`${sleep}describe("s", () => {\n  it("a", () => { vi.useFakeTimers(); });\n` +
+                "  it(\"b\", async () => {\n    await sleep(20);\n  });\n});")).toEqual([5]);
   });
 });
 

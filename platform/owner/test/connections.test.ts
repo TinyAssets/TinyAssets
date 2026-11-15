@@ -13,6 +13,7 @@ import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { until } from "../../ci/workerd";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { type Credential } from "../../gateway/src/credential";
 import { type Source, SUPPORTED_APIS } from "../../contract/src/egress-scope";
@@ -25,7 +26,7 @@ import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
-import { failure, until } from "./support";
+import { failure } from "./support";
 import { egressTokenOf, generationOf } from "../../contract/src/egress";
 import { hashed, ownerRun, secretOf } from "./runs-support";
 import {

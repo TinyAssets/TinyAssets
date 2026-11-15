@@ -7,6 +7,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { sealObject } from "../../contract/src/envelope";
 import { chunkName, unwrap } from "../../files/src/datakey";
 import { chunkKey } from "../../files/src/keys";
@@ -16,7 +17,7 @@ import {
 } from "../src/holds";
 import { owner } from "./generation-support";
 import { MUSE, rig } from "./ledger-support";
-import { failure, inFiles, sqlIn } from "./support";
+import { failure, inFiles } from "./support";
 
 const MIB = 1024 * 1024;
 

@@ -108,11 +108,15 @@ afterEach(() => {
 
 describe("a memory leg's own workerd", () => {
   it("fails the leg as soon as its child exits early, before another figure is read", () => {
+    // The leg's next step is the child's exit itself, heard after the leg's own handler.
     const done = spawnSync(process.execPath, [leg("process.exit(3)", `
-await new Promise((resolve) => setTimeout(resolve, 1500));
-console.log("still measuring");
-own.check();
-console.log("measured");`)], { encoding: "utf8", timeout: 4000 });
+const alive = setInterval(() => {}, 1000);
+own.child.once("exit", () => {
+  clearInterval(alive);
+  console.log("still measuring");
+  own.check();
+  console.log("measured");
+});`)], { encoding: "utf8", timeout: 4000 });
     expect(done.status).toBe(1);
     expect(done.stderr).toContain("exited before the leg was done (code 3");
     // At once: the leg never reached its next step.
@@ -121,8 +125,11 @@ console.log("measured");`)], { encoding: "utf8", timeout: 4000 });
 
   it("says a child that is not running is not the leg's own", async () => {
     const done = spawnSync(process.execPath, [leg("setInterval(() => {}, 1000)", `
+const alive = setInterval(() => {}, 1000);
+const exited = new Promise((resolve) => own.child.once("exit", resolve));
 own.stop();
-await new Promise((resolve) => setTimeout(resolve, 200));
+await exited;
+clearInterval(alive);
 try { own.check(); console.log("measured"); } catch (error) { console.log(error.message); }`)],
                            { encoding: "utf8", timeout: 4000 });
     const pid = Number(done.stdout.split("\n")[0]);
@@ -177,7 +184,7 @@ try { own.check(); console.log("measured"); } catch (error) { console.log(error.
 
   it("leaves no child behind when the leg crashes", async () => {
     const run = spawn(process.execPath, [leg("setInterval(() => {}, 1000)", `
-await new Promise((resolve) => setTimeout(resolve, 200));
+await new Promise((resolve) => own.child.once("spawn", resolve));
 throw new Error("the leg broke");`)], { stdio: ["ignore", "pipe", "pipe"] });
     started.push(run.pid!);
     const pid = await new Promise<number>((resolve) => {

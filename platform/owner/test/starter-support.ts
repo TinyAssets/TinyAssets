@@ -10,11 +10,12 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { sqlIn } from "../../ci/workerd";
 import type { OwnerDO } from "../src/owner-do";
 import { Starter } from "../src/starter";
 import { carried, type StarterFile, type StarterPackage } from "../src/starter-package";
 import { rig, unseededRig } from "./ledger-support";
-import { drainDue, sqlIn, storesOn } from "./support";
+import { drainDue, storesOn } from "./support";
 
 /** The version every owner here is seeded at: a test's package is `SEED + n`. */
 export const SEED = carried().version;

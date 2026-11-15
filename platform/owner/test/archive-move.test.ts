@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, onTestFinished } from "vitest";
 
+import { sqlIn } from "../../ci/workerd";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
 import { refusalOf } from "../../contract/src/refusal";
@@ -21,7 +22,7 @@ import {
   chained, exportArchived, sealed, seeded, type Seeded, sentAndAcked, seqOf, settle, unballast,
 } from "./archive-support";
 import { ballast, MUSE, type Rig, rig } from "./ledger-support";
-import { drainDue, failure, gateFor, setFiles, spaceOf, sqlIn } from "./support";
+import { drainDue, failure, gateFor, setFiles, spaceOf } from "./support";
 
 const { maxMessages } = LEDGER_LIMITS;
 
