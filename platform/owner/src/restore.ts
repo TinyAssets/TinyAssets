@@ -112,8 +112,16 @@ import { Refusal } from "../../contract/src/refusal";
 import { clock } from "./clock";
 import { exported, NOT_EXPORTED } from "./export";
 import type { OwnerStorage } from "./gate";
-import type { Door } from "./door";
-import type { OwnerState } from "./owner-do";
+import type { Backups } from "./backup";
+import type { Collections } from "./collections";
+import type { Door, DoorUnits, ObjectReads } from "./door";
+import type { Egress } from "./egress";
+import type { OwnerEnv } from "./env";
+import type { Files } from "./files";
+import type { Inbound } from "./inbound";
+import type { Keys } from "./keys";
+import type { Launcher } from "./launch";
+import type { Relay } from "./relay";
 import { addNames, emptyFilter, filterOf, mayHold } from "./names-filter";
 import { MIGRATIONS, unforwardable } from "./schema";
 
@@ -306,7 +314,7 @@ export function pinned(storage: OwnerStorage): string | null {
  * anything but what its migrations seeded (`SEEDED`), a namespace, or a restore already, but
  * the record of the wipe that emptied it. In a unit.
  */
-function emptiness(o: OwnerState): string | null {
+function emptiness(o: RestoreDoorNeeds): string | null {
   const { state } = o.admission.row();
   if (state !== "pending") {
     return `the owner is ${state}: a restore takes only a pending owner`;
@@ -346,7 +354,7 @@ function wipedFor(held: Held | null, ns: string, gen: string): void {
  * generation the wipe leaves as the undo (the one a failed restore was from, should no pin
  * have written one). In a unit.
  */
-function holdOf(o: OwnerState, held: Held): RestoreHold {
+function holdOf(o: RestoreDoorNeeds, held: Held): RestoreHold {
   const written = held.step !== "pinned"
     || (held.fresh !== null && o.backups.finished(held.fresh));
   const due = held.step === "failed" || (held.step === "pinned" && written);
@@ -574,7 +582,7 @@ const START = "{\"p\":0,\"n\":0}";
  * have no lease here, so the runs lane settles them `unknown` once the owner is admitted
  * (`Runs.lost`). The doors delete the API keys from the directory (`restoreStep`'s answer).
  */
-function fence(o: OwnerState, now: number): void {
+function fence(o: RestoreDoorNeeds, now: number): void {
   for (const client of o.grants.revokeAll(now)) {
     o.keys.revoked(client, now);
   }
@@ -583,7 +591,7 @@ function fence(o: OwnerState, now: number): void {
 }
 
 /** The restore's answer for its record as it stands. In a unit. */
-function answer(o: OwnerState, held: Held): RestoreAnswer {
+function answer(o: RestoreDoorNeeds, held: Held): RestoreAnswer {
   if (held.step === "failed") {
     return { step: "failed", done: false, failed: held.failed! };
   }
@@ -625,7 +633,7 @@ function heldFilter(sql: Pick<SqlStorage, "exec">): Uint8Array {
  * the same unit, and only while no other call moved it first (`still`), so two calls at once
  * never do one piece twice; whether the restore goes on.
  */
-async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
+async function piece(o: RestoreDoorNeeds, door: Door<undefined>, source: Bucket):
     Promise<boolean> {
   const sql = o.storage.sql;
   const held = await o.door(() => {
@@ -872,7 +880,7 @@ async function piece(o: OwnerState, door: Door<undefined>, source: Bucket):
  * generation holds them: the owner's admission as it stood at E, which `names` held to one
  * a restore admits before anything was swept.
  */
-function finish(o: OwnerState, held: Held, root: ManifestRoot): void {
+function finish(o: RestoreDoorNeeds, held: Held, root: ManifestRoot): void {
   const sql = o.storage.sql;
   fence(o, clock());
   o.files.restored();
@@ -891,9 +899,36 @@ function finish(o: OwnerState, held: Held, root: ManifestRoot): void {
 
 // -- THE DOORS: the `restore` rows' handlers (`contract/doors.json`) -------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands the
-// object's state once the row's steps held: the bind (the platform's reserved caller), and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`RestoreDoorNeeds`) once the row's steps held: the bind (the platform's
+// reserved caller), and the fields.
+
+/**
+ * What the `restore` doors reach: the generations (`Backups`) and the bucket they are read
+ * from; every store a generation loads into (the files, collections and ledger's allocators);
+ * what a pin ends (the runs, the sandbox's egress, the app sockets) and fences (the grants and
+ * keys, the inbound bindings, the model connections' secrets); and the owner's admission.
+ */
+export interface RestoreDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "sync">,
+                                          Pick<ObjectReads, "owner" | "storage" | "reset"> {
+  readonly env: Pick<OwnerEnv, "FILES">;
+  readonly admission: {
+    row(): { readonly state: string; readonly reasons: readonly string[] };
+  };
+  readonly backups: Pick<Backups, "adopt" | "begin" | "finished" | "kept" | "manifests"
+    | "restorable" | "run" | "writing">;
+  readonly collections: Pick<Collections, "restored">;
+  readonly connections: { secretsLost(): void };
+  readonly egress: Pick<Egress, "end">;
+  readonly files: Pick<Files, "adoptSpace" | "check" | "chunksAfter" | "chunksPage" | "names"
+    | "restored" | "settled" | "storedNamespace" | "sweep">;
+  readonly grants: { revokeAll(now: number): string[] };
+  readonly inbound: Pick<Inbound, "disableAll">;
+  readonly keys: Pick<Keys, "ids" | "revoked">;
+  readonly launcher: Pick<Launcher, "endAll">;
+  readonly ledger: { restored(): void };
+  readonly relay: Pick<Relay, "closeAll">;
+}
 
 /** The `restore` doors' handlers, by door. */
 export const restoreDoors = Object.freeze({
@@ -901,7 +936,7 @@ export const restoreDoors = Object.freeze({
    * What a restore could read for this owner: its namespace and its finished generations, as
    * this object holds them, and its admission and any restore's step. A read.
    */
-  async restoreSource(o: OwnerState, door: Door<undefined>): Promise<RestoreSource> {
+  async restoreSource(o: RestoreDoorNeeds, door: Door<undefined>): Promise<RestoreSource> {
     return o.door(() => {
       door.check();
       const held = record(o.storage.sql);
@@ -920,7 +955,7 @@ export const restoreDoors = Object.freeze({
    * schema this code brings forward. Asked again with the same generation, it answers as it
    * stands.
    */
-  async restoreBegin(o: OwnerState, door: Door<RestoreBeginRequest>): Promise<RestoreAnswer> {
+  async restoreBegin(o: RestoreDoorNeeds, door: Door<RestoreBeginRequest>): Promise<RestoreAnswer> {
     const asked = await o.door(() => {
       const { r } = door.check();
       const { namespace: ns, gen } = r;
@@ -986,7 +1021,7 @@ export const restoreDoors = Object.freeze({
    * The restore carried on, a piece at a time, for at most `RESTORE_PASS_MS`; how far it is.
    * Refused while none was begun; a failed one answers its failure.
    */
-  async restoreStep(o: OwnerState, door: Door<undefined>): Promise<RestoreAnswer> {
+  async restoreStep(o: RestoreDoorNeeds, door: Door<undefined>): Promise<RestoreAnswer> {
     await o.door(() => door.check());
     const until = clock() + RESTORE_PASS_MS / 1000;
     const source: Bucket = o.env.FILES;
@@ -1003,7 +1038,7 @@ export const restoreDoors = Object.freeze({
    * the words that confirm the wipe. A record past the pin, for `gen` or the one its pin
    * wrote, answers as it stands; a pending owner is restored into directly, with no pin.
    */
-  async restorePin(o: OwnerState, door: Door<RestorePinRequest>): Promise<RestoreHold> {
+  async restorePin(o: RestoreDoorNeeds, door: Door<RestorePinRequest>): Promise<RestoreHold> {
     const { held, began } = await o.door(() => {
       const { r } = door.check();
       const gen = r.gen;
@@ -1073,7 +1108,7 @@ export const restoreDoors = Object.freeze({
    * record answers as it stands; a failed restore is wiped again the same way. A pin is
    * refused its wipe once its generation or its undo can no longer be restored.
    */
-  async restoreWipe(o: OwnerState, door: Door<RestoreWipeRequest>): Promise<RestoreHold> {
+  async restoreWipe(o: RestoreDoorNeeds, door: Door<RestoreWipeRequest>): Promise<RestoreHold> {
     const wiped = await o.door(() => {
       const { r } = door.check();
       const held = record(o.storage.sql);
@@ -1122,7 +1157,7 @@ export const restoreDoors = Object.freeze({
    * A pin not yet wiped given up: the record gone, the owner as it was (the runs the hold
    * ended stay ended), its lanes running again. With none pinned, answered the same.
    */
-  async restoreRelease(o: OwnerState, door: Door<undefined>): Promise<{ released: true }> {
+  async restoreRelease(o: RestoreDoorNeeds, door: Door<undefined>): Promise<{ released: true }> {
     await o.door(() => {
       door.check();
       const held = record(o.storage.sql);

@@ -204,7 +204,6 @@ CODE_PATH = [
     "tinyassets/broker/model_connect.py",
     "tinyassets/onboarding/model_connect.py",
     "tinyassets/onboarding/source_connect.py",
-    "scripts/blind_provider_test.py",
 ]
 PROVIDERS = ("openrouter", "openai", "anthropic", "claude", "gemini", "google", "mistral",
              "groq", "grok", "xai", "x.ai", "deepseek", "together", "fireworks", "cohere",

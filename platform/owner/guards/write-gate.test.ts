@@ -413,7 +413,7 @@ function helpers(source: string): Record<string, string> {
   const found: Record<string, string> = {};
   const visit = (node: ts.Node): void => {
     if (ts.isMethodDeclaration(node)
-        && ["#door", "#synced", "#filing", "#quiet", "#call", "#stateOf",
+        && ["#door", "#synced", "#filing", "#quiet", "#call",
             ...PLACEMENT].includes(node.name.getText(file))) {
       found[node.name.getText(file)] = node.body?.getText(file) ?? "";
     }
@@ -499,10 +499,12 @@ describe("write-gate guard", () => {
     expect(placement["rereading"]).toContain(
       "const value = await this.#write(() => read(bodies));");
     expect(placement["rereadingPage"]).toContain("return this.rereading(");
-    // The handlers' gate members are the object's helpers.
-    const state = bodies["#stateOf"]!;
+    // The handlers' gate members are the object's helpers, in the parts it hands them.
+    const source = sources.get(OWNER_DO)!;
+    const parts = source.slice(source.indexOf("this.#parts = Object.freeze({"));
+    expect(parts).not.toBe(source);
     for (const name of UNIT_HELPERS) {
-      expect(state).toMatch(new RegExp(`\\n      ${name}: [^]*?=>\\s*object\\.#${name}\\(`));
+      expect(parts).toMatch(new RegExp(`\\n      ${name}: [^]*?=>\\s*this\\.#${name}\\(`));
     }
   });
 

@@ -132,7 +132,7 @@ export class WriteGate {
 
   /**
    * Once every write made so far is durable (`sync`), as a reset that follows needs: a reset
-   * takes back what is not yet (`OwnerState.reset`).
+   * takes back what is not yet (`ObjectReads.reset`).
    */
   durable(): Promise<void> {
     return this.#raw.sync();

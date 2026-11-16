@@ -569,7 +569,6 @@ def test_required_tests_cannot_decline_to_report() -> None:
     assert any(
         _expr(s.get("if", "")) == "github.event_name == 'pull_request'" for s in agg_steps
     ), "on a PR the aggregate must still REPORT, explicitly deferring to the queue"
-    assert _expr(wf["jobs"]["slow-tests"].get("if", "")) == queue_only
 
 
 def test_required_tests_enforces_an_adequate_vacuity_floor() -> None:
@@ -799,12 +798,6 @@ def test_merge_group_shape_guard_checkouts_fetch_main_history() -> None:
         assert checkout.get("with", {}).get("fetch-depth") == 0, name
         guarded.append(name)
     assert guarded == ["structural-guards", "required-tests-shard"]
-    # slow-tests is queue-eligible and runs pytest on the host, but only the
-    # slow marker. The shape test is unmarked, so a shallow checkout there is
-    # not the failure in run 38208790984.
-    slow = "\n".join(step.get("run", "") for step in wf["jobs"]["slow-tests"]["steps"])
-    assert "pytest -m slow" in slow
-    assert "test_shape_registry" not in slow
 
 
 # ---- PR-time affected tests ----------------------------------------------------
@@ -1131,7 +1124,7 @@ def test_pr_gate_requires_structural_and_affected_success(tmp_path):
             assert b"Fix the failures" in result.stdout
 
 
-def test_structural_job_runs_unconditionally_and_slow_collection_has_browser():
+def test_structural_job_runs_unconditionally():
     jobs = _load()["jobs"]
     structural = jobs["structural-guards"]
     assert "if" not in structural
@@ -1148,13 +1141,6 @@ def test_structural_job_runs_unconditionally_and_slow_collection_has_browser():
     assert code[-1] == 'python -m scripts.ci_structural_guards --selection "$SELECTION"'
     assert step["env"] == {"BASE": "${{ github.event.merge_group.base_sha }}",
                            "SELECTION": "${{ runner.temp }}/structural-selection.txt"}
-    slow = jobs["slow-tests"]
-    # Playwright 1.58 cannot install chromium on ubuntu 26.04, which is
-    # what ubuntu-latest is now. The queue runs this install before pytest.
-    assert slow["runs-on"] == "ubuntu-24.04"
-    slow_run = "\n".join(s.get("run", "") for s in slow["steps"])
-    assert "pip install -e '.[dev,browser]'" in slow_run
-    assert "python -m playwright install --with-deps chromium" in slow_run
 
 
 def test_the_structural_guards_run_what_the_selection_holds(tmp_path, monkeypatch, capsys):

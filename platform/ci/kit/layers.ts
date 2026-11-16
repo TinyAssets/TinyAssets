@@ -97,10 +97,13 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     // A Worker loads nothing at run time: a module its source could load by `import()` (the
     // owner's runner, its proofs' mint) would reach what its imports do not show.
     name: "a Worker's source",
-    files: ["platform/<worker>/src/**", ...NOT_TESTS],
+    files: ["platform/<worker>/src/**", "!platform/owner/src/index.ts", ...NOT_TESTS],
     eager: true,
-    may: ["platform/<worker>/src/**", "platform/<worker>/*.json", "platform/<worker>/dist/**",
-          ...CONTRACT, ...SOURCES, ...NOT_TESTS],
+    // The owner object's module is its entry's alone (`index.ts`): every other owner module
+    // is handed what it reaches by the object (`<Module>DoorNeeds`, `LauncherNeeds`).
+    may: ["platform/<worker>/src/**", "!platform/owner/src/owner-do.ts",
+          "platform/<worker>/*.json", "platform/<worker>/dist/**", ...CONTRACT, ...SOURCES,
+          ...NOT_TESTS],
     also: {
       owner: ["platform/starter/starter.json"],
       // The Worker↔runner wire: the Worker writes the documents the runner reads. E2B's
@@ -108,6 +111,13 @@ export const LAYERS: readonly Layer[] = Object.freeze([
       sandbox: ["platform/sandbox/runner/protocol.ts",
                 "platform/sandbox/e2b/{transport,install}.ts"],
     },
+  },
+  {
+    // The owner Worker's entry: its one importer of the object's module.
+    name: "the owner Worker's entry",
+    files: ["platform/owner/src/index.ts"],
+    eager: true,
+    may: ["platform/owner/src/**", ...CONTRACT, ...SOURCES, ...NOT_TESTS],
   },
   {
     // The owner app's pages, run in the browser: they import one another by the path the

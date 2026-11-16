@@ -175,7 +175,6 @@ def default_specs(root: Path) -> list[SourceSpec]:
         SourceSpec(".cursorrules", "cursor", "provider-config", False),
         SourceSpec("CLAUDE.md", "claude", "provider-routing", False),
         SourceSpec("ideas/INBOX.md", "shared", "idea-feed", False),
-        SourceSpec("ideas/PIPELINE.md", "shared", "idea-pipeline", False),
         SourceSpec("pages/concepts", "shared", "brain-concept"),
         SourceSpec("pages/plans", "shared", "brain-plan"),
         SourceSpec("docs/concerns", "shared", "research-artifact"),

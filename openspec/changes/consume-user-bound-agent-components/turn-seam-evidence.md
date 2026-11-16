@@ -1,7 +1,7 @@
 # Bounded turn, model and snapshot seam check
 
 2026-09-19; read-only Windows source inspection on planning base `7b406025`.
-Commands: `rg -n` named symbols and `scripts/docview.py lines` cited helpers.
+Commands: `rg -n` named symbols and `docview.py lines` cited helpers.
 Source evidence only, not execution or deployment proof.
 
 ## Durable progress is not canonical turn admission

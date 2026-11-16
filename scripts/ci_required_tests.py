@@ -1284,8 +1284,7 @@ def collectible_under_gate(files: list[str]) -> tuple[list[str], list[str]]:
     earlier version read "no node ids" as "all slow" and dropped the file; the
     shards (which DO have Playwright) then never saw it, and the browser no-skip
     assertion filters against the pruned selection and accepts an empty
-    intersection -- so a broken non-slow browser test could land, with
-    `slow-tests` skipping the module too for the same missing dependency.
+    intersection -- so a broken non-slow browser test could land.
 
     Keeping such a file costs nothing and is self-correcting: the shards have
     the full extras, so they collect and run it, and if nothing reports it the

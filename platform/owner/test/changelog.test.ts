@@ -225,7 +225,8 @@ describe("the change log", () => {
      async () => {
     const o = await owner();
     const out = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
-      const { gate, log, files } = storesOn(state);
+      const { gate, files } = storesOn(state);
+      const log = new ChangeLog(gate.storage);
       await gate.write(() => log.begin("0123456789abcdef"));
       await files.write(`${W}/a.bin`, Uint8Array.from([0, 1, 2, 250, 251]),
                         { expected: null, writer: "owner" });

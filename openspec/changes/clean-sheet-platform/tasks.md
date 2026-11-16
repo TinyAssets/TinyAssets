@@ -243,15 +243,19 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
 - [ ] P7's rest: the workflow headers lose their dated history, which git holds (list3 T12;
   `untangle/p7-headers`).
-- [ ] P8's rest and P9's "can go now" list: the always-red watchers, the callerless scripts,
+- [x] P8's rest and P9's "can go now" list: the always-red watchers, the callerless scripts,
   the root leftovers, the OpenSpec prompts' copies, `setup-secure-merge-gate.sh`, the finished
-  changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`).
+  changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`;
+  what stayed and why: `untangle-2026-11/p9-now.md`).
 - [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
   their readers re-pointed, so the window's deletion is smaller (`untangle/p9-openspec`).
-- [ ] `slow-tests`, which collects no test, leaves the ruleset and the classic branch
-  protection, the founder's admin edit (d3 §E4; the exact command goes on his local-session
-  list when this session can't write it, §F4), then its job goes (`untangle/slow-tests`, from
-  `land/3`).
+- [x] `slow-tests`, which collected no test, left the ruleset and the classic branch
+  protection (the founder, 2026-11-16, d3 §E4), then its job went (`untangle/slow-tests`,
+  from `land/3`; `untangle-2026-11/slow-tests.md`).
+- [ ] The required checks' names are held four times: the ruleset, the classic branch
+  protection, `docs/ops/merge-queue-ruleset.json` and `enqueue_merge.py` `REQUIRED_CHECKS`,
+  and nothing ties them. One source, researched first (`untangle/required-checks`; found by
+  `untangle/slow-tests`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
   one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
 
@@ -299,7 +303,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 - [ ] The wave-2 lanes (d2 §D): lane O (O1–O5) is left, unblocked since C3 and C4 merged; the
   merged lanes' owed items and d3 §A's changes:
-  - [ ] B3 after T1, on the cleaned constructors (d3 §A2, §K1), as `o1_research.md`'s option (b′):
+  - [x] B3 after T1, on the cleaned constructors (d3 §A2, §K1), as `o1_research.md`'s option (b′):
     per-module `DoorNeeds`, four widening proofs, `untangle/o1` to `o1d`
     (`docs/decisions/untangle-2026-11/o2.md`, "B3's shape").
     - [x] `untangle/o1`: `door.ts`, the placement in `Bodies`, `Archive` in `ownerStores`, the
@@ -308,7 +312,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] `untangle/o1b`: the four proofs, the policy stores, the guard cut
       (`untangle-2026-11/o1b.md`).
     - [x] `untangle/o1c`: files, collections, ledger, import (`untangle-2026-11/o1c.md`).
-    - [ ] `untangle/o1d`: runs, launch, signins, restore; `OwnerState` deleted.
+    - [x] `untangle/o1d`: runs, launch, signins, restore; `OwnerState` deleted
+      (`untangle-2026-11/o1d.md`).
   - [x] B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2). Built in O2 (`untangle-2026-11/o2.md`).

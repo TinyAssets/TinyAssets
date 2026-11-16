@@ -118,7 +118,7 @@ of production parity.
 
 ## Measurement: memory per waiting turn
 
-`scripts/measure_agent_loop_memory.py`, 2026-10-01, the Linux oracle image
+`measure_agent_loop_memory.py`, 2026-10-01, the Linux oracle image
 (python 3.11.16), 500 concurrent turns, a mock SSE server in its own process
 holding every stream open with `: ping` until all 500 wait, then completing
 them (each folded by `agent_chat_codec.fold_chat_stream`):
@@ -129,7 +129,7 @@ them (each folded by `agent_chat_codec.fold_chat_stream`):
 | 8 KiB | 60.4 MiB | 89.9 MiB | **61 KiB** |
 
 Command: `docker run --rm -v <tree>:/src:ro -w /src tinyassets-linux-oracle:<tag>
-python -B scripts/measure_agent_loop_memory.py --turns 500 [--context-kb 8]`.
+python -B measure_agent_loop_memory.py --turns 500 [--context-kb 8]`.
 
 Read it with what it excludes: the turns share one loop (the target shape;
 see decision 1 for why production turns do not yet), and the transport is a

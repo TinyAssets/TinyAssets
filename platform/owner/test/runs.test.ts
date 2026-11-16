@@ -9,21 +9,19 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { Refusal } from "../../contract/src/refusal";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { egressTokenOf } from "../../contract/src/egress";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { AGENT_DISABLED, AGENT_UNDEFINED, agentFile } from "../src/agent-file";
-import { WriteGate } from "../src/gate";
+import { AGENT_DISABLED, AGENT_UNDEFINED } from "../src/agent-file";
 import { AUTHORITY_CHANGED } from "../src/authority";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
-import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, type RunHost, Runs, SESSION_REFUSED,
-         SIGNIN_LAPSED, TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
+import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, SESSION_REFUSED, SIGNIN_LAPSED,
+         TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
 import { PLATFORM_TIER_ONLY } from "../src/admission";
 import { TIER_UNREAD } from "../src/files";
 import { gated, type Gated, OPENAI } from "./gateway-support";
@@ -31,8 +29,8 @@ import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
 import { secretOf } from "../../ci/workerd";
-import { drainDue, failure, gateFor, spaceOf, storesOn } from "./support";
-import type { SandboxStart } from "../../contract/src/sandbox";
+import { drainDue, failure, gateFor, spaceOf } from "./support";
+import { SANDBOX_WAITING, type SandboxStart } from "../../contract/src/sandbox";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -673,69 +671,65 @@ describe("auto and the owner's sign-ins", () => {
   });
 });
 
-/** A Runs host whose every member is `never`: a test overrides the ones it reaches. */
-function hostOf(never: () => never): RunHost {
-  return { unadmitted: never, tier: never, tiers: never, reachable: never,
-           standing: never, caps: never, spent: never, lease: never, leases: never,
-           openLease: never, releaseLease: never, renewLease: never, leasesLapsed: never,
-           ended: never, answer: never, mailSettled: never, notice: never, stop: never };
-}
-
 describe("the admission unit", () => {
+  /** An input to `conversation`, by the owner. */
+  const submit = (r: Gated, conversation: string, message: string, id: string) =>
+    r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message, client_send_id: id,
+                                                  conversation_id: conversation });
+
   it("refuses an owner not admitted itself, whatever reached it (the lane's race)",
      async () => {
     const r = await gated();
-    const refused = await r.in((_instance, state) => {
-      const gate = new WriteGate(state.storage);
-      const never = () => {
-        throw new Error("admission went past the owner's admission");
-      };
-      const runs = new Runs(gate.storage, {
-        ...hostOf(never),
-        unadmitted: () => new Refusal("owner_suspended", "owner_suspended: the owner's " +
-                                      "account is suspended (billing)") });
-      return gate.write(() => runs.admit({
-        initiator: "schedule", stamp: null, origin: null, agent: "main",
-        file: agentFile(JSON.stringify(SIGNED_IN)), conversation: null, request: null,
-        tiers: TIERS, unattended: true, prompt: "x", mail: null }, Date.now() / 1000, never))
-        .then(() => "admitted", (error: Error) => error.message);
-    });
-    expect(refused).toBe("owner_suspended: the owner's account is suspended (billing)");
-    expect(await r.sql("SELECT id FROM runs")).toEqual([]);
+    const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const waiting = await submit(r, run.conversation_id, "after", "a-1");
+    // An agent.json past an inline file: the lane's read of it crosses to the files plane
+    // between its unit that picks the waiting run (admitted then) and the run's admission.
+    const path = "/workspace/agents/main/agent.json";
+    const session = r.session();
+    const { entry } = await r.stub.fileStat(session, { path });
+    await r.stub.fileWrite(session, { path, expected_etag: entry!.etag, content: new TextEncoder()
+      .encode(JSON.stringify(SIGNED_IN).padEnd(INLINE_BYTES + 1, " ")) });
+    const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
+    await files.arm("getChunks", { hold: "before" });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+    const lane = drainDue(r.stub);
+    try {
+      await files.held("getChunks");
+      await r.stub.admissionSet({ owner: r.name, caller: PLATFORM_CALLER, origin: null },
+                                { reason: "billing", suspended: true });
+    } finally {
+      await files.release("getChunks");
+    }
+    await lane;
+    // Its admission refused it: never started.
+    expect((await recorder(r.stub)).starts.map((each) => each.run)).toEqual([run.run_id]);
+    expect(await r.sql("SELECT state FROM runs WHERE id = ?", waiting.run_id))
+      .not.toEqual([{ state: "running" }]);
   });
 
   it("finds a waiting run's turn: first in a conversation with no live run, while the " +
      "tier has room by the numbers last handed", async () => {
     const r = await gated();
-    const run = (n: number) => `run_${String(n).repeat(32)}`;
-    const picked = await r.in(async (_instance, state) => {
-      const sql = state.storage.sql;
-      const row = (id: string, conversation: number, kind: string) => sql.exec(
-        "INSERT INTO runs (id, agent, conversation, source, credential, state, initiator, " +
-          "unattended, created_at, lease_id, epoch, beat_at) VALUES (?, 'main', ?, " +
-          "'claude-code', 'vendor_login_in_sandbox', ?, 'owner', 0, 1, ?, ?, ?)", id,
-        `cv_${String(conversation).repeat(32)}`, kind, ...(kind === "running"
-          ? ["0".repeat(32), 1, 1] : [null, null, null]));
-      row(run(1), 1, "running");
-      row(run(2), 1, "waiting");  // behind its conversation's live run
-      row(run(3), 2, "waiting");  // its turn
-      row(run(4), 2, "waiting");  // behind the one before it
-      const never = () => {
-        throw new Error("a read went past its rows");
-      };
-      // The tier's simultaneous runs, by the numbers last kept: none, then 1 and 2.
-      const { gate, admission } = storesOn(state);
-      const runs = new Runs(gate.storage, { ...hostOf(never), tier: () => "free",
-                                            tiers: () => admission.tiers() });
-      const picks: (string | null)[] = [];
-      for (const capacity of [null, 1, 2]) {
-        await gate.write(() => admission.keep(capacity === null ? null
-          : { ...TIERS, free: { ...TIERS.free, runs: capacity } }, Date.now() / 1000));
-        picks.push(runs.nextWaiting()?.id ?? null);
-      }
-      return picks;
-    });
-    expect(picked).toEqual([null, null, run(3)]);
+    const { run } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const behind = await submit(r, run.conversation_id, "behind", "t-1");  // its run is live
+    // A run of its own conversation that waits for the sandbox: the line's ring starts it.
+    await scripted(r.stub, { answer: [{ started: true }, { started: false, code: SANDBOX_WAITING },
+                                      { started: true }] });
+    const own = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+                                         { message: "own", client_send_id: "t-2" });
+    expect([behind.state, own.state]).toEqual(["waiting", "waiting"]);
+    const asked = (await recorder(r.stub)).starts.length;  // the first's, and own's wait
+    // The tier's simultaneous runs, by the numbers a door last handed: 1, none, then 2.
+    const started = async (tiers: Binding["tiers"]) => {
+      await r.stub.fileStat(r.bind({ tiers }), { path: "/workspace" });
+      await r.stub.sandboxRung();
+      await drainDue(r.stub);
+      return (await recorder(r.stub)).starts.slice(asked).map((each) => each.run);
+    };
+    expect(await started({ ...TIERS, free: { ...TIERS.free, runs: 1 } })).toEqual([]);
+    expect(await started(null)).toEqual([]);
+    expect(await started({ ...TIERS, free: { ...TIERS.free, runs: 2 } }))
+      .toEqual([own.run_id]);
   });
 });
 
