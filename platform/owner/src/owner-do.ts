@@ -166,7 +166,7 @@ import { Launcher } from "./launch";
 import { Egress, egressDoors, sandboxBinding } from "./egress";
 import { exportDoors } from "./export";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
-import type { OwnerDoors } from "../../contract/src/owner";
+import type { OwnerDoors } from "../../contract/src/owner-doors";
 import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
 import { Signins, signinsDoors, switchedOn } from "./signins";

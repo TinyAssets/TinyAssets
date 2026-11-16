@@ -7,7 +7,7 @@ import type { ChunkUpload } from "../../contract/src/files";
 import type { ConnectService, EgressService } from "../../contract/src/gateway";
 import type { ImportMessage } from "../../contract/src/import-message";
 import type { OperatorMessage } from "../../contract/src/operator-message";
-import type { OwnerDoors } from "../../contract/src/owner";
+import type { OwnerDoors } from "../../contract/src/owner-doors";
 
 export interface DoorsEnv {
   readonly OAUTH_KV: KVNamespace;

@@ -1,26 +1,23 @@
 /**
  * The owner object's doors as the doors Worker calls them
- * (`docs/decisions/untangle-2026-11-wave-1.md` A1; `list_doors.md` R1): the one interface the
- * doors type the owner's stub by (`DurableObjectStub<OwnerDoors>`), which `OwnerDO` implements
- * (`owner/src/owner-do.ts`), so the doors import no owner source.
- *
- * It names only the doors the doors call, each a row of the door table (`doors.json`, read by
- * `doors.ts`; the services guard, `contract/guards/services.test.ts`, holds every name here
- * to a row, its arity, and its request to the row's fields): the binding first, then the
- * request, which the object's runner checks field by field:
+ * (`docs/decisions/untangle-2026-11-wave-1.md` A1; `list_doors.md` R1): `OwnerDoors`, the one
+ * interface the doors type the owner's stub by (`DurableObjectStub<OwnerDoors>`), which
+ * `OwnerDO` implements (`owner/src/owner-do.ts`), so the doors import no owner source.
+ * `npm run generate` writes it from the door table (`owner-doors.ts`, `contract/requests.ts`):
+ * each door its row's, the binding first (but on the two unbound doors), then its request,
+ * which the object's runner checks field by field. What the table cannot say is here, by door
+ * (`DoorTypes`):
  * - where the row lists the fields, exactly them (`Asked`: `DoorRequests`, which
  *   `requests.ts` writes from the table), or, where the doors hand a parsed body on as it
  *   came, that body (`Handed`, `JsonBody`), so `tsc` holds every request the doors build,
  *   and the object's handler, to the row's fields; where the doors build the request, also
- *   the value each field takes (`Asked<door, { … }>`), the owner's own request type's, since
- *   the row names most fields alone;
- * - where its module reads it whole (`loose`), the type its module takes, spelled once here
- *   (`AdmissionRequest`, `TierRequest`, the connections', the inbound bindings', the egress
- *   door's).
- *
- * An answer is what the doors read of it, or `object` where they pass it on as it came (as
- * JSON, or as an RPC result). A tool's door is called by its row's name alone
- * (`doors/src/tools.ts` `callDoor`), so it needs no entry here.
+ *   the value each field takes (`values`), the owner's own request type's, since the row
+ *   names most fields alone;
+ * - where its module reads it whole (`loose`), the parameters its module takes, spelled once
+ *   here (`AdmissionRequest`, `TierRequest`, the connections', the inbound bindings', the
+ *   egress door's);
+ * - what the doors read of its answer (`answer`), or an object they pass on as it came (as
+ *   JSON, or as an RPC result).
  *
  * Beside them are the answers the egress door reads field by field (`EgressOpened`,
  * `EgressReserved`, `EgressRefusal`) and the billed event the E2B hook routes
@@ -390,197 +387,235 @@ export type SettleSent = {
   readonly resealed?: unknown;
 };
 
-/** The owner's object, as the doors reach it (`binder.ts` alone looks one up by name). */
-export interface OwnerDoors extends Rpc.DurableObjectBranded {
-  // The two doors that take no binding: the sandbox line's ring, and E2B's billed events.
-  sandboxRung(): Promise<{ readonly waiting: number }>;
-  sandboxBilled(event: BilledEvent): Promise<{ readonly counted: boolean }>;
-
-  // Sign-in and sign-up (`authorize.ts`), the owner's session (`app.ts`), erasure (`erase.ts`).
-  admissionSet(binding: Binding, request: AdmissionRequest): Promise<{ readonly state: string }>;
-  tierSet(binding: Binding, request: TierRequest): Promise<{ readonly tier: TierName }>;
-  // The owner's state and a key rotation's sweeps, the operator channel's (`operator.ts`).
-  ownerState(binding: Binding): Promise<OwnerStateAnswer>;
-  dataKeyRewrap(binding: Binding): Promise<RewrapAnswer>;
-  gatewayReseal(binding: Binding): Promise<ResealAnswer>;
-  // A restore, the operator channel's (`operator.ts`; `owner/src/restore.ts`).
-  restoreSource(binding: Binding): Promise<RestoreSource>;
-  restoreBegin(binding: Binding, request: Asked<"restoreBegin", RestoreBeginRequest>):
-    Promise<RestoreAnswer>;
-  restoreStep(binding: Binding): Promise<RestoreAnswer>;
-  restorePin(binding: Binding, request: Asked<"restorePin", RestorePinRequest>):
-    Promise<RestoreHold>;
-  restoreWipe(binding: Binding, request: Asked<"restoreWipe", RestoreWipeRequest>):
-    Promise<RestoreHold>;
-  restoreRelease(binding: Binding): Promise<{ readonly released: true }>;
-  restoreNames(binding: Binding, request: Asked<"restoreNames", RestoreNamesRequest>):
-    Promise<RestoreNames>;
-  sessionOpen(binding: Binding): Promise<{ readonly session: string }>;
-  sessionExtend(binding: Binding): Promise<object>;
-  sessionClose(binding: Binding): Promise<{ readonly closed: number }>;
-  socketsEnd(binding: Binding): Promise<object>;
-  socketTicket(binding: Binding, request: Handed<"socketTicket">): Promise<object>;
-  ownerErase(binding: Binding, request: Asked<"ownerErase", EraseRequest>):
-    Promise<{ readonly erasing: true }>;
-  erasureBegin(binding: Binding, request: Asked<"erasureBegin", EraseRequest>):
-    Promise<{ readonly erasing: true }>;
-  erasureOutside(binding: Binding):
-    Promise<{ readonly keys: readonly string[]; readonly routes: readonly string[] } | null>;
-  erasureOutsideDone(binding: Binding): Promise<object>;
-
-  // An MCP caller's tools (`mcp.ts`) and its MCP Events (`events.ts`).
-  toolProfile(binding: Binding):
-    Promise<{ readonly profile: ProfileName; readonly tools: readonly string[] }>;
-  wakeEvents(binding: Binding, commandCenter?: string):
-    Promise<{ readonly events: readonly Events[] }>;
-  wakeSubscribe(binding: Binding, request: Asked<"wakeSubscribe", {
-    readonly subscription_id: string; readonly name: string;
-    readonly arguments: { readonly command_center_id: string; readonly board?: boolean;
-                          readonly rooms?: readonly string[] };
-    readonly blob: string; readonly kid: string; readonly version: number;
-    readonly expires_at: number | null }>): Promise<object>;
-  wakeUnsubscribe(binding: Binding,
-                  request: Asked<"wakeUnsubscribe", { readonly subscription_id: string }>):
-    Promise<object>;
-
-  // API keys and outside clients (`api-keys.ts`, `revoke.ts`, `app.ts`).
-  keyMint(binding: Binding, request: Asked<"keyMint", {
-    readonly key_id: string; readonly name: string; readonly scopes: unknown;
-    /** As the caller sent it: the object checks it (`request_id`, `digest`). */
-    readonly proposal?: unknown }>):
-    Promise<{ readonly name: string; readonly created_at: number;
-              readonly scopes: readonly object[] }>;
-  keyList(binding: Binding): Promise<{ readonly keys: readonly { readonly key_id: string }[] }>;
-  grantRevoke(binding: Binding, request: Asked<"grantRevoke", { readonly client: string }>):
-    Promise<{ readonly client: string; readonly revoked: boolean; readonly generation: number;
-              readonly revision: number }>;
-  grantForget(binding: Binding, request: Asked<"grantForget", { readonly client: string }>):
-    Promise<{ readonly forgotten: boolean }>;
-  grantSet(binding: Binding, request: Handed<"grantSet">): Promise<object>;
-  grantList(binding: Binding): Promise<object>;
-  registerAgent(binding: Binding, request: Handed<"registerAgent">): Promise<object>;
-
-  // Inbound events and their bindings (`inbound.ts`).
-  inboundAccept(binding: Binding, request: Asked<"inboundAccept", {
-    readonly event_id: string; readonly event_at: number; readonly body: Uint8Array;
-    readonly headers: Readonly<Record<string, string>> }>): Promise<InboundAnswer>;
-  inboundCreate(binding: Binding, request: InboundCreateRequest | JsonBody):
-    Promise<InboundRoute>;
-  inboundSet(binding: Binding, request: InboundSetRequest | JsonBody): Promise<InboundRoute>;
-  inboundRevoke(binding: Binding, request: BindingRequest | JsonBody):
-    Promise<{ readonly route: string | null }>;
-  inboundList(binding: Binding): Promise<object>;
-
-  // Model connections (`connect.ts`).
-  connectionPrepare(binding: Binding, request: ConnectionPrepareRequest):
-    Promise<{ readonly connection: string; readonly version: number;
-              readonly flow?: { readonly state: string; readonly code_challenge: string;
-                                readonly expires_at: number } }>;
-  connectionCommit(binding: Binding, request: ConnectionCommitRequest): Promise<object>;
-  connectionRevoke(binding: Binding, request: ConnectionRequest): Promise<object>;
-  connectionList(binding: Binding): Promise<object>;
-  flowFinish(binding: Binding, request: FlowFinishRequest):
-    Promise<{ readonly connection: string; readonly version: number;
-              readonly verifier: string; readonly redirect_uri: string;
-              readonly source: string }>;
-
-  // The owner surface (`app.ts`): its own routes, and each door a route names.
-  tierRead(binding: Binding): Promise<{ readonly tier: TierName }>;
-  fileUsage(binding: Binding): Promise<object>;
-  fileRead(binding: Binding,
-           request: Handed<"fileRead", { readonly path: string; readonly etag?: string }>):
-    Promise<{ readonly entry: object; readonly inline?: Uint8Array }>;
-  fileWrite(binding: Binding, request: Asked<"fileWrite", {
-    readonly path: string; readonly expected_etag: string | null;
-    readonly content: string | Uint8Array; readonly mode?: number }>): Promise<object>;
-  ownerExport(binding: Binding, request: Handed<"ownerExport", {
-    readonly cursor?: string | null; readonly export_id?: string }>):
-    Promise<{ readonly export_id: string; readonly lines: readonly string[];
-              readonly next: string | null; readonly pending: boolean }>;
-  exportChunks(binding: Binding, request: Asked<"exportChunks">): Promise<object>;
-  exportEnd(binding: Binding, request: { readonly export_id: string }): Promise<object>;
-  storageUsage(binding: Binding): Promise<object>;
-  agentDoorbell(binding: Binding, request: Asked<"agentDoorbell", {
-    readonly agent_id: string; readonly kind: string; readonly subscription_id: string;
-    readonly board: boolean; readonly rooms: readonly string[]; readonly blob: string;
-    readonly kid: string; readonly version: number }>): Promise<object>;
-  agentDoorbellEnd(binding: Binding, request: Asked<"agentDoorbellEnd">): Promise<object>;
-  policyWakeLimits(binding: Binding, request: Asked<"policyWakeLimits">): Promise<object>;
-  noticeList(binding: Binding): Promise<object>;
-  policyRead(binding: Binding): Promise<object>;
-  policyWrite(binding: Binding, request: Asked<"policyWrite">): Promise<object>;
-  fileUploadBegin(binding: Binding, request: Asked<"fileUploadBegin">): Promise<object>;
-  fileUploadCommit(binding: Binding, request: Asked<"fileUploadCommit">): Promise<object>;
-  fileUploadAbort(binding: Binding, request: Asked<"fileUploadAbort">): Promise<object>;
-  agentSubmit(binding: Binding, request: Asked<"agentSubmit">): Promise<object>;
-  agentRun(binding: Binding, request: Asked<"agentRun">): Promise<object>;
-  agentStatus(binding: Binding, request: Asked<"agentStatus">): Promise<object>;
-  agentCancel(binding: Binding, request: Asked<"agentCancel">): Promise<object>;
-  runList(binding: Binding, request: Asked<"runList">): Promise<object>;
-  signinStart(binding: Binding, request: Asked<"signinStart">): Promise<object>;
-  signinCode(binding: Binding, request: Asked<"signinCode">): Promise<object>;
-  signinCancel(binding: Binding, request: Asked<"signinCancel">): Promise<object>;
-  signinList(binding: Binding): Promise<object>;
-
-  // An upload's bytes (`file-bytes.ts`).
-  fileUploadTarget(binding: Binding,
-                   request: Asked<"fileUploadTarget", { readonly intent_id: string }>):
-    Promise<{ readonly namespace: string; readonly key: string;
-              readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
-              readonly pending: readonly string[] }>;
-  fileUploadStored(binding: Binding, request: Asked<"fileUploadStored", {
-    readonly intent_id: string; readonly chunks: readonly string[] }>): Promise<object>;
-
-  // The cutover's import consumer (`import.ts`), at its import binding (`bindImport`).
-  importNotice(binding: Binding, request: Asked<"importNotice", { readonly detail: string }>):
-    Promise<object>;
-  importRows(binding: Binding, request: Asked<"importRows", { readonly rows: readonly unknown[] }>):
-    Promise<object>;
-  importFiles(binding: Binding,
-              request: Asked<"importFiles", { readonly entries: readonly unknown[] }>):
-    Promise<object>;
-  importFileBegin(binding: Binding, request: Asked<"importFileBegin", {
-    readonly path: string; readonly size: number; readonly mode: 0 | 1;
-    readonly content_id: string; readonly chunks: readonly string[] }>):
-    Promise<{ readonly skipped: true }
-            | { readonly skipped: false; readonly intent_id: string; readonly namespace: string;
-                readonly key: string;
-                readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
-                readonly pending: readonly string[] }>;
-  importFileStored(binding: Binding, request: Asked<"importFileStored", {
-    readonly intent_id: string; readonly chunks: readonly string[] }>): Promise<object>;
-  importFileCommit(binding: Binding, request: Asked<"importFileCommit", {
-    readonly intent_id: string; readonly path: string; readonly mode: 0 | 1;
-    readonly content_id: string; readonly mtime_ms: number }>): Promise<object>;
-  importCheck(binding: Binding, request: Asked<"importCheck", {
-    readonly part: CheckPart; readonly page: number }>): Promise<{ readonly more: boolean }>;
-  importDiscard(binding: Binding): Promise<{ readonly namespace: string | null }>;
-
-  // The egress host (`egress.ts`): a model call, a run's events, a sign-in's, and sync.
-  egressOpen(binding: Binding, request: EgressRequest): Promise<EgressOpened | EgressRefusal>;
-  egressReserve(binding: Binding, request: ReserveRequest):
-    Promise<EgressReserved | EgressRefusal>;
-  egressBeat(binding: Binding, request: BeatRequest): Promise<object>;
-  egressSettle(binding: Binding, request: SettleSent): Promise<object>;
-  runEvents(binding: Binding, request: Handed<"runEvents">): Promise<object>;
-  signinEvents(binding: Binding, request: SigninEventsRequest): Promise<object>;
-  signinReport(binding: Binding, request: Handed<"signinReport">): Promise<object>;
-  fileChanges(binding: Binding, request: Handed<"fileChanges">): Promise<object>;
-  fileList(binding: Binding, request: Handed<"fileList">): Promise<object>;
-  fileReadChunks(binding: Binding, request: Handed<"fileReadChunks">):
-    Promise<{ readonly chunks: readonly Uint8Array[] }>;
-  fileSyncCommit(binding: Binding, request: Handed<"fileSyncCommit", {
-    readonly lease_id: string; readonly epoch: number; readonly ops: readonly SyncOp[] }>):
-    Promise<object>;
-  fileSyncUploadBegin(binding: Binding, request: Handed<"fileSyncUploadBegin">):
-    Promise<object>;
-  fileSyncUploadChunks(binding: Binding, request: Handed<"fileSyncUploadChunks", {
-    readonly lease_id: string; readonly epoch: number; readonly intent_id: string;
-    readonly chunks: readonly { readonly sha256: string; readonly bytes: Uint8Array }[] }>):
-    Promise<object>;
-  fileSyncUploadAbort(binding: Binding, request: Handed<"fileSyncUploadAbort">):
-    Promise<object>;
+/**
+ * What the door table cannot say of a door the doors call, by door: the values the doors build
+ * into its row's fields (`values`), that they hand a parsed body on (`handed`), a loose door's
+ * parameters after its binding (`loose`), and what they read of its answer (`answer`). `tsc`
+ * refuses an entry for no door of the table, or one its row leaves no room for: `values` or
+ * `handed` but on a field list, a field the row does not list, `loose` but on a loose door
+ * (`owner-doors.ts`). A door with no entry takes its row's fields, each `unknown`, and
+ * answers an object the doors pass on.
+ */
+export interface DoorTypes {
+  readonly sandboxRung: { readonly answer: { readonly waiting: number } };
+  readonly sandboxBilled: {
+    readonly loose: [event: BilledEvent];
+    readonly answer: { readonly counted: boolean };
+  };
+  readonly admissionSet: {
+    readonly loose: [request: AdmissionRequest];
+    readonly answer: { readonly state: string };
+  };
+  readonly tierSet: {
+    readonly loose: [request: TierRequest];
+    readonly answer: { readonly tier: TierName };
+  };
+  readonly ownerState: { readonly answer: OwnerStateAnswer };
+  readonly dataKeyRewrap: { readonly answer: RewrapAnswer };
+  readonly gatewayReseal: { readonly answer: ResealAnswer };
+  readonly restoreSource: { readonly answer: RestoreSource };
+  readonly restoreBegin: { readonly values: RestoreBeginRequest; readonly answer: RestoreAnswer };
+  readonly restoreStep: { readonly answer: RestoreAnswer };
+  readonly restorePin: { readonly values: RestorePinRequest; readonly answer: RestoreHold };
+  readonly restoreWipe: { readonly values: RestoreWipeRequest; readonly answer: RestoreHold };
+  readonly restoreRelease: { readonly answer: { readonly released: true } };
+  readonly restoreNames: { readonly values: RestoreNamesRequest; readonly answer: RestoreNames };
+  readonly sessionOpen: { readonly answer: { readonly session: string } };
+  readonly sessionClose: { readonly answer: { readonly closed: number } };
+  readonly socketTicket: { readonly handed: true };
+  readonly ownerErase: {
+    readonly values: EraseRequest;
+    readonly answer: { readonly erasing: true };
+  };
+  readonly erasureBegin: {
+    readonly values: EraseRequest;
+    readonly answer: { readonly erasing: true };
+  };
+  readonly erasureOutside: {
+    readonly answer:
+      { readonly keys: readonly string[]; readonly routes: readonly string[] } | null;
+  };
+  readonly toolProfile: {
+    readonly answer: { readonly profile: ProfileName; readonly tools: readonly string[] };
+  };
+  readonly wakeEvents: {
+    readonly loose: [commandCenter?: string];
+    readonly answer: { readonly events: readonly Events[] };
+  };
+  readonly wakeSubscribe: {
+    readonly values: {
+      readonly subscription_id: string; readonly name: string;
+      readonly arguments: { readonly command_center_id: string; readonly board?: boolean;
+                            readonly rooms?: readonly string[] };
+      readonly blob: string; readonly kid: string; readonly version: number;
+      readonly expires_at: number | null };
+  };
+  readonly wakeUnsubscribe: { readonly values: { readonly subscription_id: string } };
+  readonly keyMint: {
+    readonly values: {
+      readonly key_id: string; readonly name: string; readonly scopes: unknown;
+      /** As the caller sent it: the object checks it (`request_id`, `digest`). */
+      readonly proposal?: unknown };
+    readonly answer: { readonly name: string; readonly created_at: number;
+                       readonly scopes: readonly object[] };
+  };
+  readonly keyList: { readonly answer: { readonly keys: readonly { readonly key_id: string }[] } };
+  readonly grantRevoke: {
+    readonly values: { readonly client: string };
+    readonly answer: { readonly client: string; readonly revoked: boolean;
+                       readonly generation: number; readonly revision: number };
+  };
+  readonly grantForget: {
+    readonly values: { readonly client: string };
+    readonly answer: { readonly forgotten: boolean };
+  };
+  readonly grantSet: { readonly handed: true };
+  readonly registerAgent: { readonly handed: true };
+  readonly inboundAccept: {
+    readonly values: {
+      readonly event_id: string; readonly event_at: number; readonly body: Uint8Array;
+      readonly headers: Readonly<Record<string, string>> };
+    readonly answer: InboundAnswer;
+  };
+  readonly inboundCreate: {
+    readonly loose: [request: InboundCreateRequest | JsonBody];
+    readonly answer: InboundRoute;
+  };
+  readonly inboundSet: {
+    readonly loose: [request: InboundSetRequest | JsonBody];
+    readonly answer: InboundRoute;
+  };
+  readonly inboundRevoke: {
+    readonly loose: [request: BindingRequest | JsonBody];
+    readonly answer: { readonly route: string | null };
+  };
+  readonly connectionPrepare: {
+    readonly loose: [request: ConnectionPrepareRequest];
+    readonly answer: { readonly connection: string; readonly version: number;
+                       readonly flow?: { readonly state: string; readonly code_challenge: string;
+                                         readonly expires_at: number } };
+  };
+  readonly connectionCommit: { readonly loose: [request: ConnectionCommitRequest] };
+  readonly connectionRevoke: { readonly loose: [request: ConnectionRequest] };
+  readonly flowFinish: {
+    readonly loose: [request: FlowFinishRequest];
+    readonly answer: { readonly connection: string; readonly version: number;
+                       readonly verifier: string; readonly redirect_uri: string;
+                       readonly source: string };
+  };
+  readonly tierRead: { readonly answer: { readonly tier: TierName } };
+  readonly fileRead: {
+    readonly handed: true;
+    readonly values: { readonly path: string; readonly etag?: string };
+    readonly answer: { readonly entry: object; readonly inline?: Uint8Array };
+  };
+  readonly fileWrite: {
+    readonly values: {
+      readonly path: string; readonly expected_etag: string | null;
+      readonly content: string | Uint8Array; readonly mode?: number };
+  };
+  readonly ownerExport: {
+    readonly handed: true;
+    readonly values: {
+      readonly cursor?: string | null; readonly export_id?: string };
+    readonly answer: { readonly export_id: string; readonly lines: readonly string[];
+                       readonly next: string | null; readonly pending: boolean };
+  };
+  readonly exportEnd: { readonly loose: [request: { readonly export_id: string }] };
+  readonly agentDoorbell: {
+    readonly values: {
+      readonly agent_id: string; readonly kind: string; readonly subscription_id: string;
+      readonly board: boolean; readonly rooms: readonly string[]; readonly blob: string;
+      readonly kid: string; readonly version: number };
+  };
+  readonly fileUploadTarget: {
+    readonly values: { readonly intent_id: string };
+    readonly answer: {
+      readonly namespace: string; readonly key: string;
+      readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
+      readonly pending: readonly string[] };
+  };
+  readonly fileUploadStored: {
+    readonly values: {
+      readonly intent_id: string; readonly chunks: readonly string[] };
+  };
+  readonly importNotice: { readonly values: { readonly detail: string } };
+  readonly importRows: { readonly values: { readonly rows: readonly unknown[] } };
+  readonly importFiles: { readonly values: { readonly entries: readonly unknown[] } };
+  readonly importFileBegin: {
+    readonly values: {
+      readonly path: string; readonly size: number; readonly mode: 0 | 1;
+      readonly content_id: string; readonly chunks: readonly string[] };
+    readonly answer: { readonly skipped: true } | {
+      readonly skipped: false; readonly intent_id: string; readonly namespace: string;
+      readonly key: string;
+      readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
+      readonly pending: readonly string[] };
+  };
+  readonly importFileStored: {
+    readonly values: {
+      readonly intent_id: string; readonly chunks: readonly string[] };
+  };
+  readonly importFileCommit: {
+    readonly values: {
+      readonly intent_id: string; readonly path: string; readonly mode: 0 | 1;
+      readonly content_id: string; readonly mtime_ms: number };
+  };
+  readonly importCheck: {
+    readonly values: {
+      readonly part: CheckPart; readonly page: number };
+    readonly answer: { readonly more: boolean };
+  };
+  readonly importDiscard: { readonly answer: { readonly namespace: string | null } };
+  readonly egressOpen: {
+    readonly loose: [request: EgressRequest];
+    readonly answer: EgressOpened | EgressRefusal;
+  };
+  readonly egressReserve: {
+    readonly loose: [request: ReserveRequest];
+    readonly answer: EgressReserved | EgressRefusal;
+  };
+  readonly egressBeat: { readonly loose: [request: BeatRequest] };
+  readonly egressSettle: { readonly loose: [request: SettleSent] };
+  readonly runEvents: { readonly handed: true };
+  readonly signinEvents: { readonly loose: [request: SigninEventsRequest] };
+  readonly signinReport: { readonly handed: true };
+  readonly fileChanges: { readonly handed: true };
+  readonly fileList: { readonly handed: true };
+  readonly fileReadChunks: {
+    readonly handed: true;
+    readonly answer: { readonly chunks: readonly Uint8Array[] };
+  };
+  readonly fileSyncCommit: {
+    readonly handed: true;
+    readonly values: {
+      readonly lease_id: string; readonly epoch: number; readonly ops: readonly SyncOp[] };
+  };
+  readonly fileSyncUploadBegin: { readonly handed: true };
+  readonly fileSyncUploadChunks: {
+    readonly handed: true;
+    readonly values: {
+      readonly lease_id: string; readonly epoch: number; readonly intent_id: string;
+      readonly chunks: readonly { readonly sha256: string; readonly bytes: Uint8Array }[] };
+  };
+  readonly fileSyncUploadAbort: { readonly handed: true };
 }
+
+/** A door's entry in `DoorTypes`, or none. */
+type TypesOf<D extends string> = D extends keyof DoorTypes ? DoorTypes[D] : Record<never, never>;
+/** The values the doors build into a door's fields, or none named. */
+type ValuesOf<D extends string> =
+  TypesOf<D> extends { readonly values: infer V extends object } ? V : object;
+/** A door's request by its row's fields: as the doors build it, or a parsed body handed on. */
+export type DoorRequest<D extends keyof DoorRequests> =
+  TypesOf<D> extends { readonly handed: true } ? Handed<D, ValuesOf<D>> : Asked<D, ValuesOf<D>>;
+/** A loose door's parameters after its binding: its module's own, else one request it reads. */
+export type DoorLoose<D extends string> =
+  TypesOf<D> extends { readonly loose: infer P extends readonly unknown[] } ? P
+    : [request: unknown];
+/** What the doors read of a door's answer, else an object they pass on. */
+export type DoorAnswer<D extends string> =
+  TypesOf<D> extends { readonly answer: infer A } ? A : object;
 
 /** An inbound binding as the doors keep its route: its id, revision and route token. */
 export interface InboundRoute {
