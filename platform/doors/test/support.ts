@@ -443,7 +443,7 @@ export function ownBinding(owner: string): Binding {
  * this promise's alone: a test that asserted on the stub's own promise would leave a
  * rejected pipelined property of it unhandled.
  */
-export async function doorAs<T>(owner: string, binding: Binding, door: string,
+async function doorAs<T>(owner: string, binding: Binding, door: string,
                                 request?: unknown): Promise<T> {
   return await callDoor(doorsEnv.OWNER.getByName(owner), binding, door, request) as T;
 }

@@ -114,12 +114,12 @@ describe("E2B's lifecycle webhook", () => {
   it("hands the owner each event at the time it signs, however old or ahead, and a replay is " +
      "refused by the execution it names (review L2)", async () => {
     // The window the owner counts an event in is the owner's (`sandbox-time.test.ts`).
-    const signedAt = await admitted();
+    const timed = await admitted();
     const times = [Date.now() - 7 * 86_400_000, Date.now() + 3600_000];
     for (const at of times) {
-      await deliver(JSON.stringify(event(signedAt, { timestamp: new Date(at).toISOString() })));
+      await deliver(JSON.stringify(event(timed, { timestamp: new Date(at).toISOString() })));
     }
-    expect((await env.OWNER_GATE.seen(signedAt)).filter((each) => each.method === "sandboxBilled")
+    expect((await env.OWNER_GATE.seen(timed)).filter((each) => each.method === "sandboxBilled")
       .map((each) => (each.args as [{ at: number }])[0].at)).toEqual(times);
     // A delivery replayed inside the window is refused by the execution it names, however
     // many others came between; the ids are kept by age, not by count.

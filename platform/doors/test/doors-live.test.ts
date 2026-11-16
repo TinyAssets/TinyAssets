@@ -30,7 +30,7 @@ import { keyring, writeControl } from "../../ci/fixtures";
 import { slotBusy } from "../../contract/src/slots";
 import { until } from "../../ci/workerd";
 import {
- admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorAs, doorsEnv,
+ admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorsEnv,
  failNextForget, forgotten, held,
  NAVIGATE, OPEN,
  grantsOf, ownDoor, refresh, refuseOnce, registerClient, serveFirstPartyDocument, setControl,
@@ -626,17 +626,6 @@ describe("/hooks/inbound, a capability URL", () => {
     const { url: hookUrl } = await hooked();
     const over = await call(event(hookUrl, "big", "x".repeat(EGRESS_BODY_MAX + 1)));
     expect(over.status).toBe(413);
-  });
-
-  it("is refused at every door but inboundAccept, and inboundAccept refuses any other binding",
-     async () => {
-    const { who, binding_id } = await hooked();
-    const inbound = { owner: who, caller: who, origin: null,
-                      inbound: { binding: binding_id, revision: 1 } };
-    await expect(doorAs(who, inbound, "grantList")).rejects.toThrow(/inbound door alone/);
-    await expect(ownDoor(who, "inboundAccept", {
-      event_id: "x", event_at: now(), body: new Uint8Array(1), headers: {} }))
-      .rejects.toThrow(/inbound event's route alone/);
   });
 });
 

@@ -42,6 +42,8 @@ As planned, items 1 to 8 and N52, N84, N85, with one change the move needed:
 
 - **`fakeConfig` dates every fake at the Workers' one compatibility date** (`ci/workers.ts`). Before, it read the date from the fake's own workspace's Worker config, and `ci/` has none. Every Worker runs at one date (`ci/kit/config.ts` `dateProblems`), so the rule is the same for a workspace's fake and for a `ci/` one, and no fake's date changes.
 
+- **The review moved one more owner-binder test** by item 4's rule: `doors-live.test.ts`'s inbound binding at `grantList`, and the owner's own at `inboundAccept`, called the object straight with bindings no door sends there and matched the owner's text. `owner/test/admit.test.ts` now holds both (`INBOUND_ONLY`, `INBOUND_DOOR`), which no owner test held before.
+
 **Mutations**, each failing a test that passes on this head:
 
 - **`owner-do.ts`'s `erasure` caller check dropped:** fails only the new table rule (`admit.test.ts`).
