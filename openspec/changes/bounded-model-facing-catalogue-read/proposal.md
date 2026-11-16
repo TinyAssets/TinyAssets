@@ -52,7 +52,7 @@ is that one read serves two callers who want opposite things.
    ordering; `query=` filters, `output_offset=` pages the rest as a cursor.
    Totals accompany every page, so a count is never hidden. No new parameters:
    `query`, `limit` and `output_offset` already exist on `read_graph`.
-   Collision-checked: `python scripts/check_primitive_exists.py action
+   Collision-checked: `python check_primitive_exists.py action
    model_options_summary` → CLEAN on `origin/main`.
 
 2. **`target="model_options"` is unchanged** — same arguments, same complete

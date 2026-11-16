@@ -9,11 +9,12 @@ half-formed experiments.
 - Keep one idea per entry.
 - If an idea becomes work, a design note, or a plan, add the destination in
   `Links` instead of deleting the capture history.
-- Merge duplicates during triage in `ideas/PIPELINE.md`, not during capture.
+- Merge duplicates during triage, not during capture.
 
 ## Inbox
 
-- [2026-09-26] (source: host, owner: rulebook-recut, status: captured, priority: infrastructure, size: medium) **Scale disk hygiene past the dev box.**
+- [2026-09-26] (source: host, owner: rulebook-recut, status: dropped, priority: infrastructure, size: medium) **Scale disk hygiene past the dev box.**
+  **Dropped 2026-11-16:** the Windows dev-box hygiene it builds on was deleted (`untangle/p9-now`; git holds it), and the platform runs on no host disk.
   **Why it is captured, not built:** founder, 2026-09-26 — *"scaled with users as needed, but that's mostly later."* Kept here rather than in a reference doc, because an unbuilt plan in `docs/reference/` reads as procedure.
   **What already survives the move:** every machine-specific value in `scripts/dev_hygiene.py` is a constant or a flag (prefixes, classes, age floors, keep budget, per-pass cap, roots), and the extra temp root defaults to the repo's own drive rather than a literal `C:\`, so the rules apply unchanged to the production host and to per-universe scratch.
   **The three classes that would have to be added:** **per-universe quotas** (a reclaim decision needs a tier quota, not one global floor), **scratch-lease reclamation** (the proof becomes "the lease expired", not "the mtime is old"), and **host disk expansion** (escalation should be able to end in "grow the volume").

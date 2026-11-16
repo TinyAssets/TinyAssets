@@ -565,8 +565,7 @@ inside the free tier. Expect about **$1-3/month**.
 Only an elevated shell can do this one. 68 directories under
 `%TEMP%` plus `.codex-test-tmp/` and `.pytest-tmp/` inside the checkout carry
 sandbox-token ACLs the interactive user cannot read, list, or delete — not just
-cannot delete: `Get-Acl` itself fails. `scripts/dev_hygiene.py` reports them as
-`acl_locked_needs_elevation` and deliberately never tries to force them.
+cannot delete: `Get-Acl` itself fails.
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts/clear_sandbox_temp_dirs.ps1 -Apply

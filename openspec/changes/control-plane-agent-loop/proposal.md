@@ -36,7 +36,7 @@ handle bound at turn start; no model credential ever enters the box.
   provides them and passes the `op_id`; the journal is unchanged.
 - An admitted box binding selects the thin loop; owner-split admission keeps
   the engine-tool adapter.
-- `scripts/measure_agent_loop_memory.py`: resident memory per waiting turn,
+- `measure_agent_loop_memory.py`: resident memory per waiting turn,
   500 concurrent turns against a mock SSE server.
 
 Still owed by later PRs of this change (see `tasks.md`): the production box
