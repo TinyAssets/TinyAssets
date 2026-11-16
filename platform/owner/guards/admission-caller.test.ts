@@ -173,10 +173,7 @@ describe("admission caller guard", () => {
     const rows = ownerRows();
     const by = (test: (row: (typeof rows)[number]) => boolean) =>
       rows.filter(test).map((row) => row.door).sort();
-    expect(by((row) => row.class === "admission"))
-      .toEqual(by((row) => row.caller === "reserved" || row.caller === "erasure"));
-    expect(by((row) => row.class === "import"))
-      .toEqual(by((row) => row.caller === "import" || row.caller === "discard"));
+    // Each class by its callers is the table's rule (`stepProblems`), held when it loads.
     expect(by((row) => row.class === "import")).toEqual(["importCheck", "importDiscard",
       "importFileBegin", "importFileCommit", "importFileStored", "importFiles", "importNotice",
       "importRows"]);

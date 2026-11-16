@@ -53,7 +53,7 @@ import {
  * - `none`: no binding at all (the sandbox line's ring, and billed events): the contract's
  *   doors that take none (`UNBOUND_DOORS`) alone, so every other door binds.
  */
-export const CALLER_KINDS = Object.freeze(["account", "visitors", "owner", "session",
+const CALLER_KINDS = Object.freeze(["account", "visitors", "owner", "session",
   "reserved", "erasure", "import", "discard", "egress", "runner", "run", "sync", "reader",
   "changes", "lease", "inbound", "none"] as const);
 export type CallerKind = (typeof CALLER_KINDS)[number];
@@ -63,12 +63,12 @@ export type CallerKind = (typeof CALLER_KINDS)[number];
  * changes no row it may not (`owner_rows`, `action`: what); only an MCP client files its own
  * card (`own_card`).
  */
-export const GUARDS = Object.freeze(["no_mailbox", "owner_rows", "own_card"] as const);
-export type Guard = (typeof GUARDS)[number];
+const GUARDS = Object.freeze(["no_mailbox", "owner_rows", "own_card"] as const);
+type Guard = (typeof GUARDS)[number];
 
 /** How a door's handler runs in the object's write gate (`gate.ts`). */
-export const GATES = Object.freeze(["door", "quiet", "synced", "filing", "units"] as const);
-export type Gate = (typeof GATES)[number];
+const GATES = Object.freeze(["door", "quiet", "synced", "filing", "units"] as const);
+type Gate = (typeof GATES)[number];
 
 /** A door's steps, by its name. */
 export interface DoorSteps {
