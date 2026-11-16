@@ -30,11 +30,6 @@ import pytest
 
 import tinyassets.api.universe as us
 import tinyassets.api.visibility as vis
-
-# A universe exists because an ownership row names it (#4012). A `founder_home`
-# BINDING, not an ACL grant: granting would flip a fixture to private and change
-# what the surrounding assertion means.
-from tests.conftest import own_universe
 from tinyassets.api.wiki import _ensure_wiki_scaffold
 from tinyassets.auth.middleware import auth_middleware, clear_identity, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
