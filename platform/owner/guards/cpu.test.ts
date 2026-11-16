@@ -2,13 +2,24 @@
  * The CPU guards' clock (`cpu.ts`) is the measuring thread's own: CPU that another thread
  * of the process spends while a step is measured (V8's helpers, another worker thread)
  * never counts. `process.cpuUsage`, the whole process's, counted it, so the move's guard
- * read 4,354 ms on a CI runner where its own thread spent less.
+ * read 4,354 ms on a CI runner where its own thread spent less. A guard's bound is the
+ * budgets' runners' times this runner's speed, as the test pool is given it (`onThisRunner`).
  */
 import { Worker } from "node:worker_threads";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { cpuMs, threadMs } from "./cpu";
+import { cpuMs, onThisRunner, threadMs } from "./cpu";
+
+/** The pool's runner, as a runner three times slower than the budgets' would be given it. */
+vi.mock("vitest", async (actual) => {
+  const real = await actual<typeof import("vitest")>();
+  const inject = ((key: "classTimeouts") => {
+    const given = real.inject(key);
+    return { ...given, runner: { calibration_ms: 3 * given.runner.calibration_ms, speed: 3 } };
+  }) as typeof real.inject;
+  return { ...real, inject };
+});
 
 /** A worker thread that spins for `ms` of wall time, then ends. */
 const spinning = (ms: number) => new Worker(
@@ -44,5 +55,11 @@ describe("the CPU guards' clock", () => {
     }
     expect(spins).toBeGreaterThan(0);
     expect(threadMs(start)).toBeGreaterThan(spent() / 2);
+  });
+});
+
+describe("the CPU guards' bounds", () => {
+  it("hold a step at this runner's speed, as the test pool is given it", () => {
+    expect(onThisRunner(1_000)).toBe(3_000);
   });
 });

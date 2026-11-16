@@ -358,6 +358,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       not by hand (`ownDoor<T>`); `d2:N52`, `N84`, `N85` and `N89`.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
+  - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
+    budgets' factor of 4 and the watchdogs' 3, and `search-cpu`'s host CPU bound with them: the
+    runner-variance rule (`untangle/budgets-variance`, #5640's review; `budgets-variance.md`).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `owner.rewrap` (or `owner.reseal`) for every owner until a pass answers `left` 0 for every
@@ -660,9 +663,6 @@ The fixes the untangle skill's cutover rule holds until after the cutover (found
   connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
   exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
   then its build (`untangle/r7-unopenable`).
-- [ ] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
-  budgets' factor of 4 and the watchdogs' 3, and `search-cpu`'s host CPU bound with them: the
-  runner-variance rule (`untangle/budgets-variance`, #5640's review).
 
 ### Step 17. Restore and the off-account copy
 

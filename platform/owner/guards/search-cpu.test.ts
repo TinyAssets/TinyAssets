@@ -3,9 +3,10 @@
  * `SEARCH_SCAN` entries of inline files at `INLINE_BYTES` each and a query of
  * `SEARCH_QUERY_BYTES` of distinct words, in two shapes: pages of distinct words, and OKF
  * indexes of as many lines as fit, each naming a file of the page. The figures go in
- * `limits-audit.md`; the test holds each well inside Workers' CPU limit an invocation
- * (30 s by default, developers.cloudflare.com/workers/platform/limits/#cpu-time), at a tenth
- * of it, so a slower host still has room. It also measures what a query's words take.
+ * `limits-audit.md`; the test holds each well inside the owner Worker's CPU limit an
+ * invocation (`cpu.ts` `CPU_LIMIT_MS`), at a tenth of it on the budgets' runners
+ * (`onThisRunner`), so a slower host still has room. It also measures what a query's words
+ * take.
  */
 import { describe, expect, it } from "vitest";
 
@@ -13,9 +14,11 @@ import { RESULT_CHARS } from "../../contract/src/encoded";
 import {
   SEARCH_ANSWER_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, type Scanned, searchPage, words,
 } from "../src/file-search";
-import { threadMs } from "./cpu";
+import { CPU_LIMIT_MS, onThisRunner, threadMs } from "./cpu";
 
 const INLINE = 4096;
+/** One search's CPU on the budgets' runners, at most: a tenth of the limit. */
+const SEARCH_CPU_MS = CPU_LIMIT_MS / 10;
 const encoder = new TextEncoder();
 
 /** Distinct words from `from`, joined by spaces, to `bytes` bytes. */
@@ -59,7 +62,7 @@ describe("the search's worst case", () => {
     });
     console.log(`search worst case, distinct words: ${Math.round(ms)} ms CPU, ${found} results`);
     expect(found).toBe(SEARCH_SCAN);
-    expect(ms).toBeLessThan(3_000);
+    expect(ms).toBeLessThan(onThisRunner(SEARCH_CPU_MS));
   });
 
   it("keeps one call of full indexes inside a tenth of the CPU limit", () => {
@@ -78,7 +81,7 @@ describe("the search's worst case", () => {
     }
     const ms = cpuMs(() => searchPage(entries, false, terms, () => "u"));
     console.log(`search worst case, full indexes: ${Math.round(ms)} ms CPU`);
-    expect(ms).toBeLessThan(3_000);
+    expect(ms).toBeLessThan(onThisRunner(SEARCH_CPU_MS));
   });
 
   it("keeps the worst answer, envelope and escapes included, within one answer", () => {

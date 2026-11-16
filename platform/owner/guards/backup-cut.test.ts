@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import { cutParts, GENERATION_SIZES } from "../src/backup";
 import { chunkLine, encodeLines, EXPORT_PAGE_BYTES, type Lines } from "../src/export";
 import { CHUNK_BYTES } from "../../contract/src/limits";
-import { CPU_LIMIT_MS, cpuMs, STEP_CPU_MS } from "./cpu";
+import { CPU_LIMIT_MS, cpuMs, onThisRunner, STEP_CPU_MS } from "./cpu";
 
 /** The cut `cutParts` replaced, verbatim but for its inputs: the reference for its bytes. */
 function replacedCut(lines: readonly string[], part: number): Uint8Array[] {
@@ -117,7 +117,7 @@ describe("a burst's cut into parts at production sizes", () => {
     const ms = await cpuMs(() => cut(lines, part));
     console.log(`one burst's cut: ${lines.length} lines, ${Math.round(ms)} ms CPU of ` +
                 `${CPU_LIMIT_MS}`);
-    expect(ms).toBeLessThan(STEP_CPU_MS);
+    expect(ms).toBeLessThan(onThisRunner(STEP_CPU_MS));
   });
 
   it("costs in proportion to its size: a burst four times as large, parts and all, is " +
