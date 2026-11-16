@@ -12,7 +12,7 @@ conservative queue still covers all files. Refresh when shard times drift
 apart, or when a test file's time changes by minutes.
 
     python scripts/refresh_test_durations.py               # last 5 whole-surface runs, via gh
-    python scripts/refresh_test_durations.py --junit a.xml b.xml
+    python scripts/refresh_test_durations.py --junit a.xml b.xml  # whole-surface junits only
 """
 
 from __future__ import annotations
@@ -65,7 +65,8 @@ def download_recent(count: int, workdir: Path) -> list[Path]:
 
         def download(artifact: str) -> None:
             subprocess.run(
-                ["gh", "run", "download", str(run["databaseId"]), "-n", artifact, "-D", str(target)],
+                ["gh", "run", "download", str(run["databaseId"]),
+                 "-n", artifact, "-D", str(target)],
                 cwd=REPO_ROOT, check=True,
             )
 
@@ -81,7 +82,8 @@ def download_recent(count: int, workdir: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--junit", nargs="+", type=Path, help="merged junit files to use instead")
+    ap.add_argument("--junit", nargs="+", type=Path,
+                    help="whole-surface runs' merged junit files to use instead")
     ap.add_argument("--runs", type=int, default=5,
                     help="successful whole-surface merge-group runs to read")
     ap.add_argument("--out", type=Path, default=OUT)
