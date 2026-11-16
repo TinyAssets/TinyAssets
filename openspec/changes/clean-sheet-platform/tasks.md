@@ -365,7 +365,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       (`N89` was already gone).
     - [ ] T2d (`untangle/t2d`, after `untangle/o2b` merges): the table doors' answers typed from
       the contract, not by hand: `ownDoor<D>` over o2b's generated `OwnerDoors`, its answer
-      `DoorAnswer<D>`, with the `DoorTypes` answers the doors' tests read (`t2c.md`).
+      `DoorAnswer<D>`, with the `DoorTypes` answers the doors' tests read and those #5657 left
+      (`sandboxRung`, `restoreRelease`; `t2c.md`).
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
   - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
