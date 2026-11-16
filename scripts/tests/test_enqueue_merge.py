@@ -20,6 +20,13 @@ def test_the_rules_the_file_declares_are_no_drift() -> None:
                                     _as_github_returns(enqueue_merge.RULES)) == []
 
 
+def test_the_same_checks_in_another_order_are_no_drift() -> None:
+    live = copy.deepcopy(enqueue_merge.RULES)
+    gate = next(rule for rule in live if rule["type"] == "required_status_checks")
+    gate["parameters"]["required_status_checks"].reverse()
+    assert enqueue_merge.gate_drift(enqueue_merge.RULES, _as_github_returns(live)) == []
+
+
 def test_a_check_required_live_but_not_in_the_file_is_drift() -> None:
     live = copy.deepcopy(enqueue_merge.RULES)
     gate = next(rule for rule in live if rule["type"] == "required_status_checks")

@@ -109,9 +109,20 @@ def not_green(conclusions: dict[str, str]) -> list[str]:
 
 
 def gate_drift(declared: list[dict], live: list[dict]) -> list[str]:
-    """Each rule on one side only: the file's, or the rules GitHub applies to main."""
+    """Each rule on one side only: the file's, or the rules GitHub applies to main.
+
+    No list in a rule's parameters has a meaningful order, so lists compare sorted."""
+    def unordered(value: object) -> object:
+        if isinstance(value, dict):
+            return {key: unordered(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return sorted((unordered(item) for item in value),
+                          key=lambda item: json.dumps(item, sort_keys=True))
+        return value
+
     def canonical(rules: list[dict]) -> list[str]:
-        return sorted(json.dumps({"type": rule["type"], "parameters": rule.get("parameters", {})},
+        return sorted(json.dumps(unordered({"type": rule["type"],
+                                            "parameters": rule.get("parameters", {})}),
                                  sort_keys=True) for rule in rules)
     mine, theirs = canonical(declared), canonical(live)
     return ([f"file only: {rule}" for rule in mine if rule not in theirs]
