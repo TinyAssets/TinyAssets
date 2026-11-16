@@ -13,6 +13,11 @@ same receipt ``pr-scope-guard.yml`` requires: a comment by Jonnyton that opens
 with ``Drain-Review-Verdict: APPROVE`` and ``Drain-Review-Head`` for this
 change, cited at the top of the body. No receipt, no enqueue.
 
+The required checks are the ones ``docs/ops/merge-queue-ruleset.json`` names.
+The rules GitHub applies to ``main`` are read first, and anything but that
+file's rules fails the job and enqueues nothing: the file and the live ruleset
+change together (``docs/host-actions.md``).
+
 A token that cannot call the mutation (missing ``Merge queues: Read and
 write``) logs that sentence and returns success. The job stays green so the
 missing permission is not mistaken for a bad pull request.
@@ -39,10 +44,13 @@ from scripts.drain_review_gate import (  # noqa: E402
     same_change_as,
 )
 
-REQUIRED_CHECKS = (
-    "Diff scope declared",
-    "required-tests",
-    "invariants",
+RULESET = REPO_ROOT / "docs" / "ops" / "merge-queue-ruleset.json"
+RULES = json.loads(RULESET.read_text(encoding="utf-8"))["rules"]
+REQUIRED_CHECKS = tuple(
+    check["context"]
+    for rule in RULES
+    if rule["type"] == "required_status_checks"
+    for check in rule["parameters"]["required_status_checks"]
 )
 TRUSTED_LOGIN = "jonnyton"
 
@@ -98,6 +106,27 @@ def not_green(conclusions: dict[str, str]) -> list[str]:
     """The required checks that did not succeed; each runs on the pull request,
     so a skip means it did not run."""
     return [name for name in REQUIRED_CHECKS if conclusions.get(name) != "SUCCESS"]
+
+
+def gate_drift(declared: list[dict], live: list[dict]) -> list[str]:
+    """Each rule on one side only: the file's, or the rules GitHub applies to main.
+
+    No list in a rule's parameters has a meaningful order, so lists compare sorted."""
+    def unordered(value: object) -> object:
+        if isinstance(value, dict):
+            return {key: unordered(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return sorted((unordered(item) for item in value),
+                          key=lambda item: json.dumps(item, sort_keys=True))
+        return value
+
+    def canonical(rules: list[dict]) -> list[str]:
+        return sorted(json.dumps(unordered({"type": rule["type"],
+                                            "parameters": rule.get("parameters", {})}),
+                                 sort_keys=True) for rule in rules)
+    mine, theirs = canonical(declared), canonical(live)
+    return ([f"file only: {rule}" for rule in mine if rule not in theirs]
+            + [f"live only: {rule}" for rule in theirs if rule not in mine])
 
 
 def skip_reason(
@@ -454,6 +483,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.repo.count("/") != 1:
         parser.error("--repo must be OWNER/REPO")
+    proc = _gh(["api", f"repos/{args.repo}/rules/branches/main"])
+    if proc.returncode != 0:
+        print(f"::error::could not read the rules for main: {proc.stderr.strip()}",
+              file=sys.stderr)
+        return 1
+    drift = gate_drift(RULES, json.loads(proc.stdout))
+    if drift:
+        print(f"::error::the rules GitHub applies to main are not "
+              f"{RULESET.relative_to(REPO_ROOT)}'s, so nothing is enqueued until they are "
+              f"(docs/host-actions.md): {'; '.join(drift)}", file=sys.stderr)
+        return 1
     code = 0
     for number in args.prs:
         code = max(code, enqueue(args.repo, number, expect_head=args.head))
