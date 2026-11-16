@@ -27,8 +27,11 @@
  *   `copyback` writes into R2 the objects of one owner's namespace that R2 lacks, as the copy
  *   held them at a time inside its window (`copyBack`), the namespace the one the owner's own
  *   object names, so the doors' erasure records refuse an erased owner before anything is read.
- *   The restore record goes first (`recordRestore`). Once a month a night is a drill (`drill`):
- *   it reads back what R2 held, whole, and what a copy back at the window's far edge writes.
+ *   The bucket's own erasure record is read first, and survives the account: the mark the files
+ *   Worker makes for each namespace it deletes on purpose (`e/<ns>`, `erasures`), whose objects
+ *   no copy back writes. The restore record goes first (`recordRestore`). Once a month a night
+ *   is a drill (`drill`): it reads back what R2 held, whole, and what a copy back of the whole
+ *   bucket at the window's far edge writes, every marked namespace left out.
  *
  * `node --experimental-strip-types deploy/offsite.ts settings` writes `configured` for the
  * workflow; `… copy` runs the copy, and `… drill` the copy and then the drill. Node runs this
@@ -41,7 +44,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { keyed, whole } from "../contract/src/checks.ts";
-import { objectPrefix } from "../contract/src/files.ts";
+import { MARKS, markedNamespace, namespaceOf, objectPrefix } from "../contract/src/files.ts";
 import { HEX32 } from "../contract/src/ids.ts";
 import { RECOVERY_WINDOW_S } from "../contract/src/limits.ts";
 import { annotate, github, output, pages, type Reach, summarize } from "./actions.ts";
@@ -557,20 +560,60 @@ export function readableAt(at: Date | null, now: Date): void {
   }
 }
 
+type Run<R extends string> = ReturnType<typeof rcloneOf<R>>["run"];
+
 /**
- * `prefix` of the copy as it stood at `at` (null: as it stands) and of `source` in R2, and
- * what a copy back of it writes: every name under it the copy then held that R2 now lacks,
- * relative to it.
+ * The namespaces the files bucket marks deleted on purpose (`e/<ns>`,
+ * `contract/src/files.ts` `MARKS`), as R2 holds them and the copy as it stands: the files
+ * Worker makes each before its namespace's first delete, and nothing deletes one, so R2 holds
+ * every mark, and the copy every one made before its last night, past the account itself.
+ * Read with `--include`, so a bucket with no mark yet lists none. With `at`, every mark the
+ * copy held then must still be in it: one gone means a night copied a bucket that had lost its
+ * marks (an account lost, and a new one copied), so the marks as it stands are not whole. A
+ * listing that fails, a name under `e/` that is no mark, or a mark gone, is a loud stop before
+ * anything is written: no copy back runs without the erasures.
+ */
+function erasures(run: Run<"back" | "now" | "r2">, bucket: string, source: string,
+                  at: boolean): ReadonlySet<string> {
+  const listed = (using: "back" | "now" | "r2", root: string, where: string) =>
+    new Set(run(`listing of the erasure marks in ${where}`, [using],
+                ["lsf", "--files-only", "-R", "--include", `/${MARKS}*`, `${using}:${root}`], true)
+      .split("\n").filter(Boolean).map((name) => {
+        const ns = markedNamespace(name);
+        if (ns === null) {
+          throw new Error(`the erasure marks in ${where} can't be read: it holds a name under ` +
+                          `${MARKS} that is no namespace's mark; nothing is written`);
+        }
+        return ns;
+      }));
+  const now = listed(at ? "now" : "back", bucket, "the copy");
+  if (at) {
+    const lost = [...listed("back", bucket, "the copy as it stood")].filter((ns) => !now.has(ns));
+    if (lost.length > 0) {
+      throw new Error(`the copy as it stands lacks ${lost.length} erasure marks it held at the ` +
+                      "time asked: a night copied a files bucket that had lost them, so its " +
+                      "marks are not whole; nothing is written");
+    }
+  }
+  return new Set([...now, ...listed("r2", source, "R2")]);
+}
+
+/**
+ * `prefix` of the copy as it stood at `at` (null: as it stands) and of `source` in R2, the
+ * namespaces marked erased (`erasures`, read first), and what a copy back of it writes: every
+ * name under it the copy then held that R2 now lacks, relative to it.
  */
 function readBack(b: Back, source: string, prefix: string, at: Date | null, io: Effects) {
   const rclone = rcloneOf(io, { back: readRemote("back", b.read, at),
+                                now: readRemote("now", b.read, null),
                                 r2: r2Remote("r2", b.account, b.r2) });
+  const erased = erasures(rclone.run, b.bucket, source, at !== null);
   const from = `back:${b.bucket}/${prefix}`;
   const to = `r2:${source}/${prefix}`;
   const there = new Set(rclone.listed("listing of R2", "r2", to));
   const lacking = rclone.listed("listing of the copy", "back", from)
     .filter((name) => !there.has(name));
-  return { run: rclone.run, from, to, lacking };
+  return { run: rclone.run, from, to, lacking, erased };
 }
 
 /**
@@ -605,6 +648,8 @@ function referenced(named: Referenced, name: string): boolean {
  *   never written: nothing would ever delete it again. After the write the object is asked
  *   again, and a written object it no longer names (its row collected during the run) is a
  *   loud stop, for mode `restore`'s sweep.
+ * - **Never a marked namespace's** (`erasures`, read first): its erasure stands, whatever
+ *   else says the owner is not erased.
  * - **Never one R2 holds,** so no live root goes back to an older wrap.
  * - **The restore record before the first byte,** so mode `retire` holds a rotation's gate to
  *   a pass begun after it. With nothing to write, nothing is written and nothing recorded.
@@ -619,6 +664,10 @@ export async function copyBack(b: Back, source: string, namespace: string, at: D
   const prefix = objectPrefix(namespace);
   const as = at === null ? "as the copy stands" : `as the copy held them at ${iso(at)}`;
   const back = readBack(b, source, prefix, at, io);
+  if (back.erased.has(namespace)) {
+    throw new Error(`the files bucket marks the namespace under ${prefix} erased: nothing of it ` +
+                    "is written, and no restore is recorded");
+  }
   const before = await named();
   const writes = back.lacking.filter((name) => referenced(before, name));
   const left = `${back.lacking.length - writes.length} more it lacks no row names`;
@@ -648,11 +697,31 @@ export async function copyBack(b: Back, source: string, namespace: string, at: D
 }
 
 /**
+ * Whether a copy back of the whole bucket (after an account's loss) writes `name`, which the
+ * copy holds and R2 lacks: a mark, so R2 holds every erasure again first; an object of a
+ * namespace no mark names; never one of a marked namespace. Any other name is a loud stop: the
+ * files bucket holds nothing else (`files/src/keys.ts`).
+ */
+function restored(name: string, erased: ReadonlySet<string>): boolean {
+  if (markedNamespace(name) !== null) {
+    return true;
+  }
+  const ns = namespaceOf(name);
+  if (ns === null) {
+    throw new Error(`the copy holds an object that is neither a namespace's nor a mark ` +
+                    `(under ${name.split("/")[0]}/), which nothing in the files bucket writes`);
+  }
+  return !erased.has(ns);
+}
+
+/**
  * The monthly drill, on the whole bucket, after the night `night` (`copy`): every object R2
  * held when the night began downloaded from both sides and compared byte for byte, so a copy
- * back as the copy stands writes exactly R2's bytes; then a copy back's own reads as the copy
- * stood `BACK_DAYS` ago, the oldest it takes: what it would write counted, and `SAMPLE` of
- * them read whole. It writes nothing: no standing key can write the files bucket.
+ * back as the copy stands writes exactly R2's bytes; then a whole-bucket copy back's own reads
+ * as the copy stood `BACK_DAYS` ago, the oldest it takes: the erasure marks read whole
+ * (`erasures`), what it would write counted with every marked namespace's objects left out,
+ * and `SAMPLE` of them read whole. It writes nothing: no standing key can write the files
+ * bucket.
  */
 export function drill(s: Settings, source: string, night: Copied, io: Effects): string[] {
   const { run } = rcloneOf(io, { source: r2Remote("source", s.account, s.r2),
@@ -662,12 +731,14 @@ export function drill(s: Settings, source: string, night: Copied, io: Effects): 
        "--min-age", night.began]);
   const at = new Date(io.now().getTime() - BACK_DAYS * 86_400_000);
   const back = readBack(s, source, "", at, io);
-  const sample = sampled(back.lacking);
+  const writes = back.lacking.filter((name) => restored(name, back.erased));
+  const sample = sampled(writes);
   withList(sample, (file) => back.run("read of a copy back's sample", ["back"],
                                       ["cat", "--discard", "--files-from", file, back.from]));
   return [`every object R2 held at ${night.began} is in the copy, compared byte for byte`,
-          `a copy back as the copy stood at ${iso(at)} would write ${back.lacking.length} ` +
-          `objects R2 no longer holds; ${sample.length} of them read back whole`];
+          `a copy back as the copy stood at ${iso(at)} would write ${writes.length} objects R2 ` +
+          `no longer holds, and leave out ${back.lacking.length - writes.length} of namespaces ` +
+          `marked erased (${back.erased.size} marks); ${sample.length} of them read back whole`];
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
