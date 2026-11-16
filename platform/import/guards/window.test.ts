@@ -2,10 +2,12 @@
  * The window's steps after staging (`window.ts`, slice 5) on the slice-2 builder's own bundles,
  * against a fake world: R2's S3 API (the staging and files buckets), the Queues HTTP API (the
  * import queue, whose fake doors answer each message as `doors/src/import/` does, and the
- * dead-letter queue's pull consumer) and the KV API (the directory). `verify` holds each check
- * to its bundle and keeps the result; `admit` admits nothing until every owner verified clean
- * and the dead-letter queue is empty, then each in turn; `wipe` discards, deletes and proves
- * every listing empty; `dlq` reports by ordinal and deletes only with its flag; and each,
+ * dead-letter queue's pull consumer), the KV API (the directory) and the doors' secret
+ * listing. `verify` holds each check to its bundle and keeps the result; `admit` admits nothing
+ * until every owner verified clean and the dead-letter queue is empty, then each in turn;
+ * `wipe` discards each owner still staged, deletes and proves every listing empty; `dlq`
+ * reports by ordinal and deletes only with its flag; `close` passes only once every staged
+ * owner is admitted or discarded, and `unkey` deletes the doors' key after it; and each,
  * killed at any of its steps, converges when run again. The doors' side of each is the doors'
  * own test (`doors/test/import.test.ts`), through the real object. The live names are the
  * deploy kit's, read from the configs (`deploy/facts.ts`), as the window's `facts.json` hands
@@ -20,8 +22,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { TIERS } from "../../ci/fixtures";
 import { chunkPlan } from "../../contract/src/content";
 import {
-  answerName, bodyId, type CheckEntry, doneName, type Entry, importMessage, type ImportMessage,
-  macHolds, NO_ROWS, rehearsalName, rehearsalRun, type Row, rowLeaf, rowsSum,
+  answerName, bodyId, BUNDLE_INDEX, type CheckEntry, doneName, type Entry, IMPORT_KEY,
+  importMessage, type ImportMessage, macHolds, NO_ROWS, rehearsalName, rehearsalRun, type Row,
+  rowLeaf, rowsSum, stagedName,
 } from "../../contract/src/import-message";
 import { DEFAULT_POLICY_DIGEST, policyDigest } from "../../contract/src/policy-document";
 import { PLACE_BYTES } from "../../contract/src/limits";
@@ -30,9 +33,11 @@ import { objectPrefix } from "../../contract/src/files";
 import { QUEUES } from "../../contract/src/queue-names";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
-import { windowMain } from "../cli";
+import { unkeyMain, windowMain } from "../cli";
 import { bundlesIn, type Fetcher, type Inputs, type Staged } from "../stage";
-import { admit, type Clock, deadLetters, readRecord, verify, type Window, wipe } from "../window";
+import {
+  admit, type Clock, close, deadLetters, readRecord, verify, type Window, wipe,
+} from "../window";
 import { FOUNDER, fixture } from "./fixture";
 
 const temps: string[] = [];
@@ -103,7 +108,15 @@ function heldOf(staged: Staged) {
                     used_bytes: 1, limit_bytes: 100 } };
 }
 
-/** The fake world: two buckets, the queues and their fake doors, and the directory. */
+/** A bundle's index, as `stage` puts it in the staging bucket under its run. */
+const indexAt = (staged: Staged): [string, string] =>
+  [stagedName(`${RUN}/${staged.key}`, BUNDLE_INDEX),
+   readFileSync(join(staged.dir, BUNDLE_INDEX), "utf8")];
+
+/**
+ * The fake world: two buckets (each bundle staged), the queues and their fake doors, the
+ * directory, and the doors' secret listing.
+ */
 function world(bundles: readonly Staged[]) {
   const buckets = new Map<string, Map<string, string>>([[NAMES.staging_bucket, new Map()],
                                                         [NAMES.files_bucket, new Map()]]);
@@ -117,7 +130,9 @@ function world(bundles: readonly Staged[]) {
   /** A refusal of every message of an op, as the doors would answer it, or a kill. */
   const faults: { kill?: { op: string; after: number }; refuse?: string } = {};
   const namespaces = new Map(bundles.map((staged, n) => [staged.owner, `${String(n).repeat(32)}`]));
+  const secrets = new Set([IMPORT_KEY]);
   for (const staged of bundles) {
+    staging.set(...indexAt(staged));
     staging.set(doneName(`${RUN}/${staged.key}`), JSON.stringify({ op: "import",
                                                                    bundle: staged.bundle,
                                                                    done: true }));
@@ -220,6 +235,14 @@ function world(bundles: readonly Staged[]) {
         .filter((key) => key.startsWith(prefix)).map((name) => ({ name })),
                              result_info: { cursor: "" } });
     }
+    const secret = `/workers/scripts/${NAMES.doors}/secrets`;
+    if (path === secret) {
+      return ok([...secrets].map((name) => ({ name, type: "secret_text" })));
+    }
+    if (request.method === "DELETE" && path.startsWith(`${secret}/`)) {
+      secrets.delete(path.slice(secret.length + 1));
+      return ok(null);
+    }
     if (path === "/storage/kv/namespaces/kv-directory/bulk/delete") {
       for (const key of JSON.parse(body) as string[]) {
         kv.delete(key);
@@ -230,7 +253,7 @@ function world(bundles: readonly Staged[]) {
   };
   const window: Window = { names: NAMES, inputs: INPUTS, fetcher, clock: CLOCK };
   return { window, buckets, staging, kv, sent, dead, consumers, held, admitted, faults,
-           namespaces };
+           namespaces, secrets };
 }
 
 const quiet = () => undefined;
@@ -419,15 +442,130 @@ describe("the window's wipe", () => {
     w.faults.kill = { op: "discard", after: 1 };
     await expect(wipe(out, RUN, w.window, record, quiet)).rejects.toThrow(/killed/);
     expect(Object.keys(readRecord(record, RUN).discarded).length).toBe(1);
-    // A put that landed late under a discarded namespace: the proof finds it.
+    // The killed run's staging stood, so its one discard is asked again.
+    expect(await wipe(out, RUN, w.window, record, quiet))
+      .toEqual({ records: 0, staged: 0, namespaces: bundles.length, objects: 0 });
+    const discards = () => w.sent.filter((message) => message.op === "discard").length;
+    expect(discards()).toBe(bundles.length + 2);
+    // A put that landed late under a discarded namespace: a wipe run again, with no owner left
+    // staged to discard, proves each namespace the record kept, and finds it.
     const first = w.namespaces.get(bundles[0]!.owner)!;
     w.buckets.get(NAMES.files_bucket)!.set(`${objectPrefix(first)}c/late`, "late");
-    const proof = await wipe(out, RUN, w.window, record, quiet);
-    expect(proof).toMatchObject({ records: 0, staged: 0, namespaces: bundles.length, objects: 1 });
+    expect(await wipe(out, RUN, w.window, record, quiet))
+      .toMatchObject({ records: 0, staged: 0, namespaces: bundles.length, objects: 1 });
     expect(await windowMain(["wipe", out, "--run", RUN, "--facts", facts, "--record", record],
                             envOf(), quiet, w.window.fetcher, CLOCK)).toBe(3);
-    // Each owner discarded once: the record kept the first run's.
-    expect(w.sent.filter((message) => message.op === "discard").length).toBe(bundles.length + 1);
+    expect(discards()).toBe(bundles.length + 2);
+  });
+});
+
+describe("the window's close", () => {
+  /** Every request but a read, through `w`'s fetcher: the close makes none. */
+  const writes = (w: ReturnType<typeof world>) => {
+    const made: string[] = [];
+    const fetcher: Fetcher = async (request) => {
+      if (request.method !== "GET") {
+        made.push(`${request.method} ${new URL(request.url).pathname}`);
+      }
+      return w.window.fetcher(request);
+    };
+    return { window: { ...w.window, fetcher }, made };
+  };
+
+  it("refuses while an owner is staged and not admitted, naming it, and changes nothing",
+     async () => {
+    const { out, record, facts, bundles } = bundled();
+    const w = world(bundles);
+    await verify(out, RUN, w.window, record, quiet);
+    // One admit, then the run stopped: every other owner is left with its data staged.
+    w.faults.kill = { op: "admit", after: 1 };
+    await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/killed/);
+    // And another run's owner, staged and never admitted, is the window's too.
+    w.staging.set(stagedName(`r0/${"0".repeat(16)}`, BUNDLE_INDEX),
+                  JSON.stringify({ owner: rehearsalName("r0", "user_z") }));
+    const lines: string[] = [];
+    const { window, made } = writes(w);
+    const shut = await close(window, (line) => lines.push(line));
+    const n = bundles.length;
+    expect(shut.left).toEqual([
+      "run r0, bundle 1 of 1: left, staged and not admitted",
+      ...bundles.slice(1).map((_b, at) => `run ${RUN}, bundle ${at + 2} of ${n}: left, staged ` +
+                                          "and not admitted")]);
+    expect(lines.at(-1)).toBe(`${n} of ${n + 1} staged owners are neither admitted nor ` +
+                              "discarded: the window stays open (admit each, in this run or a " +
+                              "later one, or wipe a rehearsal's run)");
+    expect(made).toEqual([]);
+    for (const staged of bundles) {
+      expect(lines.join("\n")).not.toContain(staged.owner);
+      expect(lines.join("\n")).not.toContain(staged.key);
+    }
+    expect(await windowMain(["close", "--facts", facts], envOf(), quiet, window.fetcher,
+                            CLOCK)).toBe(3);
+  });
+
+  it("passes once every owner is admitted, and once every owner is discarded", async () => {
+    const admitted = bundled();
+    const a = world(admitted.bundles);
+    await verify(admitted.out, RUN, a.window, admitted.record, quiet);
+    await admit(admitted.out, RUN, a.window, admitted.record, quiet);
+    const lines: string[] = [];
+    expect(await close(a.window, (line) => lines.push(line)))
+      .toEqual({ owners: admitted.bundles.length, left: [] });
+    expect(lines).toEqual([`every one of the ${admitted.bundles.length} staged owners is ` +
+                           "admitted, and every other discarded: the window may close"]);
+    expect(await windowMain(["close", "--facts", admitted.facts], envOf(), quiet,
+                            a.window.fetcher, CLOCK)).toBe(0);
+
+    const discarded = bundled();
+    const d = world(discarded.bundles);
+    await wipe(discarded.out, RUN, d.window, discarded.record, quiet);
+    expect(await close(d.window, quiet)).toEqual({ owners: 0, left: [] });
+  });
+
+  it("sees an owner staged again after a wipe, and the next wipe discards it again",
+     async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    await wipe(out, RUN, w.window, record, quiet);
+    // A stage of the run again puts the owner's index back, and its data with it.
+    w.staging.set(...indexAt(bundles[0]!));
+    expect((await close(w.window, quiet)).left)
+      .toEqual([`run ${RUN}, bundle 1 of 1: left, staged and not admitted`]);
+    const before = w.sent.filter((message) => message.op === "discard").length;
+    await wipe(out, RUN, w.window, record, quiet);
+    expect(w.sent.filter((message) => message.op === "discard").slice(before)
+      .map((message) => message.owner)).toEqual([bundles[0]!.owner]);
+    expect(await close(w.window, quiet)).toEqual({ owners: 0, left: [] });
+  });
+});
+
+describe("the window's key, deleted after its close", () => {
+  const stdin = `${INPUTS.account}\ndeploy-token-not-real\n`;
+
+  it("deletes the doors' IMPORT_KEY and reads their listing back without it", async () => {
+    const { facts, bundles } = bundled();
+    const w = world(bundles);
+    const lines: string[] = [];
+    expect(await unkeyMain(["unkey", "--facts", facts], stdin, (line) => lines.push(line),
+                           w.window.fetcher)).toBe(0);
+    expect([...w.secrets]).toEqual([]);
+    expect(lines).toEqual([`${NAMES.doors} holds no ${IMPORT_KEY}: the import window is closed`]);
+    // Run again, it deletes nothing more.
+    expect(await unkeyMain(["unkey", "--facts", facts], stdin, quiet, w.window.fetcher)).toBe(0);
+  });
+
+  it("refuses when the listing still holds the key, or without its stdin", async () => {
+    const { facts, bundles } = bundled();
+    const w = world(bundles);
+    const kept: Fetcher = async (request) => (request.method === "DELETE"
+      ? Response.json({ success: true, result: null }) : w.window.fetcher(request));
+    await expect(unkeyMain(["unkey", "--facts", facts], stdin, quiet, kept))
+      .rejects.toThrow(`${NAMES.doors} still lists ${IMPORT_KEY} after its deletion`);
+    for (const given of ["", `${INPUTS.account}\n`, "not-an-account\ntoken\n"]) {
+      await expect(unkeyMain(["unkey", "--facts", facts], given, quiet, w.window.fetcher))
+        .rejects.toThrow(/unkey takes CLOUDFLARE_ACCOUNT_ID, then CLOUDFLARE_API_TOKEN/);
+    }
+    expect([...w.secrets]).toEqual([IMPORT_KEY]);
   });
 });
 

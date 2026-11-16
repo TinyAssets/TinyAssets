@@ -18,10 +18,13 @@
  *   `STAGE_INPUTS`' order, never from a file, an argument or the environment; counts and
  *   ordinals on stdout;
  * - `verify <out> --run <id> --record <file>`, `admit <out> --run <id> --record <file>`,
- *   `wipe <out> --run <id> --record <file>` and `dlq <out> --run <id> [--delete]`, each with
- *   `--facts <facts.json>`: the window's steps after staging (`window.ts`), with the same
- *   credentials; exit 0 when the step holds (every owner clean, every listing empty, no dead
- *   letter), 3 when not.
+ *   `wipe <out> --run <id> --record <file>`, `dlq <out> --run <id> [--delete]` and `close`,
+ *   each with `--facts <facts.json>`: the window's steps after staging (`window.ts`), with the
+ *   same credentials; exit 0 when the step holds (every owner clean, every listing empty, no
+ *   dead letter, every staged owner admitted or discarded), 3 when not;
+ * - `unkey --facts <facts.json>`, on the workflow's runner after a real window's `close`
+ *   passed: the doors' `IMPORT_KEY` deleted with the deploy kit's token, which stdin hands
+ *   after the account (`UNKEY_INPUTS`), never to the import host.
  *
  * `--tiers` is the control record's tiers (`deploy/control.json`'s, by the window's `jq`),
  * read by the contract's `parseTiers`; `--facts` is the live names the steps that reach the
@@ -42,9 +45,9 @@ import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
 import { census } from "./census";
 import { copyMain } from "./copy";
-import { type Fetcher, type Inputs, namesOf, NETWORK, stage } from "./stage";
+import { cloudflareOf, type Fetcher, type Inputs, namesOf, NETWORK, stage } from "./stage";
 import type { Copy } from "./survey";
-import { admit, CLOCK, type Clock, deadLetters, verify, wipe } from "./window";
+import { admit, CLOCK, type Clock, close, deadLetters, unkey, verify, wipe } from "./window";
 
 /**
  * A staging run's credentials, by input, each named as its stdin hands it: one a line, in this
@@ -97,15 +100,22 @@ export async function stageMain(argv: readonly string[],
   return 0;
 }
 
-/** The window's steps after staging: `verify`, `admit`, `wipe` and `dlq` (`window.ts`). */
-export const WINDOW_STEPS = Object.freeze(["verify", "admit", "wipe", "dlq"] as const);
+/** The window's steps after staging: `verify`, `admit`, `wipe`, `dlq`, `close` (`window.ts`). */
+export const WINDOW_STEPS = Object.freeze(["verify", "admit", "wipe", "dlq", "close"] as const);
 
-/** `<step> <out> --run <id> ...`: its exit code, 0 when the step holds, 3 when not. */
+/**
+ * `<step> <out> --run <id> ...`, or `close --facts <file>`: its exit code, 0 when the step
+ * holds, 3 when not.
+ */
 export async function windowMain(argv: readonly string[],
                                  env: Readonly<Record<string, string | undefined>>,
                                  print: (line: string) => void, fetcher: Fetcher = NETWORK,
                                  clock: Clock = CLOCK): Promise<number> {
   const [step, given] = argv;
+  if (step === "close") {
+    const window = { names: namesIn(argv), inputs: stageInputs(env), fetcher, clock };
+    return (await close(window, print)).left.length === 0 ? 0 : 3;
+  }
   if (given === undefined) {
     throw new Error(`usage: ${step} <out> --run <id> --facts <file> --record <file>`);
   }
@@ -130,6 +140,22 @@ export async function windowMain(argv: readonly string[],
     return proof.records === 0 && proof.staged === 0 && proof.objects === 0 ? 0 : 3;
   }
   throw new Error(`no step ${step}`);
+}
+
+/** `unkey`'s stdin, one a line in this order: the account, then the deploy kit's token. */
+export const UNKEY_INPUTS = Object.freeze(["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]);
+
+/** `unkey --facts <file>`, its stdin `text`: 0 once the doors hold no `IMPORT_KEY`. */
+export async function unkeyMain(argv: readonly string[], text: string,
+                                print: (line: string) => void, fetcher: Fetcher = NETWORK):
+    Promise<number> {
+  const [account = "", token = ""] = text.split("\n").map((line) => line.replace(/\r$/, ""));
+  if (!HEX32.test(account) || token === "") {
+    throw new Error(`unkey takes ${UNKEY_INPUTS.join(", then ")} from its stdin, the account ` +
+                    "32 hex");
+  }
+  await unkey(cloudflareOf(token, fetcher), account, namesIn(argv).doors, print);
+  return 0;
 }
 
 function option(argv: readonly string[], name: string): string | null {
@@ -241,6 +267,11 @@ if (process.argv[1] !== undefined && /import\.mjs$|cli\.ts$/.test(process.argv[1
   const credentials = () => credentialsFrom(readFileSync(0, "utf8"));
   if (process.argv[2] === "stage") {
     stageMain(process.argv.slice(2), process.argv.includes("--dry-run") ? {} : credentials(),
+              (line) => process.stdout.write(`${line}\n`)).then((code) => {
+      process.exitCode = code;
+    }, refuse);
+  } else if (process.argv[2] === "unkey") {
+    unkeyMain(process.argv.slice(2), readFileSync(0, "utf8"),
               (line) => process.stdout.write(`${line}\n`)).then((code) => {
       process.exitCode = code;
     }, refuse);

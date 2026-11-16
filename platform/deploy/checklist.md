@@ -415,12 +415,13 @@ host's boot script drops it for Docker's containers).
 
 It reads these `production` secrets. Every mode needs `DO_SSH_KEY` (already set),
 `IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` needs the Spaces pair too, `bundle` the
-exclusion list, `stage`, `verify`, `wipe`, `admit` and `dlq` the R2 pair, the API token and
-`IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one stops
-before any step and names it. The account id is no secret: the six Cloudflare modes read it
-from the repository **variable** `CLOUDFLARE_ACCOUNT_ID` (step 0), held to 32 hex digits, and
-no token of the deploy kit's is read by this workflow. **Make them before the rehearsal, keep
-them through the window, and revoke them after it.**
+exclusion list, `stage`, `verify`, `wipe`, `admit`, `dlq` and `close` the R2 pair, the API
+token and `IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one
+stops before any step and names it. The account id is no secret: the seven Cloudflare modes
+read it from the repository **variable** `CLOUDFLARE_ACCOUNT_ID` (step 0), held to 32 hex
+digits. The real window's `close` alone also reads the deploy kit's own `CLOUDFLARE_API_TOKEN`,
+on the runner, never on the host, to delete the doors' `IMPORT_KEY`. **Make them before the
+rehearsal, keep them through the window, and revoke them after it.**
 
 | `production` secret | What it is | Scope |
 |---|---|---|
@@ -554,9 +555,16 @@ census's tag `ta-kind-rehearsal` or `ta-kind-window`: clean the window's run wit
 false and its confirm, as it was made; a rehearsal-kind dispatch is refused before the host is
 reached or destroyed.
 
-**After the admit, before `routes`,** delete the doors' copy
-(`npx wrangler secret delete IMPORT_KEY --name tinyassets-doors`), since a replayed admit is
-accepted by design. **After the window,** revoke everything and leave nothing billing:
+**After the admit, before `routes`,** run `close` with rehearsal false and its confirm. It
+passes only when every owner the staging bucket holds an index of, in any run, has its
+directory record (admitted) or no index left (discarded by its run's `wipe`). Then it deletes the
+doors' copy of `IMPORT_KEY` itself, since a replayed admit is accepted by design, and from then
+on the kit's `rotation` runs. An owner left behind is named by run and bundle ordinal, and
+nothing is changed. The window stays open, and `rotation` keeps refusing, until it is admitted:
+in this run once it verifies, or imported again in a later run and admitted there. A
+rehearsal's `close` only checks, after its `wipe`, and keeps the key for the window. Nothing
+else deletes the key; if it is ever needed again, step 7's second line sets it again.
+**After the window,** revoke everything and leave nothing billing:
 - run `clean` for every run, which destroys its import host, and confirm in DigitalOcean that
   no Droplet tagged `import-window` remains (every dispatch's summary names each one and its
   age, and warns past 7 days);
