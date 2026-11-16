@@ -248,10 +248,13 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`).
 - [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
   their readers re-pointed, so the window's deletion is smaller (`untangle/p9-openspec`).
-- [ ] `slow-tests`, which collects no test, leaves the ruleset and the classic branch
-  protection, the founder's admin edit (d3 §E4; the exact command goes on his local-session
-  list when this session can't write it, §F4), then its job goes (`untangle/slow-tests`, from
-  `land/3`).
+- [x] `slow-tests`, which collected no test, left the ruleset and the classic branch
+  protection (the founder, 2026-11-16, d3 §E4), then its job went (`untangle/slow-tests`,
+  from `land/3`; `untangle-2026-11/slow-tests.md`).
+- [ ] The required checks' names are held four times: the ruleset, the classic branch
+  protection, `docs/ops/merge-queue-ruleset.json` and `enqueue_merge.py` `REQUIRED_CHECKS`,
+  and nothing ties them. One source, researched first (`untangle/required-checks`; found by
+  `untangle/slow-tests`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
   one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
 
