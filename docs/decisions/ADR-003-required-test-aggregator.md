@@ -82,7 +82,9 @@ trustworthiness, not by speed**:
   proof. Reported but **not required** initially: stress tests are the likeliest
   source of flake, and a flaky *required* check trains everyone to re-run until
   green, which is how a gate stops meaning anything. Promote it once it has a
-  clean track record.
+  clean track record. (Corrected 2026-11-16: it was made required later, and
+  was deleted once the shape prune left it no test to collect,
+  `untangle/slow-tests`.)
 
 ### 5. Why serial — parallelism made the gate's verdict non-deterministic
 
@@ -163,7 +165,7 @@ own piece of work and bundling them would make this change unreviewable:
   would restore ~4x parallelism and remove a class of order-dependent results.
 - **9 `slow` concurrency tests had no CI runner at all**, and the tray tests
   cannot even be *imported* on a headless runner (`Xlib.error.DisplayNameError`).
-  The `slow-tests` job now runs the former and skips collecting the latter.
+  The `slow-tests` job ran the former and skipped collecting the latter.
 
 ## Residual risk — stated plainly
 
