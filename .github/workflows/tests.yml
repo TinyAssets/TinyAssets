@@ -824,12 +824,11 @@ jobs:
           overwrite: true
 
   required-tests:
-    # This exact string is the branch-protection context. Renaming the job
-    # ORPHANS the old required context: it stays "Expected — waiting for
-    # status" forever and every PR blocks indefinitely (it does NOT fail open;
-    # corrected 2026-08-02 per Codex review). Change the name only together
-    # with the `gh api` protection update in
-    # docs/decisions/ADR-003-required-test-aggregator.md.
+    # This exact string is a required check (docs/ops/merge-queue-ruleset.json,
+    # held to the job names by platform/ci/guards/required-checks.test.ts).
+    # A rename the live ruleset has not taken leaves the old context
+    # "Expected — waiting for status" and every PR blocked (it does NOT fail
+    # open), so the ruleset takes it at the merge (docs/host-actions.md).
     name: required-tests
     # The gate's lasting shape is the platform's jobs and the process leg. The first four
     # are the old stack's Python jobs, which leave at the cutover.
