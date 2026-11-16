@@ -201,7 +201,9 @@ reads `strict=true contexts=["policy","Diff scope declared","required-tests"]`,
 confirmed by an independent read-back. Verified engaging: PRs #2197 and #2194
 went to `mergeState=BLOCKED` pending the check.
 
-Kept below for the rollback command and for the next context change.
+Kept below as the 2026-08-03 record. A later context change goes through
+`docs/ops/merge-queue-ruleset.json` and its host-actions row
+(`untangle-2026-11/required-checks.md`), not these commands.
 
 The command that was run — note it preserves both existing contexts and
 `strict`, since PATCH replaces the whole list:

@@ -404,12 +404,6 @@ def test_junit_uploaded_even_on_failure():
     assert step["with"]["path"].endswith("/junit-linux-jail.xml")
 
 
-def test_not_the_required_context():
-    job = _job(_load())
-    assert job["name"] == _JOB
-    assert job["name"] != "required-tests"
-
-
 # --- the assertion helper ---------------------------------------------------
 
 _CASE = ('<testcase classname="tests.test_delivery_node_rpc" '

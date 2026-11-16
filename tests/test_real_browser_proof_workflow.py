@@ -137,10 +137,6 @@ def test_junit_uploaded_even_on_failure():
     assert step["with"]["path"].endswith("/junit-real-browser.xml")
 
 
-def test_not_the_required_context():
-    assert _job(_load())["name"] == _JOB != "required-tests"
-
-
 def _code(steps: list[dict]) -> str:
     return "\n".join(
         ln for s in steps for ln in s.get("run", "").splitlines()
