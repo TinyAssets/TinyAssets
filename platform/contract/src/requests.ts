@@ -97,6 +97,7 @@ export interface DoorRequests {
   readonly restoreBegin: DoorFields<"namespace" | "gen">;
   readonly restorePin: DoorFields<"gen">;
   readonly restoreWipe: DoorFields<"confirm">;
+  readonly restoreNames: DoorFields<"from">;
   readonly fileSyncCommit: DoorFields<"lease_id" | "epoch" | "ops">;
   readonly fileSyncUploadBegin: DoorFields<"lease_id" | "epoch" | "size" | "chunks">;
   readonly fileSyncUploadChunks: DoorFields<"lease_id" | "epoch" | "intent_id" | "chunks">;

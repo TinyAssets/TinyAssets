@@ -137,7 +137,7 @@ import {
   argsText, OPERATOR_KEYRING, type OperatorArgs,
 } from "../contract/src/operator-message.ts";
 import {
-  eraseWords, type RestoreAnswer, type RestoreHold, type RestoreSource,
+  eraseWords, type RestoreAnswer, type RestoreHold, type RestoreNames, type RestoreSource,
 } from "../contract/src/owner.ts";
 import {
   authorizeUrl, SECRET_ORIGIN, SIGN_IN_MAX_AGE_S, type UpstreamConfig, upstreamConfig,
@@ -153,13 +153,14 @@ import {
   type LockRule, type Moved, narrower, type Route, type RouteChange, unlike,
 } from "./cloudflare.ts";
 import {
-  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
+  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN, FILES_BUCKET,
   IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES,
   RETIRED, ROTATED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS,
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
-  firstNightAfter, KEEP_DAYS, RESTORE_KEY, restoreBegan, type Watch, watch,
+  BACK_INPUTS, backFrom, copyBack, firstNightAfter, KEEP_DAYS, readableAt, type Referenced,
+  RESTORE_KEY, restoreBegan, type Watch, watch,
 } from "./offsite.ts";
 import {
   type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
@@ -217,7 +218,7 @@ export const IO: Io = Object.freeze({
 });
 
 export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback" | "control"
-  | "owner" | "restore" | "erase" | "rotation" | "retire";
+  | "owner" | "restore" | "copyback" | "erase" | "rotation" | "retire";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -250,6 +251,8 @@ export interface Run {
   readonly confirm: string | null;
   /** `--keyring`: the keyring `rotation` sweeps, or `retire` retires the old kids of. */
   readonly keyring: string | null;
+  /** `--at`: the time `copyback` reads the off-account copy as it stood at; none, as it stands. */
+  readonly at: Date | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly io: Io;
@@ -1547,6 +1550,64 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
 });
 
 /**
+ * Mode `copyback` (R8, `offsite.ts` `copyBack`): the objects of `--owner`'s namespace that
+ * the files bucket lacks, written back from the off-account copy as it stood at `--at` (none:
+ * as it stands), the restore record first. The namespace is the one the owner's own object
+ * answers through the operator channel (`restore.source`). So an erasure the copy can't show
+ * is applied before anything: the doors refuse an erased owner at the channel's gate (the
+ * directory's record), at its tombstone and while it is erasing, and an object that names no
+ * namespace (a lost one, or a new account's) is refused here, with nothing read or written.
+ * Then mode `restore` restores a generation from it, should the owner's database go back too.
+ * The plan job only plans it.
+ */
+const copyBackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const owner = run.owner!;
+  readableAt(run.at, run.io.now());
+  say(`copy back into ${FILES_BUCKET} the objects of ${owner}'s namespace that it lacks and ` +
+      "the owner's object names (restore.names: a row of it each, so nothing its own " +
+      "collection deleted comes back), as the off-account copy " +
+      `${run.at === null ? "stands" : `stood at ${run.at.toISOString()}`}, never one it holds, ` +
+      `after writing the restore record ${RESTORE_KEY}: the namespace the owner's own object ` +
+      "names (restore.source through the operator channel, which the doors refuse for an " +
+      "erased or erasing owner), each object written read back byte for byte");
+  if (run.reach === "public") {
+    return;
+  }
+  const { namespace } = await asked(run, got, "restore.source", owner, {}) as RestoreSource;
+  if (namespace === null) {
+    throw new Error(`${owner}'s object names no namespace, so nothing says which of the copy's ` +
+                    "is its own (a lost object, or any after an account loss: checklist.md, " +
+                    "\"A restore from the copy\"); nothing is read or written");
+  }
+  const control = (await got.cloudflare.namespaces(got.account)).get(NAMESPACES["CONTROL"]!);
+  if (control === undefined) {
+    throw new Error(`the account holds no ${NAMESPACES["CONTROL"]}: no dark deploy made it`);
+  }
+  if (!run.apply) {
+    say(`${owner}'s object names the namespace ${namespace}`);
+    return;
+  }
+  say(...await copyBack(backFrom(run.env, got.account), FILES_BUCKET, namespace, run.at,
+                        () => namedBy(run, got, owner),
+                        { cloudflare: got.cloudflare, account: got.account, namespace: control },
+                        run.io));
+});
+
+/** What `owner`'s object names in its namespace, page by page (`restore.names`). */
+async function namedBy(run: Run, got: Pick<Values, "cloudflare" | "account">, owner: string):
+    Promise<Referenced> {
+  const chunks = new Set<string>();
+  const generations = new Set<string>();
+  for (let from: number | null = 0; from !== null;) {
+    const page = await asked(run, got, "restore.names", owner, { from }) as RestoreNames;
+    page.chunks.forEach((name) => chunks.add(name));
+    page.generations.forEach((gen) => generations.add(gen));
+    from = page.next;
+  }
+  return { chunks, generations };
+}
+
+/**
  * Mode `erase`: `--owner` erased through the operator channel (`owner.erase`), for an owner
  * who asked by other means: its object marked as its own door marks it, then the same
  * erasure (`owner/src/erasure.ts`). Irreversible, so only with `--confirm` its words
@@ -2213,6 +2274,7 @@ const HANDBACK = Steps.none.then(zone).then(recordRead).then(e2b).then(hookListe
 const CONTROL = Steps.none.then(zone).then(controlEdit).list;
 const OWNER = Steps.none.then(zone).then(ownerAsk).list;
 const RESTORE = Steps.none.then(zone).then(restoreAsk).list;
+const COPYBACK = Steps.none.then(zone).then(copyBackAsk).list;
 const ERASE = Steps.none.then(zone).then(eraseAsk).list;
 const ROTATION = Steps.none.then(zone).then(rotationSweep).list;
 const RETIRE = Steps.none.then(zone).then(retireAsk).list;
@@ -2283,6 +2345,13 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
     deploys: false, applies: true, own: ["--owner", "--generation", "--confirm"],
     steps: { public: RESTORE, secrets: RESTORE }, report: { unchanged: NOTHING, after: [] },
+  },
+  // The copy's bucket and read key, and the R2 write pair minted for this restore alone.
+  copyback: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN", ...BACK_INPUTS.public],
+              secret: [OPERATOR_KEYRING, ...BACK_INPUTS.secret], optional: [] },
+    deploys: false, applies: true, own: ["--owner", "--at"],
+    steps: { public: COPYBACK, secrets: COPYBACK }, report: { unchanged: NOTHING, after: [] },
   },
   erase: {
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },
@@ -2483,6 +2552,8 @@ const OWN = Object.freeze({
                  needed: false },
   "--keyring": { names: `the keyring swept or retired: ${Object.keys(ROTATED).join(" or ")}`,
                  needed: true },
+  "--at": { names: "the time the off-account copy is read back as it stood at, " +
+                   "<yyyy>-<mm>-<dd>T<hh>:<mm>:<ss>Z", needed: false },
 });
 export type Own = keyof typeof OWN;
 
@@ -2527,6 +2598,11 @@ function ownValue(name: Own, text: string): unknown {
         throw refused();
       }
       return text;
+    case "--at":
+      if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(text) || Number.isNaN(Date.parse(text))) {
+        throw refused();
+      }
+      return new Date(text);
   }
 }
 
@@ -2570,7 +2646,8 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
     act: (own["--act"] as Act | undefined) ?? null,
     generation: (own["--generation"] as Generation | undefined) ?? null,
     confirm: (own["--confirm"] as string | undefined) ?? null,
-    keyring: (own["--keyring"] as string | undefined) ?? null, env, io });
+    keyring: (own["--keyring"] as string | undefined) ?? null,
+    at: (own["--at"] as Date | undefined) ?? null, env, io });
   if (row.report !== null) {
     if (run.apply && run.reach === "public") {
       throw new Error("--public is the plan job's: it never changes anything");

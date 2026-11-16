@@ -69,7 +69,7 @@ import {
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
-import { RESTORE_KEY } from "../offsite";
+import { BACK_INPUTS, RESTORE_KEY } from "../offsite";
 import {
   ERASE_LOSES, keyHashes, POLL_MS, RESTORE_LOSES, rotationKey, RUN_MS,
 } from "../operator";
@@ -142,6 +142,9 @@ const ENV: Record<string, string> = {
   E2B_WEBHOOK_SECRET: "hook-secret", INBOUND_SLACK_SIGNING_SECRET: "slack-secret",
   PLATFORM_CANARY_TOKEN: "clock-token", PUSHOVER_USER_KEY: "pager-user",
   PUSHOVER_APP_TOKEN: "pager-token", PATH: "/bin", HOME: "/home/test",
+  OFFSITE_BUCKET: "tinyassets-offsite-abcd1234", OFFSITE_B2_READ_KEY_ID: "b2-read-id",
+  OFFSITE_B2_READ_KEY: "b2-read-secret", OFFSITE_R2_WRITE_ACCESS_KEY_ID: "r2-write-id",
+  OFFSITE_R2_WRITE_SECRET_ACCESS_KEY: "r2-write-secret",
 };
 /** What the plan job holds. */
 const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]));
@@ -149,7 +152,8 @@ const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]
 /** The options of its own each mode needs, by the dispatch's input that gives each. */
 const NEEDED: Partial<Record<Mode, Readonly<Record<string, string>>>> = {
   handback: { RECORD: "7001" }, owner: { OWNER: "user_alice", ACT: "tier=paid" },
-  restore: { OWNER: "user_alice" }, erase: { OWNER: "user_alice" },
+  restore: { OWNER: "user_alice" }, copyback: { OWNER: "user_alice" },
+  erase: { OWNER: "user_alice" },
   rotation: { KEYRING: "FILES_KEYRING" }, retire: { KEYRING: "GATEWAY_KEYRING" } };
 /** `mode`'s needed options, as its command line gives them. */
 const needed = (mode: Mode): string[] => Object.entries(NEEDED[mode] ?? {})
@@ -213,6 +217,8 @@ interface WorldOptions {
   readonly owners?: readonly string[];
   /** The doors hold the import window's key. */
   readonly windowOpen?: boolean;
+  /** The names rclone lists under a copy back's prefix: the copy's and R2's. */
+  readonly copied?: { readonly copy: readonly string[]; readonly r2: readonly string[] };
 }
 
 /** The world's clock. */
@@ -556,6 +562,14 @@ function world(options: WorldOptions = {}) {
       return options.lockRefused === undefined ? { status: 0, stdout: "{}", stderr: "" }
         : { status: 1, stdout: "", stderr: `${options.lockRefused}\n` };
     }
+    if (command === "rclone") {
+      const at = argv.indexOf("--files-from");
+      events.push(`rclone ${argv.join(" ")}${at < 0 ? ""
+        : ` (${readFileSync(argv[at + 1]!, "utf8").split("\n").filter(Boolean).join(",")})`}`);
+      const listing = argv[0] === "lsf" ? (argv.at(-1)!.startsWith("back:")
+        ? options.copied?.copy : options.copied?.r2) ?? [] : [];
+      return { status: 0, stdout: listing.join("\n"), stderr: "" };
+    }
     events.push(`unexpected spawn ${command} ${argv.join(" ")}`);
     return { status: 1, stdout: "", stderr: "" };
   }) as unknown as Io["spawn"];
@@ -767,7 +781,8 @@ describe("the command line", () => {
 
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
     expect(Object.keys(MODES)).toEqual(["plan", "dark", "probe", "routes", "h2", "pair",
-                                        "handback", "control", "owner", "restore", "erase",
+                                        "handback", "control", "owner", "restore", "copyback",
+                                        "erase",
                                         "rotation", "retire"]);
     for (const mode of Object.keys(MODES) as Mode[]) {
       expect(parse(["--mode", mode, ...needed(mode)], ENV, w.io).mode).toBe(mode);
@@ -2970,7 +2985,7 @@ describe("the operator path's modes", () => {
     expect(() => parse(["--mode", "owner", "--owner", " x", "--act", "admit"], ENV, w.io))
       .toThrow("--owner is the owner principal the op is asked for");
     expect(() => parse(["--mode", "control", "--owner", "user_alice"], ENV, w.io))
-      .toThrow("mode control takes no --owner: it is mode owner, restore and erase's");
+      .toThrow("mode control takes no --owner: it is mode owner, restore, copyback and erase's");
   });
 });
 
@@ -3129,6 +3144,115 @@ describe("mode restore", () => {
       "restore.pin answers them, or give its pin up, release-<owner>, an erasure, " +
       "erase-<owner>, or a keyring's retirement, retire-<keyring>-<kids> as its apply job " +
       "names them");
+  });
+});
+
+describe("mode copyback", () => {
+  const NS = "a".repeat(32);
+  const PREFIX = `o/${NS}/`;
+  /** The copy back's settings. */
+  const BACK = Object.fromEntries([...BACK_INPUTS.public, ...BACK_INPUTS.secret]
+    .map((name) => [name, ENV[name]!]));
+  /**
+   * The doors answering restore.source as an object holding `namespace`, or an erased one, and
+   * restore.names in two pages: the chunk `2` and the generation `3`, then nothing more.
+   */
+  const source = (namespace: string | null, erased = false) => (message: OperatorMessage) =>
+    erased ? { refused: { code: "owner_erased" as const, message: "the owner is erased" } }
+      : { result: message.op === "restore.source"
+          ? { namespace, generations: [], state: "admitted", begins: false, restore: null }
+          : message.op === "restore.names"
+          ? message.args["from"] === 0 ? { chunks: ["2"], generations: ["3"], next: 1 }
+            : { chunks: [], generations: ["3"], next: null }
+          : message.args };
+  const copied = { copy: ["c/1", "c/2", "m/3"], r2: ["c/1"] };
+  const recorded = `ns-${NAMESPACES["CONTROL"]}/${RESTORE_KEY}`;
+  const rclone = (w: ReturnType<typeof world>) =>
+    w.events.filter((event) => event.startsWith("rclone "));
+  const AT = "2026-11-01T00:00:00Z";
+
+  it("plans the copy back; with --yes, asks the owner's object its namespace, records the " +
+     "restore, then writes only what R2 lacks, as the copy stood at --at, and reads it back",
+     async () => {
+    const planned = world({ held: true });
+    expect((await runMode(planned, "copyback", ["--public", "--owner", "user_alice"],
+                          { ...PUBLIC, OFFSITE_BUCKET: BACK["OFFSITE_BUCKET"]! })).plan).toEqual([
+      "copy back into tinyassets-files the objects of user_alice's namespace that it lacks and " +
+      "the owner's object names (restore.names: a row of it each, so nothing its own " +
+      "collection deleted comes back), as the off-account copy stands, never one it holds, " +
+      `after writing the restore record ${RESTORE_KEY}: the namespace the owner's own object ` +
+      "names (restore.source through the operator channel, which the doors refuse for an " +
+      "erased or erasing owner), each object written read back byte for byte"]);
+    expect(planned.sent).toEqual([]);
+    const w = world({ held: true, doors: source(NS), copied });
+    const work = await runMode(w, "copyback", ["--yes", "--owner", "user_alice", "--at", AT],
+                               ENV);
+    // The object's names asked page by page once R2 is listed, and again after the write.
+    expect(w.sent.map(({ message }) => [message.op, message.args])).toEqual([
+      ["restore.source", {}], ...[0, 1, 0, 1].map((from) => ["restore.names", { from }])]);
+    // Begun after three asks: restore.source and the two pages of names.
+    expect(JSON.parse(w.kv.get(recorded)!)).toEqual({ kind: "tinyassets-offsite-restore",
+                                                     began: (NOW.getTime() + 3 * POLL_MS) / 1000 });
+    // The restore record before the first byte: the copy back's, and after the listings.
+    order(w.events, ["cf POST /accounts/", "rclone lsf", "rclone lsf",
+                     `${CONTROL_WRITE}namespaces/ns-${NAMESPACES["CONTROL"]}/values/` +
+                     encodeURIComponent(RESTORE_KEY), "rclone copy"]);
+    const bucket = BACK["OFFSITE_BUCKET"]!;
+    expect(rclone(w).map((event) => event.replace(/--files-from \S+/, "--files-from <list>")))
+      .toEqual([
+        `rclone lsf --files-only -R --use-server-modtime --fast-list r2:tinyassets-files/${PREFIX}`,
+        `rclone lsf --files-only -R --use-server-modtime --fast-list back:${bucket}/${PREFIX}`,
+        `rclone copy back:${bucket}/${PREFIX} r2:tinyassets-files/${PREFIX} --files-from <list> ` +
+        "--ignore-existing --stats-one-line --stats 1m --stats-log-level NOTICE (c/2,m/3)",
+        `rclone check back:${bucket}/${PREFIX} r2:tinyassets-files/${PREFIX} --one-way ` +
+        "--download --files-from <list> (c/2,m/3)"]);
+    expect(work.plan).toContain(`wrote 2 objects under ${PREFIX} into tinyassets-files, as ` +
+                                `the copy held them at ${AT}, each one R2 lacked and the ` +
+                                "owner's object names, and read each back byte for byte (0 " +
+                                "more it lacks no row names)");
+  });
+
+  it("writes nothing and records nothing when R2 lacks nothing the copy holds", async () => {
+    const w = world({ held: true, doors: source(NS), copied: { copy: ["c/1"], r2: ["c/1"] } });
+    await runMode(w, "copyback", ["--yes", "--owner", "user_alice"], ENV);
+    expect([w.kv.has(recorded), rclone(w).map((event) => event.split(" ")[1])])
+      .toEqual([false, ["lsf", "lsf"]]);
+  });
+
+  it("applies the erasure first: an erased owner, or an object that names no namespace, is " +
+     "refused before anything is read from the copy or written", async () => {
+    for (const [doors, refused] of [
+      [source(NS, true), "the doors refused restore.source for user_alice " +
+       "(owner_erased)"],
+      [source(null), "user_alice's object names no namespace, so nothing says which of the " +
+       "copy's is its own"],
+    ] as const) {
+      const w = world({ held: true, doors, copied });
+      await expect(runMode(w, "copyback", ["--yes", "--owner", "user_alice"], ENV))
+        .rejects.toThrow(refused);
+      expect([w.kv.has(recorded), rclone(w)]).toEqual([false, []]);
+    }
+  });
+
+  it("refuses, before any step, a run without the copy's keys, and a time outside the " +
+     "copy's window", async () => {
+    for (const name of Object.keys(BACK)) {
+      const { [name]: _, ...without } = ENV;
+      const w = world({ held: true, doors: source(NS), copied });
+      await expect(runMode(w, "copyback", ["--yes", "--owner", "user_alice"], without))
+        .rejects.toThrow(`${name} is not set`);
+      expect([w.sent, w.kv.has(recorded), rclone(w)]).toEqual([[], false, []]);
+    }
+    for (const at of ["2026-10-17T11:59:59Z", "2026-11-07T12:00:01Z"]) {
+      const w = world({ held: true, doors: source(NS), copied });
+      await expect(runMode(w, "copyback", ["--yes", "--owner", "user_alice", "--at", at], ENV))
+        .rejects.toThrow(`not at ${at}: a version older than 22 days since it was hidden is ` +
+                         "gone");
+      expect([w.sent, rclone(w)]).toEqual([[], []]);
+    }
+    expect(() => parse(["--mode", "copyback", "--owner", "user_alice", "--at", "yesterday"],
+                       ENV, world().io))
+      .toThrow("--at is the time the off-account copy is read back as it stood at");
   });
 });
 
@@ -3449,7 +3573,7 @@ describe("platform-deploy.yml", () => {
   const PLAN = ["--plan", `${RUNNER_TEMP}/deploy-plan.json`];
   /** The dispatch's inputs, each handed to the kit as its option of the same name. */
   const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "SET", "REPLACE", "OWNER", "ACT",
-                    "GENERATION", "CONFIRM", "KEYRING"];
+                    "GENERATION", "CONFIRM", "KEYRING", "AT"];
   const dispatched = (inputs: Record<string, string>) =>
     DISPATCH.flatMap((name) => [`--${name.toLowerCase()}`, inputs[name]!]);
   /** `mode` dispatched with what it needs and nothing else. */
@@ -3462,17 +3586,19 @@ describe("platform-deploy.yml", () => {
                    { ...dispatchOf("restore"), GENERATION: FROM,
                      CONFIRM: `wipe-user_alice-${"c".repeat(16)}` },
                    { ...dispatchOf("erase"), CONFIRM: "erase-user_alice" },
-                   { ...dispatchOf("retire"), CONFIRM: "retire-GATEWAY_KEYRING-k1" }];
+                   { ...dispatchOf("retire"), CONFIRM: "retire-GATEWAY_KEYRING-k1" },
+                   { ...dispatchOf("copyback"), AT: "2026-11-01T00:00:00Z" }];
   /** What the kit reads of a run's own options. */
   const ownOf = (run: ReturnType<typeof parse>) =>
     [run.record, run.edits.length, run.replace, run.owner, run.act?.op ?? null,
-     run.generation?.gen ?? null, run.confirm, run.keyring];
+     run.generation?.gen ?? null, run.confirm, run.keyring, run.at?.toISOString() ?? null];
   const wanted = (inputs: Record<string, string>) =>
     [inputs["RECORD"] || null, inputs["SET"]!.split(" ").filter(Boolean).length,
      inputs["REPLACE"] ? JSON.parse(inputs["REPLACE"]) : undefined, inputs["OWNER"] || null,
      inputs["ACT"] ? `owner.${inputs["ACT"].split("=")[0]}` : null,
      inputs["GENERATION"] ? inputs["GENERATION"].split("/")[1] : null,
-     inputs["CONFIRM"] || null, inputs["KEYRING"] || null];
+     inputs["CONFIRM"] || null, inputs["KEYRING"] || null,
+     inputs["AT"] ? new Date(inputs["AT"]).toISOString() : null];
 
   it("plans in a job of its own, with the Cloudflare token alone, the chosen mode's plan", () => {
     expect(plan!.environment).toBe("production");

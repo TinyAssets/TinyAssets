@@ -228,6 +228,22 @@ export interface RestoreSource {
                       readonly fresh: string | null; readonly since: number } | null;
 }
 
+/** A page of what the owner's object names in the bucket (`restoreNames`), from the `from`th. */
+export interface RestoreNamesRequest {
+  readonly from: number;
+}
+
+/**
+ * What a copy back from the off-account copy may write into the owner's namespace
+ * (`restoreNames`): the bucket name of each chunk a page of its chunk rows holds, the
+ * generations it holds, and where the next page begins (null: none is left).
+ */
+export interface RestoreNames {
+  readonly chunks: readonly string[];
+  readonly generations: readonly string[];
+  readonly next: number | null;
+}
+
 /** The generation a restore pins on a live owner (`restorePin`): one of its finished ones. */
 export interface RestorePinRequest {
   readonly gen: string;
@@ -397,6 +413,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   restoreWipe(binding: Binding, request: Asked<"restoreWipe", RestoreWipeRequest>):
     Promise<RestoreHold>;
   restoreRelease(binding: Binding): Promise<{ readonly released: true }>;
+  restoreNames(binding: Binding, request: Asked<"restoreNames", RestoreNamesRequest>):
+    Promise<RestoreNames>;
   sessionOpen(binding: Binding): Promise<{ readonly session: string }>;
   sessionExtend(binding: Binding): Promise<object>;
   sessionClose(binding: Binding): Promise<{ readonly closed: number }>;
