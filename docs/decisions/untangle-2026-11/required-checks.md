@@ -23,4 +23,4 @@ The merge queue's required checks (`Diff scope declared`, `required-tests`, `inv
 7. **Left, each with its own line in `tasks.md`:**
    - `required-tests shard 2/6` takes 25 to 28 minutes of its 30-minute watchdog on the merge group, and `required-tests` reports at about 29 of the queue's 35 (`untangle/shard-2-time`).
    - `main_red.py` and `queue_attempts.py` name the Tests aggregate by its job name to read its results. They follow `tests.yml`'s job, not the gate (`untangle/aggregate-name`).
-   - When `review` is pinned to its App, the check is posted by an App, not named by a job, and the guard's predicate changes in that PR (the host-actions row says so).
+   - When `review` is pinned to its App, the check is posted by an App, not named by a job, and the guard's predicate changes in that PR (`untangle/p2-review-gate`, P2's line; the host-actions row says so).
