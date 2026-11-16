@@ -19,11 +19,11 @@
  */
 import type { RunCapability } from "../../contract/src/capabilities";
 import type { Binding, Origin } from "../../contract/src/binding";
-import type { CallerKind } from "../../contract/src/doors";
 import { isMinted } from "./proof-mint";
 import type { Grant, Stamped } from "./authority";
 import type { ControlGate } from "./control-gate";
 import type { DoorRows } from "./door-map";
+import type { CallerKind } from "./door-steps";
 import type { OwnerEnv } from "./env";
 import type { SandboxLease } from "./files";
 import type { OwnerStorage, WriteGate } from "./gate";
@@ -54,7 +54,7 @@ export interface Readable {
 }
 
 /**
- * A call as its door's row bound it (`contract/doors.json`): its account, and what a sandbox,
+ * A call as its door's steps bound it (`owner/doors.json`): its account, and what a sandbox,
  * runner or inbound door's binding names (the lease's readable set, the lease, the route's
  * binding), or that the platform's erasure door found the owner already erased.
  */

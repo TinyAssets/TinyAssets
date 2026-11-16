@@ -805,7 +805,7 @@ export interface Conflicted {
   readonly conflict: Row | null;
 }
 
-// -- THE DOORS: the `collections` rows' handlers (`contract/doors.json`) --------------------------
+// -- THE DOORS: the `collections` rows' handlers (`owner/doors.json`) -----------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`CollectionsDoorNeeds`) once the row's steps held: the bind, the account,

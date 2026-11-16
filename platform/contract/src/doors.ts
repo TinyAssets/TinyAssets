@@ -1,24 +1,19 @@
 /**
  * The owner object's doors, as data (`doors.json`; ADR-032,
  * `docs/decisions/untangle-2026-11-wave-1.md` A2): one row for each public RPC method of
- * `OwnerDO`, and nothing else lists them. A row says how the object takes a call, and the
- * object's one runner (`owner/src/owner-do.ts`, `#run`) does each step from it, in this order:
+ * `OwnerDO`, and nothing else lists them. A row says what every caller of the door sees:
  *
- * 1. **bind**: the object's own owner, its admission for the door's `class` (`work`, `read`
- *    or `reduce`, which decides what a suspension leaves it, `admission.ts`; `admission`,
- *    the platform's own doors, read none; `import`, the cutover's import doors, are taken
- *    only while the owner is `pending`), and the sandbox, inbound or import binding its
- *    `caller` kind takes;
- * 2. **account**: who calls (`caller`), then the row's `guard`, if any;
- * 3. **scope**: `capability`, held where the caller acts (`scope`: the caller's own place,
- *    the agent its request names, or a place the door's handler reads from the request);
- * 4. **fields**: `args`, exactly the required fields and any of the optional ones, none
- *    `undefined`, else refused with the row's words; `fieldsFirst` checks them before the
- *    scope (where the scope's place is read from them).
+ * - its `class`, which decides what a suspension leaves it (`work`, `read` or `reduce`,
+ *   `owner/src/admission.ts`; `admission`, the platform's own doors, read none; `import`, the
+ *   cutover's import doors, are taken only while the owner is `pending`); a door that takes
+ *   no binding (`UNBOUND_DOORS`) has none;
+ * - its `capability`, held where the caller acts;
+ * - its request (`args`): exactly the required fields and any of the optional ones, none
+ *   `undefined`, else refused with the row's words.
  *
- * Then the door's handler, in its module (`handler`), runs in the row's `gate`: one unit of
- * the write gate (`door`), a quiet one (`quiet`), a unit and then the schedule synced
- * (`synced`; `filing`, whatever the unit did), or units of its own (`units`).
+ * How the object takes a call, its runner's steps (who it takes, the checks after, where its
+ * capability is held, the order of its scope and fields, its handler's module and its gate),
+ * is the owner's, by the door's name (`owner/doors.json`, `owner/src/door-steps.ts`).
  *
  * A door that does one of the acts an owner's `actions` rule names says so (`act`, an act of
  * `acts.json`, and `when`, the condition under which a call is the act, every call when it
@@ -45,7 +40,7 @@ import profiles from "../profiles.json" with { type: "json" };
 
 import { actNamed, type Condition, isCondition } from "./acts.ts";
 import { RUN_CAPABILITIES, type RunCapability } from "./capabilities.ts";
-import { keyed, object } from "./checks.ts";
+import { among, frozen, keyed, object } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 
 type JsonSchema = Readonly<Record<string, unknown>>;
@@ -56,38 +51,6 @@ type JsonSchema = Readonly<Record<string, unknown>>;
  */
 export const DOOR_CLASSES = Object.freeze(["work", "read", "reduce", "admission", "import"] as const);
 export type DoorClass = (typeof DOOR_CLASSES)[number];
-
-/**
- * Who a door takes, as its account step binds them:
- * - `account`: the owner's own account, acting itself or through a verified outside client
- *   admitted against its grant, or a run on the egress host as its initiator;
- * - `visitors`: `account`, and another owner visiting (origin null): the collections;
- * - `owner`: the owner itself, on its own account, never an outside client nor a run
- *   (`action`: what only the owner may do; `live`: in its live session, receipting nothing);
- * - `session`: the owner in its live session, a widening, whose refusals leave a receipt
- *   under `rule` of the request (or of `receipt`, in its place); `action`, null when an
- *   outside client may ask in it, and `registering`, an API key's registration;
- * - `reserved`: the platform's reserved caller, with no outside client and no session
- *   (`action`: its act, `admission` or `tier`);
- * - `erasure`: the platform's reserved caller, at an erasure under way;
- * - `import`: the platform's reserved caller with an import binding (the doors' import
- *   consumer, `doors/src/import/`), while the owner is `pending`: the `import` class's doors
- *   alone, deleted at the cutover;
- * - `discard`: the same binding, while the owner is `pending` or its name is a rehearsal's
- *   (`rehearsalRun`, `import-message.ts`), in any state: the import's discard alone;
- * - `egress`; `runner`, with its runner's secret (`closed`: its refusal once the lease is
- *   gone); `run`, with the run its path names;
- * - `sync`: the sync agent's token, at its live lease (the request's, when it names one);
- * - `reader`, `changes`: a file reader's account, or the sync agent's;
- * - `lease`: the owner itself (`action`), or the sync agent at its lease;
- * - `inbound`: an inbound event's route, at its binding's revision;
- * - `none`: no binding at all (the sandbox line's ring, and billed events): those two doors
- *   alone (`UNBOUND_DOORS`), so every other door binds.
- */
-export const CALLER_KINDS = Object.freeze(["account", "visitors", "owner", "session",
-  "reserved", "erasure", "import", "discard", "egress", "runner", "run", "sync", "reader",
-  "changes", "lease", "inbound", "none"] as const);
-export type CallerKind = (typeof CALLER_KINDS)[number];
 
 /**
  * The names no RPC method may take (Cloudflare's `rpc/reserved-methods`, `doors.json`
@@ -101,18 +64,6 @@ export function rpcReserved(): readonly string[] {
 
 /** The doors that take no binding: the sandbox line's ring and E2B's billed events. */
 export const UNBOUND_DOORS: readonly string[] = Object.freeze(["sandboxBilled", "sandboxRung"]);
-
-/**
- * A check of the caller after its account: a run reads no mailbox (`no_mailbox`); a visitor
- * changes no row it may not (`owner_rows`, `action`: what); only an MCP client files its own
- * card (`own_card`).
- */
-export const GUARDS = Object.freeze(["no_mailbox", "owner_rows", "own_card"] as const);
-export type Guard = (typeof GUARDS)[number];
-
-/** How a door's handler runs in the object's write gate (`gate.ts`). */
-export const GATES = Object.freeze(["door", "quiet", "synced", "filing", "units"] as const);
-export type Gate = (typeof GATES)[number];
 
 /** A door's request: its fields, each a JSON Schema, and the words its refusal is given. */
 export interface Args {
@@ -143,47 +94,20 @@ export interface ToolInfo {
   readonly description: string;
 }
 
+/** A door as every caller sees it; its runner's steps are the owner's (`owner/doors.json`). */
 export interface DoorRow {
   readonly door: string;
   readonly class: DoorClass | null;
-  readonly caller: CallerKind;
-  readonly action?: string | null;
-  readonly rule?: string;
-  readonly receipt?: unknown;
-  readonly registering?: true;
-  readonly closed?: "egress_lease_closed";
-  readonly live?: true;
-  readonly guard?: Guard;
   readonly capability: RunCapability | null;
-  readonly scope?: "caller" | "agent" | "handler";
-  /** The request's field naming the agent a run door acts as, and its default. */
-  readonly agent?: { readonly field: string; readonly default?: string };
-  readonly fieldsFirst?: true;
   /** The act a call of this door is, and when (`acts.json`). */
   readonly act?: { readonly name: string; readonly when?: Condition };
-  /**
-   * The owner module that holds the door's handler (`<module>Doors.<door>`): the object's
-   * typed handler map (`owner/src/door-map.ts`, written from this) holds it to one.
-   */
-  readonly handler: string;
-  readonly gate: Gate;
-  /**
-   * A new owner's starter seed awaited before the handler, once the caller's authority holds
-   * in a unit: a door that touches the files or lists the agents (a `units` row).
-   */
-  readonly seeded?: true;
   readonly args: DoorArgs;
   readonly tool?: ToolInfo;
 }
 
-const ROW_KEYS = Object.freeze(["door", "class", "caller", "action", "rule", "receipt",
-  "registering", "closed", "live", "guard", "capability", "scope", "agent", "fieldsFirst",
-  "act", "handler", "gate", "seeded", "args", "tool"]);
+const ROW_KEYS = Object.freeze(["door", "class", "capability", "act", "args", "tool"]);
 const TOOL_KEYS = Object.freeze(["name", "title", "description", "destructiveHint",
   "idempotentHint", "openWorldHint", "readOnlyHint"]);
-
-const one = <T>(list: readonly T[], value: unknown): value is T =>
-  (list as readonly unknown[]).includes(value);
 
 /** Each way a door's arguments break the table's rules. */
 function argsProblems(value: unknown): string[] {
@@ -250,30 +174,13 @@ export function doorProblems(rows: unknown): string[] {
         say(`a key ${key}`);
       }
     }
-    if (!one(CALLER_KINDS, row["caller"])) {
-      say("no caller kind");
-    }
-    if (row["caller"] === "none" ? row["class"] !== null : !one(DOOR_CLASSES, row["class"])) {
-      say("no door class");
-    }
-    if ((row["caller"] === "none") !== UNBOUND_DOORS.includes(row["door"] as string)) {
-      say("only the sandbox line's ring and billed events take no binding");
-    }
-    if ((row["class"] === "admission") !== one(["reserved", "erasure"], row["caller"])) {
-      say("only the platform's doors read no admission");
-    }
-    if ((row["class"] === "import") !== one(["import", "discard"], row["caller"])) {
-      say("only the import's doors take the import class, and they take no other");
+    if (UNBOUND_DOORS.includes(row["door"] as string) ? row["class"] !== null
+        : !among(DOOR_CLASSES, row["class"])) {
+      say("no door class, or one on a door that takes no binding");
     }
     if (!("capability" in row) || (row["capability"] !== null
-                                   && !one(RUN_CAPABILITIES, row["capability"]))) {
+                                   && !among(RUN_CAPABILITIES, row["capability"]))) {
       say("no capability, nor null");
-    }
-    if (row["scope"] !== undefined && !one(["caller", "agent", "handler"], row["scope"])) {
-      say("an unknown scope");
-    }
-    if (row["guard"] !== undefined && !one(GUARDS, row["guard"])) {
-      say("an unknown guard");
     }
     const act = row["act"];
     if (act !== undefined && (!object(act) || actNamed(act["name"]) === undefined
@@ -281,27 +188,12 @@ export function doorProblems(rows: unknown): string[] {
         || ("when" in act && !isCondition(act["when"])))) {
       say("an act is one of acts.json's, and when, one of its conditions");
     }
-    if (typeof row["handler"] !== "string" || !/^[a-z]+(-[a-z]+)*$/.test(row["handler"])) {
-      say("no handler module");
-    }
-    if (!one(GATES, row["gate"])) {
-      say("no gate");
-    }
-    if (row["seeded"] !== undefined && (row["seeded"] !== true || row["gate"] !== "units")) {
-      say("a seeded door's handler makes its own units");
-    }
     if (!("args" in row)) {
       say("no argument schema");
     } else {
       for (const problem of argsProblems(row["args"])) {
         say(problem);
       }
-    }
-    if (one(["owner", "session"], row["caller"]) && !("action" in row)) {
-      say("an owner's door names what only the owner may do");
-    }
-    if (row["caller"] === "session" && typeof row["rule"] !== "string") {
-      say("a session's door names its receipt's rule");
     }
     const tool = row["tool"];
     if (tool !== undefined) {
@@ -319,17 +211,6 @@ export function doorProblems(rows: unknown): string[] {
     }
   }
   return problems;
-}
-
-/** `value` and everything in it frozen, so no module can change a row for the isolate. */
-function frozen<T>(value: T): T {
-  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
-    for (const each of Object.values(value)) {
-      frozen(each);
-    }
-    Object.freeze(value);
-  }
-  return value;
 }
 
 /**

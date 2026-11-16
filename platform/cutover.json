@@ -34,8 +34,7 @@
         { "edit": "platform/ci/guards/environment.test.ts", "names": ["import-window.yml"], "what": "the window's workflow among the known production workflows" },
 
         { "edit": "platform/contract/doors.json", "names": ["importRows", "importFiles", "importFileBegin", "importFileStored", "importFileCommit", "importNotice", "importCheck", "importDiscard"], "what": "the eight import rows" },
-        { "edit": "platform/contract/src/doors.ts", "names": ["\"import\"", "\"discard\""], "what": "the import class and the import and discard callers" },
-        { "edit": "platform/contract/guards/doors.test.ts", "names": ["\"import\"", "\"discard\""], "what": "the import class's and the discard caller's cases" },
+        { "edit": "platform/contract/src/doors.ts", "names": ["\"import\""], "what": "the import class" },
         { "edit": "platform/contract/src/binding.ts", "names": ["ImportBinding", "importBinding", "IMPORT_KEY"], "what": "the binding's import field and the import kind" },
         { "edit": "platform/contract/src/owner.ts", "names": ["importRows", "importDiscard", "CheckPart"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import doors' types" },
         { "edit": "platform/contract/src/paths.ts", "names": ["IMPORTED"], "what": "the imported tree's path" },
@@ -45,7 +44,10 @@
 
         { "edit": "platform/owner/src/admission.ts", "names": ["IMPORT_PLATFORM_ONLY", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "DISCARDED", "\"import\""], "what": "the import doors' refusals and class" },
         { "edit": "platform/owner/src/owner-do.ts", "names": ["#discarded", "#discard", "IMPORT_DOORS_ONLY", "\"discard\"", "ImportLine"], "imports": ["platform/owner/src/import.ts", "platform/contract/src/import-message.ts"], "what": "the import doors, the object's #discarded and the import and discard callers" },
-        { "edit": "platform/owner/src/door-map.ts", "names": ["importRows", "importDiscard", "\"import\"", "\"discard\""], "what": "the import doors' rows and methods, by npm run generate once contract/doors.json loses them" },
+        { "edit": "platform/owner/doors.json", "names": ["importRows", "importFiles", "importFileBegin", "importFileStored", "importFileCommit", "importNotice", "importCheck", "importDiscard"], "what": "the eight import rows' steps" },
+        { "edit": "platform/owner/src/door-steps.ts", "names": ["\"import\"", "\"discard\""], "what": "the import and discard callers, and their class's rule" },
+        { "edit": "platform/owner/guards/doors.test.ts", "names": ["importRows", "importFiles", "\"import\"", "\"discard\""], "what": "the import and discard callers' cases" },
+        { "edit": "platform/owner/src/door-map.ts", "names": ["importRows", "importDiscard", "\"import\"", "\"discard\""], "what": "the import doors' rows and methods, by npm run generate once the two door tables lose them" },
         { "edit": "platform/owner/src/policy.ts", "names": ["imported("], "what": "Policy.imported" },
         { "edit": "platform/owner/test/proofs.test.ts", "names": ["policy.imported", "\"import\""], "what": "the import line's widening, among the proofs' tests" },
         { "edit": "platform/owner/src/door.ts", "names": ["ImportLine", "\"import\""], "what": "the import line, the import rows' proof, which Policy.imported alone takes" },

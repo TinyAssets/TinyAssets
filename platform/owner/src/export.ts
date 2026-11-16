@@ -482,7 +482,7 @@ export function endLine(at: number, seq: number): string {
   return JSON.stringify({ t: "end", at, seq });
 }
 
-// -- THE DOORS: the `export` rows' handlers (`contract/doors.json`) -------------------------------
+// -- THE DOORS: the `export` rows' handlers (`owner/doors.json`) ----------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`ExportDoorNeeds`) once the row's steps held: the bind, the account, the

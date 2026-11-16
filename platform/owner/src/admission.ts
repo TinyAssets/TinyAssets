@@ -312,7 +312,7 @@ export function writeTombstone(sql: Pick<SqlStorage, "exec">): void {
   sql.exec("INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'erased', '[]')");
 }
 
-// -- THE DOORS: the `admission` rows' handlers (`contract/doors.json`) ----------------------------
+// -- THE DOORS: the `admission` rows' handlers (`owner/doors.json`) -------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`AdmissionDoorNeeds`) once the row's steps held: the bind, the account, the

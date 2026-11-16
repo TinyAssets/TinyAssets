@@ -980,7 +980,7 @@ export class Connections {
   }
 }
 
-// -- THE DOORS: the `connections` rows' handlers (`contract/doors.json`) --------------------------
+// -- THE DOORS: the `connections` rows' handlers (`owner/doors.json`) -----------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`ConnectionsDoorNeeds`) once the row's steps held: the bind, the account, the

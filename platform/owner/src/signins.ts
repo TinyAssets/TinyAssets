@@ -393,7 +393,7 @@ export interface SigninRequest {
                                readonly models?: readonly string[] }[];
 }
 
-// -- THE DOORS: the `signins` rows' handlers (`contract/doors.json`) ------------------------------
+// -- THE DOORS: the `signins` rows' handlers (`owner/doors.json`) ---------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`SigninsDoorNeeds`) once the row's steps held: the bind, the account, the
