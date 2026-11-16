@@ -40,3 +40,30 @@ def test_a_live_rule_the_file_lacks_is_drift() -> None:
     live = [*enqueue_merge.RULES, {"type": "deletion"}]
     assert enqueue_merge.gate_drift(enqueue_merge.RULES, _as_github_returns(live)) == [
         'live only: {"parameters": {}, "type": "deletion"}']
+
+
+def test_a_pr_its_auto_merge_queued_first_is_already_queued(monkeypatch, capsys) -> None:
+    """#5656: auto-merge queued it a second before the enqueue, and GitHub's refusal turned
+    the job red."""
+    green = [{"__typename": "CheckRun", "name": name, "conclusion": "SUCCESS",
+              "completedAt": "2026-11-16T21:35:00Z"} for name in enqueue_merge.REQUIRED_CHECKS]
+    pr = {"id": "PR_1", "state": "OPEN", "isDraft": False, "baseRefName": "main",
+          "baseRefOid": "b" * 40, "headRefOid": "a" * 40, "body": "", "mergeQueueEntry": None,
+          "headRepository": {"nameWithOwner": "o/r"},
+          "commits": {"nodes": [{"commit": {"statusCheckRollup": {
+              "contexts": {"nodes": green}}}}]}}
+
+    def graphql(query: str, variables: dict) -> dict:
+        if "enqueuePullRequest" in query:
+            raise RuntimeError("[{'type': 'UNPROCESSABLE', 'path': ['enqueuePullRequest'], "
+                               "'message': 'Pull request is already in the queue'}]")
+        return {"data": {"repository": {"pullRequest": pr}}}
+
+    monkeypatch.setattr(enqueue_merge, "_graphql", graphql)
+    monkeypatch.setattr(enqueue_merge, "_capped", lambda repo, number: False)
+    monkeypatch.setattr(enqueue_merge, "_comments", lambda repo, number: "")
+    monkeypatch.setattr(enqueue_merge, "_change_key", lambda base, head: (None, None))
+    monkeypatch.setattr(enqueue_merge, "_fetch_commits", lambda shas: None)
+    monkeypatch.setattr(enqueue_merge, "trusted_receipt", lambda **kwargs: True)
+    assert enqueue_merge.enqueue("o/r", 5656) == 0
+    assert capsys.readouterr().out == "PR #5656: already queued.\n"

@@ -237,14 +237,21 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     check reads it, and each decision one new check run, never an edit of one (an edit
     GitHub refused had left a red "could not decide" on #5656); ADR-038 drafted
     (`untangle/p2-review-gate`);
-  - [ ] the check seen green on a real PR (`live:` the first PR landed with its PR review);
-  - [ ] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
-    allowing a check an App posts, then the founder's `PUT` (`untangle/p2-review-required`);
+  - [x] the check seen green on a real PR (`live:` #5658's head and its merge group
+    `54668a171`, then #5659's, each from its PR review);
+  - [x] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
+    holding a check an App posts to the workflow named for it, and `enqueue-merge.yml`
+    listening to it; the founder's `PUT` after it merges is its host-actions row
+    (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
   - [ ] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
-    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`).
+    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`). With no
+    body edit at landing, `enqueue-merge` no longer reruns after the PR review's decision
+    (`review` on `workflow_run`, which it skips): decide there whether it follows that run or
+    auto-merge alone queues the PR.
 - [ ] P6, process code in one place, research first: the scripts' tests beside them, the queue
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
-  measured (`untangle/p6-process-code`).
+  measured, `enqueue_merge.py` reading each check's newest run as GitHub does
+  (`untangle/p6-process-code`; `untangle-2026-11/p2-review-required.md` item 6).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).

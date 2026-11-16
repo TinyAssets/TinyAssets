@@ -36,7 +36,8 @@
         "required_status_checks": [
           {"context": "Diff scope declared", "integration_id": 15368},
           {"context": "required-tests", "integration_id": 15368},
-          {"context": "invariants", "integration_id": 15368}
+          {"context": "invariants", "integration_id": 15368},
+          {"context": "review", "integration_id": 5634948}
         ]
       }
     }
