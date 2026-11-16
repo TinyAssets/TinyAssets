@@ -206,8 +206,6 @@ describe("the Worker kit", () => {
           outboundService: "fake",
         },
       });
-      expect(main(dir, { bindings: { SECRET: "stated" } }, "./test/entry.ts").main)
-        .toBe("./test/entry.ts");
       expect(() => main(dir, { bindings: { B: "test" } }))
         .toThrow("x: a test states each secret its config requires, and SECRET is not stated");
     } finally {

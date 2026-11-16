@@ -61,7 +61,7 @@ import { answered, asRedirect } from "./refused";
 import { replaceInstallation } from "./revoke";
 import { boundedText, mediaType, plain, randomToken, redirect, TOO_LARGE } from "./kit";
 import { sessionCookie } from "./session";
-import type { SignIn, Upstream } from "./upstream";
+import { type SignIn, type Upstream, upstreamOf } from "./upstream";
 
 interface Verifier {
   readonly verifier: string;
@@ -118,25 +118,16 @@ export function navigation(request: Request): boolean {
     && request.headers.get("Sec-Fetch-Dest") === "document";
 }
 
-/** Start the upstream sign-in for an approved request, checking the URL it builds. */
-async function signIn(oauth: OAuthHelpers, upstream: Upstream, request: AuthRequest,
+/** Start the configured upstream sign-in for an approved request. */
+async function signIn(oauth: OAuthHelpers, env: DoorsEnv, request: AuthRequest,
                       headers?: Headers): Promise<Response> {
   const verifier = randomToken(32);
   const challenge = sha256(verifier).toString("base64url");
   const data: Verifier = { verifier };
   const started = await oauth.beginUpstream(request, headers === undefined ? { data }
                                                                            : { data, headers });
-  const location = upstream.authorizeUrl({ state: started.state, code_challenge: challenge,
-                                           redirect_uri: UPSTREAM_CALLBACK });
-  const url = new URL(location);
-  const params = url.searchParams;
-  if (url.protocol !== "https:" || params.get("max_age") !== "0" || params.has("prompt")
-      || params.get("state") !== started.state || params.get("code_challenge") !== challenge
-      || params.get("code_challenge_method") !== "S256"
-      || params.get("redirect_uri") !== UPSTREAM_CALLBACK) {
-    throw new Error("the upstream's sign-in URL must ask for a fresh sign-in (max_age=0, " +
-                    "no prompt of its own) with our S256 challenge, state and callback");
-  }
+  const location = upstreamOf(env).authorizeUrl({
+    state: started.state, code_challenge: challenge, redirect_uri: UPSTREAM_CALLBACK });
   return redirect(location, started.headers);
 }
 
@@ -154,17 +145,8 @@ function failed(error: unknown): Response {
   throw error;
 }
 
-/**
- * The owner's sign-in, built only where a sign-in needs it: a bad `UPSTREAM` breaks
- * sign-in alone, never another door.
- */
-function upstreamOf(source: Upstream | (() => Upstream)): Upstream {
-  return typeof source === "function" ? source() : source;
-}
-
 /** `GET` and `POST /authorize`. */
-export async function authorize(request: Request, env: DoorsEnv,
-                                upstream: Upstream | (() => Upstream)): Promise<Response> {
+export async function authorize(request: Request, env: DoorsEnv): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
   try {
     if (request.method === "GET") {
@@ -185,7 +167,7 @@ export async function authorize(request: Request, env: DoorsEnv,
         return plain(400, "This app may not send access to TinyAssets itself.");
       }
       if (forApp) {
-        return await signIn(oauth, upstreamOf(upstream), parsed);
+        return await signIn(oauth, env, parsed);
       }
       const details = await oauth.describeConsent(parsed);
       const consent = await oauth.beginConsent(parsed);
@@ -211,7 +193,7 @@ export async function authorize(request: Request, env: DoorsEnv,
       // No `remember`: the approval is this authorization's alone. The grant's scopes
       // are cut to the catalogue when it is made.
       const approved = await oauth.approveConsent(request, handle);
-      return await signIn(oauth, upstreamOf(upstream), approved.request, approved.headers);
+      return await signIn(oauth, env, approved.request, approved.headers);
     }
     return plain(405, "method not allowed");
   } catch (error) {
@@ -278,8 +260,7 @@ async function signedInVendor(oauth: OAuthHelpers, clientId: string, redirectUri
 }
 
 /** `GET /oauth/upstream/callback`: the verified sign-in becomes the grant. */
-export async function callback(request: Request, env: DoorsEnv,
-                               source: Upstream | (() => Upstream)): Promise<Response> {
+export async function callback(request: Request, env: DoorsEnv): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
   let resumed: Awaited<ReturnType<typeof oauth.finishUpstream<Verifier>>>;
   try {
@@ -287,7 +268,7 @@ export async function callback(request: Request, env: DoorsEnv,
   } catch (error) {
     return failed(error);
   }
-  const upstream = upstreamOf(source);
+  const upstream = upstreamOf(env);
   const { request: original, data, headers } = resumed;
   const params = new URL(request.url).searchParams;
   const code = params.get("code");
@@ -306,8 +287,7 @@ export async function callback(request: Request, env: DoorsEnv,
     return plain(502, `The sign-in could not be completed: ${reason}.`, headers);
   }
   const at = now();
-  if (!Number.isSafeInteger(signedIn.authenticated_at)
-      || signedIn.authenticated_at < at - SIGN_IN_MAX_AGE_S
+  if (signedIn.authenticated_at < at - SIGN_IN_MAX_AGE_S
       || signedIn.authenticated_at > at + CLOCK_MARGIN_S) {
     return redirect(authorizationErrorRedirect(original, "access_denied",
                                                "sign in again"), headers);

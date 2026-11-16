@@ -11,14 +11,12 @@ declare namespace Cloudflare {
                                          | "ROUTING_MAC_KEY"> {
     /** The gate in front of the owner Worker's objects, which OWNER reaches (`ci/gate.ts`). */
     OWNER_GATE: import("../../ci/gate").GateControl;
-    /** The fake providers (test/fake-providers.ts), for the tests to read back. */
+    /** The fake outside world (test/fake-providers.ts), for the tests to read back. */
     PROVIDERS: Fetcher;
     /**
      * The owner Worker's fake sandbox Worker's record, by owner: the owner reaches that
      * Worker as its SANDBOX (`owner/test/fake-sandbox.ts`).
      */
     SANDBOX_LOG: Service<import("../../owner/test/fake-sandbox").Log>;
-    /** What the owner Worker sent its erasure queue (`owner/test/fake-erasures.ts`). */
-    ERASURES_SENT: Service<import("../../owner/test/fake-erasures").Sent>;
   }
 }

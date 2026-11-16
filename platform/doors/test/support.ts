@@ -10,6 +10,7 @@ import { base64url } from "../../contract/src/envelope";
 import { acceptanceKey, answerKey } from "../../contract/src/operator-message";
 import { QUEUES } from "../../contract/src/queue-names";
 import type { Refusal } from "../../contract/src/refusal";
+import { upstreamConfig } from "../../contract/src/signin";
 import { OPEN, writeControl } from "../../ci/fixtures";
 import { until } from "../../ci/workerd";
 import { now } from "../src/config";
@@ -22,8 +23,7 @@ import doors from "../src/index";
 import { authorizationServer } from "../src/oauth";
 import { callDoor } from "../src/tools";
 import type { Sources } from "../../sources/src/schema";
-import worker from "./entry";
-import { FAKE_UPSTREAM, fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
+import { signInCode } from "./fake-providers";
 
 
 /**
@@ -33,19 +33,40 @@ import { FAKE_UPSTREAM, fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
 export async function recorded(owner: string) {
   return await env.SANDBOX_LOG.recorded(owner);
 }
+/**
+ * The statuses the fake AuthKit answered `subject`'s identity deletions, oldest first
+ * (`fake-providers.ts`): the doors' `forget` at an erasure, and at an erased owner's sign-in.
+ */
+export async function forgotten(subject: string): Promise<number[]> {
+  return await (await env.PROVIDERS.fetch(
+    `https://status.test/forgotten?sub=${encodeURIComponent(subject)}`)).json();
+}
+
+/** `document` served at `clientId` by the fake outside world, as a client's host serves its CIMD. */
+export async function serveDocument(clientId: string, document: Record<string, unknown>):
+    Promise<void> {
+  await env.PROVIDERS.fetch(`https://status.test/document?url=${encodeURIComponent(clientId)}`,
+                            { method: "POST", body: JSON.stringify(document) });
+}
+
+/** `subject`'s next identity deletion at the fake AuthKit answered `503`, as an outage would. */
+export async function failNextForget(subject: string): Promise<void> {
+  await env.PROVIDERS.fetch(`https://status.test/fail-forget?sub=${encodeURIComponent(subject)}`,
+                            { method: "POST" });
+}
 export const doorsEnv = env as unknown as DoorsEnv;
 export { DARK, OPEN, TIERS } from "../../ci/fixtures";
 export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
 
 /**
- * One request through the doors, its waitUntil work finished: serving the test entry's
- * catalog, or `sources` in its place.
+ * One request through the doors' own entry, its waitUntil work finished; or through their
+ * router over `sources`, a catalog with a record the bundle lacks (`connect.test.ts`).
  */
 export async function call(request: Request, environment: DoorsEnv = doorsEnv,
                            sources?: Sources): Promise<Response> {
   const ctx = createExecutionContext();
-  const response = sources === undefined ? await worker.fetch(request, environment, ctx)
-    : await serve(request, environment, ctx, FAKE_UPSTREAM, sources);
+  const response = sources === undefined ? await doors.fetch(request, environment, ctx)
+    : await serve(request, environment, ctx, sources);
   await waitOnExecutionContext(ctx);
   return response;
 }
@@ -154,22 +175,26 @@ export function handleOf(html: string): string {
 
 export interface SignInAs {
   readonly owner: string;
-  readonly authenticatedAt?: number;
-  /** The issuer the upstream reports; the owner issuer by default. */
-  readonly issuer?: string;
+  /** When the person signed in, 100 s ago by default; null: a token with no `auth_time`. */
+  readonly authenticatedAt?: number | null;
 }
 
-/** The upstream sign-in after the doors redirected to it: back to the callback. */
+/**
+ * The upstream sign-in after the doors redirected to it, at the authorize endpoint the
+ * doors' `UPSTREAM` names: back to the callback with the fake AuthKit's code.
+ */
 export async function upstreamReturns(jar: Jar, location: string, who: SignInAs,
                                       environment: DoorsEnv = doorsEnv,
                                       extra: Record<string, string> = {}): Promise<Response> {
   const sent = new URL(location);
-  if (`${sent.origin}${sent.pathname}` !== UPSTREAM_AUTHORIZE) {
+  if (`${sent.origin}${sent.pathname}`
+      !== upstreamConfig(environment.UPSTREAM).authorization_endpoint) {
     throw new Error(`the doors sent the browser to ${location}`);
   }
-  const code = fakeCode({ ...(who.issuer === undefined ? {} : { issuer: who.issuer }),
-                          subject: who.owner, authenticated_at: who.authenticatedAt ?? now() - 100,
-                          challenge: sent.searchParams.get("code_challenge")! });
+  const code = signInCode({ subject: who.owner,
+                            authenticated_at: who.authenticatedAt === undefined ? now() - 100
+                              : who.authenticatedAt,
+                            challenge: sent.searchParams.get("code_challenge")! });
   const back = new URLSearchParams({ code, state: sent.searchParams.get("state")!, ...extra });
   return jar.take(await call(new Request(url(`/oauth/upstream/callback?${back}`), {
     headers: { ...NAVIGATE, Cookie: jar.header() } }), environment));

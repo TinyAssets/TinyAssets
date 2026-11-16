@@ -1,5 +1,6 @@
 // The owner app in a real browser (Chromium, through Playwright), against the doors in
-// workerd: the doors' test Worker (`e2e-entry.ts`: the fake upstream sign-in) with the real
+// workerd: the doors' harness Worker (`e2e-entry.ts`: the live sign-in against the fake AuthKit
+// of `fake-providers.ts`, the test OAuth source beside the bundled records) with the real
 // owner, gateway, codemode and files Workers and the fake providers, each bundled by wrangler
 // from its own config as `vitest.config.ts` does (`ci/workers.ts`), and the owner's sandbox
 // the owner suite's fake sandbox Worker. Each Worker is bound as production binds it: the
@@ -30,17 +31,21 @@ import { installed } from "../../ci/deps.ts";
 import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts";
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
+import { AUTHKIT } from "./fake-providers.ts";
 
 installed();
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ORIGIN = "https://tinyassets.io";
 const EGRESS = "https://egress.tinyassets.io";
-const UPSTREAM = "https://upstream.test";
+const UPSTREAM = AUTHKIT.OWNER_ISSUER;
 const SOURCE_AUTH = "https://auth.test";
+/** The hosts the doors' sign-in reaches, the fake AuthKit's: its record's token and JWKS. */
+const { token_endpoint: TOKEN_AT, jwks_uri: JWKS_AT } = JSON.parse(AUTHKIT.UPSTREAM);
+const AUTHKIT_HOSTS = [TOKEN_AT, JWKS_AT].map((at) => new URL(at).hostname);
 const WHO = `user_${randomBytes(16).toString("hex")}`;
 /**
  * The hand-off hosts' Worker: the identity provider signs `WHO` in at once, its code the
- * fake upstream's (`fake-upstream.ts`'s `fakeCode`), and the test source's authorization
+ * fake AuthKit's (`fake-providers.ts`'s `signInCode`), and the test source's authorization
  * server approves (`fake-providers.ts` takes `good-code`); each sends the browser back.
  */
 const HAND_OFF = `
@@ -84,20 +89,24 @@ async function doors() {
   mf = new Miniflare(convertV4MiniflareOptions(pool({
     host: "127.0.0.1", port: 0, https: true,
     workers: [
-      // The doors' test Worker, with everything the doors' config gives it (`auxiliary`):
+      // The doors' harness Worker, with everything the doors' config gives it (`auxiliary`):
       // its secrets are the test's, none read from the host.
       await auxiliary(DOORS, {
-        bindings: { OWNER_ISSUER: UPSTREAM, ROUTING_MAC_KEY: routingKey,
-                    WORKOS_API_KEY: "test-client-secret",
+        bindings: { ...AUTHKIT,
+                    ROUTING_MAC_KEY: routingKey, WORKOS_API_KEY: "test-client-secret",
                     E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                     OPERATOR_KEYRING: newKeyring() },
         // SANDBOX_LOG reads back the owner's fake sandbox Worker.
         serviceBindings: { PROVIDERS: providers.name,
                            SANDBOX_LOG: { name: sandbox.name, entrypoint: "Log" } },
         // The provider fetches the first-party app's metadata document, as production does
-        // over the public internet; nothing else leaves the doors.
-        outboundService: (request) => request.url === webClient ? mf.dispatchFetch(webClient)
-          : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
+        // over the public internet, and the sign-in reaches the fake AuthKit; nothing else
+        // leaves the doors.
+        outboundService: async (request) => request.url === webClient
+          ? mf.dispatchFetch(webClient)
+          : AUTHKIT_HOSTS.includes(new URL(request.url).hostname)
+            ? (await mf.getWorker(providers.name)).fetch(request)
+            : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
       }, "test/e2e-entry.ts"),
       // The owner Worker, its SANDBOX the owner suite's fake sandbox Worker.
       await auxiliary(join(PLATFORM, "owner"), { bindings: { ROUTING_MAC_KEY: routingKey },

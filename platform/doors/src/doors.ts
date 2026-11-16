@@ -29,9 +29,8 @@
  * - `/.well-known/oauth-authorization-server`, `/oauth/token`, `/oauth/register` (only
  *   with `DCR_ENABLED`): the provider's own endpoints.
  *
- * Any other origin or path is `404`. The upstream sign-in and the source records are the
- * caller's: `index.ts` passes the configured sign-in and the bundled records,
- * and the tests a fake sign-in and the records with a test source beside them.
+ * Any other origin or path is `404`. The source records are the caller's: `index.ts`
+ * passes the bundled records, and a test of a record the bundle lacks its own catalog.
  */
 import { e2bLifecycle } from "./e2b-hooks";
 import { serveApi } from "./api";
@@ -56,7 +55,6 @@ import { appPath, servePage } from "./pages";
 import { answered, asJson } from "./refused";
 import { OWNER_SURFACE, withoutCookie } from "./session";
 import type { Sources } from "../../sources/src/schema";
-import type { Upstream } from "./upstream";
 
 function notFound(): Response {
   return plain(404, "not found");
@@ -95,12 +93,11 @@ export function overloaded(error: unknown): boolean {
     && (error as { overloaded?: unknown }).overloaded === true;
 }
 
-/** Serve one request through the doors, with `upstream` as the owner's sign-in. */
+/** Serve one request through the doors, over the source records `sources`. */
 export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                            upstream: Upstream | (() => Upstream), sources: Sources):
-    Promise<Response> {
+                            sources: Sources): Promise<Response> {
   try {
-    return await route(request, env, ctx, upstream, sources);
+    return await route(request, env, ctx, sources);
   } catch (error) {
     if (overloaded(error)) {
       return plain(429, "this account is busy; try again shortly", { "Retry-After": "1" });
@@ -110,8 +107,7 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
 }
 
 async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                     upstream: Upstream | (() => Upstream), sources: Sources):
-    Promise<Response> {
+                     sources: Sources): Promise<Response> {
   const url = new URL(request.url);
   if (url.origin === EGRESS_ORIGIN) {
     return serveEgress(withoutCookie(request), env, ctx);
@@ -145,10 +141,10 @@ async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
     return connectCallback(request, sources);
   }
   if (path === AUTHORIZE_PATH) {
-    return authorize(request, env, upstream);
+    return authorize(request, env);
   }
   if (path === UPSTREAM_CALLBACK_PATH) {
-    return callback(request, env, upstream);
+    return callback(request, env);
   }
   if (url.href === WEB_CLIENT) {
     return webClient();

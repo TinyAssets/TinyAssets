@@ -30,11 +30,6 @@ import pytest
 
 import tinyassets.api.universe as us
 import tinyassets.api.visibility as vis
-
-# A universe exists because an ownership row names it (#4012). A `founder_home`
-# BINDING, not an ACL grant: granting would flip a fixture to private and change
-# what the surrounding assertion means.
-from tests.conftest import own_universe
 from tinyassets.api.wiki import _ensure_wiki_scaffold
 from tinyassets.auth.middleware import auth_middleware, clear_identity, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
@@ -330,50 +325,6 @@ class TestABranchIsBornPrivateToo:
             assert br._resolve_readable_branch("legacy-1", str(base)) is not None
         finally:
             monkey.undo()
-
-
-class TestMigration:
-    """`scripts/migrate_private_by_default.py` — the one-shot the host runs.
-
-    The records it exists for are the ones live production held on 2026-09-02:
-    maintenance buckets and IdP-migration backups declared `public` by the old
-    backfill, never by a person
-    See openspec/changes/archive/2026-09-30-private-by-default-universes/.
-    """
-
-    @staticmethod
-    def _declare(base: Path, uid: str, level: str, source: str) -> None:
-        from tinyassets.daemon_server import ensure_universe_registered
-
-        (base / uid).mkdir(parents=True, exist_ok=True)
-        own_universe(base, uid)  # a universe exists because an owner names it (#4012)
-        ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
-        vis.set_universe_visibility(uid, level, source=source)
-
-    def _fixture_estate(self, base: Path) -> None:
-        # What production looked like: buckets and legacy universes declared by
-        # the old backfill, plus one universe an owner actually published.
-        self._declare(base, "_removed_universes_20260829", "public", "backfill")
-        self._declare(base, "scratch", "public", "backfill")
-        self._declare(base, "u-legacy", "public", "default")
-        self._declare(base, "u-listed", "metadata_only", "default")
-        self._declare(base, "u-chosen", "public", "owner")
-        self._declare(base, "u-already", "private", "backfill")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # --------------------------------------------------------------------------- #

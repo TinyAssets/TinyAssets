@@ -13,7 +13,7 @@ import { mcpOrigin } from "../src/binder";
 import type { DoorsEnv } from "../src/env";
 import {
   call, type Client as Registered, connect, doorsEnv, grantsOf, OPEN, registerClient,
-  setControl, type Tokens, url, answerOf,
+  serveDocument, setControl, type Tokens, url, answerOf,
 } from "./support";
 
 /** The vendor `registered`'s grant in `who`'s object holds, as the `grantList` door answers. */
@@ -85,29 +85,19 @@ describe("a client's vendor, at sign-in", () => {
   it("is verified by a Client ID Metadata Document's host", async () => {
     const document = "https://claude.ai/oauth/test-client-metadata";
     const redirect = "https://claude.ai/api/mcp/auth_callback";
-    const real = globalThis.fetch;
-    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const request = new Request(input, init);
-      return request.url === document
-        ? Response.json({ client_id: document, client_name: "Claude",
-                          redirect_uris: [redirect], token_endpoint_auth_method: "none",
-                          grant_types: ["authorization_code", "refresh_token"],
-                          response_types: ["code"] })
-        : real(input, init);
-    });
-    try {
-      const alice = owner();
-      const client = await mcpClient(await connect({ clientId: document, redirectUri: redirect },
-                                                   { owner: alice }));
-      const { value } = await tool(client, "agents_list", {});
-      expect((value["apps"] as { id: string; connected: boolean; verified: boolean }[])
-        .find((app) => app.id === "claude")).toMatchObject({ connected: true, verified: true });
-      expect(await vendorOf(alice, { clientId: document, redirectUri: redirect }))
-        .toEqual({ vendor: "claude", vendor_verified: 1 });
-      await client.close();
-    } finally {
-      spy.mockRestore();
-    }
+    await serveDocument(document, { client_id: document, client_name: "Claude",
+                                    redirect_uris: [redirect], token_endpoint_auth_method: "none",
+                                    grant_types: ["authorization_code", "refresh_token"],
+                                    response_types: ["code"] });
+    const alice = owner();
+    const client = await mcpClient(await connect({ clientId: document, redirectUri: redirect },
+                                                 { owner: alice }));
+    const { value } = await tool(client, "agents_list", {});
+    expect((value["apps"] as { id: string; connected: boolean; verified: boolean }[])
+      .find((app) => app.id === "claude")).toMatchObject({ connected: true, verified: true });
+    expect(await vendorOf(alice, { clientId: document, redirectUri: redirect }))
+      .toEqual({ vendor: "claude", vendor_verified: 1 });
+    await client.close();
   });
 });
 
@@ -163,27 +153,17 @@ describe("a CIMD document on a vendor's host that sends access elsewhere (review
   it("is that vendor unverified, and its consent says where access goes", async () => {
     const document = "https://chatgpt.com/some/user/path/cimd.json";
     const redirect = "https://attacker.example/cb";
-    const real = globalThis.fetch;
-    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const request = new Request(input, init);
-      return request.url === document
-        ? Response.json({ client_id: document, client_name: "ChatGPT",
-                          redirect_uris: [redirect], token_endpoint_auth_method: "none",
-                          grant_types: ["authorization_code", "refresh_token"],
-                          response_types: ["code"] })
-        : real(input, init);
-    });
-    try {
-      const alice = owner();
-      const client = await mcpClient(await connect({ clientId: document, redirectUri: redirect },
-                                                   { owner: alice }));
-      await tool(client, "agents_list", {});
-      expect(await vendorOf(alice, { clientId: document, redirectUri: redirect }))
-        .toEqual({ vendor: "chatgpt", vendor_verified: 0 });
-      await client.close();
-    } finally {
-      spy.mockRestore();
-    }
+    await serveDocument(document, { client_id: document, client_name: "ChatGPT",
+                                    redirect_uris: [redirect], token_endpoint_auth_method: "none",
+                                    grant_types: ["authorization_code", "refresh_token"],
+                                    response_types: ["code"] });
+    const alice = owner();
+    const client = await mcpClient(await connect({ clientId: document, redirectUri: redirect },
+                                                 { owner: alice }));
+    await tool(client, "agents_list", {});
+    expect(await vendorOf(alice, { clientId: document, redirectUri: redirect }))
+      .toEqual({ vendor: "chatgpt", vendor_verified: 0 });
+    await client.close();
   });
 });
 

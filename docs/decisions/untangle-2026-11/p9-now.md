@@ -1,0 +1,18 @@
+# p9-now as built (2026-11-16)
+
+`untangle/p9-now` deletes P8's rest and P9's "can go now" list (list3 P8, P9; d3 §B5; the founder, 2026-11-12). Each item was checked on main for a caller in workflows, scripts, tests, hooks, `package.json`, skills, specs and docs, and for being an old-stack file that leaves in the window (`tasks.md` §10, step 15).
+
+1. **Deleted.**
+   - The always-red watchers: `community-loop-watch.yml` (40 of 40 runs red) and `tier3-oss-clone-nightly.yml` (red every night since 2026-10-22), with the scripts only they ran (`community_loop_watch.py`, `tier3_smoke.py`), the empty `tests/smoke/`, the spec that described only the clone check (`oss-clone-and-install`), the monitor requirement in `community-patch-loop`, and PROBE-009 in the probe catalog.
+   - 32 callerless scripts, list3 C1's list less the ones a reader still runs (item 2). Two tests named one of them: `test_model_source_detector.py` loses a path from its scan list, and `test_private_by_default.py` loses `TestMigration`, a class with no test left in it.
+   - The root leftovers: `attic/`, `.cowork-revert-patches/`, `auto_ship_ship_classes.yaml`, `affected-c7.txt`. `.codex-gate-plan.txt` had already gone in #5504.
+   - All three copies of the OpenSpec prompts (`.claude/commands/opsx/`, `.github/prompts/`, `.github/skills/`). The OpenSpec CLI writes them again if anyone wants `/opsx`.
+   - `setup-secure-merge-gate.sh`. Running it would have required a check that no longer exists.
+   - Two of the nine finished changes: `app-object` and `mcp-discovery-schema`.
+   - `ideas/PIPELINE.md`, `SHIPPED.md` and `INDEX.md`, with `capture_idea.py`. `INBOX.md` and the dated idea files stay.
+   - The Windows dev-box hygiene: `dev_hygiene_hook.py` and its `SessionStart` entry, `dev_hygiene.py`, `install_dev_hygiene_task.ps1`, and the environment-variable rows they read. Also `install-git-hooks.ps1`. The pre-commit hook's header now says how to install it on any OS: `git config core.hooksPath scripts/git-hooks`.
+2. **Kept, with the reason and where each goes.**
+   - `dr-drill.yml`. It is disabled, not red, and step 15 names it as an old-stack workflow that leaves in the window.
+   - Seven of the finished changes: `box-subscription-sources`, `model-connect-by-discovery`, `test-suite-follows-shape`, `n3-realtime-model-sessions`, `n9-model-media-results` and `post-c6-multiplayer` hold the requirement ids that running tests verify. Deleting them fails the hygiene gate ("spec retires an id still named") and lets `test-shape-prune` delete those tests. `target-architecture` is cited by `tinyassets/`, the `Dockerfile` and `dr-drill.yml`. All seven go with `untangle/p9-openspec`, behind list3 D5's id rule.
+   - The list3 C1 scripts that a current page tells someone to run. These are old-stack runbooks or host-actions rows (`bootstrap_add_second_ssh_key`, `cf_access_rollback`, `cleanup_provider_child`, `selfhost_smoke`, `stripe_go_live`, `review_evidence_keygen`, `outside_client_claims_probe`, `uptime_canary_layer2`, `migrate_secrets_to_vault`), or files that `tinyassets/` or `deploy/` cite (`owner_lease_restore`, `run-tunnel.sh`, `universe_ownership_inventory`, `webpush_keys`). They leave in the window. `provider_context_feed.py` is required by `development-coordination-runtime`, a process spec that list3 X5 carries out. It goes with that spec's decision, and it no longer reads `ideas/PIPELINE.md`.
+3. **Dated records name a deleted tool without its path.** Concerns and old changes that cite a deleted script as evidence of a past run now give its bare name, and git holds the file. `e2b-resume-measurement.md` names the commit the probe lived at.

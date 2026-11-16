@@ -3,17 +3,12 @@
  * consent flow, `authenticated_at` fixed across refreshes, consent after a revoke, and
  * `invalid_grant` once revoked.
  */
-import { createExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { mcpOrigin } from "../src/binder";
 import { ACCESS_TOKEN_TTL_S, now, REFRESH_TOKEN_TTL_S } from "../src/config";
 import { MCP_RESOURCE, WEB_REDIRECT } from "../../contract/src/identity";
-import { serve } from "../src/doors";
 import { authorizationServer } from "../src/oauth";
-import type { Upstream } from "../src/upstream";
-import { TEST_SOURCES } from "./entry";
-import { FAKE_UPSTREAM } from "./fake-upstream";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, crossed, DARK, decide, doorsEnv,
   handleOf, Jar, legacyPost, legacyTool, NAVIGATE, OPEN, pkce, refresh, refuseOnce,
@@ -150,36 +145,6 @@ describe("the authorization flow", () => {
     expect(redirect.searchParams.get("code")).toBeTruthy();
   });
 
-  it.each([
-    ["no max_age=0", (u: URL) => u.searchParams.delete("max_age")],
-    ["a looser max_age", (u: URL) => u.searchParams.set("max_age", "600")],
-    ["a prompt of its own", (u: URL) => u.searchParams.set("prompt", "none")],
-    ["another challenge", (u: URL) => u.searchParams.set("code_challenge", "x")],
-    ["a plain challenge", (u: URL) => u.searchParams.set("code_challenge_method", "plain")],
-    ["another state", (u: URL) => u.searchParams.set("state", "x")],
-    ["another callback", (u: URL) => u.searchParams.set("redirect_uri", "https://evil.test/cb")],
-    ["plain http", (u: URL) => { u.protocol = "http:"; }],
-  ])("refuses an upstream whose sign-in URL has %s", async (_what, alter) => {
-    const upstream: Upstream = {
-      authorizeUrl: (request) => {
-        const sent = new URL(FAKE_UPSTREAM.authorizeUrl(request));
-        alter(sent);
-        return sent.href;
-      },
-      finish: FAKE_UPSTREAM.finish,
-      forget: FAKE_UPSTREAM.forget,
-    };
-    const client = await registerClient();
-    const jar = new Jar();
-    const { challenge } = await pkce();
-    const page = await consent(jar, client, challenge);
-    const approve = new Request(url("/authorize"), {
-      method: "POST", headers: { Cookie: jar.header() },
-      body: new URLSearchParams({ handle: handleOf(await page.text()), decision: "approve" }) });
-    await expect(serve(approve, doorsEnv, createExecutionContext(), upstream, TEST_SOURCES))
-      .rejects.toThrow("max_age=0");
-  });
-
   it("answers a denied consent with access_denied", async () => {
     const client = await registerClient();
     const jar = new Jar();
@@ -222,21 +187,17 @@ describe("the authorization flow", () => {
   });
 
   it("names a failed upstream check at the callback, on its page and in the log", async () => {
+    // The issuer's token carries no auth_time, which the live upstream refuses (`oidc.ts`).
     const reason = "the access token carries no auth_time";
-    const upstream: Upstream = { ...FAKE_UPSTREAM,
-                                 finish: () => Promise.reject(new Error(reason)) };
     const client = await registerClient();
     const jar = new Jar();
     const { challenge } = await pkce();
     const page = await consent(jar, client, challenge);
     const approved = await decide(jar, handleOf(await page.text()), "approve");
-    const sent = new URL(approved.headers.get("Location")!);
-    const back = new URLSearchParams({ code: "c", state: sent.searchParams.get("state")! });
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      const failed = await serve(new Request(url(`/oauth/upstream/callback?${back}`), {
-        headers: { ...NAVIGATE, Cookie: jar.header() } }), doorsEnv, createExecutionContext(),
-                                 upstream, TEST_SOURCES);
+      const failed = await upstreamReturns(jar, approved.headers.get("Location")!,
+                                           { owner: owner(), authenticatedAt: null });
       expect(failed.status).toBe(502);
       expect(await failed.text()).toBe(`The sign-in could not be completed: ${reason}.`);
       expect(logged).toHaveBeenCalledWith(`the upstream sign-in failed: ${reason}`);

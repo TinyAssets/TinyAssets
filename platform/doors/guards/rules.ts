@@ -119,13 +119,12 @@ export const CONFIG: ConfigRules = Object.freeze({
  */
 export const OWED: readonly Owed[] = Object.freeze([
   // The owner's constants and its fakes' read-back types, which the doors' tests read from the
-  // owner's own folder: B23's second part (`untangle/t2b`) moves what both sides read.
+  // owner's own folder: B23's last doors part (`untangle/t2c`) moves what both sides read.
   ...imports("B23", "platform/doors/test/doors-live.test.ts", [
     "platform/owner/src/admission.ts", "platform/owner/src/erasure.ts"]),
   ...imports("B23", "platform/doors/test/e2b-hooks.test.ts",
              ["platform/owner/src/sandbox-time.ts"]),
-  ...imports("B23", "platform/doors/test/env.d.ts", ["platform/owner/test/fake-sandbox.ts",
-                                                      "platform/owner/test/fake-erasures.ts"]),
+  ...imports("B23", "platform/doors/test/env.d.ts", ["platform/owner/test/fake-sandbox.ts"]),
   ...imports("B23", "platform/doors/test/hardening.test.ts", ["platform/owner/src/bodies.ts"]),
   ...imports("B23", "platform/doors/test/runs.test.ts", ["platform/owner/src/runs.ts"]),
 ]);

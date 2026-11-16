@@ -10,7 +10,7 @@
  * browser and the session that began it, once, while it lasts, and only with a code that
  * came back on its own source's callback; a connect that fails leaves nothing live.
  */
-import { createExecutionContext, env } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CONNECT_CALLBACK, CONNECTED_PAGE } from "../src/config";
@@ -18,17 +18,19 @@ import { base64url } from "../../contract/src/envelope";
 import { ORIGIN } from "../../contract/src/identity";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import type { DoorsEnv } from "../src/env";
-import { serve } from "../src/doors";
 import { connectCookie } from "../src/session";
-import { bundledRecords, catalogOf } from "../../sources/src/catalog";
-import { TEST_OAUTH } from "./entry";
-import { FAKE_UPSTREAM } from "./fake-upstream";
 import { mintKeyFor } from "./keys";
+import { TEST_SOURCES } from "./sources";
 import {
-  call, connect, doorsEnv, NAVIGATE, OPEN, ownDoor, refuseOnce, registerClient,
+  call as through, connect, doorsEnv, NAVIGATE, OPEN, ownDoor, refuseOnce, registerClient,
   serveFirstPartyDocument, setControl, signInApp, url,
 } from "./support";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
+
+/** One request through the doors, over `TEST_SOURCES` (`support.ts` `call`). */
+function call(request: Request, environment: DoorsEnv = doorsEnv): Promise<Response> {
+  return through(request, environment, TEST_SOURCES);
+}
 
 interface Call {
   readonly method: string;
@@ -794,14 +796,13 @@ describe("a flow's finish", () => {
 
   it("re-checks the source still has its record, before any exchange", async () => {
     const { app, started, body } = await begun();
-    const gone = catalogOf(bundledRecords());
-    const ctx = createExecutionContext();
-    const answer = await serve(new Request(url("/app/api/connections/oauth/finish"), {
+    // The doors' own entry, which serves the bundled records alone.
+    const answer = await through(new Request(url("/app/api/connections/oauth/finish"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: ORIGIN,
                  "Sec-Fetch-Site": "same-origin", Authorization: `Bearer ${app.token}`,
                  Cookie: `__Host-ta-owner=${app.session}; ${started.binding}` },
-      body: JSON.stringify(body) }), doorsEnv, ctx, FAKE_UPSTREAM, gone);
+      body: JSON.stringify(body) }));
     expect(answer.status).toBe(404);
     expect(await received()).toEqual([]);
     expect(await connectionRows(app))

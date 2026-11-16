@@ -30,7 +30,7 @@ import { NOT_CONFIGURED, now } from "./config";
 import type { DoorsEnv } from "./env";
 import { deleteKey, deleteRoute, putOwner } from "./directory";
 import { revokeAll } from "./revoke";
-import type { Upstream } from "./upstream";
+import { upstreamOf } from "./upstream";
 
 /** The door: the object's mark, then the job; the owner's own session and words. */
 export async function eraseOwner({ binding, stub }: Bound, request: unknown):
@@ -40,8 +40,7 @@ export async function eraseOwner({ binding, stub }: Bound, request: unknown):
 }
 
 /** One erasure's outside record, made whole, then confirmed to the object. */
-export async function eraseOutside(env: DoorsEnv, owner: string, upstream: () => Upstream):
-    Promise<"done" | "wiped"> {
+export async function eraseOutside(env: DoorsEnv, owner: string): Promise<"done" | "wiped"> {
   const { binding, stub } = bindPlatformFor(env, owner);
   const names = await stub.erasureOutside(binding);
   if (names === null) {
@@ -56,15 +55,15 @@ export async function eraseOutside(env: DoorsEnv, owner: string, upstream: () =>
   }
   await revokeAll(env, owner);
   if (env.OWNER_ISSUER !== NOT_CONFIGURED && !owner.startsWith(FOREIGN_OWNER)) {
-    await upstream().forget(owner);
+    await upstreamOf(env).forget(owner);
   }
   await stub.erasureOutsideDone(binding);
   return "done";
 }
 
 /** The erasure queue's consumer: each `{owner}` message's outside record, retried on failure. */
-export async function erasureQueue(batch: MessageBatch<unknown>, env: DoorsEnv,
-                                   upstream: () => Upstream): Promise<void> {
+export async function erasureQueue(batch: MessageBatch<unknown>, env: DoorsEnv):
+    Promise<void> {
   for (const message of batch.messages) {
     let owner: string;
     try {
@@ -75,7 +74,7 @@ export async function erasureQueue(batch: MessageBatch<unknown>, env: DoorsEnv,
       continue;
     }
     try {
-      await eraseOutside(env, owner, upstream);
+      await eraseOutside(env, owner);
       message.ack();
     } catch (error) {
       // A refusal (no erasure under way) is the object's word: dropped, never retried; one

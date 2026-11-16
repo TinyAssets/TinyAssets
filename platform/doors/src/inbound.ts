@@ -80,9 +80,9 @@ interface SharedApp {
   };
 }
 
-/** The shared apps, each checked whole: a broken record fails loudly here. */
-export function sharedApps(declared: unknown = apps): readonly SharedApp[] {
-  const list = (declared as { apps?: unknown } | null)?.apps;
+/** `shared-apps.json`'s apps, each checked whole: a broken record fails loudly here. */
+export function sharedApps(): readonly SharedApp[] {
+  const list = (apps as { apps?: unknown } | null)?.apps;
   if (!Array.isArray(list)) {
     throw new Error("shared-apps.json holds an apps list");
   }

@@ -8,11 +8,17 @@
  * Management's code exchange and its access token's signature, issuer, client, subject and
  * `auth_time` against the issuer's JWKS, refusing a token without `auth_time` (there is no
  * clock fallback). Until the
- * deploy configures it, `UNWIRED` refuses loudly (`upstreamOf`), and the tests run a fake.
+ * deploy configures it, `UNWIRED` refuses loudly (`upstreamOf`).
  * The binder names the owner from the issuer and subject: AuthKit's (`OWNER_ISSUER`)
  * subjects stay owner ids as they are, so no identity migration is owed at cutover, and
  * any later issuer's are namespaced.
  */
+import { upstreamConfig } from "../../contract/src/signin";
+
+import { NOT_CONFIGURED } from "./config";
+import type { DoorsEnv } from "./env";
+import { oidcUpstream } from "./oidc";
+
 export interface SignIn {
   /** The issuer whose sign-in this is (`OWNER_ISSUER` for AuthKit's). */
   readonly issuer: string;
@@ -26,7 +32,7 @@ export interface Upstream {
   /**
    * Where to send the browser: the provider's authorize URL for this `state`, asking for
    * a fresh sign-in (`max_age=0`) with this S256 challenge, returning to
-   * `redirect_uri`. The doors check every one of those in the URL it returns.
+   * `redirect_uri`: the contract's `authorizeUrl`, whose record holds no flow parameter.
    */
   authorizeUrl(request: { state: string; code_challenge: string; redirect_uri: string }):
     string;
@@ -51,3 +57,22 @@ export const UNWIRED: Upstream = Object.freeze({
   finish: (): Promise<SignIn> => Promise.reject(new Error(UNWIRED_MESSAGE)),
   forget: (): Promise<void> => Promise.reject(new Error(UNWIRED_MESSAGE)),
 });
+
+/**
+ * The owner's sign-in as the Worker is configured: `UNWIRED` while both the issuer and its
+ * record are unset; the live one when both are set; a throw when one is set without the
+ * other, or the secret is missing (a half-configured deploy fails loudly, never signs in).
+ * Built only where a sign-in or an identity's deletion needs it, so a bad `UPSTREAM` breaks
+ * those alone, never another door.
+ */
+export function upstreamOf(env: DoorsEnv): Upstream {
+  const issuer = env.OWNER_ISSUER === NOT_CONFIGURED;
+  const record = env.UPSTREAM === NOT_CONFIGURED;
+  if (issuer && record) {
+    return UNWIRED;
+  }
+  if (issuer || record) {
+    throw new Error("OWNER_ISSUER and UPSTREAM are configured together, or neither is");
+  }
+  return oidcUpstream(env.OWNER_ISSUER, upstreamConfig(env.UPSTREAM), env.WORKOS_API_KEY);
+}

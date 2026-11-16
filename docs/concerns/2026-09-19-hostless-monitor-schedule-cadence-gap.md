@@ -50,11 +50,11 @@ through the gap.
 | Existing primitive | Actual boundary / limitation |
 |---|---|
 | `uptime-canary.yml` + issue/Pushover sink | External to daemon/developer hosts, but probe and paging execution share GitHub Actions. No run means no fresh observation or escalation decision. Exact prior-red receipts expire after 30 minutes; the observed gaps cannot count as consecutive timely reds. |
-| `community-loop-watch.yml` + `scripts/community_loop_watch.py` | Requests 15-minute GitHub schedule plus completion events. Can flag an observation older than 90 minutes and dispatch a stale canary. Shares GitHub scheduler; latest natural record at this read is [35413249182](https://github.com/Jonnyton/TinyAssets/actions/runs/35413249182), 01:37:54 UTC. Its generic `workflow_stage` reads whole-run conclusion/freshness, not typed Layer-1 evidence: a fresh classifier-success/unknown run can be a green stage, not proof of green uptime. |
+| `community-loop-watch.yml` + `community_loop_watch.py` | Requests 15-minute GitHub schedule plus completion events. Can flag an observation older than 90 minutes and dispatch a stale canary. Shares GitHub scheduler; latest natural record at this read is [35413249182](https://github.com/Jonnyton/TinyAssets/actions/runs/35413249182), 01:37:54 UTC. Its generic `workflow_stage` reads whole-run conclusion/freshness, not typed Layer-1 evidence: a fresh classifier-success/unknown run can be a green stage, not proof of green uptime. |
 | `dns-canary.yml`, `llm-binding-canary.yml`, `release-reconcile.yml` | Existing external checks/backstop, all GitHub scheduled. Different measurements do not create an independent scheduler. Reconcile also has completion triggers; binding presence is not provider execution. |
 | `p0-outage-triage.yml` | Issue-label-triggered GitHub repair; not an independent observer of absent canary ticks. |
 | `tinyassets-watchdog.timer` / `daemon-watchdog.timer` | Production-VM systemd checks at 30 seconds / two minutes. Survive developer-host loss, but share the daemon VM failure domain; cannot attest that VM's availability when it is offline. |
-| `scripts/install_canary_task.ps1` | Developer Windows Task Scheduler checks; explicitly host-fate-sharing, not zero-host proof. |
+| `install_canary_task.ps1` | Developer Windows Task Scheduler checks; explicitly host-fate-sharing, not zero-host proof. |
 | `deploy/cloudflare-worker/{wrangler.toml,worker.js}` | Existing external request proxy. Tracked config has no cron trigger; code exposes fetch, not scheduled monitoring. No dashboard configuration was inspected or inferred. |
 | Vector / Better Stack runbook | Optional remote log forwarding, not evidence of configured external polling or dead-man alerts. No live account inspected. |
 

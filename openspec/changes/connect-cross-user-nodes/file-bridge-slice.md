@@ -9,7 +9,7 @@ not approved until root says so.
 Scope: **cross-owner delivery only.** The owned run-file reader, capture,
 upload and binding primitives are reused unchanged. No new MCP primitive is
 introduced — delivery still enters through the existing `deliver_output`
-extension scope, so `scripts/check_primitive_exists.py action` has nothing to
+extension scope, so `check_primitive_exists.py action` has nothing to
 collide with.
 
 ---

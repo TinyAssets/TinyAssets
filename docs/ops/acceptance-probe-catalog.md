@@ -325,51 +325,6 @@ PROBE-002 (Layer-2 chatbot liveness) overlaps on the `llm_endpoint_bound` field 
 
 ---
 
-## PROBE-009 — Tier-3 OSS fresh-clone smoke
-
-**Validated:** registration 2026-04-27 — workflow live since `.github/workflows/tier3-oss-clone-nightly.yml` landed; runs nightly from GitHub Actions.
-**Source workflow:** `.github/workflows/tier3-oss-clone-nightly.yml`
-**Source script:** `scripts/tier3_smoke.py` + `scripts/import_graph_smoke.py` (called inside the workflow).
-**Persona:** automated GHA runner simulating a fresh tier-3 OSS contributor path.
-
-### Invocation
-
-Runs automatically on the `17 7 * * *` cron (07:17 UTC daily) + manual `workflow_dispatch`.
-
-### What it exercises
-
-| Layer | What's tested |
-|---|---|
-| System | `git clone --depth 1` of the repo on a fresh GHA runner (no cache, no host artifacts). |
-| System | `python -m venv .venv` + `pip install -e .` succeeds from `pyproject.toml` alone. |
-| System | `import workflow` works at top level after install. |
-| System | `scripts/tier3_smoke.py` structural smoke + `scripts/import_graph_smoke.py` import-graph smoke (catches missing-symbol / dropped-file regressions at package import). |
-| System | `pytest tests/smoke/ -x` — fast smoke-test subset green on a fresh clone. |
-| User-impact | AGENTS.md Forever Rule "tier-3 OSS contributors `git clone` and run cleanly" — directly probes the contributor onboarding surface. |
-
-### Green criteria
-
-- All 6 workflow steps (clone, venv, install, top-level import, structural smoke, import-graph smoke, smoke pytest) exit 0.
-- TinyAssets conclusion = success.
-
-### Red signals
-
-- Any step exits non-zero.
-- Failure path opens GitHub Issue labeled `tier3-broken` with the failing commit SHA + run URL.
-- No auto-recovery / auto-close — issue stays open until manual triage + fix-forward (debug order documented in the workflow body).
-
-### Why this probe earns a catalog slot
-
-Per `2026-04-20-public-mcp-outage-postmortem.md (archived in git)` §6: "Highest-priority post-canary addition: tier-3 OSS clone nightly probe. That surface is just as public as the MCP connector and has zero monitoring today — the project is one bad commit away from 'fresh contributors silently bounce because pip install -e . fails.'" PROBE-001..008 all probe the running daemon; PROBE-009 alone probes the contributor onboarding surface. Catches dirty-tree commits, missing files, broken pyproject.toml, dropped symbols, and import-graph regressions that running-daemon probes cannot see.
-
-### When to use
-
-- Continuous monitoring of the OSS-contributor entrypoint (passive — fires nightly).
-- After any commit that touches `pyproject.toml`, package layout, top-level imports, or `__all__` declarations.
-- Before merging structural refactors (manual `workflow_dispatch` to run the smoke against a PR's HEAD before the daily cron).
-
----
-
 ## Borderline scripts — intentionally not catalogued
 
 These canary-adjacent scripts exist in the repo but do NOT earn standalone catalog slots per the audit's admission criteria. Listed here so future audits can confirm their omission is intentional, not accidental.

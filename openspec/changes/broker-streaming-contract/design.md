@@ -437,7 +437,7 @@ caller: the loop's incremental SSE reader folds chunks with today's codec
 
 ### Local Linux measurement (2026-10-13, Python 3.11.17)
 
-- `scripts/measure_broker_streams.py --streams 500`, with the 256 KiB default
+- `measure_broker_streams.py --streams 500`, with the 256 KiB default
   credit window: broker RSS 28.0 to 78.5 MiB, or 103.5 KiB per open stream;
   threads 1 to 503. The injected held upstream excludes real TLS sockets and
   their buffers. The no-thread-per-stream target is still unmet.

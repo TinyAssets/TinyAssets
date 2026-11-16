@@ -44,8 +44,7 @@
 # Override with `git commit --no-verify` for exceptional cases
 # (e.g. intentional mirror-only edit during a sync commit).
 #
-# Installed via `powershell -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1`.
-# Source of truth lives at `scripts/git-hooks/pre-commit`.
+# Install with `git config core.hooksPath scripts/git-hooks`.
 
 set -u
 
