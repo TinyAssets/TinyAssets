@@ -38,7 +38,14 @@ one check. This PR builds the first step, the ADR's draft and a fix to the check
      receipt.
    - `land_pr.sh` is host tooling, outside the repo. Its change is two lines after the
      receipt comment: build the review body from the receipt's verdict line, and `POST` it
-     with `commit_id` the receipt's head. The coordinator applies it. In the repo, the rule
+     with `commit_id` the receipt's head, which the script has already checked is `$HEAD`:
+
+     ```bash
+     printf '%s\n\n' "${VERDICT#Drain-Review-Verdict: }" | cat - "$RECEIPT" > "$TMP/review.md"
+     gh api $R/pulls/$N/reviews -X POST -f commit_id="$HEAD" -f event=COMMENT -F body=@"$TMP/review.md" >/dev/null
+     ```
+
+     The coordinator applies it. In the repo, the rule
      is `docs/reference/executable-gates.md`'s "To land", and the untangle skill already
      says it.
    - **Rejected:** accepting `Drain-Review-Verdict: APPROVE` as a verdict line, or letting
