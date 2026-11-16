@@ -116,8 +116,7 @@ async function connectionRows(app: App):
 }
 
 async function noticeTypes(owner: string): Promise<string[]> {
-  const { notices } = await ownDoor<{ notices: { type: string; detail: string }[] }>(
-    owner, "noticeList");
+  const { notices } = await ownDoor(owner, "noticeList");
   return notices.map((notice) => `${notice.type}: ${notice.detail}`);
 }
 

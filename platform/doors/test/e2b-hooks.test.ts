@@ -31,18 +31,9 @@ function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
-/** One day of the owner's sandbox time, as its `sandboxDays` door answers it. */
-interface Day {
-  readonly day: string;
-  readonly seconds: number;
-  readonly billed_seconds: number;
-  readonly vcpu_seconds: number;
-  readonly gb_seconds: number;
-}
-
 /** `who`'s sandbox days, as its `sandboxDays` door answers its own binding. */
-function daysOf(who: string): Promise<{ days: Day[] }> {
-  return ownDoor<{ days: Day[] }>(who, "sandboxDays", {});
+function daysOf(who: string) {
+  return ownDoor(who, "sandboxDays", {});
 }
 
 /** An owner the platform admitted, whose object answers its doors. */
