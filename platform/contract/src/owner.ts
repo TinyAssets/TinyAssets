@@ -390,9 +390,11 @@ export type SettleSent = {
 /**
  * What the door table cannot say of a door the doors call, by door: the values the doors build
  * into its row's fields (`values`), that they hand a parsed body on (`handed`), a loose door's
- * parameters after its binding (`loose`), and what they read of its answer (`answer`). A door
- * named here and nowhere in the table is refused by `tsc` (`owner-doors.ts`); a door with no
- * entry takes its row's fields, each `unknown`, and answers an object the doors pass on.
+ * parameters after its binding (`loose`), and what they read of its answer (`answer`). `tsc`
+ * refuses an entry for no door of the table, or one its row leaves no room for: `values` or
+ * `handed` but on a field list, a field the row does not list, `loose` but on a loose door
+ * (`owner-doors.ts`). A door with no entry takes its row's fields, each `unknown`, and
+ * answers an object the doors pass on.
  */
 export interface DoorTypes {
   readonly sandboxRung: { readonly answer: { readonly waiting: number } };

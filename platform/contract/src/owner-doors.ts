@@ -5,6 +5,7 @@
  */
 import type { Binding } from "./binding.ts";
 import type { DoorAnswer, DoorLoose, DoorRequest, DoorTypes } from "./owner.ts";
+import type { DoorRequests } from "./requests.ts";
 
 /** The owner's object, as the doors reach it (`binder.ts` alone looks one up by name). */
 export interface OwnerDoors extends Rpc.DurableObjectBranded {
@@ -384,6 +385,28 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   importDiscard(binding: Binding): Promise<DoorAnswer<"importDiscard">>;
 }
 
-/** The doors `DoorTypes` names: `tsc` refuses one that is no door of the table. */
+/** The doors whose rows leave their parameters to their modules. */
+type Loose =
+    "sandboxBilled" | "sandboxDays" | "exportEnd" | "inboundCreate" | "inboundSet" | "inboundRevoke"
+      | "connectionPrepare" | "connectionCommit" | "connectionRevoke" | "flowFinish"
+      | "admissionSet" | "wakeEvents" | "signinEvents" | "tierSet" | "egressOpen" | "egressReserve"
+      | "egressBeat" | "egressSettle";
+/** What `DoorTypes` may say of a door, by its row. */
+type Parts<D> = "answer" | (D extends keyof DoorRequests ? "values" | "handed"
+  : D extends Loose ? "loose" : never);
+/** The fields a door's row lists (any of a choice's). */
+type Fields<D> = D extends keyof DoorRequests
+  ? DoorRequests[D] extends infer R ? R extends unknown ? keyof R : never : never : never;
+/** What an entry of `DoorTypes` says that its row leaves no room for. */
+type Stray<D extends keyof DoorTypes> = Exclude<keyof DoorTypes[D], Parts<D>>
+  | (DoorTypes[D] extends { readonly values: infer V }
+    ? Exclude<keyof V, Fields<D>> : never);
+
+/**
+ * The doors `DoorTypes` names: `tsc` refuses one that is no door of the table, or one whose
+ * entry says what its row leaves no room for (a part, or a field its row does not list).
+ */
 type Doors<D extends keyof OwnerDoors> = D;
-export type TypedDoors = Doors<keyof DoorTypes>;
+type None<D extends never> = D;
+type Strays = { [D in keyof DoorTypes]: [Stray<D>] extends [never] ? never : D };
+export type TypedDoors = Doors<keyof DoorTypes> | None<Strays[keyof DoorTypes]>;
