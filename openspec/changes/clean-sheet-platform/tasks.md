@@ -241,8 +241,9 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     `54668a171`, then #5659's, each from its PR review);
   - [x] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
     holding a check an App posts to the workflow named for it, and `enqueue-merge.yml`
-    listening to it; the founder's `PUT` after it merges is its host-actions row
-    (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
+    listening to it (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
+  - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until then
+    `enqueue-merge` refuses on the drift);
   - [ ] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
     ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`). With no
     body edit at landing, `enqueue-merge` no longer reruns after the PR review's decision
