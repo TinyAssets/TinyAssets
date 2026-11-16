@@ -19,14 +19,17 @@
  *   paused through the sandbox Worker once no run holds it (`leaseFreed`); one run's whole
  *   environment (`#runConfig`).
  *
- * It reaches the owner's other modules only through the object's state it is handed
- * (`OwnerState`), each read or write in the unit it is called in.
+ * It reaches the owner's other modules only through what the object hands it once
+ * (`LauncherNeeds`), each read or write in the unit it is called in.
  */
 import { randomHex } from "../../contract/src/ids";
 import { sha256Hex } from "../../contract/src/digest";
 import { utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { LEASE_LIVED, mintToken, sealRoute } from "../../contract/src/routing-mac";
-import { runUrls, sandboxEnv, withEgressToken } from "../../contract/src/egress";
+import {
+  type Egressible, runUrls, sandboxEnv, withEgressToken,
+} from "../../contract/src/egress";
+import type { PolicyDocument } from "../../contract/src/policy-document";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
@@ -35,21 +38,26 @@ import { SourceRecordError } from "../../sources/src/schema";
 
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
 import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
-import type { Placed, Placing } from "./bodies";
-import { type Lease, type SandboxLease } from "./files";
-import { type Delivery, type MailAuthority, mailInput } from "./ledger";
+import type { Bodies, Placed, Placing } from "./bodies";
+import type { DoorUnits, ObjectReads } from "./door";
+import type { Egress } from "./egress";
+import type { OwnerEnv } from "./env";
+import { type Files, type Lease, type SandboxLease } from "./files";
+import { type Delivery, type Ledger, type MailAuthority, mailInput } from "./ledger";
 import { nativeId } from "../../contract/src/binding";
 import { clock, inTime } from "./clock";
 import { networkDocument } from "./network";
-import type { OwnerState } from "./owner-do";
+import type { Notices } from "./notices";
+import type { Relay } from "./relay";
 import {
-  type Ask, type LiveLease, type LiveRun, type MailAnswer, mailConversation, NO_SCHEDULE,
+  type Ask, type LiveLease, type MailAnswer, mailConversation, NO_SCHEDULE,
   type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority,
   type SpendCaps, type UsableSource,
 } from "./runs";
 import { started, vendorHosts } from "./sandbox";
 import { LANE_CALL_MS } from "./schedule";
-import { switchedOn } from "./signins";
+import type { Starter } from "./starter";
+import { type Signins, switchedOn } from "./signins";
 import type { TierName, Tiers } from "../../contract/src/control";
 import {
   type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, SIGNIN_REQUIRED,
@@ -90,13 +98,51 @@ export interface SandboxRun {
   readonly connection?: string;
 }
 
-/** What the launcher reaches of the object: its stores, its gate, and its own reads. */
-export type LaunchState = Pick<OwnerState, "env" | "storage" | "owner" | "files" | "connections"
-  | "grants" | "policy" | "usage" | "egress" | "relay" | "ledger" | "notices" | "signins"
-  | "bodies" | "starter" | "door" | "sync" | "control" | "admitted" | "admission">;
+/**
+ * What the launcher reaches of the object, handed it once by the object that builds it: the
+ * files' leases and the bodies a run's mail and reply place; the mail it delivers; the
+ * owner's model connections, policy, spend and grants a run is admitted against; the tier
+ * and admission; the sandbox's egress, sign-ins and the app sockets a run's end tells; its
+ * starter seed; and the object's units and reads.
+ */
+export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
+                                       Pick<ObjectReads, "owner" | "storage" | "control"> {
+  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY" | "SANDBOX">;
+  readonly admission: {
+    numbers(): Tiers;
+    tier(): TierName;
+    tiers(): Tiers | null;
+    unadmitted(): Refusal | null;
+  };
+  readonly bodies: Pick<Bodies, "begin" | "fetch" | "rereading">;
+  readonly connections: {
+    usable(): readonly UsableSource[];
+    egressible(): readonly Egressible[];
+  };
+  readonly egress: Pick<Egress, "end">;
+  readonly files: Pick<Files, "fetch" | "held" | "leaseAcquire" | "leaseRelease" | "leaseRenew"
+    | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "open"
+    | "sandboxLease" | "stat">;
+  readonly grants: {
+    standing(client: unknown, generation: unknown, authenticatedAt: number | null):
+        StandingGrant;
+  };
+  readonly ledger: Pick<Ledger, "answer" | "hold" | "mailDue" | "mailFor" | "nextMail" | "post"
+    | "release" | "settled" | "taken" | "undeliverable">;
+  readonly notices: Pick<Notices, "add">;
+  readonly policy: {
+    egressGeneration(): number;
+    models(): SpendCaps;
+    read(): { readonly document: PolicyDocument };
+  };
+  readonly relay: Pick<Relay, "settled">;
+  readonly signins: Pick<Signins, "holds">;
+  readonly starter: Pick<Starter, "seeded" | "version">;
+  readonly usage: { spent(period: string, source: string | null): number };
+}
 
 export class Launcher implements RunHost {
-  readonly #o: LaunchState;
+  readonly #o: LauncherNeeds;
   /** The owner's runs: admission, grants, conversations, schedules (`runs.ts`). */
   readonly runs: Runs;
   /** Who waits on a run's settle, on this instance only: a door's bounded wait. */
@@ -107,7 +153,7 @@ export class Launcher implements RunHost {
    */
   #replyPlaced: Placed | null = null;
 
-  constructor(o: LaunchState) {
+  constructor(o: LauncherNeeds) {
     this.#o = o;
     this.runs = new Runs(o.storage, this);
   }
@@ -206,9 +252,9 @@ export class Launcher implements RunHost {
   }
 
   /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
-  stop(grants: readonly LiveRun[]): void {
-    for (const grant of grants) {
-      queueMicrotask(() => void this.cancel(grant.run));
+  stop(runs: readonly string[]): void {
+    for (const run of runs) {
+      queueMicrotask(() => void this.cancel(run));
     }
   }
 

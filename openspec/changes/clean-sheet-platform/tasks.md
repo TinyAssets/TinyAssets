@@ -299,7 +299,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 - [ ] The wave-2 lanes (d2 §D): lane O (O1–O5) is left, unblocked since C3 and C4 merged; the
   merged lanes' owed items and d3 §A's changes:
-  - [ ] B3 after T1, on the cleaned constructors (d3 §A2, §K1), as `o1_research.md`'s option (b′):
+  - [x] B3 after T1, on the cleaned constructors (d3 §A2, §K1), as `o1_research.md`'s option (b′):
     per-module `DoorNeeds`, four widening proofs, `untangle/o1` to `o1d`
     (`docs/decisions/untangle-2026-11/o2.md`, "B3's shape").
     - [x] `untangle/o1`: `door.ts`, the placement in `Bodies`, `Archive` in `ownerStores`, the
@@ -308,7 +308,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] `untangle/o1b`: the four proofs, the policy stores, the guard cut
       (`untangle-2026-11/o1b.md`).
     - [x] `untangle/o1c`: files, collections, ledger, import (`untangle-2026-11/o1c.md`).
-    - [ ] `untangle/o1d`: runs, launch, signins, restore; `OwnerState` deleted.
+    - [x] `untangle/o1d`: runs, launch, signins, restore; `OwnerState` deleted
+      (`untangle-2026-11/o1d.md`).
   - [x] B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2). Built in O2 (`untangle-2026-11/o2.md`).
