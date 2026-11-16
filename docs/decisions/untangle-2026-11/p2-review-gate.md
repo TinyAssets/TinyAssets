@@ -106,6 +106,10 @@ one check. This PR builds the first step, the ADR's draft and a fix to the check
    3. `untangle/p2-receipt-delete`, after the `PUT`. It reuses `land/7`'s `66d29f032`
       where it still applies: the scope guard's receipt block; auto-enroll, enqueue, queue
       freshness and the floor hotfix reading `review_passed_at`; the receipt's wording.
+      In `development-coordination-runtime/spec.md` the receipt's requirement goes, and
+      the hotfix requirement, whose floor fixes cite a receipt, moves inside
+      `## Requirements`: it sits after "Retired capabilities", so `openspec validate`
+      refuses the spec on main today.
       Its `Lane:` parts do not apply, since P3 removed `Lane:` (d3 §B2), and neither does
       `a6ad432c8`.
    4. With step 3: ADR-038 accepted, and ADR-015's Status line names the supersession of

@@ -629,7 +629,7 @@ def _decide(tmp_path: Path, checkout: Path, data: dict, **env: str):
         cwd=checkout, capture_output=True, text=True, timeout=120,
         env={**_ENV, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_GH": str(state),
              "GH_TOKEN": _ACTIONS_TOKEN, "APP_TOKEN": _APP_TOKEN, "REVIEW_APP_ID": "777",
-             "REPO": "o/r", "PR": "12", "KIND": "pr", "GROUP_SHA": "", "GROUP_REF": "",
+             "REPO": "o/r", "PR": "12", "KIND": "pr", "GROUP_SHA": "",
              "RUNNER_TEMP": str(runner), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
              **env})
     log = state / "calls.jsonl"
@@ -833,6 +833,18 @@ def test_a_merge_group_takes_only_its_prs_fresh_decision(pr_checkout, reviews, c
     assert verdict["head_sha"] == B and verdict["external_id"] == "queue-pr-12"
     assert verdict["conclusion"] == conclusion
     assert _group_run(after)["conclusion"] == conclusion
+
+
+def test_a_merge_group_decision_that_stops_fails_the_group(pr_checkout):
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"])]
+    data["fail"] = "/timeline"
+    done, calls, after = _decide(tmp_path, path, data, **_queue())
+    assert done.returncode != 0
+    assert _writes(calls) == [("POST", "repos/o/r/check-runs", {
+        "name": "review", "head_sha": B, "external_id": "queue-pr-12",
+        "status": "completed", "conclusion": "failure", "output": _FAILED})]
+    assert _group_run(after)["conclusion"] == "failure"
 
 
 def test_a_merge_group_with_no_group_commit_writes_nothing(pr_checkout):
