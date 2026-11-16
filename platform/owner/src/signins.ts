@@ -42,8 +42,12 @@ import {
 import { OWNER } from "./authority";
 import type { OwnerStorage } from "./gate";
 import { isPrintable } from "../../contract/src/text";
-import type { Call, Door } from "./door";
-import type { OwnerState } from "./owner-do";
+import type { Call, Door, DoorUnits, ObjectReads } from "./door";
+import type { OwnerEnv } from "./env";
+import type { Files } from "./files";
+import type { Launcher } from "./launch";
+import type { Notices } from "./notices";
+import type { Relay } from "./relay";
 import { signinUrls } from "../../contract/src/egress";
 import { FRAME_VERSION } from "../../contract/src/run-events";
 import { started, vendorHosts } from "./sandbox";
@@ -391,9 +395,26 @@ export interface SigninRequest {
 
 // -- THE DOORS: the `signins` rows' handlers (`contract/doors.json`) ------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`SigninsDoorNeeds`) once the row's steps held: the bind, the account, the
+// scope and the fields.
+
+/**
+ * What the `signins` doors reach: the sign-ins; the sandbox's leases they open, renew and
+ * free, and the sandbox Worker and the route key they reach it by; the switched-on engines; the runs' signed-in engines; the
+ * app sockets a sign-in's frames go to; a client's grant; and the owner's notices.
+ */
+export interface SigninsDoorNeeds extends Pick<DoorUnits, "door">,
+                                          Pick<ObjectReads, "owner" | "storage"> {
+  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY" | "SANDBOX">;
+  readonly signins: Signins;
+  readonly files: Pick<Files, "leaseRenew" | "leaseSignins" | "liveLeases" | "sandboxLease">;
+  readonly grants: { live(client: string): boolean };
+  readonly launcher: Pick<Launcher, "leaseFreed" | "openLease">;
+  readonly notices: Pick<Notices, "add">;
+  readonly relay: Pick<Relay, "relay" | "settled">;
+  readonly runs: Pick<Runs, "reportSignin" | "signins">;
+}
 
 /** The `signins` doors' handlers, by door. */
 export const signinsDoors = Object.freeze({
@@ -407,7 +428,7 @@ export const signinsDoors = Object.freeze({
    * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
    * a pasted code), or the code the Worker answered (`sandbox_waiting`, ...).
    */
-  async signinStart(o: OwnerState, door: Door<SigninStartRequest>):
+  async signinStart(o: SigninsDoorNeeds, door: Door<SigninStartRequest>):
       Promise<SigninView | { started: false; code: string }> {
     const begun = await o.door(() => {
       const { r } = door.check();
@@ -481,7 +502,7 @@ export const signinsDoors = Object.freeze({
    * owner's app sockets on the sign-in's id; its end ends it, and the lease goes once nothing
    * holds it.
    */
-  async signinEvents(o: OwnerState, door: Door<SigninEventsRequest>):
+  async signinEvents(o: SigninsDoorNeeds, door: Door<SigninEventsRequest>):
       Promise<{ accepted: number; ended: boolean }> {
     const { row, ended, stopped, events, frames } = await o.door(() => {
       const lease = door.check().lease!;
@@ -516,7 +537,7 @@ export const signinsDoors = Object.freeze({
    * The code the vendor's page showed the owner, pasted back: to the sign-in's CLI's stdin
    * (`SandboxService.signinInput`). The owner's own door.
    */
-  async signinCode(o: OwnerState, door: Door<SigninCodeRequest>): Promise<{ delivered: boolean }> {
+  async signinCode(o: SigninsDoorNeeds, door: Door<SigninCodeRequest>): Promise<{ delivered: boolean }> {
     const { row, code } = await o.door(() => {
       const { r } = door.check();
       const code = pastedCode(r["code"]);
@@ -530,7 +551,7 @@ export const signinsDoors = Object.freeze({
                                                   code });
   },
   /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
-  async signinCancel(o: OwnerState, door: Door<SigninRequestById>):
+  async signinCancel(o: SigninsDoorNeeds, door: Door<SigninRequestById>):
       Promise<{ cancelled: boolean }> {
     const row = await o.door(() => o.signins.get(door.check().r["id"]));
     return o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority, id: row.id });
@@ -539,7 +560,7 @@ export const signinsDoors = Object.freeze({
    * The sign-ins in progress, and each engine's presence in the owner's own sandbox as its
    * runner last reported it (never a credential). The owner's own door.
    */
-  signinList(o: OwnerState, _call: Call<undefined>): { signins: SigninView[];
+  signinList(o: SigninsDoorNeeds, _call: Call<undefined>): { signins: SigninView[];
                                            engines: ReturnType<Runs["signins"]> } {
     const now = clock();
     o.signins.lost(now, new Set(o.files.liveLeases(now).map((each) => each.lease_id)));
@@ -552,7 +573,7 @@ export const signinsDoors = Object.freeze({
    * with the owner's connections. A sign-in that lapsed (signed in, now not) leaves a
    * "sign in again" notice, and `auto` stops picking that engine.
    */
-  signinReport(o: OwnerState, { lease: held, r }: Call<SigninRequest>):
+  signinReport(o: SigninsDoorNeeds, { lease: held, r }: Call<SigninRequest>):
       { recorded: number; lapsed: string[] } {
     const lease = held!;
     const reports = signinRequest(r);

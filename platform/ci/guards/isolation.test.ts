@@ -149,10 +149,19 @@ describe("the import layers", () => {
       "platform/owner/src/ledger.ts": 'export const o = () => import("./owner-do");',
       "platform/owner/src/policy.ts":
         'export const m = async () => (await import("./proof-mint")).mintProof({});' },
-     ["platform/owner/src/ledger.ts loads a module at run time, by import() or require()",
+     [`platform/owner/src/ledger.ts imports ${OWNER_DO}`,
+      "platform/owner/src/ledger.ts loads a module at run time, by import() or require()",
       "platform/owner/src/policy.ts imports platform/owner/src/proof-mint.ts, which only " +
         `${OWNER_DO} and platform/owner/src/door.ts may import`,
       "platform/owner/src/policy.ts loads a module at run time, by import() or require()"]],
+    ["an owner module importing the object's, as a type too; its entry and its tests may", {
+      "platform/owner/src/runs.ts": 'import type { OwnerDO } from "./owner-do";',
+      "platform/owner/src/launch.ts": 'export { SANDBOX_DOORS } from "./owner-do.ts";',
+      "platform/owner/src/index.ts": 'export { OwnerDO } from "./owner-do";',
+      "platform/owner/test/probe.test.ts": 'import { ownerStores } from "../src/owner-do";',
+      "platform/owner/memory/probe.ts": 'import { ownerStores } from "../src/owner-do";' },
+     [`platform/owner/src/runs.ts imports ${OWNER_DO}`,
+      `platform/owner/src/launch.ts imports ${OWNER_DO}`]],
     ["the contract reaching a Worker, the source records, a package and Node's file system", {
       "platform/contract/src/probe.ts": [
         'import { x } from "../../owner/src/text";',

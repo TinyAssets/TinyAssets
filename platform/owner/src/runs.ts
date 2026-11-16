@@ -87,10 +87,13 @@ import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF, switchedOn } from "./signins";
 import type { TierName, Tiers } from "../../contract/src/control";
 import { utf8Bytes } from "../../contract/src/text";
-import type { Account, Call, Door } from "./door";
-import type { OwnerState } from "./owner-do";
+import type { Account, Call, Door, DoorUnits, ObjectReads } from "./door";
+import type { OwnerEnv } from "./env";
+import type { Launcher } from "./launch";
+import type { PostGate } from "../../contract/src/run-events";
+import type { Relay } from "./relay";
 import type { Binding, Origin } from "../../contract/src/binding";
-import type { Placed } from "./bodies";
+import type { Bodies, Placed } from "./bodies";
 import { clock } from "./clock";
 import { fittedRun } from "./pages";
 import { placedAs } from "./bodies";
@@ -224,7 +227,7 @@ export interface RunHost {
    */
   notice(type: string, detail: string): void;
   /** In the unit: a run settled lost or revoked, whose CLI the sandbox stops, once over. */
-  stop(runs: readonly LiveRun[]): void;
+  stop(runs: readonly string[]): void;
 }
 
 /** An engine's sign-in, as the runner last reported it: presence only, never a credential. */
@@ -1329,20 +1332,20 @@ export class Runs {
 
   /**
    * In a unit: a live run marked cancelled and its grant revoked at once, so its MCP and
-   * model calls are refused from this unit on and its streams end; the live run, for the
+   * model calls are refused from this unit on and its streams end; the live run's id, for the
    * sandbox's cancel. It settles `failed` (`cancelled`) from the runner's end, or
    * `unknown` when its heartbeat lapses. A waiting run is settled `failed` (`cancelled`) at
    * once: it never started.
    */
-  cancel(runId: string, now: number): LiveRun | null {
+  cancel(runId: string, now: number): string | null {
     if (this.#sql.exec("SELECT 1 FROM runs WHERE id = ? AND state = 'waiting'", runId)
           .toArray().length === 1) {
       this.settle(runId, "failed", "cancelled", null, now);
       return null;
     }
-    const live = this.#sql.exec<LiveRun>(
-      `UPDATE runs SET cancel_requested = 1 WHERE id = ? AND ${LIVE} ` +
-        "RETURNING id AS run, lease_id, epoch", runId).toArray()[0];
+    const live = this.#sql.exec<{ run: string }>(
+      `UPDATE runs SET cancel_requested = 1 WHERE id = ? AND ${LIVE} RETURNING id AS run`,
+      runId).toArray()[0];
     if (live === undefined) {
       return null;
     }
@@ -1350,26 +1353,23 @@ export class Runs {
           .length === 1) {
       this.#host.ended(runId);
     }
-    return { run: live.run, lease_id: live.lease_id, epoch: live.epoch };
+    return live.run;
   }
 
   /**
    * In a unit: the client's runs ended (a grant change or revoke ends them, ADR-034
    * decision 6): each settled `failed` (`revoked`) at once, live or waiting, so its grant
    * is gone, its tier slot and conversation free and its lease given back with the last;
-   * and the client's schedules removed. The live ones, to stop in the sandbox.
+   * and the client's schedules removed. The live ones' ids, to stop in the sandbox.
    */
-  endClient(client: string, now: number): LiveRun[] {
-    const ended = this.#sql.exec<{ id: string; lease_id: string | null; epoch: number | null;
-                                   state: RunState }>(
-      `SELECT id, lease_id, epoch, state FROM runs WHERE client = ? AND ${UNSETTLED}`, client)
-      .toArray();
+  endClient(client: string, now: number): string[] {
+    const ended = this.#sql.exec<{ id: string; state: RunState }>(
+      `SELECT id, state FROM runs WHERE client = ? AND ${UNSETTLED}`, client).toArray();
     for (const row of ended) {
       this.settle(row.id, "failed", "revoked", null, now);
     }
     this.#sql.exec("DELETE FROM run_schedules WHERE client = ?", client);
-    return ended.filter((row) => row.state !== "waiting")
-      .map((row) => ({ run: row.id, lease_id: row.lease_id!, epoch: row.epoch! }));
+    return ended.filter((row) => row.state !== "waiting").map((row) => row.id);
   }
 
   /** Every live run and its lease. A read. */
@@ -1378,8 +1378,11 @@ export class Runs {
       `SELECT id AS run, lease_id, epoch FROM runs WHERE ${LIVE} ORDER BY seq`).toArray();
   }
 
-  /** In a unit: every live run marked cancelled, its grant revoked; to cancel in the sandbox. */
-  endAll(now: number): LiveRun[] {
+  /**
+   * In a unit: every live run marked cancelled, its grant revoked; their ids, to cancel in the
+   * sandbox.
+   */
+  endAll(now: number): string[] {
     return this.#sql.exec<{ id: string }>(`SELECT id FROM runs WHERE ${LIVE}`).toArray()
       .map(({ id: run }) => this.cancel(run, now)).filter((run) => run !== null);
   }
@@ -1452,9 +1455,9 @@ export class Runs {
    * whose own heartbeat lapsed (no report of its own within `LEASE_TTL_S`, while other runs
    * keep the lease) or whose grant a cancel revoked and whose runner never ended it; then the
    * lapsed leases' rows gone. It reads the runs' own rows, never their grants, so a run
-   * whose grant is gone is still found. The ones to stop in the sandbox.
+   * whose grant is gone is still found. The ones' ids, to stop in the sandbox.
    */
-  lost(now: number): LiveRun[] {
+  lost(now: number): string[] {
     const leases = new Set(this.#host.leases(now)
       .map((lease) => `${lease.lease_id}/${lease.epoch}`));
     const lost = this.#sql.exec<LiveRun & { beat_at: number }>(
@@ -1465,7 +1468,7 @@ export class Runs {
       this.settle(row.run, "unknown", "lost", null, now);
     }
     this.#host.leasesLapsed(now);
-    const stopped = lost.map(({ run, lease_id, epoch }) => ({ run, lease_id, epoch }));
+    const stopped = lost.map(({ run }) => run);
     if (stopped.length > 0) {
       this.#host.stop(stopped);
     }
@@ -1679,9 +1682,9 @@ export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
 
 // -- THE DOORS: the `runs` rows' handlers (`contract/doors.json`) ---------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands
-// the object's state once the row's steps held: the bind, the account, the scope and the
-// fields.
+// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
+// doors reach (`RunsDoorNeeds`) once the row's steps held: the bind, the account, the scope
+// and the fields.
 //
 // A run door starts, reads or cancels a run. Starting one is two units around the agent's
 // file read: the first checks the call and reads what it asks; then `agent.json` is read
@@ -1697,7 +1700,7 @@ export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
  * is its initiator's: the owner's for an owner-started or scheduled run, else the stamp
  * its client's run holds, for the agent it launches.
  */
-function initiated(o: OwnerState, binding: Binding, account: Account, universe: string | null,
+function initiated(binding: Binding, account: Account, universe: string | null,
                    agent: string):
     { initiator: "owner" | "client"; stamp: Stamped | null; origin: Origin | null } {
   if (account.run !== null) {
@@ -1714,6 +1717,24 @@ function initiated(o: OwnerState, binding: Binding, account: Account, universe: 
                     authenticated_at: binding.authenticated_at ?? null, universe, agent } };
 }
 
+/**
+ * What the `runs` doors reach: the runs, and the launcher that starts, waits on and cancels
+ * them; the tier numbers a launch is held to; the runners' events (their posts held at once,
+ * their placed replies, the app sockets they go to); and the sandbox Worker the line's ring
+ * reaches.
+ */
+export interface RunsDoorNeeds extends Pick<DoorUnits, "door" | "synced" | "sync">,
+                                       Pick<ObjectReads, "owner" | "gone"> {
+  readonly env: Pick<OwnerEnv, "SANDBOX">;
+  readonly runs: Runs;
+  readonly launcher: Pick<Launcher, "beginReply" | "cancel" | "launch" | "readAgent" | "seeded"
+    | "settledWithin" | "withReply">;
+  readonly admission: { numbers(): Tiers };
+  readonly bodies: Pick<Bodies, "release" | "send">;
+  readonly posts: Pick<PostGate, "enter" | "leave">;
+  readonly relay: Pick<Relay, "relay" | "settled">;
+}
+
 /** The `runs` doors' handlers, by door. */
 export const runsDoors = Object.freeze({
   /**
@@ -1722,7 +1743,7 @@ export const runsDoors = Object.freeze({
    * the same `client_send_id` is the same run. Waits up to `wait_ms` for the run to settle,
    * then answers the run as it stands; its status is `agentStatus`'s.
    */
-  async agentSubmit(o: OwnerState, door: Door<SubmitRequest>): Promise<RunView> {
+  async agentSubmit(o: RunsDoorNeeds, door: Door<SubmitRequest>): Promise<RunView> {
     const asked = await o.door(() => {
       const { account, r, agent } = door.check();
       const client = account.origin?.client ?? null;
@@ -1735,7 +1756,7 @@ export const runsDoors = Object.freeze({
     const read = await o.launcher.readAgent(asked.agent);
     const run = await o.launcher.launch(read, () => {
       const { account, universe } = door.check();
-      return { ...initiated(o, door.binding, account, universe, asked.agent),
+      return { ...initiated(door.binding, account, universe, asked.agent),
                agent: asked.agent, conversation: asked.conversation, request: asked.request,
                tiers: o.admission.numbers(), unattended: false,
                prompt: asked.prompt, mail: null };
@@ -1748,7 +1769,7 @@ export const runsDoors = Object.freeze({
    * cron names (`cron`). A schedule's run is unattended: its source must allow that
    * (ADR-033 decision 3). An agent answers mail by being mailed itself (`roomPost`).
    */
-  async agentRun(o: OwnerState, door: Door<LaunchRequest>): Promise<RunView | RunSchedule> {
+  async agentRun(o: RunsDoorNeeds, door: Door<LaunchRequest>): Promise<RunView | RunSchedule> {
     const asked = await o.synced(() => {
       const { account, r, agent, universe } = door.check();
       const input = runText(r["input"], "an input");
@@ -1764,7 +1785,7 @@ export const runsDoors = Object.freeze({
       if (at === null && cron === null) {
         return { now: true as const, agent, input, client };
       }
-      const { stamp, origin } = initiated(o, door.binding, account, universe, agent);
+      const { stamp, origin } = initiated(door.binding, account, universe, agent);
       return { now: false as const, schedule: o.runs.schedule({
         agent, input, at: at as number | null, cron: cron as string | null, stamp, origin },
                                                                   clock()) };
@@ -1777,7 +1798,7 @@ export const runsDoors = Object.freeze({
     const run = await o.launcher.launch(read, () => {
       const { account, universe } = door.check();
       // A run's own launch has no person at it: unattended, as a schedule's run is.
-      return { ...initiated(o, door.binding, account, universe, asked.agent),
+      return { ...initiated(door.binding, account, universe, asked.agent),
                agent: asked.agent, conversation: null, request: null,
                tiers: o.admission.numbers(), unattended: account.run !== null,
                prompt: asked.input, mail: null };
@@ -1785,7 +1806,7 @@ export const runsDoors = Object.freeze({
     return fittedRun(await o.launcher.settledWithin(run, 0, asked.client));
   },
   /** A run of the caller's, from its receipt; or a schedule of the caller's. */
-  agentStatus(o: OwnerState, { account, r }: Call<RunRequest>): RunView | RunSchedule {
+  agentStatus(o: RunsDoorNeeds, { account, r }: Call<RunRequest>): RunView | RunSchedule {
     const client = account.origin?.client ?? null;
     if (("run_id" in r) === ("schedule_id" in r)) {
       throw new Refusal("invalid", "a status names a run_id or a schedule_id");
@@ -1798,7 +1819,7 @@ export const runsDoors = Object.freeze({
    * `failed` (`cancelled`) from the runner's end, or `unknown` if the runner is lost. Or a
    * schedule of the caller's removed. A settled run cancels nothing.
    */
-  async agentCancel(o: OwnerState, door: Door<RunRequest>):
+  async agentCancel(o: RunsDoorNeeds, door: Door<RunRequest>):
       Promise<RunView | { schedule_id: string; cancelled: true }> {
     const found = await o.synced(() => {
       const { account, r } = door.check();
@@ -1816,7 +1837,7 @@ export const runsDoors = Object.freeze({
       return { schedule_id: found.schedule, cancelled: true };
     }
     if (found.live !== null) {
-      await o.launcher.cancel(found.live.run);
+      await o.launcher.cancel(found.live);
     }
     return o.door(() => fittedRun(o.runs.receipt(found.run, found.client)));
   },
@@ -1827,7 +1848,7 @@ export const runsDoors = Object.freeze({
    * never committed; the batch renews the lease (the runner's heartbeat); the runner's
    * `end` settles the run.
    */
-  async runEvents(o: OwnerState, door: Door<EventsRequest>):
+  async runEvents(o: RunsDoorNeeds, door: Door<EventsRequest>):
       Promise<{ accepted: number; settled: string | null }> {
     // A reply this batch's settle would post, past `PLACE_BYTES`, is placed in R2 first, in
     // the gate's own first unit (ADR-035): the settle's unit then posts it by reference, so a
@@ -1883,7 +1904,7 @@ export const runsDoors = Object.freeze({
    * `next`): the owner's every run, an outside client's its own alone, as their receipts show
    * them (the result is the run's own door's, `agentStatus`).
    */
-  runList(o: OwnerState, { account, r }: Call<RunListRequest>):
+  runList(o: RunsDoorNeeds, { account, r }: Call<RunListRequest>):
       { runs: RunListed[]; next: number | null } {
     return o.runs.list(account.origin?.client ?? null, r["before"], r["limit"]);
   },
@@ -1895,7 +1916,7 @@ export const runsDoors = Object.freeze({
    * reaches it. With no run waiting the owner leaves the line, so the next owner is rung.
    * An erased or erasing owner does nothing (its erasure takes it out of the line).
    */
-  async sandboxRung(o: OwnerState, door: Door<undefined>): Promise<{ waiting: number }> {
+  async sandboxRung(o: RunsDoorNeeds, door: Door<undefined>): Promise<{ waiting: number }> {
     if (o.gone()) {
       return { waiting: 0 };
     }
