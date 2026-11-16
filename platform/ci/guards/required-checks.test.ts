@@ -42,23 +42,24 @@ function requiredCheckProblems(required: string[],
     const jobs = Object.entries(workflows).flatMap(([file, data]) =>
       Object.entries<Data>(data.jobs ?? {})
         .filter(([key, job]) => (job.name ?? key) === check).map(() => file));
-    if (jobs.length !== 1) {
+    const [file] = jobs;
+    if (jobs.length !== 1 || file === undefined) {
       problems.push(`\`${check}\` is the name of ${jobs.length} jobs (${jobs.join(", ")}), ` +
                     "not exactly one");
       continue;
     }
-    const data = workflows[jobs[0]];
+    const data = workflows[file];
     owners.add(String(data.name));
     const on = triggers(data);
     const events = ["merge_group", ...PULL_REQUEST].filter((event) => event in on);
     if (!events.includes("merge_group") || events.length < 2) {
-      problems.push(`${jobs[0]} (\`${check}\`) runs on ${events.join(", ") || "neither"}, ` +
+      problems.push(`${file} (\`${check}\`) runs on ${events.join(", ") || "neither"}, ` +
                     "not on the merge group and a pull request");
     }
     for (const event of events) {
       for (const filter of ["paths", "paths-ignore"]) {
         if (on[event]?.[filter] !== undefined) {
-          problems.push(`${jobs[0]} (\`${check}\`) filters ${event} by \`${filter}\``);
+          problems.push(`${file} (\`${check}\`) filters ${event} by \`${filter}\``);
         }
       }
     }
