@@ -264,10 +264,16 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   `untangle/slow-tests`): the file; the job names and `enqueue-merge.yml` are held to it,
   `enqueue_merge.py` reads it and stops while the live rules differ; the classic copy goes
   with a host-actions row (`untangle-2026-11/required-checks.md`).
-- [ ] `required-tests shard 2/6` takes 25 to 28 minutes of its 30-minute watchdog on the
-  merge group (runs 43769559562, 43940676068), and `required-tests` reports at about 29 of
-  the queue's 35-minute check timeout; the other shards take 6 to 11 (`untangle/shard-2-time`;
-  found by `untangle/required-checks`).
+- [x] `required-tests shard 2/6` took 24 to 27 minutes of its 30-minute watchdog on
+  whole-surface merge groups, and `required-tests` reported 26 to 29 minutes after the start,
+  against the queue's 35: a stale durations table put both eight-minute root proofs on it.
+  Each venue is packed on its own by a table refreshed from whole-surface runs only, so the
+  slowest shard's tests take 569 to 621 s, about 15 minutes of job (`untangle/shard-2-time`;
+  found by `untangle/required-checks`; `untangle-2026-11/shard-2-time.md`).
+- [ ] Whether the Python legs need cover for a runner five times slower before the cutover
+  deletes them: no packing fits one (a 477 s case and the image build, 62 minutes at five
+  times), and #5646's calibration is Vitest's only; research first
+  (`untangle/python-slow-runner`; found by `untangle/shard-2-time`).
 - [ ] `main_red.py` `REQUIRED_JOB` and `queue_attempts.py` `AGGREGATE_JOB` name the Tests
   aggregate by its job name, and nothing ties them to `tests.yml`: a rename leaves main-red
   reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).

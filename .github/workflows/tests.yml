@@ -453,10 +453,13 @@ jobs:
   # (`required-tests`, below) decides the gate over the union. Measured before
   # the split: ~21,900 tests serially, 19-22 min on an idle runner (runs
   # 36284043853, 36283801757), 40+ under contention. Each test FILE is owned by
-  # exactly one shard (ci_required_tests.shard_of: packed by the measured
-  # per-file durations in .github/test-durations.json, path hash for anything
-  # the table does not cover), so the split is complete and disjoint by
-  # construction.
+  # exactly one shard (ci_required_tests.shard_of: each venue packed on its own
+  # by the measured per-file durations in .github/test-durations.json, path hash
+  # for anything the table does not cover), so the split is complete and
+  # disjoint by construction. Packed so, the slowest shard's tests took 569 to
+  # 621 s in the junits of whole-surface runs 43940676068, 43939779247,
+  # 43769559562 and 43705715555, about 15 minutes of its 30 with the image build
+  # (docs/decisions/untangle-2026-11/shard-2-time.md).
   #
   # Not pytest-xdist: parallelism is across RUNNERS, so no two shards share a
   # process, temp dir or sqlite file — the in-process nondeterminism documented
