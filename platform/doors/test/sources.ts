@@ -1,15 +1,12 @@
 /**
- * The test Worker: the doors, served with the fake upstream sign-in and the bundled
- * source records plus one test OAuth source (`TEST_OAUTH`, an RFC 6749 server the fake
- * providers run). The owner is its own Worker beside it (vitest.config.ts).
+ * The source records the tests of an RFC 6749 source serve (`connect.test.ts`, the browser
+ * test's harness `e2e-entry.ts`): no record the platform bundles is one, so no config gives
+ * the doors' own entry one, and these tests call the doors' router with this catalog.
  */
-import type { DoorsEnv } from "../src/env";
-import { serve } from "../src/doors";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
-import { FAKE_UPSTREAM } from "./fake-upstream";
 
-/** An RFC 6749 source: no bundled record is one, so the flow is tested on this one. */
-export const TEST_OAUTH = Object.freeze({
+/** An RFC 6749 source, run by the fake providers (`auth.test`). */
+const TEST_OAUTH = Object.freeze({
   id: "test_oauth",
   display_name: "Test OAuth",
   connect: ["oauth"],
@@ -35,9 +32,5 @@ export const TEST_OAUTH = Object.freeze({
   },
 });
 
+/** The bundled records and the test OAuth source beside them. */
 export const TEST_SOURCES = catalogOf([...bundledRecords(), TEST_OAUTH]);
-
-export default {
-  fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
-    serve(request, env, ctx, FAKE_UPSTREAM, TEST_SOURCES),
-};

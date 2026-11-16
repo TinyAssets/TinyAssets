@@ -21,7 +21,6 @@ import { OWNER_UNADMITTED, PLATFORM_ONLY } from "../../owner/src/admission";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import { ERASE_CONFIRM, NO_ERASURE } from "../../owner/src/erasure";
 import { QUEUES } from "../../contract/src/queue-names";
-import type { OwnerMessage } from "../../contract/src/queues";
 import { MCP_RESOURCE } from "../../contract/src/identity";
 import { now } from "../src/config";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
@@ -31,10 +30,10 @@ import { contentDigest } from "../src/file-bytes";
 import { sharedApps } from "../src/inbound";
 import { keyring, writeControl } from "../../ci/fixtures";
 import { slotBusy } from "../../contract/src/slots";
-import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
+import { until } from "../../ci/workerd";
 import {
  admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorAs, doorsEnv,
- held,
+ failNextForget, forgotten, held,
  NAVIGATE, OPEN,
  grantsOf, ownDoor, refresh, refuseOnce, registerClient, serveFirstPartyDocument, setControl,
  signInApp,
@@ -118,30 +117,34 @@ describe("the erasure", () => {
     vi.useRealTimers();
   });
 
-  /** How many of each owner's erasure messages a test has taken. */
-  const taken = new Map<string, number>();
-
-  /** The messages the object sent its erasure queue since the last taken, once one arrived. */
-  async function sent(who: string): Promise<OwnerMessage[]> {
-    for (let tries = 0; tries < 300; tries++) {
-      const all = await env.ERASURES_SENT.of(who);
-      const from = taken.get(who) ?? 0;
-      if (all.length > from) {
-        taken.set(who, all.length);
-        return all.slice(from);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error(`no erasure message of ${who} reached the queue`);
+  /**
+   * `who`'s outside record made: the erasure message the object sent, consumed by the doors'
+   * own entry, until the consumer's confirmation (`erasureOutsideDone`) crosses the owner gate.
+   */
+  async function confirmed(who: string): Promise<void> {
+    await until(async () => (await crossed(who, "erasureOutsideDone")).length > 0,
+                `${who}'s outside record`);
   }
 
-  /** The object's erasure queue as the doors would consume it: each message sent, run. */
-  async function consume(who: string): Promise<string[]> {
-    const done: string[] = [];
-    for (const message of await sent(who)) {
-      done.push(await eraseOutside(doorsEnv, message.owner, () => FAKE_UPSTREAM));
-    }
-    return done;
+  /** `who`'s next erasure message held at the owner gate, before the consumer reads its names. */
+  async function holdOutside(who: string): Promise<void> {
+    await env.OWNER_GATE.arm({ method: "erasureOutside", name: who, hold: "before" });
+  }
+
+  /** The id of `who`'s held erasure message, once the consumer has brought it to the gate. */
+  async function heldOutside(who: string): Promise<number> {
+    let id: number | undefined;
+    await until(async () => {
+      id = (await env.OWNER_GATE.held()).find((call) => call.name === who)?.id;
+      return id !== undefined;
+    }, `${who}'s erasure message at the gate`);
+    return id!;
+  }
+
+  /** `who`'s held erasure message let go, and its outside record made. */
+  async function letGo(who: string): Promise<void> {
+    await env.OWNER_GATE.release(await heldOutside(who));
+    await confirmed(who);
   }
 
   // The doors' work ends with the outside record and its confirmation: the wipe after the
@@ -189,18 +192,19 @@ describe("the erasure", () => {
       await appPost("hooks/create", app.access_token, app.session, { agent: "main" }));
     const client = await registerClient();
     const tokens = await connect(client, { owner: who });
-    FORGOTTEN.length = 0;
+    await holdOutside(who);
     await begin(who, app);
-    // The mark first: every door refuses from the answer on, and no outside record is in.
+    // The mark first: every door refuses from the answer on, while no outside record is in.
     await expect(ownDoor(who, "grantList")).rejects.toMatchObject({ message: ERASING });
-    expect(await crossed(who, "erasureOutsideDone")).toEqual([]);
-    // The queue's message, consumed: the outside record, then the confirmation (the job may
-    // send it more than once; each after the first finds the work done).
-    expect(await consume(who)).toContain("done");
+    expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
+    expect(await forgotten(who)).toEqual([]);
+    // The queue's message, consumed by the doors' own entry: the outside record, then the
+    // confirmation.
+    await letGo(who);
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "erased" });
     expect(await env.DIRECTORY.get(`k:${minted.key_id}`)).toBeNull();
     expect(await readRoute(doorsEnv, hook.route)).toBeNull();
-    expect(FORGOTTEN).toEqual([who]);
+    expect(await forgotten(who)).toEqual([204]);
     // No key, no inbound route, no token, no refresh, no sign-in resolves the name again.
     const key = await call(new Request(url("/api/tools/agents_list"), {
       method: "POST", headers: { Authorization: `Bearer ${minted.key}`,
@@ -213,35 +217,34 @@ describe("the erasure", () => {
     const again = await appCallback({ owner: who });
     expect(new URL(again.back.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
-    expect(FORGOTTEN).toEqual([who, who]);  // the identity's deletion tried again
+    expect(await forgotten(who)).toEqual([204, 204]);  // the identity's deletion tried again
   });
 
   // That the object's own job sends a lost message again, and wipes only once the outside
   // record is in, is the owner's test (`owner/test/erasure.test.ts`).
-  it("finishes a half-done erasure: the mark locks the owner out until a message's outside " +
+  it("finishes a half-done erasure: the mark locks the owner out until its message's outside " +
      "record lands, and one after the wipe finds it done", async () => {
     const { who, app } = await owned();
+    await holdOutside(who);
     await appPost("account/erase", app.access_token, app.session, { confirm: ERASE_CONFIRM });
-    // The request is gone and its message lost.
-    await sent(who);
     // Locked out meanwhile: the mark refuses sign-in, though no outside record exists yet.
+    await heldOutside(who);
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
     const during = await appCallback({ owner: who });
     expect(new URL(during.back.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
-    // The job's message sent again, consumed.
-    expect(await eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM)).toBe("done");
+    // The message consumed.
+    await letGo(who);
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "erased" });
     // A message after the wipe: the object names nothing left to erase, and nothing is done.
     await env.OWNER_GATE.arm({ method: "erasureOutside", name: who, answer: null });
-    expect(await eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM)).toBe("wiped");
-    expect(await crossed(who, "erasureOutsideDone")).toHaveLength(1);
+    expect(await eraseOutside(doorsEnv, who)).toBe("wiped");
+    expect(await crossed(who, "erasureOutsideDone")).toEqual([]);
   });
 
   it("writes no outside record for an owner no erasure has marked", async () => {
     const { who } = await owned();
-    await expect(eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM))
-      .rejects.toMatchObject({ message: NO_ERASURE });
+    await expect(eraseOutside(doorsEnv, who)).rejects.toMatchObject({ message: NO_ERASURE });
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
     // The queue's consumer drops it, and a message out of shape, without retrying.
     const acked: string[] = [];
@@ -252,7 +255,7 @@ describe("the erasure", () => {
     await erasureQueue({ queue: QUEUES.ERASURES, messages: [
       message({ owner: who }, "m1"), message({ owner: who, extra: 1 }, "m2")],
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
-                       doorsEnv, () => FAKE_UPSTREAM);
+                       doorsEnv);
     expect([acked, retried]).toEqual([["m1", "m2"], []]);
   });
 
@@ -266,26 +269,30 @@ describe("the erasure", () => {
       id: "m1", timestamp: new Date(), attempts: 1, body: { owner: who },
       ack: () => { acked.push("m1"); }, retry: () => { retried.push("m1"); } }],
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
-                       doorsEnv, () => FAKE_UPSTREAM);
+                       doorsEnv);
     expect([acked, retried]).toEqual([[], ["m1"]]);
   });
 
   it("retries an outside record whose identity deletion fails, and finishes on the next try",
      async () => {
     const { who, app } = await owned();
+    // The object's own message waits at the gate while a delivery of it fails at the issuer.
+    await holdOutside(who);
     await appPost("account/erase", app.access_token, app.session, { confirm: ERASE_CONFIRM });
-    const messages = await sent(who);
-    const failing = { ...FAKE_UPSTREAM, forget: () => Promise.reject(new Error("WorkOS down")) };
+    await heldOutside(who);
+    await failNextForget(who);
     const retried: string[] = [];
     await erasureQueue({ queue: QUEUES.ERASURES, messages: [{
-      id: "m1", timestamp: new Date(), attempts: 1, body: messages[0],
+      id: "m1", timestamp: new Date(), attempts: 1, body: { owner: who },
       ack: () => undefined, retry: () => { retried.push("m1"); } }],
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
-                       doorsEnv, () => failing);
+                       doorsEnv);
     expect(retried).toEqual(["m1"]);
+    expect(await forgotten(who)).toEqual([503]);
     expect(await crossed(who, "erasureOutsideDone")).toEqual([]);
-    expect(await eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM)).toBe("done");
-    expect(await crossed(who, "erasureOutsideDone")).toHaveLength(1);
+    // The next delivery finishes it.
+    await letGo(who);
+    expect(await forgotten(who)).toEqual([503, 204]);
   });
 
   // That a wiped object that lost its tombstone starts pending, as any new object does, is
@@ -294,7 +301,7 @@ describe("the erasure", () => {
      "refusing it before the object is asked", async () => {
     const { who, app } = await owned();
     await appPost("account/erase", app.access_token, app.session, { confirm: ERASE_CONFIRM });
-    await consume(who);
+    await confirmed(who);
     await env.OWNER_GATE.seen(who);
     const again = await appCallback({ owner: who });
     expect(new URL(again.back.headers.get("Location")!).searchParams.get("error"))
@@ -348,10 +355,11 @@ describe("the erasure", () => {
   it("answers the operator's erasure asked again by the state it left: erasing, then erased",
      async () => {
     const { who } = await owned();
+    await holdOutside(who);
     await BEGINS[1][1](who);
     expect((await operated(who, "owner.erase", { confirm: eraseWords(who) }))
       .answer?.["refused"]).toMatchObject({ code: "erasing" });
-    expect(await consume(who)).toContain("done");
+    await letGo(who);
     expect((await operated(who, "owner.erase", { confirm: eraseWords(who) }))
       .answer?.["refused"]).toEqual({ code: "owner_erased", message: "the owner is erased" });
   });
@@ -362,10 +370,11 @@ describe("the erasure", () => {
     expect((await operated(who, "owner.state", {})).answer).toMatchObject({
       result: { state: "admitted", restore: null } });
     await expect(ownDoor(who, "ownerState")).rejects.toMatchObject({ message: PLATFORM_ONLY });
+    await holdOutside(who);
     await BEGINS[1][1](who);
     expect((await operated(who, "owner.state", {})).answer?.["refused"])
       .toMatchObject({ code: "erasing" });
-    expect(await consume(who)).toContain("done");
+    await letGo(who);
     expect((await operated(who, "owner.state", {})).answer?.["refused"])
       .toEqual({ code: "owner_erased", message: "the owner is erased" });
   });
@@ -756,23 +765,6 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
 });
 
 describe("no caller is counted or capped by the doors (slice L's review)", () => {
-  let fetched: string[] = [];
-  let spy: { mockRestore(): void } | undefined;
-
-  beforeEach(() => {
-    fetched = [];
-    const real = globalThis.fetch;
-    spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const request = new Request(input as RequestInfo, init);
-      if (/attacker-\d+\.example/i.test(request.url)) {
-        fetched.push(request.url);
-        return new Response("nope", { status: 404 });
-      }
-      return real(input as RequestInfo, init);
-    });
-  });
-  afterEach(() => spy?.mockRestore());
-
   /** More failures from one address than the removed failure bound (115) allowed. */
   const MANY = 117;
   /** A credential of the right shape that no grant holds. */
@@ -844,7 +836,11 @@ describe("no caller is counted or capped by the doors (slice L's review)", () =>
         headers: { ...NAVIGATE, "CF-Connecting-IP": ip } }));
       expect(answer.status).not.toBe(429);
     }
-    expect(fetched.length).toBeLessThanOrEqual(sent);
+    // Each metadata fetch reached the fake outside world, which answers none of them.
+    const log = await (await env.PROVIDERS.fetch("https://status.test/log"))
+      .json<{ url: string }[]>();
+    expect(log.filter((entry) => /attacker-[0-9]+[.]example/.test(entry.url)).length)
+      .toBeLessThanOrEqual(sent);
   });
 
   it("answers an overloaded owner object 429 with Retry-After, never retried", async () => {

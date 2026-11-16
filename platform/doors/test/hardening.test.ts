@@ -22,8 +22,8 @@ import { profileNames } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar, legacyPost,
-  NAVIGATE, OPEN, pkce, reached, unseen, refresh, registerClient, rpcBody, serveFirstPartyDocument,
-  setControl, signInApp, tokenCall, upstreamReturns, url, admitOwner } from "./support";
+  NAVIGATE, OPEN, pkce, reached, unseen, refresh, registerClient, rpcBody, serveDocument,
+  serveFirstPartyDocument, setControl, signInApp, tokenCall, upstreamReturns, url, admitOwner } from "./support";
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -44,21 +44,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Serve a CIMD document at `clientId` when the provider fetches it. */
-function serveDocument(clientId: string, document: Record<string, unknown>): void {
-  const real = globalThis.fetch;
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const request = new Request(input, init);
-    if (request.url === clientId) {
-      return Response.json(document);
-    }
-    if (request.url === WEB_CLIENT) {
-      return call(new Request(WEB_CLIENT));
-    }
-    return real(input, init);
-  });
-}
-
 /** Through consent and approval to the upstream's URL. */
 async function approved(): Promise<{ jar: Jar; location: string }> {
   const client = await registerClient();
@@ -72,7 +57,7 @@ async function approved(): Promise<{ jar: Jar; location: string }> {
 describe("L1: an outside client is never sent access on our own origin", () => {
   it("refuses a CIMD client naming a redirect on tinyassets.io, before consent", async () => {
     const evil = "https://evil.example/client.json";
-    serveDocument(evil, { client_id: evil, client_name: "TinyAssets",
+    await serveDocument(evil, { client_id: evil, client_name: "TinyAssets",
                           redirect_uris: [WEB_REDIRECT], token_endpoint_auth_method: "none" });
     const { challenge } = await pkce();
     const page = await call(new Request(authorizeUrl({ clientId: evil, redirectUri: WEB_REDIRECT },
@@ -89,7 +74,7 @@ describe("L1: an outside client is never sent access on our own origin", () => {
     ["a deeper subdomain", "https://a.b.tinyassets.io/cb"],
   ])("refuses a client naming a redirect on %s", async (_what, redirect) => {
     const evil = "https://evil.example/client.json";
-    serveDocument(evil, { client_id: evil, client_name: "TinyAssets", redirect_uris: [redirect],
+    await serveDocument(evil, { client_id: evil, client_name: "TinyAssets", redirect_uris: [redirect],
                           token_endpoint_auth_method: "none" });
     const { challenge } = await pkce();
     const page = await call(new Request(authorizeUrl({ clientId: evil, redirectUri: redirect },
@@ -103,7 +88,7 @@ describe("L1: an outside client is never sent access on our own origin", () => {
     ["a subdomain in capitals with a port", "https://MCP.TinyAssets.IO:8443/cb"],
   ])("refuses a client naming a redirect on %s", async (_what, redirect) => {
     const evil = "https://evil.example/client.json";
-    serveDocument(evil, { client_id: evil, client_name: "TinyAssets", redirect_uris: [redirect],
+    await serveDocument(evil, { client_id: evil, client_name: "TinyAssets", redirect_uris: [redirect],
                           token_endpoint_auth_method: "none" });
     const { challenge } = await pkce();
     const page = await call(new Request(authorizeUrl({ clientId: evil, redirectUri: redirect },
@@ -137,7 +122,7 @@ describe("L1: an outside client is never sent access on our own origin", () => {
 
   it("still serves a CIMD client on its own domain", async () => {
     const real = "https://claude.example/client.json";
-    serveDocument(real, { client_id: real, client_name: "Claude",
+    await serveDocument(real, { client_id: real, client_name: "Claude",
                           redirect_uris: ["https://claude.example/cb"],
                           token_endpoint_auth_method: "none" });
     const { challenge } = await pkce();
@@ -225,7 +210,7 @@ describe("loopback clients' grants", () => {
   }
 
   it("are replaced per installation, whatever port each sign-in used", async () => {
-    serveDocument(CLI, { client_id: CLI, client_name: "CLI",
+    await serveDocument(CLI, { client_id: CLI, client_name: "CLI",
                          redirect_uris: ["http://127.0.0.1/callback"],
                          token_endpoint_auth_method: "none" });
     const alice = owner();
@@ -237,7 +222,7 @@ describe("loopback clients' grants", () => {
   });
 
   it("are replaced all at once when earlier ports had piled up", async () => {
-    serveDocument(CLI, { client_id: CLI, client_name: "CLI",
+    await serveDocument(CLI, { client_id: CLI, client_name: "CLI",
                          redirect_uris: ["http://127.0.0.1/callback"],
                          token_endpoint_auth_method: "none" });
     const alice = owner();
@@ -258,7 +243,7 @@ describe("loopback clients' grants", () => {
   });
 
   it("are replaced only within one installation, and only for /mcp", async () => {
-    serveDocument(CLI, { client_id: CLI, client_name: "CLI",
+    await serveDocument(CLI, { client_id: CLI, client_name: "CLI",
                          redirect_uris: ["http://127.0.0.1/a", "http://127.0.0.1/b"],
                          token_endpoint_auth_method: "none" });
     const alice = owner();
@@ -278,16 +263,11 @@ describe("loopback clients' grants", () => {
 
   it("are replaced only for the same client", async () => {
     const OTHER = "https://other-cli.example/client.json";
-    const real = globalThis.fetch;
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const request = new Request(input, init);
-      if (request.url === CLI || request.url === OTHER) {
-        return Response.json({ client_id: request.url, client_name: "CLI",
-                               redirect_uris: ["http://127.0.0.1/callback"],
-                               token_endpoint_auth_method: "none" });
-      }
-      return request.url === WEB_CLIENT ? call(new Request(WEB_CLIENT)) : real(input, init);
-    });
+    for (const clientId of [CLI, OTHER]) {
+      await serveDocument(clientId, { client_id: clientId, client_name: "CLI",
+                                      redirect_uris: ["http://127.0.0.1/callback"],
+                                      token_endpoint_auth_method: "none" });
+    }
     const alice = owner();
     await connectCimd(alice, "http://127.0.0.1:5555/callback");
     await connect({ clientId: OTHER, redirectUri: "http://127.0.0.1:6666/callback" },
@@ -296,7 +276,7 @@ describe("loopback clients' grants", () => {
   });
 
   it("keep each non-loopback installation's own grant", async () => {
-    serveDocument(CLI, { client_id: CLI, client_name: "CLI",
+    await serveDocument(CLI, { client_id: CLI, client_name: "CLI",
                          redirect_uris: ["https://a.example/cb", "https://b.example/cb"],
                          token_endpoint_auth_method: "none" });
     const alice = owner();
@@ -378,12 +358,21 @@ describe("L6 and the sign-in's bounds", () => {
     // Well past it: a busy test process (other owners' seeds) can take a second or more
     // between this time and the check, which must not bring it inside the margin.
     ["in the future past the margin", () => now() + 60],
-    ["not whole seconds", () => now() - 10.5],
     ["older than ten minutes", () => now() - 601],
   ])("refuses a sign-in time %s", async (_what, at) => {
     const { jar, location } = await approved();
     const back = await upstreamReturns(jar, location, { owner: owner(), authenticatedAt: at() });
     expect(new URL(back.headers.get("Location")!).searchParams.get("error")).toBe("access_denied");
+  });
+
+  it("refuses a sign-in time not whole seconds at the upstream's own check", async () => {
+    const { jar, location } = await approved();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const back = await upstreamReturns(jar, location,
+                                       { owner: owner(), authenticatedAt: now() - 10.5 });
+    expect([back.status, await back.text()]).toEqual(
+      [502, "The sign-in could not be completed: the access token carries no auth_time."]);
+    expect(logged).toHaveBeenCalledTimes(1);
   });
 
   it("takes a sign-in inside the margin", async () => {

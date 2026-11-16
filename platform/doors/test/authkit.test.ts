@@ -18,9 +18,8 @@ import { base64url } from "../../contract/src/envelope";
 import { UPSTREAM_CALLBACK } from "../../contract/src/identity";
 import { upstreamConfig, type UpstreamConfig } from "../../contract/src/signin";
 import type { DoorsEnv } from "../src/env";
-import { upstreamOf } from "../src/index";
+import { UNWIRED, upstreamOf } from "../src/upstream";
 import { oidcUpstream, verifiedAccessToken } from "../src/oidc";
-import { UNWIRED } from "../src/upstream";
 import { doorsEnv } from "./support";
 
 const ISSUER = "https://auth.tinyassets.test";
@@ -327,6 +326,12 @@ describe("the UPSTREAM record", () => {
                                                         authorize_params: { prompt: "none" } })],
     ["a max_age of its own", JSON.stringify({ ...base, authorize_params: { max_age: "600" } })],
     ["a nonce of its own", JSON.stringify({ ...base, authorize_params: { nonce: "x" } })],
+    // The sign-in URL is this endpoint with our parameters set on it (`authorizeUrl`): one
+    // in its own query would reach the browser beside them, so the record holds none.
+    ["an authorize endpoint with a query", JSON.stringify({
+      ...base, authorization_endpoint: `${API}/a?prompt=none` })],
+    ["an http authorize endpoint", JSON.stringify({ ...base,
+                                                    authorization_endpoint: "http://auth.test/a" })],
     ["a deletion URL without the subject", JSON.stringify({ ...base,
                                                            user_delete: `${API}/u` })],
     ["another key", JSON.stringify({ ...base, client_secret: "s" })],

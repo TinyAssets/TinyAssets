@@ -26,7 +26,7 @@ import { mintToken, verifyToken } from "../../contract/src/routing-mac";
 import { HELD_WAIT_MS } from "../../ci/fixtures";
 import { secretOf, until } from "../../ci/workerd";
 import { Refusal } from "../../contract/src/refusal";
-import worker from "./entry";
+import doors from "../src/index";
 import { EGRESS_CHUNKS, EGRESS_USAGE } from "./fake-providers";
 import {
   appPost, call, crossed, defineMain, doorsEnv, OPEN, ownDoor, reached, recorded,
@@ -70,7 +70,7 @@ interface Opened {
  * registers with `waitUntil` resolves only once its stream ended, which the test reads.
  */
 function send(request: Request, environment: DoorsEnv = doorsEnv): Promise<Response> {
-  return worker.fetch(request, environment, createExecutionContext());
+  return doors.fetch(request, environment, createExecutionContext());
 }
 
 /** An owner's object as the test reaches it: its own stub, every door of it. */

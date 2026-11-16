@@ -15,13 +15,14 @@ import {
 } from "../src/binder";
 import type { DoorsEnv } from "../src/env";
 import { APP_RESOURCE, MCP_RESOURCE, WEB_CLIENT } from "../../contract/src/identity";
-import { FAKE_ISSUER } from "./fake-upstream";
 import { mintKeyFor } from "./keys";
 import {
-  appCallback,
   appPost, call, connect, doorsEnv, legacyPost, OPEN, ownDoor, reached, registerClient, rpcBody,
   serveFirstPartyDocument, setControl, unseen, url, answerOf,
 } from "./support";
+
+/** The owner issuer, as the suite's config names it. */
+const ISSUER = doorsEnv.OWNER_ISSUER;
 
 /** A filed registration card, as the owner's `registerProposal` door answers it. */
 interface Card {
@@ -189,10 +190,10 @@ describe("the other bindings", () => {
   });
 
   it("a sign-in: the owner its issuer and subject name, at its time", async () => {
-    expect((await bindSignIn(doorsEnv, { issuer: FAKE_ISSUER, subject: "alice",
+    expect((await bindSignIn(doorsEnv, { issuer: ISSUER, subject: "alice",
                                          authenticated_at: 5 })).binding)
       .toEqual({ owner: "alice", caller: "alice", origin: null, authenticated_at: 5 });
-    await expect(bindSignIn(doorsEnv, { issuer: FAKE_ISSUER, subject: " alice",
+    await expect(bindSignIn(doorsEnv, { issuer: ISSUER, subject: " alice",
                                         authenticated_at: 5 })).rejects.toThrow();
   });
 });
@@ -207,7 +208,7 @@ describe("the owner a sign-in names", () => {
   });
 
   it("is the owner issuer's subject as it stands", async () => {
-    expect(await ownerOf(doorsEnv, FAKE_ISSUER, "user_01H")).toBe("user_01H");
+    expect(await ownerOf(doorsEnv, ISSUER, "user_01H")).toBe("user_01H");
   });
 
   it("is namespaced by a listed foreign issuer, so two issuers' subjects never meet",
@@ -220,7 +221,7 @@ describe("the owner a sign-in names", () => {
   });
 
   it.each([
-    ["the owner issuer with a trailing slash", `${FAKE_ISSUER}/`],
+    ["the owner issuer with a trailing slash", `${ISSUER}/`],
     ["the owner issuer's host in capitals", "https://UPSTREAM.test"],
     ["an issuer no slice has listed", "https://auth.openai.com"],
     ["a listed issuer with a trailing slash", "https://auth.openai.com/"],
@@ -233,7 +234,7 @@ describe("the owner a sign-in names", () => {
 
   it("refuses a foreign list that is malformed or names the owner issuer", async () => {
     for (const list of ["", "{}", "[1]", "[\"http://x.example\"]",
-                        `["${FAKE_ISSUER}"]`, "[\"https://a.example\",\"https://a.example\"]"]) {
+                        `["${ISSUER}"]`, "[\"https://a.example\",\"https://a.example\"]"]) {
       await expect(ownerOf({ ...doorsEnv, FOREIGN_ISSUERS: list }, "https://a.example", "u"))
         .rejects.toThrow("FOREIGN_ISSUERS");
     }
@@ -246,40 +247,13 @@ describe("the owner a sign-in names", () => {
     ["the rehearsals' prefix, though no rehearsal's name", "rehearsal-x"],
     ["blank", ""],
   ])("refuses an owner issuer's subject holding %s", async (_what, subject) => {
-    await expect(ownerOf(doorsEnv, FAKE_ISSUER, subject)).rejects.toThrow();
+    await expect(ownerOf(doorsEnv, ISSUER, subject)).rejects.toThrow();
   });
 
   it("fails loudly before the owner issuer is configured", async () => {
     for (const issuer of ["not-configured", "http://upstream.test", ""]) {
-      await expect(ownerOf({ ...doorsEnv, OWNER_ISSUER: issuer }, FAKE_ISSUER, "alice"))
+      await expect(ownerOf({ ...doorsEnv, OWNER_ISSUER: issuer }, ISSUER, "alice"))
         .rejects.toThrow("OWNER_ISSUER");
-    }
-  });
-
-  it("is what a sign-in through a listed foreign issuer is bound to", async () => {
-    const restoreDocument = serveFirstPartyDocument();
-    try {
-      const subject = owner();
-      const { back } = await appCallback({ owner: subject, issuer: "https://auth.openai.com" },
-                                         LISTED);
-      expect(new URL(back.headers.get("Location")!).searchParams.get("code")).toBeTruthy();
-      const named = await ownerOf(LISTED, "https://auth.openai.com", subject);
-      expect(await reached(named)).toBe(true);
-      expect(await reached(subject)).toBe(false);
-    } finally {
-      restoreDocument();
-    }
-  });
-
-  it("refuses a sign-in from an issuer off the list before any object", async () => {
-    const restoreDocument = serveFirstPartyDocument();
-    try {
-      const subject = owner();
-      await expect(appCallback({ owner: subject, issuer: `${FAKE_ISSUER}/` }))
-        .rejects.toThrow("is neither the owner issuer nor a listed one");
-      expect(await reached(subject)).toBe(false);
-    } finally {
-      restoreDocument();
     }
   });
 });

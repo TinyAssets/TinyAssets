@@ -352,13 +352,15 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] T1's last edges: the owner tests' five B23 entries in `owner/guards/rules.ts`
       (connections, export, gateway-support, holds, runs-authority), each through its Worker's
       front door (`t1-owner-edges.md`).
-  - T2, the doors' tests through the owner's front door, two PRs (`t2.md`):
+  - T2, the doors' tests through the owner's front door, three PRs (`t2.md`, `t2b.md`):
     - [x] T2a: the owner an auxiliary Worker behind the owner gate, every reach into its object
       gone, and the doors' test `OWNER` (C2b) typed as the doors' env types it; 13 of the 20
       B23 entries in `doors/guards/rules.ts`.
-    - T2b (`untangle/t2b`): the doors' real entry (`d2:N49`, `N50`, `N53`) and with it T1c-b's
-      `owner-erasures-recorded` queue; the last seven B23 entries (the owner's constants and
-      its fakes' types the doors' tests read); the table doors' answers typed from the contract,
+    - [x] T2b: the doors' real entry, its sign-in the live one by config against a fake AuthKit
+      (`d2:N49`, `N50`, `N53`), and with it T1c-b's `owner-erasures-recorded` queue: the
+      owner's erasure queue consumed by the doors' own entry; one B23 entry.
+    - T2c (`untangle/t2c`): the last six B23 entries (the owner's constants and the fake
+      sandbox's type the doors' tests read); the table doors' answers typed from the contract,
       not by hand (`ownDoor<T>`); `d2:N52`, `N84`, `N85` and `N89`.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
