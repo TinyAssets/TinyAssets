@@ -10,7 +10,8 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { displayName, MAX_BODY_BYTES } from "../src/ledger";
+import { BODY_BYTES_MAX } from "../../contract/src/limits";
+import { displayName } from "../src/ledger";
 import { OWNER } from "../src/authority";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
@@ -126,9 +127,9 @@ describe("the sender is the verified identity", () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     for (const [fields, code, reason] of [
-      [{ body: "" }, "message_body", `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
-      [{ body: "x".repeat(MAX_BODY_BYTES + 1) }, "message_body",
-       `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
+      [{ body: "" }, "message_body", `a message body is 1 to ${BODY_BYTES_MAX} bytes`],
+      [{ body: "x".repeat(BODY_BYTES_MAX + 1) }, "message_body",
+       `a message body is 1 to ${BODY_BYTES_MAX} bytes`],
       [{ body: "a\uD800b" }, "message_body", "a message body is well-formed text"],
       [{ cmid: "" }, "invalid", "client_message_id is 1 to 128 printable characters"],
       [{ cmid: "a\nb" }, "invalid", "client_message_id is 1 to 128 printable characters"],

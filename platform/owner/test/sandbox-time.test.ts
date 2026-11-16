@@ -12,7 +12,9 @@ import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { type RunReceipt, runMeter } from "../src/runs";
 import { GRANT_LIMITS } from "../src/grants";
-import { BILLED_KEPT, DAYS_KEPT, LIVE_KEPT, meterRead, SandboxTime } from "../src/sandbox-time";
+import {
+  BILLED_KEPT, BILLED_WINDOW_S, DAYS_KEPT, LIVE_KEPT, meterRead, SandboxTime,
+} from "../src/sandbox-time";
 import { rig } from "./ledger-support";
 import { gated } from "./gateway-support";
 import { ownerRun, runnerBinding, scripted } from "./runs-support";
@@ -197,6 +199,18 @@ describe("E2B's billed executions", () => {
     // One live sandbox an authority is kept for every authority an owner may have.
     expect(LIVE_KEPT).toBeGreaterThanOrEqual(1 + GRANT_LIMITS.maxFreeClients
                                              + GRANT_LIMITS.maxOwnerClients);
+  });
+
+  it("counts an event only inside its window by its own time: never older, nor ahead of the " +
+     "clock (review L2)", async () => {
+    const r = await rig();
+    for (const at of [Date.now() - BILLED_WINDOW_S * S - 60_000, Date.now() + 3600 * S]) {
+      expect(await r.stub.sandboxBilled(event({ execution_id: `exec-${at}`, at }) as never))
+        .toEqual({ counted: false });
+    }
+    const inside = event({ at: Date.now() - BILLED_WINDOW_S * S + 60_000 });
+    expect(await r.stub.sandboxBilled(inside as never)).toEqual({ counted: true });
+    expect((await billed(r)).reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(60);
   });
 
   it("counts an execution past BILLED_KEPT anyway, and shows it unverified (review N5)",

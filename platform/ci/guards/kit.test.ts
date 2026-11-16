@@ -115,7 +115,7 @@ describe("the Worker kit", () => {
     expect(() => parseWrangler("[]", "list.jsonc")).toThrow(/list\.jsonc/);
   });
 
-  it("builds a fake at its own Worker's compatibility date, named as its file", () => {
+  it("builds a fake at the Workers' one compatibility date, named as its file", () => {
     const built = fake(join(PLATFORM, "gateway", "test", "fake-upstream.ts"), { extra: 1 });
     expect(built.name).toBe("fake-upstream");
     expect(built.compatibilityDate).toBe(workerConfig(join(PLATFORM, "gateway")).compatibility_date);

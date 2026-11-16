@@ -6,7 +6,6 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { BODY_BYTES_MAX } from "../../owner/src/bodies";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { parseKey } from "../src/api-keys";
 import { mcpClient } from "../src/binder";
@@ -330,7 +329,6 @@ describe("L5: bounded bodies", () => {
     const post = (body: string) => call(new Request(url("/api/tools/agents_list"), {
       method: "POST", headers: { Authorization: `Bearer ${key}`,
                                  "Content-Type": "application/json" }, body }));
-    expect(2 * BODY_BYTES_MAX).toBe(EGRESS_BODY_MAX);
     expect((await post(`{"p":"${"x".repeat(EGRESS_BODY_MAX)}"}`)).status).toBe(413);
     expect((await post("[1]")).status).toBe(400);
     expect((await post("{")).status).toBe(400);
@@ -571,23 +569,24 @@ describe("L7: the provider revoke reads every page", () => {
     await admitOwner(alice);
     const bound = { binding: { owner: alice, caller: alice, origin: null },
                     stub: doorsEnv.OWNER.getByName(alice) };
-    // The provider's grant listing, observed: each page holds the one grant asked for.
+    // The grants' store answers one grant a listing, its cursor kept: a page shorter than
+    // asked, which the provider answers with its cursor as it answers any page not the last.
     const real = env.OAUTH_KV;
-    const limits: unknown[] = [];
+    let pages = 0;
     const observed = { ...doorsEnv, OAUTH_KV: {
       get: real.get.bind(real), put: real.put.bind(real), delete: real.delete.bind(real),
       getWithMetadata: real.getWithMetadata.bind(real),
       list: (options: KVNamespaceListOptions) => {
-        if (options.prefix?.startsWith("grant:")) {
-          limits.push(options.limit);
+        if (!options.prefix?.startsWith("grant:")) {
+          return real.list(options);
         }
-        return real.list(options);
+        pages++;
+        return real.list({ ...options, limit: 1 });
       },
     } as unknown as KVNamespace };
-    const done = await revokeClient(observed, bound, await mcpClient(client.clientId), 1);
+    const done = await revokeClient(observed, bound, await mcpClient(client.clientId));
     expect(done.grants).toBe(3);
-    expect(limits.length).toBeGreaterThanOrEqual(4);
-    expect(new Set(limits)).toEqual(new Set([1]));
+    expect(pages).toBeGreaterThanOrEqual(4);
     const left = (await oauth.listUserGrants(alice)).items.filter((g) => g.resource !== APP_RESOURCE);
     expect(left.map((g) => g.clientId)).not.toContain(client.clientId);
     expect(left).toHaveLength(1);

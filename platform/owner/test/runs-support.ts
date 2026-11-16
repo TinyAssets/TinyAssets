@@ -2,7 +2,7 @@
  * Starting runs in the tests as the owner's app does: an agent's `agent.json` written by
  * the owner's file doors, then the run door with the control record's tier numbers in the
  * binding, as the binder hands them, and the start the fake sandbox Worker saw
- * (`fake-sandbox.ts`, bound by config behind its gate).
+ * (`ci/fake-sandbox.ts`, bound by config behind its gate).
  */
 import { createHash } from "node:crypto";
 
@@ -17,7 +17,7 @@ import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { RunReceipt } from "../src/runs";
 import { LEASE_TTL_S } from "../../contract/src/limits";
-import type { Recorded, Script } from "./fake-sandbox";
+import type { Recorded, Script } from "../../ci/fake-sandbox";
 
 import { clockAt, gateFor, TIERS } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";

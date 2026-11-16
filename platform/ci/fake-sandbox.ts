@@ -1,6 +1,7 @@
 /**
- * The owner suite's sandbox Worker, bound by config behind the `SANDBOX` gate
- * (`vitest.config.ts`): every `SandboxService` method the owner's object calls, recorded by
+ * The owner Worker's sandbox Worker in a test, bound by config behind its `SANDBOX` gate by
+ * every suite that runs the owner Worker (`owner/vitest.config.ts`, the doors' config and the
+ * browser test's): every `SandboxService` method the owner's object calls, recorded by
  * owner and answered as the test scripted that owner's answers. Nothing is started: the real
  * sandbox Worker (`platform/sandbox`) is tested against a fake E2B in its own package. A test
  * reads the record and sets the answers through `Log`, an entrypoint bound to the test Worker
@@ -16,7 +17,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import type {
   METER_BATCH, MeterEvent, NetworkApplied, NetworkReapply, SandboxService, SandboxSignin,
   SandboxStart, Started,
-} from "../../contract/src/sandbox";
+} from "../contract/src/sandbox";
 
 /** What one owner's object asked of the sandbox. */
 export interface Recorded {

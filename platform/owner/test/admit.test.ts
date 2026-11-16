@@ -7,8 +7,10 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { OWNER_UNADMITTED } from "../src/admission";
+import { OWNER_UNADMITTED, PLATFORM_ONLY, PLATFORM_TIER_ONLY } from "../src/admission";
 import { apiKeyOrigin, type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import { doorTable } from "../../contract/src/doors";
+import { NO_ERASURE } from "../src/erasure";
 import { BREAKER_FAILURES, Inbound, INSTALL_PROOF } from "../src/inbound";
 import { profile, proves } from "../../contract/src/inbound-proof";
 import { TOO_MANY_KEYS } from "../src/keys";
@@ -62,6 +64,28 @@ describe("the platform's admit", () => {
     const o = stub as unknown as DurableObjectStub<import("../src/owner-do").OwnerDO>;
     expect((await failure(() => o.admissionSet(own(owner), { admit: true }))).message)
       .toMatch(/only the platform/);
+  });
+});
+
+describe("the platform's doors", () => {
+  it("refuse the owner's own binding at every reserved and erasure door, and the platform's " +
+     "at an erasure door while no erasure is under way", async () => {
+    const { stub, owner } = pending();
+    await (stub as unknown as DurableObjectStub<import("../src/owner-do").OwnerDO>)
+      .admissionSet(platform(owner), { admit: true });
+    const o = stub as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const rows = doorTable().filter((row) => row.caller === "reserved" || row.caller === "erasure");
+    expect(rows.map((row) => row.caller)).toEqual(expect.arrayContaining(["reserved", "erasure"]));
+    for (const row of rows) {
+      const refused = await failure(() => o[row.door]!(own(owner), {}));
+      expect([row.door, refused.code, refused.message]).toEqual([row.door, "refused",
+        row.action === "tier" ? PLATFORM_TIER_ONLY : PLATFORM_ONLY]);
+    }
+    for (const row of rows.filter((each) => each.caller === "erasure")) {
+      const refused = await failure(() => o[row.door]!(platform(owner), {}));
+      expect([row.door, refused.code, refused.message]).toEqual([row.door, "refused",
+                                                                 NO_ERASURE]);
+    }
   });
 });
 

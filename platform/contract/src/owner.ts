@@ -262,7 +262,10 @@ export interface RestoreWipeRequest {
  */
 export const eraseWords = (owner: string): string => `erase-${owner}`;
 
-/** What confirms an erasure: the owner's typed words, or the platform's (`eraseWords`). */
+/** The words the owner types to erase its own account (`ownerErase`), taken exactly. */
+export const ERASE_CONFIRM = "erase my account";
+
+/** What confirms an erasure: the owner's typed words (`ERASE_CONFIRM`), or the platform's. */
 export interface EraseRequest {
   readonly confirm: string;
 }

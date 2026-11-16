@@ -16,10 +16,8 @@ import { parseRing } from "../../contract/src/envelope";
 import {
   type OperatorAnswer, operatorAnswer, type OperatorArgs, signOperator,
 } from "../../contract/src/operator-message";
-import { eraseWords } from "../../contract/src/owner";
-import { OWNER_UNADMITTED, PLATFORM_ONLY } from "../../owner/src/admission";
-import { ERASING, Refusal } from "../../contract/src/refusal";
-import { ERASE_CONFIRM, NO_ERASURE } from "../../owner/src/erasure";
+import { ERASE_CONFIRM, eraseWords } from "../../contract/src/owner";
+import { Refusal } from "../../contract/src/refusal";
 import { QUEUES } from "../../contract/src/queue-names";
 import { MCP_RESOURCE } from "../../contract/src/identity";
 import { now } from "../src/config";
@@ -79,7 +77,7 @@ describe("sign-up", () => {
      async () => {
     const who = owner();
     // Any getByName makes an object; made is never admitted.
-    await expect(ownDoor(who, "grantList")).rejects.toThrow(OWNER_UNADMITTED);
+    expect(await admissionOf(who)).toMatchObject({ state: "pending" });
     expect(await readOwner(doorsEnv, who)).toBeNull();
     const app = await signInApp({ owner: who });
     expect(await readOwner(doorsEnv, who)).toEqual({ s: "admitted", t: expect.any(Number) });
@@ -104,12 +102,6 @@ describe("sign-up", () => {
     expect(await admissionOf(who)).toMatchObject({ state: "suspended", reasons: ["billing"] });
   });
 
-  it("is refused for an admit the platform's reserved caller sends at any other door", async () => {
-    const who = owner();
-    await signInApp({ owner: who });
-    await expect(doorAs(who, { owner: who, caller: PLATFORM_CALLER, origin: null }, "grantList"))
-      .rejects.toThrow(/reaches no owner door/);
-  });
 });
 
 describe("the erasure", () => {
@@ -195,7 +187,7 @@ describe("the erasure", () => {
     await holdOutside(who);
     await begin(who, app);
     // The mark first: every door refuses from the answer on, while no outside record is in.
-    await expect(ownDoor(who, "grantList")).rejects.toMatchObject({ message: ERASING });
+    await expect(ownDoor(who, "grantList")).rejects.toMatchObject({ code: "erasing" });
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
     expect(await forgotten(who)).toEqual([]);
     // The queue's message, consumed by the doors' own entry: the outside record, then the
@@ -244,7 +236,7 @@ describe("the erasure", () => {
 
   it("writes no outside record for an owner no erasure has marked", async () => {
     const { who } = await owned();
-    await expect(eraseOutside(doorsEnv, who)).rejects.toMatchObject({ message: NO_ERASURE });
+    await expect(eraseOutside(doorsEnv, who)).rejects.toMatchObject({ code: "refused" });
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
     // The queue's consumer drops it, and a message out of shape, without retrying.
     const acked: string[] = [];
@@ -310,7 +302,7 @@ describe("the erasure", () => {
   });
 
   it("erases by the operator only an owner the platform signed up, by a message its ring " +
-     "signed, with its exact words, and only at the platform's own door", async () => {
+     "signed, with its exact words, at the platform's own door", async () => {
     const { who } = await owned();
     const other = owner();
     for (const [args, refused] of [
@@ -336,9 +328,6 @@ describe("the erasure", () => {
       "an operator message has a MAC that does not hold under its kid; dropped",
       "an operator message is out of shape; dropped"]);
     logged.mockRestore();
-    // The owner's own binding at the platform's door.
-    await expect(ownDoor(who, "erasureBegin", { confirm: eraseWords(who) }))
-      .rejects.toMatchObject({ message: PLATFORM_ONLY });
     // A name the platform never signed up, with its own words: never barred.
     expect((await operated(other, "owner.erase", { confirm: eraseWords(other) }))
       .answer?.["refused"]).toEqual({
@@ -364,12 +353,11 @@ describe("the erasure", () => {
       .answer?.["refused"]).toEqual({ code: "owner_erased", message: "the owner is erased" });
   });
 
-  it("answers owner.state only at the platform's door; for an owner being erased erasing, " +
+  it("answers owner.state at the platform's door; for an owner being erased erasing, " +
      "and once erased owner_erased", async () => {
     const { who } = await owned();
     expect((await operated(who, "owner.state", {})).answer).toMatchObject({
       result: { state: "admitted", restore: null } });
-    await expect(ownDoor(who, "ownerState")).rejects.toMatchObject({ message: PLATFORM_ONLY });
     await holdOutside(who);
     await BEGINS[1][1](who);
     expect((await operated(who, "owner.state", {})).answer?.["refused"])
@@ -379,14 +367,11 @@ describe("the erasure", () => {
       .toEqual({ code: "owner_erased", message: "the owner is erased" });
   });
 
-  it("answers a key rotation's owner.rewrap and owner.reseal only at the platform's doors",
+  it("answers a key rotation's owner.rewrap and owner.reseal at the platform's doors",
      async () => {
     const { who } = await owned();
     for (const op of ["owner.rewrap", "owner.reseal"]) {
       expect((await operated(who, op, {})).answer, op).toMatchObject({ result: { left: 0 } });
-    }
-    for (const door of ["dataKeyRewrap", "gatewayReseal"]) {
-      await expect(ownDoor(who, door)).rejects.toMatchObject({ message: PLATFORM_ONLY });
     }
   });
 

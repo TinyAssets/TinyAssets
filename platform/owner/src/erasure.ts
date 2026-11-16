@@ -45,7 +45,7 @@
  * operator's `owner.erase` for an owner who cannot sign in (`doors/src/operator.ts`).
  */
 import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
-import { type EraseRequest, eraseWords } from "../../contract/src/owner";
+import { ERASE_CONFIRM, type EraseRequest, eraseWords } from "../../contract/src/owner";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import type { Call, Door, DoorUnits, ObjectReads } from "./door";
@@ -139,9 +139,6 @@ export function markErasing(storage: OwnerStorage, now: number): void {
 
 /** An erasure door's refusal when no erasure is under way. */
 export const NO_ERASURE = "no erasure of this owner is under way";
-
-/** What the owner types to erase its account. */
-export const ERASE_CONFIRM = "erase my account";
 
 /**
  * In a unit: the door's call checked, holding the words `words` names for its owner and no
