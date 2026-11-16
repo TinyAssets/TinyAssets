@@ -28,7 +28,7 @@ const OPERATOR_KEYRING = keyring();
  * providers), and the owner suite's fake sandbox.
  */
 const FAKE_PROVIDERS = join(PLATFORM, "doors", "test", "fake-providers.ts");
-const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
+const FAKE_SANDBOX = join(PLATFORM, "ci", "fake-sandbox.ts");
 /** The gate in front of the owner Worker's objects, which the doors' OWNER reaches. */
 const OWNER_GATE = "owner-gate";
 
@@ -49,7 +49,7 @@ export default defineConfig({
       // OWNER_GATE (bound to the test Worker alone), to hold, refuse or answer one owner's
       // door, and records what crossed by owner (`test/gates.ts` disarms it after each test).
       // The owner's SANDBOX is the owner suite's fake sandbox Worker
-      // (`owner/test/fake-sandbox.ts`), whose record a test reads through SANDBOX_LOG. GATEWAY
+      // (`ci/fake-sandbox.ts`), whose record a test reads through SANDBOX_LOG. GATEWAY
       // reaches the real gateway Worker (its `ConnectGateway` entrypoint, as the config names
       // it). ROUTING_MAC_KEY is both the doors' and the owner's, as their configs share it.
       // The doors' and each auxiliary Worker have every binding their configs give them

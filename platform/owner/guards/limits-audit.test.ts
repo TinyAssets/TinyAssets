@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { BODY_BYTES_MAX } from "../src/bodies";
+import { BODY_BYTES_MAX } from "../../contract/src/limits";
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { LEDGER_LIMITS } from "../src/ledger";
 import {

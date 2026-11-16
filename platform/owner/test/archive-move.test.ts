@@ -12,7 +12,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
-import { BODY_BYTES_MAX } from "../src/bodies";
+import { BODY_BYTES_MAX } from "../../contract/src/limits";
 import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
 import { refusalOf } from "../../contract/src/refusal";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";

@@ -7,7 +7,7 @@
 import { expect, onTestFinished } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
-import { BODY_BYTES_MAX } from "../src/bodies";
+import { BODY_BYTES_MAX } from "../../contract/src/limits";
 import { LEDGER_LIMITS, type Ledger } from "../src/ledger";
 import type { Origin } from "../../contract/src/binding";
 import { RESULT_CHARS } from "../../contract/src/encoded";

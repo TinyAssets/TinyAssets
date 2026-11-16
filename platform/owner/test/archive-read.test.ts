@@ -12,9 +12,9 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
-import { BODY_BYTES_MAX, READ_TRIES } from "../src/bodies";
+import { READ_TRIES } from "../src/bodies";
 import { RESULT_CHARS } from "../../contract/src/encoded";
-import { PLACE_BYTES } from "../../contract/src/limits";
+import { BODY_BYTES_MAX, PLACE_BYTES } from "../../contract/src/limits";
 import { refusalOf } from "../../contract/src/refusal";
 import type { Ledger } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";

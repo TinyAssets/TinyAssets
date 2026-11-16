@@ -384,16 +384,21 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] T1's last edges: the owner tests' five B23 entries in `owner/guards/rules.ts`
       (connections, export, gateway-support, holds, runs-authority), each through its Worker's
       front door (`t1-owner-edges.md`).
-  - T2, the doors' tests through the owner's front door, three PRs (`t2.md`, `t2b.md`):
+  - T2, the doors' tests through the owner's front door, four PRs (`t2.md`, `t2b.md`, `t2c.md`):
     - [x] T2a: the owner an auxiliary Worker behind the owner gate, every reach into its object
       gone, and the doors' test `OWNER` (C2b) typed as the doors' env types it; 13 of the 20
       B23 entries in `doors/guards/rules.ts`.
     - [x] T2b: the doors' real entry, its sign-in the live one by config against a fake AuthKit
       (`d2:N49`, `N50`, `N53`), and with it T1c-b's `owner-erasures-recorded` queue: the
       owner's erasure queue consumed by the doors' own entry; one B23 entry.
-    - T2c (`untangle/t2c`): the last six B23 entries (the owner's constants and the fake
-      sandbox's type the doors' tests read); the table doors' answers typed from the contract,
-      not by hand (`ownDoor<T>`); `d2:N52`, `N84`, `N85` and `N89`.
+    - [x] T2c: the last six B23 entries, the doors' `OWED` empty: a doors test asserts an owner
+      refusal by its code and the owner's suite holds the reason; `ERASE_CONFIRM` and
+      `BODY_BYTES_MAX` in the contract; the fake sandbox in `ci/`; `d2:N52`, `N84`, `N85`
+      (`N89` was already gone).
+    - [ ] T2d (`untangle/t2d`, after `untangle/o2b` merges): the table doors' answers typed from
+      the contract, not by hand: `ownDoor<D>` over o2b's generated `OwnerDoors`, its answer
+      `DoorAnswer<D>`, with the `DoorTypes` answers the doors' tests read and those #5657 left
+      (`sandboxRung`, `restoreRelease`; `t2c.md`).
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
   - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
