@@ -4,7 +4,7 @@
     "routes": {
       "why": "After the admit, before mode routes hands the routes over (tasks.md §9 step 12).",
       "entries": [
-        { "live": "secret", "name": "IMPORT_KEY", "in": "platform/deploy/checklist.md", "what": "the doors' Worker secret, deleted (npx wrangler secret delete IMPORT_KEY --name tinyassets-doors): a replayed admit is accepted by design" },
+        { "live": "secret", "name": "IMPORT_KEY", "in": "platform/deploy/checklist.md", "what": "the doors' Worker secret, deleted by the real window's close (import-window.yml) once every owner it staged is admitted or discarded: a replayed admit is accepted by design" },
         { "live": "workflow", "name": "uptime-canary.yml", "in": ".github/workflows/uptime-canary.yml", "what": "the old stack's pager, disabled as the routes go (gh workflow disable uptime-canary.yml): from then its old-stack probes meet the doors and would page on every run; the platform's canary (platform-canary.yml) watches from routes on (d3 §J2)" }
       ]
     },
@@ -87,12 +87,14 @@
         { "live": "secret", "name": "IMPORT_R2_SECRET_ACCESS_KEY", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
         { "live": "secret", "name": "IMPORT_CLOUDFLARE_API_TOKEN", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
         { "live": "secret", "name": "IMPORT_KEY", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
+        { "live": "secret", "name": "IMPORT_DOORS_API_TOKEN", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
         { "live": "secret", "name": "IMPORT_DO_TOKEN", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
         { "live": "secret", "name": "IMPORT_RESERVED_IP", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
         { "live": "secret", "name": "IMPORT_SPACES_ACCESS_KEY_ID", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
         { "live": "secret", "name": "IMPORT_SPACES_SECRET_ACCESS_KEY", "in": ".github/workflows/import-window.yml", "what": "a production secret, deleted" },
         { "live": "token", "name": "IMPORT_R2_ACCESS_KEY_ID", "in": "platform/deploy/checklist.md", "what": "the R2 token the S3 key pair is of, revoked" },
         { "live": "token", "name": "IMPORT_CLOUDFLARE_API_TOKEN", "in": "platform/deploy/checklist.md", "what": "the window's Cloudflare API token, revoked" },
+        { "live": "token", "name": "IMPORT_DOORS_API_TOKEN", "in": "platform/deploy/checklist.md", "what": "the doors' Worker token the close deleted IMPORT_KEY with, revoked" },
         { "live": "token", "name": "IMPORT_DO_TOKEN", "in": "platform/deploy/checklist.md", "what": "the DigitalOcean token, revoked" },
         { "live": "token", "name": "IMPORT_SPACES_ACCESS_KEY_ID", "in": "platform/deploy/checklist.md", "what": "the Spaces read key, revoked" },
         { "live": "address", "name": "IMPORT_RESERVED_IP", "in": "platform/deploy/checklist.md", "what": "the reserved IP, released" },

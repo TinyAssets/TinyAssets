@@ -15,12 +15,18 @@
  *   its tier, admit it, suspend it for each old reason, then write its `o:` record). One owner
  *   that failed blocks every admit: going on without it is the founder's call, never this
  *   step's. It never admits an owner the old stack never admitted (`absent`).
- * - `wipe`: one `discard` message an owner (`importDiscard`: no tombstone, no erased record, no
- *   issuer's deletion), each answer's namespace kept in the record; then the directory's
- *   `o:rehearsal-<run>-` records deleted and the staging bucket's `<run>/` objects; then the
- *   proof: the `o:rehearsal-<run>-` listing, the `<run>/` listing, and each discarded
- *   namespace's listing in the files bucket, each empty. Durable Objects keep a point-in-time
- *   copy for 30 days (`owner/src/erasure.ts`), recoverable by Cloudflare alone.
+ * - `wipe`: one `discard` message an owner whose index is still staged (`importDiscard`: no
+ *   tombstone, no erased record, no issuer's deletion), each answer's namespace kept in the
+ *   record; then the directory's `o:rehearsal-<run>-` records deleted and the staging
+ *   bucket's `<run>/` objects; then the proof: the `o:rehearsal-<run>-` listing, the `<run>/`
+ *   listing, and each discarded namespace's listing in the files bucket, each empty. Durable
+ *   Objects keep a point-in-time copy for 30 days (`owner/src/erasure.ts`), recoverable by
+ *   Cloudflare alone.
+ * - `close`: the window's, of every run (`r7-rotation-driver.md` item 8, the founder's B): it
+ *   passes only when every bundle index the staging bucket holds names an owner the directory
+ *   lists, so no owner the import may have written is out of the rotation's reach; else it
+ *   names each owner left, by run and ordinal, and changes nothing. On the real window's pass,
+ *   the workflow's next step deletes the doors' `IMPORT_KEY` (`unkey`), on its runner.
  * - `dlq`: the dead-letter queue read over its HTTP pull consumer (added when it has none; no
  *   Worker consumes it, and a Worker config may name no pull consumer: wrangler refuses one),
  *   reported by bundle ordinal and op; its messages are deleted only with `--delete`, otherwise
@@ -34,14 +40,16 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  answerName, BUNDLE_OWNER, type BundleOwner, bundlePrefix, doneName, type Entry, importMac,
-  type ImportMessage, type ImportOp, importMessage, NO_ROWS, type Paged, pageNumber,
-  rehearsalRun, type Row, rowsSum,
+  answerName, BUNDLE_INDEX, BUNDLE_OWNER, type BundleOwner, bundlePrefix, doneName, type Entry,
+  IMPORT_KEY, importMac, type ImportMessage, type ImportOp, importMessage, NO_ROWS, type Paged,
+  pageNumber, rehearsalRun, type Row, rowsSum, RUN, stagedName,
 } from "../contract/src/import-message";
 import { DEFAULT_TIER } from "../contract/src/control";
 import { objectPrefix } from "../contract/src/files";
+import { HEX16, OWNER_ENTRY } from "../contract/src/ids";
 import type { ImportNames } from "../contract/src/import-names";
 import { QUEUES } from "../contract/src/queue-names";
+import type { Cloudflare } from "../deploy/cloudflare";
 
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
 import {
@@ -174,7 +182,8 @@ async function answered(window: Window, name: string): Promise<Record<string, un
 /** A message sent, then its answer waited for; a refused send throws, nothing more sent. */
 async function ask(window: Window, queue: string, message: ImportMessage):
     Promise<Record<string, unknown>> {
-  await cloudflareOf(window.inputs, window.fetcher).send(window.inputs.account, queue, message);
+  await cloudflareOf(window.inputs.apiToken, window.fetcher)
+    .send(window.inputs.account, queue, message);
   return answered(window, answerName(message.prefix, message.ask!));
 }
 
@@ -314,8 +323,8 @@ export async function admit(out: string, run: string, window: Window, recordFile
 
 /** The directory's KV namespace id, by its title. */
 async function directoryId(window: Window): Promise<string> {
-  const id = (await cloudflareOf(window.inputs, window.fetcher).namespaces(window.inputs.account))
-    .get(window.names.directory);
+  const id = (await cloudflareOf(window.inputs.apiToken, window.fetcher)
+    .namespaces(window.inputs.account)).get(window.names.directory);
   if (id === undefined) {
     throw new Error(`the account lists no KV namespace ${window.names.directory}: nothing is done`);
   }
@@ -331,19 +340,50 @@ export interface WipeProof {
 }
 
 /**
- * `wipe`: each owner discarded (its namespace kept in the record, so a run again proves it
- * too), then the rehearsal's `o:` records and the staging prefix deleted, then each listing
- * read and proved empty.
+ * Whether `staged`'s index is in the staging bucket. The doors read it before any op, and an
+ * import writes only from what is staged, so an owner can hold imported data only while its
+ * index is staged or after its admit; `wipe` deletes a run's staging only once every one of
+ * its owners is discarded.
+ */
+async function indexStaged(window: Window, run: string, staged: Staged): Promise<boolean> {
+  return await getText(window, window.names.staging_bucket,
+                       stagedName(bundlePrefix(run, staged.key), BUNDLE_INDEX)) !== null;
+}
+
+/** Each bundle index the staging bucket holds under `prefix`: its name, run and key. */
+async function stagedIndexes(window: Window, prefix: string):
+    Promise<{ name: string; run: string; key: string }[]> {
+  return (await listKeys(window, window.names.staging_bucket, prefix)).flatMap((name) => {
+    const [run = "", key = "", ...part] = name.split("/");
+    return RUN.test(run) && HEX16.test(key) && part.join("/") === BUNDLE_INDEX
+      ? [{ name, run, key }] : [];
+  });
+}
+
+/**
+ * `wipe`: each owner whose index is still staged discarded (its namespace kept in the record,
+ * so a run again proves it too), then the rehearsal's `o:` records and the staging prefix
+ * deleted, then each listing read and proved empty. It refuses first, changing nothing, while
+ * the run's staging holds an index its `out` names no bundle of (the run bundled again, on a
+ * new host, since it staged it): deleting it would leave that owner's data with no index, so
+ * `close` would read it as discarded.
  */
 export async function wipe(out: string, run: string, window: Window, recordFile: string,
                            print: (line: string) => void): Promise<WipeProof> {
   checkRun(run);
   const bundles = bundlesIn(out);
   const record = readRecord(recordFile, run);
+  const named = new Set(bundles.map((staged) => staged.key));
+  const unnamed = (await stagedIndexes(window, `${run}/`)).filter(({ key }) => !named.has(key));
+  if (unnamed.length > 0) {
+    throw new Error(`run ${run} stages ${unnamed.length} bundle index(es) its bundles do not ` +
+                    "name: nothing is discarded or deleted (admit or discard each from the " +
+                    "bundles that staged it)");
+  }
   const queue = await queueId(window.inputs, window.fetcher, QUEUES.IMPORTS);
   for (const [n, staged] of bundles.entries()) {
-    if (record.discarded[staged.key]?.bundle === staged.bundle) {
-      continue;  // discarded on an earlier run: its staging may be gone already
+    if (!await indexStaged(window, run, staged)) {
+      continue;
     }
     const answer = await ask(window, queue, askOf(staged, run, "discard",
                                                   window.inputs.importKey));
@@ -357,11 +397,11 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
     print(`bundle ${n + 1} of ${bundles.length}: discarded`);
   }
   const directory = await directoryId(window);
-  const cloudflare = cloudflareOf(window.inputs, window.fetcher);
-  const prefix = `o:rehearsal-${run}-`;
+  const cloudflare = cloudflareOf(window.inputs.apiToken, window.fetcher);
+  const prefix = `${OWNER_ENTRY}rehearsal-${run}-`;
   // The run's own records: a run whose id extends this one's (`r1-x` of `r1`) shares the prefix.
   const runs = async () => (await cloudflare.keys(window.inputs.account, directory, prefix))
-    .filter((key) => rehearsalRun(key.slice(2)) === run);
+    .filter((key) => rehearsalRun(key.slice(OWNER_ENTRY.length)) === run);
   await cloudflare.deleteKeys(window.inputs.account, directory, await runs());
   const staging = window.names.staging_bucket;
   for (const key of await listKeys(window, staging, `${run}/`)) {
@@ -383,6 +423,70 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
   return proof;
 }
 
+/** What the close found: every staged owner, and those left by run and ordinal. */
+export interface CloseSummary {
+  readonly owners: number;
+  readonly left: readonly string[];
+}
+
+/**
+ * `close`: every bundle index in the staging bucket, of every run, read for its owner, and
+ * held to the directory's `o:` listing, the one the rotation sweeps. An index no longer staged
+ * is a discarded owner's (`wipe`). Each owner left is named by its run and its ordinal among
+ * the run's staged indexes, by key (the run's `out`'s order); nothing is written or deleted.
+ */
+export async function close(window: Window, print: (line: string) => void):
+    Promise<CloseSummary> {
+  const staging = window.names.staging_bucket;
+  const runs = new Map<string, string[]>();
+  for (const { name, run } of await stagedIndexes(window, "")) {
+    runs.set(run, [...runs.get(run) ?? [], name]);
+  }
+  const listed = new Set(await cloudflareOf(window.inputs.apiToken, window.fetcher)
+    .keys(window.inputs.account, await directoryId(window), OWNER_ENTRY));
+  const left: string[] = [];
+  let owners = 0;
+  for (const [run, indexes] of [...runs].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    for (const [n, name] of indexes.sort().entries()) {
+      const text = await getText(window, staging, name);
+      const owner = text === null ? null : (JSON.parse(text) as { owner?: unknown }).owner;
+      if (text !== null && typeof owner !== "string") {
+        throw new Error(`run ${run}'s staged index ${n + 1} names no owner: nothing is closed`);
+      }
+      owners += owner === null ? 0 : 1;
+      if (owner !== null && !listed.has(`${OWNER_ENTRY}${owner}`)) {
+        const line = `run ${run}, bundle ${n + 1} of ${indexes.length}: left, staged and not ` +
+          "admitted";
+        left.push(line);
+        print(line);
+      }
+    }
+  }
+  print(left.length === 0
+    ? `every one of the ${owners} staged owners is admitted, and every other discarded: the ` +
+      "window may close"
+    : `${left.length} of ${owners} staged owners are neither admitted nor discarded: the ` +
+      "window stays open (admit each, in this run or a later one, or wipe a rehearsal's run)");
+  return { owners, left };
+}
+
+/**
+ * The window closed: the doors' `IMPORT_KEY` deleted with the doors' own token, then their
+ * secret listing read back without it, so the kit's rotation may run (`deploy.ts`
+ * `rotationNamespaces`). The workflow runs it on its runner, for the real window alone, once
+ * the host's `close` passed.
+ */
+export async function unkey(cloudflare: Cloudflare, account: string, doors: string,
+                            print: (line: string) => void): Promise<void> {
+  if ((await cloudflare.secrets(account, doors)).includes(IMPORT_KEY)) {
+    await cloudflare.deleteSecret(account, doors, IMPORT_KEY);
+    if ((await cloudflare.secrets(account, doors)).includes(IMPORT_KEY)) {
+      throw new Error(`${doors} still lists ${IMPORT_KEY} after its deletion: the window is open`);
+    }
+  }
+  print(`${doors} holds no ${IMPORT_KEY}: the import window is closed`);
+}
+
 /** What the dead-letter queue held, by bundle ordinal and op. */
 export interface DeadLetters {
   readonly messages: number;
@@ -400,7 +504,7 @@ export async function deadLetters(window: Window, out: string | null, run: strin
     Promise<DeadLetters> {
   const dead = window.names.dead_letter_queue;
   const queue = await queueId(window.inputs, window.fetcher, dead);
-  const cloudflare = cloudflareOf(window.inputs, window.fetcher);
+  const cloudflare = cloudflareOf(window.inputs.apiToken, window.fetcher);
   const account = window.inputs.account;
   const consumers = await cloudflare.consumers(account, queue);
   if (consumers.some((type) => type !== "http_pull")) {

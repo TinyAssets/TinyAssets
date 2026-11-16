@@ -10,8 +10,9 @@
  * rclone's environment alone), the copy's refusals (a digest that is not the manifest's, a
  * disk without room for the copy or the bundles, a work folder not the host's own), the run's
  * one Node, what a networked job sees, the host's lock, the off-site copy (the window's alone,
- * read back and held to the manifest, the primary store unchanged), and the output's
- * discipline (counts alone: no principal, no owner key, no path of the copy, and a withheld
+ * read back and held to the manifest, the primary store unchanged), the close (the doors' key
+ * deleted after a real window's close alone, with the doors' own token, never the host's),
+ * and the output's discipline (counts alone: no principal, no owner key, no path of the copy, and a withheld
  * output never printed).
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -238,13 +239,27 @@ describe("the dispatch's gate, the workflow's first step", () => {
         expect(gate({ MODE: mode }, without(name)).out).toContain(`needs the secret(s) ${name},`);
       }
     }
-    // The account is the repository variable, held to its shape; no deploy-kit token is read.
+    // A real window's close needs the doors' token, for the key; a rehearsal's none.
+    const shut = { MODE: "close", REHEARSAL: "false", CONFIRM: "window-r1" };
+    expect(gate(shut).out).toContain("needs the secret(s) IMPORT_DOORS_API_TOKEN, which");
+    expect(gate(shut, { ...SECRETS, IMPORT_DOORS_API_TOKEN: "doors-token-value-11" }).status)
+      .toBe(0);
+    expect(gate(shut, { ...SECRETS, IMPORT_DOORS_API_TOKEN: "doors-token-value-11 " }).out)
+      .toContain("credential(s) IMPORT_DOORS_API_TOKEN hold a space");
+    expect(gate({ MODE: "close" }).status).toBe(0);
+    expect(gate({ MODE: "close" }, without("IMPORT_KEY")).out)
+      .toContain("needs the secret(s) IMPORT_KEY,");
+    // The account is the repository variable, held to its shape.
     expect(gate({ MODE: "verify" }, without("CLOUDFLARE_ACCOUNT_ID")).out)
       .toContain("needs the secret(s) CLOUDFLARE_ACCOUNT_ID,");
     expect(gate({ MODE: "verify" }, { ...SECRETS, CLOUDFLARE_ACCOUNT_ID: "not-an-account" }).out)
       .toContain("refused: the repository variable CLOUDFLARE_ACCOUNT_ID is no 32-hex account id");
     expect(steps[0]!.env!["CLOUDFLARE_ACCOUNT_ID"]).toBe("${{ vars.CLOUDFLARE_ACCOUNT_ID }}");
+    // No token of the deploy kit's is read; the doors' token by the gate and the key's step.
     expect(JSON.stringify(WORKFLOW)).not.toContain("secrets.CLOUDFLARE_API_TOKEN");
+    expect(steps.filter((each) => JSON.stringify(each).includes("secrets.IMPORT_DOORS_API_TOKEN"))
+      .map((each) => each.name)).toEqual(["Refuse a run this dispatch may not make",
+                                          "Close the window, the doors' IMPORT_KEY deleted"]);
     const offsite = gate({ MODE: "offsite", REHEARSAL: "false", CONFIRM: "window-r1" },
                          without("IMPORT_SPACES_ACCESS_KEY_ID", "IMPORT_R2_SECRET_ACCESS_KEY"));
     expect(offsite.out).toContain(
@@ -260,7 +275,8 @@ describe("the dispatch's gate, the workflow's first step", () => {
 
   it("refuses a mode's credential pasted with a trailing CR or space, or a line break, by name", () => {
     const without = (name: string) => ({ ...SECRETS, [name]: "" });
-    const MODES = ["census", "bundle", "stage", "verify", "wipe", "admit", "dlq", "offsite", "clean"];
+    const MODES = ["census", "bundle", "stage", "verify", "wipe", "admit", "dlq", "close", "offsite",
+                   "clean"];
     const LISTS = ["DO_SSH_KEY", "IMPORT_EXCLUSION_LIST"];
     let checked = 0;
     for (const mode of MODES) {
@@ -293,7 +309,7 @@ describe("the dispatch's gate, the workflow's first step", () => {
     }
     // Every one-line credential of every mode: the DO token and the reserved IP in each, and
     // the modes' own.
-    expect(checked).toBe(3 * (2 * 9 + 2 + 5 * 5 + 5));
+    expect(checked).toBe(3 * (2 * 10 + 2 + 5 * 6 + 5));
   });
 });
 
@@ -336,6 +352,7 @@ describe("the run step, its ssh faked", () => {
     expect(run({ MODE: "offsite", REHEARSAL: "false" }).stdin)
       .toContain("STDIN spid-v\nspsec-v\nacct-v\nr2id-v\nr2sec-v\n");
     expect(run({ MODE: "clean" }).stdin).toMatch(/STDIN \n/);
+    expect(run({ MODE: "close" }).stdin).toContain("STDIN acct-v\nr2id-v\nr2sec-v\ntok-v\nkey-v");
     // root on the import host by its reserved IP, its key pinned, never the droplet's sudo.
     for (const line of rehearsal.args.split("\n")) {
       expect(line).toContain("-o StrictHostKeyChecking=yes");
@@ -347,6 +364,46 @@ describe("the run step, its ssh faked", () => {
       expect(rehearsal.args).not.toContain(value);
       expect(rehearsal.out).not.toContain(value);
     }
+  });
+});
+
+describe("the key's step, after the host's close", () => {
+  const steps = WORKFLOW.jobs.window.steps as { name?: string; if?: string; run?: string;
+                                                env?: Record<string, string> }[];
+  const at = steps.findIndex((each) => each.name === "Close the window, the doors' IMPORT_KEY deleted");
+  const key = steps[at]!;
+
+  it("runs for the real window's close alone, after the host's close passed", () => {
+    expect(at).toBeGreaterThan(steps.findIndex((each) =>
+      each.name === "Run the step on the import host"));
+    expect(key.if!.replace(/\s+/g, " ").trim()).toBe(
+      "inputs.mode == 'close' && inputs.rehearsal == false && steps.run.outcome == 'success'");
+    expect(key.env).toEqual({ CLOUDFLARE_ACCOUNT_ID: "${{ vars.CLOUDFLARE_ACCOUNT_ID }}",
+                              IMPORT_DOORS_API_TOKEN: "${{ secrets.IMPORT_DOORS_API_TOKEN }}" });
+  });
+
+  it("hands the job the account and the doors' token on its stdin alone", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ta-window-key-"));
+    temps.push(dir);
+    const log = join(dir, "node.log");
+    const fake = join(dir, "bin");
+    mkdirSync(fake);
+    writeFileSync(join(fake, "node"), "#!/bin/sh\nprintf 'ARGS %s\\n' \"$*\" >> \"$FAKE_LOG\"\n" +
+                  "printf 'STDIN %s\\n' \"$(cat)\" >> \"$FAKE_LOG\"\necho closed\n");
+    chmodSync(join(fake, "node"), 0o755);
+    writeFileSync(join(dir, "summary"), "");
+    const result = spawnSync("bash", ["-c", key.run!], {
+      encoding: "utf8", cwd: dir,
+      env: { PATH: `${fake}:/usr/bin:/bin`, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, "summary"),
+             FAKE_LOG: log, CLOUDFLARE_ACCOUNT_ID: "3c".repeat(16),
+             IMPORT_DOORS_API_TOKEN: "doors-token-v" } });
+    expect(result.status).toBe(0);
+    const calls = readFileSync(log, "utf8");
+    expect(calls).toContain(`ARGS platform/import/dist/import.mjs unkey --facts ${dir}/facts.json`);
+    expect(calls).toContain(`STDIN ${"3c".repeat(16)}\ndoors-token-v`);
+    expect(calls.split("\n").filter((line) => line.startsWith("ARGS")).join("\n"))
+      .not.toContain("doors-token-v");
+    expect(readFileSync(join(dir, "summary"), "utf8")).toBe("closed\n");
   });
 });
 
@@ -551,12 +608,13 @@ describe("the runner's guards, on a fake droplet", () => {
     h.window(["census", "f2", "rehearsal"]);
     const work = h.work("f2");
     mkdirSync(join(work, "bundle", "out"), { recursive: true });
-    for (const mode of ["stage", "verify", "dlq"]) {
+    for (const mode of ["stage", "verify", "dlq", "close"]) {
       h.window([mode, "f2", "rehearsal"], "a\nb\nc\nd\ne\n");
     }
     const networked = h.calls().filter((call) => call.startsWith("docker run")
                                                  && call.includes("--network bridge"));
-    expect(networked).toHaveLength(3);
+    expect(networked).toHaveLength(4);
+    expect(networked[3]).toMatch(/ -i \S+ node \S+ \S+ close --facts \S+\/facts\.json$/);
     for (const call of networked) {
       const mounts = [...call.matchAll(/-v (\S+)/g)].map((match) => match[1]);
       expect(mounts.filter((each) => each !== `${stage}:${stage}:ro`
@@ -727,7 +785,7 @@ describe("the host guard, on a fake import host", () => {
     const takes: [string, string, string[]][] = [
       ["census", "rehearsal", SOURCE],
       ["offsite", "window", [...SOURCE, "CLOUDFLARE_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"]],
-      ...["stage", "verify", "wipe", "admit", "dlq"].map((mode): [string, string, string[]] =>
+      ...["stage", "verify", "wipe", "admit", "dlq", "close"].map((mode): [string, string, string[]] =>
         [mode, "rehearsal", CREDENTIALS])];
     for (const [mode, kind, names] of takes) {
       const values = names.map((name, n) => `${name.toLowerCase()}-value-${n}`);

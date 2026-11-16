@@ -398,6 +398,13 @@ export class Cloudflare {
       .map((secret) => String(secret["name"]));
   }
 
+  /** The Worker `script`'s secret `name` deleted; any answer but success throws. */
+  async deleteSecret(account: string, script: string, name: string): Promise<void> {
+    await this.#ok(`deleting the secret ${name} of ${script}`,
+                   `/accounts/${account}/workers/scripts/${script}/secrets/${name}`,
+                   { method: "DELETE" });
+  }
+
   /**
    * The Worker `script` deleted, with the Durable Object namespaces it implements. Never
    * forced: Cloudflare refuses while another Worker still references it, and any answer but

@@ -14,9 +14,11 @@ name: Import window (manual)
 #   here, recorded as a tag and pinned on every dispatch. Nothing reaches the production
 #   droplet: the copy is read from the primary backup store with a read-only key.
 # - mode: census (makes the run's host and copy when it has none, then counts), bundle,
-#   stage, verify, wipe, admit, dlq, offsite (the real window alone: its final backup copied
-#   to the final backup's R2 bucket, deploy/platform.json's, and read back), or clean
-#   (unmount and delete the run's copy, then destroy its host).
+#   stage, verify, wipe, admit, dlq, close (the window's, of every run: every owner the staging
+#   bucket holds an index of admitted or discarded, else refused naming each; on the real
+#   window's pass, the doors' IMPORT_KEY deleted), offsite (the real window alone: its final
+#   backup copied to the final backup's R2 bucket, deploy/platform.json's, and read back), or
+#   clean (unmount and delete the run's copy, then destroy its host).
 # - run: the run's id, which keys its host, its work folder and its staging prefix, so
 #   census -> bundle -> stage -> verify -> wipe run against one copy over several dispatches.
 # - rehearsal: true by default, and then every owner is imported under its
@@ -32,9 +34,12 @@ name: Import window (manual)
 # DO_SSH_KEY, IMPORT_DO_TOKEN and IMPORT_RESERVED_IP for every mode;
 # IMPORT_SPACES_ACCESS_KEY_ID and IMPORT_SPACES_SECRET_ACCESS_KEY for census and offsite;
 # IMPORT_EXCLUSION_LIST for bundle; IMPORT_R2_ACCESS_KEY_ID and IMPORT_R2_SECRET_ACCESS_KEY for
-# stage, verify, wipe, admit, dlq and offsite, with IMPORT_CLOUDFLARE_API_TOKEN and IMPORT_KEY
-# for the first five. The Cloudflare account id, which is no secret, is the repository
-# variable CLOUDFLARE_ACCOUNT_ID, for those six; no token of the deploy kit's is read here.
+# stage, verify, wipe, admit, dlq, close and offsite, with IMPORT_CLOUDFLARE_API_TOKEN and
+# IMPORT_KEY for the first six. The Cloudflare account id, which is no secret, is the
+# repository variable CLOUDFLARE_ACCOUNT_ID, for those seven. IMPORT_DOORS_API_TOKEN, Editor on
+# the doors' Worker alone, is read for the real window's close alone, by the gate (that it is
+# there) and the key's step (the doors' IMPORT_KEY deleted, on this runner): never the host's.
+# No token of the deploy kit's is read here.
 # Each credential reaches the host on the SSH session's stdin. There, the job's reach the job
 # on its own stdin (`docker run -i`), and the Spaces and off-site R2 keys reach rclone alone,
 # in that one process's environment (window.sh): never an argument, an exported variable, a
@@ -50,11 +55,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'census | bundle | stage | verify | wipe | admit | dlq | offsite | clean'
+        description: 'census | bundle | stage | verify | wipe | admit | dlq | close | offsite | clean'
         required: true
         default: census
         type: choice
-        options: [census, bundle, stage, verify, wipe, admit, dlq, offsite, clean]
+        options: [census, bundle, stage, verify, wipe, admit, dlq, close, offsite, clean]
       run:
         description: "The run's id (lowercase letters, digits and dashes): its host, copy and staging"
         required: true
@@ -110,11 +115,12 @@ jobs:
           IMPORT_R2_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_R2_SECRET_ACCESS_KEY }}
           IMPORT_CLOUDFLARE_API_TOKEN: ${{ secrets.IMPORT_CLOUDFLARE_API_TOKEN }}
           IMPORT_KEY: ${{ secrets.IMPORT_KEY }}
+          IMPORT_DOORS_API_TOKEN: ${{ secrets.IMPORT_DOORS_API_TOKEN }}
         run: |
           set -euo pipefail
           refuse() { echo "::error::refused: $*"; exit 1; }
           case "${MODE}" in
-            census|bundle|stage|verify|wipe|admit|dlq|offsite|clean) ;;
+            census|bundle|stage|verify|wipe|admit|dlq|close|offsite|clean) ;;
             *) refuse "no such mode" ;;
           esac
           [[ "${RUN_ID}" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] \
@@ -134,13 +140,17 @@ jobs:
           case "${MODE}" in
             census) needed+=(IMPORT_SPACES_ACCESS_KEY_ID IMPORT_SPACES_SECRET_ACCESS_KEY) ;;
             bundle) needed+=(IMPORT_EXCLUSION_LIST) ;;
-            stage|verify|wipe|admit|dlq)
+            stage|verify|wipe|admit|dlq|close)
               needed+=(CLOUDFLARE_ACCOUNT_ID IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY
                        IMPORT_CLOUDFLARE_API_TOKEN IMPORT_KEY) ;;
             offsite)
               needed+=(IMPORT_SPACES_ACCESS_KEY_ID IMPORT_SPACES_SECRET_ACCESS_KEY
                        CLOUDFLARE_ACCOUNT_ID IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY) ;;
           esac
+          # The real window's close deletes the doors' IMPORT_KEY with the doors' own token.
+          if [ "${MODE}" = close ] && [ "${REHEARSAL}" != true ]; then
+            needed+=(IMPORT_DOORS_API_TOKEN)
+          fi
           missing=()
           for name in "${needed[@]}"; do
             [ -n "${!name:-}" ] || missing+=("${name}")
@@ -228,7 +238,7 @@ jobs:
       - name: Check its egress is the reserved IP
         if: >-
           steps.host.outputs.address != '' &&
-          contains(fromJSON('["census","stage","verify","wipe","admit","dlq","offsite"]'), inputs.mode)
+          contains(fromJSON('["census","stage","verify","wipe","admit","dlq","close","offsite"]'), inputs.mode)
         env:
           IMPORT_RESERVED_IP: ${{ secrets.IMPORT_RESERVED_IP }}
           MODE: ${{ inputs.mode }}
@@ -285,7 +295,7 @@ jobs:
               census)
                 printf '%s\n' "${IMPORT_SPACES_ACCESS_KEY_ID}" "${IMPORT_SPACES_SECRET_ACCESS_KEY}" ;;
               bundle) printf '%s\n' "${IMPORT_EXCLUSION_LIST}" ;;
-              stage|verify|wipe|admit|dlq)
+              stage|verify|wipe|admit|dlq|close)
                 printf '%s\n' "${CLOUDFLARE_ACCOUNT_ID}" "${IMPORT_R2_ACCESS_KEY_ID}" \
                   "${IMPORT_R2_SECRET_ACCESS_KEY}" "${IMPORT_CLOUDFLARE_API_TOKEN}" "${IMPORT_KEY}" ;;
               offsite)
@@ -312,6 +322,23 @@ jobs:
             echo "::error::the ${MODE} step ended ${status} (3: it does not hold yet; see its counts)"
             exit 1
           fi
+
+      - name: Close the window, the doors' IMPORT_KEY deleted
+        # The real window's close alone, once the host's close passed (any other end of that
+        # step fails the job before this one, and a skipped one leaves this skipped): every
+        # owner the import may have written is admitted or discarded, so the key goes, the
+        # window's steps end and the kit's rotation may run (i-window-close.md). The doors'
+        # token, on this runner alone; the job built above, from the same checkout.
+        if: >-
+          inputs.mode == 'close' && inputs.rehearsal == false && steps.run.outcome == 'success'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          IMPORT_DOORS_API_TOKEN: ${{ secrets.IMPORT_DOORS_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${CLOUDFLARE_ACCOUNT_ID}" "${IMPORT_DOORS_API_TOKEN}" \
+            | node platform/import/dist/import.mjs unkey --facts "${RUNNER_TEMP}/facts.json" \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Destroy the run's import host
         # After the host's own clean; or, with no clean, when the host is not to be reached (no

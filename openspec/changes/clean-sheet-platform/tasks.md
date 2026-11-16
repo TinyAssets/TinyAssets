@@ -192,8 +192,9 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
     are admitted empty. The old canary stays provisioned until the switch, since
     `deploy/deploy_fail_safe.sh` refuses a data-moving deploy without it.
 - [ ] **Step 12. Manifest phase 1:** `IMPORT_KEY` removed, since a replayed admit is accepted by
-  design; and R1, `deploy-worker.yml` deleted, so no routine deploy of the old proxy takes routes
-  back (d3 §J1: the proxy ends with no routes).
+  design, by the window's `close` alone, once every owner it staged is admitted or discarded
+  (`i-window-close.md`); and R1, `deploy-worker.yml` deleted, so no routine deploy of the old
+  proxy takes routes back (d3 §J1: the proxy ends with no routes).
 - [ ] **Step 13. `routes`, the handles canary, the platform's canary.** `identity.json`'s `host`
   is already `tinyassets.io` (d3 §H). Mode `routes` keeps its route record, then hands the
   routes over; the manifest disables `uptime-canary.yml` (d3 §J2), whose old canary scripts the
@@ -406,10 +407,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     founder's words, for `FILES_KEYRING` only after a second pass begun `KEEP_DAYS` + 1 days
     after the first copy night that followed the first (`r7-rotation.md` item 6;
     `r7-rotation-driver.md`).
-  - [ ] An imported owner whose admit never ran keeps its data and no `o:` record after the
-    window, so no rotation reaches it: the window's close checks every bundle is admitted or
-    discarded, the founder's decision in `r7-rotation-driver.md` item 8
-    (`untangle/i-window-close`).
+  - [x] An imported owner whose admit never ran keeps its data and no `o:` record after the
+    window, so no rotation reaches it: the window's `close` passes only when every bundle index
+    the staging bucket holds, of any run, names an owner the directory lists, and the real
+    window's pass alone deletes the doors' `IMPORT_KEY`, so `rotation`'s refusal holds until
+    then (the founder's B, `r7-rotation-driver.md` item 8; `untangle/i-window-close`,
+    `i-window-close.md`).
   - [x] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
     old-kid roots back and restarts the copy's expiry, so `retire`'s gate is read from that
     night (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`): `retire` reads the copy's
