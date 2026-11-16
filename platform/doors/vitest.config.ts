@@ -10,6 +10,7 @@ import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
 import { auxiliary, fake, fakeConfig, main, once, pool } from "../ci/workers";
 import { QUEUES } from "../contract/src/queue-names";
+import { AUTHKIT } from "./test/fake-providers";
 
 /** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), the doors' and the owner's. */
 const ROUTING_KEY = randomBytes(32).toString("base64url");
@@ -28,20 +29,6 @@ const OPERATOR_KEYRING = keyring();
  */
 const FAKE_PROVIDERS = join(PLATFORM, "doors", "test", "fake-providers.ts");
 const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
-/**
- * The owner's sign-in as the deploy kit configures it: the issuer and its `UPSTREAM` record
- * (`contract/src/signin.ts`), whose endpoints the fake AuthKit answers.
- */
-const ISSUER = "https://upstream.test";
-const UPSTREAM = JSON.stringify({
-  client_id: "client_fake",
-  authorization_endpoint: `${ISSUER}/authorize`,
-  token_endpoint: "https://api.workos.com/user_management/authenticate",
-  jwks_uri: `${ISSUER}/oauth2/jwks`,
-  token_issuer: "https://api.workos.com/user_management/client_fake",
-  user_delete: "https://api.workos.com/user_management/users/{sub}",
-  authorize_params: { provider: "authkit" },
-});
 /** The gate in front of the owner Worker's objects, which the doors' OWNER reaches. */
 const OWNER_GATE = "owner-gate";
 
@@ -50,8 +37,8 @@ export default defineConfig({
     projects: [
       // Runs in workerd: the doors' real entry (`src/index.ts`, the config's `main`), against
       // the config's own KV namespaces, flags, queues and service bindings. The owner's
-      // sign-in is the live one, configured as the deploy kit configures it (`ISSUER`,
-      // `UPSTREAM`): every fetch of the doors, as of the gateway, reaches the fake outside
+      // sign-in is the live one, configured as the deploy kit configures it (the fake
+      // `AUTHKIT`): every fetch of the doors, as of the gateway, reaches the fake outside
       // world (`test/fake-providers.ts`), which plays AuthKit too; PROVIDERS is the tests' own
       // way to it, to read back what it received. OWNER, which the config binds by
       // script_name, is the owner gate (`ci/gate.ts`), in front of the owner Worker's objects:
@@ -75,7 +62,7 @@ export default defineConfig({
           cloudflareTest(once(async () => pool(main(join(PLATFORM, "doors"), {
               durableObjects: { OWNER: { className: "OwnerDO", scriptName: OWNER_GATE,
                                          useSQLite: true } },
-              bindings: { OWNER_ISSUER: ISSUER, UPSTREAM, ROUTING_MAC_KEY: ROUTING_KEY,
+              bindings: { ...AUTHKIT, ROUTING_MAC_KEY: ROUTING_KEY,
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                           WORKOS_API_KEY: "test-client-secret", OPERATOR_KEYRING,
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },

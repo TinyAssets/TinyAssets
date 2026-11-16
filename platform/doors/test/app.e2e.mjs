@@ -31,23 +31,17 @@ import { installed } from "../../ci/deps.ts";
 import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts";
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
+import { AUTHKIT } from "./fake-providers.ts";
 
 installed();
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ORIGIN = "https://tinyassets.io";
 const EGRESS = "https://egress.tinyassets.io";
-const UPSTREAM = "https://upstream.test";
+const UPSTREAM = AUTHKIT.OWNER_ISSUER;
 const SOURCE_AUTH = "https://auth.test";
-/** The sign-in's record, as the deploy kit writes it, its endpoints the fake AuthKit's. */
-const UPSTREAM_RECORD = JSON.stringify({
-  client_id: "client_fake", authorization_endpoint: `${UPSTREAM}/authorize`,
-  token_endpoint: "https://api.workos.com/user_management/authenticate",
-  jwks_uri: `${UPSTREAM}/oauth2/jwks`,
-  token_issuer: "https://api.workos.com/user_management/client_fake",
-  user_delete: "https://api.workos.com/user_management/users/{sub}",
-});
-/** The hosts the doors' sign-in reaches: the fake AuthKit's (`fake-providers.ts`). */
-const AUTHKIT = ["api.workos.com", "upstream.test"];
+/** The hosts the doors' sign-in reaches, the fake AuthKit's: its record's token and JWKS. */
+const { token_endpoint: TOKEN_AT, jwks_uri: JWKS_AT } = JSON.parse(AUTHKIT.UPSTREAM);
+const AUTHKIT_HOSTS = [TOKEN_AT, JWKS_AT].map((at) => new URL(at).hostname);
 const WHO = `user_${randomBytes(16).toString("hex")}`;
 /**
  * The hand-off hosts' Worker: the identity provider signs `WHO` in at once, its code the
@@ -98,7 +92,7 @@ async function doors() {
       // The doors' harness Worker, with everything the doors' config gives it (`auxiliary`):
       // its secrets are the test's, none read from the host.
       await auxiliary(DOORS, {
-        bindings: { OWNER_ISSUER: UPSTREAM, UPSTREAM: UPSTREAM_RECORD,
+        bindings: { ...AUTHKIT,
                     ROUTING_MAC_KEY: routingKey, WORKOS_API_KEY: "test-client-secret",
                     E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                     OPERATOR_KEYRING: newKeyring() },
@@ -110,7 +104,7 @@ async function doors() {
         // leaves the doors.
         outboundService: async (request) => request.url === webClient
           ? mf.dispatchFetch(webClient)
-          : AUTHKIT.includes(new URL(request.url).hostname)
+          : AUTHKIT_HOSTS.includes(new URL(request.url).hostname)
             ? (await mf.getWorker(providers.name)).fetch(request)
             : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
       }, "test/e2e-entry.ts"),

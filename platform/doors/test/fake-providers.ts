@@ -40,6 +40,27 @@
  * It is test code: its module state (the log, the signing key, the deletions) is the fake's
  * own.
  */
+
+/** The owner issuer the fake AuthKit stands for; the browser alone visits it. */
+const ISSUER = "https://upstream.test";
+/**
+ * The doors' sign-in bindings whose endpoints the fake AuthKit below answers, as the deploy
+ * kit sets them: the issuer and its `UPSTREAM` record (`contract/src/signin.ts`). The doors'
+ * suite and the browser test configure the doors with them.
+ */
+export const AUTHKIT = Object.freeze({
+  OWNER_ISSUER: ISSUER,
+  UPSTREAM: JSON.stringify({
+    client_id: "client_fake",
+    authorization_endpoint: `${ISSUER}/authorize`,
+    token_endpoint: "https://api.workos.com/user_management/authenticate",
+    jwks_uri: `${ISSUER}/oauth2/jwks`,
+    token_issuer: "https://api.workos.com/user_management/client_fake",
+    user_delete: "https://api.workos.com/user_management/users/{sub}",
+    authorize_params: { provider: "authkit" },
+  }),
+});
+
 const log: unknown[] = [];
 const cancelled = new Set<string>();
 /** The client metadata documents a test published, by URL. */
