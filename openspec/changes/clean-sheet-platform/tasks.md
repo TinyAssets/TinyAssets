@@ -392,11 +392,19 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     night (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`): `retire` reads the copy's
     restore record (`deploy:offsite:restore`) and draws the gate from the first pass that swept
     and began after it, and needs no second pass (`r8-retire-gate.md`).
-  - [ ] R8, restore from the off-account copy and its monthly drill
+  - [x] R8, restore from the off-account copy and its monthly drill
     (`untangle/r8-copy-restore`): every write from the copy into R2 puts the restore record
     before its first byte, in the kit's concurrency group (`r8-retire-gate.md` item 3), and
     every erasure the copy can't show is applied before any owner is restored (`r4.md`
-    item 13).
+    item 13): mode `copyback`, one owner's namespace as its own object names it, so the doors'
+    erasure records refuse an erased owner first, and only the objects a row of it names
+    (`restore.names`), so nothing its own collection deleted comes back; and the monthly
+    drill, read-only, on the whole bucket (`r8-copy-restore.md`).
+  - [ ] A lost object, or every owner after an account loss, restored from the copy: `locate`
+    and an erasure record that survives the account: option A, a marker per erased namespace
+    in the files bucket (`r8-copy-restore.md` item 5; `untangle/r8-account-loss`).
+  - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
+    key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
     (`live:` after `untangle/r7-rotation-driver`).
   - [x] `restore.wipe`, a live owner brought to pending and empty for a restore, the

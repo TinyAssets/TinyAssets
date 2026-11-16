@@ -104,8 +104,8 @@ import { DELETE_BATCH, LOG_BYTES } from "../../contract/src/limits";
 import type { ChunkStore, ManifestRoot } from "../../contract/src/files";
 import { remigrate } from "../../contract/src/migrate";
 import type {
-  RestoreAnswer, RestoreBeginRequest, RestoreHold, RestorePinRequest, RestoreSource,
-  RestoreWipeRequest,
+  RestoreAnswer, RestoreBeginRequest, RestoreHold, RestoreNames, RestoreNamesRequest,
+  RestorePinRequest, RestoreSource, RestoreWipeRequest,
 } from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
 
@@ -920,7 +920,7 @@ export interface RestoreDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "sy
   readonly collections: Pick<Collections, "restored">;
   readonly connections: { secretsLost(): void };
   readonly egress: Pick<Egress, "end">;
-  readonly files: Pick<Files, "adoptSpace" | "check" | "chunksAfter" | "chunksPage" | "names"
+  readonly files: Pick<Files, "adoptSpace" | "check" | "chunksAfter" | "chunksFrom" | "chunksPage" | "names"
     | "restored" | "settled" | "storedNamespace" | "sweep">;
   readonly grants: { revokeAll(now: number): string[] };
   readonly inbound: Pick<Inbound, "disableAll">;
@@ -1172,5 +1172,32 @@ export const restoreDoors = Object.freeze({
     });
     await o.sync();
     return { released: true as const };
+  },
+  /**
+   * What a copy back from the off-account copy may write into this owner's namespace
+   * (`deploy/offsite.ts` `copyBack`), as the files plane's rule has it, every object in the
+   * bucket having a row first: the bucket name of each of `NAMES_ROWS` of its chunk rows, in
+   * any state but `deleting`, from the `from`th in hash order, and every finished generation
+   * it holds. So a chunk the owner's own collection deleted or is deleting (garbage past its
+   * grace, a redaction's) is never written back. A read. Pages go by offset, so no hash leaves the object (the operator log
+   * keeps every answer): a row gone between two pages moves one past the next page's start,
+   * a name left out, never one added, and a run again finds it still lacking.
+   */
+  async restoreNames(o: RestoreDoorNeeds, door: Door<RestoreNamesRequest>): Promise<RestoreNames> {
+    const read = await o.door(() => {
+      const { r } = door.check();
+      const from = r.from;
+      if (typeof from !== "number" || !Number.isSafeInteger(from) || from < 0) {
+        throw new Refusal("invalid", "a page of names begins at a whole row (from >= 0)");
+      }
+      if (o.files.storedNamespace() === null) {
+        throw refused("the owner's object names no namespace");
+      }
+      return { hashes: o.files.chunksFrom(from, NAMES_ROWS + 1), from,
+               generations: o.backups.manifests().map(({ gen }) => gen) };
+    });
+    const page = read.hashes.slice(0, NAMES_ROWS);
+    return { chunks: await o.files.names(page), generations: read.generations,
+             next: read.hashes.length > NAMES_ROWS ? read.from + NAMES_ROWS : null };
   },
 });

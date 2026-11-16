@@ -241,6 +241,8 @@ export interface DoorRows {
     { readonly module: "restore"; readonly caller: "reserved"; readonly gate: "units" };
   readonly restoreRelease:
     { readonly module: "restore"; readonly caller: "reserved"; readonly gate: "units" };
+  readonly restoreNames:
+    { readonly module: "restore"; readonly caller: "reserved"; readonly gate: "units" };
   readonly egressOpen:
     { readonly module: "egress"; readonly caller: "egress"; readonly gate: "units" };
   readonly egressReserve:
@@ -636,6 +638,8 @@ export interface DoorMethods<H> {
   restoreWipe(binding: Binding, request: RequestIn<H, "restoreWipe">):
     Promise<AnswerIn<H, "restoreWipe">>;
   restoreRelease(binding: Binding): Promise<AnswerIn<H, "restoreRelease">>;
+  restoreNames(binding: Binding, request: RequestIn<H, "restoreNames">):
+    Promise<AnswerIn<H, "restoreNames">>;
   egressOpen(binding: Binding, request: RequestIn<H, "egressOpen">):
     Promise<AnswerIn<H, "egressOpen">>;
   egressReserve(binding: Binding, request: RequestIn<H, "egressReserve">):
