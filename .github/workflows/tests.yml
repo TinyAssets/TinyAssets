@@ -37,8 +37,8 @@ on:
     # SHA, so the aggregate's `always()` failed it as `structural=cancelled`
     # (every PR of 2026-11-04, #5407-#5416). One run per SHA.
     types: [opened, reopened, synchronize]
-  # The merge queue. `required-tests` and `slow-tests` are required checks, and
-  # a queue waits for every required check to report on the merge-group commit;
+  # The merge queue. `required-tests` is a required check, and a queue waits
+  # for every required check to report on the merge-group commit;
   # without this trigger nothing reports and every queued PR times out.
   merge_group:
     types: [checks_requested]
@@ -77,11 +77,12 @@ on:
   # acceptable for a merge gate, which is why `required-tests` is REQUIRED only
   # via `pull_request`, where the trigger is deterministic.
   #
-  # Accepted side effect: `required-tests` (and its shards) and `slow-tests`
-  # have no job-level `if:` that can skip them — the aggregate's `always()`
-  # cannot evaluate false — so they run on the schedule too. `heavy-tests` runs only what the required gate excludes; it is no longer a superset of
-  # `required-tests`, so that is duplicated work. It is deliberate — runners are
-  # free here, and the alternative is a job-level `if:` on the REQUIRED job.
+  # Accepted side effect: `required-tests` and its shards have no job-level
+  # `if:` that can skip them — the aggregate's `always()` cannot evaluate
+  # false — so they run on the schedule too, repeating the PR's run.
+  # (`heavy-tests` runs only what the required gate excludes, so it repeats
+  # nothing.) It is deliberate — runners are free here, and the alternative is
+  # a job-level `if:` on the REQUIRED job.
   #
   # That would fail OPEN, not closed. A skipped job reports
   # `conclusion=skipped`, and branch protection accepts a skipped required check
@@ -1055,42 +1056,3 @@ jobs:
           name: junit-heavy-tests
           path: junit-heavy.xml
           if-no-files-found: warn
-
-  slow-tests:
-    name: slow-tests
-    # Queue-only, like the shards above: skipped on the PR, run on the
-    # merge-group commit before anything lands.
-    if: github.event_name != 'pull_request'
-    # ubuntu-latest is 26.04. Playwright 1.58 has no chromium build for it,
-    # so this queue-only install fails before pytest. 24.04 is the image
-    # this pin matched until that rollout.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e '.[dev,browser]'
-          python -m playwright install --with-deps chromium
-      - name: Run slow/stress/race tests
-        env:
-          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-slow
-        run: |
-          mkdir -p "$TINYASSETS_DATA_DIR"
-          # Serial on purpose: these assert cross-process/locking behaviour and
-          # sharing a worker pool with them would test the pool, not the code.
-          # The shape prune removed every slow-marked test. Exit 5 means pytest
-          # collected nothing; every other failure still fails.
-          rc=0
-          pytest -m slow -q --no-header -rfE --durations=10 || rc=$?
-          if [ "$rc" = 5 ]; then
-            echo "::notice::no slow-marked tests in the shape-tagged suite"
-            rc=0
-          fi
-          exit "$rc"

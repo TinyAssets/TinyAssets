@@ -43,12 +43,7 @@ REQUIRED_CHECKS = (
     "Diff scope declared",
     "required-tests",
     "invariants",
-    "slow-tests",
 )
-# slow-tests is skipped on pull_request and re-run by the queue. The other
-# three run on the pull request; a skip there means the gate did not run.
-_SKIPPABLE = frozenset({"slow-tests"})
-_PASSING = frozenset({"SUCCESS", "SKIPPED"})
 TRUSTED_LOGIN = "jonnyton"
 
 _PR_QUERY = """query($owner:String!,$name:String!,$number:Int!){
@@ -99,12 +94,10 @@ def latest_conclusions(nodes: list[dict] | None) -> dict[str, str]:
     return {name: conclusion for name, (_, conclusion) in best.items()}
 
 
-def checks_green(conclusions: dict[str, str]) -> bool:
-    for name in REQUIRED_CHECKS:
-        allowed = _PASSING if name in _SKIPPABLE else frozenset({"SUCCESS"})
-        if conclusions.get(name) not in allowed:
-            return False
-    return True
+def not_green(conclusions: dict[str, str]) -> list[str]:
+    """The required checks that did not succeed; each runs on the pull request,
+    so a skip means it did not run."""
+    return [name for name in REQUIRED_CHECKS if conclusions.get(name) != "SUCCESS"]
 
 
 def skip_reason(
@@ -406,7 +399,7 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         in_queue=pr.get("mergeQueueEntry") is not None,
         capped=False,
         receipt=True,
-        green=checks_green(conclusions),
+        green=not not_green(conclusions),
         head_matches=not expect_head or expect_head == head,
     )
     if reason is None and _capped(repo, number):
@@ -429,12 +422,7 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
             ):
                 reason = "no review receipt for this head"
     if reason is not None:
-        missing = [
-            name for name in REQUIRED_CHECKS
-            if conclusions.get(name) not in (
-                _PASSING if name in _SKIPPABLE else frozenset({"SUCCESS"})
-            )
-        ]
+        missing = not_green(conclusions)
         extra = f" (not green: {', '.join(missing)})" if reason.startswith("required") else ""
         print(f"PR #{number}: not enqueued ({reason}){extra}.")
         return 0
