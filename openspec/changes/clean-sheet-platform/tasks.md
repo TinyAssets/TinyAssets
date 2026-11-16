@@ -252,10 +252,19 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
 - [x] `slow-tests`, which collected no test, left the ruleset and the classic branch
   protection (the founder, 2026-11-16, d3 §E4), then its job went (`untangle/slow-tests`,
   from `land/3`; `untangle-2026-11/slow-tests.md`).
-- [ ] The required checks' names are held four times: the ruleset, the classic branch
+- [x] The required checks' names are held four times: the ruleset, the classic branch
   protection, `docs/ops/merge-queue-ruleset.json` and `enqueue_merge.py` `REQUIRED_CHECKS`,
   and nothing ties them. One source, researched first (`untangle/required-checks`; found by
-  `untangle/slow-tests`).
+  `untangle/slow-tests`): the file; the job names and `enqueue-merge.yml` are held to it,
+  `enqueue_merge.py` reads it and stops while the live rules differ; the classic copy goes
+  with a host-actions row (`untangle-2026-11/required-checks.md`).
+- [ ] `required-tests shard 2/6` takes 25 to 28 minutes of its 30-minute watchdog on the
+  merge group (runs 43769559562, 43940676068), and `required-tests` reports at about 29 of
+  the queue's 35-minute check timeout; the other shards take 6 to 11 (`untangle/shard-2-time`;
+  found by `untangle/required-checks`).
+- [ ] `main_red.py` `REQUIRED_JOB` and `queue_attempts.py` `AGGREGATE_JOB` name the Tests
+  aggregate by its job name, and nothing ties them to `tests.yml`: a rename leaves main-red
+  reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
   one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
 

@@ -463,50 +463,18 @@ def test_non_pr_runs_never_cancel_or_queue_behind_each_other() -> None:
     )
 
 
-def test_required_tests_job_name_matches_the_protection_context() -> None:
-    """Renaming this job orphans the required context and blocks every PR.
-
-    It does not fail open: the old context stays "Expected — waiting for
-    status" forever.
-    """
-    assert _load()["jobs"]["required-tests"]["name"] == "required-tests"
-
-
 def test_required_tests_cannot_decline_to_report() -> None:
     """The required check must always produce a real conclusion.
 
-    Two different failure modes, and they fail in OPPOSITE directions:
-
-    * A `paths:`/`paths-ignore:` filter on the trigger can stop the workflow
-      from running at all. Then no check is ever reported and branch protection
-      waits on "Expected — waiting for status" FOREVER — every PR wedged.
-    * A job-level `if:` does NOT do that. A skipped job reports
-      `conclusion=skipped`, which branch protection accepts as satisfied — so a
-      mistaken condition FAILS OPEN and silently merges untested code. Verified
-      empirically 2026-08-03: the scheduled tripwire (`full-tests` then,
-      `heavy-tests` now) carries a job-level `if:` and
-      reported `COMPLETED/SKIPPED` on PR #2197, not pending.
-
-    Fail-open is the more dangerous of the two, which is why the required job
-    gets neither.
+    A job-level `if:` that skips it reports `conclusion=skipped`, which
+    branch protection accepts as satisfied — so a mistaken condition FAILS
+    OPEN and silently merges untested code. Verified empirically 2026-08-03:
+    the scheduled tripwire (`full-tests` then, `heavy-tests` now) carries a
+    job-level `if:` and reported `COMPLETED/SKIPPED` on PR #2197, not
+    pending. Its name and triggers are every required check's
+    (`platform/ci/guards/required-checks.test.ts`).
     """
     wf = _load()
-    triggers = _triggers(wf)
-    # Asserted separately: `.get("pull_request") or {}` treats a MISSING
-    # pull_request trigger as an unfiltered one, so deleting the trigger
-    # outright would have passed the filter checks below.
-    assert "pull_request" in triggers, (
-        "the required check must be triggered by `pull_request` at all — "
-        "without it no check is ever reported and every PR hangs on "
-        "'Expected — waiting for status'"
-    )
-    pr_trigger = triggers.get("pull_request") or {}
-    for key in ("paths", "paths-ignore"):
-        assert key not in pr_trigger, (
-            f"`{key}:` on the required check's trigger stops the workflow from "
-            f"running on out-of-scope PRs, and the required context then hangs "
-            f"on 'Expected — waiting for status' forever"
-        )
     # The aggregate is the one exception, and it is forced rather than
     # allowed: it `needs` the shards, and a job whose need failed is SKIPPED
     # unless its condition says otherwise -- so with no `if:` a red shard would
@@ -550,7 +518,6 @@ def test_required_tests_cannot_decline_to_report() -> None:
         "shards skip ONLY on pull_request; any other condition could skip the "
         "merge-queue run, which is the one that gates main"
     )
-    assert "merge_group" in triggers, "without merge_group the shards never run at all"
     agg_steps = wf["jobs"]["required-tests"]["steps"]
     # Two verdict steps now -- whole surface and selection -- and they must
     # PARTITION every non-PR event. If a non-PR event could match neither, the
@@ -700,15 +667,6 @@ def test_every_shard_count_declaration_agrees() -> None:
     assert d["matrix"] == list(range(1, n + 1)), d
     assert int(d["expect"][0]) == n, d
     assert int(d["name"][0]) == n, d
-
-
-def test_only_the_aggregate_carries_the_protection_context() -> None:
-    """A shard named `required-tests` would let one green shard satisfy it."""
-    jobs = _load()["jobs"]
-    shard_name = str(jobs["required-tests-shard"]["name"])
-    assert shard_name.startswith("required-tests shard "), shard_name
-    names = [str(j.get("name", k)) for k, j in jobs.items()]
-    assert names.count("required-tests") == 1
 
 
 def test_aggregate_waits_for_every_shard_and_reads_their_results() -> None:

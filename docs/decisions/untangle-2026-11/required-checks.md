@@ -1,0 +1,26 @@
+# required-checks as built (2026-11-16)
+
+The merge queue's required checks (`Diff scope declared`, `required-tests`, `invariants`) were held by the live ruleset 24065294, the classic branch protection on `main`, `docs/ops/merge-queue-ruleset.json`, `enqueue_merge.py` `REQUIRED_CHECKS` and the workflows' job names, with nothing tying them (`slow-tests.md` item 4).
+
+1. **Research.** Every place that names a required check as a check, not as a job read for its own results:
+   - live: the ruleset and the classic protection (both read back from the API before this change, both the three checks);
+   - the file, `enqueue_merge.py`, and the jobs: `pr-scope-guard.yml` `scope`, `tests.yml` `required-tests`, `invariants.yml` `invariants`;
+   - `enqueue-merge.yml` `workflow_run.workflows`, which names the three workflows that hold those jobs;
+   - stale copies: `auto-enroll-merge.yml` still named `policy` and `strict`, both gone; `tests.yml`'s comment sent a rename to ADR-003's classic `gh api` commands, whose contexts are the 2026-08 set;
+   - tests that held one name each: `test_required_tests_job_name_matches_the_protection_context`, the `count("required-tests") == 1` in `test_only_the_aggregate_carries_the_protection_context`, and `test_not_the_required_context` in the real-browser and linux-jail workflow tests. The `merge_group` trigger was held for `tests.yml` alone, since `test_merge_queue_triggers.py` went in #5182.
+   - `rerun_cancelled_required.py` already asks GitHub (`isRequired`), so it holds no copy.
+   - **Found:** the file had already drifted from the live ruleset: `max_entries_to_build` 5 against 6, `check_response_timeout_minutes` 60 against 35, and no `do_not_enforce_on_create`. Nothing read those fields, so nothing noticed.
+   - **Found:** the premise that the live ruleset needs an admin token is true of the ruleset by id (its `bypass_actors`) and of the classic protection, but not of `GET /repos/{repo}/rules/branches/main`. That endpoint needs only metadata read (GitHub's REST docs), which every token has, and it returns every rule that applies to `main`.
+2. **The one source is the file**, the ruleset as the founder applies it. Everything else follows it or is checked against it, by one predicate each:
+   - `enqueue_merge.py` reads the required checks from the file; `REQUIRED_CHECKS` is no longer a list of its own.
+   - `platform/ci/guards/required-checks.test.ts`: each required check is the name of exactly one workflow job, whose workflow runs on the merge group and on a pull request with no path filter, and `enqueue-merge.yml` runs after exactly those workflows. A renamed, doubled or unqueued job fails it, and so does a listener left behind.
+   - **Live drift:** `enqueue_merge.py` reads the rules GitHub applies to `main` before judging any PR, and fails, enqueuing nothing, unless they are exactly the file's rules (each rule's type and parameters). So a ruleset edit made only on the Settings page is loud on the next run, and so is a file change not yet applied. It does not stop merges: auto-enroll's user-armed PRs enter the queue on their own; `enqueue-merge` exists for those a bot re-armed.
+   - **The classic copy goes** (host-actions row): it repeats the ruleset's checks and only an admin can read it, so nothing could hold it to the file. Its rule stays for no force push and no deletion.
+3. **Why not the live ruleset as the source, read at run time and in CI.** A guard that reads the network changes its answer with no change to the code, and the static ties (job names, the `workflow_run` list) then have nothing in the repo to hold to. The file is reviewed in the PR that changes a job, and the live read checks it.
+4. **Why the whole of `rules`, not only the checks.** Comparing all of it is one predicate with no picked fields, and it keeps the merge-queue parameters honest, which had drifted. The cost: a parameter edited live stops `enqueue-merge` until a PR copies it, so the host-actions row says to change the file first and apply it with `PUT`. The ruleset's name, conditions and bypass actors aren't in that read; applying the file with `PUT` is what keeps them in step.
+5. **The file now matches the live ruleset**: 6, 35, and `do_not_enforce_on_create: false`. The live values stand, since they are what GitHub enforces.
+6. **Deleted:** the four one-name tests above, and the trigger and path asserts in `test_required_tests_cannot_decline_to_report`, all now held for every required check by the guard. That test keeps its `if: always()` and its `needs`. Comments in `tests.yml`, `auto-enroll-merge.yml` and ADR-003 now point at the file.
+7. **Left, each with its own line in `tasks.md`:**
+   - `required-tests shard 2/6` takes 25 to 28 minutes of its 30-minute watchdog on the merge group, and `required-tests` reports at about 29 of the queue's 35 (`untangle/shard-2-time`).
+   - `main_red.py` and `queue_attempts.py` name the Tests aggregate by its job name to read its results. They follow `tests.yml`'s job, not the gate (`untangle/aggregate-name`).
+   - When `review` is pinned to its App, the check is posted by an App, not named by a job, and the guard's predicate changes in that PR (the host-actions row says so).
