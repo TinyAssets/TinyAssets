@@ -575,8 +575,8 @@ function readBack(b: Back, source: string, prefix: string, at: Date | null, io: 
 
 /**
  * What the owner's object names in its namespace (`restore.names`, `owner/src/restore.ts`
- * `restoreNames`): the bucket name of each chunk a row of it holds, in any state, and each
- * finished generation it holds.
+ * `restoreNames`): the bucket name of each chunk a row of it holds, in any state but
+ * `deleting`, and each finished generation it holds.
  */
 export interface Referenced {
   readonly chunks: ReadonlySet<string>;

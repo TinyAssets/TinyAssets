@@ -1675,6 +1675,9 @@ describe("what a copy back may write (restoreNames)", () => {
     expect([[...named.chunks].sort(), named.generations, named.pages])
       .toEqual([await bucketNames(o.stub, await rowHashes(o.stub)), [gen.gen], [null]]);
     expect([named.chunks.includes(na!), named.chunks.includes(ng!)]).toEqual([true, true]);
+    // Being deleted, its bytes may be gone already: named no more.
+    await sqlIn(o.stub, "UPDATE file_chunks SET state = 'deleting' WHERE sha256 = ?", hg!);
+    expect((await namedAll(o.stub, o.name)).chunks.includes(ng!)).toBe(false);
     // Its grace past, the owner's collection takes it: then it is named no more.
     await sqlIn(o.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", hg!);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/x`, expected_etag: null });

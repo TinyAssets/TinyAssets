@@ -1142,9 +1142,9 @@ export const restoreDoors = Object.freeze({
    * What a copy back from the off-account copy may write into this owner's namespace
    * (`deploy/offsite.ts` `copyBack`), as the files plane's rule has it, every object in the
    * bucket having a row first: the bucket name of each of `NAMES_ROWS` of its chunk rows, in
-   * any state, from the `from`th in hash order, and every finished generation it holds. So a
-   * chunk the owner's own collection deleted (garbage past its grace, a redaction's) is never
-   * written back. A read. Pages go by offset, so no hash leaves the object (the operator log
+   * any state but `deleting`, from the `from`th in hash order, and every finished generation
+   * it holds. So a chunk the owner's own collection deleted or is deleting (garbage past its
+   * grace, a redaction's) is never written back. A read. Pages go by offset, so no hash leaves the object (the operator log
    * keeps every answer): a row gone between two pages moves one past the next page's start,
    * a name left out, never one added, and a run again finds it still lacking.
    */

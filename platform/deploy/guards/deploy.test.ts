@@ -3153,7 +3153,6 @@ describe("mode copyback", () => {
   /** The copy back's settings. */
   const BACK = Object.fromEntries([...BACK_INPUTS.public, ...BACK_INPUTS.secret]
     .map((name) => [name, ENV[name]!]));
-  /** The doors answering restore.source as an object holding `namespace`, or an erased one. */
   /**
    * The doors answering restore.source as an object holding `namespace`, or an erased one, and
    * restore.names in two pages: the chunk `2` and the generation `3`, then nothing more.
