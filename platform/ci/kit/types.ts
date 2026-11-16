@@ -30,6 +30,7 @@ const WIDTH = 100;
 
 interface ServiceClass {
   readonly source: string;
+  /** The interface it implements, as `<contract module>#<name>`. */
   readonly contract: string;
   readonly args?: readonly string[];
 }
@@ -119,7 +120,7 @@ function contractType(table: Services, folder: string, name: string, imports: Im
     throw new Error(`${what} reaches ${folder}'s ${name}, which contract/services.json does ` +
                     "not type");
   }
-  const type = imports.add(`${contract}/${folder}`, entry.contract);
+  const type = imports.ref(entry.contract, contract);
   const args = (entry.args ?? []).map((arg) => imports.ref(arg, contract));
   return args.length === 0 ? type : `${type}<${args.join(", ")}>`;
 }
