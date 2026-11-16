@@ -231,11 +231,16 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 Each in its own PR, taking the next free slot, never behind product work; the product lanes
 keep running (the untangle skill's "Process first", founder 2026-11-15).
 
-- [ ] P2 in order: reviews posted as the App's `review` check reads them and seen green on a
-  real PR, then `review` required (in `docs/ops/merge-queue-ruleset.json`, with
-  `required-checks.test.ts` allowing a check an App posts), then the receipt half deleted,
-  with the ADR that every PR is reviewed by one check, superseding ADR-015's review line
-  (d3 §F4; `untangle/p2-review-gate`, from `land/7`).
+- [ ] P2 in order (d3 §F4; `untangle-2026-11/p2-review-gate.md`):
+  - [x] the verdict posted as a `COMMENT` PR review on the commit read, as the App's `review`
+    check reads it, and each decision one new check run, never an edit of one (an edit
+    GitHub refused had left a red "could not decide" on #5656); ADR-038 drafted
+    (`untangle/p2-review-gate`);
+  - [ ] the check seen green on a real PR (`live:` the first PR landed with its PR review);
+  - [ ] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
+    allowing a check an App posts, then the founder's `PUT` (`untangle/p2-review-required`);
+  - [ ] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
+    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`).
 - [ ] P6, process code in one place, research first: the scripts' tests beside them, the queue
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
   measured (`untangle/p6-process-code`).

@@ -7,14 +7,14 @@ from the root, touched `pytest` files, `check_shapes.py`,
 Each passes by exit code (`set -o pipefail`). After a red CI job, rerun only
 its failing tests.
 
-A receipt binds to the exact head (or its tree-diff). A trivial commit after
-review gets a one-round delta review, the reviewer told only that delta.
-Over 8 release-critical files (scope guard's count): look for a carried lineage.
-To land, comment the receipt on the PR and open the body with
+A receipt binds to the exact head (or its tree-diff). A commit after review
+gets a review of that delta alone.
+Over 8 release-critical files: look for a carried lineage.
+To land, post the verdict as a `COMMENT` PR review on the commit read, first
+line `APPROVE` or `BLOCK` (`review.yml`), comment the receipt, and open the body with
 `Drain-Review-Verdict: APPROVE`, `Drain-Review-Head: <sha>`, `Drain-Review-Artifact: <its URL>`;
-auto-enroll arms the merge. Until then `Diff scope declared` fails. Two
-counted queue failures on one head disarm auto-merge (`queue-handoff`): fix the head, or
-drop the label to retry.
+auto-enroll arms the merge. Two counted queue failures on one head disarm
+auto-merge (`queue-handoff`): fix the head, or drop the label to retry.
 
 | Gate | Entry point |
 |---|---|
