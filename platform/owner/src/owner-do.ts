@@ -254,9 +254,9 @@ export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail
 
 /**
  * The object's stores, as it wires them over its gate's units, from its env and its id: the
- * owner's admission and tier, policy, notices, change log, files, placed bodies, collections,
- * grants, sessions, keys, held registrations, ledger, nightly manifest (`backup.ts`) and
- * archive (`archive.ts`). The object builds its own with this, once; a test builds the same
+ * owner's admission and tier, policy, notices, files, placed bodies, collections, grants,
+ * sessions, keys, held registrations, ledger, nightly manifest (`backup.ts`, which alone holds
+ * the change log) and archive (`archive.ts`). The object builds its own with this, once; a test builds the same
  * over an object's own storage to reach a store directly. A file change tells the owner's
  * other modules through these stores (`FileReaction`), so every builder's tells them.
  */
@@ -300,7 +300,7 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
     syncIgnoreReaction({ policy, notices, grants, files,
                          agentsAt: (epoch, most) => agentsAt(storage, epoch, most) }),
   ]);
-  return { admission, policy, notices, log, files, bodies, collections, grants,
+  return { admission, policy, notices, files, bodies, collections, grants,
            sessions: new Sessions(storage), keys: new Keys(storage),
            registrations: new Registrations(storage, grants), ledger, backups, archive };
 }
