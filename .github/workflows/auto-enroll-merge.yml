@@ -9,9 +9,8 @@ name: Auto-enroll merge
 # This workflow does the enrolling. From here: open a PR, and when its required
 # checks go green GitHub merges it. No human step, no agent step.
 #
-# Safety is delegated to branch protection, which is the right place for it:
-#   - required checks `policy` and `Diff scope declared` must pass
-#   - `strict` means the branch must be current with main
+# Safety is delegated to the merge queue's ruleset, which is the right place for it:
+#   - every required check (docs/ops/merge-queue-ruleset.json) must pass
 #   - a PR that fails ANY required check simply never merges; enrolment is not a
 #     bypass, it is a standing instruction to merge WHEN allowed
 #
@@ -234,8 +233,8 @@ jobs:
             {
               echo "### Auto-merge"
               echo ""
-              echo "Enrolled. This PR will merge itself once required checks pass:"
-              echo "\`policy\` and \`Diff scope declared\`."
+              echo "Enrolled. This PR will merge itself once the required checks pass"
+              echo "(\`docs/ops/merge-queue-ruleset.json\`)."
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Could not enrol PR #${PR} — not fatal, leaving it to the humans:"
@@ -257,4 +256,5 @@ jobs:
 # The protection against a bad merge is entirely the required-check set, so those
 # checks are now load-bearing in a way they were not before. Weakening or removing
 # a required check silently widens what merges itself — treat changes to
-# `policy` or `Diff scope declared` as changes to the merge policy itself.
+# docs/ops/merge-queue-ruleset.json, or to a job it names, as changes to the merge
+# policy itself.
