@@ -920,7 +920,7 @@ export interface RestoreDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "sy
   readonly collections: Pick<Collections, "restored">;
   readonly connections: { secretsLost(): void };
   readonly egress: Pick<Egress, "end">;
-  readonly files: Pick<Files, "adoptSpace" | "check" | "chunksAfter" | "chunksPage" | "names"
+  readonly files: Pick<Files, "adoptSpace" | "check" | "chunksAfter" | "chunksFrom" | "chunksPage" | "names"
     | "restored" | "settled" | "storedNamespace" | "sweep">;
   readonly grants: { revokeAll(now: number): string[] };
   readonly inbound: Pick<Inbound, "disableAll">;
@@ -1183,7 +1183,7 @@ export const restoreDoors = Object.freeze({
    * keeps every answer): a row gone between two pages moves one past the next page's start,
    * a name left out, never one added, and a run again finds it still lacking.
    */
-  async restoreNames(o: OwnerState, door: Door<RestoreNamesRequest>): Promise<RestoreNames> {
+  async restoreNames(o: RestoreDoorNeeds, door: Door<RestoreNamesRequest>): Promise<RestoreNames> {
     const read = await o.door(() => {
       const { r } = door.check();
       const from = r.from;
