@@ -279,10 +279,10 @@ own pull request.
 - **WHEN** a pull request approved at its head is retargeted to another base, by hand or by GitHub after its parent merged
 - **THEN** its `review` check is pending until a review after the retarget
 
-#### Scenario: A decision updates the run in progress and never a completed one
+#### Scenario: Each decision posts one new run and never updates one
 - **WHEN** a head is decided again
-- **THEN** the review App updates its newest `review` run for that pull request on that head while that run is in progress, and posts a new run when none is in progress
-- **AND** it never updates a completed run, and treats an update whose answer lacks the status and conclusion it sent as not made
+- **THEN** the review App posts one new `review` run for that pull request on that head, carrying the decision, and updates no run that exists
+- **AND** a decision that stops before its verdict is posted posts a failed run instead
 
 #### Scenario: The latest run is the highest id
 - **WHEN** a head holds an older in-progress `review` run and a newer successful one, both by the App for the pull request
@@ -374,24 +374,6 @@ so an unattended session does not spawn visible windows.
 - **WHEN** a peer provider subprocess starts on Windows
 - **THEN** it is created with no new console
 
----
-
-## Retired capabilities (2026-08-26)
-
-The requirements below were removed because the machinery they describe was
-deleted by the harness reset, and `openspec/specs/` is **as-built** truth rather
-than intent. Keeping them would assert behaviour the system no longer has, which
-is worse than silence -- a reader cannot tell a stale requirement from a live one.
-
-| Retired | Why |
-|---|---|
-| STATUS claims / STATUS row lifecycle | `STATUS.md` retired 2026-08-25; live state moved to typed homes (`openspec/changes/`, `docs/concerns/`, `docs/host-actions.md`, git branches) |
-| Agent Village (2 requirements) | `command_center/` deleted -- it visualised a concurrent-agent fleet that no longer runs, and read the retired board |
-| OpenSpec drain (18 requirements) | `openspec_drain_supervisor.py` and its watchdog/tray deleted; autonomous background workers are out of scope under the two-provider decision. **Three behaviours in that block survived their machinery and were re-specified above** rather than retired with it: the exact-head review receipt (still enforced by `pr-scope-guard.yml`, `auto-enroll-merge.yml`, `scripts/drain_review_gate.py`), lane-local worktree dispatch (`scripts/peer_agent.py`), and consoleless provider launch. A blanket retirement of the block would have deleted live contracts -- caught by cross-family review 2026-08-26. |
-
-Recover any of it from git: the reset merged as `e4180697`, and this file's
-history holds the full text.
-
 ### Requirement: Fixes reach production through a reversible hotfix first
 
 Pushed fixes SHALL run affected tests at their exact head before hot-swapping eligible Python or daemon-served app assets. Floor-class fixes SHALL carry a corroborated Drain-Review APPROVE receipt for that head. Migrations, storage shape, dependencies, images and host services SHALL use normal deployment. Selection SHALL NOT hide an incompatible change elsewhere in the branch diff.
@@ -421,3 +403,21 @@ Pushed fixes SHALL run affected tests at their exact head before hot-swapping el
 - **THEN** it discovers running TinyAssets-image containers, patches each containing the file, and restarts those services
 - **AND** files present in the box harness are patched and boxhostd restarts, closing awake boxes so subsequent admission loads the updated harness
 - **AND** review uses the existing drain-review receipt requirement for every PR, with no private path exemptions
+
+---
+
+## Retired capabilities (2026-08-26)
+
+The requirements below were removed because the machinery they describe was
+deleted by the harness reset, and `openspec/specs/` is **as-built** truth rather
+than intent. Keeping them would assert behaviour the system no longer has, which
+is worse than silence -- a reader cannot tell a stale requirement from a live one.
+
+| Retired | Why |
+|---|---|
+| STATUS claims / STATUS row lifecycle | `STATUS.md` retired 2026-08-25; live state moved to typed homes (`openspec/changes/`, `docs/concerns/`, `docs/host-actions.md`, git branches) |
+| Agent Village (2 requirements) | `command_center/` deleted -- it visualised a concurrent-agent fleet that no longer runs, and read the retired board |
+| OpenSpec drain (18 requirements) | `openspec_drain_supervisor.py` and its watchdog/tray deleted; autonomous background workers are out of scope under the two-provider decision. **Three behaviours in that block survived their machinery and were re-specified above** rather than retired with it: the exact-head review receipt (still enforced by `pr-scope-guard.yml`, `auto-enroll-merge.yml`, `scripts/drain_review_gate.py`), lane-local worktree dispatch (`scripts/peer_agent.py`), and consoleless provider launch. A blanket retirement of the block would have deleted live contracts -- caught by cross-family review 2026-08-26. |
+
+Recover any of it from git: the reset merged as `e4180697`, and this file's
+history holds the full text.

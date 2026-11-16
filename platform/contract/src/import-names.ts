@@ -7,5 +7,5 @@
  */
 export const IMPORT_NAME_KEYS = Object.freeze(["staging_bucket", "dead_letter_queue",
                                                "files_bucket", "directory",
-                                               "final_backup_bucket"] as const);
+                                               "final_backup_bucket", "doors"] as const);
 export type ImportNames = Readonly<Record<(typeof IMPORT_NAME_KEYS)[number], string>>;

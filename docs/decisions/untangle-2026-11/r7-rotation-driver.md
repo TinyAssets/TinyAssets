@@ -28,7 +28,7 @@ Lane R's key rotation, PR 2 of two: the kit's driver over PR 1's answers and ops
    - **A.** A window step `close`, before `IMPORT_KEY` is deleted, that refuses unless every bundle's owner has an admitted `o:` record or a discard in the window's record, and discards, with the founder's words naming each, an owner left behind.
    - **B.** The same check, refusing only, with the owner left to be imported again in a later window.
    - **C.** The import writes a directory record of its own state (`imported`) at its first slice, which the rotation lists and the sign-in reads as never signed up: it changes the directory's meaning for every reader.
-   Owed: `untangle/i-window-close`, after the decision (`tasks.md`).
+   The founder chose B (2026-11-16); built as `i-window-close.md`.
 9. **Owed by PR 1's review: an owner a blob that no longer opens keeps above `left` 0.** From the code, three cases land in `owing`, so `retire` never passes while one exists (safe, but stuck):
    - a refused doorbell blob is counted left (`wakes.ts` `Doorbell.reseal`, PR 1's review);
    - a connection's blob the gateway refuses, counted left by `Connections.reseal`, the rest resealed;

@@ -26,6 +26,10 @@
 #   registry digest (public, so the rehearsal's and the window's can be compared) and keeps it
 #   in the work folder (`image`); every later mode of the run runs that digest alone, and
 #   refuses a copy that names none.
+# - close: the window's, of every run, from any run's host (the window's credentials leave
+#   through its reserved IP alone): every owner the staging bucket holds an index of, admitted
+#   or discarded, or exit 3 naming each left (r7-rotation-driver.md item 8). It writes nothing;
+#   the workflow deletes the doors' IMPORT_KEY after a real window's pass.
 # - Each job in `docker run --rm`, one folder writable for the step's output. The jobs without
 #   network see the work folder read-only at its own path (so the kernel's loop devices name
 #   its images); the modes that reach R2 and Queues see the bundles alone (bundle/out), never
@@ -48,7 +52,7 @@
 #   SOURCE_CREDENTIALS' order, then the off-site key (offsite) in OFFSITE_CREDENTIALS'; each
 #   refused by its name when it holds a space or a control character, and the run refused when
 #   a line follows the last (a credential that held a line break); the
-#   job's (stage, verify, wipe, admit, dlq) in CREDENTIALS' order, which reach only the job,
+#   job's (stage, verify, wipe, admit, dlq, close) in CREDENTIALS' order, which reach only the job,
 #   piped to its stdin (`docker run -i`), so they are in no argument, no container config
 #   (`docker inspect`), no environment and no file. The exclusion list (bundle) is stdin
 #   whole, piped to the job the same way.
@@ -100,7 +104,7 @@ run="${2:-}"
 kind="${3:-}"
 extra="${4:-}"
 case "$mode" in
-  census|bundle|stage|verify|wipe|admit|dlq|offsite|clean) ;;
+  census|bundle|stage|verify|wipe|admit|dlq|close|offsite|clean) ;;
   *) refuse "no such mode" ;;
 esac
 [[ "$run" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] \
@@ -158,7 +162,7 @@ network=none
 case "$mode" in
   census) take "${SOURCE_CREDENTIALS[@]}" ;;
   offsite) take "${SOURCE_CREDENTIALS[@]}" "${OFFSITE_CREDENTIALS[@]}" ;;
-  stage|verify|wipe|admit|dlq)
+  stage|verify|wipe|admit|dlq|close)
     network=bridge
     take "${CREDENTIALS[@]}"
     ;;
@@ -555,7 +559,7 @@ case "$mode" in
     fi
     exit "$status"
     ;;
-  stage|verify|wipe|admit|dlq)
+  stage|verify|wipe|admit|dlq|close)
     has_copy
     use_image
     [[ -d "$work/bundle/out" ]] || refuse "this run has no bundles: run bundle first"
@@ -576,6 +580,9 @@ case "$mode" in
           flags=(--delete)
         fi
         job - dlq "$out" --run "$run" --facts "$facts" "${flags[@]}"
+        ;;
+      close)
+        job - close --facts "$facts"
         ;;
       *)
         job "$work/window" "$mode" "$out" --run "$run" --facts "$facts" --record "$record"

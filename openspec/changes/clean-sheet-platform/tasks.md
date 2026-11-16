@@ -192,8 +192,9 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
     are admitted empty. The old canary stays provisioned until the switch, since
     `deploy/deploy_fail_safe.sh` refuses a data-moving deploy without it.
 - [ ] **Step 12. Manifest phase 1:** `IMPORT_KEY` removed, since a replayed admit is accepted by
-  design; and R1, `deploy-worker.yml` deleted, so no routine deploy of the old proxy takes routes
-  back (d3 §J1: the proxy ends with no routes).
+  design, by the window's `close` alone, once every owner it staged is admitted or discarded
+  (`i-window-close.md`); and R1, `deploy-worker.yml` deleted, so no routine deploy of the old
+  proxy takes routes back (d3 §J1: the proxy ends with no routes).
 - [ ] **Step 13. `routes`, the handles canary, the platform's canary.** `identity.json`'s `host`
   is already `tinyassets.io` (d3 §H). Mode `routes` keeps its route record, then hands the
   routes over; the manifest disables `uptime-canary.yml` (d3 §J2), whose old canary scripts the
@@ -231,11 +232,16 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 Each in its own PR, taking the next free slot, never behind product work; the product lanes
 keep running (the untangle skill's "Process first", founder 2026-11-15).
 
-- [ ] P2 in order: reviews posted as the App's `review` check reads them and seen green on a
-  real PR, then `review` required (in `docs/ops/merge-queue-ruleset.json`, with
-  `required-checks.test.ts` allowing a check an App posts), then the receipt half deleted,
-  with the ADR that every PR is reviewed by one check, superseding ADR-015's review line
-  (d3 §F4; `untangle/p2-review-gate`, from `land/7`).
+- [ ] P2 in order (d3 §F4; `untangle-2026-11/p2-review-gate.md`):
+  - [x] the verdict posted as a `COMMENT` PR review on the commit read, as the App's `review`
+    check reads it, and each decision one new check run, never an edit of one (an edit
+    GitHub refused had left a red "could not decide" on #5656); ADR-038 drafted
+    (`untangle/p2-review-gate`);
+  - [ ] the check seen green on a real PR (`live:` the first PR landed with its PR review);
+  - [ ] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
+    allowing a check an App posts, then the founder's `PUT` (`untangle/p2-review-required`);
+  - [ ] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
+    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`).
 - [ ] P6, process code in one place, research first: the scripts' tests beside them, the queue
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
   measured (`untangle/p6-process-code`).
@@ -401,10 +407,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     founder's words, for `FILES_KEYRING` only after a second pass begun `KEEP_DAYS` + 1 days
     after the first copy night that followed the first (`r7-rotation.md` item 6;
     `r7-rotation-driver.md`).
-  - [ ] An imported owner whose admit never ran keeps its data and no `o:` record after the
-    window, so no rotation reaches it: the window's close checks every bundle is admitted or
-    discarded, the founder's decision in `r7-rotation-driver.md` item 8
-    (`untangle/i-window-close`).
+  - [x] An imported owner whose admit never ran keeps its data and no `o:` record after the
+    window, so no rotation reaches it: the window's `close` passes only when every bundle index
+    the staging bucket holds, of any run, names an owner the directory lists, and the real
+    window's pass alone deletes the doors' `IMPORT_KEY`, so `rotation`'s refusal holds until
+    then (the founder's B, `r7-rotation-driver.md` item 8; `untangle/i-window-close`,
+    `i-window-close.md`).
   - [x] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
     old-kid roots back and restarts the copy's expiry, so `retire`'s gate is read from that
     night (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`): `retire` reads the copy's

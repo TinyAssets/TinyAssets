@@ -211,14 +211,14 @@ export function s3Request(inputs: Inputs, method: "GET" | "PUT" | "DELETE", buck
                ...(body === null ? {} : { "content-type": "application/octet-stream" }) } });
 }
 
-/** The kit's Cloudflare client with the window's API token, over `fetcher`. */
-export function cloudflareOf(inputs: Inputs, fetcher: Fetcher): Cloudflare {
-  return new Cloudflare(inputs.apiToken, (url, init) => fetcher(new Request(url, init)));
+/** The kit's Cloudflare client with `token`, over `fetcher`. */
+export function cloudflareOf(token: string, fetcher: Fetcher): Cloudflare {
+  return new Cloudflare(token, (url, init) => fetcher(new Request(url, init)));
 }
 
 /** A queue's id in the account, by its name, from the Queues API's listing. */
 export async function queueId(inputs: Inputs, fetcher: Fetcher, name: string): Promise<string> {
-  const id = (await cloudflareOf(inputs, fetcher).queues(inputs.account)).get(name);
+  const id = (await cloudflareOf(inputs.apiToken, fetcher).queues(inputs.account)).get(name);
   if (id === undefined) {
     throw new Error(`the account lists no queue ${name}: nothing is sent; run the deploy ` +
                     "kit's dark mode first");
@@ -289,7 +289,7 @@ export async function stage(out: string, run: string, names: ImportNames, inputs
                         "nothing more is sent");
       }
     }
-    await cloudflareOf(inputs, fetcher).send(inputs.account, queue,
+    await cloudflareOf(inputs.apiToken, fetcher).send(inputs.account, queue,
                                              messageOf(staged, run, inputs.importKey));
     print(`bundle ${n + 1} of ${bundles.length}: ${staged.parts.length} objects uploaded, ` +
           "its message sent");

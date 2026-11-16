@@ -323,9 +323,10 @@ export const FILES_BUCKET = bucketOf("files", "BLOBS");
 /**
  * The live names the import job reaches, each read where it is written: the staging bucket the
  * doors bind, the dead-letter queue of the doors' consumer of the queue they bind as `IMPORTS`,
- * the files Worker's bucket, the directory's namespace title and the final backup's bucket
- * (`platform.json`). The job runs on its import host, away from this tree, so the window's
- * bundle step writes them beside the job (`--import`).
+ * the files Worker's bucket, the directory's namespace title, the final backup's bucket
+ * (`platform.json`), and the doors' Worker, whose `IMPORT_KEY` the window's close deletes. The
+ * job runs on its import host, away from this tree, so the window's bundle step writes them
+ * beside the job (`--import`).
  */
 export const IMPORT_NAMES = Object.freeze({
   staging_bucket: bucketOf("doors", "IMPORT_STAGING"),
@@ -333,6 +334,7 @@ export const IMPORT_NAMES = Object.freeze({
   files_bucket: FILES_BUCKET,
   directory: platform.namespaces.titles.DIRECTORY,
   final_backup_bucket: platform.buckets.unbound.final_backup,
+  doors: DOORS,
 } satisfies ImportNames);
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

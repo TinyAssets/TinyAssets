@@ -759,7 +759,8 @@ describe("the deploy kit's facts", () => {
     expect(control?.tiers).not.toBeNull();
   });
 
-  it("prints the import job's names for its bundle, each storage this kit makes", () => {
+  it("prints the import job's names for its bundle, each storage this kit makes, and the doors",
+     () => {
     const run = (...flags: string[]) => spawnSync(process.execPath, [
       "--experimental-strip-types", "--no-warnings", join(PLATFORM, "deploy", "facts.ts"),
       ...flags], { cwd: PLATFORM, encoding: "utf8" });
@@ -767,7 +768,8 @@ describe("the deploy kit's facts", () => {
     expect([printed.status, printed.stderr]).toEqual([0, ""]);
     const names = JSON.parse(printed.stdout) as Record<string, string>;
     expect(names).toEqual(IMPORT_NAMES);
-    const { dead_letter_queue: deadLetters, directory, ...buckets } = names;
+    const { dead_letter_queue: deadLetters, directory, doors, ...buckets } = names;
+    expect(doors).toBe(DOORS);
     expect(QUEUES).toContain(deadLetters);
     expect(Object.values(NAMESPACES)).toContain(directory);
     expect(Object.values(buckets).filter((name) => !BUCKETS.includes(name))).toEqual([]);

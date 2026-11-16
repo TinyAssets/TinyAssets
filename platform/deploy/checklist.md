@@ -407,7 +407,7 @@ tasks.md §9 item 7), runs each mode on the run's own **import host**: a Droplet
 `tinyassets-import-<run>` in `sfo3` (`s-4vcpu-8gb`, about $0.07 an hour, $1.71 a day), that
 `census` makes and `clean` destroys, one at a time. It never reaches the production droplet.
 The host reads the backup from the primary store with a read-only key, and leaves for
-Cloudflare through one **reserved IP**, which both Cloudflare tokens are pinned to. Before any
+Cloudflare through one **reserved IP**, which the job's two Cloudflare tokens are pinned to. Before any
 copy, and before any mode hands it a credential, the workflow checks from a container on the
 host that Cloudflare sees that address, and that no container on the host reaches the
 metadata service (it serves the host's `user_data`, which holds its private SSH key; the
@@ -415,12 +415,13 @@ host's boot script drops it for Docker's containers).
 
 It reads these `production` secrets. Every mode needs `DO_SSH_KEY` (already set),
 `IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` needs the Spaces pair too, `bundle` the
-exclusion list, `stage`, `verify`, `wipe`, `admit` and `dlq` the R2 pair, the API token and
-`IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one stops
-before any step and names it. The account id is no secret: the six Cloudflare modes read it
-from the repository **variable** `CLOUDFLARE_ACCOUNT_ID` (step 0), held to 32 hex digits, and
-no token of the deploy kit's is read by this workflow. **Make them before the rehearsal, keep
-them through the window, and revoke them after it.**
+exclusion list, `stage`, `verify`, `wipe`, `admit`, `dlq` and `close` the R2 pair, the API
+token and `IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one
+stops before any step and names it. The account id is no secret: the seven Cloudflare modes
+read it from the repository **variable** `CLOUDFLARE_ACCOUNT_ID` (step 0), held to 32 hex
+digits. The real window's `close` alone also reads `IMPORT_DOORS_API_TOKEN`, on the runner,
+never on the host, to delete the doors' `IMPORT_KEY`; no token of the deploy kit's is read.
+**Make them before the rehearsal, keep them through the window, and revoke them after it.**
 
 | `production` secret | What it is | Scope |
 |---|---|---|
@@ -431,6 +432,7 @@ them through the window, and revoke them after it.**
 | `IMPORT_R2_ACCESS_KEY_ID` and `IMPORT_R2_SECRET_ACCESS_KEY` | The S3 key pair of one Cloudflare API token, made through the API (step 4). | Workers R2 Storage Bucket Item Write on `tinyassets-import-staging` and on `tinyassets-final-backup` (the off-site copy), Workers R2 Storage Bucket Item Read on `tinyassets-files`: it can never write the live files bucket. The reserved IP only; an end date. |
 | `IMPORT_CLOUDFLARE_API_TOKEN` | One account API token (step 5). | Account · Queues · Edit (send to `tinyassets-import`, add and use the HTTP pull consumer of `tinyassets-import-dlq`), Account · Workers KV Storage · Edit (list `tinyassets-directory` and delete a rehearsal's records). The reserved IP only; an end date. |
 | `IMPORT_KEY` | 32 random bytes, base64url (step 6). | The same value as the doors' Worker secret `IMPORT_KEY` |
+| `IMPORT_DOORS_API_TOKEN` | One account API token (step 8). | Workers · Editor on the doors' Worker `tinyassets-doors` alone (Specified Workers): deleting and listing its secrets. No IP filter (GitHub's runner uses it); an end date. |
 
 **Never give one of them a name another job reads.** Every `production` job reads its
 secrets by name from the one environment, so an import token stored as
@@ -439,7 +441,7 @@ apply job.
 
 The steps, on your own computer, with your own `gh` login. `gh secret set <name> --env
 production` asks for the value and does not show it, so no value enters the chat or a
-command line. **Reserve the IP first:** both Cloudflare tokens are minted against it.
+command line. **Reserve the IP first:** the job's two Cloudflare tokens are minted against it.
 
 0. **The account id, a repository variable (not a secret).** Cloudflare dashboard → Workers &
    Pages → Account details → Account ID, then `gh variable set CLOUDFLARE_ACCOUNT_ID` with its
@@ -536,6 +538,13 @@ command line. **Reserve the IP first:** both Cloudflare tokens are minted agains
    unset k
    ```
    Without the doors' copy, the consumer drops every import message.
+8. **`IMPORT_DOORS_API_TOKEN`.** Manage Account → Account API Tokens → Create Token → Custom
+   token, named `tinyassets-import-window-doors`: Workers · Editor, resources Specified Workers
+   → `tinyassets-doors` alone (Cloudflare's per-Worker roles, 2026-09-15; Editor manages a
+   Worker's secrets), with a TTL just after the window. Then
+   `gh secret set IMPORT_DOORS_API_TOKEN --env production`. Confirm, as you mint it, that the
+   form scopes the token to that one Worker; if it cannot, stop and say so, rather than hand
+   the window a token that edits every Worker.
 
 The R2 bucket `tinyassets-final-backup` is made by the deploy kit's `dark`, with the other
 buckets. **In the window, after its census,** run `offsite`: it copies the final backup the
@@ -554,15 +563,22 @@ census's tag `ta-kind-rehearsal` or `ta-kind-window`: clean the window's run wit
 false and its confirm, as it was made; a rehearsal-kind dispatch is refused before the host is
 reached or destroyed.
 
-**After the admit, before `routes`,** delete the doors' copy
-(`npx wrangler secret delete IMPORT_KEY --name tinyassets-doors`), since a replayed admit is
-accepted by design. **After the window,** revoke everything and leave nothing billing:
+**After the admit, before `routes`,** run `close` with rehearsal false and its confirm. It
+passes only when every owner the staging bucket holds an index of, in any run, has its
+directory record (admitted) or no index left (discarded by its run's `wipe`). Then it deletes the
+doors' copy of `IMPORT_KEY` itself, since a replayed admit is accepted by design, and from then
+on the kit's `rotation` runs. An owner left behind is named by run and bundle ordinal, and
+nothing is changed. The window stays open, and `rotation` keeps refusing, until it is admitted:
+in this run once it verifies, or imported again in a later run and admitted there. A
+rehearsal's `close` only checks, after its `wipe`, and keeps the key for the window. Nothing
+else deletes the key; if it is ever needed again, step 7's second line sets it again.
+**After the window,** revoke everything and leave nothing billing:
 - run `clean` for every run, which destroys its import host, and confirm in DigitalOcean that
   no Droplet tagged `import-window` remains (every dispatch's summary names each one and its
   age, and warns past 7 days);
 - release the reserved IP (Networking → Reserved IPs → Release);
 - revoke `IMPORT_DO_TOKEN` (API → Tokens), the Spaces read key (Spaces → Access Keys), and
-  both Cloudflare tokens (My Profile → API Tokens), even those that also end on their own date;
+  the three Cloudflare tokens (API Tokens), even those that also end on their own date;
 - delete the `production` secrets above (`gh secret delete <name> --env production`). The
   `CLOUDFLARE_ACCOUNT_ID` variable stays: it is no credential, and other workflows read it.
 
