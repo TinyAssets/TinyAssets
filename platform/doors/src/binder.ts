@@ -27,7 +27,7 @@ import { FOREIGN_OWNER, reservedOwner } from "../../contract/src/ids";
 
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
-import type { OwnerDoors } from "../../contract/src/owner";
+import type { OwnerDoors } from "../../contract/src/owner-doors";
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
 } from "../../contract/src/socket-shape";

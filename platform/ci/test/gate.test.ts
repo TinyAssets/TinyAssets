@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { PLATFORM_CALLER } from "../../contract/src/binding";
 import type { ChunkStore } from "../../contract/src/files";
-import type { OwnerDoors } from "../../contract/src/owner";
+import type { OwnerDoors } from "../../contract/src/owner-doors";
 import { refusalOf } from "../../contract/src/refusal";
 import { HELD_WAIT_MS, TIERS } from "../fixtures";
 import type { GateControl } from "../gate";

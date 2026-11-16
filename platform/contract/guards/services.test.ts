@@ -10,10 +10,9 @@
  * - No Worker keeps a copy: no Worker source declares a name a service contract exports, nor
  *   an object type of exactly the members one does under another name, so a type that
  *   crosses a service is spelled once, in the contract.
- * - The owner's doors are the door table's (`doors.json`): each one the contract names is a
- *   row, taking the binding first (but the two unbound doors) and a request where its row
- *   takes one, by the row's own fields where it lists them (`Asked` or `Handed` of the door,
- *   from `requests.ts`, which `npm run generate` writes from the table).
+ * The owner's doors are the door table's by construction: `npm run generate` writes them
+ * (`contract/src/owner-doors.ts`), each door's name, binding and request its row's, and `tsc`
+ * refuses a door `DoorTypes` types that is no row (`contract/src/owner.ts`).
  */
 import { join } from "node:path";
 
@@ -24,18 +23,18 @@ import { parse, workerSources } from "../../ci/kit/sources";
 import { services } from "../../ci/kit/types";
 import { PLATFORM } from "../../ci/paths";
 import { readWrangler } from "../../ci/wrangler";
-import { doorRow, takesRequest, UNBOUND_DOORS } from "../src/doors";
 
 /** The service contracts, by their module. */
-const CONTRACTS = Object.freeze(["gateway", "files", "codemode", "sandbox", "owner", "requests",
-                                 "queues"].map((name) => `contract/src/${name}.ts`));
+const CONTRACTS = Object.freeze(["gateway", "files", "codemode", "sandbox", "owner", "owner-doors",
+                                 "requests", "queues"].map((name) => `contract/src/${name}.ts`));
 
 const table = services();
 
 /** Each service's classes, by source, and the contract interface each implements. */
 const IMPLEMENTS = Object.entries(table.workers).flatMap(([worker, entry]) =>
   Object.entries(entry.classes)
-    .map(([name, { source, contract }]) => ({ path: `${worker}/${source}`, name, contract })));
+    .map(([name, { source, contract }]) => ({ path: `${worker}/${source}`, name,
+                                               contract: contract.split("#")[1]! })));
 
 /** Each Worker's default entrypoint, as the table names it, by the Worker's main module. */
 const DEFAULTS = Object.entries(table.workers).flatMap(([worker, entry]) =>
@@ -134,49 +133,6 @@ export function implemented(path: string, source: string): Map<string, string[]>
   return found;
 }
 
-/**
- * The owner's doors as the contract names them: each method, its parameters' count, and its
- * request's type as written (the last parameter's), or null when it takes none.
- */
-export function ownerDoors(source: string): [string, number, string | null][] {
-  const found: [string, number, string | null][] = [];
-  const file = parse("contract/src/owner.ts", source);
-  for (const statement of file.statements) {
-    if (ts.isInterfaceDeclaration(statement) && statement.name.text === "OwnerDoors") {
-      for (const member of statement.members) {
-        if (ts.isMethodSignature(member) && ts.isIdentifier(member.name)) {
-          found.push([member.name.text, member.parameters.length,
-                      member.parameters.at(-1)?.type?.getText(file) ?? null]);
-        }
-      }
-    }
-  }
-  return found;
-}
-
-/**
- * Why a door the contract names breaks its row, or null: a row, the binding, a request, and
- * a row's field list as the request's type (`Asked` or `Handed` of the door itself, with its
- * value types where the doors build the request: `Asked<"door", { … }>`).
- */
-export function doorProblem(door: string, parameters: number, request: string | null = null):
-    string | null {
-  let row;
-  try {
-    row = doorRow(door);
-  } catch {
-    return `${door}: no row of the door table`;
-  }
-  const expected = (UNBOUND_DOORS.includes(door) ? 0 : 1) + (takesRequest(row) ? 1 : 0);
-  if (parameters !== expected) {
-    return `${door}: takes ${parameters} arguments, its row ${expected}`;
-  }
-  const listed = typeof row.args === "object";
-  const ownFields = new RegExp(`^(?:Asked|Handed)<"${door}"(?:,[\\s\\S]*)?>$`);
-  return !listed || request === null || ownFields.test(request)
-    ? null : `${door}: takes ${request}, not its row's fields (Asked<"${door}"> or Handed)`;
-}
-
 describe("the services' contracts", () => {
   const sources = workerSources();
 
@@ -234,25 +190,6 @@ describe("the services' contracts", () => {
       .toEqual(["doors/src/probe.ts: Verified"]);
     expect(copies(new Map([["gateway/src/forward.ts",
       'import type { Verified } from "../../contract/src/gateway";']]), names)).toEqual([]);
-  });
-
-  it("name for the doors only the owner's doors, each as its row takes it", () => {
-    const doors = ownerDoors(sources.get("contract/src/owner.ts")!);
-    expect(doors.length).toBeGreaterThan(50);
-    expect(doors.map(([door, parameters, request]) => doorProblem(door, parameters, request))
-      .filter((problem) => problem !== null)).toEqual([]);
-    expect(doors.filter(([, , request]) => /^(?:Asked|Handed)</.test(request ?? "")).length)
-      .toBe(51);
-    expect(doorProblem("grantRevoke", 2, "object"))
-      .toBe('grantRevoke: takes object, not its row\'s fields (Asked<"grantRevoke"> or Handed)');
-    expect(doorProblem("grantRevoke", 2, 'Asked<"grantForget">')).not.toBeNull();
-    expect(doorProblem("grantRevoke", 2, 'Asked<"grantRevoke", { readonly client: string }>'))
-      .toBeNull();
-    expect(doorProblem("grantRevoke", 2, 'Asked<"grantForget", { readonly client: string }>'))
-      .not.toBeNull();
-    expect(doorProblem("fileProbe", 2)).toBe("fileProbe: no row of the door table");
-    expect(doorProblem("sessionOpen", 2)).toBe("sessionOpen: takes 2 arguments, its row 1");
-    expect(doorProblem("sandboxRung", 1)).toBe("sandboxRung: takes 1 arguments, its row 0");
   });
 
   it("let only the doors' body parser make a JsonBody: no source spells its mark or casts to it",

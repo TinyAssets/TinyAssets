@@ -210,7 +210,8 @@ export const registrationsDoors = Object.freeze({
    * object captures the origin the binder verified; the owner applies it in session
    * (`registerAgent`). Never applied here. Filing again replaces the identity's card.
    */
-  registerPropose(o: RegistrationsDoorNeeds, { account, r, binding }: Call<Fields>):
+  registerPropose(o: RegistrationsDoorNeeds,
+                  { account, r, binding }: Call<Readonly<Record<string, unknown>>>):
       { card_id: string; digest: string; expires_at: number } {
     return o.registrations.file(account.origin!, (binding.source as Source).ref, {
     client: account.origin!.client, generation: account.grant!.generation,

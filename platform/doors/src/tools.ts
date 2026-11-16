@@ -8,11 +8,11 @@
  */
 import type { Binding } from "../../contract/src/binding";
 import { doorRow, takesRequest } from "../../contract/src/doors";
-import type { OwnerDoors } from "../../contract/src/owner";
+import type { OwnerDoors } from "../../contract/src/owner-doors";
 
 /**
- * A door the doors name in code (an owner-surface route's): one the contract's owner doors
- * name (`contract/src/owner.ts`), each a row of the door table, so a name written in code
+ * A door the doors name in code (an owner-surface route's): one of the contract's owner doors
+ * (`contract/src/owner-doors.ts`), each a row of the door table, so a name written in code
  * that is no door fails to compile.
  */
 export type DoorName = keyof OwnerDoors & string;
