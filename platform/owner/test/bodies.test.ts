@@ -16,9 +16,8 @@ import { refusalOf } from "../../contract/src/refusal";
 import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { LIMITS } from "../src/collections";
 import { Files, PLACE_TTL_S } from "../src/files";
-import { GC_GRACE_S, INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
+import { BODY_BYTES_MAX, GC_GRACE_S, INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { GRANT_LIMITS, scopes } from "../src/grants";
-import { MAX_BODY_BYTES } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { TIER_UNREAD } from "../src/files";
@@ -249,8 +248,8 @@ describe("the placement rule", () => {
       .toBe(`a row body is text of at most ${LIMITS.maxRowBytes} bytes`);
     const r = await rig();
     const muse = await r.register(MUSE);
-    await r.post(null, `dm:${muse}`, { body: "m".repeat(MAX_BODY_BYTES) });
-    expect((await r.read(MUSE)).messages[0]).toMatchObject({ body_bytes: MAX_BODY_BYTES,
+    await r.post(null, `dm:${muse}`, { body: "m".repeat(BODY_BYTES_MAX) });
+    expect((await r.read(MUSE)).messages[0]).toMatchObject({ body_bytes: BODY_BYTES_MAX,
                                                              truncated: true });
     // A grant's scopes: as many as their JSON's bytes hold, counted to the byte.
     const scope = (n: number) => ({ universe: `u${n}`, agent: "main", capability: "read_graph" });

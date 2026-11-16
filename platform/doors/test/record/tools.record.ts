@@ -66,7 +66,7 @@ describe("tools/list, byte for byte", () => {
     console.log(`TOOLS\tapp\t${apptools.status} ${await apptools.text()}`);
     await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "t-1" });
     // The owner's fake sandbox Worker records each start, by owner (T1a's
-    // `owner/test/fake-sandbox.ts`, bound to the doors' tests as `SANDBOX_LOG`).
+    // `ci/fake-sandbox.ts`, bound to the doors' tests as `SANDBOX_LOG`).
     const [start] = (await env.SANDBOX_LOG.recorded(who)).starts as SandboxStart[];
     console.log(`TOOLS\trun\t${await runListed(start!)}`);
     // Code mode off: every custom tool but code.

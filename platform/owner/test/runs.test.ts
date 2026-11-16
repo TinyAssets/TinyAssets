@@ -1,6 +1,6 @@
 /**
  * Runs in the owner's object (slice R; ADR-034 decision 4), in workerd, with a recording
- * fake sandbox Worker behind `SANDBOX` (`fake-sandbox.ts`): admission in one unit (each of its
+ * fake sandbox Worker behind `SANDBOX` (`ci/fake-sandbox.ts`): admission in one unit (each of its
  * refusals with its code), the run row, its grant and the sandbox's lease, the start with the
  * run's whole environment, the settle from the runner's end, the cancel through the sandbox,
  * no sandbox at all, simultaneous runs each on their own connection, a run's calls held to

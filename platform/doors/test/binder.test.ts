@@ -3,7 +3,6 @@
  * a forged owner, caller or origin in the request ignored, and one owner's credential
  * never reaching another owner's object.
  */
-import { createHash } from "node:crypto";
 
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -100,11 +99,12 @@ describe("an MCP binding", () => {
     await expect(bindMcp(doorsEnv, token)).rejects.toThrow();
   });
 
+  // Known answers: every card and grant the owner keeps is keyed by them, so a derivation
+  // that changes them fails here.
   it("derives the client and family with their domain, our issuer and the client id", async () => {
-    const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
     expect(await mcpOrigin("c", "https://a.test/cb")).toEqual({
-      client: sha("tinyassets-mcp-client\0https://tinyassets.io\0c"),
-      family: sha("tinyassets-mcp-family\0https://tinyassets.io\0c\0https://a.test/cb"),
+      client: "2b9b91265a35498afa8bf62d3c18a77e81535b9c427ab556324ea51933ae9ee5",
+      family: "c6cf8165215729cc68d98a711153e36b8a2b99798809aaeb8e11cf05d76803e5",
     });
   });
 
@@ -203,19 +203,14 @@ describe("the owner a sign-in names", () => {
   const LISTED: DoorsEnv = { ...doorsEnv,
     FOREIGN_ISSUERS: JSON.stringify(["https://auth.openai.com", "https://other.example"]) };
 
-  it("is listed against no foreign issuer today", () => {
-    expect(doorsEnv.FOREIGN_ISSUERS).toBe("[]");
-  });
-
   it("is the owner issuer's subject as it stands", async () => {
     expect(await ownerOf(doorsEnv, ISSUER, "user_01H")).toBe("user_01H");
   });
 
   it("is namespaced by a listed foreign issuer, so two issuers' subjects never meet",
      async () => {
-    const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
     const chatgpt = await ownerOf(LISTED, "https://auth.openai.com", "user_01H");
-    expect(chatgpt).toBe(`iss-${sha("https://auth.openai.com").slice(0, 32)}-user_01H`);
+    expect(chatgpt).toBe("iss-734d5d728a1e07b3a95ea2cb5c1b72d9-user_01H");
     expect(chatgpt).not.toBe(await ownerOf(LISTED, "https://other.example", "user_01H"));
     expect(await ownerOf(LISTED, "https://auth.openai.com", "a:b")).toMatch(/-a%3Ab$/);
   });

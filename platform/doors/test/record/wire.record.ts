@@ -14,6 +14,7 @@ import {
   SYNC_HEADER,
 } from "../../../contract/src/egress";
 import { PLATFORM_CALLER } from "../../../contract/src/binding";
+import { ERASE_CONFIRM } from "../../../contract/src/owner";
 import type { SandboxStart } from "../../../contract/src/sandbox";
 import { toolTable } from "../../../contract/src/doors";
 import {
@@ -223,7 +224,7 @@ describe("wire: busy, suspended and erasing owners", () => {
     const key = await mint(app.access_token, app.session);
     const tokens = await connect(await registerClient(), { owner: who });
     await rec("erase app account/erase", appPost("account/erase", app.access_token,
-      app.session, { confirm: "erase my account" }));
+      app.session, { confirm: ERASE_CONFIRM }));
     for (const name of ["agents_list", "write_page", "get_status"]) {
       await rec(`erasing api ${name}`, api(key, name, {}));
       await rec(`erasing app ${name}`, appPost(`tools/${name}`, app.access_token,
@@ -274,7 +275,7 @@ describe("wire: egress, run events and sync doors", () => {
       path: "/workspace/notes.md", expected_etag: null, content: new TextEncoder().encode("hi") });
     await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "s-1" });
     // The owner's fake sandbox Worker records each start, by owner (T1a's
-    // `owner/test/fake-sandbox.ts`, bound to the doors' tests as `SANDBOX_LOG`).
+    // `ci/fake-sandbox.ts`, bound to the doors' tests as `SANDBOX_LOG`).
     const [start] = (await env.SANDBOX_LOG.recorded(who)).starts as SandboxStart[];
     return { who, start: start!, sync: start!.tokens!.sync_token,
              inside: { [SANDBOX_HEADER]: egressTokenOf(start!.network!.network)!,

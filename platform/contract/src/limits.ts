@@ -73,6 +73,12 @@ export const EGRESS_DEADLINE_S = 86_400;
  */
 export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
 /**
+ * The most bytes a row's or a message's body takes: half of a request body's one ceiling, so
+ * the body with its JSON escapes fits the tool call that carries it; two chunks. A technical
+ * ceiling; a larger thing is a file, uploaded a chunk at a time.
+ */
+export const BODY_BYTES_MAX = EGRESS_BODY_MAX / 2;
+/**
  * A request's body on the MCP door, a technical ceiling: the MCP SDK's own default
  * (`maxRequestBodySize`, 4 MiB), kept because the SDK materializes a JSON-RPC message whole,
  * so its ceiling is what the doors' isolate holds a few at a time; bodies up to
