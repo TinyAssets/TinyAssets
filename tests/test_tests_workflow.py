@@ -463,50 +463,18 @@ def test_non_pr_runs_never_cancel_or_queue_behind_each_other() -> None:
     )
 
 
-def test_required_tests_job_name_matches_the_protection_context() -> None:
-    """Renaming this job orphans the required context and blocks every PR.
-
-    It does not fail open: the old context stays "Expected — waiting for
-    status" forever.
-    """
-    assert _load()["jobs"]["required-tests"]["name"] == "required-tests"
-
-
 def test_required_tests_cannot_decline_to_report() -> None:
     """The required check must always produce a real conclusion.
 
-    Two different failure modes, and they fail in OPPOSITE directions:
-
-    * A `paths:`/`paths-ignore:` filter on the trigger can stop the workflow
-      from running at all. Then no check is ever reported and branch protection
-      waits on "Expected — waiting for status" FOREVER — every PR wedged.
-    * A job-level `if:` does NOT do that. A skipped job reports
-      `conclusion=skipped`, which branch protection accepts as satisfied — so a
-      mistaken condition FAILS OPEN and silently merges untested code. Verified
-      empirically 2026-08-03: the scheduled tripwire (`full-tests` then,
-      `heavy-tests` now) carries a job-level `if:` and
-      reported `COMPLETED/SKIPPED` on PR #2197, not pending.
-
-    Fail-open is the more dangerous of the two, which is why the required job
-    gets neither.
+    A job-level `if:` that skips it reports `conclusion=skipped`, which
+    branch protection accepts as satisfied — so a mistaken condition FAILS
+    OPEN and silently merges untested code. Verified empirically 2026-08-03:
+    the scheduled tripwire (`full-tests` then, `heavy-tests` now) carries a
+    job-level `if:` and reported `COMPLETED/SKIPPED` on PR #2197, not
+    pending. Its name and triggers are every required check's
+    (`platform/ci/guards/required-checks.test.ts`).
     """
     wf = _load()
-    triggers = _triggers(wf)
-    # Asserted separately: `.get("pull_request") or {}` treats a MISSING
-    # pull_request trigger as an unfiltered one, so deleting the trigger
-    # outright would have passed the filter checks below.
-    assert "pull_request" in triggers, (
-        "the required check must be triggered by `pull_request` at all — "
-        "without it no check is ever reported and every PR hangs on "
-        "'Expected — waiting for status'"
-    )
-    pr_trigger = triggers.get("pull_request") or {}
-    for key in ("paths", "paths-ignore"):
-        assert key not in pr_trigger, (
-            f"`{key}:` on the required check's trigger stops the workflow from "
-            f"running on out-of-scope PRs, and the required context then hangs "
-            f"on 'Expected — waiting for status' forever"
-        )
     # The aggregate is the one exception, and it is forced rather than
     # allowed: it `needs` the shards, and a job whose need failed is SKIPPED
     # unless its condition says otherwise -- so with no `if:` a red shard would
@@ -550,7 +518,6 @@ def test_required_tests_cannot_decline_to_report() -> None:
         "shards skip ONLY on pull_request; any other condition could skip the "
         "merge-queue run, which is the one that gates main"
     )
-    assert "merge_group" in triggers, "without merge_group the shards never run at all"
     agg_steps = wf["jobs"]["required-tests"]["steps"]
     # Two verdict steps now -- whole surface and selection -- and they must
     # PARTITION every non-PR event. If a non-PR event could match neither, the
@@ -700,15 +667,6 @@ def test_every_shard_count_declaration_agrees() -> None:
     assert d["matrix"] == list(range(1, n + 1)), d
     assert int(d["expect"][0]) == n, d
     assert int(d["name"][0]) == n, d
-
-
-def test_only_the_aggregate_carries_the_protection_context() -> None:
-    """A shard named `required-tests` would let one green shard satisfy it."""
-    jobs = _load()["jobs"]
-    shard_name = str(jobs["required-tests-shard"]["name"])
-    assert shard_name.startswith("required-tests shard "), shard_name
-    names = [str(j.get("name", k)) for k, j in jobs.items()]
-    assert names.count("required-tests") == 1
 
 
 def test_aggregate_waits_for_every_shard_and_reads_their_results() -> None:
@@ -1385,6 +1343,51 @@ def test_comment_and_label_events_do_not_start_tests() -> None:
                         assert "pytest" not in code
                         assert "ci_required_tests.py" not in code
                         assert "linux_oracle.py" not in code
+
+
+def test_every_shard_runs_its_user_venue_and_plans_within_half_its_watchdog() -> None:
+    """The measured table's packing, as the six shard jobs compute it.
+
+    A shard whose user venue owns no measured file runs an empty pytest (exit 5)
+    or falls under its case floor; an eight-minute root proof packed with the
+    whole surface's longest-first order leaves its shard nothing else. Half the
+    watchdog leaves the shard's image build (about five minutes) and a fifth.
+    """
+    job = _load()["jobs"]["required-tests-shard"]
+    total = len(job["strategy"]["matrix"]["shard"])
+    table = _ci.load_durations()
+    planned = [0.0] * total
+    users = [0] * total
+    for rel, seconds in table.items():
+        index = _ci.shard_of(rel, total) - 1
+        planned[index] += seconds
+        users[index] += rel not in _ci.ROOT_TEST_FILES and seconds > 0
+    assert all(users), users
+    assert max(planned) <= job["timeout-minutes"] * 60 / 2, planned
+
+
+def test_the_durations_refresh_reads_only_whole_surface_runs(tmp_path, monkeypatch) -> None:
+    """A selective run's junit holds only its selection; the table would drop the rest."""
+    monkeypatch.syspath_prepend(str(_SCRIPT.parent))
+    refresh = importlib.import_module("refresh_test_durations")
+    scopes = {"1": "ALL", "2": "tests/test_a.py", "3": "ALL", "4": "ALL"}
+
+    def gh(argv, **_):
+        if argv[:3] == ["gh", "run", "list"]:
+            return subprocess.CompletedProcess(argv, 0, stdout='[{"databaseId": 1}, '
+                                               '{"databaseId": 2}, {"databaseId": 3}, '
+                                               '{"databaseId": 4}]')
+        run, artifact, target = argv[3], argv[5], Path(argv[7])
+        target.mkdir(parents=True, exist_ok=True)
+        if artifact == refresh.SELECTION:
+            (target / "affected.txt").write_text(scopes[run], encoding="utf-8")
+        else:
+            (target / "junit.xml").write_text("<testsuites/>", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(refresh.subprocess, "run", gh)
+    got = refresh.download_recent(2, tmp_path)
+    assert got == [tmp_path / "1" / "junit.xml", tmp_path / "3" / "junit.xml"]
 
 
 pytestmark = pytest.mark.verifies(

@@ -21,17 +21,18 @@
       "parameters": {
         "merge_method": "SQUASH",
         "grouping_strategy": "ALLGREEN",
-        "max_entries_to_build": 5,
+        "max_entries_to_build": 6,
         "max_entries_to_merge": 5,
         "min_entries_to_merge": 1,
         "min_entries_to_merge_wait_minutes": 5,
-        "check_response_timeout_minutes": 60
+        "check_response_timeout_minutes": 35
       }
     },
     {
       "type": "required_status_checks",
       "parameters": {
         "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
         "required_status_checks": [
           {"context": "Diff scope declared", "integration_id": 15368},
           {"context": "required-tests", "integration_id": 15368},

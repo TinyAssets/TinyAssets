@@ -196,13 +196,15 @@ def collect_cost(junit: Path) -> tuple[set[str], float]:
 # collected file maps to some index in 1..N, and the workflow runs every index.
 #
 # Files are packed by measured duration (.github/test-durations.json, per-file
-# seconds from a merge-group junit; scripts/refresh_test_durations.py rewrites
-# it). Every test_*.py under tests/ is packed longest-first onto the
-# least-loaded shard; a file the table does not know yet counts as the median,
-# and anything outside that set falls back to a stable path hash. A stale
-# table only costs balance, never coverage. The pure hash it replaced left
-# shard 3 slowest in 27 of 57 merge-group runs (2026-10-01; 289s of tests
-# against 197-261s for the others).
+# seconds from whole-surface merge-group junits; scripts/refresh_test_durations.py
+# rewrites it). Every test_*.py under tests/ is packed longest-first onto the
+# least-loaded shard, each venue on its own: a shard runs its user venue and then
+# its root venue as two pytest processes, so each venue's time is spread across
+# all N shards, and no root proof's minutes (one alone is about eight) can take
+# a shard's share of the user venue, whose cases hold every shard over its floor
+# and whose pytest exits 5 when it owns none. A file the table does not know yet
+# counts as its venue's median, and anything outside that set falls back to a
+# stable path hash. A stale table only costs balance, never coverage.
 #
 # Enforced through `pytest_ignore_collect` (this module is loaded with `-p`), so
 # a shard never IMPORTS another shard's files: a collection error is reported
@@ -269,7 +271,11 @@ def _packed(total: int) -> dict[str, int]:
             path.relative_to(REPO_ROOT).as_posix()
             for path in (REPO_ROOT / "tests").rglob("test_*.py")
         ]
-    return pack(sorted(files), load_durations(), total)
+    durations = load_durations()
+    files = sorted(files)
+    root = [f for f in files if f in ROOT_TEST_FILES]
+    user = [f for f in files if f not in ROOT_TEST_FILES]
+    return {**pack(user, durations, total), **pack(root, durations, total)}
 
 
 def shard_of(relpath: str, total: int) -> int:
