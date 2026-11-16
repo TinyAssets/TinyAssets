@@ -460,7 +460,7 @@ Source: cli-programmatic-reference.md.
 ### Agent definition [E]
 
 - **Instructions:** `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` and `.github/instructions/**/*.instructions.md`.
-- **Skills:** `.github/skills`, `.claude/skills`, `.agents/skills` and `~/.copilot/skills`.
+- **Skills:** a `skills` folder in the project's `.github/`, `.claude/` or `.agents/`, and `~/.copilot/skills`.
 - **Agents:** `.github/agents` and `~/.copilot/agents`.
 - **Hooks:** `.github/hooks/` and `~/.copilot/hooks/`.
 

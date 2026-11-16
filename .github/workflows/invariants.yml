@@ -2,13 +2,8 @@ name: invariants
 
 # The server-side half of the invariant framework.
 #
-# Until 2026-08-25 these ran ONLY from scripts/git-hooks/pre-commit, which has
-# to be installed by hand (scripts/install-git-hooks.ps1). A fresh clone, a CI
-# runner, or an agent sandbox that skipped the installer got zero enforcement —
-# which is how the always-loaded context budget drifted from ~17.6 KB to 62 KB
-# with its invariant registered and VIOLATED the whole time.
-#
-# The local hook stays as fast feedback; this is the authoritative gate.
+# The local hook (scripts/git-hooks/pre-commit) is fast feedback where a clone
+# installs it; this is the authoritative gate.
 #
 # Scope: pre-commit-scoped invariants only (cross-provider-drift, skills-valid,
 # context-budget, mirror-parity, mojibake). Network- and browser-dependent ones

@@ -106,7 +106,7 @@ drift, but is a proposal requiring review, not an approved architecture change.
 Verification method: `rg -n` of handler definitions/dispatch targets in
 `tinyassets/universe_server.py`, `tinyassets/engine_mcp_server.py`,
 `tinyassets/served_tools.py`, `tinyassets/api/{automations,runs,runtime_ops,
-pending_requests,source_channel}.py`; bounded `scripts/docview.py lines` reads of
+pending_requests,source_channel}.py`; bounded `docview.py lines` reads of
 the corresponding implementations; provider imports checked in
 `tinyassets/providers/codex_provider.py` and `tinyassets/universe_intelligence.py`.
 No live missing capability was invoked and no private workflow was modified.

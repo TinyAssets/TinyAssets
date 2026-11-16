@@ -1,7 +1,8 @@
 # E2B pause/resume latency, 1 GiB sandbox — 2026-10-28
 
 For `openspec/changes/clean-sheet-platform/tasks.md` §1 (ADR-032). Script:
-`scripts/e2b_resume_probe.py`.
+`e2b_resume_probe.py`, in git history at `6e755f2cc`; later runs use
+`platform/sandbox/pause-probe.ts`.
 
 ## Verdict
 

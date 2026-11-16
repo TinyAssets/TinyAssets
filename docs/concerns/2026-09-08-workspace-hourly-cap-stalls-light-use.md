@@ -182,7 +182,7 @@ Read `release-state.json` through the configured release-state path and inspect
 only the named numeric constants from deployed source. Do not dump payloads,
 credentials, or other universes' records.
 
-The release SHA was also checked with `python scripts/check_primitive_exists.py
+The release SHA was also checked with `python check_primitive_exists.py
 sha 49dc655fdb11e58d7e6682f7b41e111d042cf246`. No new deploy is claimed here.
 
 ## Correction scope and acceptance
@@ -224,7 +224,7 @@ Independent diagnosis review: [Claude review and disposition](../reviews/2026-09
 **2026-09-08 PDT / September 9 UTC, source assessment at `ad198c37`.** Runtime
 source is the deployed `0eb1388f` tree. Read-only repository inspection only;
 no new live workload, provider call, user-workflow edit or deployment. Commands:
-`python scripts/docview.py lines <source> --start <line> --end <line>` and scoped
+`python docview.py lines <source> --start <line> --end <line>` and scoped
 `rg -n` searches over the source symbols below. This is not a new load test.
 The existing independent shape/code reviews remain the starting point, not a
 reason to repeat review of the already shipped code.

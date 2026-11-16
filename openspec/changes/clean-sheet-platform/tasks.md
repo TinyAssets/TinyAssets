@@ -243,9 +243,10 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
 - [ ] P7's rest: the workflow headers lose their dated history, which git holds (list3 T12;
   `untangle/p7-headers`).
-- [ ] P8's rest and P9's "can go now" list: the always-red watchers, the callerless scripts,
+- [x] P8's rest and P9's "can go now" list: the always-red watchers, the callerless scripts,
   the root leftovers, the OpenSpec prompts' copies, `setup-secure-merge-gate.sh`, the finished
-  changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`).
+  changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`;
+  what stayed and why: `untangle-2026-11/p9-now.md`).
 - [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
   their readers re-pointed, so the window's deletion is smaller (`untangle/p9-openspec`).
 - [ ] `slow-tests`, which collects no test, leaves the ruleset and the classic branch

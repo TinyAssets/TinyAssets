@@ -45,7 +45,7 @@ are new and have no owner yet; they are the reason this file exists.
    measures 39 of them in four days and attributes them to repo-wide ratchets;
    this floor is a second cause, and it ejects entries that broke nothing.
 3. **A lone failure under a lone queue entry is weak evidence of causation.**
-   `scripts/miss_attr.py` reports such cases separately for exactly this reason
+   `miss_attr.py` reports such cases separately for exactly this reason
    rather than counting them as escapes
    (`2026-10-02-affected-only-merge-gate.md (archived in git)`).
 

@@ -598,8 +598,8 @@ reversible: the rollback inverse is `cc-X` back to `u-X`.
 - **Parsers.** `tinyassets/ids.py:23` and `:33` define
   `UNIVERSE_ID_PREFIX = "u-"` and `^u-[0-9a-hjkmnp-tv-z]{26}$`.
   `background_branch_authority.py:17` and `:190` key on that prefix. Two
-  operator scripts match `^u-` (`scripts/remove_legacy_brain_artifacts.ps1:26`,
-  `scripts/rename_live_data_universes_to_serial_ids.ps1:24`). The codemod
+  operator scripts match `^u-` (`remove_legacy_brain_artifacts.ps1:26`,
+  `rename_live_data_universes_to_serial_ids.ps1:24`). The codemod
   moves all of them to one `COMMAND_CENTER_ID_PREFIX = "cc-"` and a matching
   regex. A test fails if any `"u-"` literal or `^u-` pattern survives in code.
 - **Length.** Ids grow from 28 to 29 characters. SQLite TEXT has no limit.

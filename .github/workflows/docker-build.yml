@@ -7,10 +7,6 @@ name: Docker build smoke
 # the Dockerfile itself, .dockerignore, pyproject.toml (dep changes),
 # tinyassets/** (source the builder stage installs), deploy/** (future
 # Row C + D wiring). Manual dispatch for host-triggered re-verification.
-#
-# Intentionally NOT folded into tier3-oss-clone-nightly — that one runs
-# at 07:17 UTC on a schedule. Dockerfile changes want push-triggered
-# feedback, not overnight discovery.
 
 on:
   push:
