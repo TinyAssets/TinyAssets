@@ -41,9 +41,10 @@
 import { sha256Hex } from "../../contract/src/digest";
 
 import {
-  type Adopt, adopted, type Bodies, BODY_BYTES_MAX, bodyOffset, PAGE_BYTES, type Placed,
+  type Adopt, adopted, type Bodies, bodyOffset, PAGE_BYTES, type Placed,
   READ_PAGE_BYTES,
 } from "./bodies";
+import { BODY_BYTES_MAX } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import {

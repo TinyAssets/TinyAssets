@@ -34,19 +34,11 @@ import type { Files } from "./files";
 import { streamChunks } from "./segments";
 import type { OwnerStorage, Write } from "./gate";
 import { bodyUnits, ownerSlots, WINDOW_UNITS } from "./holds";
-import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
+import { BODY_BYTES_MAX, CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { slotted } from "../../contract/src/slots";
 import { OWNER } from "./authority";
 import type { Shown, Wants } from "./pages";
 
-
-/**
- * The most bytes a body takes: half of a request body's one ceiling (`limits.ts`'s
- * `EGRESS_BODY_MAX`, 16 MiB, the isolate's 128 MB), so the body with its JSON escapes fits
- * the tool call that carries it; two chunks. A technical ceiling; a larger thing is a file,
- * uploaded a chunk at a time.
- */
-export const BODY_BYTES_MAX = 2 * CHUNK_BYTES;
 
 /**
  * The most body bytes a digest's rows name past its first (heads show only each body's

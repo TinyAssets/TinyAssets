@@ -41,14 +41,14 @@ interface ClientRevoked {
 const GRANT_PAGE = 1000;
 
 /** The ids of every one of the owner's provider grants that `keep` picks, all pages read. */
-async function grantsWhere(oauth: OAuthHelpers, owner: string, pageSize: number,
+async function grantsWhere(oauth: OAuthHelpers, owner: string,
                            keep: (grant: GrantSummary) => boolean | Promise<boolean>):
     Promise<string[]> {
   const matching: string[] = [];
   let cursor: string | undefined;
   do {
     const page = await oauth.listUserGrants(owner, cursor === undefined
-      ? { limit: pageSize } : { limit: pageSize, cursor });
+      ? { limit: GRANT_PAGE } : { limit: GRANT_PAGE, cursor });
     for (const grant of page.items) {
       if (await keep(grant)) {
         matching.push(grant.id);
@@ -67,14 +67,13 @@ async function grantsWhere(oauth: OAuthHelpers, owner: string, pageSize: number,
  * that is not loopback is its own installation, and the provider's replacement holds.
  */
 export async function replaceInstallation(env: DoorsEnv, owner: string, clientId: string,
-                                          redirectUri: string,
-                                          pageSize: number = GRANT_PAGE): Promise<number> {
+                                          redirectUri: string): Promise<number> {
   if (!localOrigin(new URL(redirectUri))) {
     return 0;
   }
   const installation = installationOf(redirectUri);
   const oauth = authorizationServer(env).getOAuthApi(env);
-  const earlier = await grantsWhere(oauth, owner, pageSize, (grant) =>
+  const earlier = await grantsWhere(oauth, owner, (grant) =>
     grant.resource === MCP_RESOURCE && grant.clientId === clientId
     && grant.redirectUri !== undefined && installationOf(grant.redirectUri) === installation);
   for (const id of earlier) {
@@ -88,10 +87,10 @@ export async function replaceInstallation(env: DoorsEnv, owner: string, clientId
  * owner's grants is read before any is revoked, so a revoke never shifts the pages. The
  * count revoked.
  */
-async function providerRevoke(env: DoorsEnv, owner: string, client: string,
-                                     pageSize: number = GRANT_PAGE): Promise<number> {
+async function providerRevoke(env: DoorsEnv, owner: string, client: string):
+    Promise<number> {
   const oauth = authorizationServer(env).getOAuthApi(env);
-  const matching = await grantsWhere(oauth, owner, pageSize, async (grant) =>
+  const matching = await grantsWhere(oauth, owner, async (grant) =>
     grant.resource === MCP_RESOURCE && mcpClient(grant.clientId) === client);
   for (const id of matching) {
     await oauth.revokeGrant(id, owner);
@@ -105,25 +104,24 @@ async function providerRevoke(env: DoorsEnv, owner: string, client: string,
  * store names it), the key's directory entry is deleted after the grant's revoke, as
  * `keys/revoke` deletes it.
  */
-export async function revokeClient(env: DoorsEnv, { binding, stub }: Bound, client: unknown,
-                                   pageSize: number = GRANT_PAGE): Promise<ClientRevoked> {
+export async function revokeClient(env: DoorsEnv, { binding, stub }: Bound, client: unknown):
+    Promise<ClientRevoked> {
   const done = await stub.grantRevoke(binding, { client: client as string });
   const { keys } = await stub.keyList(binding);
   const key = keys.find((row) => apiKeyOrigin(row.key_id).client === done.client);
   if (key !== undefined) {
     await deleteKey(env, key.key_id);
   }
-  return { ...done, grants: await providerRevoke(env, binding.owner, done.client, pageSize) };
+  return { ...done, grants: await providerRevoke(env, binding.owner, done.client) };
 }
 
 /**
  * Every OAuth grant the owner holds, outside clients' and its own devices' alike, revoked:
  * the owner's erasure (`erase.ts`), so no token of the owner's survives it.
  */
-export async function revokeAll(env: DoorsEnv, owner: string,
-                                pageSize: number = GRANT_PAGE): Promise<number> {
+export async function revokeAll(env: DoorsEnv, owner: string): Promise<number> {
   const oauth = authorizationServer(env).getOAuthApi(env);
-  const every = await grantsWhere(oauth, owner, pageSize, () => true);
+  const every = await grantsWhere(oauth, owner, () => true);
   for (const id of every) {
     await oauth.revokeGrant(id, owner);
   }

@@ -82,7 +82,7 @@ const errors = [];
 async function doors() {
   const gateway = workerConfig(join(PLATFORM, "gateway"));
   const providers = fake(join(DOORS, "test", "fake-providers.ts"));
-  const sandbox = fake(join(PLATFORM, "owner", "test", "fake-sandbox.ts"));
+  const sandbox = fake(join(PLATFORM, "ci", "fake-sandbox.ts"));
   const keyring = newKeyring();
   const routingKey = randomBytes(32).toString("base64url");
   const webClient = `${ORIGIN}/oauth/clients/web.json`;

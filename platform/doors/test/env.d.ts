@@ -15,8 +15,8 @@ declare namespace Cloudflare {
     PROVIDERS: Fetcher;
     /**
      * The owner Worker's fake sandbox Worker's record, by owner: the owner reaches that
-     * Worker as its SANDBOX (`owner/test/fake-sandbox.ts`).
+     * Worker as its SANDBOX (`ci/fake-sandbox.ts`).
      */
-    SANDBOX_LOG: Service<import("../../owner/test/fake-sandbox").Log>;
+    SANDBOX_LOG: Service<import("../../ci/fake-sandbox").Log>;
   }
 }

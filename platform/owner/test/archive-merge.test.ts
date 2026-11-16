@@ -8,7 +8,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
-import { BODY_BYTES_MAX } from "../src/bodies";
+import { BODY_BYTES_MAX } from "../../contract/src/limits";
 import type { Ledger } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { MOVE_BYTES } from "../src/segments";

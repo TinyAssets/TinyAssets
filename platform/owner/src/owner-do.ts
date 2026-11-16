@@ -186,8 +186,8 @@ import { Doorbell, type WakeSender } from "./wakes";
 /** Why a restore's wipe resets the instance (`ObjectReads.reset`). */
 const RESET = "the object was wiped for a restore; its next call starts it afresh";
 /** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
-const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
-const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
+export const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
+export const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
 
 /**
  * Who else an account door serves. `visitors`: another owner may call, as itself (the

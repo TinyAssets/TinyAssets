@@ -76,7 +76,7 @@ function secretOf(request: Request, inPath: string | undefined): string | undefi
 }
 
 const LENGTH = /^[0-9]{1,15}$/;
-export const EGRESS_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
+const EGRESS_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
 /** How long a completed answer's metered outcome is waited for before it is `unknown`. */
 const OUTCOME_WAIT_MS = 10_000;
 

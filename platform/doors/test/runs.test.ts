@@ -18,7 +18,6 @@ import { SOCKET_VERSION, TICKET_REFUSED } from "../../contract/src/socket-shape"
 import { RUN_INSTRUCTIONS } from "../src/instructions";
 import { profileNames } from "../../contract/src/doors";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
-import { SESSION_REFUSED } from "../../owner/src/runs";
 import { secretOf, until } from "../../ci/workerd";
 import {
   answerOf, appPost, call, connect, crossed, defineMain, OPEN, ownDoor, reached, recorded,
@@ -443,8 +442,8 @@ describe("a run's live events", () => {
     late.ws.close(1000, "done");
   });
 
-  it("relay a frame whose session id is outside its shape, refusing the id with a fixed code " +
-     "(app review)", async () => {
+  it("relay a frame whose session id is outside its shape, and answer the run's refusal of the " +
+     "id as the object holds it (app review)", async () => {
     const { who, app } = await owned();
     const run = await (await appPost("agent/submit", app.access_token, null, {
       message: "go", client_send_id: "bad-sid" })).json<{ run_id: string;
@@ -455,9 +454,12 @@ describe("a run's live events", () => {
       { seq: 2, at: 2, event: { type: "result", result: "done" } }], end: { exit_code: 0 } });
     expect(sent.status).toBe(200);
     expect(await sent.json()).toMatchObject({ accepted: 2 });
+    // The app reads the object's own status, which names the refusal: its code is the owner's
+    // test (`owner/test/runs.test.ts`).
     const status = await (await appPost("agent/status", app.access_token, null,
                                         { run_id: run.run_id })).json<Record<string, unknown>>();
-    expect(status["error"]).toBe(SESSION_REFUSED);
+    expect(status).toEqual(await ownDoor(who, "agentStatus", { run_id: run.run_id }));
+    expect(status["error"]).toEqual(expect.any(String));
   });
 
   it("keep a settled run's tail no longer: the live runs' tails have its room", async () => {
