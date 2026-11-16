@@ -537,6 +537,19 @@ describe("the window's close", () => {
       .map((message) => message.owner)).toEqual([bundles[0]!.owner]);
     expect(await close(w.window, quiet)).toEqual({ owners: 0, left: [] });
   });
+
+  it("is not passed by a wipe of a run bundled again without an owner it staged", async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    // The run cleaned and bundled again on a new host, the first owner excluded this time.
+    const [index] = indexAt(bundles[0]!);
+    rmSync(bundles[0]!.dir, { recursive: true });
+    await expect(wipe(out, RUN, w.window, record, quiet)).rejects.toThrow(
+      `run ${RUN} stages 1 bundle index(es) its bundles do not name: nothing is discarded`);
+    expect(w.sent).toEqual([]);
+    expect(w.staging.has(index)).toBe(true);
+    expect((await close(w.window, quiet)).left).toHaveLength(bundles.length);
+  });
 });
 
 describe("the window's key, deleted after its close", () => {
@@ -563,7 +576,7 @@ describe("the window's key, deleted after its close", () => {
       .rejects.toThrow(`${NAMES.doors} still lists ${IMPORT_KEY} after its deletion`);
     for (const given of ["", `${INPUTS.account}\n`, "not-an-account\ntoken\n"]) {
       await expect(unkeyMain(["unkey", "--facts", facts], given, quiet, w.window.fetcher))
-        .rejects.toThrow(/unkey takes CLOUDFLARE_ACCOUNT_ID, then CLOUDFLARE_API_TOKEN/);
+        .rejects.toThrow(/unkey takes CLOUDFLARE_ACCOUNT_ID, then IMPORT_DOORS_API_TOKEN/);
     }
     expect([...w.secrets]).toEqual([IMPORT_KEY]);
   });

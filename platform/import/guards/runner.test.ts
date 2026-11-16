@@ -11,7 +11,7 @@
  * disk without room for the copy or the bundles, a work folder not the host's own), the run's
  * one Node, what a networked job sees, the host's lock, the off-site copy (the window's alone,
  * read back and held to the manifest, the primary store unchanged), the close (the doors' key
- * deleted after a real window's close alone, with the deploy kit's token, never the host's),
+ * deleted after a real window's close alone, with the doors' own token, never the host's),
  * and the output's discipline (counts alone: no principal, no owner key, no path of the copy, and a withheld
  * output never printed).
  */
@@ -239,11 +239,13 @@ describe("the dispatch's gate, the workflow's first step", () => {
         expect(gate({ MODE: mode }, without(name)).out).toContain(`needs the secret(s) ${name},`);
       }
     }
-    // A real window's close needs the deploy kit's token, for the key; a rehearsal's none.
+    // A real window's close needs the doors' token, for the key; a rehearsal's none.
     const shut = { MODE: "close", REHEARSAL: "false", CONFIRM: "window-r1" };
-    expect(gate(shut).out).toContain("needs the secret(s) DEPLOY_CLOUDFLARE_API_TOKEN, which");
-    expect(gate(shut, { ...SECRETS, DEPLOY_CLOUDFLARE_API_TOKEN: "kit-token-value-11" }).status)
+    expect(gate(shut).out).toContain("needs the secret(s) IMPORT_DOORS_API_TOKEN, which");
+    expect(gate(shut, { ...SECRETS, IMPORT_DOORS_API_TOKEN: "doors-token-value-11" }).status)
       .toBe(0);
+    expect(gate(shut, { ...SECRETS, IMPORT_DOORS_API_TOKEN: "doors-token-value-11 " }).out)
+      .toContain("credential(s) IMPORT_DOORS_API_TOKEN hold a space");
     expect(gate({ MODE: "close" }).status).toBe(0);
     expect(gate({ MODE: "close" }, without("IMPORT_KEY")).out)
       .toContain("needs the secret(s) IMPORT_KEY,");
@@ -253,8 +255,9 @@ describe("the dispatch's gate, the workflow's first step", () => {
     expect(gate({ MODE: "verify" }, { ...SECRETS, CLOUDFLARE_ACCOUNT_ID: "not-an-account" }).out)
       .toContain("refused: the repository variable CLOUDFLARE_ACCOUNT_ID is no 32-hex account id");
     expect(steps[0]!.env!["CLOUDFLARE_ACCOUNT_ID"]).toBe("${{ vars.CLOUDFLARE_ACCOUNT_ID }}");
-    // The deploy kit's token is read by the gate and the key's step alone.
-    expect(steps.filter((each) => JSON.stringify(each).includes("secrets.CLOUDFLARE_API_TOKEN"))
+    // No token of the deploy kit's is read; the doors' token by the gate and the key's step.
+    expect(JSON.stringify(WORKFLOW)).not.toContain("secrets.CLOUDFLARE_API_TOKEN");
+    expect(steps.filter((each) => JSON.stringify(each).includes("secrets.IMPORT_DOORS_API_TOKEN"))
       .map((each) => each.name)).toEqual(["Refuse a run this dispatch may not make",
                                           "Close the window, the doors' IMPORT_KEY deleted"]);
     const offsite = gate({ MODE: "offsite", REHEARSAL: "false", CONFIRM: "window-r1" },
@@ -376,10 +379,10 @@ describe("the key's step, after the host's close", () => {
     expect(key.if!.replace(/\s+/g, " ").trim()).toBe(
       "inputs.mode == 'close' && inputs.rehearsal == false && steps.run.outcome == 'success'");
     expect(key.env).toEqual({ CLOUDFLARE_ACCOUNT_ID: "${{ vars.CLOUDFLARE_ACCOUNT_ID }}",
-                              DEPLOY_CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}" });
+                              IMPORT_DOORS_API_TOKEN: "${{ secrets.IMPORT_DOORS_API_TOKEN }}" });
   });
 
-  it("hands the job the account and the kit's token on its stdin alone", () => {
+  it("hands the job the account and the doors' token on its stdin alone", () => {
     const dir = mkdtempSync(join(tmpdir(), "ta-window-key-"));
     temps.push(dir);
     const log = join(dir, "node.log");
@@ -393,13 +396,13 @@ describe("the key's step, after the host's close", () => {
       encoding: "utf8", cwd: dir,
       env: { PATH: `${fake}:/usr/bin:/bin`, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, "summary"),
              FAKE_LOG: log, CLOUDFLARE_ACCOUNT_ID: "3c".repeat(16),
-             DEPLOY_CLOUDFLARE_API_TOKEN: "kit-token-v" } });
+             IMPORT_DOORS_API_TOKEN: "doors-token-v" } });
     expect(result.status).toBe(0);
     const calls = readFileSync(log, "utf8");
     expect(calls).toContain(`ARGS platform/import/dist/import.mjs unkey --facts ${dir}/facts.json`);
-    expect(calls).toContain(`STDIN ${"3c".repeat(16)}\nkit-token-v`);
+    expect(calls).toContain(`STDIN ${"3c".repeat(16)}\ndoors-token-v`);
     expect(calls.split("\n").filter((line) => line.startsWith("ARGS")).join("\n"))
-      .not.toContain("kit-token-v");
+      .not.toContain("doors-token-v");
     expect(readFileSync(join(dir, "summary"), "utf8")).toBe("closed\n");
   });
 });

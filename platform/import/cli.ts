@@ -23,8 +23,8 @@
  *   same credentials; exit 0 when the step holds (every owner clean, every listing empty, no
  *   dead letter, every staged owner admitted or discarded), 3 when not;
  * - `unkey --facts <facts.json>`, on the workflow's runner after a real window's `close`
- *   passed: the doors' `IMPORT_KEY` deleted with the deploy kit's token, which stdin hands
- *   after the account (`UNKEY_INPUTS`), never to the import host.
+ *   passed: the doors' `IMPORT_KEY` deleted with the doors' own token (Editor on that Worker
+ *   alone), which stdin hands after the account (`UNKEY_INPUTS`), never to the import host.
  *
  * `--tiers` is the control record's tiers (`deploy/control.json`'s, by the window's `jq`),
  * read by the contract's `parseTiers`; `--facts` is the live names the steps that reach the
@@ -142,8 +142,8 @@ export async function windowMain(argv: readonly string[],
   throw new Error(`no step ${step}`);
 }
 
-/** `unkey`'s stdin, one a line in this order: the account, then the deploy kit's token. */
-export const UNKEY_INPUTS = Object.freeze(["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]);
+/** `unkey`'s stdin, one a line in this order: the account, then the doors' token. */
+export const UNKEY_INPUTS = Object.freeze(["CLOUDFLARE_ACCOUNT_ID", "IMPORT_DOORS_API_TOKEN"]);
 
 /** `unkey --facts <file>`, its stdin `text`: 0 once the doors hold no `IMPORT_KEY`. */
 export async function unkeyMain(argv: readonly string[], text: string,

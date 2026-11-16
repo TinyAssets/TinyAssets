@@ -36,9 +36,10 @@ name: Import window (manual)
 # IMPORT_EXCLUSION_LIST for bundle; IMPORT_R2_ACCESS_KEY_ID and IMPORT_R2_SECRET_ACCESS_KEY for
 # stage, verify, wipe, admit, dlq, close and offsite, with IMPORT_CLOUDFLARE_API_TOKEN and
 # IMPORT_KEY for the first six. The Cloudflare account id, which is no secret, is the
-# repository variable CLOUDFLARE_ACCOUNT_ID, for those seven. The deploy kit's token
-# (CLOUDFLARE_API_TOKEN) is read for the real window's close alone, by the gate (that it is
-# there) and the last step (the doors' IMPORT_KEY deleted, on this runner): never the host's.
+# repository variable CLOUDFLARE_ACCOUNT_ID, for those seven. IMPORT_DOORS_API_TOKEN, Editor on
+# the doors' Worker alone, is read for the real window's close alone, by the gate (that it is
+# there) and the key's step (the doors' IMPORT_KEY deleted, on this runner): never the host's.
+# No token of the deploy kit's is read here.
 # Each credential reaches the host on the SSH session's stdin. There, the job's reach the job
 # on its own stdin (`docker run -i`), and the Spaces and off-site R2 keys reach rclone alone,
 # in that one process's environment (window.sh): never an argument, an exported variable, a
@@ -114,7 +115,7 @@ jobs:
           IMPORT_R2_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_R2_SECRET_ACCESS_KEY }}
           IMPORT_CLOUDFLARE_API_TOKEN: ${{ secrets.IMPORT_CLOUDFLARE_API_TOKEN }}
           IMPORT_KEY: ${{ secrets.IMPORT_KEY }}
-          DEPLOY_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          IMPORT_DOORS_API_TOKEN: ${{ secrets.IMPORT_DOORS_API_TOKEN }}
         run: |
           set -euo pipefail
           refuse() { echo "::error::refused: $*"; exit 1; }
@@ -146,9 +147,9 @@ jobs:
               needed+=(IMPORT_SPACES_ACCESS_KEY_ID IMPORT_SPACES_SECRET_ACCESS_KEY
                        CLOUDFLARE_ACCOUNT_ID IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY) ;;
           esac
-          # The real window's close deletes the doors' IMPORT_KEY with the deploy kit's token.
+          # The real window's close deletes the doors' IMPORT_KEY with the doors' own token.
           if [ "${MODE}" = close ] && [ "${REHEARSAL}" != true ]; then
-            needed+=(DEPLOY_CLOUDFLARE_API_TOKEN)
+            needed+=(IMPORT_DOORS_API_TOKEN)
           fi
           missing=()
           for name in "${needed[@]}"; do
@@ -326,16 +327,16 @@ jobs:
         # The real window's close alone, once the host's close passed (any other end of that
         # step fails the job before this one, and a skipped one leaves this skipped): every
         # owner the import may have written is admitted or discarded, so the key goes, the
-        # window's steps end and the kit's rotation may run (i-window-close.md). The deploy
-        # kit's token, on this runner alone; the job built above, from the same checkout.
+        # window's steps end and the kit's rotation may run (i-window-close.md). The doors'
+        # token, on this runner alone; the job built above, from the same checkout.
         if: >-
           inputs.mode == 'close' && inputs.rehearsal == false && steps.run.outcome == 'success'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          DEPLOY_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          IMPORT_DOORS_API_TOKEN: ${{ secrets.IMPORT_DOORS_API_TOKEN }}
         run: |
           set -euo pipefail
-          printf '%s\n' "${CLOUDFLARE_ACCOUNT_ID}" "${DEPLOY_CLOUDFLARE_API_TOKEN}" \
+          printf '%s\n' "${CLOUDFLARE_ACCOUNT_ID}" "${IMPORT_DOORS_API_TOKEN}" \
             | node platform/import/dist/import.mjs unkey --facts "${RUNNER_TEMP}/facts.json" \
             | tee -a "${GITHUB_STEP_SUMMARY}"
 

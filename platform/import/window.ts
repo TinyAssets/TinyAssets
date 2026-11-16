@@ -350,16 +350,36 @@ async function indexStaged(window: Window, run: string, staged: Staged): Promise
                        stagedName(bundlePrefix(run, staged.key), BUNDLE_INDEX)) !== null;
 }
 
+/** Each bundle index the staging bucket holds under `prefix`: its name, run and key. */
+async function stagedIndexes(window: Window, prefix: string):
+    Promise<{ name: string; run: string; key: string }[]> {
+  return (await listKeys(window, window.names.staging_bucket, prefix)).flatMap((name) => {
+    const [run = "", key = "", ...part] = name.split("/");
+    return RUN.test(run) && HEX16.test(key) && part.join("/") === BUNDLE_INDEX
+      ? [{ name, run, key }] : [];
+  });
+}
+
 /**
  * `wipe`: each owner whose index is still staged discarded (its namespace kept in the record,
  * so a run again proves it too), then the rehearsal's `o:` records and the staging prefix
- * deleted, then each listing read and proved empty.
+ * deleted, then each listing read and proved empty. It refuses first, changing nothing, while
+ * the run's staging holds an index its `out` names no bundle of (the run bundled again, on a
+ * new host, since it staged it): deleting it would leave that owner's data with no index, so
+ * `close` would read it as discarded.
  */
 export async function wipe(out: string, run: string, window: Window, recordFile: string,
                            print: (line: string) => void): Promise<WipeProof> {
   checkRun(run);
   const bundles = bundlesIn(out);
   const record = readRecord(recordFile, run);
+  const named = new Set(bundles.map((staged) => staged.key));
+  const unnamed = (await stagedIndexes(window, `${run}/`)).filter(({ key }) => !named.has(key));
+  if (unnamed.length > 0) {
+    throw new Error(`run ${run} stages ${unnamed.length} bundle index(es) its bundles do not ` +
+                    "name: nothing is discarded or deleted (admit or discard each from the " +
+                    "bundles that staged it)");
+  }
   const queue = await queueId(window.inputs, window.fetcher, QUEUES.IMPORTS);
   for (const [n, staged] of bundles.entries()) {
     if (!await indexStaged(window, run, staged)) {
@@ -419,11 +439,8 @@ export async function close(window: Window, print: (line: string) => void):
     Promise<CloseSummary> {
   const staging = window.names.staging_bucket;
   const runs = new Map<string, string[]>();
-  for (const name of await listKeys(window, staging, "")) {
-    const [run, key, ...part] = name.split("/");
-    if (RUN.test(run!) && HEX16.test(key ?? "") && part.join("/") === BUNDLE_INDEX) {
-      runs.set(run!, [...runs.get(run!) ?? [], name]);
-    }
+  for (const { name, run } of await stagedIndexes(window, "")) {
+    runs.set(run, [...runs.get(run) ?? [], name]);
   }
   const listed = new Set(await cloudflareOf(window.inputs.apiToken, window.fetcher)
     .keys(window.inputs.account, await directoryId(window), OWNER_ENTRY));
@@ -454,7 +471,7 @@ export async function close(window: Window, print: (line: string) => void):
 }
 
 /**
- * The window closed: the doors' `IMPORT_KEY` deleted with the deploy kit's client, then their
+ * The window closed: the doors' `IMPORT_KEY` deleted with the doors' own token, then their
  * secret listing read back without it, so the kit's rotation may run (`deploy.ts`
  * `rotationNamespaces`). The workflow runs it on its runner, for the real window alone, once
  * the host's `close` passed.
