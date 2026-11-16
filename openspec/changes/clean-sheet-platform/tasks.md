@@ -256,6 +256,16 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   protection, `docs/ops/merge-queue-ruleset.json` and `enqueue_merge.py` `REQUIRED_CHECKS`,
   and nothing ties them. One source, researched first (`untangle/required-checks`; found by
   `untangle/slow-tests`).
+- [x] `required-tests shard 2/6` took 24 to 27 minutes of its 30-minute watchdog on
+  whole-surface merge groups, and `required-tests` reported 26 to 29 minutes after the start,
+  against the queue's 35: a stale durations table put both eight-minute root proofs on it.
+  Each venue is packed on its own by a table refreshed from whole-surface runs only, so the
+  slowest shard's tests take 569 to 621 s, about 15 minutes of job (`untangle/shard-2-time`;
+  found by `untangle/required-checks`; `untangle-2026-11/shard-2-time.md`).
+- [ ] Whether the Python legs need cover for a runner five times slower before the cutover
+  deletes them: no packing fits one (a 477 s case and the image build, 62 minutes at five
+  times), and #5646's calibration is Vitest's only; research first
+  (`untangle/python-slow-runner`; found by `untangle/shard-2-time`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
   one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
 

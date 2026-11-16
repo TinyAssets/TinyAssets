@@ -1387,6 +1387,51 @@ def test_comment_and_label_events_do_not_start_tests() -> None:
                         assert "linux_oracle.py" not in code
 
 
+def test_every_shard_runs_its_user_venue_and_plans_within_half_its_watchdog() -> None:
+    """The measured table's packing, as the six shard jobs compute it.
+
+    A shard whose user venue owns no measured file runs an empty pytest (exit 5)
+    or falls under its case floor; an eight-minute root proof packed with the
+    whole surface's longest-first order leaves its shard nothing else. Half the
+    watchdog leaves the shard's image build (about five minutes) and a fifth.
+    """
+    job = _load()["jobs"]["required-tests-shard"]
+    total = len(job["strategy"]["matrix"]["shard"])
+    table = _ci.load_durations()
+    planned = [0.0] * total
+    users = [0] * total
+    for rel, seconds in table.items():
+        index = _ci.shard_of(rel, total) - 1
+        planned[index] += seconds
+        users[index] += rel not in _ci.ROOT_TEST_FILES and seconds > 0
+    assert all(users), users
+    assert max(planned) <= job["timeout-minutes"] * 60 / 2, planned
+
+
+def test_the_durations_refresh_reads_only_whole_surface_runs(tmp_path, monkeypatch) -> None:
+    """A selective run's junit holds only its selection; the table would drop the rest."""
+    monkeypatch.syspath_prepend(str(_SCRIPT.parent))
+    refresh = importlib.import_module("refresh_test_durations")
+    scopes = {"1": "ALL", "2": "tests/test_a.py", "3": "ALL", "4": "ALL"}
+
+    def gh(argv, **_):
+        if argv[:3] == ["gh", "run", "list"]:
+            return subprocess.CompletedProcess(argv, 0, stdout='[{"databaseId": 1}, '
+                                               '{"databaseId": 2}, {"databaseId": 3}, '
+                                               '{"databaseId": 4}]')
+        run, artifact, target = argv[3], argv[5], Path(argv[7])
+        target.mkdir(parents=True, exist_ok=True)
+        if artifact == refresh.SELECTION:
+            (target / "affected.txt").write_text(scopes[run], encoding="utf-8")
+        else:
+            (target / "junit.xml").write_text("<testsuites/>", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(refresh.subprocess, "run", gh)
+    got = refresh.download_recent(2, tmp_path)
+    assert got == [tmp_path / "1" / "junit.xml", tmp_path / "3" / "junit.xml"]
+
+
 pytestmark = pytest.mark.verifies(
     'ci-linux-proof-venue:'
     'The required shards run the unchanged gate runner',

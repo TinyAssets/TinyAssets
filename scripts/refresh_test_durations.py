@@ -4,11 +4,14 @@
 The required shards are packed by these per-file durations
 (ci_required_tests.shard_of). A single run is noisy -- on 2026-10-01 one shard
 ran the same files a median 2.7x slower than another run did -- so each file's
-value is its MEDIAN over the last few successful runs. A stale table costs
-shard balance and PR tier placement; the conservative queue still covers all
-files. Refresh when shard times drift apart.
+value is its MEDIAN over the last few successful whole-surface runs. Only
+those: a selective run's junit holds just the files it selected, so a table
+read from them drops every file they left out, and a dropped file counts as
+its venue's median wherever it lands. A stale table costs shard balance; the
+conservative queue still covers all files. Refresh when shard times drift
+apart, or when a test file's time changes by minutes.
 
-    python scripts/refresh_test_durations.py               # last 5 runs, via gh
+    python scripts/refresh_test_durations.py               # last 5 whole-surface runs, via gh
     python scripts/refresh_test_durations.py --junit a.xml b.xml
 """
 
@@ -24,9 +27,14 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 
+from ci_required_tests import selection_entries
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT = REPO_ROOT / ".github" / "test-durations.json"
 ARTIFACT = "junit-required-tests"
+SELECTION = "affected-selection"
+#: How far back to look for whole-surface runs: most merge groups are selective.
+SEARCHED = 200
 
 
 def per_file_seconds(junit: Path) -> dict[str, float]:
@@ -45,26 +53,37 @@ def median_table(runs: list[dict[str, float]], root: Path = REPO_ROOT) -> dict[s
 
 
 def download_recent(count: int, workdir: Path) -> list[Path]:
+    """The aggregate junits of the last `count` successful whole-surface merge groups."""
     listed = subprocess.run(
         ["gh", "run", "list", "--workflow", "tests.yml", "--event", "merge_group",
-         "--status", "success", "-L", str(count), "--json", "databaseId"],
+         "--status", "success", "-L", str(SEARCHED), "--json", "databaseId"],
         cwd=REPO_ROOT, check=True, capture_output=True, text=True,
     ).stdout
     paths = []
     for run in json.loads(listed):
         target = workdir / str(run["databaseId"])
-        subprocess.run(
-            ["gh", "run", "download", str(run["databaseId"]), "-n", ARTIFACT, "-D", str(target)],
-            cwd=REPO_ROOT, check=True,
-        )
+
+        def download(artifact: str) -> None:
+            subprocess.run(
+                ["gh", "run", "download", str(run["databaseId"]), "-n", artifact, "-D", str(target)],
+                cwd=REPO_ROOT, check=True,
+            )
+
+        download(SELECTION)
+        if selection_entries(target / "affected.txt") is not None:
+            continue
+        download(ARTIFACT)
         paths.append(target / "junit.xml")
+        if len(paths) == count:
+            break
     return paths
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--junit", nargs="+", type=Path, help="merged junit files to use instead")
-    ap.add_argument("--runs", type=int, default=5, help="successful merge-group runs to read")
+    ap.add_argument("--runs", type=int, default=5,
+                    help="successful whole-surface merge-group runs to read")
     ap.add_argument("--out", type=Path, default=OUT)
     args = ap.parse_args(argv)
     with tempfile.TemporaryDirectory() as tmp:
