@@ -1582,6 +1582,18 @@ export class Files {
   }
 
   /**
+   * A read for a copy back's names (`restore.ts` `restoreNames`): `limit` of the hashes of
+   * every chunk row but one being deleted, from the `offset`th in hash order. A `deleting`
+   * row is never held again and its bytes may be gone already, its row's delete to follow.
+   */
+  chunksFrom(offset: number, limit: number): string[] {
+    return this.#sql.exec<{ sha256: string }>(
+      "SELECT sha256 FROM file_chunks WHERE state != 'deleting' ORDER BY sha256 LIMIT ? " +
+        "OFFSET ?", limit, offset)
+      .toArray().map((row) => row.sha256);
+  }
+
+  /**
    * A read for a restore's sweep (`restore.ts`): `limit` of the hashes of every chunk row, in
    * any state, after the hash `after` (null: from the first), in order.
    */

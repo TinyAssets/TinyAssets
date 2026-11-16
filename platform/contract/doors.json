@@ -1157,6 +1157,11 @@
       "args": "none"
     },
     {
+      "door": "restoreNames", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "restore", "gate": "units",
+      "args": { "refused": "invalid restore request", "required": { "from": {} }, "optional": {} }
+    },
+    {
       "door": "egressOpen", "class": "work", "caller": "egress", "capability": null,
       "handler": "egress", "gate": "units", "args": "loose"
     },

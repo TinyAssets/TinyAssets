@@ -348,6 +348,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   restoreWipe(binding: Binding, request: DoorRequest<"restoreWipe">):
     Promise<DoorAnswer<"restoreWipe">>;
   restoreRelease(binding: Binding): Promise<DoorAnswer<"restoreRelease">>;
+  restoreNames(binding: Binding, request: DoorRequest<"restoreNames">):
+    Promise<DoorAnswer<"restoreNames">>;
   egressOpen(binding: Binding, ...request: DoorLoose<"egressOpen">):
     Promise<DoorAnswer<"egressOpen">>;
   egressReserve(binding: Binding, ...request: DoorLoose<"egressReserve">):

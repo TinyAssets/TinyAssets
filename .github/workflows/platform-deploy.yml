@@ -29,8 +29,8 @@ name: Platform deploy (manual, founder-approved)
 # makes the same in memory) and rotated with `keyring-add`, then stored here.
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
-# probe, routes, h2, handback, control, owner, restore, erase, rotation and
-# retire here; pair is its own job.
+# probe, routes, h2, handback, control, owner, restore, copyback, erase, rotation
+# and retire here; pair is its own job.
 # `routes` keeps a record of what it changes (the zone's routes, the egress
 # custom domain, E2B's lifecycle webhook) before any change, and its job
 # summary names the record's id (the run's); `handback` takes that id as
@@ -41,8 +41,12 @@ name: Platform deploy (manual, founder-approved)
 # channel; `restore` restores `owner` from `generation` through it (a live
 # owner's object wiped only once `confirm` names the generation its pin wrote),
 # or with no `generation` asks the owner's namespace and finished generations
-# (`confirm` release-<owner> gives a pin up); `erase` erases `owner` as its own
-# door does, for an owner who asked by other means, only once `confirm` is
+# (`confirm` release-<owner> gives a pin up); `copyback` writes back from the
+# off-account copy, as it stood at `at` (none: as it stands), the objects of
+# `owner`'s namespace that R2 lacks, the namespace as the owner's object names
+# it and the copy's restore record written first (deploy/offsite.ts
+# `copyBack`; checklist.md, "A restore from the copy"); `erase` erases `owner`
+# as its own door does, for an owner who asked by other means, only once `confirm` is
 # erase-<owner> (a run without it names the words); `rotation` asks every
 # owner the directory lists to bring its blobs under `keyring`'s active kid,
 # its progress kept in the control namespace; `retire` sets `keyring` with its
@@ -53,11 +57,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | probe | routes | h2 | handback | control | owner | restore | erase | rotation | retire'
+        description: 'plan | dark | probe | routes | h2 | handback | control | owner | restore | copyback | erase | rotation | retire'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, probe, routes, h2, handback, control, owner, restore, erase, rotation, retire]
+        options: [plan, dark, probe, routes, h2, handback, control, owner, restore, copyback, erase, rotation, retire]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -84,7 +88,7 @@ on:
         default: ''
         type: string
       owner:
-        description: 'owner, restore and erase: the owner principal'
+        description: 'owner, restore, copyback and erase: the owner principal'
         required: false
         default: ''
         type: string
@@ -108,6 +112,11 @@ on:
         required: false
         default: ''
         type: string
+      at:
+        description: 'copyback: the time the copy is read as it stood at (yyyy-mm-ddThh:mm:ssZ); none, as it stands'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -126,6 +135,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
       OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
+      OFFSITE_BUCKET: ${{ vars.OFFSITE_BUCKET }}
       MODE: ${{ inputs.mode }}
       ROTATE: ${{ inputs.rotate }}
       MIGRATE: ${{ inputs.migrate }}
@@ -137,6 +147,7 @@ jobs:
       GENERATION: ${{ inputs.generation }}
       CONFIRM: ${{ inputs.confirm }}
       KEYRING: ${{ inputs.keyring }}
+      AT: ${{ inputs.at }}
     steps:
       - uses: actions/checkout@v4
 
@@ -155,6 +166,7 @@ jobs:
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
           --generation "${GENERATION}" --confirm "${CONFIRM}" --keyring "${KEYRING}"
+          --at "${AT}"
 
       # The plan the apply job is held to, kept by this run alone (a re-run of the plan job
       # writes it again).
@@ -213,6 +225,7 @@ jobs:
       WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
       WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
       OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
+      OFFSITE_BUCKET: ${{ vars.OFFSITE_BUCKET }}
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       ROUTING_MAC_KEY: ${{ secrets.ROUTING_MAC_KEY }}
       GATEWAY_KEYRING: ${{ secrets.GATEWAY_KEYRING }}
@@ -227,6 +240,10 @@ jobs:
       TA_PROBE_KEY_B: ${{ secrets.TA_PROBE_KEY_B }}
       TA_PROBE_APP_TOKEN: ${{ secrets.TA_PROBE_APP_TOKEN }}
       TA_PROBE_KEY_ID: ${{ secrets.TA_PROBE_KEY_ID }}
+      OFFSITE_B2_READ_KEY_ID: ${{ secrets.OFFSITE_B2_READ_KEY_ID }}
+      OFFSITE_B2_READ_KEY: ${{ secrets.OFFSITE_B2_READ_KEY }}
+      OFFSITE_R2_WRITE_ACCESS_KEY_ID: ${{ secrets.OFFSITE_R2_WRITE_ACCESS_KEY_ID }}
+      OFFSITE_R2_WRITE_SECRET_ACCESS_KEY: ${{ secrets.OFFSITE_R2_WRITE_SECRET_ACCESS_KEY }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       MODE: ${{ inputs.mode }}
       ROTATE: ${{ inputs.rotate }}
@@ -239,6 +256,7 @@ jobs:
       GENERATION: ${{ inputs.generation }}
       CONFIRM: ${{ inputs.confirm }}
       KEYRING: ${{ inputs.keyring }}
+      AT: ${{ inputs.at }}
     steps:
       - uses: actions/checkout@v4
 
@@ -249,6 +267,10 @@ jobs:
       - name: Install the platform's pinned tools
         working-directory: platform
         run: npm ci
+
+      # The copy back's rclone (deploy/offsite.ts `copyBack`), for that mode alone.
+      - if: inputs.mode == 'copyback'
+        uses: ./.github/actions/rclone
 
       # This run's plan alone: with no run-id, the download reads no other run's artifacts.
       - name: The plan the plan job showed
@@ -264,3 +286,4 @@ jobs:
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
           --generation "${GENERATION}" --confirm "${CONFIRM}" --keyring "${KEYRING}"
+          --at "${AT}"

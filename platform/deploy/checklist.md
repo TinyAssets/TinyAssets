@@ -654,12 +654,56 @@ The steps, on your own computer (about $0.50 a month at today's size):
    copies.
 
 **The first copied nights** show, in the run's summary, both sides' counts and bytes and how
-many objects were compared byte for byte. A restore from the copy is a later step of its own.
-For it you mint an R2 write key on `tinyassets-files`, ending the next day, and revoke it
-after. No standing key can write the files bucket. Never copy back by hand, even before that
-step exists: it writes the restore record (`deploy:offsite:restore`) before its first byte, and
-a copy back that records nothing lets mode `retire` pass while R2 and the copy still hold roots
-under a retiring kid of `FILES_KEYRING`.
+many objects were compared byte for byte.
+
+**The monthly drill.** On the 1st of each month a second night runs at 06:37 UTC and then
+drills a restore from the copy (`deploy/offsite.ts` `drill`): every object R2 held when that
+night began is downloaded from both sides and compared byte for byte, and the copy is read as a
+copy back reads it at the oldest time it takes (21 days back), naming how many objects it would
+write. It writes nothing. A failed drill fails that night's copy job, as a red night does. Dispatch **Off-account copy (nightly)** with `drill` ticked for one by hand.
+
+## A restore from the copy
+
+Mode `copyback` of **Platform deploy** writes back into `tinyassets-files` the objects of one
+owner's namespace that R2 lacks, as the copy holds them now or held them at `at`, a time in the
+last 21 days, and never replaces one R2 holds (`deploy/offsite.ts` `copyBack`). Use it when R2
+lost an owner's objects: a mistaken deletion, or a restore whose chunks step names chunks
+missing.
+
+- **Erasures first.** The namespace is the one the owner's own object names (`restore.source`
+  through the operator channel). The doors refuse that for an erased owner, or one being
+  erased, so nothing of it is read or written.
+- **Only what the owner's object names.** A chunk or generation no row of it names (one its
+  own collection deleted, a redaction's bytes, a pruned generation) is never written back:
+  nothing would delete it again. Should a row be collected during the run, the run stops
+  after the write, naming how many; then restore the owner (mode `restore`), whose sweep
+  deletes them.
+- **The restore record first.** Before the first byte the run writes `deploy:offsite:restore`.
+  That restarts a `FILES_KEYRING` retirement's gate: dispatch `rotation` for a pass begun after
+  it.
+- **Not yet: a lost object, or any owner after an account loss.** Then no object names a
+  namespace, and the run refuses (`docs/decisions/untangle-2026-11/r8-copy-restore.md`).
+
+The steps:
+
+1. **The R2 write key, for this restore alone,** as step 5 above makes the read key, with
+   **Workers R2 Storage Bucket Item Write** in place of Item Read, the name
+   `tinyassets-offsite-restore`, and an end date: add `"expires_on": "<tomorrow>T00:00:00Z"`
+   beside `"name"`. Store its pair as `OFFSITE_R2_WRITE_ACCESS_KEY_ID` and
+   `OFFSITE_R2_WRITE_SECRET_ACCESS_KEY`. The run also reads `OFFSITE_BUCKET` and the read key
+   the nights use.
+2. **Dispatch `copyback`** with `owner`, and `at` (`2026-11-01T00:00:00Z`) for the copy as it
+   stood then; none reads it as it stands. A deletion more than a night old is hidden in the
+   copy as it stands, so give a time before it. The apply job names the namespace, how many
+   objects it wrote, and that each read back byte for byte. Nothing lacking, nothing is written
+   or recorded.
+3. **Should the owner's database go back too,** dispatch `restore` with a generation of that
+   namespace (above).
+4. **Revoke the key** (My Profile → API Tokens), and `gh secret delete` both halves
+   `--env production`.
+
+Never copy back by hand. A copy back that records nothing lets mode `retire` pass while R2 and
+the copy still hold roots under a retiring kid of `FILES_KEYRING`.
 
 ## Registrations you make by hand at the providers
 

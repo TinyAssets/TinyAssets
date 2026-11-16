@@ -23,10 +23,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 
 import { REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
-import { CAPABILITIES, copy, type Effects, NIGHTLY, SETTINGS, settings } from "../offsite";
+import {
+  backFrom, BACK_DAYS, CAPABILITIES, copy, copyBack, drill, type Effects, NIGHTLY, RESTORE_KEY,
+  type RestoreControl, SETTINGS, settings,
+} from "../offsite";
 
 const BUCKET = "tinyassets-offsite-abcd1234";
 const ACCOUNT = "c".repeat(32);
@@ -41,6 +45,8 @@ const STORED: Record<string, string> = {
 const SECRETS = Object.entries(STORED).filter(([name]) => /KEY|SECRET/.test(name))
   .map(([, value]) => value);
 const START = new Date("2026-11-15T05:37:12.345Z");
+/** The monthly night that drills a restore from the copy. */
+const DRILL_NIGHT = "37 6 1 * *";
 
 type Json = Record<string, unknown>;
 
@@ -66,7 +72,9 @@ function world(options: { readonly capabilities?: Partial<Record<"write" | "read
                           readonly buckets?: (string | null)[]; readonly prefix?: string;
                           readonly bucket?: Json; readonly signIn?: number;
                           readonly gone?: string[]; readonly names?: string[];
-                          readonly failing?: string } = {}) {
+                          readonly failing?: string;
+                          readonly back?: { readonly copy: string[]; readonly r2: string[] } }
+               = {}) {
   const calls: Call[] = [];
   const asked: string[] = [];
   const keyOf: Record<string, "write" | "read"> =
@@ -111,6 +119,10 @@ function world(options: { readonly capabilities?: Partial<Record<"write" | "read
     if (args[0] === "size") {
       const count = args.at(-1)!.startsWith("copy:") ? 3000 : 5000;
       return { status: 0, stdout: JSON.stringify({ count, bytes: count * 10, sizeless: 0 }) };
+    }
+    if (args[0] === "lsf" && /^(back|r2):/.test(args.at(-1)!)) {
+      return { status: 0, stdout: (args.at(-1)!.startsWith("back:") ? options.back?.copy
+        : options.back?.r2)?.join("\n") ?? "" };
     }
     if (args[0] === "lsf") {
       const names = options.names ?? ["o/aa/c/1", "o/aa/m/2"];
@@ -205,8 +217,10 @@ describe("the nightly copy", () => {
   it("syncs R2 to B2, hiding every deletion, then checks what R2 held when the run began, " +
      "and a sample byte for byte", async () => {
     const fake = world();
-    const lines = await run(fake);
+    const night = await run(fake);
+    const { lines } = night;
     const began = "2026-11-15T05:37:12Z";
+    expect(night.began).toBe(began);
     const times = ["--use-server-modtime", "--fast-list"];
     expect(fake.calls.map((call) => call.args)).toEqual([
       ["lsf", "--files-only", "-R", ...times, `copy:${BUCKET}`],
@@ -217,7 +231,7 @@ describe("the nightly copy", () => {
        "--min-age", began],
       ["lsf", "--files-only", "-R", ...times, "--min-age", began, `source:${SOURCE}`],
       ["check", `source:${SOURCE}`, `check:${BUCKET}`, "--one-way", "--download",
-       "--files-from", expect.stringMatching(/sample$/)],
+       "--files-from", expect.stringMatching(/names$/)],
       ["size", "--json", ...times, `source:${SOURCE}`],
       ["size", "--json", ...times, `copy:${BUCKET}`],
     ]);
@@ -282,7 +296,7 @@ describe("the nightly copy", () => {
     expect([sample.length, new Set(sample).size,
             sample.every((name) => names.includes(name))]).toEqual([16, 16, true]);
     const empty = world({ names: [] });
-    expect((await run(empty)).at(-1)).toMatch(/0 compared byte for byte$/);
+    expect((await run(empty)).lines.at(-1)).toMatch(/0 compared byte for byte$/);
     expect(empty.calls.find((call) => call.sample !== undefined)!.sample).toEqual([]);
   });
 
@@ -298,6 +312,158 @@ describe("the nightly copy", () => {
   }
 });
 
+describe("a copy back from the copy (R8)", () => {
+  const NS = "a".repeat(32);
+  const PREFIX = `o/${NS}/`;
+  const WRITE = { OFFSITE_R2_WRITE_ACCESS_KEY_ID: "r2-write-id",
+                  OFFSITE_R2_WRITE_SECRET_ACCESS_KEY: "r2-write-secret-value" };
+  const BACK = backFrom({ ...STORED, ...WRITE }, ACCOUNT);
+  const AT = new Date("2026-11-01T00:00:00Z");
+  /** The control namespace as Cloudflare answers the record's put with `status`. */
+  const control = (fake: ReturnType<typeof world>, status = 200) => {
+    const puts: unknown[] = [];
+    const held: RestoreControl = { account: ACCOUNT, namespace: "control-ns", cloudflare: {
+      put: async (account, namespace, key, value) => {
+        expect([account, namespace, key]).toEqual([ACCOUNT, "control-ns", RESTORE_KEY]);
+        // Where the put falls among rclone's calls.
+        puts.push({ value, after: fake.calls.map((call) => call.args[0]) });
+        return status;
+      } } };
+    return { held, puts };
+  };
+  const lacking = { copy: ["c/1", "c/2", "m/3"], r2: ["c/1"] };
+  /** What the owner's object names: the chunks and generations given, the same each ask. */
+  const naming = (chunks: string[] = ["1", "2"], generations: string[] = ["3"]) =>
+    async () => ({ chunks: new Set(chunks), generations: new Set(generations) });
+
+  it("records the restore before its first byte, then writes only what R2 lacks, as the " +
+     "copy stood at the time asked, and reads each back byte for byte", async () => {
+    const fake = world({ back: lacking });
+    const { held, puts } = control(fake);
+    const lines = await copyBack(BACK, SOURCE, NS, AT, naming(), held, fake.io);
+    expect(puts).toEqual([{ value: { kind: "tinyassets-offsite-restore",
+                                     began: Math.floor(START.getTime() / 1000) },
+                            after: ["lsf", "lsf"] }]);
+    expect(fake.calls.map((call) => [call.args, call.sample])).toEqual([
+      [["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list",
+        `r2:${SOURCE}/${PREFIX}`], undefined],
+      [["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list",
+        `back:${BUCKET}/${PREFIX}`], undefined],
+      [["copy", `back:${BUCKET}/${PREFIX}`, `r2:${SOURCE}/${PREFIX}`, "--files-from",
+        expect.stringMatching(/names$/), "--ignore-existing", "--stats-one-line", "--stats", "1m",
+        "--stats-log-level", "NOTICE"], ["c/2", "m/3"]],
+      [["check", `back:${BUCKET}/${PREFIX}`, `r2:${SOURCE}/${PREFIX}`, "--one-way", "--download",
+        "--files-from", expect.stringMatching(/names$/)], ["c/2", "m/3"]]]);
+    // The copy as it stood at the time, with the read key; R2 with the write pair alone.
+    expect(fake.calls[2]!.env).toEqual({
+      RCLONE_CONFIG: "/dev/null",
+      RCLONE_CONFIG_BACK_TYPE: "b2", RCLONE_CONFIG_BACK_ACCOUNT: "b2-read-id",
+      RCLONE_CONFIG_BACK_KEY: "b2-read-secret-value",
+      RCLONE_CONFIG_BACK_VERSION_AT: "2026-11-01T00:00:00Z",
+      RCLONE_CONFIG_R2_TYPE: "s3", RCLONE_CONFIG_R2_PROVIDER: "Cloudflare",
+      RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true",
+      RCLONE_CONFIG_R2_ENDPOINT: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: "r2-write-id",
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: "r2-write-secret-value" });
+    for (const call of fake.calls) {
+      expect([...SECRETS, ...Object.values(WRITE)]
+        .filter((secret) => call.args.some((arg) => arg.includes(secret)))).toEqual([]);
+    }
+    expect(lines.at(-1)).toBe(`wrote 2 objects under ${PREFIX} into ${SOURCE}, as the copy ` +
+                              "held them at 2026-11-01T00:00:00Z, each one R2 lacked and the " +
+                              "owner's object names, and read each back byte for byte (0 more " +
+                              "it lacks no row names)");
+  });
+
+  it("never writes back what no row of the owner's object names: a chunk its own collection " +
+     "deleted, or a pruned generation, stays out of R2", async () => {
+    // The copy still holds a chunk collected past its grace (or a redaction's) and a pruned
+    // generation's root and part; the object names neither.
+    const fake = world({ back: { copy: ["c/1", "c/2", "c/collected", "m/3", "m/3/0",
+                                        "m/pruned", "m/pruned/0"], r2: ["c/1"] } });
+    const lines = await copyBack(BACK, SOURCE, NS, AT, naming(), control(fake).held, fake.io);
+    expect(fake.calls.filter((call) => call.args[0] !== "lsf").map((call) => call.sample))
+      .toEqual([["c/2", "m/3", "m/3/0"], ["c/2", "m/3", "m/3/0"]]);
+    expect(lines.at(-1)).toMatch(/wrote 3 objects .* \(3 more it lacks no row names\)$/);
+    // Nothing it names lacking: nothing written, nothing recorded.
+    const none = world({ back: { copy: ["c/1", "c/collected"], r2: ["c/1"] } });
+    const { held, puts } = control(none);
+    expect((await copyBack(BACK, SOURCE, NS, AT, naming(), held, none.io)).at(-1))
+      .toMatch(/nothing is written, and no restore is recorded$/);
+    expect([puts, none.calls.map((call) => call.args[0])]).toEqual([[], ["lsf", "lsf"]]);
+  });
+
+  it("stops loudly when the object stops naming what was written, its row collected during " +
+     "the run", async () => {
+    const fake = world({ back: lacking });
+    let asks = 0;
+    const named = async () => (asks++ === 0 ? naming() : naming(["1"]))();
+    await expect(copyBack(BACK, SOURCE, NS, AT, named, control(fake).held, fake.io))
+      .rejects.toThrow(`the owner's object no longer names 1 of the 2 objects written under ` +
+                       `${PREFIX}, collected during the run: only mode restore's sweep deletes ` +
+                       "them");
+  });
+
+  it("reads the copy as it stands when no time is asked", async () => {
+    const fake = world({ back: lacking });
+    await copyBack(BACK, SOURCE, NS, null, naming(), control(fake).held, fake.io);
+    expect(Object.keys(fake.calls[2]!.env)).not.toContain("RCLONE_CONFIG_BACK_VERSION_AT");
+  });
+
+  it("writes nothing when Cloudflare refuses the restore record", async () => {
+    const fake = world({ back: lacking });
+    await expect(copyBack(BACK, SOURCE, NS, AT, naming(), control(fake, 500).held, fake.io))
+      .rejects.toThrow(`writing the restore record ${RESTORE_KEY} failed (500): nothing is ` +
+                       "written into R2");
+    expect(fake.calls.map((call) => call.args[0])).toEqual(["lsf", "lsf"]);
+  });
+
+  it("refuses a time outside the copy's window, and a missing key, before anything", async () => {
+    for (const at of [new Date(START.getTime() - BACK_DAYS * 86_400_000 - 1000),
+                      new Date(START.getTime() + 1000)]) {
+      const fake = world({ back: lacking });
+      const { held, puts } = control(fake);
+      await expect(copyBack(BACK, SOURCE, NS, at, naming(), held, fake.io))
+        .rejects.toThrow(/a version older than 22 days since it was hidden is gone/);
+      expect([fake.calls, puts]).toEqual([[], []]);
+    }
+    for (const name of Object.keys(WRITE)) {
+      expect(() => backFrom({ ...STORED, ...WRITE, [name]: "" }, ACCOUNT))
+        .toThrow(`a copy back needs ${name} (platform/deploy/checklist.md, "A restore from ` +
+                 "the copy\"); nothing is read or written");
+    }
+  });
+});
+
+describe("the monthly drill", () => {
+  it("compares every object R2 held at the night's start byte for byte, then reads what a " +
+     "copy back at the oldest time it takes would write, writing nothing", () => {
+    const fake = world({ back: { copy: ["o/aa/c/1", "o/aa/c/2", "o/bb/m/3"], r2: ["o/aa/c/1"] } });
+    const night = { began: "2026-11-15T05:37:12Z", lines: [] };
+    const lines = drill(SET, SOURCE, night, fake.io);
+    expect(fake.calls.map((call) => call.args)).toEqual([
+      ["check", `source:${SOURCE}`, `check:${BUCKET}`, "--one-way", "--download", "--min-age",
+       night.began],
+      ["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list", `r2:${SOURCE}/`],
+      ["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list", `back:${BUCKET}/`],
+      ["cat", "--discard", "--files-from", expect.stringMatching(/names$/), `back:${BUCKET}/`]]);
+    expect(fake.calls[3]!.sample!.sort()).toEqual(["o/aa/c/2", "o/bb/m/3"]);
+    // The copy as it stood BACK_DAYS ago, and R2 with the nightly's read pair.
+    expect(fake.calls[2]!.env["RCLONE_CONFIG_BACK_VERSION_AT"]).toBe("2026-10-25T05:37:12Z");
+    expect(fake.calls[1]!.env["RCLONE_CONFIG_R2_ACCESS_KEY_ID"]).toBe("r2-id");
+    expect(lines).toEqual([
+      "every object R2 held at 2026-11-15T05:37:12Z is in the copy, compared byte for byte",
+      "a copy back as the copy stood at 2026-10-25T05:37:12Z would write 2 objects R2 no " +
+      "longer holds; 2 of them read back whole"]);
+  });
+
+  it("stops loudly when its byte check fails", () => {
+    expect(() => drill(SET, SOURCE, { began: "2026-11-15T05:37:12Z", lines: [] },
+                       world({ failing: "check" }).io))
+      .toThrow(/the copy's byte check of every object failed \(rclone exit 7/);
+  });
+});
+
 describe("offsite-copy.yml", () => {
   const flow = workflow("offsite-copy.yml");
   const { [NIGHTLY.settings]: settingsJob, [NIGHTLY.copy]: copyJob } = flow.jobs;
@@ -308,8 +474,8 @@ describe("offsite-copy.yml", () => {
 
   it("runs nightly off the hour, one at a time, both jobs in production, the copy only " +
      "when its settings are stored", () => {
-    expect(flow.on.schedule).toEqual([{ cron: "37 5 * * *" }]);
-    expect(flow.on).toEqual({ schedule: [{ cron: "37 5 * * *" }], workflow_dispatch: null });
+    expect(flow.on.schedule).toEqual([{ cron: "37 5 * * *" }, { cron: DRILL_NIGHT }]);
+    expect(Object.keys(flow.on)).toEqual(["schedule", "workflow_dispatch"]);
     expect(flow.concurrency).toEqual({ group: "offsite-copy", "cancel-in-progress": false });
     // The canary reads the nights by these two jobs' names (`watch`), which a `name:` would
     // replace in GitHub's listing.
@@ -332,18 +498,32 @@ describe("offsite-copy.yml", () => {
     const variables = ["OFFSITE_BUCKET", "CLOUDFLARE_ACCOUNT_ID"];
     expect(flow.env).toEqual(Object.fromEntries([...SETTINGS, "CLOUDFLARE_ACCOUNT_ID"].map(
       (name) => [name, `\${{ ${variables.includes(name) ? "vars" : "secrets"}.${name} }}`])));
-    expect(copied.env).toBeUndefined();
-    expect(copied.run).toBe("node --experimental-strip-types platform/deploy/offsite.ts copy");
+    expect(copied.run)
+      .toBe('node --experimental-strip-types platform/deploy/offsite.ts "${COMMAND}"');
   });
 
-  it("runs the rclone it pins, by its digest", () => {
-    const install = step(copyJob, "Install rclone, pinned by its digest");
+  it("drills on the monthly night, or a dispatch that asks, and copies on every other", () => {
+    expect(flow.on.workflow_dispatch.inputs.drill).toMatchObject({ type: "boolean",
+                                                                   default: false });
+    expect(copied.env).toEqual({ COMMAND: `\${{ (github.event.schedule == '${DRILL_NIGHT}' || ` +
+                                          "inputs.drill) && 'drill' || 'copy' }}" });
+  });
+
+  it("runs the rclone the one action pins, by its digest, before each step that runs it", () => {
+    const action = parse(readFileSync(join(REPO, ".github/actions/rclone/action.yml"), "utf8"));
+    const [install] = action.runs.steps;
+    expect(action.runs.steps).toHaveLength(1);
     expect(install.env.RCLONE).toMatch(/^v\d+\.\d+\.\d+$/);
     expect(install.env.RCLONE_SHA256).toMatch(/^[0-9a-f]{64}$/);
     expect(install.run).toContain('| sha256sum -c -');
-    const order = copyJob.steps.map((each: { name?: string }) => each.name);
-    expect(order.indexOf("Install rclone, pinned by its digest"))
-      .toBeLessThan(order.indexOf("Copy the files bucket to B2"));
+    const uses = (job: typeof flow) =>
+      job.steps.findIndex((each: { uses?: string }) => each.uses === "./.github/actions/rclone");
+    const at = (job: typeof flow, text: string) =>
+      job.steps.findIndex((each: { run?: string }) => each.run?.includes(text));
+    expect([uses(copyJob) >= 0, uses(copyJob) < at(copyJob, "offsite.ts")]).toEqual([true, true]);
+    const { apply } = workflow("platform-deploy.yml").jobs;
+    expect(apply.steps[uses(apply)].if).toBe("inputs.mode == 'copyback'");
+    expect(uses(apply)).toBeLessThan(at(apply, "deploy.ts"));
   });
 
   const folder = mkdtempSync(join(tmpdir(), "offsite-workflow-"));

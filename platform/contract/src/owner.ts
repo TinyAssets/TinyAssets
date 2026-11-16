@@ -225,6 +225,22 @@ export interface RestoreSource {
                       readonly fresh: string | null; readonly since: number } | null;
 }
 
+/** A page of what the owner's object names in the bucket (`restoreNames`), from the `from`th. */
+export interface RestoreNamesRequest {
+  readonly from: number;
+}
+
+/**
+ * What a copy back from the off-account copy may write into the owner's namespace
+ * (`restoreNames`): the bucket name of each chunk a page of its chunk rows holds, the
+ * generations it holds, and where the next page begins (null: none is left).
+ */
+export interface RestoreNames {
+  readonly chunks: readonly string[];
+  readonly generations: readonly string[];
+  readonly next: number | null;
+}
+
 /** The generation a restore pins on a live owner (`restorePin`): one of its finished ones. */
 export interface RestorePinRequest {
   readonly gen: string;
@@ -401,6 +417,7 @@ export interface DoorTypes {
   readonly restorePin: { readonly values: RestorePinRequest; readonly answer: RestoreHold };
   readonly restoreWipe: { readonly values: RestoreWipeRequest; readonly answer: RestoreHold };
   readonly restoreRelease: { readonly answer: { readonly released: true } };
+  readonly restoreNames: { readonly values: RestoreNamesRequest; readonly answer: RestoreNames };
   readonly sessionOpen: { readonly answer: { readonly session: string } };
   readonly sessionClose: { readonly answer: { readonly closed: number } };
   readonly socketTicket: { readonly handed: true };
