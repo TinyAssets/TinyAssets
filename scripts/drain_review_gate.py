@@ -31,12 +31,6 @@ _RAW_META_RE = re.compile(
     rb":[0-7]{6} [0-7]{6} ([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) [A-Z][0-9]*"
 )
 
-# `author_association` as GitHub computes it at read time: trusted metadata, not
-# something a review body can claim. CONTRIBUTOR and NONE are excluded: anyone can
-# review a public repository's PR, and a drive-by review must not decide it.
-_TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
-
-
 def _raw_change(base: str, head: str, *, cwd: Path | None = None) -> bytes:
     """`git diff --raw -z` of merge-base(base, head)..head, full ids, no renames."""
     def git(*args: str) -> bytes:
@@ -95,8 +89,22 @@ def change_entries(raw: bytes) -> dict[bytes, bytes]:
 #
 # COMMENT, not APPROVE, because the one writer account cannot approve its own
 # PR (ADR-038 decision 2).
+#
+# A verdict counts only from an account that can push to the repository. The
+# review's `author_association` says nothing about that: MEMBER is any member of
+# the owning organization, with or without access here, and COLLABORATOR anyone
+# invited, read-only included (GitHub's `CommentAuthorAssociation`). GitHub's
+# `GET /repos/{r}/collaborators/{login}/permission` gives the highest role from
+# every grant, the repository's, a team's, the organization's and the
+# enterprise's, with maintain read as `write` and triage as `read`.
 
 _VERDICTS = frozenset({"APPROVE", "BLOCK"})
+_PUSH = {"admin": True, "write": True, "read": False, "none": False}
+_LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?$")
+
+
+class PermissionUnread(Exception):
+    """Whether a verdict's author can push could not be read: no verdict counts."""
 
 
 @dataclass(frozen=True)
@@ -106,15 +114,21 @@ class Verdict:
     url: str
 
 
-def latest_verdict(reviews: list[object], *, since: str | None = None) -> Verdict | None:
-    """The latest trusted review whose first non-blank line is a verdict.
+def latest_verdict(reviews: list[object], *, can_push: Callable[[str], bool],
+                   since: str | None = None) -> Verdict | None:
+    """The latest review by an account that can push whose first line is a verdict.
 
-    `reviews` is `GET /repos/{r}/pulls/{n}/reviews`. A review counts when its
-    author's `author_association` (GitHub's, computed at read time) is trusted,
-    it is not dismissed or pending, and its body's first non-blank line, with
-    surrounding whitespace removed, is exactly `APPROVE` or `BLOCK`. Anything
-    else is an ordinary review comment and changes nothing. The latest one by
-    `submitted_at` (then id) wins, so a BLOCK after an APPROVE voids it.
+    `reviews` is `GET /repos/{r}/pulls/{n}/reviews`. A review is a verdict when it is
+    not dismissed or pending and its body's first non-blank line, with surrounding
+    whitespace removed, is exactly `APPROVE` or `BLOCK`. Anything else is an ordinary
+    review comment and changes nothing. The latest verdict by `submitted_at` (then id)
+    whose author `can_push` wins, so a BLOCK after an APPROVE voids it; a verdict by
+    anyone else is an ordinary comment.
+
+    `can_push(login)` is asked newest first, once a login, and stops at the first
+    author who can. When it raises `PermissionUnread`, so does this: that author may
+    be a writer whose BLOCK would decide, so skipping them could bring back an older
+    APPROVE.
 
     A dismissed review, by anyone, voids every verdict at or before it: dismissing
     a BLOCK must not bring back the APPROVE it answered (#3989's failure), so the
@@ -133,36 +147,65 @@ def latest_verdict(reviews: list[object], *, since: str | None = None) -> Verdic
             if not (isinstance(when, str) and isinstance(ident, int)):
                 raise ValueError(f"dismissed review {ident!r} has no time or id")
             void = (when, ident) if void is None or (when, ident) > void else void
-    best: tuple[str, int, Verdict] | None = None
+    verdicts: list[tuple[str, int, str, Verdict]] = []
     for review in reviews:
         if not isinstance(review, dict):
             raise ValueError(f"not a review: {review!r}")
         state = review.get("state")
         if state in {"DISMISSED", "PENDING"}:
             continue
-        association = review.get("author_association")
         body = review.get("body") or ""
         commit = review.get("commit_id")
         when = review.get("submitted_at")
         ident = review.get("id")
-        if not isinstance(association, str) or not isinstance(body, str):
-            raise ValueError(f"review {ident!r} has no author association or body")
-        if association not in _TRUSTED_ASSOCIATIONS:
-            continue
+        if not isinstance(body, str):
+            raise ValueError(f"review {ident!r} has no body")
         first = next((line.strip() for line in body.splitlines() if line.strip()), "")
         if first not in _VERDICTS:
             continue
+        user = review.get("user")
+        login = user.get("login") if isinstance(user, dict) else None
         if not (isinstance(commit, str) and _SHA_RE.fullmatch(commit)
-                and isinstance(when, str) and isinstance(ident, int)):
-            raise ValueError(f"review {ident!r} has no commit, time or id")
+                and isinstance(when, str) and isinstance(ident, int)
+                and isinstance(login, str)):
+            raise ValueError(f"review {ident!r} has no commit, time, id or author")
         if since is not None and when <= since:
             continue
         if void is not None and (when, ident) <= void:
             continue
-        verdict = Verdict(first, commit, str(review.get("html_url") or ""))
-        if best is None or (when, ident) > best[:2]:
-            best = (when, ident, verdict)
-    return None if best is None else best[2]
+        verdicts.append((when, ident, login,
+                         Verdict(first, commit, str(review.get("html_url") or ""))))
+    pushes: dict[str, bool] = {}
+    for _, _, login, verdict in sorted(verdicts, key=lambda v: v[:2], reverse=True):
+        if login not in pushes:
+            pushes[login] = can_push(login)
+        if pushes[login]:
+            return verdict
+    return None
+
+
+def push_reader(repo: str) -> Callable[[str], bool]:
+    """`can_push` for `latest_verdict`, from GitHub's permission read with `gh`.
+
+    `admin` and `write` (maintain among them) can push; `read` and `none` cannot.
+    Anything else, a failed read included, raises `PermissionUnread` with its reason.
+    """
+    def can_push(login: str) -> bool:
+        if not _LOGIN_RE.fullmatch(login):
+            raise PermissionUnread(f"{login!r} is not a GitHub login")
+        try:
+            answer = _gh_json(f"repos/{repo}/collaborators/{login}/permission")
+        except subprocess.CalledProcessError as exc:
+            why = (exc.stderr or "").strip()[:200] or f"gh exited {exc.returncode}"
+            raise PermissionUnread(f"could not read {login}'s permission: {why}") from exc
+        except (subprocess.SubprocessError, OSError, ValueError) as exc:
+            raise PermissionUnread(f"could not read {login}'s permission: {exc}") from exc
+        permission = answer.get("permission") if isinstance(answer, dict) else None
+        if permission not in _PUSH:
+            raise PermissionUnread(f"{login}'s permission reads {permission!r}")
+        return _PUSH[permission]
+
+    return can_push
 
 
 _BASE_CHANGES = frozenset({"base_ref_changed", "automatic_base_change_succeeded"})
@@ -378,18 +421,26 @@ def review_check(
     base: str,
     head: str,
     carry: Callable[[str], str | None],
+    can_push: Callable[[str], bool],
     since: str | None = None,
 ) -> CheckState:
-    """The `review` check for `head`, from the PR's reviews and `carry(commit)`.
+    """The `review` check for `head`, from the PR's reviews, `carry(commit)` and
+    `can_push(login)`.
 
-    Only reviews after `since`, the PR's last base change, count.
+    Only reviews after `since`, the PR's last base change, count. A permission that
+    cannot be read is no verdict, its reason in the title and summary: never a pass.
     """
     ask = (
-        f"A reviewer posts a PR review on the commit it read ({head}), its first "
-        "line `APPROVE` or `BLOCK`, the evidence below. Any other delta after a "
+        f"A reviewer who can push posts a PR review on the commit it read ({head}), its "
+        "first line `APPROVE` or `BLOCK`, the evidence below. Any other delta after a "
         "review gets a one-round delta review of only that delta."
     )
-    verdict = latest_verdict(reviews, since=since)
+    try:
+        verdict = latest_verdict(reviews, can_push=can_push, since=since)
+    except PermissionUnread as exc:
+        return CheckState(None, f"no verdict counts: {exc}",
+                          f"A verdict counts only from an account that can push, and {exc}. "
+                          f"Rerun review.yml once the read works.\n\n{ask}")
     if verdict is None:
         title = f"waiting for review of {head}"
         if since is not None:
@@ -490,6 +541,7 @@ def _review_check(argv: list[str]) -> int:
     parser.add_argument("--timeline-file", type=Path, required=True,
                         help="the PR's timeline events, one JSON array")
     parser.add_argument("--pr", type=int, required=True)
+    parser.add_argument("--repo", required=True, help="owner/repo, whose writers' verdicts count")
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", required=True)
     parser.add_argument("--group-sha", help="the merge group's commit, to post the group's run")
@@ -508,6 +560,7 @@ def _review_check(argv: list[str]) -> int:
         state = review_check(
             reviews, base=args.base, head=args.head, since=last_base_change(events),
             carry=lambda commit: carries(args.base, commit, args.head),
+            can_push=push_reader(args.repo),
         )
     except (OSError, ValueError) as exc:
         print(f"cannot decide the review check: {exc}", file=sys.stderr)

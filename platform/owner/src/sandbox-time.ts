@@ -356,7 +356,7 @@ function billedEvent(value: unknown): BilledEvent {
   return value as unknown as BilledEvent;
 }
 
-// -- THE DOORS: the `sandbox-time` rows' handlers (`contract/doors.json`) -------------------------
+// -- THE DOORS: the `sandbox-time` rows' handlers (`owner/doors.json`) ----------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`SandboxTimeDoorNeeds`) once the row's steps held: the bind, the account, the
@@ -376,7 +376,7 @@ export const sandboxTimeDoors = Object.freeze({
    * an execution, inside the window its event's time allows. An erased or erasing owner
    * counts nothing.
    */
-  async sandboxBilled(o: SandboxTimeDoorNeeds, door: Door<BilledEvent>):
+  async sandboxBilled(o: SandboxTimeDoorNeeds, door: Door<BilledEvent, "none">):
       Promise<{ counted: boolean }> {
     if (o.gone()) {
       return { counted: false };

@@ -1680,7 +1680,7 @@ export interface RunListRequest {
 /** A past run in the caller's list: its receipt without its result (its own door's). */
 export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
 
-// -- THE DOORS: the `runs` rows' handlers (`contract/doors.json`) ---------------------------------
+// -- THE DOORS: the `runs` rows' handlers (`owner/doors.json`) ------------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`RunsDoorNeeds`) once the row's steps held: the bind, the account, the scope
@@ -1755,8 +1755,8 @@ export const runsDoors = Object.freeze({
     await o.launcher.seeded();
     const read = await o.launcher.readAgent(asked.agent);
     const run = await o.launcher.launch(read, () => {
-      const { account, universe } = door.check();
-      return { ...initiated(door.binding, account, universe, asked.agent),
+      const { account, binding, universe } = door.check();
+      return { ...initiated(binding, account, universe, asked.agent),
                agent: asked.agent, conversation: asked.conversation, request: asked.request,
                tiers: o.admission.numbers(), unattended: false,
                prompt: asked.prompt, mail: null };
@@ -1771,7 +1771,7 @@ export const runsDoors = Object.freeze({
    */
   async agentRun(o: RunsDoorNeeds, door: Door<LaunchRequest>): Promise<RunView | RunSchedule> {
     const asked = await o.synced(() => {
-      const { account, r, agent, universe } = door.check();
+      const { account, binding, r, agent, universe } = door.check();
       const input = runText(r["input"], "an input");
       const client = account.origin?.client ?? null;
       const at = r["at"] ?? null;
@@ -1785,7 +1785,7 @@ export const runsDoors = Object.freeze({
       if (at === null && cron === null) {
         return { now: true as const, agent, input, client };
       }
-      const { stamp, origin } = initiated(door.binding, account, universe, agent);
+      const { stamp, origin } = initiated(binding, account, universe, agent);
       return { now: false as const, schedule: o.runs.schedule({
         agent, input, at: at as number | null, cron: cron as string | null, stamp, origin },
                                                                   clock()) };
@@ -1796,9 +1796,9 @@ export const runsDoors = Object.freeze({
     await o.launcher.seeded();
     const read = await o.launcher.readAgent(asked.agent);
     const run = await o.launcher.launch(read, () => {
-      const { account, universe } = door.check();
+      const { account, binding, universe } = door.check();
       // A run's own launch has no person at it: unattended, as a schedule's run is.
-      return { ...initiated(door.binding, account, universe, asked.agent),
+      return { ...initiated(binding, account, universe, asked.agent),
                agent: asked.agent, conversation: null, request: null,
                tiers: o.admission.numbers(), unattended: account.run !== null,
                prompt: asked.input, mail: null };
@@ -1848,7 +1848,7 @@ export const runsDoors = Object.freeze({
    * never committed; the batch renews the lease (the runner's heartbeat); the runner's
    * `end` settles the run.
    */
-  async runEvents(o: RunsDoorNeeds, door: Door<EventsRequest>):
+  async runEvents(o: RunsDoorNeeds, door: Door<EventsRequest, "run">):
       Promise<{ accepted: number; settled: string | null }> {
     // A reply this batch's settle would post, past `PLACE_BYTES`, is placed in R2 first, in
     // the gate's own first unit (ADR-035): the settle's unit then posts it by reference, so a
@@ -1861,7 +1861,7 @@ export const runsDoors = Object.freeze({
         const call = door.check();
         const lease = call.lease!;
         const r = eventsRequest(call.r);
-        const reply = o.runs.answering(door.binding.run as string, lease, r.frames, r.end);
+        const reply = o.runs.answering(call.binding.run, lease, r.frames, r.end);
         return reply === null || utf8Bytes(reply.result) <= PLACE_BYTES ? null
           : { placing: o.launcher.beginReply(reply) };
       } catch (error) {
@@ -1879,18 +1879,18 @@ export const runsDoors = Object.freeze({
         // Another batch landed between the units (a runner's retry): the reply this settle
         // would post is not the one placed, so the batch is posted again, never dropped. A
         // reply whose writer's files refused it (no placing) settles with a notice instead.
-        const reply = o.runs.answering(door.binding.run as string, lease, r.frames, r.end);
+        const reply = o.runs.answering(call.binding.run, lease, r.frames, r.end);
         if (reply !== null && utf8Bytes(reply.result) > PLACE_BYTES
             && !placedAs(placed, reply.result)
             && !(placing !== null && placing.placing === null)) {
           throw new Refusal("events_raced", EVENTS_RACED);
         }
-        return o.launcher.withReply(placed, () =>
-          o.runs.events(door.binding.run as string, lease, r.frames, r.end, clock()));
+        return { run: call.binding.run, ...o.launcher.withReply(placed, () =>
+          o.runs.events(call.binding.run, lease, r.frames, r.end, clock())) };
       });
       o.relay.relay(done.conversation, done.frames);
       if (done.settled !== null) {
-        o.relay.settled(door.binding.run as string);
+        o.relay.settled(done.run);
         await o.sync();
       }
       return { accepted: done.frames.length, settled: done.settled };
@@ -1916,7 +1916,8 @@ export const runsDoors = Object.freeze({
    * reaches it. With no run waiting the owner leaves the line, so the next owner is rung.
    * An erased or erasing owner does nothing (its erasure takes it out of the line).
    */
-  async sandboxRung(o: RunsDoorNeeds, door: Door<undefined>): Promise<{ waiting: number }> {
+  async sandboxRung(o: RunsDoorNeeds, door: Door<undefined, "none">):
+      Promise<{ waiting: number }> {
     if (o.gone()) {
       return { waiting: 0 };
     }

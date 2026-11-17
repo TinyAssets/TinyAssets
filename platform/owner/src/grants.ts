@@ -609,7 +609,7 @@ export interface ForgetRequest {
   readonly clients: string[];
 }
 
-// -- THE DOORS: the `grants` rows' handlers (`contract/doors.json`) -------------------------------
+// -- THE DOORS: the `grants` rows' handlers (`owner/doors.json`) ----------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`GrantsDoorNeeds`) once the row's steps held: the bind, the account, the

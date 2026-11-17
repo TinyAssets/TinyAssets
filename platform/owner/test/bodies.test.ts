@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { sqlIn, until } from "../../ci/workerd";
 import { refusalOf } from "../../contract/src/refusal";
+import { MARK_BODY } from "../../contract/src/files";
 import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { LIMITS } from "../src/collections";
 import { Files, PLACE_TTL_S } from "../src/files";
@@ -21,7 +22,7 @@ import { GRANT_LIMITS, scopes } from "../src/grants";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { TIER_UNREAD } from "../src/files";
-import { eraseBegun, erasedWhole, finished } from "./erasure-support";
+import { eraseBegun, finished } from "./erasure-support";
 import { MUSE, rig, signedIn } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import {
@@ -223,7 +224,13 @@ describe("the placement rule", () => {
                                  content: text(file) });
     const ns = await namespace(stub);
     expect([await inR2(ns, LARGE), await inR2(ns, file)]).toEqual([LARGE, file]);
-    await erasedWhole(stub, owner, session);
+    // The namespace's mark at the erasure's start, a day before its delete, so the night
+    // between carries the erasure off the account (`r8-account-loss.md` item 3).
+    await eraseBegun(stub, session);
+    await until(async () => await env.BLOBS.get(`e/${ns}`).then((mark) => mark?.text()) ===
+                MARK_BODY, "the erasure's mark");
+    expect(await inR2(ns, file)).toBe(file);
+    await finished(stub, owner);
     expect(await inR2(ns, LARGE)).toMatch(/^missing: /);
     expect(await inR2(ns, file)).toMatch(/^missing: /);
   });

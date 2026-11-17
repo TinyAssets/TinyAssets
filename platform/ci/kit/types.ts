@@ -21,12 +21,10 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
+import { WIDTH } from "../../contract/src/source-lines.ts";
 import { PLATFORM } from "../paths.ts";
 import { readWrangler, WRANGLER, workerFolders } from "../wrangler.ts";
 import { envFile } from "./sources.ts";
-
-/** The widest line the platform's sources keep. */
-const WIDTH = 100;
 
 interface ServiceClass {
   readonly source: string;

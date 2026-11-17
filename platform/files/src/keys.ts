@@ -3,7 +3,7 @@
  * (`objectPrefix`, `o/<ns>/`, the contract's): a chunk's `o/<ns>/c/<name>`, and a
  * generation's (the owner export and the nightly manifest, `owner/src/backup.ts`) root
  * `o/<ns>/m/<gen>`, its base parts `o/<ns>/m/<gen>/<part>` and its change-log segments
- * `o/<ns>/m/<gen>/l/<a>-<b>`.
+ * `o/<ns>/m/<gen>/l/<a>-<b>`; and, outside every prefix, a namespace's erasure mark `e/<ns>`.
  *
  * `ns` is an owner's random 128-bit namespace, held only in that owner's object; a chunk's
  * `name` is the HMAC of its content hash under the owner's data key (`datakey.ts`
@@ -12,7 +12,7 @@
  * NFC-normalizes keys, and uploads are verbatim (Fact 9): two names a sandbox can create
  * would meet in one object. The r2-keys guard keeps every other source from building one.
  */
-import { objectPrefix, segmentSpans } from "../../contract/src/files";
+import { MARKS, namespace, objectPrefix, segmentSpans } from "../../contract/src/files";
 import { Refusal } from "../../contract/src/refusal";
 import { HEX16, HEX64 } from "../../contract/src/ids";
 import { MANIFEST_PARTS } from "../../contract/src/limits";
@@ -77,6 +77,14 @@ export function manifestObjectKey(ns: unknown, gen: unknown, at: ManifestAt): st
 export function segmentKey(ns: unknown, gen: unknown, a: unknown, b: unknown): string {
   const [from, to] = segmentSpan(a, b);
   return `${manifestKey(ns, gen)}/l/${from}-${to}`;
+}
+
+/**
+ * The R2 key of the mark that `ns` was deleted on purpose (`e/<ns>`, the contract's `MARKS`):
+ * outside the namespace's prefix, so its own delete spares it.
+ */
+export function markKey(ns: unknown): string {
+  return `${MARKS}${namespace(ns)}`;
 }
 
 /** The prefix every chunk key of one owner's namespace starts with: the erasure's list. */

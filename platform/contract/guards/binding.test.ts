@@ -1,20 +1,23 @@
 /**
  * Each binding kind's parser (`contract/src/binding.ts`) takes the binding the binder builds
- * for it, field for field, and refuses any malformed one as `invalid`: a field missing, a
- * field another kind carries, a field out of its grammar, or another kind's caller.
+ * for it, field for field, which presents that kind (`bindingKind`), and refuses any malformed
+ * one as `invalid`: a field missing, a field another kind carries, a field out of its grammar,
+ * or another kind's caller.
  */
 import { describe, expect, it } from "vitest";
 
-import { BINDING_PARSERS, type BindingKind, PLATFORM_CALLER } from "../src/binding";
+import { BINDING_PARSERS, type BindingKind, bindingKind, PLATFORM_CALLER } from "../src/binding";
 import { refusalOf } from "../src/refusal";
 
 const OWNER = "user_owner";
 const HEX = (char: string, length: number) => char.repeat(length);
 const ORIGIN = { client: HEX("a", 64), family: HEX("b", 64) };
 const EGRESS = { kind: "egress", token: HEX("c", 64), generation: 3 };
+const SYNC = { kind: "sync", token: HEX("c", 64), egress: HEX("f", 64) };
 
-/** Each kind's bindings as the binder builds them (`doors/src/binder.ts`). */
-const BUILT: Readonly<Record<BindingKind, readonly Record<string, unknown>[]>> = {
+/** Each kind's bindings as the binder builds them (`doors/src/binder.ts`), and `none`'s. */
+const BUILT: Readonly<Record<BindingKind, readonly unknown[]>> = {
+  none: [undefined],
   account: [
     { owner: OWNER, caller: OWNER, origin: null },
     { owner: OWNER, caller: "user_visitor", origin: null, tiers: { free: 1 }, signins: [] },
@@ -30,12 +33,11 @@ const BUILT: Readonly<Record<BindingKind, readonly Record<string, unknown>[]>> =
     { owner: OWNER, caller: OWNER, origin: ORIGIN, source: { kind: "api_key", ref: HEX("d", 16) },
       authenticated_at: 5, session: "cookie" },
   ],
-  sandbox: [
+  egress: [
     { owner: OWNER, caller: OWNER, origin: null, sandbox: EGRESS },
     { owner: OWNER, caller: OWNER, origin: null, sandbox: { ...EGRESS, runner: HEX("e", 64) } },
-    { owner: OWNER, caller: OWNER, origin: null,
-      sandbox: { kind: "sync", token: HEX("c", 64), egress: HEX("f", 64) } },
   ],
+  sync: [{ owner: OWNER, caller: OWNER, origin: null, sandbox: SYNC }],
   run: [
     { owner: OWNER, caller: OWNER, origin: null, sandbox: { ...EGRESS, secret: HEX("1", 64) },
       run: `run_${HEX("2", 32)}` },
@@ -45,7 +47,6 @@ const BUILT: Readonly<Record<BindingKind, readonly Record<string, unknown>[]>> =
       tiers: { free: 1 }, signins: [] },
   ],
   reserved: [{ owner: OWNER, caller: PLATFORM_CALLER, origin: null }],
-  erasure: [{ owner: OWNER, caller: PLATFORM_CALLER, origin: null }],
   import: [
     { owner: OWNER, caller: PLATFORM_CALLER, origin: null, import: { bundle: HEX("4", 64) },
       tiers: null },
@@ -54,6 +55,7 @@ const BUILT: Readonly<Record<BindingKind, readonly Record<string, unknown>[]>> =
 
 /** Each kind's binding made malformed one way, by what is wrong with it. */
 const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
+  none: [["a binding", { owner: OWNER, caller: OWNER, origin: null }], ["null", null]],
   account: [
     ["not an object", "user_owner"],
     ["no origin", { owner: OWNER, caller: OWNER }],
@@ -73,7 +75,7 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
     ["an untrimmed owner", { owner: " user_owner", caller: OWNER, origin: null }],
   ],
   session: [["no session", { owner: OWNER, caller: OWNER, origin: null }]],
-  sandbox: [
+  egress: [
     ["an outside origin", { owner: OWNER, caller: OWNER, origin: ORIGIN, sandbox: EGRESS }],
     ["another caller", { owner: OWNER, caller: "user_other", origin: null, sandbox: EGRESS }],
     ["both secrets", { owner: OWNER, caller: OWNER, origin: null,
@@ -82,17 +84,22 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
                         sandbox: { kind: "egress", token: HEX("c", 64) } }],
     ["generation 0", { owner: OWNER, caller: OWNER, origin: null,
                        sandbox: { ...EGRESS, generation: 0 } }],
-    ["a sync token with a generation", { owner: OWNER, caller: OWNER, origin: null,
-      sandbox: { kind: "sync", token: HEX("c", 64), egress: HEX("f", 64), generation: 1 } }],
+    ["the sync token", { owner: OWNER, caller: OWNER, origin: null, sandbox: SYNC }],
     ["a run beside it", { owner: OWNER, caller: OWNER, origin: null, sandbox: EGRESS,
                           run: `run_${HEX("2", 32)}` }],
+  ],
+  sync: [
+    ["a sync token with a generation", { owner: OWNER, caller: OWNER, origin: null,
+                                          sandbox: { ...SYNC, generation: 1 } }],
+    ["the egress token", { owner: OWNER, caller: OWNER, origin: null, sandbox: EGRESS }],
+    ["another caller", { owner: OWNER, caller: "user_other", origin: null, sandbox: SYNC }],
   ],
   run: [
     ["no run", { owner: OWNER, caller: OWNER, origin: null, sandbox: EGRESS }],
     ["a run out of its grammar", { owner: OWNER, caller: OWNER, origin: null, sandbox: EGRESS,
                                    run: "run_x" }],
     ["the sync token", { owner: OWNER, caller: OWNER, origin: null, run: `run_${HEX("2", 32)}`,
-      sandbox: { kind: "sync", token: HEX("c", 64), egress: HEX("f", 64) } }],
+                         sandbox: SYNC }],
   ],
   inbound: [
     ["revision 0", { owner: OWNER, caller: OWNER, origin: null,
@@ -106,9 +113,9 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
     ["the owner's own caller", { owner: OWNER, caller: OWNER, origin: null }],
     ["an outside origin", { owner: OWNER, caller: PLATFORM_CALLER, origin: ORIGIN }],
     ["tiers beside it", { owner: OWNER, caller: PLATFORM_CALLER, origin: null, tiers: null }],
+    ["a session beside it", { owner: OWNER, caller: PLATFORM_CALLER, origin: null,
+                              session: "cookie" }],
   ],
-  erasure: [["a session beside it", { owner: OWNER, caller: PLATFORM_CALLER, origin: null,
-                                      session: "cookie" }]],
   import: [
     ["no tiers", { owner: OWNER, caller: PLATFORM_CALLER, origin: null,
                    import: { bundle: HEX("4", 64) } }],
@@ -123,8 +130,9 @@ const KINDS = Object.keys(BINDING_PARSERS) as BindingKind[];
 
 describe("each binding kind's parser", () => {
   it.each(KINDS.flatMap((kind) => BUILT[kind].map((built) => [kind, built] as const)))(
-    "%s takes the binding the binder builds, field for field", (kind, built) => {
+    "%s takes the binding the binder builds, field for field, which presents it", (kind, built) => {
       expect(BINDING_PARSERS[kind](built)).toEqual(built);
+      expect(bindingKind(built)).toBe(kind);
     });
 
   it.each(KINDS.flatMap((kind) => MALFORMED[kind].map(([what, bad]) => [kind, what, bad] as const)))(

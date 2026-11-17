@@ -393,7 +393,7 @@ export interface SigninRequest {
                                readonly models?: readonly string[] }[];
 }
 
-// -- THE DOORS: the `signins` rows' handlers (`contract/doors.json`) ------------------------------
+// -- THE DOORS: the `signins` rows' handlers (`owner/doors.json`) ---------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`SigninsDoorNeeds`) once the row's steps held: the bind, the account, the
@@ -431,7 +431,7 @@ export const signinsDoors = Object.freeze({
   async signinStart(o: SigninsDoorNeeds, door: Door<SigninStartRequest>):
       Promise<SigninView | { started: false; code: string }> {
     const begun = await o.door(() => {
-      const { r } = door.check();
+      const { binding, r } = door.check();
       const rec = typeof r["engine"] === "string" ? bundledSources().get(r["engine"]) : undefined;
       const cli = rec?.cli;
       if (rec === undefined || cli === undefined || cli.login === undefined
@@ -445,7 +445,7 @@ export const signinsDoors = Object.freeze({
       }
       // A sign-in sits behind its source's switch; a sign-out never does, so a login is
       // always removable (review H1).
-      if (mode === "in" && !switchedOn(o.storage, door.binding.signins, clock()).has(rec.id)) {
+      if (mode === "in" && !switchedOn(o.storage, binding.signins, clock()).has(rec.id)) {
         throw new Refusal("signin_off", SIGNIN_OFF);
       }
       const regions = cli.regions === undefined ? [] : Object.keys(cli.regions);
@@ -539,10 +539,10 @@ export const signinsDoors = Object.freeze({
    */
   async signinCode(o: SigninsDoorNeeds, door: Door<SigninCodeRequest>): Promise<{ delivered: boolean }> {
     const { row, code } = await o.door(() => {
-      const { r } = door.check();
+      const { binding, r } = door.check();
       const code = pastedCode(r["code"]);
       const row = o.signins.wantsCode(r["id"], clock());
-      if (!switchedOn(o.storage, door.binding.signins, clock()).has(row.engine)) {
+      if (!switchedOn(o.storage, binding.signins, clock()).has(row.engine)) {
         throw new Refusal("signin_off", SIGNIN_OFF);
       }
       return { row, code };

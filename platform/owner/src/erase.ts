@@ -43,6 +43,11 @@ interface ErasureParts {
   readonly ended: () => void;
   /** Every sandbox of the owner killed and the sandbox Worker's state of them deleted. */
   readonly sandboxes: () => Promise<void>;
+  /**
+   * The namespace's erasure mark in R2 (`Files.markNamespace`), at the erasure's start, so the
+   * nightly copy holds it before the delete is due, whatever holds the delete up. Repeatable.
+   */
+  readonly mark: () => Promise<void>;
   /** The object's Lifecycle, whose alarm the last step disables for good. */
   readonly lifecycle: { disableAlarms(): Promise<void> };
   /**
@@ -139,7 +144,7 @@ export class Erasure extends LifecycleCapability {
     if (this.#erased) {
       return;
     }
-    const { storage, write, ended, sandboxes, lifecycle, blobs, blobsAgain, wipe,
+    const { storage, write, ended, mark, sandboxes, lifecycle, blobs, blobsAgain, wipe,
             outside } = this.#parts;
     if (erasureStep(storage) < 2) {
       // 1. The mark, and the job that resumes this after a crash (pushed again on a resume,
@@ -150,6 +155,7 @@ export class Erasure extends LifecycleCapability {
         return [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: clockMs() + ERASE_RETRY_MS })];
       });
       await rearmed;
+      await mark();
       // 2. The outside record: the doors told (again, should this be a resume).
       await outside();
       // 3. Every run ended: the owner's sandboxes killed first, paused ones included (a

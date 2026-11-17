@@ -36,8 +36,13 @@
  *   hashes under the owner's key; the owner object's garbage collection is its only caller,
  *   for keys in its own chunk table.
  * - `deleteNamespace` deletes every object under one owner's namespace prefix, listing it
- *   1,000 keys at a time: the owner's erasure alone, so a chunk whose row was lost, or
- *   whose put landed late, goes with the rest.
+ *   1,000 keys at a time: the owner's erasure and the cutover's discard alone, so a chunk
+ *   whose row was lost, or whose put landed late, goes with the rest. First, in the same
+ *   call, it makes the namespace's mark (`e/<ns>`, `contract/src/files.ts` `MARKS`), once and
+ *   never deleted: the record of the erasure that the nightly copy carries off the account,
+ *   so no copy back ever writes the namespace again (`deploy/offsite.ts`). A failure after
+ *   the mark leaves it standing, and the delete is repeated. An erasure marks it at its start
+ *   too (`markNamespace`), a day before its delete.
  * - `sweepManifests` lists one page of one namespace's generations and deletes every object
  *   of a generation the owner's object no longer names, each root before its objects: the
  *   manifest lane's sweep alone.
@@ -51,9 +56,10 @@
  * `deleteNamespace`, `sweepManifests` and `listChunks` are the only lists of the bucket, each
  * only ever of one namespace's prefix.
  *
- * Every object is sealed in this Worker under its owner's data key (`datakey.ts`), by the
- * envelope's per-object seal (`contract/src/envelope.ts` `sealObject`: AES-256-GCM, the
- * object's own R2 key as additional data), so the bucket holds only ciphertext, and bytes
+ * Every object of a namespace is sealed in this Worker under its owner's data key
+ * (`datakey.ts`), by the envelope's per-object seal (`contract/src/envelope.ts` `sealObject`:
+ * AES-256-GCM, the object's own R2 key as additional data), so the bucket holds only
+ * ciphertext but the marks, which hold nothing but what they are, and bytes
  * moved under another key or namespace fail to open. Each call presents the owner's wrapped
  * key, which this Worker opens with its own keyring (`FILES_KEYRING`) for that call alone and
  * never keeps. A put or get with no key, or a key that does not open for the namespace, is
@@ -85,13 +91,13 @@ import { base64, fromBase64, hex, openObject, sealObject } from "../../contract/
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedGeneration, listedManifest,
-  type ManifestAt, manifestKey, manifestObjectKey, manifestPrefix, segmentKey,
+  type ManifestAt, manifestKey, manifestObjectKey, manifestPrefix, markKey, segmentKey,
 } from "./keys";
 import { Refusal } from "../../contract/src/refusal";
 import {
   type ChunkCheck, type ChunkGet, type ChunkPut, type ChunkStore, type ChunkUpload, GET_READS,
-  type ManifestLists, manifestLists, type ManifestObject, type ManifestRoot, type ManifestSegment,
-  namespace,
+  type ManifestLists, manifestLists, MARK_BODY, type ManifestObject, type ManifestRoot,
+  type ManifestSegment, namespace,
 } from "../../contract/src/files";
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
@@ -325,12 +331,17 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       : { check: "broken", why: "a chunk's bytes no longer match its hash" };
   }
 
+  /** Mark `ns` deleted on purpose, once: a mark again finds it and leaves its one version. */
+  async markNamespace(ns: string): Promise<void> {
+    await this.env.BLOBS.put(markKey(ns), MARK_BODY, { onlyIf: { etagDoesNotMatch: "*" } });
+  }
+
   /**
-   * Delete every chunk and then every manifest object under `ns`'s prefixes, listed 1,000 at
-   * a time; repeatable.
+   * Mark `ns` deleted on purpose, then delete every chunk and then every manifest object under
+   * its prefixes, listed 1,000 at a time; repeatable.
    */
   async deleteNamespace(ns: string): Promise<{ deleted: number }> {
-    namespace(ns);
+    await this.markNamespace(ns);
     let deleted = 0;
     for (;;) {
       const listed = await this.env.BLOBS.list({ prefix: chunkPrefix(ns), limit: DELETE_BATCH });

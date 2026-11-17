@@ -1557,6 +1557,8 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
  * is applied before anything: the doors refuse an erased owner at the channel's gate (the
  * directory's record), at its tombstone and while it is erasing, and an object that names no
  * namespace (a lost one, or a new account's) is refused here, with nothing read or written.
+ * The copy back itself refuses a namespace the files bucket marks erased (`offsite.ts`
+ * `erasures`), the erasure's record that outlives the account.
  * Then mode `restore` restores a generation from it, should the owner's database go back too.
  * The plan job only plans it.
  */
@@ -1569,7 +1571,9 @@ const copyBackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
       `${run.at === null ? "stands" : `stood at ${run.at.toISOString()}`}, never one it holds, ` +
       `after writing the restore record ${RESTORE_KEY}: the namespace the owner's own object ` +
       "names (restore.source through the operator channel, which the doors refuse for an " +
-      "erased or erasing owner), each object written read back byte for byte");
+      "erased or erasing owner), and none the files bucket marks erased (its marks read from " +
+      "R2 and the copy first, a loud stop when they can't be), each object written read back " +
+      "byte for byte");
   if (run.reach === "public") {
     return;
   }

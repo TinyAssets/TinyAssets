@@ -439,7 +439,7 @@ describe("the key store", () => {
     const stub = doorsEnv.OWNER.getByName(who);
     const change = { type: "api_key_request", scopes: SCOPES };
     const proposed = (request_id: string) =>
-      ownDoor<{ digest: string }>(who, "policyProposal", { request_id });
+      ownDoor(who, "policyProposal", { request_id });
     await ownDoor(who, "policyPropose", { change, request_id: "card-key-1" });
     const { digest } = await proposed("card-key-1");
     const proposal = { request_id: "card-key-1", digest };
@@ -856,7 +856,8 @@ describe("the file door's bytes", () => {
     const files = (env as unknown as {
       FILES: Record<string, (...args: unknown[]) => Promise<unknown>> }).FILES;
     for (const method of ["getChunks", "getManifestRoot", "getManifestPart", "getManifestSegment",
-                          "rewrapKey", "mintKey", "deleteNamespace", "checkChunks"]) {
+                          "rewrapKey", "mintKey", "markNamespace", "deleteNamespace",
+                          "checkChunks"]) {
       const refused = await Promise.resolve().then(() => files[method]!("0".repeat(32), "k"))
         .then(() => null, (error: unknown) => String(error));
       expect([method, refused]).toEqual([method, expect.stringMatching(/does not implement/)]);
@@ -880,8 +881,7 @@ describe("the file door's bytes", () => {
     const committed = await appPost("files/upload/commit", app.access_token, null, {
       intent_id, path: "/workspace/big.bin", expected_etag: null });
     expect(committed.status).toBe(200);
-    const read = await ownDoor<{ entry: { size: number } }>(who, "fileRead",
-                                                             { path: "/workspace/big.bin" });
+    const read = await ownDoor(who, "fileRead", { path: "/workspace/big.bin" });
     expect(read.entry.size).toBe(FILE.byteLength);
   });
 

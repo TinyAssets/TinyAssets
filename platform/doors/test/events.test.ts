@@ -206,7 +206,7 @@ describe("the owner surface's doorbell", () => {
                                 { subscription_id });
     expect(await ended.json()).toEqual({ unsubscribed: true });
     // The owner's own wake settings, off by default, set here.
-    const policy = await ownDoor<{ generation: number }>(who, "policyRead");
+    const policy = await ownDoor(who, "policyRead");
     const limits = await appPost("agent/wake-limits", app.access_token, app.session, {
       agent_id: agent, max_wakes_per_hour: 2, batch_window_s: 0,
       expected_generation: policy.generation });

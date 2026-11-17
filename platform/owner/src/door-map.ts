@@ -1,11 +1,11 @@
 /**
  * The owner object's typed handler map, by door: written by `npm run generate` from the
- * door table (`contract/doors.json`), which says what each means. Edit the table, never
- * this file.
+ * door table's two halves (`contract/doors.json`, `owner/doors.json`), which say what each
+ * means. Edit the tables, never this file.
  */
 import type { Binding } from "../../contract/src/binding";
 
-/** Each door's module (its handler's), caller and gate, as its row names them. */
+/** Each door's module (its handler's), caller and gate, as its steps name them. */
 export interface DoorRows {
   readonly inboxDigest:
     { readonly module: "ledger"; readonly caller: "account"; readonly gate: "units" };

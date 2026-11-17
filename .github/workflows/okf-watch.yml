@@ -27,7 +27,7 @@ name: okf-watch
 #
 # Nothing here merges. Drafts are not auto-enrolled (auto-enroll-merge.yml), and a ready
 # pull request merges only with the `review` check every pull request needs (review.yml):
-# an APPROVE PR review by a trusted author. No workflow writes that review; it is an
+# an APPROVE PR review by an account that can push. No workflow writes that review; it is an
 # agent review session's, as for every pull request. A version number never decides
 # anything.
 

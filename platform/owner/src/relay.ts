@@ -423,7 +423,7 @@ export interface ConversationRequest {
   readonly conversation_id: string;
 }
 
-// -- THE DOORS: the `relay` rows' handlers (`contract/doors.json`) --------------------------------
+// -- THE DOORS: the `relay` rows' handlers (`owner/doors.json`) -----------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`RelayDoorNeeds`) once the row's steps held: the bind, the account, the
@@ -479,8 +479,7 @@ export const relayDoors = Object.freeze({
   async socketsEnd(o: RelayDoorNeeds, door: Door<undefined>):
       Promise<{ grant: string; ended: true }> {
     const grant = await o.door(() => {
-      door.check();
-      const held = door.binding.grant;
+      const held = door.check().binding.grant;
       if (typeof held !== "string" || held === "" || held.length > 128) {
         throw new Refusal("invalid", "a grant id");
       }

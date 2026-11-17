@@ -12,7 +12,7 @@
  */
 import { serve } from "../src/doors";
 import type { DoorsEnv } from "../src/env";
-import { callDoor } from "../src/tools";
+import { callDoor, type DoorName } from "../src/tools";
 import { TEST_SOURCES } from "./sources";
 
 const HARNESS = "https://e2e.internal";
@@ -35,19 +35,17 @@ export default {
       const name = url.pathname.slice("/starter/".length);
       const owner = env.OWNER.getByName(name);
       const binding = { owner: name, caller: name, origin: null };
-      // Each door's answer, as its row says it is.
-      const door = <T>(called: string, asked?: unknown) =>
-        callDoor(owner, binding, called, asked) as Promise<T>;
+      const door = <D extends DoorName>(called: D, asked?: unknown) =>
+        callDoor(owner, binding, called, asked);
       const files: Record<string, boolean> = {};
       for (const path of SEEDED) {
-        files[path] = (await door<{ entry: unknown }>("fileStat", { path })).entry !== null;
+        files[path] = (await door("fileStat", { path })).entry !== null;
       }
       return Response.json({
-        version: (await door<{ version: number }>("starterReceipts")).version,
-        agents: (await door<{ owner_agents: { agent: string }[] }>("outsideAgents", {}))
-          .owner_agents.map((agent) => agent.agent),
+        version: (await door("starterReceipts")).version,
+        agents: (await door("outsideAgents", {})).owner_agents.map((agent) => agent.agent),
         files,
-        failed: (await door<{ notices: { type: string; detail: unknown }[] }>("noticeList"))
+        failed: (await door("noticeList"))
           .notices.filter((notice) => notice.type === "starter_failed")
           .map((notice) => notice.detail),
       });

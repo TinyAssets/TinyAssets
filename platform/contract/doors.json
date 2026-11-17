@@ -1,11 +1,10 @@
 {
-  "about": "The owner object's doors (contract/src/doors.ts): one row for each public RPC method of OwnerDO, read by the object's runner and by the doors' tool table; and the names no RPC method may take, which no door is named.",
+  "about": "The owner object's doors (contract/src/doors.ts): one row for each public RPC method of OwnerDO, what every caller of it sees (its class, capability, act, arguments and MCP tool), read by the doors' tool table and by the object's runner beside the door's steps (owner/doors.json); and the names no RPC method may take, which no door is named.",
   "reserved": ["fetch", "connect", "dup", "constructor", "alarm", "webSocketMessage",
                "webSocketClose", "webSocketError"],
   "doors": [
     {
-      "door": "inboxDigest", "class": "read", "caller": "account", "guard": "no_mailbox",
-      "capability": "read_graph", "fieldsFirst": true, "handler": "ledger", "gate": "units",
+      "door": "inboxDigest", "class": "read", "capability": "read_graph",
       "args": {
         "refused": "invalid ledger request",
         "required": {
@@ -24,8 +23,7 @@
       }
     },
     {
-      "door": "boardDigest", "class": "read", "caller": "visitors", "capability": "read_graph",
-      "handler": "collections", "gate": "units",
+      "door": "boardDigest", "class": "read", "capability": "read_graph",
       "args": {
         "refused": "invalid collection request",
         "required": {
@@ -43,8 +41,7 @@
       }
     },
     {
-      "door": "mailboxRead", "class": "read", "caller": "account", "guard": "no_mailbox",
-      "capability": "read_graph", "fieldsFirst": true, "handler": "ledger", "gate": "units",
+      "door": "mailboxRead", "class": "read", "capability": "read_graph",
       "args": {
         "refused": "invalid ledger request",
         "required": {
@@ -64,8 +61,7 @@
       }
     },
     {
-      "door": "mailboxAck", "class": "reduce", "caller": "account", "guard": "no_mailbox",
-      "capability": "write_graph", "fieldsFirst": true, "handler": "ledger", "gate": "synced",
+      "door": "mailboxAck", "class": "reduce", "capability": "write_graph",
       "args": {
         "refused": "invalid ledger request",
         "required": {
@@ -80,9 +76,8 @@
       }
     },
     {
-      "door": "roomPost", "class": "work", "caller": "account", "capability": "write_graph",
+      "door": "roomPost", "class": "work", "capability": "write_graph",
       "act": { "name": "people.message", "when": "outside_member" },
-      "handler": "ledger", "gate": "units",
       "args": {
         "refused": "invalid ledger request",
         "required": {
@@ -100,8 +95,7 @@
       }
     },
     {
-      "door": "outsideAgents", "class": "read", "caller": "account", "capability": null,
-      "handler": "ledger", "gate": "units", "seeded": true,
+      "door": "outsideAgents", "class": "read", "capability": null,
       "args": {
         "refused": "invalid collection request", "required": {},
         "optional": {
@@ -116,8 +110,7 @@
       }
     },
     {
-      "door": "registerPropose", "class": "work", "caller": "account", "guard": "own_card",
-      "capability": null, "handler": "registrations", "gate": "door",
+      "door": "registerPropose", "class": "work", "capability": null,
       "args": {
         "refused": "invalid ledger request",
         "required": {
@@ -135,8 +128,7 @@
       }
     },
     {
-      "door": "policyPropose", "class": "work", "caller": "account",
-      "capability": "propose_policy", "fieldsFirst": true, "handler": "policy", "gate": "door",
+      "door": "policyPropose", "class": "work", "capability": "propose_policy",
       "args": {
         "refused": "invalid policy request",
         "required": { "change": { "type": "object", "description": "The proposed change" } },
@@ -151,8 +143,7 @@
       }
     },
     {
-      "door": "collectionGet", "class": "read", "caller": "visitors", "capability": "read_graph",
-      "handler": "collections", "gate": "units",
+      "door": "collectionGet", "class": "read", "capability": "read_graph",
       "args": {
         "refused": "invalid collection request",
         "required": {
@@ -171,8 +162,7 @@
       }
     },
     {
-      "door": "collectionPull", "class": "read", "caller": "visitors",
-      "capability": "read_graph", "handler": "collections", "gate": "units",
+      "door": "collectionPull", "class": "read", "capability": "read_graph",
       "args": {
         "refused": "invalid collection request",
         "required": {
@@ -189,8 +179,7 @@
       }
     },
     {
-      "door": "collectionHistory", "class": "read", "caller": "visitors",
-      "capability": "read_graph", "handler": "collections", "gate": "units",
+      "door": "collectionHistory", "class": "read", "capability": "read_graph",
       "args": {
         "refused": "invalid collection request",
         "required": {
@@ -209,9 +198,8 @@
       }
     },
     {
-      "door": "collectionWrite", "class": "work", "caller": "visitors",
-      "act": { "name": "share", "when": "public_row" },
-      "capability": "write_graph", "handler": "collections", "gate": "units",
+      "door": "collectionWrite", "class": "work", "act": { "name": "share", "when": "public_row" },
+      "capability": "write_graph",
       "args": {
         "refused": "invalid collection request",
         "required": {
@@ -232,8 +220,7 @@
       }
     },
     {
-      "door": "collectionDelete", "class": "reduce", "caller": "visitors", "guard": "owner_rows",
-      "action": "delete", "capability": "write_graph", "handler": "collections", "gate": "units",
+      "door": "collectionDelete", "class": "reduce", "capability": "write_graph",
       "args": {
         "refused": "invalid collection request",
         "required": {
@@ -250,8 +237,7 @@
       }
     },
     {
-      "door": "collectionClear", "class": "reduce", "caller": "visitors", "guard": "owner_rows",
-      "action": "clear", "capability": "write_graph", "handler": "collections", "gate": "synced",
+      "door": "collectionClear", "class": "reduce", "capability": "write_graph",
       "args": {
         "refused": "invalid collection request",
         "required": {
@@ -267,8 +253,7 @@
       }
     },
     {
-      "door": "fileStat", "class": "read", "caller": "account", "capability": "read_files",
-      "handler": "files", "gate": "door",
+      "door": "fileStat", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -283,8 +268,7 @@
       }
     },
     {
-      "door": "fileList", "class": "read", "caller": "reader", "capability": "read_files",
-      "handler": "files", "gate": "units", "seeded": true,
+      "door": "fileList", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -303,8 +287,7 @@
       }
     },
     {
-      "door": "fileText", "class": "read", "caller": "account", "capability": "read_files",
-      "handler": "files", "gate": "units", "seeded": true,
+      "door": "fileText", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -322,8 +305,7 @@
       }
     },
     {
-      "door": "fileSearch", "class": "read", "caller": "account", "capability": "read_files",
-      "handler": "files", "gate": "units", "seeded": true,
+      "door": "fileSearch", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request",
         "required": { "query": { "type": "string", "description": "The words to look for" } },
@@ -338,8 +320,7 @@
       }
     },
     {
-      "door": "fileFetch", "class": "read", "caller": "account", "capability": "read_files",
-      "handler": "files", "gate": "units", "seeded": true,
+      "door": "fileFetch", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -354,9 +335,8 @@
       }
     },
     {
-      "door": "fileAppend", "class": "work", "caller": "account", "capability": "write_files",
+      "door": "fileAppend", "class": "work", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -372,9 +352,8 @@
       }
     },
     {
-      "door": "fileWrite", "class": "work", "caller": "account", "capability": "write_files",
+      "door": "fileWrite", "class": "work", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -393,9 +372,8 @@
       }
     },
     {
-      "door": "fileEdit", "class": "work", "caller": "account", "capability": "write_files",
+      "door": "fileEdit", "class": "work", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "units", "seeded": true,
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -413,8 +391,7 @@
       }
     },
     {
-      "door": "fileHistory", "class": "read", "caller": "account", "capability": "read_files",
-      "handler": "files", "gate": "door",
+      "door": "fileHistory", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -432,8 +409,7 @@
       }
     },
     {
-      "door": "fileUsage", "class": "read", "caller": "account", "capability": "read_files",
-      "handler": "files", "gate": "door", "args": "none",
+      "door": "fileUsage", "class": "read", "capability": "read_files", "args": "none",
       "tool": {
         "name": "file_usage", "title": "File usage", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
@@ -441,9 +417,8 @@
       }
     },
     {
-      "door": "fileMkdir", "class": "work", "caller": "account", "capability": "write_files",
+      "door": "fileMkdir", "class": "work", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "filing",
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -459,9 +434,8 @@
       }
     },
     {
-      "door": "fileRemove", "class": "reduce", "caller": "account", "capability": "write_files",
+      "door": "fileRemove", "class": "reduce", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "filing",
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -478,9 +452,8 @@
       }
     },
     {
-      "door": "fileRename", "class": "work", "caller": "account", "capability": "write_files",
+      "door": "fileRename", "class": "work", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "filing",
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -498,9 +471,8 @@
       }
     },
     {
-      "door": "fileRestore", "class": "work", "caller": "account", "capability": "write_files",
+      "door": "fileRestore", "class": "work", "capability": "write_files",
       "act": { "name": "workspace.files" },
-      "handler": "files", "gate": "filing",
       "args": {
         "refused": "invalid file request",
         "required": {
@@ -517,9 +489,7 @@
       }
     },
     {
-      "door": "agentSubmit", "class": "work", "caller": "account", "capability": "converse",
-      "scope": "agent", "agent": { "field": "agent_id", "default": "main" }, "fieldsFirst": true,
-      "handler": "runs", "gate": "units",
+      "door": "agentSubmit", "class": "work", "capability": "converse",
       "args": {
         "refused": "invalid run request",
         "required": {
@@ -539,10 +509,8 @@
       }
     },
     {
-      "door": "agentRun", "class": "work", "caller": "account", "capability": "run_graph",
+      "door": "agentRun", "class": "work", "capability": "run_graph",
       "act": { "name": "workspace.workflows" },
-      "scope": "agent", "agent": { "field": "agent" }, "fieldsFirst": true, "handler": "runs",
-      "gate": "units",
       "args": {
         "refused": "invalid run request",
         "required": {
@@ -561,8 +529,7 @@
       }
     },
     {
-      "door": "agentStatus", "class": "read", "caller": "account", "capability": null,
-      "scope": "agent", "handler": "runs", "gate": "door",
+      "door": "agentStatus", "class": "read", "capability": null,
       "args": {
         "refused": "invalid run request", "required": {},
         "optional": {
@@ -577,8 +544,7 @@
       }
     },
     {
-      "door": "agentCancel", "class": "reduce", "caller": "account", "capability": null,
-      "scope": "agent", "handler": "runs", "gate": "units",
+      "door": "agentCancel", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid run request", "required": {},
         "optional": {
@@ -593,8 +559,7 @@
       }
     },
     {
-      "door": "codeRun", "class": "work", "caller": "account", "capability": null,
-      "handler": "codemode", "gate": "units",
+      "door": "codeRun", "class": "work", "capability": null,
       "args": {
         "refused": "invalid code request",
         "required": {
@@ -609,92 +574,71 @@
       }
     },
     {
-      "door": "sessionOpen", "class": "read", "caller": "owner", "action": "open its session",
-      "capability": null, "handler": "sessions", "gate": "door", "args": "none"
+      "door": "sessionOpen", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "sessionExtend", "class": "read", "caller": "owner", "action": "renew its session",
-      "capability": null, "handler": "sessions", "gate": "quiet", "args": "none"
+      "door": "sessionExtend", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "sessionClose", "class": "reduce", "caller": "owner", "action": "sign out",
-      "capability": null, "handler": "sessions", "gate": "synced", "args": "none"
+      "door": "sessionClose", "class": "reduce", "capability": null, "args": "none"
     },
     {
-      "door": "sessionCloseAll", "class": "reduce", "caller": "owner", "action": "sign out",
-      "capability": null, "handler": "sessions", "gate": "units", "args": "none"
+      "door": "sessionCloseAll", "class": "reduce", "capability": null, "args": "none"
     },
     {
-      "door": "sandboxBilled", "class": null, "caller": "none", "capability": null,
-      "handler": "sandbox-time", "gate": "units", "args": "loose"
+      "door": "sandboxBilled", "class": null, "capability": null, "args": "loose"
     },
     {
-      "door": "sandboxDays", "class": "read", "caller": "owner",
-      "action": "read its sandbox time", "capability": null, "handler": "sandbox-time",
-      "gate": "door", "args": "loose"
+      "door": "sandboxDays", "class": "read", "capability": null, "args": "loose"
     },
     {
-      "door": "storageUsage", "class": "read", "caller": "owner", "action": "read its storage",
-      "capability": null, "handler": "files", "gate": "door", "args": "none"
+      "door": "storageUsage", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "ownerExport", "class": "read", "caller": "owner",
-      "action": "export everything it holds", "live": true, "capability": null,
-      "handler": "export", "gate": "units",
+      "door": "ownerExport", "class": "read", "capability": null,
       "args": {
         "refused": "an export request is at most its cursor and its export_id", "required": {},
         "optional": { "cursor": {}, "export_id": {} }, "undefinedAllowed": true
       }
     },
     {
-      "door": "exportChunks", "class": "read", "caller": "owner",
-      "action": "export everything it holds", "live": true, "capability": null,
-      "handler": "export", "gate": "units",
+      "door": "exportChunks", "class": "read", "capability": null,
       "args": {
         "refused": "an export's chunks are its export_id and one or two sha256s",
         "required": { "export_id": {}, "sha256s": {} }, "optional": {}, "undefinedAllowed": true
       }
     },
     {
-      "door": "exportEnd", "class": "reduce", "caller": "owner", "action": "end its export",
-      "capability": null, "handler": "export", "gate": "quiet", "args": "loose"
+      "door": "exportEnd", "class": "reduce", "capability": null, "args": "loose"
     },
     {
-      "door": "dataKeyRewrap", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "files", "gate": "units", "args": "none"
+      "door": "dataKeyRewrap", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "gatewayReseal", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "connections", "gate": "units", "args": "none"
+      "door": "gatewayReseal", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "policyRead", "class": "read", "caller": "owner", "action": "read its policy",
-      "capability": null, "handler": "policy", "gate": "door", "args": "none"
+      "door": "policyRead", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "policyReceipts", "class": "read", "caller": "owner", "action": "read its policy",
-      "capability": null, "handler": "policy", "gate": "door", "args": "none"
+      "door": "policyReceipts", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "policyWrite", "class": "work", "caller": "session", "rule": "write",
-      "act": { "name": "security.change" },
-      "action": "write its policy", "capability": null, "handler": "policy", "gate": "units",
+      "door": "policyWrite", "class": "work", "act": { "name": "security.change" },
+      "capability": null,
       "args": {
         "refused": "invalid policy request",
         "required": { "expected_generation": {}, "policy": {} }, "optional": { "proposal": {} }
       }
     },
     {
-      "door": "policyProposal", "class": "read", "caller": "owner", "action": "read its policy",
-      "capability": null, "handler": "policy", "gate": "door",
+      "door": "policyProposal", "class": "read", "capability": null,
       "args": {
         "refused": "invalid policy request", "required": { "request_id": {} }, "optional": {}
       }
     },
     {
-      "door": "policyWakeLimits", "class": "work", "caller": "session", "rule": "wake_limits",
-      "action": "change its agents' policy", "capability": null, "handler": "ledger",
-      "gate": "door",
+      "door": "policyWakeLimits", "class": "work", "capability": null,
       "args": {
         "refused": "invalid policy request",
         "required": {
@@ -705,15 +649,10 @@
       }
     },
     {
-      "door": "grantList", "class": "read", "caller": "owner",
-      "action": "read its outside clients", "capability": null, "handler": "grants",
-      "gate": "door", "args": "none"
+      "door": "grantList", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "grantSet", "class": "work", "caller": "session", "rule": "outside_set",
-      "act": { "name": "access.grant" },
-      "action": "change an outside client's grant", "capability": null, "handler": "grants",
-      "gate": "synced",
+      "door": "grantSet", "class": "work", "act": { "name": "access.grant" }, "capability": null,
       "args": {
         "refused": "invalid policy request",
         "required": {
@@ -724,87 +663,65 @@
       }
     },
     {
-      "door": "grantRevoke", "class": "reduce", "caller": "owner",
-      "action": "revoke an outside client's grant", "capability": null, "handler": "grants",
-      "gate": "synced",
+      "door": "grantRevoke", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid policy request", "required": { "client": {} }, "optional": {}
       }
     },
     {
-      "door": "grantForget", "class": "reduce", "caller": "owner",
-      "action": "forget an outside client's grant", "capability": null, "handler": "grants",
-      "gate": "door",
+      "door": "grantForget", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid policy request", "required": { "client": {} }, "optional": {}
       }
     },
     {
-      "door": "grantForgetRevoked", "class": "reduce", "caller": "session",
-      "rule": "outside_forget", "action": "forget its revoked outside clients",
-      "capability": null, "handler": "grants", "gate": "door",
+      "door": "grantForgetRevoked", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid policy request", "required": { "clients": {} }, "optional": {}
       }
     },
     {
-      "door": "keyMint", "class": "work", "caller": "session", "rule": "key_mint",
-      "act": { "name": "access.grant" },
-      "action": "mint an API key", "capability": null, "handler": "keys", "gate": "synced",
+      "door": "keyMint", "class": "work", "act": { "name": "access.grant" }, "capability": null,
       "args": {
         "refused": "invalid policy request",
         "required": { "key_id": {}, "name": {}, "scopes": {} }, "optional": { "proposal": {} }
       }
     },
     {
-      "door": "keyList", "class": "read", "caller": "owner", "action": "read its API keys",
-      "capability": null, "handler": "keys", "gate": "door", "args": "none"
+      "door": "keyList", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "ownerErase", "class": "reduce", "caller": "session", "rule": "owner_erase",
-      "action": "erase its account", "capability": null, "handler": "erasure", "gate": "units",
+      "door": "ownerErase", "class": "reduce", "capability": null,
       "args": { "refused": "invalid policy request", "required": { "confirm": {} }, "optional": {} }
     },
     {
-      "door": "erasureBegin", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "erasure", "gate": "units",
+      "door": "erasureBegin", "class": "admission", "capability": null,
       "args": {
         "refused": "invalid erasure request", "required": { "confirm": {} }, "optional": {}
       }
     },
     {
-      "door": "erasureOutside", "class": "admission", "caller": "erasure", "capability": null,
-      "handler": "erasure", "gate": "door", "args": "none"
+      "door": "erasureOutside", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "erasureOutsideDone", "class": "admission", "caller": "erasure",
-      "capability": null, "handler": "erasure", "gate": "door", "args": "none"
+      "door": "erasureOutsideDone", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "inboundList", "class": "read", "caller": "owner",
-      "action": "read its inbound bindings", "capability": null, "handler": "inbound",
-      "gate": "door", "args": "none"
+      "door": "inboundList", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "inboundCreate", "class": "work", "caller": "session", "rule": "inbound_create",
-      "act": { "name": "access.grant" },
-      "action": "add an inbound binding", "capability": null, "handler": "inbound",
-      "gate": "door", "args": "loose"
+      "door": "inboundCreate", "class": "work", "act": { "name": "access.grant" },
+      "capability": null, "args": "loose"
     },
     {
-      "door": "inboundSet", "class": "work", "caller": "session", "rule": "inbound_set",
-      "act": { "name": "access.grant" },
-      "action": "change an inbound binding", "capability": null, "handler": "inbound",
-      "gate": "door", "args": "loose"
+      "door": "inboundSet", "class": "work", "act": { "name": "access.grant" }, "capability": null,
+      "args": "loose"
     },
     {
-      "door": "inboundRevoke", "class": "reduce", "caller": "owner",
-      "action": "withdraw an inbound binding", "capability": null, "handler": "inbound",
-      "gate": "door", "args": "loose"
+      "door": "inboundRevoke", "class": "reduce", "capability": null, "args": "loose"
     },
     {
-      "door": "inboundAccept", "class": "work", "caller": "inbound", "capability": null,
-      "handler": "inbound", "gate": "units",
+      "door": "inboundAccept", "class": "work", "capability": null,
       "args": {
         "refused": "invalid policy request",
         "required": { "event_id": {}, "event_at": {}, "body": {}, "headers": {} },
@@ -812,24 +729,20 @@
       }
     },
     {
-      "door": "fileUploadTarget", "class": "work", "caller": "account",
-      "capability": "write_files", "handler": "files", "gate": "units",
+      "door": "fileUploadTarget", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request", "required": { "intent_id": {} }, "optional": {}
       }
     },
     {
-      "door": "fileUploadStored", "class": "work", "caller": "account",
-      "capability": "write_files", "handler": "files", "gate": "door",
+      "door": "fileUploadStored", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request", "required": { "intent_id": {}, "chunks": {} },
         "optional": {}
       }
     },
     {
-      "door": "registerAgent", "class": "work", "caller": "session",
-      "rule": "OUTSIDE_AGENTS.register", "action": null, "registering": true, "capability": null,
-      "handler": "ledger", "gate": "synced",
+      "door": "registerAgent", "class": "work", "capability": null,
       "args": {
         "owner": {
           "required": { "card_id": {}, "digest": {} }, "optional": {},
@@ -844,26 +757,20 @@
       }
     },
     {
-      "door": "registerProposal", "class": "read", "caller": "owner",
-      "action": "read its agents' registrations", "capability": null, "handler": "registrations",
-      "gate": "door",
+      "door": "registerProposal", "class": "read", "capability": null,
       "args": {
         "refused": "invalid ledger request", "required": { "card_id": {} }, "optional": {}
       }
     },
     {
-      "door": "disableAgent", "class": "reduce", "caller": "session",
-      "rule": "OUTSIDE_AGENTS.disable", "action": null, "capability": null, "handler": "ledger",
-      "gate": "synced",
+      "door": "disableAgent", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid ledger request", "required": { "agent_id": {}, "reason": {} },
         "optional": {}
       }
     },
     {
-      "door": "agentDoorbell", "class": "work", "caller": "session",
-      "rule": "OUTSIDE_AGENTS.doorbell", "action": "set its agents' doorbells",
-      "capability": null, "handler": "ledger", "gate": "door",
+      "door": "agentDoorbell", "class": "work", "capability": null,
       "args": {
         "refused": "invalid ledger request",
         "required": {
@@ -874,92 +781,66 @@
       }
     },
     {
-      "door": "agentDoorbellEnd", "class": "reduce", "caller": "session",
-      "rule": "OUTSIDE_AGENTS.doorbell_end", "action": "end its agents' doorbells",
-      "capability": null, "handler": "ledger", "gate": "door",
+      "door": "agentDoorbellEnd", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid ledger request", "required": { "subscription_id": {} },
         "optional": {}
       }
     },
     {
-      "door": "deleteAgent", "class": "reduce", "caller": "session",
-      "rule": "OUTSIDE_AGENTS.delete", "action": "change its agents' policy", "capability": null,
-      "handler": "ledger", "gate": "synced",
+      "door": "deleteAgent", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid ledger request", "required": { "agent_id": {} }, "optional": {}
       }
     },
     {
-      "door": "connectionPrepare", "class": "work", "caller": "session",
-      "act": { "name": "security.change" },
-      "rule": "connection_prepare", "action": "connect a model source", "capability": null,
-      "handler": "connections", "gate": "synced", "args": "loose"
+      "door": "connectionPrepare", "class": "work", "act": { "name": "security.change" },
+      "capability": null, "args": "loose"
     },
     {
-      "door": "connectionCommit", "class": "work", "caller": "session",
-      "act": { "name": "security.change" },
-      "rule": "connection_commit", "action": "connect a model source", "capability": null,
-      "handler": "connections", "gate": "synced", "args": "loose"
+      "door": "connectionCommit", "class": "work", "act": { "name": "security.change" },
+      "capability": null, "args": "loose"
     },
     {
-      "door": "connectionRevoke", "class": "reduce", "caller": "session",
-      "act": { "name": "security.change" },
-      "rule": "connection_revoke", "action": "revoke a model source", "capability": null,
-      "handler": "connections", "gate": "units", "args": "loose"
+      "door": "connectionRevoke", "class": "reduce", "act": { "name": "security.change" },
+      "capability": null, "args": "loose"
     },
     {
-      "door": "connectionList", "class": "read", "caller": "session", "rule": "connection_list",
-      "action": "read its model sources", "receipt": null, "capability": null,
-      "handler": "connections", "gate": "door", "args": "none"
+      "door": "connectionList", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "flowFinish", "class": "work", "caller": "session", "rule": "flow_finish",
-      "action": "connect a model source", "receipt": { "state": "[state]" }, "capability": null,
-      "handler": "connections", "gate": "synced", "args": "loose"
+      "door": "flowFinish", "class": "work", "capability": null, "args": "loose"
     },
     {
-      "door": "usageReceipts", "class": "read", "caller": "owner",
-      "action": "read its model spend", "capability": null, "handler": "usage", "gate": "door",
-      "args": "none"
+      "door": "usageReceipts", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "noticeList", "class": "read", "caller": "owner", "action": "read its notices",
-      "capability": null, "handler": "notices", "gate": "door", "args": "none"
+      "door": "noticeList", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "starterReceipts", "class": "read", "caller": "owner",
-      "action": "read its starter files' receipts", "capability": null, "handler": "starter",
-      "gate": "door", "args": "none"
+      "door": "starterReceipts", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "admissionSet", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "admission", "gate": "units", "args": "loose"
+      "door": "admissionSet", "class": "admission", "capability": null, "args": "loose"
     },
     {
-      "door": "ownerState", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "admission", "gate": "units", "args": "none"
+      "door": "ownerState", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "toolProfile", "class": "read", "caller": "account", "capability": null,
-      "handler": "codemode", "gate": "door", "args": "none"
+      "door": "toolProfile", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "mailChain", "class": "read", "caller": "owner",
-      "action": "read its agents' mail chains", "capability": null, "handler": "ledger",
-      "gate": "units",
+      "door": "mailChain", "class": "read", "capability": null,
       "args": {
         "refused": "invalid ledger request", "required": { "message_id": {}, "limit": {} },
         "optional": { "after": {}, "body_offset": {}, "body_message_id": {} }
       }
     },
     {
-      "door": "wakeEvents", "class": "read", "caller": "account", "capability": "read_graph",
-      "scope": "handler", "handler": "ledger", "gate": "door", "args": "loose"
+      "door": "wakeEvents", "class": "read", "capability": "read_graph", "args": "loose"
     },
     {
-      "door": "wakeSubscribe", "class": "work", "caller": "account", "capability": "read_graph",
-      "scope": "handler", "handler": "ledger", "gate": "synced",
+      "door": "wakeSubscribe", "class": "work", "capability": "read_graph",
       "args": {
         "refused": "invalid ledger request",
         "required": {
@@ -970,49 +851,43 @@
       }
     },
     {
-      "door": "wakeUnsubscribe", "class": "reduce", "caller": "account", "capability": null,
-      "handler": "ledger", "gate": "door",
+      "door": "wakeUnsubscribe", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid ledger request", "required": { "subscription_id": {} },
         "optional": {}
       }
     },
     {
-      "door": "fileRead", "class": "read", "caller": "reader", "capability": "read_files",
-      "handler": "files", "gate": "door",
+      "door": "fileRead", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request", "required": { "path": {} },
         "optional": { "etag": {} }
       }
     },
     {
-      "door": "fileReadChunks", "class": "read", "caller": "reader", "capability": "read_files",
-      "handler": "files", "gate": "units",
+      "door": "fileReadChunks", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request",
         "required": { "path": {}, "version": {}, "first": {}, "count": {} }, "optional": {}
       }
     },
     {
-      "door": "fileUploadBegin", "class": "work", "caller": "account",
-      "capability": "write_files", "handler": "files", "gate": "filing",
+      "door": "fileUploadBegin", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request", "required": { "size": {}, "chunks": {} },
         "optional": {}
       }
     },
     {
-      "door": "fileUploadChunks", "class": "work", "caller": "account",
-      "capability": "write_files", "handler": "files", "gate": "units",
+      "door": "fileUploadChunks", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request", "required": { "intent_id": {}, "chunks": {} },
         "optional": {}
       }
     },
     {
-      "door": "fileUploadCommit", "class": "work", "caller": "account",
-      "act": { "name": "workspace.files" },
-      "capability": "write_files", "handler": "files", "gate": "filing",
+      "door": "fileUploadCommit", "class": "work", "act": { "name": "workspace.files" },
+      "capability": "write_files",
       "args": {
         "refused": "invalid file request",
         "required": { "intent_id": {}, "path": {}, "expected_etag": {} },
@@ -1020,189 +895,149 @@
       }
     },
     {
-      "door": "fileUploadAbort", "class": "reduce", "caller": "account",
-      "capability": "write_files", "handler": "files", "gate": "filing",
+      "door": "fileUploadAbort", "class": "reduce", "capability": "write_files",
       "args": {
         "refused": "invalid file request", "required": { "intent_id": {} }, "optional": {}
       }
     },
     {
-      "door": "fileRedact", "class": "reduce", "caller": "owner",
-      "action": "redact its file history", "capability": null, "handler": "files",
-      "gate": "filing",
+      "door": "fileRedact", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid file request", "required": { "path": {}, "version": {} },
         "optional": {}
       }
     },
     {
-      "door": "fileHistoryPurge", "class": "reduce", "caller": "owner",
-      "action": "purge its file history", "capability": null, "handler": "files",
-      "gate": "filing",
+      "door": "fileHistoryPurge", "class": "reduce", "capability": null,
       "args": { "refused": "invalid file request", "required": { "path": {} }, "optional": {} }
     },
     {
-      "door": "fileChanges", "class": "read", "caller": "changes", "capability": "read_files",
-      "handler": "files", "gate": "door",
+      "door": "fileChanges", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request", "required": { "after": {}, "limit": {} },
         "optional": {}
       }
     },
     {
-      "door": "runEvents", "class": "reduce", "caller": "run", "capability": null,
-      "handler": "runs", "gate": "units",
+      "door": "runEvents", "class": "reduce", "capability": null,
       "args": { "refused": "invalid run events", "required": { "frames": {} }, "optional": { "end": {} } }
     },
     {
-      "door": "signinStart", "class": "work", "caller": "owner",
-      "action": "sign in inside a sandbox", "capability": null,
-      "handler": "signins", "gate": "units",
+      "door": "signinStart", "class": "work", "capability": null,
       "args": {
         "refused": "invalid run request", "required": { "engine": {} },
         "optional": { "authority": {}, "region": {}, "mode": {} }
       }
     },
     {
-      "door": "signinEvents", "class": "reduce", "caller": "runner", "capability": null,
-      "handler": "signins", "gate": "units", "args": "loose"
+      "door": "signinEvents", "class": "reduce", "capability": null, "args": "loose"
     },
     {
-      "door": "signinCode", "class": "work", "caller": "owner",
-      "action": "sign in inside a sandbox", "capability": null, "handler": "signins",
-      "gate": "units",
+      "door": "signinCode", "class": "work", "capability": null,
       "args": {
         "refused": "invalid run request", "required": { "id": {}, "code": {} }, "optional": {}
       }
     },
     {
-      "door": "signinCancel", "class": "reduce", "caller": "owner", "action": "stop a sign-in",
-      "capability": null, "handler": "signins", "gate": "units",
+      "door": "signinCancel", "class": "reduce", "capability": null,
       "args": { "refused": "invalid run request", "required": { "id": {} }, "optional": {} }
     },
     {
-      "door": "signinList", "class": "read", "caller": "owner", "action": "see its sign-ins",
-      "capability": null, "handler": "signins", "gate": "door", "args": "none"
+      "door": "signinList", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "runList", "class": "read", "caller": "account", "capability": null,
-      "scope": "agent", "handler": "runs", "gate": "door",
+      "door": "runList", "class": "read", "capability": null,
       "args": {
         "refused": "invalid run request", "required": {},
         "optional": { "before": {}, "limit": {} }
       }
     },
     {
-      "door": "signinReport", "class": "work", "caller": "runner",
-      "closed": "egress_lease_closed", "capability": null, "handler": "signins", "gate": "door",
+      "door": "signinReport", "class": "work", "capability": null,
       "args": {
         "refused": "invalid sign-in report", "required": { "signins": {} }, "optional": {}
       }
     },
     {
-      "door": "sandboxRung", "class": null, "caller": "none", "capability": null,
-      "handler": "runs", "gate": "units", "args": "none"
+      "door": "sandboxRung", "class": null, "capability": null, "args": "none"
     },
     {
-      "door": "socketTicket", "class": "read", "caller": "owner", "action": "open an app socket",
-      "capability": null, "handler": "relay", "gate": "door",
+      "door": "socketTicket", "class": "read", "capability": null,
       "args": {
         "refused": "invalid run request", "required": { "conversation_id": {} }, "optional": {}
       }
     },
     {
-      "door": "socketsEnd", "class": "reduce", "caller": "owner",
-      "action": "end its app sockets", "capability": null, "handler": "relay", "gate": "units",
-      "args": "none"
+      "door": "socketsEnd", "class": "reduce", "capability": null, "args": "none"
     },
     {
-      "door": "tierSet", "class": "admission", "caller": "reserved", "action": "tier",
-      "capability": null, "handler": "admission", "gate": "door", "args": "loose"
+      "door": "tierSet", "class": "admission", "capability": null, "args": "loose"
     },
     {
-      "door": "tierRead", "class": "read", "caller": "owner", "action": "read its tier",
-      "capability": null, "handler": "admission", "gate": "door", "args": "none"
+      "door": "tierRead", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "restoreSource", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "restore", "gate": "units", "args": "none"
+      "door": "restoreSource", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "restoreBegin", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "restore", "gate": "units",
+      "door": "restoreBegin", "class": "admission", "capability": null,
       "args": {
         "refused": "invalid restore request",
         "required": { "namespace": {}, "gen": {} }, "optional": {}
       }
     },
     {
-      "door": "restoreStep", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "restore", "gate": "units", "args": "none"
+      "door": "restoreStep", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "restorePin", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "restore", "gate": "units",
+      "door": "restorePin", "class": "admission", "capability": null,
       "args": { "refused": "invalid restore request", "required": { "gen": {} }, "optional": {} }
     },
     {
-      "door": "restoreWipe", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "restore", "gate": "units",
+      "door": "restoreWipe", "class": "admission", "capability": null,
       "args": {
         "refused": "invalid restore request", "required": { "confirm": {} }, "optional": {}
       }
     },
     {
-      "door": "restoreRelease", "class": "admission", "caller": "reserved",
-      "action": "admission", "capability": null, "handler": "restore", "gate": "units",
-      "args": "none"
+      "door": "restoreRelease", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "restoreNames", "class": "admission", "caller": "reserved", "action": "admission",
-      "capability": null, "handler": "restore", "gate": "units",
+      "door": "restoreNames", "class": "admission", "capability": null,
       "args": { "refused": "invalid restore request", "required": { "from": {} }, "optional": {} }
     },
     {
-      "door": "egressOpen", "class": "work", "caller": "egress", "capability": null,
-      "handler": "egress", "gate": "units", "args": "loose"
+      "door": "egressOpen", "class": "work", "capability": null, "args": "loose"
     },
     {
-      "door": "egressReserve", "class": "work", "caller": "egress", "capability": null,
-      "handler": "egress", "gate": "door", "args": "loose"
+      "door": "egressReserve", "class": "work", "capability": null, "args": "loose"
     },
     {
-      "door": "egressBeat", "class": "reduce", "caller": "egress", "capability": null,
-      "handler": "egress", "gate": "door", "args": "loose"
+      "door": "egressBeat", "class": "reduce", "capability": null, "args": "loose"
     },
     {
-      "door": "egressSettle", "class": "reduce", "caller": "egress", "capability": null,
-      "handler": "egress", "gate": "door", "args": "loose"
+      "door": "egressSettle", "class": "reduce", "capability": null, "args": "loose"
     },
     {
-      "door": "egressReceipts", "class": "read", "caller": "owner",
-      "action": "read its sandbox's egress", "capability": null, "handler": "egress",
-      "gate": "door", "args": "none"
+      "door": "egressReceipts", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "fileSyncCommit", "class": "work", "caller": "lease",
-      "act": { "name": "workspace.files" },
-      "action": "hold the file sync lease", "capability": "write_files", "handler": "files",
-      "gate": "filing",
+      "door": "fileSyncCommit", "class": "work", "act": { "name": "workspace.files" },
+      "capability": "write_files",
       "args": {
         "refused": "invalid file request",
         "required": { "lease_id": {}, "epoch": {}, "ops": {} }, "optional": {}
       }
     },
     {
-      "door": "fileSyncUploadBegin", "class": "work", "caller": "sync", "capability": "write_files",
-      "handler": "files", "gate": "filing",
+      "door": "fileSyncUploadBegin", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request",
         "required": { "lease_id": {}, "epoch": {}, "size": {}, "chunks": {} }, "optional": {}
       }
     },
     {
-      "door": "fileSyncUploadChunks", "class": "work", "caller": "sync", "capability": "write_files",
-      "handler": "files", "gate": "units",
+      "door": "fileSyncUploadChunks", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request",
         "required": { "lease_id": {}, "epoch": {}, "intent_id": {}, "chunks": {} },
@@ -1210,72 +1045,63 @@
       }
     },
     {
-      "door": "fileSyncUploadAbort", "class": "work", "caller": "sync", "capability": "write_files",
-      "handler": "files", "gate": "filing",
+      "door": "fileSyncUploadAbort", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request",
         "required": { "lease_id": {}, "epoch": {}, "intent_id": {} }, "optional": {}
       }
     },
     {
-      "door": "importRows", "class": "import", "caller": "import", "capability": null,
-      "handler": "import", "gate": "units",
+      "door": "importRows", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
         "required": { "rows": {} }, "optional": {}
       }
     },
     {
-      "door": "importFiles", "class": "import", "caller": "import", "capability": null,
-      "handler": "import", "gate": "filing",
+      "door": "importFiles", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
         "required": { "entries": {} }, "optional": {}
       }
     },
     {
-      "door": "importFileBegin", "class": "import", "caller": "import", "capability": null,
-      "handler": "import", "gate": "units",
+      "door": "importFileBegin", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
         "required": { "path": {}, "size": {}, "mode": {}, "content_id": {}, "chunks": {} }, "optional": {}
       }
     },
     {
-      "door": "importFileStored", "class": "import", "caller": "import", "capability": null,
-      "handler": "import", "gate": "door",
+      "door": "importFileStored", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
         "required": { "intent_id": {}, "chunks": {} }, "optional": {}
       }
     },
     {
-      "door": "importFileCommit", "class": "import", "caller": "import", "capability": null,
-      "handler": "import", "gate": "filing",
+      "door": "importFileCommit", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
         "required": { "intent_id": {}, "path": {}, "mode": {}, "content_id": {}, "mtime_ms": {} }, "optional": {}
       }
     },
     {
-      "door": "importNotice", "class": "import", "caller": "import", "capability": null,
-      "handler": "import", "gate": "door",
+      "door": "importNotice", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
         "required": { "detail": {} }, "optional": {}
       }
     },
     {
-      "door": "importCheck", "class": "import", "caller": "import", "capability": null,
-      "handler": "import", "gate": "units",
+      "door": "importCheck", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
         "required": { "part": {}, "page": {} }, "optional": {}
       }
     },
     {
-      "door": "importDiscard", "class": "import", "caller": "discard", "capability": null,
-      "handler": "import", "gate": "units", "args": "none"
+      "door": "importDiscard", "class": "import", "capability": null, "args": "none"
     }
   ]
 }

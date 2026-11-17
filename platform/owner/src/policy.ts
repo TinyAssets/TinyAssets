@@ -538,7 +538,7 @@ export interface CardRequest {
   readonly request_id: string;
 }
 
-// -- THE DOORS: the `policy` rows' handlers (`contract/doors.json`) -------------------------------
+// -- THE DOORS: the `policy` rows' handlers (`owner/doors.json`) ----------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`PolicyDoorNeeds`) once the row's steps held: the bind, the account, the
