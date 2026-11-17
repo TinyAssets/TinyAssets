@@ -347,15 +347,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2). Built in O2 (`untangle-2026-11/o2.md`).
-  - [ ] B4's contract half (`o2.md` item 9), in two PRs:
+  - [x] B4's contract half (`o2.md` item 9), in two PRs:
     - [x] `untangle/o2b`: `OwnerDoors` written by the generator from the table, and the services
       guard's name and arity checks as type facts (`untangle-2026-11/o2b.md`).
-    - [ ] `untangle/o2c`: `contract/doors.json` split from `owner/doors.json` (the runner's
-      steps).
+    - [x] `untangle/o2c`: `contract/doors.json` split from `owner/doors.json` (the runner's
+      steps), the door map written by the owner (`untangle-2026-11/o2c.md`).
   - Owed to lane O by merged PRs, one line each:
     - S8: the owner adopts `served()` (`s8.md`).
     - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
     - C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
+    - O2c: `caller` `none` (`owner/doors.json`) beside `UNBOUND_DOORS`, held equal by
+      `stepProblems`, goes with B5's `none` binding kind, `untangle/o3` (`o2c.md` item 7).
     - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
     - X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the

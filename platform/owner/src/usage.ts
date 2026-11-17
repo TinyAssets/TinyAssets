@@ -363,7 +363,7 @@ export class Usage {
   }
 }
 
-// -- THE DOORS: the `usage` rows' handlers (`contract/doors.json`) --------------------------------
+// -- THE DOORS: the `usage` rows' handlers (`owner/doors.json`) -----------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`UsageDoorNeeds`) once the row's steps held: the bind, the account, the

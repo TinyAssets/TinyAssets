@@ -239,7 +239,7 @@ async function runScript(parts: ScriptParts): Promise<CodeResult> {
   }
 }
 
-// -- THE DOORS: the `codemode` rows' handlers (`contract/doors.json`) -----------------------------
+// -- THE DOORS: the `codemode` rows' handlers (`owner/doors.json`) --------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`CodemodeDoorNeeds`) once the row's steps held: the bind, the account, the

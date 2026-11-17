@@ -356,7 +356,7 @@ function billedEvent(value: unknown): BilledEvent {
   return value as unknown as BilledEvent;
 }
 
-// -- THE DOORS: the `sandbox-time` rows' handlers (`contract/doors.json`) -------------------------
+// -- THE DOORS: the `sandbox-time` rows' handlers (`owner/doors.json`) ----------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`SandboxTimeDoorNeeds`) once the row's steps held: the bind, the account, the

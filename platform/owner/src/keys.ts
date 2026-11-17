@@ -135,7 +135,7 @@ export interface KeyMintRequest {
   readonly proposal?: { readonly request_id: string; readonly digest: string };
 }
 
-// -- THE DOORS: the `keys` rows' handlers (`contract/doors.json`) ---------------------------------
+// -- THE DOORS: the `keys` rows' handlers (`owner/doors.json`) ------------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`KeysDoorNeeds`) once the row's steps held: the bind, the account, the scope

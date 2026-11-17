@@ -17,7 +17,7 @@
  *   bodies' placement writes through the gate's `write`, `bodies.ts`). A row whose door waits
  *   for a new owner's seed (`seeded`, slice BRAIN) has its caller checked in a unit before
  *   the wait, by the runner. A door's handler is in the module its row names
- *   (`contract/doors.json`'s `handler`: `<module>Doors.<door>`, untangle A2), handed the
+ *   (`owner/doors.json`'s `handler`: `<module>Doors.<door>`, untangle A2), handed the
  *   object's parts, whose gate members are those helpers;
  * - the object names `ctx.storage` once, to make the gate, and its modules are handed the
  *   gate's view, and no other source names a `ctx.storage`; no source builds a SQLite
@@ -43,7 +43,7 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { type DoorRow, doorTable } from "../../contract/src/doors";
+import { type DoorSteps, ownerRows } from "../src/door-steps";
 import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
@@ -233,7 +233,7 @@ export function doorHandlers(sources: ReadonlyMap<string, string>):
  */
 export function ungatedHandlers(
     handlers: ReturnType<typeof doorHandlers>,
-    rows: readonly Pick<DoorRow, "door" | "handler" | "gate" | "caller">[]): string[] {
+    rows: readonly Pick<DoorSteps, "door" | "handler" | "gate" | "caller">[]): string[] {
   const entered = (node: ts.Expression | undefined): boolean => {
     let expression = node;
     if (expression !== undefined && ts.isAwaitExpression(expression)) {
@@ -472,7 +472,7 @@ describe("write-gate guard", () => {
   const sources = workerSources();
 
   it("begins every door of the object in the gate", () => {
-    const rows = doorTable();
+    const rows = ownerRows();
     expect(ungatedHandlers(doorHandlers(sources), rows)).toEqual([]);
     expect(rows.filter((row) => row.gate === "units").length).toBeGreaterThan(40);
     const bodies = helpers(sources.get(OWNER_DO)!);
@@ -575,7 +575,7 @@ describe("write-gate guard", () => {
     ["a row whose module has no such handler", "fileProbe", "units"],
   ])("sees an ungated door: %s", (_what, door, gate) => {
     expect(ungatedHandlers(doorHandlers(new Map([["owner/src/files.ts", HANDLERS]])),
-                           [{ door, handler: "files", gate, caller: "account" }] as DoorRow[]))
+                           [{ door, handler: "files", gate, caller: "account" }] as DoorSteps[]))
       .toEqual([door]);
   });
 
@@ -587,7 +587,7 @@ describe("write-gate guard", () => {
     ["a door that takes no binding", "fileRead", "units", "none"],
   ])("allows a gated door: %s", (_what, door, gate, caller) => {
     expect(ungatedHandlers(doorHandlers(new Map([["owner/src/files.ts", HANDLERS]])),
-                           [{ door, handler: "files", gate, caller }] as DoorRow[]))
+                           [{ door, handler: "files", gate, caller }] as DoorSteps[]))
       .toEqual([]);
   });
 

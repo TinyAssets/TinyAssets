@@ -13,10 +13,11 @@
  * named only there, in `owner-do.ts`, whose binding check and `admissionSet` read it, and in
  * the binder. A tripwire for our own code's mistakes, as the alarm guard is.
  *
- * And the doors the caller reaches, by class (`contract/doors.json`): the platform's own
- * (`admission`, the reserved and erasure callers'), and the cutover's import doors (`import`,
- * its import line's alone, with an import binding while the owner is pending, `import.ts`),
- * which the binder sends as it sends the admit (`bindImport`).
+ * And the doors the caller reaches, by class (`contract/doors.json`) and caller
+ * (`owner/doors.json`): the platform's own (`admission`, the reserved and erasure callers'),
+ * and the cutover's import doors (`import`, its import line's alone, with an import binding
+ * while the owner is pending, `import.ts`), which the binder sends as it sends the admit
+ * (`bindImport`).
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -25,7 +26,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { doorTable } from "../../contract/src/doors";
+import { ownerRows } from "../src/door-steps";
 import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 /** The reserved name, as this guard spells it apart from the sources it reads. */
@@ -169,13 +170,10 @@ describe("admission caller guard", () => {
   });
 
   it("reaches the platform's own doors and the import's alone, each by its class", () => {
-    const rows = doorTable();
+    const rows = ownerRows();
     const by = (test: (row: (typeof rows)[number]) => boolean) =>
       rows.filter(test).map((row) => row.door).sort();
-    expect(by((row) => row.class === "admission"))
-      .toEqual(by((row) => row.caller === "reserved" || row.caller === "erasure"));
-    expect(by((row) => row.class === "import"))
-      .toEqual(by((row) => row.caller === "import" || row.caller === "discard"));
+    // Each class by its callers is the table's rule (`stepProblems`), held when it loads.
     expect(by((row) => row.class === "import")).toEqual(["importCheck", "importDiscard",
       "importFileBegin", "importFileCommit", "importFileStored", "importFiles", "importNotice",
       "importRows"]);

@@ -1,13 +1,13 @@
 /**
  * The owner object's door table (`contract/doors.json`, read by `src/doors.ts`): every row
- * whole and of known parts, so the object's runner and the doors' tool table read it alone.
- * A row with no argument schema, an unknown caller or gate, a tool missing a hint, a tool
- * named twice, a door named twice or one named as RPC reserves is refused when the table
- * loads, and here.
+ * whole and of known parts, so the doors' tool table and the object's runner read it alone.
+ * A row with no argument schema, an unknown class or capability, a runner's step (the
+ * owner's, `owner/doors.json`, held by `owner/guards/doors.test.ts`), a tool missing a hint,
+ * a tool named twice, a door named twice or one named as RPC reserves is refused when the
+ * object's class loads, and here.
  *
  * And the door classes the spec names (`owner-object/spec.md`, admission): a billing
- * suspension refuses only `work`, an abuse suspension every door, and the platform's own
- * doors alone read no admission.
+ * suspension refuses only `work`, an abuse suspension every door.
  */
 import { describe, expect, it } from "vitest";
 
@@ -48,18 +48,10 @@ describe("the door table", () => {
       refused: "x", required: { path: {} }, optional: { path: {} } } })],
     ["no capability", without("fileStat", "capability")],
     ["an unknown capability", changed("fileStat", { capability: "read_everything" })],
-    ["an unknown caller", changed("fileStat", { caller: "anyone" })],
-    ["an unknown gate", changed("fileStat", { gate: "later" })],
-    ["an unknown guard", changed("fileStat", { guard: "maybe" })],
-    ["a seed awaited at a door run in one unit", changed("fileStat", { seeded: true })],
-    ["no handler module", without("fileStat", "handler")],
-    ["a handler that is no module's name", changed("fileStat", { handler: "../files" })],
     ["a door a name RPC reserves", changed("fileStat", { door: "alarm" })],
     ["a door class past the five", changed("fileStat", { class: "write" })],
-    ["admission read by an account door", changed("fileStat", { class: "admission" })],
-    ["a platform door that reads admission", changed("tierSet", { class: "work" })],
-    ["an owner's door that names no act", without("policyRead", "action")],
-    ["a session's door with no receipt rule", without("policyWrite", "rule")],
+    ["a door of no class that binds", changed("keyList", { class: null })],
+    ["a class on a door that takes no binding", changed("sandboxRung", { class: "work" })],
     ["a tool missing a hint", changed("fileStat", { tool: { name: "file_stat", title: "x",
       description: "x", readOnlyHint: true, destructiveHint: false, idempotentHint: true } })],
     ["a tool on a loose door", changed("egressReserve", { tool: { name: "egress",
@@ -67,15 +59,8 @@ describe("the door table", () => {
       idempotentHint: false, openWorldHint: false } })],
     ["a tool named twice", changed("fileUsage", { tool: { ...(row("fileStat")["tool"] as object) } })],
     ["a door named twice", [...raw.doors, row("fileStat")]],
-    ["a key of no step", changed("fileStat", { owner: "alice" })],
-    ["a door that binds nothing", changed("keyList", { caller: "none", class: null })],
-    ["an account door of the import class", changed("fileStat", { class: "import" })],
-    ["an import door of another class", changed("importRows", { class: "work" })],
-    ["an import door on the reserved line", changed("importRows", { caller: "reserved" })],
-    ["an import door that binds nothing", changed("importFiles", { caller: "none", class: null })],
-    ["the discard's caller at an account door", changed("fileStat", { caller: "discard" })],
-    ["the discard of another class", changed("importDiscard", { class: "work" })],
-    ["an unbound door that binds", changed("sandboxRung", { caller: "account", class: "work" })],
+    ["a key of no part", changed("fileStat", { owner: "alice" })],
+    ["a runner's step, the owner's", changed("fileStat", { gate: "door" })],
   ])("refuses %s", (_what, rows) => {
     expect(doorProblems(rows)).not.toEqual([]);
   });

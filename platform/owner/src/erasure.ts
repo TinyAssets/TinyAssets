@@ -154,7 +154,7 @@ function confirmed(door: Door<EraseRequest>, words: (owner: string) => string): 
   });
 }
 
-// -- THE DOORS: the `erasure` rows' handlers (`contract/doors.json`) ------------------------------
+// -- THE DOORS: the `erasure` rows' handlers (`owner/doors.json`) ---------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`ErasureDoorNeeds`) once the row's steps held: the bind, the account, the
