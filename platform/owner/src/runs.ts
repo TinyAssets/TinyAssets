@@ -1680,7 +1680,7 @@ export interface RunListRequest {
 /** A past run in the caller's list: its receipt without its result (its own door's). */
 export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
 
-// -- THE DOORS: the `runs` rows' handlers (`contract/doors.json`) ---------------------------------
+// -- THE DOORS: the `runs` rows' handlers (`owner/doors.json`) ------------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`RunsDoorNeeds`) once the row's steps held: the bind, the account, the scope

@@ -16,8 +16,8 @@
  * - where its module reads it whole (`loose`), the parameters its module takes, spelled once
  *   here (`AdmissionRequest`, `TierRequest`, the connections', the inbound bindings', the
  *   egress door's);
- * - what the doors read of its answer (`answer`), or an object they pass on as it came (as
- *   JSON, or as an RPC result).
+ * - what the doors, or their tests, read of its answer (`answer`), or an object they pass on
+ *   as it came (as JSON, or as an RPC result).
  *
  * Beside them are the answers the egress door reads field by field (`EgressOpened`,
  * `EgressReserved`, `EgressRefusal`) and the billed event the E2B hook routes
@@ -27,6 +27,7 @@ import type { Binding, InboundAnswer } from "./binding.ts";
 import type { TierName } from "./control.ts";
 import type { ProfileName } from "./doors.ts";
 import type { Outcome } from "./egress.ts";
+import type { PolicyDocument } from "./policy-document.ts";
 import type { CheckPart } from "./import-message.ts";
 import type { Metering, MeterOutcome } from "./gateway.ts";
 import type { DoorRequests } from "./requests.ts";
@@ -393,14 +394,14 @@ export type SettleSent = {
 /**
  * What the door table cannot say of a door the doors call, by door: the values the doors build
  * into its row's fields (`values`), that they hand a parsed body on (`handed`), a loose door's
- * parameters after its binding (`loose`), and what they read of its answer (`answer`). `tsc`
- * refuses an entry for no door of the table, or one its row leaves no room for: `values` or
- * `handed` but on a field list, a field the row does not list, `loose` but on a loose door
+ * parameters after its binding (`loose`), and what they or their tests read of its answer
+ * (`answer`), held to the owner's own by `OwnerDO implements OwnerDoors`. `tsc` refuses an
+ * entry for no door of the table, or one its row leaves no room for: `values` or `handed` but
+ * on a field list, a field the row does not list, `loose` but on a loose door
  * (`owner-doors.ts`). A door with no entry takes its row's fields, each `unknown`, and
  * answers an object the doors pass on.
  */
 export interface DoorTypes {
-  readonly sandboxRung: { readonly answer: { readonly waiting: number } };
   readonly sandboxBilled: {
     readonly loose: [event: BilledEvent];
     readonly answer: { readonly counted: boolean };
@@ -421,7 +422,6 @@ export interface DoorTypes {
   readonly restoreStep: { readonly answer: RestoreAnswer };
   readonly restorePin: { readonly values: RestorePinRequest; readonly answer: RestoreHold };
   readonly restoreWipe: { readonly values: RestoreWipeRequest; readonly answer: RestoreHold };
-  readonly restoreRelease: { readonly answer: { readonly released: true } };
   readonly restoreNames: { readonly values: RestoreNamesRequest; readonly answer: RestoreNames };
   readonly sessionOpen: { readonly answer: { readonly session: string } };
   readonly sessionClose: { readonly answer: { readonly closed: number } };
@@ -473,7 +473,7 @@ export interface DoorTypes {
     readonly answer: { readonly forgotten: boolean };
   };
   readonly grantSet: { readonly handed: true };
-  readonly registerAgent: { readonly handed: true };
+  readonly registerAgent: { readonly handed: true; readonly answer: { readonly agent_id: string } };
   readonly inboundAccept: {
     readonly values: {
       readonly event_id: string; readonly event_at: number; readonly body: Uint8Array;
@@ -510,7 +510,11 @@ export interface DoorTypes {
   readonly fileRead: {
     readonly handed: true;
     readonly values: { readonly path: string; readonly etag?: string };
-    readonly answer: { readonly entry: object; readonly inline?: Uint8Array };
+    readonly answer: {
+      readonly entry: { readonly size: number; readonly mode: number; readonly writer: string;
+                        readonly mtime_ms: number };
+      readonly inline?: Uint8Array;
+      readonly chunks?: readonly { readonly sha256: string }[] };
   };
   readonly fileWrite: {
     readonly values: {
@@ -602,6 +606,57 @@ export interface DoorTypes {
       readonly chunks: readonly { readonly sha256: string; readonly bytes: Uint8Array }[] };
   };
   readonly fileSyncUploadAbort: { readonly handed: true };
+  readonly outsideAgents: {
+    readonly answer: { readonly owner_agents: readonly { readonly agent: string }[] };
+  };
+  readonly collectionGet: {
+    readonly answer: {
+      readonly row: { readonly body: string; readonly private: boolean;
+                      readonly writer: string } | null };
+  };
+  readonly fileStat: { readonly answer: { readonly entry: { readonly kind: string } | null } };
+  readonly sandboxDays: {
+    readonly answer: {
+      readonly days: readonly {
+        readonly day: string; readonly seconds: number; readonly billed_seconds: number;
+        readonly vcpu_seconds: number; readonly gb_seconds: number }[] };
+  };
+  readonly policyRead: {
+    readonly answer: { readonly generation: number; readonly policy: PolicyDocument };
+  };
+  readonly policyProposal: { readonly answer: { readonly digest: string } };
+  readonly grantList: {
+    readonly answer: {
+      readonly clients: readonly {
+        readonly client: string; readonly source: string; readonly mode: string;
+        readonly scopes: unknown; readonly revision: number;
+        readonly revoked_at: number | null; readonly vendor: string | null;
+        readonly vendor_verified: number }[] };
+  };
+  readonly registerProposal: {
+    readonly answer: { readonly client: string; readonly family: string;
+                       readonly request: Readonly<Record<string, unknown>> };
+  };
+  readonly noticeList: {
+    readonly answer: { readonly notices: readonly { readonly type: string;
+                                                    readonly detail: string }[] };
+  };
+  readonly starterReceipts: { readonly answer: { readonly version: number } };
+  readonly signinList: {
+    readonly answer: {
+      readonly engines: readonly { readonly engine: string; readonly signed_in: boolean }[] };
+  };
+  readonly egressReceipts: {
+    readonly answer: {
+      readonly receipts: readonly {
+        readonly reservation: string; readonly method: string; readonly path: string;
+        readonly state: string; readonly code: string | null; readonly ended: string | null;
+        readonly outcome: string | null; readonly status: number | null;
+        readonly bytes: number | null; readonly charge: string | null;
+        readonly rule: string | null; readonly est_cost: number | null;
+        readonly cost: number | null; readonly tokens: number | null;
+        readonly served: string | null }[] };
+  };
 }
 
 /** A door's entry in `DoorTypes`, or none. */
@@ -616,7 +671,7 @@ export type DoorRequest<D extends keyof DoorRequests> =
 export type DoorLoose<D extends string> =
   TypesOf<D> extends { readonly loose: infer P extends readonly unknown[] } ? P
     : [request: unknown];
-/** What the doors read of a door's answer, else an object they pass on. */
+/** What the doors, or their tests, read of a door's answer, else an object they pass on. */
 export type DoorAnswer<D extends string> =
   TypesOf<D> extends { readonly answer: infer A } ? A : object;
 

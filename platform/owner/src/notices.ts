@@ -53,7 +53,7 @@ export class Notices {
   }
 }
 
-// -- THE DOORS: the `notices` rows' handlers (`contract/doors.json`) ------------------------------
+// -- THE DOORS: the `notices` rows' handlers (`owner/doors.json`) ---------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`NoticesDoorNeeds`) once the row's steps held: the bind, the account, the

@@ -347,15 +347,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2). Built in O2 (`untangle-2026-11/o2.md`).
-  - [ ] B4's contract half (`o2.md` item 9), in two PRs:
+  - [x] B4's contract half (`o2.md` item 9), in two PRs:
     - [x] `untangle/o2b`: `OwnerDoors` written by the generator from the table, and the services
       guard's name and arity checks as type facts (`untangle-2026-11/o2b.md`).
-    - [ ] `untangle/o2c`: `contract/doors.json` split from `owner/doors.json` (the runner's
-      steps).
+    - [x] `untangle/o2c`: `contract/doors.json` split from `owner/doors.json` (the runner's
+      steps), the door map written by the owner (`untangle-2026-11/o2c.md`).
   - Owed to lane O by merged PRs, one line each:
     - S8: the owner adopts `served()` (`s8.md`).
     - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
     - C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
+    - O2c: `caller` `none` (`owner/doors.json`) beside `UNBOUND_DOORS`, held equal by
+      `stepProblems`, goes with B5's `none` binding kind, `untangle/o3` (`o2c.md` item 7).
     - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
     - X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
@@ -384,7 +386,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] T1's last edges: the owner tests' five B23 entries in `owner/guards/rules.ts`
       (connections, export, gateway-support, holds, runs-authority), each through its Worker's
       front door (`t1-owner-edges.md`).
-  - T2, the doors' tests through the owner's front door, four PRs (`t2.md`, `t2b.md`, `t2c.md`):
+  - T2, the doors' tests through the owner's front door, four PRs (`t2.md`, `t2b.md`, `t2c.md`,
+    `t2d.md`):
     - [x] T2a: the owner an auxiliary Worker behind the owner gate, every reach into its object
       gone, and the doors' test `OWNER` (C2b) typed as the doors' env types it; 13 of the 20
       B23 entries in `doors/guards/rules.ts`.
@@ -395,10 +398,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       refusal by its code and the owner's suite holds the reason; `ERASE_CONFIRM` and
       `BODY_BYTES_MAX` in the contract; the fake sandbox in `ci/`; `d2:N52`, `N84`, `N85`
       (`N89` was already gone).
-    - [ ] T2d (`untangle/t2d`, after `untangle/o2b` merges): the table doors' answers typed from
-      the contract, not by hand: `ownDoor<D>` over o2b's generated `OwnerDoors`, its answer
-      `DoorAnswer<D>`, with the `DoorTypes` answers the doors' tests read and those #5657 left
-      (`sandboxRung`, `restoreRelease`; `t2c.md`).
+    - [x] T2d: the table doors' answers typed from the contract, not by hand: `callDoor` and
+      `ownDoor<D>` answer `DoorAnswer<D>`, the 13 answers the doors' tests read are `DoorTypes`
+      entries that `OwnerDO implements OwnerDoors` holds to the owner's, and the two #5657 left
+      (`sandboxRung`, `restoreRelease`), which nothing reads, are gone.
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
   - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the

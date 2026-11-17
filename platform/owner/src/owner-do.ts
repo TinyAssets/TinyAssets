@@ -33,10 +33,11 @@
  * guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
- * but its doors: the door table (`contract/doors.json`) defines them on its prototype when
- * the class loads, one a row, none a name RPC reserves. The object is their router and holds
- * their state: each door's method hands its row's runner (`#call`: the bind, the account, the
- * scope and the fields, `door.ts`) the handler in the module its row names
+ * but its doors: the door table (`contract/doors.json`, and its steps, `owner/doors.json`)
+ * defines them on its prototype when the class loads, one a row, none a name RPC reserves.
+ * The object is their router and holds their state: each door's method hands its row's
+ * runner (`#call`: the bind, the account, the scope and the fields, `door.ts`) the handler in
+ * the module its steps name
  * (`<module>Doors.<door>`), which the runner hands the object's parts (`Parts`), as what
  * the module declares its doors reach (`<Module>DoorNeeds`), where it declares it. Its
  * runs are launched and delivered by `launch.ts`. Its timed work is the one
@@ -108,10 +109,9 @@ import { principal } from "../../contract/src/text";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import {
-  doorProblems, doorRow, type DoorRow, doorTable, fields, takesRequest,
-} from "../../contract/src/doors";
+import { fields, takesRequest } from "../../contract/src/doors";
 import type { DoorMethods } from "./door-map";
+import { type OwnerRow, ownerRow, ownerRows } from "./door-steps";
 import type {
   Account, Bound, Call, Door, DoorsOf, DoorUnits, ImportLine, LiveSession, Module, ObjectReads,
   OwnerSelf, PlatformLine, Readable, Units,
@@ -362,7 +362,7 @@ function modules(): Readonly<Record<string, Readonly<Record<string, Handled>>>> 
 }
 
 /** `row`'s handler, in the module its row names; none is a broken table (`tsc` refuses it). */
-function handlerOf(row: DoorRow): Handled {
+function handlerOf(row: OwnerRow): Handled {
   const module = Object.hasOwn(modules(), row.handler) ? modules()[row.handler]! : {};
   if (!Object.hasOwn(module, row.door)) {
     throw new Error(`${row.door}: no handler in ${row.handler}, the module its row names`);
@@ -646,10 +646,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         throw new Error(RESET);
       },
       accountAt: (door: string, binding: Binding) =>
-        this.#within(doorRow(door), binding, undefined, { live: false },
+        this.#within(ownerRow(door), binding, undefined, { live: false },
                      ({ account }) => account),
       invoke: (door: string, binding: Binding, request: unknown) => {
-        const row = doorRow(door);
+        const row = ownerRow(door);
         return this.#leased(row, binding, request, handlerOf(row));
       },
     });
@@ -832,27 +832,26 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   // -- THE RUNNER: every door's bind, account, scope and fields, from its row ------------
   //
-  // Each door is a row of the contract's table (`contract/doors.json`) and its handler in
-  // the module its row names (`HANDLERS`). The class defines each row's method on its
-  // prototype at module load (`DoorMethods`, written from the table), and each hands its row
-  // and handler to the one runner; the steps are these, from the row alone.
+  // Each door is a row of the contract's table (`contract/doors.json`), its steps the
+  // owner's (`owner/doors.json`, `door-steps.ts`), and its handler in the module its steps
+  // name (`HANDLERS`). The class defines each row's method on its prototype at module load
+  // (`DoorMethods`, written from the two), and each hands its row and handler to the one
+  // runner; the steps are these, from the row alone.
 
   static {
-    // The table whole, as a hand method once held its own row at each call (`doorRow`): a
-    // door a name RPC reserves (`rpcReserved`) among what it refuses.
-    const problems = doorProblems(doorTable());
-    if (problems.length > 0) {
-      throw new Error(`the door table is broken: ${problems.join("; ")}`);
-    }
+    // Both halves whole (`ownerRows`), as a hand method once held its own row at each call:
+    // a door a name RPC reserves (`rpcReserved`), and a door of either half with no match in
+    // the other, among what it refuses.
+    const rows = ownerRows();
     // Every handler is a row's, of the module it is in: a handler no row names is refused.
-    const named = new Map(doorTable().map((row) => [row.door, row.handler]));
+    const named = new Map(rows.map((row) => [row.door, row.handler]));
     for (const [module, handlers] of Object.entries(modules())) {
       const stray = Object.keys(handlers).filter((door) => named.get(door) !== module);
       if (stray.length > 0) {
         throw new Error(`${module}: handlers of no row of it (${stray.join(", ")})`);
       }
     }
-    for (const row of doorTable()) {
+    for (const row of rows) {
       // A name RPC reserves is refused with the table (`rpcReserved`): the runtime would
       // refuse some only at a call. One the class or its chain has (`fetch`, `toString`)
       // never becomes a door either, or the door would hide it.
@@ -877,7 +876,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * checked in one unit of that gate, or the door, which its handler checks in each unit it
    * makes. A row that takes no request is handed none, whatever came.
    */
-  #leased(row: DoorRow, binding: Binding, request: unknown, handler: Handled): Promise<unknown> {
+  #leased(row: OwnerRow, binding: Binding, request: unknown, handler: Handled): Promise<unknown> {
     // Each proof the call's steps mint is live while the call runs, and none once it settled.
     const lease: Lease = { live: true };
     const end = () => {
@@ -892,7 +891,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /** The door's call itself, its proofs live for `lease` (`#leased`). */
-  #call(row: DoorRow, binding: Binding, request: unknown, handler: Handled,
+  #call(row: OwnerRow, binding: Binding, request: unknown, handler: Handled,
         lease: Lease): Promise<unknown> {
     // The request's type is its handler's, held to the row's fields by the runner's fields
     // step at run time, as `tsc` holds the handler to its row at `HANDLERS`.
@@ -941,7 +940,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * refusal after its account is bound leaves a refusal receipt of what was asked (the
    * row's stand-in for it, where it names one), written once the refused change rolled back.
    */
-  #within<R, T>(row: DoorRow, binding: Binding, request: R, lease: Lease,
+  #within<R, T>(row: OwnerRow, binding: Binding, request: R, lease: Lease,
                 act: (call: Call<R>) => T): T {
     if (row.caller !== "session") {
       return act(this.#checked(row, binding, request, this.#bound(row, binding, request),
@@ -972,8 +971,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
   }
 
-  /** The bind and account steps of the row's caller kind (`contract/src/doors.ts`). */
-  #bound(row: DoorRow, binding: Binding, request: unknown): Bound {
+  /** The bind and account steps of the row's caller kind (`door-steps.ts`). */
+  #bound(row: OwnerRow, binding: Binding, request: unknown): Bound {
     const door = row.class as DoorClass;
     const capability = row.capability!;
     switch (row.caller) {
@@ -1077,7 +1076,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /** The guard, scope and fields steps of a bound call, in the row's order; its proof kept. */
-  #checked<R>(row: DoorRow, binding: Binding, request: R, held: Bound, proof: object):
+  #checked<R>(row: OwnerRow, binding: Binding, request: R, held: Bound, proof: object):
       Call<R> {
     const { account } = held;
     let r: Record<string, unknown>;
@@ -1099,8 +1098,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
              universeOf: () => this.#universe(account) };
   }
 
-  /** A row's guard: a check of its caller after the account (`contract/src/doors.ts`). */
-  #guard(row: DoorRow, binding: Binding, account: Account): void {
+  /** A row's guard: a check of its caller after the account (`door-steps.ts`). */
+  #guard(row: OwnerRow, binding: Binding, account: Account): void {
     switch (row.guard) {
       case undefined:
         return;
@@ -1132,7 +1131,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * The scope step: an account door's capability held where its caller acts (`#scope`), or,
    * at a run door, where the agent its request names acts (`#runDoor`), its universe kept.
    */
-  #scoped(row: DoorRow, account: Account, r: Record<string, unknown> | null):
+  #scoped(row: OwnerRow, account: Account, r: Record<string, unknown> | null):
       { universe: string | null; agent: string } {
     const none = { universe: null, agent: MAIN_AGENT };
     if ((row.caller !== "account" && row.caller !== "visitors") || row.scope === "handler") {
@@ -1151,7 +1150,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /** The fields step: the request held to its row's arguments; a loose one is its module's. */
-  #fields(row: DoorRow, request: unknown, account: Account): Record<string, unknown> {
+  #fields(row: OwnerRow, request: unknown, account: Account): Record<string, unknown> {
     const args = row.args;
     if (args === "none" || args === "loose") {
       return {};

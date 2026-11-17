@@ -3120,7 +3120,7 @@ export interface FileConflicted {
   readonly conflict: Entry | null;
 }
 
-// -- THE DOORS: the `files` rows' handlers (`contract/doors.json`) --------------------------------
+// -- THE DOORS: the `files` rows' handlers (`owner/doors.json`) -----------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`FilesDoorNeeds`) once the row's steps held: the bind, the account, the scope
