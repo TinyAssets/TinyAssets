@@ -17,7 +17,7 @@ When main moves, the first few queued or armed PRs (queue order) are checked:
    intersected with main's selection (over what main changed since the PR's
    merge base). A failure counts only if it fails again on a re-run AND passes
    on main alone, so a flake or a test already broken on main never costs a
-   builder a rebase. A huge intersection is left to the queue.
+   builder a merge. A huge intersection is left to the queue.
 
 Three commands, three trust levels (.github/workflows/queue-freshness.yml):
 
@@ -145,8 +145,8 @@ def render_comment(verdict: dict, main: str) -> str:
         "",
         f"Main moved to `{main[:12]}`, and this head (`{verdict['head'][:12]}`) no "
         "longer merges cleanly with it, so it was taken out of the merge queue and "
-        "auto-merge was disabled (scripts/queue_freshness.py). Merge or rebase onto "
-        "main and push; a `Drain-Review-Diff:` receipt survives that if the change "
+        "auto-merge was disabled (scripts/queue_freshness.py). Merge main in "
+        "and push; a `Drain-Review-Diff:` receipt survives that if the change "
         "itself is unchanged.",
         "",
         f"**{verdict['verdict']}**: {verdict['why']}",
