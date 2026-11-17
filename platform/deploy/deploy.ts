@@ -165,7 +165,7 @@ import {
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
-  BACK_INPUTS, backFrom, copyBack, firstNightAfter, KEEP_DAYS, readableAt, recover,
+  BACK_INPUTS, backFrom, type Begin, copyBack, firstNightAfter, KEEP_DAYS, readableAt, recover,
   type Recovering, type Referenced, RESTORE_KEY, restoreBegan, type Watch, watch,
 } from "./offsite.ts";
 import {
@@ -1625,7 +1625,10 @@ const recoverAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
       "first, a loud stop when they can't be), each read back byte for byte; then locate each " +
       "namespace's owner from its newest generation (restore.locate, addressed to the " +
       "platform) and begin that owner's restore from it (restore.begin), through the operator " +
-      "channel: two namespaces naming one owner stop the run before any restore begins");
+      "channel: two namespaces naming one owner stop the run before any restore begins; a " +
+      "namespace a marked one holds is left out, one a written one holds is not begun, and one " +
+      "whose owner takes no restore (live in this account) is held by the owner's own " +
+      "(restore.hold), so its erasure takes it, and the run stops naming it");
   if (run.reach === "public") {
     return;
   }
@@ -1645,7 +1648,8 @@ const recoverAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
 /**
  * What mode `recover` asks the doors (`Recovering`), a batch push of `BATCH` messages at a
  * time, stopping loudly past `RUN_MS` (a run again goes on): the namespaces' owners,
- * `LOCATE_PAGE` a message addressed to the platform, and each owner's restore begun.
+ * `LOCATE_PAGE` a message addressed to the platform, each owner's restore begun, and each
+ * namespace not begun held by its owner's own.
  */
 function recovering(run: Run, got: Pick<Values, "cloudflare" | "account">): Recovering {
   const ring = keyring(input(run, OPERATOR_KEYRING), OPERATOR_KEYRING);
@@ -1662,6 +1666,11 @@ function recovering(run: Run, got: Pick<Values, "cloudflare" | "account">): Reco
     }
     return answers;
   };
+  const each = async (op: string, begins: readonly Begin[]) =>
+    (await ask(op, begins.map(({ owner, namespace, gen }) =>
+      ({ owner, args: { namespace, gen } })))).map((answer) => answer === null
+      ? `not answered in ${WAIT_MS / 1000} s` : "refused" in answer
+      ? `refused (${answer.refused.code}): ${answer.refused.message}` : null);
   return {
     locate: async (namespaces) => {
       const spans = pages(namespaces, LOCATE_PAGE);
@@ -1678,10 +1687,8 @@ function recovering(run: Run, got: Pick<Values, "cloudflare" | "account">): Reco
         return span.map((namespace) => [namespace, located[namespace] ?? null] as const);
       }));
     },
-    begin: async (begins) => (await ask("restore.begin", begins.map(({ owner, namespace, gen }) =>
-      ({ owner, args: { namespace, gen } })))).map((answer) => answer === null
-      ? `not answered in ${WAIT_MS / 1000} s` : "refused" in answer
-      ? `refused (${answer.refused.code}): ${answer.refused.message}` : null),
+    begin: (begins) => each("restore.begin", begins),
+    hold: (holds) => each("restore.hold", holds),
   };
 }
 

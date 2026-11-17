@@ -3292,7 +3292,10 @@ describe("mode recover", () => {
       "for byte; then locate each namespace's owner from its newest generation " +
       "(restore.locate, addressed to the platform) and begin that owner's restore from it " +
       "(restore.begin), through the operator channel: two namespaces naming one owner stop " +
-      "the run before any restore begins"]);
+      "the run before any restore begins; a namespace a marked one holds is left out, one a " +
+      "written one holds is not begun, and one whose owner takes no restore (live in this " +
+      "account) is held by the owner's own (restore.hold), so its erasure takes it, and the " +
+      "run stops naming it"]);
     expect(planned.sent).toEqual([]);
     const w = world({ held: true, doors, copied });
     const work = await runMode(w, "recover", ["--yes", "--at", AT], ENV);
@@ -3307,6 +3310,22 @@ describe("mode recover", () => {
                      `rclone check back:${BUCKET}/`, "cf POST /accounts/"]);
     expect(work.plan).toContain(`began user_bb's restore from ${BB}/${GEN}: mode restore ` +
                                 `--owner user_bb --generation ${BB}/${GEN} carries it on`);
+  });
+
+  it("holds a namespace whose owner's begin is refused by that owner's own, then stops naming " +
+     "it", async () => {
+    const w = world({ held: true, copied, doors: (message) =>
+      message.op === "restore.begin" && message.owner === "user_aa"
+        ? { refused: { code: "refused" as const, message: "the owner is admitted" } }
+        : message.op === "restore.hold" ? { result: { namespace: BB, held: AA } }
+        : doors(message) });
+    await expect(runMode(w, "recover", ["--yes"], ENV)).rejects.toThrow(
+      `1 of 2 restores were not begun, each written back: user_aa from ${AA}/${GEN}: refused ` +
+      "(refused): the owner is admitted; held by the owner's own namespace, so its erasure " +
+      "takes it, and not restored");
+    expect(w.sent.map(({ message }) => [message.op, message.owner]).slice(1)).toEqual([
+      ["restore.begin", "user_aa"], ["restore.begin", "user_bb"], ["restore.hold", "user_aa"]]);
+    expect(w.sent.at(-1)!.message.args).toEqual({ namespace: AA, gen: GEN });
   });
 
   it("locates the namespaces a page of LOCATE_PAGE a message", async () => {

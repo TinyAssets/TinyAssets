@@ -34,7 +34,7 @@ import {
   BURST, digest, type Generated, generate, type Line, objectsOf, type Owner, owner, PAGE, replay,
   standing, writtenAt,
 } from "./generation-support";
-import { MUSE, registerOn } from "./ledger-support";
+import { MUSE, registerOn, signedIn } from "./ledger-support";
 import {
   drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, storesOn, TIERS,
 } from "./support";
@@ -910,6 +910,51 @@ describe("a restore refuses, writing nothing", () => {
       { owner: o.name, caller: o.name, origin: null }, { namespace: ns, gen: gen.gen }));
     expect(refused.code).toBe("refused");
     await untouched(stub);
+  });
+});
+
+describe("a namespace of the owner its object does not adopt (restoreHold)", () => {
+  const holdsOf = async (ns: string) =>
+    (await env.BLOBS.list({ prefix: `${objectPrefix(ns)}h/` })).objects.map((o) => o.key);
+
+  it("is held by the live owner's own, made for it, so the owner's erasure marks and deletes " +
+     "both", async () => {
+    const { o, gen, ns } = await source();
+    // The owner live again with nothing of it, as a sign-up in a new account before a recover.
+    const stub = await lose(o);
+    await stub.admissionSet(platform(o.name), { admit: true });
+    const held = await stub.restoreHold(platform(o.name), { namespace: ns, gen: gen.gen });
+    const [own] = await sqlIn(stub, "SELECT ns FROM file_space");
+    expect(held).toEqual({ namespace: own!["ns"], held: ns });
+    expect(await holdsOf(held.namespace)).toEqual([`${objectPrefix(held.namespace)}h/${ns}`]);
+    // Asked again, it answers as it stands.
+    expect(await stub.restoreHold(platform(o.name), { namespace: ns, gen: gen.gen }))
+      .toEqual(held);
+    const { session } = await stub.sessionOpen(o.bind(null, { authenticated_at: signedIn() }));
+    await erasedWhole(stub, o.name, o.bind(null, { session }));
+    for (const each of [ns, held.namespace]) {
+      expect([await env.BLOBS.head(`e/${each}`) !== null,
+              (await env.BLOBS.list({ prefix: objectPrefix(each) })).objects]).toEqual([true, []]);
+    }
+  });
+
+  it("is refused, holding nothing, for an object that takes a restore, for its own namespace, " +
+     "and for another owner's generation", async () => {
+    const { o, gen, ns } = await source();
+    const stub = await lose(o);
+    const refused = await failure(() => stub.restoreHold(platform(o.name),
+                                                         { namespace: ns, gen: gen.gen }));
+    expect([refused.code, refused.message]).toEqual(["refused", "this object takes a restore: " +
+      "begin it from the namespace, which it then adopts"]);
+    expect(await sqlIn(stub, "SELECT ns FROM file_space")).toEqual([{ ns: null }]);
+    const other = await source();
+    const own = await failure(() => other.o.stub.restoreHold(platform(other.o.name),
+      { namespace: other.ns, gen: other.gen.gen }));
+    expect(own.message).toBe("the namespace is this object's own");
+    const another = await failure(() => other.o.stub.restoreHold(platform(other.o.name),
+      { namespace: ns, gen: gen.gen }));
+    expect(another.message).toBe("the generation is another owner's");
+    expect(await holdsOf(other.ns)).toEqual([]);
   });
 });
 

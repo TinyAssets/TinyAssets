@@ -140,6 +140,12 @@ const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
     const { binding, stub } = bindPlatformFor(env, owner);
     return stub.restoreNames(binding, args as unknown as RestoreNamesRequest);
   },
+  // A namespace of the owner's that its object does not adopt, held by its own, so its erasure
+  // takes that one too (`deploy/offsite.ts` `recover`, when a begin finds the owner live).
+  "restore.hold": (env, owner, args) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.restoreHold(binding, args as unknown as RestoreBeginRequest);
+  },
   // A restore after an account's loss, when no object names a namespace (`deploy/offsite.ts`
   // `recover`): each namespace's owner, as its newest generation names it, read in the files
   // Worker one namespace at a time (each opens a part of up to a chunk); null for one the

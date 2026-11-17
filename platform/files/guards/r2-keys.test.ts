@@ -14,12 +14,14 @@
  *   anything else but the data keys' ring (`this.env.FILES_KEYRING`, handed straight to
  *   `datakey.ts`'s `mint`, `unwrap` and `rewrap`, the one module that reads it), and every
  *   key is a call of a key builder
- *   (`chunkKey`, `manifestKey`, `segmentKey`, `manifestObjectKey`, `markKey`, or `listedManifest`, which rebuilds a
+ *   (`chunkKey`, `manifestKey`, `segmentKey`, `manifestObjectKey`, `markKey`, `holdKey`, or
+ *   `listedManifest`, which rebuilds a
  *   listed key
  *   through `manifestKey`; or a list of them mapped from a list), each the one imported
  *   from `./keys` and nothing shadowing it. No alias (`const b = this.env.BLOBS`,
  *   `const { BLOBS } = env`, `env["BLOBS"]`) passes, and the one list is of one namespace's
- *   prefix (`list({ prefix: chunkPrefix(ns) | manifestPrefix(ns), ... })`, the erasure's).
+ *   prefix (`list({ prefix: chunkPrefix(ns) | manifestPrefix(ns) | holdPrefix(ns), ... })`,
+ *   the erasure's).
  */
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -34,9 +36,10 @@ const CALLS: ReadonlySet<string> = new Set(["put", "get", "head", "delete"]);
 const KEY_TEXT = /^o\/|\/c\//;
 /** The key builders `keys.ts` exports, the only calls a bucket key may be. */
 const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey", "segmentKey",
-                                                "manifestObjectKey", "markKey", "listedManifest"]);
+                                                "manifestObjectKey", "markKey", "holdKey",
+                                                "listedManifest"]);
 /** The prefixes `keys.ts` exports, the only lists of the bucket. */
-const PREFIXES: ReadonlySet<string> = new Set(["chunkPrefix", "manifestPrefix"]);
+const PREFIXES: ReadonlySet<string> = new Set(["chunkPrefix", "manifestPrefix", "holdPrefix"]);
 /** The one other field of `this.env` the Worker reads, and the calls it may go to. */
 const RING = "FILES_KEYRING";
 const RING_READERS: ReadonlySet<string> = new Set(["mint", "unwrap", "rewrap"]);

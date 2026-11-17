@@ -1007,6 +1007,13 @@
       "args": { "refused": "invalid restore request", "required": { "from": {} }, "optional": {} }
     },
     {
+      "door": "restoreHold", "class": "admission", "capability": null,
+      "args": {
+        "refused": "invalid restore request",
+        "required": { "namespace": {}, "gen": {} }, "optional": {}
+      }
+    },
+    {
       "door": "egressOpen", "class": "work", "capability": null, "args": "loose"
     },
     {
