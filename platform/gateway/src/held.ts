@@ -5,7 +5,7 @@
  * deadline and to its caller's stop.
  *
  * **What it costs** (measured in workerd, the pinned binary, live set after a swept
- * collection, 4 MiB bodies of 19 shapes: `owner/memory/egress.mjs` asserts it at each phase):
+ * collection, 4 MiB bodies of 19 shapes: `gateway/memory/egress.mjs` asserts it at each phase):
  * - while it reads, its text: at most 2.01 times its bytes (a two-byte string, which one
  *   non-ASCII character anywhere makes the whole text), held at `TEXT_COST` (2.25);
  * - at the parse (text and tree), the stringify (tree and output) and the encode (output and

@@ -56,7 +56,6 @@ describe("the import layers", () => {
   });
 
   it("find every import where its layer may import it, but for exactly what is owed", () => {
-    expect(tree().violations.length).toBeGreaterThan(0);
     expect(ratchet("layers", tree().violations, OWED)).toEqual([]);
     expect(unheld(OWED)).toEqual([]);
   });

@@ -5,8 +5,9 @@
  * a test pool's own Worker built from its config the same way, the check every test's
  * Workers pass before they run (`pool`: no host secret), and a test fake transpiled into one.
  *
- * Node runs this file as it is (type stripping): `doors/test/app.e2e.mjs` and
- * `owner/memory/baselines.mjs` import it, so its own imports name their `.ts` files.
+ * Node runs this file as it is (type stripping): `doors/test/app.e2e.mjs` and the memory
+ * legs (`owner/memory/baselines.mjs`, `gateway/memory/egress.mjs`) import it, so its own
+ * imports name their `.ts` files.
  */
 import { execFile } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";

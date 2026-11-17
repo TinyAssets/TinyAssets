@@ -3,7 +3,7 @@
  * tier numbers and the control records the tests write, keyrings, and the model sources the
  * gateway's fake upstream answers for. Its runtime imports are the sealed envelope, the
  * control record's module and the dark record, by their file names, which import only by file
- * name too, so Node's type stripping runs them (`doors/test/app.e2e.mjs` and the owner's
+ * name too, so Node's type stripping runs them (`doors/test/app.e2e.mjs` and the gateway's
  * memory leg import this file so).
  */
 import { CONTROL_KEY } from "../contract/src/control.ts";

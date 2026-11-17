@@ -29,17 +29,12 @@ import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
 import { principal, utf8Decoder } from "../../contract/src/text";
 
 import { type Credential, credential } from "./credential";
+import type { GatewayEnv } from "./env";
 import type { Resealed, Sealed } from "../../contract/src/gateway";
 import { Refusal } from "../../contract/src/refusal";
 
-/**
- * The one secret this Worker holds, as its config declares it (`secrets.required`). Typed
- * optional only for the owner memory probe's one Env, which binds it in its gateway role
- * alone (`owner/memory/egress-probe.ts`) until T3 moves that leg to `gateway/memory/`.
- */
-export interface KeyringEnv {
-  readonly GATEWAY_KEYRING?: unknown;
-}
+/** The one secret this Worker holds, as its config requires it (`secrets.required`). */
+export type KeyringEnv = Pick<GatewayEnv, "GATEWAY_KEYRING">;
 
 /** What a blob is bound to: the caller names all three, and the seal holds it to them. */
 export interface Binding {
