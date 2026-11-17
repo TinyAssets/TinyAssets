@@ -379,7 +379,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     depth (Fact 15; the coordinator, 2026-11-12, below).
   - [x] Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`,
     with G-H11 and G-SP5 (d3 §O5): one per-API table (`g1.md`).
-- [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
+- [x] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
   (d3 §K1, §K2).
   - [x] T1, the owner's tests at production's numbers through the object's one wiring, twelve
     PRs, T1a to T1e (#5515 to #5588; `t1c.md`).
@@ -402,8 +402,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       `ownDoor<D>` answer `DoorAnswer<D>`, the 13 answers the doors' tests read are `DoorTypes`
       entries that `OwnerDO implements OwnerDoors` holds to the owner's, and the two #5657 left
       (`sandboxRung`, `restoreRelease`), which nothing reads, are gone.
-  - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
-    (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
+  - [x] T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
+    (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i). The leg runs the real doors
+    and gateway bundles (`gateway/memory/`, `npm run test:memory -w gateway`), and the
+    metered path's tree is gone before its encode, which the leg found held (`t3.md`).
   - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
     budgets' factor of 4 and the watchdogs' 3, and `search-cpu`'s host CPU bound with them: the
     runner-variance rule (`untangle/budgets-variance`, #5640's review; `budgets-variance.md`).
