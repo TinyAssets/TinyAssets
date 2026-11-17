@@ -671,7 +671,7 @@ export type DoorRequest<D extends keyof DoorRequests> =
 export type DoorLoose<D extends string> =
   TypesOf<D> extends { readonly loose: infer P extends readonly unknown[] } ? P
     : [request: unknown];
-/** What the doors read of a door's answer, else an object they pass on. */
+/** What the doors, or their tests, read of a door's answer, else an object they pass on. */
 export type DoorAnswer<D extends string> =
   TypesOf<D> extends { readonly answer: infer A } ? A : object;
 
