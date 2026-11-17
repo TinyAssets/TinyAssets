@@ -31,7 +31,7 @@ import {
   DOT, EVENT, ledgerSubscription, MUSE, registerOn, rig, type Rig, WHSEC,
 } from "./ledger-support";
 import { writeControl } from "../../ci/fixtures";
-import { clockAt, failure, gateFor, storesOn } from "./support";
+import { clockAt, drainDue, failure, gateFor, storesOn } from "./support";
 import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
 import { connectAt, doorbellOpensRetired } from "./gateway-support";
 
@@ -94,8 +94,8 @@ async function control(owners: readonly string[], outside: "on" | "off" = "on"):
  * How long `rings` waits for its rings before it fails with the wake states: the slowest run
  * measured of the longest test that waits on it (a revoke landing mid-pass, 1.3 s with 16
  * busy loops on 4 cores; 0.11 to 0.16 s alone) with more than twice that again for margin,
- * so it fails with its diagnostic well inside the test's own 5 s timeout, never as a bare
- * timeout.
+ * so it fails with its diagnostic well inside the test's own timeout (its class's,
+ * `ci/classes.ts`: never under 5 s), never as a bare timeout.
  */
 const RINGS_BOUND_MS = 3_000;
 
@@ -305,7 +305,7 @@ describe("the kill switch and admission", () => {
     for (const [owners, outside] of [[[r.owner], "off"], [["someone-else"], "on"]] as const) {
       await control(owners, outside);
       await r.post(null, `dm:${muse}`, { cmid: `c-${outside}` });
-      await runInDurableObject(r.stub, (i: OwnerDO) => i.alarm());
+      await drainDue(r.stub);  // the pass may be the object's own alarm's (`unsent`)
       expect((await r.table("ledger_wakes")).map((w) => [w["state"], w["claim_id"]]))
         .toEqual([["pending", null]]);
       expect(await r.rang()).toEqual([]);
