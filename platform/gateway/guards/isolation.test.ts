@@ -40,7 +40,7 @@ isolationTests(IMPORTS, {
       "import { principal } from './../../contract/src/text';",
     ].join("\n")],
     ["the keyring in keyring.ts", KEYRING_HOME,
-     "export function f(env: { GATEWAY_KEYRING?: unknown }) { return env.GATEWAY_KEYRING; }"],
+     "export function f(env: { GATEWAY_KEYRING: string }) { return env.GATEWAY_KEYRING; }"],
     ["the owner grammar import beside the word owner", "gateway/src/probe.ts",
      "import { principal } from '../../contract/src/text';\nexport const owner = 'owner';"],
   ],

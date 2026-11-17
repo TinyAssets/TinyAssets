@@ -260,20 +260,44 @@ export async function forwardMetered(env: KeyringEnv, bound: Binding, blob: unkn
 type Prepared = { readonly refused: GatewayCode }
   | { readonly upload: Upload; readonly model: Model<Api>; readonly listed: boolean };
 
+/** A metered call's body serialized once it is checked, reserved and clamped, or its code. */
+type Serialized = { readonly refused: GatewayCode }
+  | { text: string | null; readonly model: Model<Api>; readonly listed: boolean };
+
 /**
- * The metered call's body, read and parsed once (at most `length` bytes), checked, reserved,
- * clamped in place, serialized and encoded once, each step's input unreachable once the next
- * holds its output; then uploading, `ended` run when its last write is taken. Refused before
- * the reserve for what the reservation cannot bound, so a refused shape is never charged.
+ * The metered call's body, read (at most `length` bytes) and weighed, serialized
+ * (`serialized`) and encoded once, each step's input unreachable once the next holds its
+ * output; then uploading, `ended` run when its last write is taken. The tree lives only in
+ * `serialized`'s frame, gone before the encode: a running frame keeps what it passed to a
+ * call after its own variable lets it go (measured in workerd: the egress memory leg,
+ * `gateway/memory/egress.mjs`, read the tree beside the text and its bytes here).
  */
 async function prepared(request: Request, length: number, credential: Credential,
                         meters: Meters, any: Meter, path: string, catalog: Catalog,
                         reserve: Reserve, hold: Hold, signal: AbortSignal,
                         ended: () => void): Promise<Prepared> {
   // The body, read under slots taken as it arrives; then its weight's slots, before the parse.
-  let read: Awaited<ReturnType<typeof weighedBody>> | null =
-    await weighedBody(request, length, hold, signal);
+  const read = await weighedBody(request, length, hold, signal);
   await hold.grow(weightSlots(read.weight));
+  const call = await serialized(read, request.method, credential, meters, any, path, catalog,
+                                reserve, signal);
+  if ("refused" in call) {
+    return call;
+  }
+  const bytes = new TextEncoder().encode(call.text!);
+  call.text = null;
+  return { upload: uploaded(bytes, ended), model: call.model, listed: call.listed };
+}
+
+/**
+ * The weighed body parsed once, its text let go from `read` once parsed; checked, reserved,
+ * clamped in place and serialized. Refused before the reserve for what the reservation cannot
+ * bound, so a refused shape is never charged.
+ */
+async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method: string,
+                          credential: Credential, meters: Meters, any: Meter, path: string,
+                          catalog: Catalog, reserve: Reserve, signal: AbortSignal):
+    Promise<Serialized> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(read.text!);
@@ -293,7 +317,7 @@ async function prepared(request: Request, length: number, credential: Credential
   // The model the call names, read where pi-ai names it; then pi-ai's own call for that
   // model, which says where its output cap goes (a model whose record cannot cap it is
   // never metered).
-  const id = meteredModel(any, request.method, path, parsed);
+  const id = meteredModel(any, method, path, parsed);
   if (id === null) {
     return { refused: "unmetered" };
   }
@@ -302,7 +326,7 @@ async function prepared(request: Request, length: number, credential: Credential
     return { refused: "unknown_model" };
   }
   const meter = await meters.of(model);
-  if (meter === null || meteredModel(meter, request.method, path, parsed) !== id) {
+  if (meter === null || meteredModel(meter, method, path, parsed) !== id) {
     return { refused: "unmetered" };
   }
   // What the reservation cannot bound: several choices, or a server-side tool the
@@ -347,15 +371,10 @@ async function prepared(request: Request, length: number, credential: Credential
   if (read.bytes > terms.input_bytes) {
     return { refused: "invalid_request" };
   }
-  read = null;
   const listed = fallbackList(rules, parsed);
-  let text: string | null = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
-                                                   terms.max_output_tokens,
-                                                   credential.upstream.api));
-  parsed = null;
-  const bytes = new TextEncoder().encode(text);
-  text = null;
-  return { upload: uploaded(bytes, ended), model, listed };
+  const text = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
+                                      terms.max_output_tokens, credential.upstream.api));
+  return { text, model, listed };
 }
 
 /**

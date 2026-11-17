@@ -38,14 +38,6 @@ export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {
 }
 
 /**
- * What `from` owes the layer table (`layers.ts`) for each of its imports `to` lands on, until
- * `fix` removes them: paths from the repository root, as the table's guard names them.
- */
-export function imports(fix: string, from: string, to: readonly string[]): Owed[] {
-  return to.map((each) => Object.freeze({ guard: "layers", what: `${from} imports ${each}`, fix }));
-}
-
-/**
  * The kernel guard's violation (`kernels.ts`): the source `from`, from the repository root,
  * does `kernel`'s work `count` times outside its home.
  */
