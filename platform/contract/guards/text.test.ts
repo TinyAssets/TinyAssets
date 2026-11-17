@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { utf8Bytes } from "../src/text";
+import { AGENT_ID, agentId, utf8Bytes } from "../src/text";
 
 /** Mixed text of `units` UTF-16 units: ASCII, two- and three-byte characters, and pairs. */
 function mixed(units: number): string {
@@ -27,5 +27,15 @@ describe("utf8Bytes", () => {
     ["ASCII alone", "z".repeat(70_000)],
   ])("is TextEncoder's count for %s", (_what, text) => {
     expect(utf8Bytes(text)).toBe(encoded(text));
+  });
+});
+
+describe("an agent's id", () => {
+  it("is its directory's name", () => {
+    expect(agentId("main")).toBe("main");
+    expect(AGENT_ID.test("a.b-c_d")).toBe(true);
+    for (const bad of ["", ".hidden", "a/b", "x".repeat(129), 7]) {
+      expect(() => agentId(bad)).toThrow(/an agent id/);
+    }
   });
 });

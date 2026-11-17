@@ -14,7 +14,7 @@ import { NO_ERASURE } from "../src/erasure";
 import { BREAKER_FAILURES, Inbound, INSTALL_PROOF } from "../src/inbound";
 import { profile, proves } from "../../contract/src/inbound-proof";
 import { TOO_MANY_KEYS } from "../src/keys";
-import { MAX_KEYS } from "../../contract/src/limits";
+import { INBOUND_AGENT_MAX, MAX_KEYS } from "../../contract/src/limits";
 import { GRANT_LIMITS } from "../src/grants";
 import { LEDGER_LIMITS } from "../src/ledger";
 import { INBOUND_DOOR, INBOUND_ONLY } from "../src/owner-do";
@@ -155,6 +155,16 @@ describe("an inbound binding", () => {
                                                      { kind: "shared", agent: "main", route })))
       .message).toBe(INSTALL_PROOF);
     expect(await r.stub.inboundList(r.bind(null))).toEqual({ bindings: [] });
+  });
+
+  it("names an agent by its id, at most INBOUND_AGENT_MAX long", async () => {
+    const r = await rig();
+    const create = (agent: string) => r.stub.inboundCreate(r.session(null), {
+      kind: "capability", agent, route: `h:${crypto.randomUUID().replace(/-/g, "").repeat(2)}` });
+    expect((await create("Research.v2")).agent).toBe("Research.v2");
+    for (const agent of ["a".repeat(INBOUND_AGENT_MAX + 1), "-lead", "a/b"]) {
+      expect((await failure(() => create(agent))).code).toBe("invalid");
+    }
   });
 
   it("trips its breaker at BREAKER_FAILURES in its window, and a change re-arms it", async () => {

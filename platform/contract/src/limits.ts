@@ -175,6 +175,12 @@ export const EGRESS_PATH_MAX = 2048;
 export const KEY_NAME_MAX = 80;
 /** An inbound binding's owner-held proof secret, in characters (`owner/src/inbound.ts`). */
 export const INBOUND_SECRET_MAX = 4096;
+/**
+ * The agent an inbound binding names, in characters (`owner/src/inbound.ts`): an agent id
+ * (`text.ts` `AGENT_ID`, up to 128) held to its column's CHECK, which only a rebuild of that
+ * exported table widens (`owner/src/schema.ts` `FORWARD`).
+ */
+export const INBOUND_AGENT_MAX = 64;
 /** An inbound binding's directory route (`h:<64 hex>` or `i:<app>:<kind>:<64 hex>`). */
 export const INBOUND_ROUTE_MAX = 160;
 /** The characters a notice's detail keeps (`owner/src/notices.ts`). */
@@ -185,6 +191,12 @@ export const MAX_PATH_BYTES = 4096;
 export const SCOPES_JSON_MAX = 64 * 1024;
 /** A held registration's request, in characters (`CARD_LIMITS`). */
 export const CARD_REQUEST_MAX = 4096;
+/**
+ * A held call's card, in UTF-8 bytes (`owner/src/actions.ts`): its request's shown text, at
+ * most `ACTION_LIMITS.shownChars` (8,000) code points of canonical JSON, each at most 4 bytes,
+ * and its other fields, well inside.
+ */
+export const ACTION_CARD_BYTES = 64 * 1024;
 
 /**
  * The placement rule's threshold (ADR-035): a collection row's, a history entry's or a

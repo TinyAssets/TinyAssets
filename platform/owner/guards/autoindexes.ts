@@ -6,6 +6,7 @@
  * (`test/indexes.test.ts`), so it cannot go stale. Plain data: workerd and Node both read it.
  */
 export const AUTOINDEXES: readonly string[] = Object.freeze([
+  "sqlite_autoindex_action_requests_1", "sqlite_autoindex_action_requests_2",
   "sqlite_autoindex_agent_cards_1", "sqlite_autoindex_agent_cards_2",
   "sqlite_autoindex_archive_moves_1", "sqlite_autoindex_archive_purges_1",
   "sqlite_autoindex_collection_history_1",

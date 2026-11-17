@@ -51,6 +51,9 @@ export interface DoorRequests {
   readonly policyProposal: DoorFields<"request_id">;
   readonly policyWakeLimits:
     DoorFields<"agent_id" | "max_wakes_per_hour" | "batch_window_s" | "expected_generation">;
+  readonly actionRequest: DoorFields<"card_id">;
+  readonly actionApprove: DoorFields<"card_id" | "digest">;
+  readonly actionRefuse: DoorFields<"card_id" | "digest">;
   readonly grantSet:
     DoorFields<"client" | "source" | "mode" | "scopes" | "expected_revision" | "name", "profile">;
   readonly grantRevoke: DoorFields<"client">;
