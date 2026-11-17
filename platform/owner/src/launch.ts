@@ -718,8 +718,7 @@ export class Launcher implements RunHost {
 
   /** In a unit: a lease no run and no sign-in holds now given back, as a settle gives it. */
   leaseFreed(leaseId: string, epoch: number): void {
-    if (this.runs.liveRuns().some((run) => run.lease_id === leaseId)
-        || this.#o.signins.holds(leaseId)) {
+    if (this.runs.holds(leaseId) || this.#o.signins.holds(leaseId)) {
       return;
     }
     if (this.#o.files.leaseRelease(leaseId, epoch).released) {

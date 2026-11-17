@@ -470,6 +470,41 @@ describe("deleteNamespace: the erasure's mark, then its prefix delete", () => {
     // Another namespace is neither marked nor touched.
     expect([await markOf(other), (await keys(other)).length]).toEqual([null, 1]);
   });
+
+  it("marks each namespace it holds after its own mark, and deletes each before its own " +
+     "objects, its holds last; a namespace held twice, or in a cycle, once", async () => {
+    const [space, held, deeper, other] = [ns(), ns(), ns(), ns()];
+    for (const each of [space, held, deeper, other]) {
+      await put(each, bytes(`of ${each}`));
+    }
+    await service().holdNamespace(space, held);
+    await service().holdNamespace(space, held);
+    await service().holdNamespace(held, deeper);
+    await service().holdNamespace(deeper, space);
+    expect((await keys(space)).filter((key) => !key.includes("/c/")))
+      .toEqual([`o/${space}/h/${held}`]);
+    await service().markNamespace(space);
+    expect((await Promise.all([space, held, deeper, other].map(markOf)))
+      .map((mark) => mark?.body ?? null)).toEqual([MARK_BODY, MARK_BODY, MARK_BODY, null]);
+    // The delete cut short after the held ones: its own and its hold still stand.
+    let deletes = 0;
+    const crashing = new Proxy(env.BLOBS, { get: (bucket, name) => name !== "delete"
+      ? Reflect.get(bucket, name).bind(bucket)
+      : (...keys: Parameters<R2Bucket["delete"]>) => {
+        if (++deletes > 4) {
+          throw new Error("crashed");
+        }
+        return bucket.delete(...keys);
+      } });
+    expect((await failure(() => service(crashing).deleteNamespace(space))).message)
+      .toBe("crashed");
+    expect([await keys(held), await keys(deeper), (await keys(space)).length])
+      .toEqual([[], [], 2]);
+    expect(await service().deleteNamespace(space)).toEqual({ deleted: 2 });
+    expect([await keys(space), (await keys(other)).length]).toEqual([[], 1]);
+    // A namespace never holds itself.
+    expect(await refused(() => service().holdNamespace(other, other))).toBe("invalid");
+  });
 });
 
 describe("locate: a namespace's owner, from its newest generation's header", () => {

@@ -641,7 +641,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       ended: () => {
         this.#egress.drop();
         this.#relay.closeAll("erased");
-        this.#launcher.stop(this.#runs.liveRuns().map(({ run }) => run));
+        this.#launcher.stop(this.#runs.liveRuns());
       },
       // The namespace's mark, at the erasure's start: the copy back's record of it (no put
       // begins under the owner's mark, so the namespace it reads is the one the delete takes).

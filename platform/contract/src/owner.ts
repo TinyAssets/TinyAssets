@@ -226,6 +226,15 @@ export interface RestoreSource {
                       readonly fresh: string | null; readonly since: number } | null;
 }
 
+/**
+ * Another namespace of the owner held by its object's own (`restoreHold`): the namespace that
+ * holds it, and the one held.
+ */
+export interface RestoreHeld {
+  readonly namespace: string;
+  readonly held: string;
+}
+
 /** A page of what the owner's object names in the bucket (`restoreNames`), from the `from`th. */
 export interface RestoreNamesRequest {
   readonly from: number;
@@ -423,6 +432,7 @@ export interface DoorTypes {
   readonly restorePin: { readonly values: RestorePinRequest; readonly answer: RestoreHold };
   readonly restoreWipe: { readonly values: RestoreWipeRequest; readonly answer: RestoreHold };
   readonly restoreNames: { readonly values: RestoreNamesRequest; readonly answer: RestoreNames };
+  readonly restoreHold: { readonly values: RestoreBeginRequest; readonly answer: RestoreHeld };
   readonly sessionOpen: { readonly answer: { readonly session: string } };
   readonly sessionClose: { readonly answer: { readonly closed: number } };
   readonly socketTicket: { readonly handed: true };

@@ -357,15 +357,20 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] `untangle/o2c`: `contract/doors.json` split from `owner/doors.json` (the runner's
       steps), the door map written by the owner (`untangle-2026-11/o2c.md`).
   - Owed to lane O by merged PRs, one line each:
-    - S8: the owner adopts `served()` (`s8.md`).
-    - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
+    - [x] S8: the owner adopts `served()` (`s8.md`). Built in `untangle/o-owed`: every owner read
+      of a CLI record is `servedRecord`, and of one that signs in, `signsIn` (`o-owed.md`).
+    - [x] S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`). The ids were
+      O1d's; `untangle/o-owed` deletes `LiveRun`: `liveRuns` answers ids, `Runs.holds` the
+      lease check (`o-owed.md`).
     - [x] C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
       Built in `untangle/o3`: each door's binding parsed by its kind's parser, by the kinds its
       caller takes (`CALLER_BINDINGS`), and the egress copy gone (`untangle-2026-11/o3.md`).
     - [x] O2c: `caller` `none` (`owner/doors.json`) beside `UNBOUND_DOORS`, held equal by
       `stepProblems`, goes with B5's `none` binding kind, `untangle/o3` (`o2c.md` item 7). Built:
       the two steps name no caller, and the runner's `none` is `UNBOUND_DOORS`' (`o3.md`).
-    - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
+    - [x] C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`). Built in
+      `untangle/o-owed`: the owner's top level is a kit `CONFIG`, `CONTROL` held by binding
+      name (`o-owed.md`).
     - X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
@@ -464,9 +469,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     begun in the same run; and a night refuses to copy a bucket lacking a mark the copy holds,
     so no night before `recover` hides the marks (`r8-account-loss.md` item 7;
     `untangle/r8-locate`, `r8-locate.md`).
+  - [x] No erasure misses an owner's namespace its object does not adopt: the files Worker's
+    mark and delete take each namespace one holds (`o/<ns>/h/<held>`), `recover` holds a
+    namespace whose owner is live by that owner's own (`restore.hold`) and begins none another
+    holds, and `owner.admit` refuses an owner the directory records whose object is pending
+    (`untangle/r8-erased-orphans`, `r8-erased-orphans.md`).
   - [ ] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
-    located, the one naming `--owner` taken, then mode `restore` from it
-    (`r8-account-loss.md` item 7, `r8-locate.md` item 7; `untangle/r8-lost-object`).
+    located, the one naming `--owner` taken, then mode `restore` from it, every other one
+    naming it held by the restored one; a live owner restored from a namespace it holds; and a
+    located namespace whose owner is erased erased (`r8-account-loss.md` item 7, `r8-locate.md`
+    item 7, `r8-erased-orphans.md` item 8; `untangle/r8-lost-object`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner

@@ -67,6 +67,7 @@ import { CONVERSATION_ID, randomHex, RUN_ID, SCHEDULE_ID } from "../../contract/
 import { sha256Hex } from "../../contract/src/digest";
 
 import { bundledSources } from "../../sources/src/catalog";
+import { servedRecord, signsIn } from "../../sources/src/served";
 import {
  type EngineEvents, EVENTS_RACED, type Frame, FRAME_VERSION, readEvent,
 } from "../../contract/src/run-events";
@@ -158,13 +159,6 @@ export interface LiveLease {
   readonly signins?: readonly string[];
 }
 
-/** A live run, and the lease it runs under. */
-export type LiveRun = {
-  readonly run: string;
-  readonly lease_id: string;
-  readonly epoch: number;
-};
-
 /** A lease the admission opened: its two tokens, for the start that configures the sandbox. */
 export interface OpenedTokens {
   readonly sync_token: string;
@@ -175,7 +169,7 @@ export interface OpenedTokens {
 /**
  * What Runs reaches past its own rows: one narrow interface, which the run launcher serves
  * (`launch.ts`, `Launcher`). Runs reads the rest itself, from the storage it is handed: the
- * switched-on sign-ins (`signins.ts`) and the served source records (`bundledSources`). The
+ * switched-on sign-ins (`signins.ts`) and the served CLI records (`servedRecord`). The
  * owner's admission, tier and kept tier numbers are the admission module's, which only the
  * object reads (the policy-boundary guard), so the launcher hands them on from the object's
  * state; the connections, the grants, the model policy's caps and the spend are their
@@ -824,9 +818,7 @@ export class Runs {
     this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin) VALUES (?, ?, ?, ?)",
                    runId, prompt, utf8Bytes(prompt), origin);
     this.#sql.exec("DELETE FROM run_grants WHERE run = ?", runId);
-    if (row.lease_id !== null && this.#sql.exec(
-      `SELECT 1 FROM runs WHERE ${LIVE} AND lease_id = ? AND epoch = ?`, row.lease_id,
-      row.epoch).toArray().length === 0) {
+    if (row.lease_id !== null && !this.holds(row.lease_id)) {
       this.#host.releaseLease(row.lease_id, row.epoch!);
     }
     return true;
@@ -996,7 +988,7 @@ export class Runs {
     const lapsed = (engine: string) => new Refusal("signin_lapsed", `${SIGNIN_LAPSED} (${engine})`);
     let unattendedOnly = false;
     const allows = (engine: string, credential: CredentialKind): boolean => {
-      const cli = sources.get(engine)?.cli;
+      const cli = servedRecord(engine)?.cli;
       if (cli === undefined || !cli.credential.includes(credential)) {
         return false;
       }
@@ -1012,8 +1004,8 @@ export class Runs {
       file.connection !== null ? candidate.connection === file.connection
         : (sources.get(candidate.source)?.engines ?? []).includes(engine));
     if (file.engine !== AUTO) {
-      const record = sources.get(file.engine);
-      if (record?.cli === undefined) {
+      const record = servedRecord(file.engine);
+      if (record === undefined) {
         throw new Refusal("no_source", `${NO_SOURCE} (${file.engine} is no served engine)`);
       }
       const credentials: readonly CredentialKind[] = file.credential !== null
@@ -1048,11 +1040,9 @@ export class Runs {
       const plans = new Map<string, string>();  // provider -> engine
       const planned: UsableSource[] = [];
       for (const signin of signins.values()) {
-        const record = sources.get(signin.engine);
+        const record = servedRecord(signin.engine);
         // A switched-off source's plan is no candidate (review H1).
-        if (record?.cli === undefined
-            || !record.cli.credential.includes("vendor_login_in_sandbox")
-            || !this.#signinOn(signin.engine)) {
+        if (!signsIn(record) || !this.#signinOn(signin.engine)) {
           continue;
         }
         const provider = providerOf(record.cli.api_key_env, signin.engine);
@@ -1233,9 +1223,7 @@ export class Runs {
     this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now,
                    lease.conversation);
     this.#host.ended(runId);
-    if (lease.lease_id !== null && this.#sql.exec(
-      `SELECT 1 FROM runs WHERE ${LIVE} AND lease_id = ? AND epoch = ?`, lease.lease_id,
-      lease.epoch).toArray().length === 0) {
+    if (lease.lease_id !== null && !this.holds(lease.lease_id)) {
       this.#host.releaseLease(lease.lease_id, lease.epoch!);
     }
     this.#prune();
@@ -1257,7 +1245,7 @@ export class Runs {
             end: { readonly exit_code: number | null } | null): MailAnswer | null {
     const row = end !== null && this.liveUnder(runId, lease) ? this.#run(runId) : undefined;
     const events = row === undefined ? undefined
-      : bundledSources().get(row.source)?.cli?.engine.events;
+      : servedRecord(row.source)?.cli.engine.events;
     if (row === undefined || end === null || events === undefined) {
       return null;
     }
@@ -1295,7 +1283,7 @@ export class Runs {
       throw new Refusal("run_ended", RUN_ENDED);
     }
     this.#host.renewLease(lease.lease_id, lease.epoch);
-    const events = bundledSources().get(row.source)?.cli?.engine.events;
+    const events = servedRecord(row.source)?.cli.engine.events;
     if (events === undefined) {
       throw new Error(`run ${runId}'s engine ${row.source} has no record`);
     }
@@ -1372,10 +1360,19 @@ export class Runs {
     return ended.filter((row) => row.state !== "waiting").map((row) => row.id);
   }
 
-  /** Every live run and its lease. A read. */
-  liveRuns(): LiveRun[] {
-    return this.#sql.exec<LiveRun>(
-      `SELECT id AS run, lease_id, epoch FROM runs WHERE ${LIVE} ORDER BY seq`).toArray();
+  /** Every live run's id. A read. */
+  liveRuns(): string[] {
+    return this.#sql.exec<{ id: string }>(`SELECT id FROM runs WHERE ${LIVE} ORDER BY seq`)
+      .toArray().map(({ id }) => id);
+  }
+
+  /**
+   * Whether a live run holds `leaseId`: the lease stays while one does. A lease's id is
+   * minted with its one epoch (`files.ts` `sandboxLease`), so the id alone names it. A read.
+   */
+  holds(leaseId: string): boolean {
+    return this.#sql.exec(`SELECT 1 FROM runs WHERE lease_id = ? AND ${LIVE}`, leaseId)
+      .toArray().length > 0;
   }
 
   /**
@@ -1383,8 +1380,7 @@ export class Runs {
    * sandbox.
    */
   endAll(now: number): string[] {
-    return this.#sql.exec<{ id: string }>(`SELECT id FROM runs WHERE ${LIVE}`).toArray()
-      .map(({ id: run }) => this.cancel(run, now)).filter((run) => run !== null);
+    return this.liveRuns().map((run) => this.cancel(run, now)).filter((run) => run !== null);
   }
 
   /** The caller's run's receipt, or refused: a client sees its own runs only. A read. */
@@ -1460,7 +1456,8 @@ export class Runs {
   lost(now: number): string[] {
     const leases = new Set(this.#host.leases(now)
       .map((lease) => `${lease.lease_id}/${lease.epoch}`));
-    const lost = this.#sql.exec<LiveRun & { beat_at: number }>(
+    const lost = this.#sql.exec<{ run: string; lease_id: string; epoch: number;
+                                  beat_at: number }>(
       `SELECT id AS run, lease_id, epoch, beat_at FROM runs WHERE ${LIVE} ORDER BY seq`)
       .toArray().filter((row) => !leases.has(`${row.lease_id}/${row.epoch}`)
                        || row.beat_at + LEASE_TTL_S <= now);

@@ -2745,6 +2745,17 @@ export class Files {
     }
   }
 
+  /**
+   * A restore's `restoreHold`: `held`, another namespace of this owner, held by this object's
+   * own, made first if it has none, so the erasure's mark and delete take it too. Repeatable;
+   * the namespace that holds it.
+   */
+  async holdNamespace(held: string): Promise<string> {
+    const { ns } = await this.space();
+    await this.#store.holdNamespace(ns, held);
+    return ns;
+  }
+
   /** The erasure's first R2 step (`erase.ts`): the namespace's mark made. Repeatable. */
   async markNamespace(ns: string): Promise<void> {
     await this.#store.markNamespace(ns);
