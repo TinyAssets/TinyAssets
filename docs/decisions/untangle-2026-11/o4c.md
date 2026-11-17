@@ -28,11 +28,11 @@ Lane O's owed line X1, B10's literal guard over every folder (`o4b.md` item 6), 
 
 1. **`deploy/guards/literals.test.ts`:** the guard over `treeFiles()`, its `KEPT`, and probes of the whole-name match (a longer name, a prefix and the template's `:` suffix; the homes; a workflow file counted as the ci kit's) and of `KEPT`'s own checks.
 2. **Kept (four):**
-   - `contract/src/queue-names.ts`, 4: written by `npm run generate` from the configs and held to them by the generated guard.
+   - `contract/src/queue-names.ts`, one a producer binding (its count read from its `QUEUES`, so a new queue is no edit here): written by `npm run generate` from the configs and held to them by the generated guard.
    - `cutover.json`, 5: the manifest must name each live object it removes even after the config that names it today has lost it. `cutover.test.ts` holds every one of those names to that config.
    - `sandbox/template/image.ts` `NAME`, 1: E2B's template name, an image input pinned by the template digest (`s6.md` item 2). It is E2B's name, not the Worker's.
    - `owner/guards/rules.ts` `RING_QUEUES`, 1: the owner's own statement of the one queue a bound Worker may produce onto. By design it follows no producer's config: the generated `QUEUES.RING` would follow a producer moved onto the erasure queue.
-3. **The config rules' `name` is gone** (`ConfigRules`, six `rules.ts`). `configProblems` held each config's name to a copy of it. The generator already refuses a service binding that names no platform Worker (`ci/kit/types.ts` `target`), and `facts.ts` does the same for the deploy order. The copy only turned a rename into two edits. The two probes of it go (`codemode` and `gateway`, "another name").
+3. **The config rules' `name` is gone** (`ConfigRules`, six `rules.ts`). `configProblems` held each config's name to a copy of it. The generator already refuses a service binding that names no platform Worker (`ci/kit/types.ts` `target`), and `facts.ts` does the same for the deploy order. The copy only turned a rename into two edits. What the copies also held, that every config names its Worker and no two share a name, `facts.ts` `workerNames` holds now (review). The two probes of it go (`codemode` and `gateway`, "another name").
 4. **`contract/services.json` keys each queue's message by its producers' binding,** the key `QUEUES` uses, and no longer by the queue's name, which was a copy of the producer's `queue`. `types.ts` reads `table.queues[binding]`, and the unsent check compares bindings. The generated files are byte-identical. The manifest's edit entry names `IMPORTS`.
 5. **The tests read the names:**
    - the owner's and the files Worker's config probes, from `platformConfigs`;

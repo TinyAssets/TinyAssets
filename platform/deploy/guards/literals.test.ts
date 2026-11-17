@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import { type Found, literalBreak, owedLists, ratchet } from "../../ci/kit/owed";
 import { treeFiles } from "../../ci/kit/sources";
+import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
 import { BUCKETS, CONFIGS, NAMES, NAMESPACES, QUEUES, RETIRED } from "../facts";
 
 /**
@@ -26,9 +27,9 @@ interface Kept {
 
 /** The permanent exceptions: one list, each with its reason. */
 const KEPT: readonly Kept[] = Object.freeze([
-  { file: "platform/contract/src/queue-names.ts", count: 4,
+  { file: "platform/contract/src/queue-names.ts", count: Object.keys(QUEUE_NAMES).length,
     reason: "written by `npm run generate` from the configs (`ci/kit/types.ts`), and held to " +
-            "them by the generated guard" },
+            "them by the generated guard, so its count is its own: a queue's name a binding" },
   { file: "platform/cutover.json", count: 5,
     reason: "the cutover's manifest: each live object it removes, by the name it must still " +
             "have once the config that names it today has lost it, each held to that file by " +
