@@ -84,6 +84,21 @@ export function isPrintable(value: string): boolean {
 export const SOURCE_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 
 /**
+ * One of the owner's agents: its directory's name under `/workspace/agents/`, which its runs,
+ * its ledger identity and an action rule's `agent` name it by (`policy-document.ts`).
+ */
+export const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** An agent's id (`AGENT_ID`), or refused `invalid`. */
+export function agentId(value: unknown): string {
+  if (typeof value !== "string" || !AGENT_ID.test(value)) {
+    throw new Refusal("invalid", "an agent id is 1 to 128 letters, digits, dots, dashes and " +
+                      "underscores");
+  }
+  return value;
+}
+
+/**
  * Whether `list` (variable names and `PREFIX_*` patterns, as a source record's
  * `forbid_env` holds them) names `name`.
  */
