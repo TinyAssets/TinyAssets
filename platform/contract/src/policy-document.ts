@@ -2,10 +2,9 @@
  * The owner's policy document (N10): its tables, its defaults, its digest and the one
  * validator every write and read of it holds it to (`validate`). The contract's, so the owner's
  * object (`owner/src/policy.ts`, which stores, receipts and applies it) and the cutover's
- * importer (`platform/import/census.ts`, which runs every old owner's document through it
- * before the window, so a document it refuses is archived and never stops an import) hold a
- * document to the same rules. Ported from the Python's `_validate`; the declared differences
- * are `owner/src/policy.ts`'s.
+ * importer (`platform/import/policy.ts`, which maps every old owner's document to these rules
+ * and holds what it writes to them) hold a document to the same rules. Ported from the
+ * Python's `_validate`; the declared differences are `owner/src/policy.ts`'s.
  *
  * The document is its `egress` table and the optional tables below, each left out until the
  * owner sets it. The `actions` table holds the owner's action rules (d3 §N): each names an act
@@ -130,6 +129,14 @@ export interface ActionRule {
 const TOOL_MATCHER = /^mcp:[A-Za-z0-9_*-]{1,64}:[A-Za-z0-9_.*-]{1,128}$/;
 
 /**
+ * Whether a rule on the act `name` (`acts.json`) holds somewhere though it names no tools:
+ * a door does the act, or a CLI tool kind is it.
+ */
+export function seenUnnamed(name: string): boolean {
+  return actDoors(name).length > 0 || (actNamed(name)?.hook.length ?? 0) > 0;
+}
+
+/**
  * The `actions` table: rules of an act the file holds, `ask` or `never`, an agent's id when
  * one is named, and tools, when named, distinct matchers, at least one. A rule on an act no
  * door does and no hook kind is, naming no tools, is refused: nothing could see it, so nothing
@@ -152,12 +159,10 @@ function checkActions(actions: unknown): void {
       throw new Refusal("invalid",
                         "invalid action rule: an act, ask or never, any agent and any tools");
     }
-    const act = actNamed(rule["act"]);
-    if (act === undefined) {
+    if (actNamed(rule["act"]) === undefined) {
       throw new Refusal("invalid", "invalid action rule: no such act");
     }
-    if (actDoors(rule["act"] as string).length === 0 && act.hook.length === 0
-        && tools === undefined) {
+    if (tools === undefined && !seenUnnamed(rule["act"] as string)) {
       throw new Refusal("invalid", "nothing can decide this action rule: no door or tool " +
                         "kind does its act, so name the tools that do it");
     }

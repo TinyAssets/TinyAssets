@@ -1,0 +1,26 @@
+{
+  "about": "What an imported owner is told about the move, outward-facing, so the words are the founder's (founder_batch.md item 6; d3 §N7): the owner's one notice (bundle.ts noticeOf, added once by owner/src/import.ts importNotice, at most NOTICE_DETAIL characters), and the README's lines on the old rules (build.ts). The notice's parts join with a space, `kept` only when the owner had an old rule list. {imported} is the imported tree's path (contract/src/paths.ts IMPORTED), {act} an act's own words (contract/acts.json), {agent} an agent's id, {old} an old rule's, setting's or host's name, {why} one of `why`.",
+  "notice": {
+    "files": "Your files from the old TinyAssets are in {imported}.",
+    "rules": "Your rules came across too. If you never changed them, your agents still ask you first before they message other people or make your work public, and still leave changes to your security and access to you, as before. These are now your own settings, which you can change in the app. When an agent asks, you get a card to approve once. A rule holds for what your agents do through TinyAssets, not for what your own AI assistant does with its own tools, or for programs your agents write and run.",
+    "kept": "Your old rule list is kept, unchanged, in {imported}/policy.json.",
+    "readme": "{imported}/README.md says which rules came across and which could not."
+  },
+  "readme": {
+    "heading": "## Your rules",
+    "kept": "`policy.json` is your old rule list, unchanged.",
+    "written": "These came across as your own settings, which you can change in the app:",
+    "ask": "- Ask you first: {act}",
+    "never": "- Leave to you: {act}",
+    "agent": " (agent `{agent}` only)",
+    "egress_ask": "Your network setting asked first for hosts not on your list, but it never could ask: it refused them. It is now your list alone, which refuses them the same way.",
+    "not_carried": "These did not come across:",
+    "item": "- `{old}`: {why}",
+    "why": {
+      "no_act": "the new platform has no such action",
+      "unseen": "nothing in the new platform sees this action until you name the tools that do it, in the app",
+      "connection": "it was kept for your old app connections, which did not come across",
+      "host": "the new platform takes a host by its name, never by its address"
+    }
+  }
+}

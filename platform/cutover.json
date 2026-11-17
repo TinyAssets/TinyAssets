@@ -11,7 +11,7 @@
     "cutover": {
       "why": "The cutover's change, in the window's last step (tasks.md §9 step 15), and the window's objects revoked or deleted as it closes.",
       "entries": [
-        { "delete": "platform/import", "what": "the importer: the census, the bundle builder, the stage, the window's steps, the host's runner (window.sh, host.py) and their guards" },
+        { "delete": "platform/import", "what": "the importer: the census, the bundle builder, the old policy's mapping and what the owner is told of it (policy.ts, notice.json), the stage, the window's steps, the host's runner (window.sh, host.py) and their guards" },
         { "delete": ".github/workflows/import-window.yml", "what": "the window's runner, Import window (manual)" },
         { "delete": "platform/contract/src/import-message.ts", "what": "the import's messages, its bundle's format and check, its bounds and its rehearsal names" },
         { "delete": "platform/contract/src/import-names.ts", "what": "the live names the job reaches" },

@@ -575,9 +575,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     the agent's engine record; a held call the hook deferred resumes on no input, and its
     conversation waits on its card (`r5-resume-hooks.md` items 6 and 7). After the sandbox
     pass lands, since the runner writes the files (`untangle/r5-hooks`).
-  - [ ] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
-    the mapping, the old defaults written explicitly (d3 §N7), and the archive file; the
-    notice. Until it lands, an old document is archived whole (`policy.refused.json`).
+  - [x] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
+    the mapping, the old defaults written explicitly (d3 §N7), and the archive file
+    (`policy.json`); the notice's words as data (`import/notice.json`). A spend cap refuses
+    its owner (`policy_spend`) until its mapping is built from the census's numbers, if it finds
+    any (`untangle/r5-import`; `r5-import.md`).
+  - [ ] The notice's words approved, or rewritten, by the founder, before the real window
+    (`live:` founder_batch item 6; `platform/import/notice.json`, nothing sent).
   - [ ] Later, only if an owner's rule needs it: hold-on-sync for `paths`, and asking for a
     host through web-fetch hooks.
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
@@ -661,7 +665,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - R5's (d3 §N9): Claude's `defer` with several tool calls in one turn; managed settings
     against an organization's server-managed settings; Codex, Gemini and pi loading our
     root-owned hooks unattended; the delay one decision adds; a census of non-default rules,
-    spend caps and egress `ask` in the import.
+    spend caps and egress `ask` in the import (the census's `policy` counts and its
+    `policy_spend` problem, `r5-import.md`).
 
 ### Step 8. The live stage (d3 §F1, §H), in order
 
