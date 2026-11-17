@@ -292,6 +292,16 @@ describe("the operator's owner ops, on a real owner object", () => {
     expect(await readOwner(doorsEnv, owner)).toBeNull();
   });
 
+  it("refuses to admit afresh an owner the platform admitted before whose object is pending: " +
+     "its state was lost, and a fresh admit would give it a second namespace", async () => {
+    const owner = fresh();
+    await putOwner(doorsEnv, owner, { s: "admitted", t: now() });
+    expect(refusedOf(await asked(owner, "owner.admit"))).toEqual({ code: "refused", message:
+      "the platform admitted this owner before and its object is pending: its state was lost, " +
+      "so it is restored (mode restore), never admitted afresh" });
+    expect(await admissionOf(owner)).toEqual({ state: "pending", reasons: [], tier: "free" });
+  });
+
   it("changes nothing more on a redelivery of a message it acted on but did not answer",
      async () => {
     const owner = fresh();
@@ -448,6 +458,21 @@ describe("the operator's restore ops, on a real owner object", () => {
     expect(refusedOf(await asked(owner, "restore.begin", GEN))).toEqual({
       code: "owner_erased", message: "the owner is erased" });
     expect(await doorsCalled(owner)).toEqual([]);
+  });
+
+  it("refuses a hold into an object that takes a restore, and an erased owner's, holding " +
+     "nothing", async () => {
+    const owner = fresh();
+    expect(refusedOf(await asked(owner, "restore.hold", GEN))).toEqual({
+      code: "refused", message: "this object takes a restore: begin it from the namespace, " +
+                                "which it then adopts" });
+    await untouched(owner);
+    const erased = fresh();
+    await putOwner(doorsEnv, erased, { s: "erased", t: now() });
+    expect(refusedOf(await asked(erased, "restore.hold", GEN)).code).toBe("owner_erased");
+    expect(await doorsCalled(erased)).toEqual([]);
+    expect(refusedOf(await asked(owner, "restore.hold", { namespace: GEN.namespace })))
+      .toEqual({ code: "invalid", message: "restore.hold takes exactly namespace, gen" });
   });
 
   it("takes a begin's namespace and generation exactly", async () => {

@@ -355,7 +355,8 @@ It never counts as "absent".
 - **Mode `owner`** asks the doors one op for one owner through the operator channel (`owner`
   and `act`: `state`, `tier=<tier>`, `suspend=<reason>`, `lift=<reason>`, `admit`, `rewrap`
   or `reseal`) and prints their answer between the owner's state before and after it, or
-  stops on their refusal. `state` alone only reads. `rewrap` and `reseal` are one owner's
+  stops on their refusal. `state` alone only reads. `admit` refuses an owner the platform
+  admitted before whose object is pending (its state lost): mode `restore` brings it back. `rewrap` and `reseal` are one owner's
   key rotation sweep (`FILES_KEYRING`, `GATEWAY_KEYRING`): they change no meaning, only the
   kid a blob is under, and answer `left`, what is still under another kid (a restore's hold
   counts), so run one again until `left` is 0. It needs `OPERATOR_KEYRING` in `production`.
@@ -738,7 +739,10 @@ object names a namespace there, and every erasure record but the marks went with
   new bucket holds every erasure again. A marked namespace is never written.
 - **Each namespace with a root.** Every other namespace the copy held at `at` and of which it
   held a generation's root is written back whole and read back byte for byte. One with no root
-  is left out: nothing could open its chunks.
+  is left out: nothing could open its chunks. So is one a marked namespace holds (`o/<ns>/h/`,
+  another namespace of the same owner): its owner's erasure took it.
+- **Held namespaces.** One a written namespace holds is written back with it, but not located
+  or begun: the holder's owner holds it again once restored, so its erasure takes it.
 - **Its owner, from its own generation.** Each namespace's owner is read from its newest
   generation's header in the files Worker (`restore.locate`, addressed to the platform, a page
   of namespaces a message). Two namespaces naming one owner stop the run before any restore
@@ -746,8 +750,12 @@ object names a namespace there, and every erasure record but the marks went with
 - **Each owner's restore begun.** `restore.begin` from that generation, so every written
   namespace is named by an object, whose erasure deletes it. The run names each one begun, and
   the `restore` dispatch that carries it on. One the doors refuse or don't answer stops the run
-  once the rest are begun, named: an owner who signed up in the new account before the run is
-  refused (it is not empty), and `restore` with its generation takes it (its pin and wipe).
+  once the rest are begun, named. Its namespace is first held by the owner's own
+  (`restore.hold`): an owner who signed up in the new account before the run is refused (it is
+  not empty), and would otherwise hold a second namespace its erasure never took. It is not
+  restored: no mode yet restores a live owner from a namespace it holds (`tasks.md`,
+  `untangle/r8-lost-object`). So keep the new account's maintenance gate closed (`ordinary`:
+  none) until `recover` begins every owner.
 - **Before it, no night.** A night refuses to copy a bucket that lacks a mark the copy holds,
   copying nothing (`copy`): the sync would hide every mark. So the nights stay red in the new
   account until `recover` has run. Run it at once.

@@ -92,6 +92,12 @@
  * of its namespace, as the lost object did: a log that stages past `LOG_BYTES` fails only at
  * its `log` step, and the one kept before it is then restored.
  *
+ * **Another namespace of the owner** (`restoreHold {namespace, gen}`, `r8-erased-orphans.md`):
+ * one whose generation names this owner but which this object will not adopt (it is live, so
+ * it takes no restore) is held by its own namespace in the bucket (`HOLDS`), made if none, so
+ * the owner's erasure marks and deletes it too and a restore of the whole bucket begins none it
+ * holds. An owner never keeps a namespace its erasure would miss.
+ *
  * From the pin until done, or once a restore failed, no lane runs (`restoring`, the schedule's
  * halt), every door but the restore's refuses (`refuseRestoring`), and so do the platform's
  * admission and the cutover's import: `restoring`, a refusal for the moment.
@@ -105,7 +111,8 @@ import { DELETE_BATCH, LOG_BYTES } from "../../contract/src/limits";
 import type { ChunkStore, ManifestRoot } from "../../contract/src/files";
 import { remigrate } from "../../contract/src/migrate";
 import type {
-  RestoreAnswer, RestoreBeginRequest, RestoreHold, RestoreNames, RestoreNamesRequest,
+  RestoreAnswer, RestoreBeginRequest, RestoreHeld, RestoreHold, RestoreNames,
+  RestoreNamesRequest,
   RestorePinRequest, RestoreSource, RestoreWipeRequest,
 } from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
@@ -918,14 +925,50 @@ export interface RestoreDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "sy
   readonly collections: Pick<Collections, "restored">;
   readonly connections: { secretsLost(): void };
   readonly egress: Pick<Egress, "end">;
-  readonly files: Pick<Files, "adoptSpace" | "check" | "chunksAfter" | "chunksFrom" | "chunksPage" | "names"
-    | "restored" | "settled" | "storedNamespace" | "sweep">;
+  readonly files: Pick<Files, "adoptSpace" | "check" | "chunksAfter" | "chunksFrom" | "chunksPage"
+    | "holdNamespace" | "names" | "restored" | "settled" | "storedNamespace" | "sweep">;
   readonly grants: { revokeAll(now: number): string[] };
   readonly inbound: Pick<Inbound, "disableAll">;
   readonly keys: Pick<Keys, "ids" | "revoked">;
   readonly launcher: Pick<Launcher, "endAll">;
   readonly ledger: { restored(): void };
   readonly relay: Pick<Relay, "closeAll">;
+}
+
+/** The namespace and generation a restore door names, or `invalid`. */
+function generationAsked(door: Door<RestoreBeginRequest>): { ns: string; gen: string } {
+  const { namespace: ns, gen } = door.check().r;
+  if (typeof ns !== "string" || !HEX32.test(ns) || typeof gen !== "string" || !HEX16.test(gen)) {
+    throw new Refusal("invalid", "a restore names a namespace (32 hex) and a generation " +
+                                 "(16 hex)");
+  }
+  return { ns, gen };
+}
+
+/**
+ * Generation `gen` of `ns`, held to this owner: its root opens for the namespace, and part 0's
+ * header names format `tinyassets-export` version 3, this generation and this object's owner;
+ * its root and schema, or refused.
+ */
+async function ownGeneration(o: RestoreDoorNeeds, ns: string, gen: string):
+    Promise<{ root: ManifestRoot; schema: number }> {
+  const source: Bucket = o.env.FILES;
+  const root = await rootOf(source, ns, gen);
+  let first: Line | undefined;
+  try {
+    first = lines(await objectAt(source, ns, root, 0))[0];
+  } catch {
+    throw refused("the generation's first part does not open under the namespace's key");
+  }
+  const header = exportHeader(first);
+  if (header === null || header.gen !== gen) {
+    throw refused(`the generation is not a ${EXPORT_FORMAT} version ${EXPORT_VERSION} ` +
+                  `generation ${gen}`);
+  }
+  if (header.owner !== o.owner()) {
+    throw refused("the generation is another owner's");
+  }
+  return { root, schema: header.schema };
 }
 
 /** The `restore` doors' handlers, by door. */
@@ -955,13 +998,7 @@ export const restoreDoors = Object.freeze({
    */
   async restoreBegin(o: RestoreDoorNeeds, door: Door<RestoreBeginRequest>): Promise<RestoreAnswer> {
     const asked = await o.door(() => {
-      const { r } = door.check();
-      const { namespace: ns, gen } = r;
-      if (typeof ns !== "string" || !HEX32.test(ns) || typeof gen !== "string"
-          || !HEX16.test(gen)) {
-        throw new Refusal("invalid", "a restore names a namespace (32 hex) and a generation " +
-                                     "(16 hex)");
-      }
+      const { ns, gen } = generationAsked(door);
       const held = record(o.storage.sql);
       if (held !== null && held.step !== "pinned" && held.step !== "wiped" && held.ns === ns
           && held.gen === gen) {
@@ -978,23 +1015,7 @@ export const restoreDoors = Object.freeze({
       return o.door(() => answer(o, asked.held!));
     }
     const { ns, gen } = asked;
-    const source: Bucket = o.env.FILES;
-    const root = await rootOf(source, ns, gen);
-    let first: Line | undefined;
-    try {
-      first = lines(await objectAt(source, ns, root, 0))[0];
-    } catch {
-      throw refused("the generation's first part does not open under the namespace's key");
-    }
-    const header = exportHeader(first);
-    if (header === null || header.gen !== gen) {
-      throw refused(`the generation is not a ${EXPORT_FORMAT} version ${EXPORT_VERSION} ` +
-                    `generation ${gen}`);
-    }
-    if (header.owner !== o.owner()) {
-      throw refused("the generation is another owner's");
-    }
-    const schema = header.schema;
+    const { root, schema } = await ownGeneration(o, ns, gen);
     const unloadable = unforwardable(schema);
     if (unloadable !== null) {
       throw refused(unloadable);
@@ -1015,6 +1036,30 @@ export const restoreDoors = Object.freeze({
                          gen, clock(), MIGRATIONS.length, schema);
       return answer(o, record(o.storage.sql)!);
     });
+  },
+  /**
+   * Another namespace of this owner, which this object does not adopt, held by its own
+   * (`Files.holdNamespace`, `contract/src/files.ts` `HOLDS`), so its erasure takes that one
+   * too and a restore of the whole bucket begins none it holds
+   * (`docs/decisions/untangle-2026-11/r8-erased-orphans.md`): refused unless generation `gen`
+   * of `namespace` is this owner's (as a begin holds it), while this object takes a restore
+   * (it then adopts the namespace: `restoreBegin`), and for its own namespace. Its own is made
+   * if it has none. Asked again, it answers as it stands.
+   */
+  async restoreHold(o: RestoreDoorNeeds, door: Door<RestoreBeginRequest>): Promise<RestoreHeld> {
+    const { ns, gen } = await o.door(() => {
+      const asked = generationAsked(door);
+      if (emptiness(o) === null) {
+        throw refused("this object takes a restore: begin it from the namespace, which it then " +
+                      "adopts");
+      }
+      if (o.files.storedNamespace() === asked.ns) {
+        throw refused("the namespace is this object's own");
+      }
+      return asked;
+    });
+    await ownGeneration(o, ns, gen);
+    return { namespace: await o.files.holdNamespace(ns), held: ns };
   },
   /**
    * The restore carried on, a piece at a time, for at most `RESTORE_PASS_MS`; how far it is.

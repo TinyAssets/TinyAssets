@@ -3,7 +3,8 @@
  * (`objectPrefix`, `o/<ns>/`, the contract's): a chunk's `o/<ns>/c/<name>`, and a
  * generation's (the owner export and the nightly manifest, `owner/src/backup.ts`) root
  * `o/<ns>/m/<gen>`, its base parts `o/<ns>/m/<gen>/<part>` and its change-log segments
- * `o/<ns>/m/<gen>/l/<a>-<b>`; and, outside every prefix, a namespace's erasure mark `e/<ns>`.
+ * `o/<ns>/m/<gen>/l/<a>-<b>`; each namespace it holds, `o/<ns>/h/<held>`; and, outside every
+ * prefix, a namespace's erasure mark `e/<ns>`.
  *
  * `ns` is an owner's random 128-bit namespace, held only in that owner's object; a chunk's
  * `name` is the HMAC of its content hash under the owner's data key (`datakey.ts`
@@ -12,7 +13,7 @@
  * NFC-normalizes keys, and uploads are verbatim (Fact 9): two names a sandbox can create
  * would meet in one object. The r2-keys guard keeps every other source from building one.
  */
-import { MARKS, namespace, objectPrefix, segmentSpans } from "../../contract/src/files";
+import { HOLDS, MARKS, namespace, objectPrefix, segmentSpans } from "../../contract/src/files";
 import { Refusal } from "../../contract/src/refusal";
 import { HEX16, HEX64 } from "../../contract/src/ids";
 import { MANIFEST_PARTS } from "../../contract/src/limits";
@@ -85,6 +86,28 @@ export function segmentKey(ns: unknown, gen: unknown, a: unknown, b: unknown): s
  */
 export function markKey(ns: unknown): string {
   return `${MARKS}${namespace(ns)}`;
+}
+
+/** The R2 key that records `held` as held by `ns` (`o/<ns>/h/<held>`, the contract's `HOLDS`). */
+export function holdKey(ns: unknown, held: unknown): string {
+  if (namespace(held) === namespace(ns)) {
+    throw new Refusal("invalid", "a namespace never holds itself");
+  }
+  return `${holdPrefix(ns)}${held}`;
+}
+
+/** The prefix every hold of one namespace starts with: the erasure's list of them. */
+export function holdPrefix(ns: unknown): string {
+  return `${objectPrefix(ns)}${HOLDS}`;
+}
+
+/** The held namespace a key listed under `holdPrefix(ns)` names, or a loud failure. */
+export function listedHold(ns: unknown, key: unknown): string {
+  const prefix = holdPrefix(ns);
+  if (typeof key !== "string" || !key.startsWith(prefix)) {
+    throw new Error("a listed key is not under its namespace's prefix");
+  }
+  return namespace(key.slice(prefix.length));
 }
 
 /** The prefix every chunk key of one owner's namespace starts with: the erasure's list. */

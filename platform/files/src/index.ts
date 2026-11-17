@@ -42,7 +42,13 @@
  *   never deleted: the record of the erasure that the nightly copy carries off the account,
  *   so no copy back ever writes the namespace again (`deploy/offsite.ts`). A failure after
  *   the mark leaves it standing, and the delete is repeated. An erasure marks it at its start
- *   too (`markNamespace`), a day before its delete.
+ *   too (`markNamespace`), a day before its delete. Each namespace it holds (`o/<ns>/h/<held>`,
+ *   `HOLDS`: another of the same owner, which no object adopted) is marked after it and
+ *   deleted before its own objects, and its holds go last, so an owner's erasure takes every
+ *   namespace of it the bucket records (`r8-erased-orphans.md`).
+ * - `holdNamespace` records one namespace as held by another, once: a restore's
+ *   `restoreHold` alone, once the owner's object has held the namespace's generation to its
+ *   own owner.
  * - `sweepManifests` lists one page of one namespace's generations and deletes every object
  *   of a generation the owner's object no longer names, each root before its objects: the
  *   manifest lane's sweep alone.
@@ -57,13 +63,13 @@
  *   for the operator channel's `restore.locate` alone (a restore after an account's loss, when no
  *   object names a namespace: `deploy/offsite.ts` `recover`).
  *
- * `deleteNamespace`, `sweepManifests`, `listChunks` and `locate` are the only lists of the
- * bucket, each only ever of one namespace's prefix.
+ * `deleteNamespace` and `markNamespace` (of a namespace's holds), `sweepManifests`, `listChunks`
+ * and `locate` are the only lists of the bucket, each only ever of one namespace's prefix.
  *
  * Every object of a namespace is sealed in this Worker under its owner's data key
  * (`datakey.ts`), by the envelope's per-object seal (`contract/src/envelope.ts` `sealObject`:
  * AES-256-GCM, the object's own R2 key as additional data), so the bucket holds only
- * ciphertext but the marks, which hold nothing but what they are, and bytes
+ * ciphertext but the marks and the holds, which hold nothing but what they are, and bytes
  * moved under another key or namespace fail to open. Each call presents the owner's wrapped
  * key, which this Worker opens with its own keyring (`FILES_KEYRING`) for that call alone and
  * never keeps. A put or get with no key, or a key that does not open for the namespace, is
@@ -96,7 +102,8 @@ import { exportHeader } from "../../contract/src/export-header";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedGeneration, listedManifest,
-  type ManifestAt, manifestKey, manifestObjectKey, manifestPrefix, markKey, segmentKey,
+  holdKey, holdPrefix, listedHold, type ManifestAt, manifestKey, manifestObjectKey,
+  manifestPrefix, markKey, segmentKey,
 } from "./keys";
 import { Refusal } from "../../contract/src/refusal";
 import {
@@ -336,18 +343,60 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       : { check: "broken", why: "a chunk's bytes no longer match its hash" };
   }
 
-  /** Mark `ns` deleted on purpose, once: a mark again finds it and leaves its one version. */
+  /**
+   * Mark `ns` deleted on purpose, once, before anything else, then each namespace it holds (and
+   * each those hold): a mark again finds it and leaves its one version. A copy back leaves out
+   * a namespace a marked one holds, so one cut short between the two is left out too.
+   */
   async markNamespace(ns: string): Promise<void> {
+    await this.#mark(ns, new Set());
+  }
+
+  async #mark(ns: string, seen: Set<string>): Promise<void> {
+    seen.add(ns);
     await this.env.BLOBS.put(markKey(ns), MARK_BODY, { onlyIf: { etagDoesNotMatch: "*" } });
+    for (const held of await this.#holds(ns)) {
+      if (!seen.has(held)) {
+        await this.#mark(held, seen);
+      }
+    }
+  }
+
+  /** Record `held` as held by `ns`, once (`HOLDS`): the owner's object checked it is its own. */
+  async holdNamespace(ns: string, held: string): Promise<void> {
+    await this.env.BLOBS.put(holdKey(ns, held), "", { onlyIf: { etagDoesNotMatch: "*" } });
+  }
+
+  /** Every namespace `ns` holds, listed under its holds' prefix page by page. */
+  async #holds(ns: string): Promise<string[]> {
+    const held: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.env.BLOBS.list({ prefix: holdPrefix(ns),
+                                               ...(cursor === undefined ? {} : { cursor }) });
+      held.push(...page.objects.map((object) => listedHold(ns, object.key)));
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor !== undefined);
+    return held;
   }
 
   /**
-   * Mark `ns` deleted on purpose, then delete every chunk and then every manifest object under
-   * its prefixes, listed 1,000 at a time; repeatable.
+   * Mark `ns` deleted on purpose (`markNamespace`), then delete each namespace it holds as it
+   * is, then every chunk and every manifest object under its prefixes, listed 1,000 at a time,
+   * and its holds last, so a delete cut short finds them again; repeatable.
    */
   async deleteNamespace(ns: string): Promise<{ deleted: number }> {
     await this.markNamespace(ns);
+    return this.#delete(ns, new Set());
+  }
+
+  async #delete(ns: string, seen: Set<string>): Promise<{ deleted: number }> {
+    seen.add(ns);
     let deleted = 0;
+    const holds = await this.#holds(ns);
+    for (const held of holds.filter((each) => !seen.has(each))) {
+      deleted += (await this.#delete(held, seen)).deleted;
+    }
     for (;;) {
       const listed = await this.env.BLOBS.list({ prefix: chunkPrefix(ns), limit: DELETE_BATCH });
       const shas = listed.objects.map((object) => listedChunk(ns, object.key));
@@ -362,11 +411,16 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
                                                  limit: DELETE_BATCH });
       const keys = listed.objects.map((object) => object.key);
       if (keys.length === 0) {
-        return { deleted };
+        break;
       }
       await this.env.BLOBS.delete(keys.map((key) => listedManifest(ns, key)));
       deleted += keys.length;
     }
+    for (let at = 0; at < holds.length; at += DELETE_BATCH) {
+      await this.env.BLOBS.delete(holds.slice(at, at + DELETE_BATCH)
+        .map((held) => holdKey(ns, held)));
+    }
+    return { deleted: deleted + holds.length };
   }
 
   /**

@@ -58,6 +58,24 @@ export function markedNamespace(key: string): string | null {
   return HEX32.test(ns) ? ns : null;
 }
 
+/**
+ * Where, under a namespace's prefix, the bucket records each other namespace its owner holds
+ * and has not adopted (`o/<ns>/h/<held>`, empty): one whose generations name the same owner,
+ * found once the owner's object held this one (`owner/src/restore.ts` `restoreHold`). The
+ * namespace's erasure, its mark and its delete, takes each it holds first, so every namespace
+ * of the owner goes with it; and a restore of the whole bucket begins none another holds
+ * (`docs/decisions/untangle-2026-11/r8-erased-orphans.md`). Its name is two random
+ * namespaces, so it holds no person's identifier.
+ */
+export const HOLDS = "h/";
+
+/** The holder and the held namespace of the bucket key `key` (`o/<ns>/h/<held>`), or null. */
+export function heldNamespace(key: string): { holder: string; held: string } | null {
+  const [o, holder, kind, held, ...rest] = key.split("/");
+  return o === "o" && HEX32.test(holder ?? "") && `${kind}/` === HOLDS && HEX32.test(held ?? "")
+    && rest.length === 0 && held !== holder ? { holder: holder!, held: held! } : null;
+}
+
 /** One chunk to store: its hash and its bytes. */
 export interface ChunkPut {
   readonly sha256: string;
@@ -188,15 +206,21 @@ export interface ChunkStore {
    */
   rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string | null } | null>;
   /**
-   * The namespace's mark (`MARKS`) made, once, and kept: the erasure's, at its start, so the
-   * nightly copy carries it off the account before the delete is due.
+   * The namespace's mark (`MARKS`) made, once, and kept, then each namespace it holds
+   * (`HOLDS`) marked: the erasure's, at its start, so the nightly copy carries them off the
+   * account before the delete is due.
    */
   markNamespace(ns: string): Promise<void>;
   /**
-   * Every object under the namespace's prefix deleted, its mark (`markNamespace`) made first
-   * and kept: the erasure's and the discard's alone.
+   * Its mark (`markNamespace`) made first and kept, then each namespace it holds deleted as it
+   * is, then every object under its prefix: the erasure's and the discard's alone.
    */
   deleteNamespace(ns: string): Promise<{ deleted: number }>;
+  /**
+   * `held` recorded as held by `ns` (`HOLDS`), once: another namespace whose generations name
+   * the owner of `ns`, as that owner's object checked (`restoreHold`).
+   */
+  holdNamespace(ns: string, held: string): Promise<void>;
   putManifestPart(ns: string, key: string, gen: string, part: number, bytes: Uint8Array):
     Promise<{ sha256: string; size: number }>;
   putManifestSegment(ns: string, key: string, gen: string, a: number, b: number,
