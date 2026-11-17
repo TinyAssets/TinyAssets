@@ -33,25 +33,33 @@ B = "b" * 40
 
 
 def _review(body: str, commit: str = A, *, ident: int = 1, when: str = "2026-11-04T10:00:00Z",
-            association: str = "OWNER", state: str = "COMMENTED") -> dict:
+            login: str = "writer", state: str = "COMMENTED") -> dict:
     return {"id": ident, "body": body, "commit_id": commit, "submitted_at": when,
-            "author_association": association, "state": state,
+            "user": {"login": login}, "state": state,
             "html_url": f"https://github.com/o/r/pull/1#pullrequestreview-{ident}"}
+
+
+def _writer(login: str) -> bool:
+    """`can_push`: only `writer` can (GitHub's read: scripts/tests/test_review_writers.py)."""
+    return login == "writer"
+
+
+def _latest(reviews, **kwargs):
+    return gate.latest_verdict(reviews, can_push=_writer, **kwargs)
 
 
 def test_the_latest_trusted_verdict_wins():
     approve = _review("APPROVE\n\nread it all", ident=1)
     block = _review("BLOCK\n\nthe lock is wrong", ident=2, when="2026-11-04T11:00:00Z")
-    assert gate.latest_verdict([approve]) == gate.Verdict("APPROVE", A, approve["html_url"])
-    assert gate.latest_verdict([block, approve]).verdict == "BLOCK"
+    assert _latest([approve]) == gate.Verdict("APPROVE", A, approve["html_url"])
+    assert _latest([block, approve]).verdict == "BLOCK"
     later = _review("APPROVE", B, ident=3, when="2026-11-04T12:00:00Z")
-    assert gate.latest_verdict([approve, block, later]) == gate.Verdict(
+    assert _latest([approve, block, later]) == gate.Verdict(
         "APPROVE", B, later["html_url"])
 
 
 @pytest.mark.parametrize("review", [
-    _review("APPROVE", association="CONTRIBUTOR"),
-    _review("APPROVE", association="NONE"),
+    _review("APPROVE", login="reader"),
     _review("APPROVE", state="DISMISSED"),
     _review("APPROVE", state="PENDING"),
     _review("approve"),
@@ -62,44 +70,48 @@ def test_the_latest_trusted_verdict_wins():
     _review(""),
 ])
 def test_what_is_not_a_verdict(review):
-    assert gate.latest_verdict([review]) is None
+    assert _latest([review]) is None
 
 
 def test_leading_whitespace_before_the_verdict_is_accepted():
-    assert gate.latest_verdict([_review("\n\n   APPROVE  \n\nevidence")]).verdict == "APPROVE"
+    assert _latest([_review("\n\n   APPROVE  \n\nevidence")]).verdict == "APPROVE"
 
 
 def test_an_ordinary_review_after_a_verdict_changes_nothing():
     approve = _review("APPROVE", ident=1)
     chat = _review("one question about line 4", ident=2, when="2026-11-04T11:00:00Z")
-    assert gate.latest_verdict([approve, chat]).verdict == "APPROVE"
+    assert _latest([approve, chat]).verdict == "APPROVE"
 
 
 def test_a_dismissal_voids_every_verdict_at_or_before_it():
     approve = _review("APPROVE", ident=1)
     block = _review("BLOCK", ident=2, when="2026-11-04T11:00:00Z", state="DISMISSED")
-    assert gate.latest_verdict([approve, block]) is None
-    assert gate.review_check([approve, block], base="0" * 40, head=A,
+    assert _latest([approve, block]) is None
+    assert gate.review_check([approve, block], base="0" * 40, head=A, can_push=_writer,
                              carry=lambda commit: "this head").conclusion is None
     # A dismissed ordinary comment, or one by anyone, voids just the same.
     chat = _review("why?", ident=2, when="2026-11-04T11:00:00Z", state="DISMISSED",
-                   association="NONE")
-    assert gate.latest_verdict([approve, chat]) is None
+                   login="reader")
+    assert _latest([approve, chat]) is None
     later = _review("APPROVE", B, ident=3, when="2026-11-04T12:00:00Z")
-    assert gate.latest_verdict([approve, block, later]).commit == B
+    assert _latest([approve, block, later]).commit == B
     with pytest.raises(ValueError):
-        gate.latest_verdict([approve, {"state": "DISMISSED", "id": 2}])
+        _latest([approve, {"state": "DISMISSED", "id": 2}])
 
 
 @pytest.mark.parametrize("review", [
     "not a review",
-    {"id": 1, "body": "APPROVE", "author_association": "OWNER", "state": "COMMENTED",
+    {"id": 1, "body": "APPROVE", "user": {"login": "writer"}, "state": "COMMENTED",
      "submitted_at": "2026-11-04T10:00:00Z", "commit_id": "short"},
     {"id": 1, "body": "APPROVE", "state": "COMMENTED"},
+    {"id": 1, "body": "APPROVE", "state": "COMMENTED", "commit_id": A,
+     "submitted_at": "2026-11-04T10:00:00Z", "user": None},
+    {"id": 1, "body": "APPROVE", "state": "COMMENTED", "commit_id": A,
+     "submitted_at": "2026-11-04T10:00:00Z", "user": "writer"},
 ])
 def test_an_unreadable_review_list_refuses(review):
     with pytest.raises(ValueError):
-        gate.latest_verdict([review])
+        _latest([review])
 
 
 # ---- carries(), on real throwaway repositories ----------------------------------------
@@ -226,7 +238,8 @@ def test_an_unreadable_commit_does_not_carry(repo):
 
 
 def _state(reviews, carry=lambda commit: None, head=B):
-    return gate.review_check(reviews, base="0" * 40, head=head, carry=carry)
+    return gate.review_check(reviews, base="0" * 40, head=head, carry=carry,
+                             can_push=_writer)
 
 
 def test_no_review_is_pending_not_red():
@@ -251,7 +264,9 @@ def _cli(path, reviews, timeline, base, head, *more, pr="12"):
     return subprocess.run(
         [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
          "--reviews-file", str(reviews), "--timeline-file", str(timeline), "--pr", pr,
-         "--base", base, "--head", head, *more], cwd=path, capture_output=True, text=True)
+         "--repo", "o/r", "--base", base, "--head", head, *more],
+        cwd=path, capture_output=True, text=True,
+        env={**_ENV, **_fake_gh(path, {"check_runs": [], "permissions": {"writer": "write"}})})
 
 
 def test_the_cli_prints_the_check_run_for_its_pr(tmp_path, repo):
@@ -284,7 +299,7 @@ def test_a_review_before_the_base_changed_counts_for_nothing(tmp_path, repo):
     assert run["status"] == "in_progress"
     assert "the base changed at 2026-11-04T11:00:00Z" in run["output"]["title"]
     later = _review("APPROVE", approved, ident=2, when="2026-11-04T11:30:00Z")
-    assert gate.latest_verdict([later], since="2026-11-04T11:00:00Z").verdict == "APPROVE"
+    assert _latest([later], since="2026-11-04T11:00:00Z").verdict == "APPROVE"
 
 
 def test_the_last_base_change_is_read_from_the_timeline():
@@ -305,7 +320,7 @@ def test_githubs_own_retarget_after_a_parent_merges_counts_as_a_base_change():
     assert gate.last_base_change([{"event": "automatic_base_change_failed",
                                    "created_at": "2026-11-04T14:00:00Z"}]) is None
     approve = _review("APPROVE", when="2026-11-04T12:00:00Z")
-    assert gate.latest_verdict([approve], since=gate.last_base_change([automatic])) is None
+    assert _latest([approve], since=gate.last_base_change([automatic])) is None
 
 
 # ---- the signal names only its own PR, and the App alone decides ----------------------
@@ -568,6 +583,9 @@ if data.get("fail") and data["fail"] in path:
     sys.exit(1)
 runs = data["check_runs"]
 method = args[args.index("-X") + 1] if "-X" in args else "GET"
+if "/collaborators/" in path and path.split("/")[4] not in data["permissions"]:
+    print("gh: Not Found (HTTP 404)", file=sys.stderr)
+    sys.exit(1)
 if method == "POST" and data.get("fail_posts"):
     data["fail_posts"] -= 1
     with open(store, "w", encoding="utf-8") as f:
@@ -580,6 +598,8 @@ if method == "POST":
     runs.append(answer)
 elif method != "GET":
     sys.exit(1)
+elif "/collaborators/" in path:
+    answer = {"permission": data["permissions"][path.split("/")[4]]}
 elif "/reviews" in path or "/timeline" in path:
     answer = data["reviews" if "/reviews" in path else "timeline"]
 else:
@@ -594,6 +614,21 @@ print(text)
 '''
 
 
+def _fake_gh(tmp_path: Path, data: dict) -> dict[str, str]:
+    """Put the fake `gh` first on PATH, holding `data`; the environment that does it."""
+    tools = tmp_path / "tools"
+    if not tools.exists():
+        tools.mkdir()
+        (tools / "gh").write_text(f"#!{sys.executable}\n{_FAKE_GH}", encoding="utf-8")
+        (tools / "gh").chmod(0o755)
+        (tools / "python").symlink_to(sys.executable)
+    state = tmp_path / "fake-gh"
+    shutil.rmtree(state, ignore_errors=True)
+    state.mkdir()
+    (state / "data.json").write_text(json.dumps(data), encoding="utf-8")
+    return {"PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_GH": str(state)}
+
+
 def _decide(tmp_path: Path, checkout: Path, data: dict, **env: str):
     """Run review.yml's decision script as Actions would, with `gh` faked.
 
@@ -606,22 +641,14 @@ def _decide(tmp_path: Path, checkout: Path, data: dict, **env: str):
     _, decide = _decide_steps()
     (checkout / "scripts").mkdir(exist_ok=True)
     shutil.copy(_ROOT / "scripts" / "drain_review_gate.py", checkout / "scripts")
-    tools = tmp_path / "tools"
-    if not tools.exists():
-        tools.mkdir()
-        (tools / "gh").write_text(f"#!{sys.executable}\n{_FAKE_GH}", encoding="utf-8")
-        (tools / "gh").chmod(0o755)
-        (tools / "python").symlink_to(sys.executable)
-    state = tmp_path / "fake-gh"
-    shutil.rmtree(state, ignore_errors=True)
-    state.mkdir()
-    (state / "data.json").write_text(json.dumps(data), encoding="utf-8")
+    fake = _fake_gh(tmp_path, data)
+    state = Path(fake["FAKE_GH"])
     runner = tmp_path / "runner"
     runner.mkdir(exist_ok=True)
     done = subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", decide["run"]],
         cwd=checkout, capture_output=True, text=True, timeout=120,
-        env={**_ENV, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_GH": str(state),
+        env={**_ENV, **fake,
              "GH_TOKEN": _ACTIONS_TOKEN, "APP_TOKEN": _APP_TOKEN, "REVIEW_APP_ID": "777",
              "REPO": "o/r", "PR": "12", "KIND": "pr", "GROUP_SHA": "",
              "RUNNER_TEMP": str(runner), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
@@ -663,7 +690,7 @@ _FAILED = {"title": "could not decide",
 def pr_checkout(tmp_path: Path, repo):
     path, base, approved = repo
     return tmp_path, path, {"base": base, "head": approved, "reviews": [], "timeline": [],
-                            "check_runs": []}
+                            "check_runs": [], "permissions": {"writer": "write"}}
 
 
 def test_a_decision_is_one_post_of_a_new_run_carrying_its_verdict(pr_checkout):
@@ -678,6 +705,27 @@ def test_a_decision_is_one_post_of_a_new_run_carrying_its_verdict(pr_checkout):
     assert (run["status"], run["conclusion"]) == ("completed", "success")
     (stored,) = _review_runs(after, data["head"])
     assert stored["id"] == 700 and _passes(after, data["head"])
+
+
+def test_a_decision_reads_who_can_push_as_actions_and_counts_only_a_writer(pr_checkout):
+    """The permission read is the run's own token's, and its failure is a named wait."""
+    tmp_path, path, data = pr_checkout
+    data["permissions"]["reader"] = "read"
+    data["reviews"] = [_review("APPROVE", data["head"], login="reader")]
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    assert any("repos/o/r/collaborators/reader/permission" in c["args"] for c in calls)
+    ((_, _, run),) = _writes(calls)
+    assert run["status"] == "in_progress"
+    assert run["output"]["title"] == f"waiting for review of {data['head']}"
+    data["reviews"] = [_review("APPROVE", data["head"], login="gone")]
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    ((_, _, run),) = _writes(calls)
+    assert run["status"] == "in_progress" and not _passes(after, data["head"])
+    assert run["output"]["title"] == (
+        "no verdict counts: could not read gone's permission: gh: Not Found (HTTP 404)")
+    assert run["output"]["title"] in (tmp_path / "summary").read_text(encoding="utf-8")
 
 
 def test_each_decision_is_a_newer_run_and_the_newest_counts(pr_checkout):

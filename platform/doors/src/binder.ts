@@ -20,7 +20,7 @@
  */
 import {
   type AccountBinding, apiKeyOrigin, type Binding, BINDING_PARSERS, type BindingKind,
-  type InboundBinding, PLATFORM_CALLER, type SandboxToken,
+  type BindingOf, type InboundBinding, PLATFORM_CALLER, type SandboxToken,
 } from "../../contract/src/binding";
 import { sha256Hex } from "../../contract/src/digest";
 import { FOREIGN_OWNER, reservedOwner } from "../../contract/src/ids";
@@ -75,8 +75,8 @@ export interface Bound<B extends Binding = Binding> {
   readonly stub: DurableObjectStub<OwnerDoors>;
 }
 
-/** The binding of kind `K`, as its parser returns it. */
-type Kind<K extends BindingKind> = ReturnType<(typeof BINDING_PARSERS)[K]>;
+/** The kinds the binder builds: all but `none`, which the doors that take no binding take. */
+type Built = Exclude<BindingKind, "none">;
 
 /**
  * The outside identity an MCP client resolves to: `client` from the issuer and its
@@ -151,12 +151,13 @@ export function mcpClient(clientId: string): string {
 }
 
 /** `binding` as kind `K`'s parser takes it. */
-function built<K extends BindingKind>(kind: K, binding: Kind<K>): Kind<K> {
-  return BINDING_PARSERS[kind](binding) as Kind<K>;
+function built<K extends Built>(kind: K, binding: BindingOf<K>): BindingOf<K> {
+  return BINDING_PARSERS[kind](binding) as BindingOf<K>;
 }
 
 /** `binding` as kind `K`'s parser takes it, with its owner's object. */
-function bound<K extends BindingKind>(env: DoorsEnv, kind: K, binding: Kind<K>): Bound<Kind<K>> {
+function bound<K extends Built>(env: DoorsEnv, kind: K, binding: BindingOf<K>):
+    Bound<BindingOf<K>> {
   const parsed = built(kind, binding);
   return { binding: parsed, stub: env.OWNER.getByName(parsed.owner) };
 }
@@ -211,8 +212,8 @@ export function bindApiKey(env: DoorsEnv, keyId: string, entry: KeyEntry):
  */
 export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
                             generation: number, presented: Presented = {}): Bound {
-  return bound(env, "sandbox", { owner, caller: owner, origin: null,
-                                 sandbox: egressToken(tokenHash, generation, presented) });
+  return bound(env, "egress", { owner, caller: owner, origin: null,
+                                sandbox: egressToken(tokenHash, generation, presented) });
 }
 
 /** The egress token as a binding carries it, with the SHA-256 of the secret presented. */
@@ -234,8 +235,8 @@ function egressToken(tokenHash: string, generation: number, presented: Presented
  */
 export function bindSync(env: DoorsEnv, owner: string, tokenHash: string,
                          egressHash: string): Bound {
-  return bound(env, "sandbox", { owner, caller: owner, origin: null,
-                                 sandbox: { kind: "sync", token: tokenHash, egress: egressHash } });
+  return bound(env, "sync", { owner, caller: owner, origin: null,
+                              sandbox: { kind: "sync", token: tokenHash, egress: egressHash } });
 }
 
 /**

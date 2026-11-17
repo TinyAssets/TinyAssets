@@ -288,6 +288,6 @@ describe("the owner's connected apps (agents_list's apps)", () => {
       .toBe("a client's vendor is one of apps.json's");
     expect((await failure(() => r.stub.outsideAgents(r.bind(MUSE, {
       vendor: { id: "muse", verified: "yes" } as never })))).message)
-      .toBe("invalid outside client vendor");
+      .toBe("invalid account binding");
   });
 });

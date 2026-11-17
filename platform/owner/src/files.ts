@@ -3497,8 +3497,8 @@ export const filesDoors = Object.freeze({
    */
   async fileAppend(o: FilesDoorNeeds, door: Door<FileAppendRequest>): Promise<{ entry: Entry }> {
     const { account, path, added } = await o.door(() => {
-      const { account, r } = door.check();
-      ownersTree(o, door.binding, account, "FILES.append", door.request, r["path"]);
+      const { account, binding, r } = door.check();
+      ownersTree(o, binding, account, "FILES.append", door.request, r["path"]);
       if (STRUCTURED.test(storedPath(r["path"]))) {
         throw new Refusal("invalid",
                           "a structured file (JSON, TOML or YAML) is never appended to: read " +
@@ -3515,7 +3515,8 @@ export const filesDoors = Object.freeze({
       return { account, path: storedPath(r["path"]), added };
     });
     const authorize = () => {
-      ownersTree(o, door.binding, door.check().account, "FILES.append", door.request, path);
+      const { binding, account } = door.check();
+      ownersTree(o, binding, account, "FILES.append", door.request, path);
     };
     try {
       for (let tries = 0; ; tries += 1) {
@@ -3595,8 +3596,8 @@ export const filesDoors = Object.freeze({
   async fileWrite(o: FilesDoorNeeds, door: Door<FileWriteRequest>):
       Promise<{ entry: Entry } | FileConflicted> {
     const { account, r, content } = await o.door(() => {
-      const { account, r } = door.check();
-      ownersTree(o, door.binding, account, "FILES.write", door.request, r["path"]);
+      const { account, binding, r } = door.check();
+      ownersTree(o, binding, account, "FILES.write", door.request, r["path"]);
       const asked = r["expected_etag"];
       if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
         throw new Refusal("invalid", UNREAD_WRITE);
@@ -3632,8 +3633,8 @@ export const filesDoors = Object.freeze({
   async fileEdit(o: FilesDoorNeeds, door: Door<FileEditRequest>):
       Promise<{ entry: Entry } | FileConflicted> {
     const asked = await o.door(() => {
-      const { account, r } = door.check();
-      ownersTree(o, door.binding, account, "FILES.edit", door.request, r["path"]);
+      const { account, binding, r } = door.check();
+      ownersTree(o, binding, account, "FILES.edit", door.request, r["path"]);
       const [old, replacement, etag] = [r["old_text"], r["new_text"], r["expected_etag"]];
       if (typeof old !== "string" || old === "" || typeof replacement !== "string") {
         throw new Refusal("invalid",
