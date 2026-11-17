@@ -250,17 +250,27 @@ tightens the ratchet; any addition SHALL keep the receipt requirement.
 
 ### Requirement: A review verdict is a check run only the review App posts
 
-A verdict SHALL be a review on the commit read, by an OWNER, MEMBER or
-COLLABORATOR, whose first non-blank line, stripped, is `APPROVE` or `BLOCK`. The
-latest verdict after the last base change and dismissal SHALL become a `review`
-check run on the head, `external_id` `pr-<number>`, posted only with the review
-App's token from the main-only `review` environment. It SHALL carry only across the
-same change or a prose delta. Readers SHALL take the App's highest-id run for their
-own pull request.
+A verdict SHALL be a review on the commit read, by an account that can push to the
+repository (write, maintain or admin, from any grant, as GitHub's permission read
+gives it when the decision is made), whose first non-blank line, stripped, is
+`APPROVE` or `BLOCK`. A permission that cannot be read SHALL be no verdict, its
+reason in the run's title, never a pass. The latest verdict after the last base
+change and dismissal SHALL become a `review` check run on the head, `external_id`
+`pr-<number>`, posted only with the review App's token from the main-only `review`
+environment. It SHALL carry only across the same change or a prose delta. Readers
+SHALL take the App's highest-id run for their own pull request.
 
 #### Scenario: An approval at the head passes
-- **WHEN** a trusted author's review on the head's commit opens with `APPROVE`
+- **WHEN** a review by an account that can push, on the head's commit, opens with `APPROVE`
 - **THEN** the review App posts a successful `review` run on the head for that pull request
+
+#### Scenario: A verdict by an account that cannot push counts for nothing
+- **WHEN** an account with read or triage access, or none, posts a review that opens with `APPROVE` or `BLOCK`
+- **THEN** the `review` check reads as it would without that review
+
+#### Scenario: A permission that cannot be read is no verdict
+- **WHEN** GitHub's permission read fails for the author of a verdict newer than every writer's verdict
+- **THEN** the `review` run on the head is in progress, its title naming the author and the failure
 
 #### Scenario: A BLOCK fails the head it carries to
 - **WHEN** the latest verdict is `BLOCK` and it carries to the head
