@@ -62,6 +62,12 @@ ADR-038 is accepted, superseding ADR-015's review line.
      reads the `review` check.
    - `required-checks.test.ts` loses `enqueue-merge.yml`'s listener check. Its rule that no
      job is named `review` stays, for `gh pr checks` and people, which read checks by name.
+   - Merged with #5666 (`p2-review-writers.md` item 7): its `latest_verdict`, which counts a
+     verdict only from an account that can push and fails closed on a permission it cannot
+     read, is kept. `_TRUSTED_ASSOCIATIONS` goes with the receipt's comment inventory, its
+     last reader, so no merge decision reads `author_association`. #5666's `live:` proof
+     passed first: `review` run 44020160475 decided #5667's merge group `dcfd9df870ae` as
+     `APPROVE`, with the permission read working.
    - Not applicable: `66d29f032`'s `Lane:` parts (P3 removed `Lane:`), its release-critical
      cap (already gone), and `a6ad432c8`.
 5. **Kept:** `tests/test_review_check.py`'s `Drain-Review-Verdict: APPROVE` case, which is not
