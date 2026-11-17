@@ -1,6 +1,6 @@
 # O-owed as built (2026-11-17)
 
-Three lines of lane O's "Owed to lane O by merged PRs" (`tasks.md` §10): S8 (`s8.md` item 6), S9 (`s9.md` item 7) and C5b (`c5b.md` item 5). Together 500 changed lines, one PR.
+Three lines of lane O's "Owed to lane O by merged PRs" (`tasks.md` §10): S8 (`s8.md` item 6), S9 (`s9.md` item 7) and C5b (`c5b.md` item 5). Together about 500 changed lines, one PR.
 
 ## The plan (research, before building)
 
