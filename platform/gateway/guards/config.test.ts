@@ -32,7 +32,6 @@ configTests(CONFIG, {
     ["a flag swapped for another", { compatibility_flags: [
       "nodejs_compat", "nodejs_compat_do_not_populate_process_env", "disable_ctx_exports",
       "global_fetch_private_origin"] }],
-    ["another name", { name: "tinyassets-owner" }],
     ["a key wrangler adds later", { agent_memory: [] }],
   ],
 });

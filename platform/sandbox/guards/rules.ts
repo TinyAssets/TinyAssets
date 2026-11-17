@@ -16,7 +16,6 @@ import { kernels, type Owed } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "sandbox",
-  name: "tinyassets-sandbox",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "build", "compatibility_date", "compatibility_flags",
                        "durable_objects", "kv_namespaces", "main", "migrations", "name",

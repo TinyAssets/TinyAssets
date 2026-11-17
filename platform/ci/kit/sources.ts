@@ -2,12 +2,13 @@
  * The platform's guard kit: what every workspace's static guards read (each Worker's
  * config files and source, parsed) and how they report.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 
 import ts from "typescript";
 
-import { PLATFORM } from "../paths.ts";
+import { PLATFORM, REPO } from "../paths.ts";
 import { type Config, parseWrangler } from "../wrangler.ts";
 
 export type { Config } from "../wrangler.ts";
@@ -126,6 +127,25 @@ export function scriptsIn(folder: string, root: string = PLATFORM): Map<string, 
 export function sourcesOf(worker: string,
                           all: ReadonlyMap<string, string> = workerSources()): Map<string, string> {
   return new Map([...all].filter(([path]) => path.startsWith(`${worker}/src/`)));
+}
+
+/** What the tree-wide guards read: the platform and its workflows. */
+export const TREE: readonly string[] = Object.freeze(["platform", ".github"]);
+
+/**
+ * Every text file in `TREE`, by path from the repository root, with its text: what git
+ * tracks, and any new file it does not ignore.
+ */
+export function treeFiles(): Map<string, string> {
+  const paths = execFileSync("git", ["ls-files", "-z", "--cached", "--others",
+                                     "--exclude-standard", "--", ...TREE],
+                             { cwd: REPO, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+    .split("\0").filter((path) => path !== "");
+  return new Map([...new Set(paths)].flatMap((path) => {
+    const bytes = statSync(join(REPO, path), { throwIfNoEntry: false })?.isFile() === true
+      ? readFileSync(join(REPO, path)) : null;
+    return bytes === null || bytes.includes(0) ? [] : [[path, bytes.toString("utf8")] as const];
+  }));
 }
 
 /** `source` parsed as its extension says, with parent links. */

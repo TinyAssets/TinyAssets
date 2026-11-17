@@ -29,7 +29,6 @@ configTests(CONFIG, {
                                                     new_classes: ["CodemodeSandbox"] }] }],
     ["no CPU headroom", { limits: undefined }],
     ["other limits", { limits: { cpu_ms: 30_000, subrequests: 10 } }],
-    ["another name", { name: "other" }],
     ["a key wrangler adds later", { agent_memory: [] }],
   ],
 });

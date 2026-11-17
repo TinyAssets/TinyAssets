@@ -1,5 +1,5 @@
 /**
- * The sandbox Worker (`tinyassets-sandbox`; ADR-034 decision 4.2, `engines-replan.md` §2.1
+ * The sandbox Worker (`platform/sandbox`; ADR-034 decision 4.2, `engines-replan.md` §2.1
  * step 3): the only holder of the E2B API key, and what stands behind the owner object's
  * `SANDBOX` interface (`contract/src/sandbox.ts`). Not deployed: no workflow deploys
  * platform/.
