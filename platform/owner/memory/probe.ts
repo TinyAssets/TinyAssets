@@ -170,6 +170,7 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
   // The rest of the files Worker's surface: no path the leg runs calls it.
   async rewrapKey(): Promise<never> { throw new Error("not in the leg"); }
   async rewrapManifestRoot(): Promise<never> { throw new Error("not in the leg"); }
+  async markNamespace(): Promise<never> { throw new Error("not in the leg"); }
   async deleteNamespace(): Promise<never> { throw new Error("not in the leg"); }
   async putManifestPart(): Promise<never> { throw new Error("not in the leg"); }
   /** A log segment as the files Worker takes it: a checkpoint while its call holds it. */
@@ -221,6 +222,7 @@ function received(env: LegEnv): ChunkStore {
     },
     rewrapKey: (ns, key) => store.rewrapKey(ns, key),
     rewrapManifestRoot: (ns, gen) => store.rewrapManifestRoot(ns, gen),
+    markNamespace: (ns) => store.markNamespace(ns),
     deleteNamespace: (ns) => store.deleteNamespace(ns),
     putManifestPart: (ns, key, gen, part, bytes) =>
       store.putManifestPart(ns, key, gen, part, bytes),

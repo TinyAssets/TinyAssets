@@ -566,8 +566,10 @@ function world(options: WorldOptions = {}) {
       const at = argv.indexOf("--files-from");
       events.push(`rclone ${argv.join(" ")}${at < 0 ? ""
         : ` (${readFileSync(argv[at + 1]!, "utf8").split("\n").filter(Boolean).join(",")})`}`);
-      const listing = argv[0] === "lsf" ? (argv.at(-1)!.startsWith("back:")
-        ? options.copied?.copy : options.copied?.r2) ?? [] : [];
+      // The erasure marks' listings (`--include`) find none.
+      const listing = argv[0] === "lsf" && !argv.includes("--include")
+        ? (argv.at(-1)!.startsWith("back:") ? options.copied?.copy : options.copied?.r2) ?? []
+        : [];
       return { status: 0, stdout: listing.join("\n"), stderr: "" };
     }
     events.push(`unexpected spawn ${command} ${argv.join(" ")}`);
@@ -3184,7 +3186,9 @@ describe("mode copyback", () => {
       "collection deleted comes back), as the off-account copy stands, never one it holds, " +
       `after writing the restore record ${RESTORE_KEY}: the namespace the owner's own object ` +
       "names (restore.source through the operator channel, which the doors refuse for an " +
-      "erased or erasing owner), each object written read back byte for byte"]);
+      "erased or erasing owner), and none the files bucket marks erased (its marks read from " +
+      "R2 and the copy first, a loud stop when they can't be), each object written read back " +
+      "byte for byte"]);
     expect(planned.sent).toEqual([]);
     const w = world({ held: true, doors: source(NS), copied });
     const work = await runMode(w, "copyback", ["--yes", "--owner", "user_alice", "--at", AT],
@@ -3202,6 +3206,9 @@ describe("mode copyback", () => {
     const bucket = BACK["OFFSITE_BUCKET"]!;
     expect(rclone(w).map((event) => event.replace(/--files-from \S+/, "--files-from <list>")))
       .toEqual([
+        `rclone lsf --files-only -R --include /e/* now:${bucket}`,
+        `rclone lsf --files-only -R --include /e/* back:${bucket}`,
+        "rclone lsf --files-only -R --include /e/* r2:tinyassets-files",
         `rclone lsf --files-only -R --use-server-modtime --fast-list r2:tinyassets-files/${PREFIX}`,
         `rclone lsf --files-only -R --use-server-modtime --fast-list back:${bucket}/${PREFIX}`,
         `rclone copy back:${bucket}/${PREFIX} r2:tinyassets-files/${PREFIX} --files-from <list> ` +
@@ -3218,7 +3225,7 @@ describe("mode copyback", () => {
     const w = world({ held: true, doors: source(NS), copied: { copy: ["c/1"], r2: ["c/1"] } });
     await runMode(w, "copyback", ["--yes", "--owner", "user_alice"], ENV);
     expect([w.kv.has(recorded), rclone(w).map((event) => event.split(" ")[1])])
-      .toEqual([false, ["lsf", "lsf"]]);
+      .toEqual([false, ["lsf", "lsf", "lsf", "lsf"]]);
   });
 
   it("applies the erasure first: an erased owner, or an object that names no namespace, is " +

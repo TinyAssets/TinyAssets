@@ -31,6 +31,31 @@ export function objectPrefix(ns: unknown): string {
   return `o/${namespace(ns)}/`;
 }
 
+/** The namespace whose prefix the bucket key `key` is under (`o/<ns>/…`), or null. */
+export function namespaceOf(key: string): string | null {
+  const [o, ns, ...rest] = key.split("/");
+  return o === "o" && HEX32.test(ns ?? "") && rest.length > 0 ? ns! : null;
+}
+
+/**
+ * Where the bucket marks a namespace deleted on purpose (an erasure's, or the cutover's
+ * discard's): `e/<ns>`, outside every namespace's prefix, so no prefix delete, sweep or
+ * listing of a namespace reaches it. The files Worker makes the mark at an erasure's start and
+ * before its prefix delete, and nothing deletes it, so the nightly copy carries it off the account, where a copy back
+ * reads it after the account is gone (`docs/decisions/untangle-2026-11/r8-account-loss.md`).
+ * A namespace is random, so a mark holds no person's identifier.
+ */
+export const MARKS = "e/";
+
+/** What a mark holds: what it is, and nothing of the namespace's owner or its time. */
+export const MARK_BODY = '{"kind":"tinyassets-erased-namespace"}';
+
+/** The namespace the bucket key `key` marks deleted (`e/<ns>`), or null. */
+export function markedNamespace(key: string): string | null {
+  const ns = key.startsWith(MARKS) ? key.slice(MARKS.length) : "";
+  return HEX32.test(ns) ? ns : null;
+}
+
 /** One chunk to store: its hash and its bytes. */
 export interface ChunkPut {
   readonly sha256: string;
@@ -160,7 +185,15 @@ export interface ChunkStore {
    * is; null when there is no root.
    */
   rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string | null } | null>;
-  /** Every object under the namespace's prefix deleted: the erasure's alone. */
+  /**
+   * The namespace's mark (`MARKS`) made, once, and kept: the erasure's, at its start, so the
+   * nightly copy carries it off the account before the delete is due.
+   */
+  markNamespace(ns: string): Promise<void>;
+  /**
+   * Every object under the namespace's prefix deleted, its mark (`markNamespace`) made first
+   * and kept: the erasure's and the discard's alone.
+   */
   deleteNamespace(ns: string): Promise<{ deleted: number }>;
   putManifestPart(ns: string, key: string, gen: string, part: number, bytes: Uint8Array):
     Promise<{ sha256: string; size: number }>;

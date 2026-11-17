@@ -13,8 +13,10 @@ import { chunkName, unwrap } from "../src/datakey";
 import { refusalOf } from "../../contract/src/refusal";
 import FilesService from "../src/index";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
-import { chunkKey, manifestKey } from "../src/keys";
-import { type ChunkGet, GET_READS } from "../../contract/src/files";
+import { chunkKey, manifestKey, markKey } from "../src/keys";
+import {
+  type ChunkGet, GET_READS, MARK_BODY, markedNamespace,
+} from "../../contract/src/files";
 
 import { ringKey } from "../../ci/fixtures";
 
@@ -425,6 +427,46 @@ describe("deleteChunks", () => {
     expect(await refused(async () => service().deleteChunks(space, await keyOf(ns()),
                                                             [names[0]!])))
       .toBe("data_key_refused");
+  });
+});
+
+describe("deleteNamespace: the erasure's mark, then its prefix delete", () => {
+  /** The mark of `space`, as the bucket holds it: its body, and which upload it is. */
+  async function markOf(space: string): Promise<{ body: string; version: string } | null> {
+    const held = await env.BLOBS.get(`e/${space}`);
+    return held === null ? null : { body: await held.text(), version: held.version };
+  }
+
+  it("marks the namespace before it deletes anything, so a crash between the two leaves the " +
+     "mark, and nothing deletes the mark: the delete again, a sweep, or any chunk delete",
+     async () => {
+    const [space, other] = [ns(), ns()];
+    const body = bytes("gone");
+    await put(space, body);
+    await put(other, body);
+    const key = await keyOf(space);
+    const part = await service().putManifestPart(space, key, "a".repeat(16), 0, bytes("part"));
+    await service().putManifestRoot(space, key, "a".repeat(16), [part], [], { s: 1, e: 0 });
+    // The Worker stops after its first call to the bucket: a crash past the mark.
+    const crashing = { put: (...args: Parameters<R2Bucket["put"]>) => env.BLOBS.put(...args),
+                       list: () => { throw new Error("crashed"); },
+                       delete: () => { throw new Error("crashed"); } } as unknown as R2Bucket;
+    expect((await failure(() => service(crashing).deleteNamespace(space))).message)
+      .toBe("crashed");
+    const mark = await markOf(space);
+    expect([mark?.body, (await keys(space)).length]).toEqual([MARK_BODY, 3]);
+    expect(markedNamespace(markKey(space))).toBe(space);
+    // Repeated, it deletes the namespace whole and leaves its one mark as it was.
+    expect(await service().deleteNamespace(space)).toEqual({ deleted: 3 });
+    expect(await service().deleteNamespace(space)).toEqual({ deleted: 0 });
+    expect([await keys(space), await markOf(space)]).toEqual([[], mark]);
+    // No delete of a namespace's objects reaches a mark: each key is under the prefix.
+    await service().sweepManifests(space, [], null);
+    await service().deleteListed(space, ["e".repeat(64)]);
+    await files().deleteChunks(space, [await sha(body)]);
+    expect(await markOf(space)).toEqual(mark);
+    // Another namespace is neither marked nor touched.
+    expect([await markOf(other), (await keys(other)).length]).toEqual([null, 1]);
   });
 });
 

@@ -446,9 +446,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     erasure records refuse an erased owner first, and only the objects a row of it names
     (`restore.names`), so nothing its own collection deleted comes back; and the monthly
     drill, read-only, on the whole bucket (`r8-copy-restore.md`).
+  - [x] An erasure record that survives the account, option A (`r8-copy-restore.md` item 5):
+    the files Worker marks each namespace it deletes on purpose (`e/<ns>`, no personal
+    identifier) at the erasure's start and before its first delete, and nothing deletes a mark; every copy back reads the
+    marks from R2 and the copy first and refuses a marked namespace, loudly when they can't be
+    read, and the monthly drill reads them whole (`untangle/r8-account-loss`,
+    `r8-account-loss.md`).
   - [ ] A lost object, or every owner after an account loss, restored from the copy: `locate`
-    and an erasure record that survives the account: option A, a marker per erased namespace
-    in the files bucket (`r8-copy-restore.md` item 5; `untangle/r8-account-loss`).
+    (part 0's header owner, a files Worker read through the operator channel) and mode
+    `recover`, the marks written back first and each unmarked namespace's owner begun in the
+    same run (`r8-account-loss.md` item 7; `untangle/r8-locate`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
