@@ -14,8 +14,8 @@ declare namespace Cloudflare {
   interface Env extends OwnerBound {
     /** The owner's objects, of the Worker's own class (`src/index.ts`). */
     OWNER: DurableObjectNamespace<import("../src/owner-do").OwnerDO>;
-    /** The fake sandbox's record and answers, by owner (`fake-sandbox.ts` `Log`). */
-    SANDBOX_LOG: Service<import("./fake-sandbox").Log>;
+    /** The fake sandbox's record and answers, by owner (`ci/fake-sandbox.ts` `Log`). */
+    SANDBOX_LOG: Service<import("../../ci/fake-sandbox").Log>;
     /** What each owner's object sent the erasure queue (`fake-erasures.ts` `Sent`). */
     ERASURES_SENT: Service<import("./fake-erasures").Sent>;
     /** The gates in front of SANDBOX, FILES and GATEWAY (`ci/gate.ts`): a test holds a call there. */

@@ -15,13 +15,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { MAINTENANCE } from "../../contract/src/control";
-import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, RUNNER_HEADER,
   SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import type { DoorsEnv } from "../src/env";
-import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
+import { serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
 import { HELD_WAIT_MS } from "../../ci/fixtures";
 import { secretOf, until } from "../../ci/workerd";
@@ -284,10 +284,6 @@ afterEach(() => {
 });
 
 describe("the egress door", () => {
-  it("keeps the gateway's own deadline (the gateway's tests hold the two equal)", () => {
-    expect(EGRESS_DEADLINE_MS).toBe(EGRESS_DEADLINE_S * 1000);
-  });
-
   it("forwards a live token's call with the sealed key in place of every credential, its " +
      "output cap clamped, streams the answer back and settles it at pi-ai's cost", async () => {
     const box = await sandbox();

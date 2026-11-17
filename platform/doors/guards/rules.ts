@@ -54,7 +54,7 @@
  *   `enable_request_signal`) are its own.
  */
 import type { ConfigRules } from "../../ci/kit/config";
-import { imports, type Owed } from "../../ci/kit/owed";
+import type { Owed } from "../../ci/kit/owed";
 
 /**
  * The import window's bindings (`src/import/`), each named once here: deleted at the
@@ -113,18 +113,5 @@ export const CONFIG: ConfigRules = Object.freeze({
   }),
 });
 
-/**
- * What the doors' tests still owe the platform's guards (`ci/kit/owed.ts`): another
- * workspace's internals, each until the fix named removes the reach.
- */
-export const OWED: readonly Owed[] = Object.freeze([
-  // The owner's constants and its fakes' read-back types, which the doors' tests read from the
-  // owner's own folder: B23's last doors part (`untangle/t2c`) moves what both sides read.
-  ...imports("B23", "platform/doors/test/doors-live.test.ts", [
-    "platform/owner/src/admission.ts", "platform/owner/src/erasure.ts"]),
-  ...imports("B23", "platform/doors/test/e2b-hooks.test.ts",
-             ["platform/owner/src/sandbox-time.ts"]),
-  ...imports("B23", "platform/doors/test/env.d.ts", ["platform/owner/test/fake-sandbox.ts"]),
-  ...imports("B23", "platform/doors/test/hardening.test.ts", ["platform/owner/src/bodies.ts"]),
-  ...imports("B23", "platform/doors/test/runs.test.ts", ["platform/owner/src/runs.ts"]),
-]);
+/** What the doors still owe the platform's guards (`ci/kit/owed.ts`). Nothing, now. */
+export const OWED: readonly Owed[] = Object.freeze([]);

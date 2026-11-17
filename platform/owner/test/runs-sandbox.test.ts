@@ -1,6 +1,6 @@
 /**
  * What slice S's sandbox Worker answers changes in the owner's object, in workerd with the
- * fake sandbox Worker behind `SANDBOX` (`fake-sandbox.ts`):
+ * fake sandbox Worker behind `SANDBOX` (`ci/fake-sandbox.ts`):
  *
  * - a start the sandbox has no room for (`sandbox_waiting`: E2B runs as many sandboxes as
  *   its plan allows) puts the run back to `waiting`, never refused, its lease given back and

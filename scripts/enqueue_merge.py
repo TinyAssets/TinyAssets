@@ -390,6 +390,7 @@ def _benign_enqueue_error(detail: str) -> bool:
     return any(
         phrase in text
         for phrase in (
+            "already in the queue",
             "already in the merge queue",
             "already queued",
             "pull request is in the merge queue",

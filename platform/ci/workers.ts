@@ -397,14 +397,17 @@ export function transpiled(path: string): string {
 }
 
 /**
- * The fake Worker at `path` (`<workspace>/test/fake-*.ts`) as `fake()` runs it: named as its
- * file, in its workspace, at its workspace's Worker's compatibility date.
+ * The fake Worker at `path` as `fake()` runs it: a workspace's (`<workspace>/test/fake-*.ts`),
+ * or one that more than one workspace's suites bind (`ci/fake-*.ts`). Named as its file, in
+ * its folder, at the one compatibility date every Worker runs at (`ci/kit/config.ts`
+ * `dateProblems`).
  */
 export function fakeConfig(path: string): { name: string; workspace: string;
                                            compatibility_date: string } {
   const workspace = join(PLATFORM, relative(PLATFORM, path).split(sep)[0]!);
   return { name: basename(path, ".ts"), workspace,
-           compatibility_date: workerConfig(workspace).compatibility_date };
+           compatibility_date: workerConfig(join(PLATFORM, workerFolders()[0]!))
+             .compatibility_date };
 }
 
 /** A test's fake outside world, transpiled into an auxiliary Worker (`fakeConfig`). */

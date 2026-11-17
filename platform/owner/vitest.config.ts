@@ -28,7 +28,7 @@ const keysOf = (ring: string) => (JSON.parse(ring) as { keys: Record<string, str
 const GATEWAY = workerConfig(join(PLATFORM, "gateway")).name;
 const FILES = workerConfig(join(PLATFORM, "files")).name;
 /** The sandbox Worker the owner's object reaches in these tests: a fake, by its file. */
-const FAKE_SANDBOX = join(PLATFORM, "owner", "test", "fake-sandbox.ts");
+const FAKE_SANDBOX = join(PLATFORM, "ci", "fake-sandbox.ts");
 /** The gate in front of it, `SANDBOX`. */
 const SANDBOX_GATE = "sandbox-gate";
 /** The gates in front of the files and gateway Workers, `FILES` and `GATEWAY`. */
@@ -49,7 +49,7 @@ const FAKE_UPSTREAM = join(PLATFORM, "gateway", "test", "fake-upstream.ts");
  * unchanged until a test arms it, through FILES_GATE or GATEWAY_GATE (bound to the test Worker
  * alone), to hold one owner's call, change its bytes or refuse it, and records what crossed by
  * owner (`gates.ts` disarms them after each test). SANDBOX is a gate in front of a fake
- * sandbox Worker (`test/fake-sandbox.ts`), which records what each owner's object asked and
+ * sandbox Worker (`ci/fake-sandbox.ts`), which records what each owner's object asked and
  * answers as a test scripts it: a test reads and scripts it through SANDBOX_LOG, and holds a
  * call at the gate through SANDBOX_GATE, both bound to the test Worker alone. The real sandbox
  * Worker is tested against a fake E2B in its own package (`sandbox/test`). ERASURES is the

@@ -11,7 +11,6 @@ import { describe, expect, it } from "vitest";
 
 import { E2B_HOOK_PATH } from "../src/config";
 import type { DoorsEnv } from "../src/env";
-import { BILLED_WINDOW_S } from "../../owner/src/sandbox-time";
 import { lifecycleEvent, signed } from "../src/e2b-hooks";
 import { HOOK_BODY_MAX } from "../../contract/src/limits";
 import { openRoute, sealRoute } from "../../contract/src/routing-mac";
@@ -112,16 +111,19 @@ describe("E2B's lifecycle webhook", () => {
     expect(days.reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(60);
   });
 
-  it("refuses an event older than its window, or ahead of the clock, by its signed time " +
-     "(review L2)", async () => {
-    const who = await admitted();
-    const old = event(who, { timestamp: new Date(Date.now() - BILLED_WINDOW_S * 1000 - 60_000)
-      .toISOString() });
-    expect(await (await deliver(JSON.stringify(old))).json()).toEqual({ counted: false });
-    const ahead = event(who, { timestamp: new Date(Date.now() + 3600_000).toISOString() });
-    expect(await (await deliver(JSON.stringify(ahead))).json()).toEqual({ counted: false });
+  it("hands the owner each event at the time it signs, however old or ahead, and a replay is " +
+     "refused by the execution it names (review L2)", async () => {
+    // The window the owner counts an event in is the owner's (`sandbox-time.test.ts`).
+    const timed = await admitted();
+    const times = [Date.now() - 7 * 86_400_000, Date.now() + 3600_000];
+    for (const at of times) {
+      await deliver(JSON.stringify(event(timed, { timestamp: new Date(at).toISOString() })));
+    }
+    expect((await env.OWNER_GATE.seen(timed)).filter((each) => each.method === "sandboxBilled")
+      .map((each) => (each.args as [{ at: number }])[0].at)).toEqual(times);
     // A delivery replayed inside the window is refused by the execution it names, however
     // many others came between; the ids are kept by age, not by count.
+    const who = await admitted();
     const kept = JSON.stringify(event(who));
     expect(await (await deliver(kept)).json()).toEqual({ counted: true });
     for (let i = 0; i < 5; i++) {

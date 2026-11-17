@@ -10,7 +10,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
-import { BODY_BYTES_MAX } from "../src/bodies";
+import { BODY_BYTES_MAX } from "../../contract/src/limits";
 import { STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
 import { LEDGER_LIMITS, type Ledger } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";

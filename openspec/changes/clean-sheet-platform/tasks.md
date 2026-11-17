@@ -237,14 +237,22 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     check reads it, and each decision one new check run, never an edit of one (an edit
     GitHub refused had left a red "could not decide" on #5656); ADR-038 drafted
     (`untangle/p2-review-gate`);
-  - [ ] the check seen green on a real PR (`live:` the first PR landed with its PR review);
-  - [ ] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
-    allowing a check an App posts, then the founder's `PUT` (`untangle/p2-review-required`);
+  - [x] the check seen green on a real PR (`live:` #5658's head and its merge group
+    `54668a171`, then #5659's, each from its PR review);
+  - [x] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
+    holding a check an App posts to the workflow named for it, and `enqueue-merge.yml`
+    listening to it (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
+  - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until then
+    `enqueue-merge` refuses on the drift);
   - [ ] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
-    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`).
+    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`). With no
+    body edit at landing, `enqueue-merge` no longer reruns after the PR review's decision
+    (`review` on `workflow_run`, which it skips): decide there whether it follows that run or
+    auto-merge alone queues the PR.
 - [ ] P6, process code in one place, research first: the scripts' tests beside them, the queue
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
-  measured (`untangle/p6-process-code`).
+  measured, `enqueue_merge.py` reading each check's newest run as GitHub does
+  (`untangle/p6-process-code`; `untangle-2026-11/p2-review-required.md` item 6).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
@@ -376,16 +384,21 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] T1's last edges: the owner tests' five B23 entries in `owner/guards/rules.ts`
       (connections, export, gateway-support, holds, runs-authority), each through its Worker's
       front door (`t1-owner-edges.md`).
-  - T2, the doors' tests through the owner's front door, three PRs (`t2.md`, `t2b.md`):
+  - T2, the doors' tests through the owner's front door, four PRs (`t2.md`, `t2b.md`, `t2c.md`):
     - [x] T2a: the owner an auxiliary Worker behind the owner gate, every reach into its object
       gone, and the doors' test `OWNER` (C2b) typed as the doors' env types it; 13 of the 20
       B23 entries in `doors/guards/rules.ts`.
     - [x] T2b: the doors' real entry, its sign-in the live one by config against a fake AuthKit
       (`d2:N49`, `N50`, `N53`), and with it T1c-b's `owner-erasures-recorded` queue: the
       owner's erasure queue consumed by the doors' own entry; one B23 entry.
-    - T2c (`untangle/t2c`): the last six B23 entries (the owner's constants and the fake
-      sandbox's type the doors' tests read); the table doors' answers typed from the contract,
-      not by hand (`ownDoor<T>`); `d2:N52`, `N84`, `N85` and `N89`.
+    - [x] T2c: the last six B23 entries, the doors' `OWED` empty: a doors test asserts an owner
+      refusal by its code and the owner's suite holds the reason; `ERASE_CONFIRM` and
+      `BODY_BYTES_MAX` in the contract; the fake sandbox in `ci/`; `d2:N52`, `N84`, `N85`
+      (`N89` was already gone).
+    - [ ] T2d (`untangle/t2d`, after `untangle/o2b` merges): the table doors' answers typed from
+      the contract, not by hand: `ownDoor<D>` over o2b's generated `OwnerDoors`, its answer
+      `DoorAnswer<D>`, with the `DoorTypes` answers the doors' tests read and those #5657 left
+      (`sandboxRung`, `restoreRelease`; `t2c.md`).
   - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
     (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
   - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the

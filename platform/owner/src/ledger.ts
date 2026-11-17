@@ -103,7 +103,7 @@ import { Buffer } from "node:buffer";
 
 import { AGENT_DIR, filerOf, may, NOT_GRANTED, OWNER, scopeOf } from "./authority";
 import {
-  type Adopt, adopted, BODY_BYTES_MAX, bodyOffset, inlineWindow, PAGE_BYTES, type Placed,
+  type Adopt, adopted, bodyOffset, inlineWindow, PAGE_BYTES, type Placed,
   READ_TRIES, type Window,
 } from "./bodies";
 import { ROOM_PREFIX } from "./collections";
@@ -126,7 +126,9 @@ import {
 import {
   admittedMethods, eventKind, kindFor, ringingMethods, wakeKinds,
 } from "../../contract/src/wake-records";
-import { COMMAND_CENTER_MAX, SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
+import {
+  BODY_BYTES_MAX, COMMAND_CENTER_MAX, SUBSCRIPTIONS_PER_AGENT,
+} from "../../contract/src/limits";
 import { type Change, CHANGES, type Follows, follows } from "../../contract/src/wake-kinds";
 import type { Archive } from "./archive";
 import type { ConnectedApp } from "./authority";
@@ -198,11 +200,6 @@ const CHANGE_BIT: Readonly<Record<Change, number>> = Object.freeze({ mail: 1, ro
 /** A claimed send's lease: past it, the may-have-sent mark decides whether a byte left. */
 export const WAKE_LEASE_S = 60;
 export const HOUR_S = 3600;
-/**
- * A message body's most UTF-8 bytes: what one call moves through the object whole
- * (`BODY_BYTES_MAX`); past `PLACE_BYTES` it is placed in R2 (ADR-035).
- */
-export const MAX_BODY_BYTES = BODY_BYTES_MAX;
 /** The open schedule rows: the `wakes_open` index's own predicate, so the planner uses it. */
 const OPEN = "state IN ('pending', 'rate_limited')";
 /** The states a wake never leaves: its outcome is known, or unknown and never replayed. */
@@ -393,8 +390,8 @@ function checkMessage(body: unknown): asserts body is string {
   if (typeof body !== "string") {
     throw new Refusal("invalid", "body is text");
   }
-  if (!body || utf8Bytes(body) > MAX_BODY_BYTES) {
-    throw new Refusal("message_body", `a message body is 1 to ${MAX_BODY_BYTES} bytes`);
+  if (!body || utf8Bytes(body) > BODY_BYTES_MAX) {
+    throw new Refusal("message_body", `a message body is 1 to ${BODY_BYTES_MAX} bytes`);
   }
   if (LONE_SURROGATE.test(body)) {
     throw new Refusal("message_body", "a message body is well-formed text");
