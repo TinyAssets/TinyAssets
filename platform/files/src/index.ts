@@ -1,5 +1,5 @@
 /**
- * The files Worker (`tinyassets-files`): a stateless blob pipe for owner file bytes
+ * The files Worker (`platform/files`): a stateless blob pipe for owner file bytes
  * (ADR-032, plan §6).
  *
  * It holds the platform's only R2 binding, `BLOBS`, one bucket of immutable chunks of at

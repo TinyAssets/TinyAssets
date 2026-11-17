@@ -1,5 +1,5 @@
 {
-  "about": "How one Worker's binding to another is typed: each Worker's entrypoint classes and the Durable Object classes other Workers bind, by the Worker's folder, each with its source and the contract interface it implements (contract/src/<module>.ts#<interface>, with args when the interface is generic), and default naming the class a binding with no entrypoint reaches; and each queue's message type (contract/src/<module>.ts#<type>). npm run generate (ci/kit/types.ts) types every service, Durable Object and queue producer binding from this, and the services guard (contract/guards/services.test.ts) holds each class to its contract.",
+  "about": "How one Worker's binding to another is typed: each Worker's entrypoint classes and the Durable Object classes other Workers bind, by the Worker's folder, each with its source and the contract interface it implements (contract/src/<module>.ts#<interface>, with args when the interface is generic), and default naming the class a binding with no entrypoint reaches; and each queue's message type (contract/src/<module>.ts#<type>), by its producers' binding, the key QUEUES (contract/src/queue-names.ts) names the queue by, so no queue's name is restated here. npm run generate (ci/kit/types.ts) types every service, Durable Object and queue producer binding from this, and the services guard (contract/guards/services.test.ts) holds each class to its contract.",
   "workers": {
     "codemode": {
       "default": "Codemode",
@@ -38,9 +38,9 @@
     }
   },
   "queues": {
-    "tinyassets-erasure": "queues#OwnerMessage",
-    "tinyassets-import": "import-message#ImportMessage",
-    "tinyassets-operator": "operator-message#OperatorMessage",
-    "tinyassets-sandbox-ring": "queues#OwnerMessage"
+    "ERASURES": "queues#OwnerMessage",
+    "IMPORTS": "import-message#ImportMessage",
+    "OPERATOR": "operator-message#OperatorMessage",
+    "RING": "queues#OwnerMessage"
   }
 }

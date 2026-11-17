@@ -66,7 +66,7 @@ import {
   boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS,
   MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers,
   ROUTES,
-  SECRET_INPUTS, SECRETS, WORKERS,
+  SECRET_INPUTS, SECRETS, WORKERS, workerNames,
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
@@ -673,6 +673,15 @@ describe("the deploy kit's facts", () => {
     }
     // The doors bind the owner by its objects' script alone: the order holds it too.
     expect(boundBy("doors")).toContain("owner");
+  });
+
+  it("names each Worker by its config's name, set in every config and shared by none", () => {
+    const owner = configOf("owner");
+    expect(workerNames(new Map([["owner", owner]]))).toEqual({ owner: NAMES["owner"] });
+    expect(() => workerNames(new Map([["owner", owner], ["files", owner]])))
+      .toThrow("platform/files's config names no Worker of its own");
+    expect(() => workerNames(new Map([["owner", { ...owner, name: undefined }]])))
+      .toThrow("platform/owner's config names no Worker of its own");
   });
 
   it("retires only a Worker no config names", () => {

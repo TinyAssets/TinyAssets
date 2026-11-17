@@ -29,6 +29,7 @@ import { parse } from "yaml";
 import { REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import type { NamespaceFound } from "../../contract/src/files";
+import { FILES_BUCKET } from "../facts";
 import {
   backFrom, BACK_DAYS, type Begin, CAPABILITIES, copy, copyBack, drill, type Effects, NIGHTLY,
   recover, RESTORE_KEY, type RestoreControl, SETTINGS, settings,
@@ -36,7 +37,7 @@ import {
 
 const BUCKET = "tinyassets-offsite-abcd1234";
 const ACCOUNT = "c".repeat(32);
-const SOURCE = "tinyassets-files";
+const SOURCE = FILES_BUCKET;
 /** Every setting, each value its own, so none can hide in another's place. */
 const STORED: Record<string, string> = {
   OFFSITE_BUCKET: BUCKET, CLOUDFLARE_ACCOUNT_ID: ACCOUNT,
@@ -325,8 +326,8 @@ describe("the nightly copy", () => {
 
   for (const [step, failing, refused] of [
     ["the sync", "sync", /the copy's sync failed \(rclone exit 7/],
-    ["the check", "check source:tinyassets-files copy:", /the copy's check of every object failed/],
-    ["the byte check", "check source:tinyassets-files check:", /byte check of a sample failed/],
+    ["the check", `check source:${SOURCE} copy:`, /the copy's check of every object failed/],
+    ["the byte check", `check source:${SOURCE} check:`, /byte check of a sample failed/],
     ["the listing", "lsf", /listing of the copy failed/],
   ] as const) {
     it(`stops loudly when ${step} fails`, async () => {

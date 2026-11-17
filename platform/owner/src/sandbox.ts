@@ -1,7 +1,7 @@
 /**
  * The `SANDBOX` interface (ADR-034 decision 4.2; `engines-replan.md` §2.1 step 3; its types
  * the contract's, `contract/src/sandbox.ts`): what the owner's object asks of the
- * `tinyassets-sandbox` Worker (`platform/sandbox`, slice S), the only holder of the E2B key,
+ * sandbox Worker (`platform/sandbox`, slice S), the only holder of the E2B key,
  * over a service binding. Slice R defined it; slice S built the
  * Worker, bound it (`wrangler.jsonc`) and held it in the owner config guard's `SERVICES`
  * (a Worker that reaches nothing but E2B, with one class of its own per owner that

@@ -93,7 +93,6 @@ export const SERVICES = Object.freeze({
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "doors",
-  name: "tinyassets-doors",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",
                        "workers_dev", "preview_urls", "vars", "durable_objects", "services",
