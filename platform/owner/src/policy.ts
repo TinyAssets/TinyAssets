@@ -24,9 +24,9 @@
  * - A refused owner-session call leaves a `refusal` receipt with the digest of what was
  *   asked, never the session proof, written after the refused change rolled back.
  * - The optional `actions` table holds the owner's action rules, each on an act (`acts.json`):
- *   ask first, or never. A rule holds where its act is seen, and one nothing sees is refused
- *   (d3 §N). Nothing decides one yet: the decision, its asks and its once-approvals are R5's
- *   later slices (tasks.md §10, R5).
+ *   ask first, or never, for every agent or one (`agent`). A rule holds where its act is seen,
+ *   and one nothing sees is refused (d3 §N). The decision, its held calls, the owner's answers
+ *   and their receipts are `actions.ts`'s.
  * - The document's optional `files` table sets the owner's own file bounds and history
  *   retention (`FILE_DEFAULTS`, plan §6, each off by default); what it leaves out keeps the
  *   defaults. It is ours, with no Python counterpart, so the default document leaves it out.
@@ -88,6 +88,7 @@ import { codePoints } from "../../contract/src/text";
 import {
   type Call, type Door, type DoorUnits, type ImportLine, type LiveSession, proven,
 } from "./door";
+import type { ActionReceipt, Actions } from "./actions";
 import type { Egress } from "./egress";
 import { clock } from "./clock";
 import { OWNER } from "./authority";
@@ -544,10 +545,14 @@ export interface CardRequest {
 // doors reach (`PolicyDoorNeeds`) once the row's steps held: the bind, the account, the
 // scope and the fields.
 
-/** What the `policy` doors reach: the policy, and the sandbox egress a write ends. */
+/**
+ * What the `policy` doors reach: the policy, the sandbox egress a write ends, and the action
+ * rules' receipts, listed beside the policy's own.
+ */
 export interface PolicyDoorNeeds extends Pick<DoorUnits, "door" | "synced"> {
   readonly policy: Policy;
   readonly egress: Pick<Egress, "end">;
+  readonly actions: Pick<Actions, "receipts">;
 }
 
 /** The `policy` doors' handlers, by door. */
@@ -564,8 +569,10 @@ export const policyDoors = Object.freeze({
   policyRead(o: PolicyDoorNeeds, { account: { owner } }: Call<undefined>): Projection {
     return o.policy.projection(owner);
   },
-  policyReceipts(o: PolicyDoorNeeds, _call: Call<undefined>): { receipts: Receipt[] } {
-    return { receipts: o.policy.receipts() };
+  /** The policy's receipts, each bucket's last `receiptsListed`, and the action rules'. */
+  policyReceipts(o: PolicyDoorNeeds, _call: Call<undefined>):
+      { receipts: Receipt[]; actions: ActionReceipt[] } {
+    return { receipts: o.policy.receipts(), actions: o.actions.receipts() };
   },
   /**
    * The owner's write, in its session; with `proposal`, a held card's one apply. A new

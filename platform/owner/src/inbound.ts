@@ -37,7 +37,10 @@
 import { HEX32, INBOUND_ROUTE, randomHex } from "../../contract/src/ids";
 
 import { Refusal } from "../../contract/src/refusal";
-import { INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX } from "../../contract/src/limits";
+import {
+  INBOUND_AGENT_MAX, INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX,
+} from "../../contract/src/limits";
+import { agentId } from "../../contract/src/text";
 import type { OwnerStorage } from "./gate";
 import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
 import type { Bodies, Placed } from "./bodies";
@@ -66,7 +69,6 @@ export const INSTALL_PROOF = "install_proof_required: a shared app's installatio
   "its install flow alone";
 
 const BINDING_ID = HEX32;
-const AGENT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 type BindingKind = "capability" | "shared";
 
@@ -108,11 +110,14 @@ function shown(row: Row): InboundBinding {
            changed_at: row.changed_at };
 }
 
+/** The agent an inbound binding names: an agent id, at most `INBOUND_AGENT_MAX` long. */
 export function agentName(value: unknown): string {
-  if (typeof value !== "string" || !AGENT.test(value)) {
-    throw new Refusal("invalid", "an inbound binding names one of the owner's agents");
+  const agent = agentId(value);
+  if (agent.length > INBOUND_AGENT_MAX) {
+    throw new Refusal("invalid", "an inbound binding names an agent id of at most " +
+                      `${INBOUND_AGENT_MAX} characters`);
   }
-  return value;
+  return agent;
 }
 
 export function bindingId(value: unknown): string {

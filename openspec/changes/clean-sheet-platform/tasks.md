@@ -555,12 +555,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     their act, a rule nothing could see refused at write; the old rule tables, `spend` and
     egress `ask` deleted; the default document and its digest anew, with owner migration 6
     (#5531; its pin, #5537).
-  - [ ] P-decide: the decide function and its receipts bucket; `action_request` cards and the
+  - [x] P-decide: the decide function and its receipts bucket; `action_request` cards and the
     once-approvals (bounded, generation-bound, swept); the owner's approve and refuse doors;
     the decide step in the runner, from the rows' `act`; a rule's `agent`, with the agent id's
-    rule moved to the contract.
+    rule moved to the contract (`untangle/r5-decide`; `r5-decide.md`).
+  - [ ] Owner migration 17's pin PR, after P-decide merges (`untangle/r5-decide-pin17`).
+  - [ ] P-decide's receipts in the export: `action_receipts` joins it with the first migration
+    that builds a forward form (`schema.ts` `FORWARD`; `r5-decide.md` item 5,
+    `untangle/r5-receipts-export`).
   - [ ] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
-    stop matcher in its record's `events`; a run settles `waiting` on a card.
+    stop matcher in its record's `events`; a run settles `waiting` on a card; a held call's
+    digest bound to its run's conversation (`r5-decide.md` item 8).
   - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
     `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
     when needed, and runs the start check; the honest note (d3 §N5): `policyRead` gives each

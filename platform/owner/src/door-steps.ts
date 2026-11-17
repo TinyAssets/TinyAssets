@@ -11,7 +11,10 @@
  *    the caller's own place, the agent its request names, or a place the door's handler
  *    reads from the request);
  * 4. **fields**: the door's request held to its arguments (the contract's); `fieldsFirst`
- *    checks them before the scope (where the scope's place is read from them).
+ *    checks them before the scope (where the scope's place is read from them);
+ * 5. **decide**: at a row that names an act (the contract's `act`), an agent's call at an
+ *    `account` or `visitors` door, once its condition holds, held to the owner's rules on
+ *    that act (`actions.ts`), in a unit of its own before the handler, once a call.
  *
  * Then the door's handler, in its module (`handler`), runs in the row's `gate`: one unit of
  * the write gate (`door`), a quiet one (`quiet`), a unit and then the schedule synced

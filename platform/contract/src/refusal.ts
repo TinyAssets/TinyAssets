@@ -54,6 +54,9 @@ export const REFUSALS = Object.freeze({
   invalid: QUIET_INVALID,
 
   // The owner's object's.
+  // An agent's call the owner's action rules decided (`owner/src/actions.ts`): never let be,
+  // or held for the owner's answer, the card's id in the facts.
+  action_never: REFUSED,
   agent_changed: REFUSED,
   agent_disabled: REFUSED,
   agent_retired: REFUSED,
@@ -79,6 +82,7 @@ export const REFUSALS = Object.freeze({
   file_index_full: Object.freeze({ status: 507 }),
   file_quota: REFUSED,
   file_share: REFUSED,
+  held_for_owner: REFUSED,
   install_proof_required: REFUSED,
   ledger_agents_full: REFUSED,
   ledger_full: REFUSED,

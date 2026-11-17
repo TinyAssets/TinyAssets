@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  AGENT_DIR, agentId, Authority, AUTHORITY_CHANGED, authorityOf, NO_AUTHORITY, NOT_GRANTED,
+  Authority, AUTHORITY_CHANGED, authorityOf, NO_AUTHORITY, NOT_GRANTED,
   NOT_OWNER, OWNER, type Stamped,
 } from "../src/authority";
 import { Refusal } from "../../contract/src/refusal";
@@ -35,14 +35,6 @@ describe("a stamp", () => {
   it("is the work's authority: the owner's, or a client's stamp", () => {
     expect(authorityOf(null)).toEqual({ by: "owner" });
     expect(authorityOf(STAMP)).toEqual(CLIENT);
-  });
-
-  it("names an agent by its directory's name", () => {
-    expect(agentId("main")).toBe("main");
-    expect(AGENT_DIR.test("a.b-c_d")).toBe(true);
-    for (const bad of ["", ".hidden", "a/b", "x".repeat(129), 7]) {
-      expect(() => agentId(bad)).toThrow(/an agent id/);
-    }
   });
 });
 
