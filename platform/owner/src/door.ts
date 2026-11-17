@@ -18,12 +18,12 @@
  * anywhere else). No state flows through this module.
  */
 import type { RunCapability } from "../../contract/src/capabilities";
-import type { Binding, Origin } from "../../contract/src/binding";
+import type { Binding, BindingOf, Origin } from "../../contract/src/binding";
 import { isMinted } from "./proof-mint";
 import type { Grant, Stamped } from "./authority";
 import type { ControlGate } from "./control-gate";
 import type { DoorRows } from "./door-map";
-import type { CallerKind } from "./door-steps";
+import type { Binds, CallerKind, TakenBy } from "./door-steps";
 import type { OwnerEnv } from "./env";
 import type { SandboxLease } from "./files";
 import type { OwnerStorage, WriteGate } from "./gate";
@@ -54,11 +54,14 @@ export interface Readable {
 }
 
 /**
- * A call as its door's steps bound it (`owner/doors.json`): its account, and what a sandbox,
- * runner or inbound door's binding names (the lease's readable set, the lease, the route's
- * binding), or that the platform's erasure door found the owner already erased.
+ * A call as its door's steps bound it (`owner/doors.json`): its binding, as its kind's parser
+ * read it, its account, and what a sandbox, runner or inbound door's binding names (the
+ * lease's readable set, the lease, the route's binding), or that the platform's erasure door
+ * found the owner already erased.
  */
 export interface Bound {
+  /** The call's binding, of a kind its row's caller takes, as that kind's parser read it. */
+  readonly binding: Binding | undefined;
   readonly account: Account;
   readonly readable: Readable | null;
   readonly lease: SandboxLease | null;
@@ -113,15 +116,22 @@ export function proven<K extends string>(proof: Proof<K>, kind: K): void {
  * door's place (its universe and agent), and, for a door whose handler names the place its
  * capability is held at, that check (`held`); and the proof its row's caller `K` made, if it
  * makes one (`Proofs`): a session door's live session, an owner door's self, a reserved door's
- * platform line, an import door's import line. A call of no one caller carries none.
+ * platform line, an import door's import line. A call of no one caller carries none. A call
+ * of no named caller is a binding door's (`Binds`); a door that takes none names `none`.
  */
-export type Call<R = unknown, K extends CallerKind = CallerKind> =
-  Checked<R> & ([K] extends [keyof Proofs] ? Proofs[K] : unknown);
+export type Call<R = unknown, K extends CallerKind = Binds> =
+  Checked<R, K> & ([K] extends [keyof Proofs] ? Proofs[K] : unknown);
+
+/**
+ * The binding a call of caller `K` carries: one of the kinds `K` takes, as its parser read it,
+ * each read as a `Binding` (a field its kind lacks is absent); none at a door that takes none.
+ */
+export type BindingFor<K extends CallerKind> = AsBinding<BindingOf<TakenBy<K>>>;
+type AsBinding<B> = B extends undefined ? undefined : Binding & B;
 
 /** A door's call once its row's every step held, but its caller's proof (`Call`). */
-export interface Checked<R = unknown> extends Bound {
-  /** The binding the call came with, as the binder handed it. */
-  readonly binding: Binding;
+export interface Checked<R = unknown, K extends CallerKind = Binds> extends Bound {
+  readonly binding: BindingFor<K>;
   /** The request as the binder handed it (`r` is its fields, as the row held them). */
   readonly request: R;
   readonly r: Record<string, unknown>;
@@ -144,9 +154,8 @@ export interface Checked<R = unknown> extends Bound {
 }
 
 /** A door whose handler makes its own units: its call, checked again in each. */
-export interface Door<R = unknown, K extends CallerKind = CallerKind> {
-  /** The binding the call came with, and its request, as the binder handed them. */
-  readonly binding: Binding;
+export interface Door<R = unknown, K extends CallerKind = Binds> {
+  /** The request as the binder handed it; its binding is its checked call's. */
   readonly request: R;
   /** Every step of the row, in the unit it is called in. */
   check(): Call<R, K>;

@@ -244,6 +244,10 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     listening to it (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
   - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until then
     `enqueue-merge` refuses on the drift);
+  - [x] a verdict counts only from an account that can push (GitHub's permission read, from
+    every grant), and a permission it cannot read is no verdict, never a pass; lands before
+    the receipt goes, which would let a read-only member's `APPROVE` pass alone
+    (`untangle/p2-review-writers`; `untangle-2026-11/p2-review-writers.md`);
   - [ ] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
     ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`). With no
     body edit at landing, `enqueue-merge` no longer reruns after the PR review's decision
@@ -355,9 +359,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - Owed to lane O by merged PRs, one line each:
     - S8: the owner adopts `served()` (`s8.md`).
     - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
-    - C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
-    - O2c: `caller` `none` (`owner/doors.json`) beside `UNBOUND_DOORS`, held equal by
-      `stepProblems`, goes with B5's `none` binding kind, `untangle/o3` (`o2c.md` item 7).
+    - [x] C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
+      Built in `untangle/o3`: each door's binding parsed by its kind's parser, by the kinds its
+      caller takes (`CALLER_BINDINGS`), and the egress copy gone (`untangle-2026-11/o3.md`).
+    - [x] O2c: `caller` `none` (`owner/doors.json`) beside `UNBOUND_DOORS`, held equal by
+      `stepProblems`, goes with B5's `none` binding kind, `untangle/o3` (`o2c.md` item 7). Built:
+      the two steps name no caller, and the runner's `none` is `UNBOUND_DOORS`' (`o3.md`).
     - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
     - X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the

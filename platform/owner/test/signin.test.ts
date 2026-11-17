@@ -40,6 +40,8 @@ async function lastSignin(r: Gated): Promise<SandboxSignin> {
   return (await recorder(r.stub)).signins.at(-1)!;
 }
 
+/** A first-party token's expiry, in whole seconds as the binder hands it: ten minutes on. */
+const expiresAt = () => Math.floor(Date.now() / 1000) + 600;
 const frame = (seq: number, event: Record<string, unknown>) =>
   ({ seq, at: Date.now() / 1000, event: { type: "ta.signin", ...event } });
 
@@ -246,11 +248,10 @@ describe("a sign-in", () => {
   it("is watched on the app socket by its id, the owner's own", async () => {
     const r = await gated();
     const { id } = await r.stub.signinStart(r.bind(), { engine: "claude-code" }) as { id: string };
-    const ticket = await r.stub.socketTicket(r.bind({ grant: "g-1",
-                                                      expires_at: Date.now() / 1000 + 600 }),
+    const ticket = await r.stub.socketTicket(r.bind({ grant: "g-1", expires_at: expiresAt() }),
                                              { conversation_id: id });
     expect(ticket.conversation_id).toBe(id);
-    expect((await failure(() => r.stub.socketTicket(r.bind({ grant: "g-1", expires_at: Date.now() / 1000 + 600 }),
+    expect((await failure(() => r.stub.socketTicket(r.bind({ grant: "g-1", expires_at: expiresAt() }),
                                      { conversation_id: `si_${"0".repeat(32)}` }))).message).toBeTruthy();
   });
 
@@ -261,7 +262,7 @@ describe("a sign-in", () => {
     // The read itself fails, as a storage fault would.
     await r.sql("ALTER TABLE sandbox_signins RENAME TO sandbox_signins_gone");
     const failed = await failure(() => r.stub.socketTicket(
-      r.bind({ grant: "g-1", expires_at: Date.now() / 1000 + 600 }), { conversation_id: id }));
+      r.bind({ grant: "g-1", expires_at: expiresAt() }), { conversation_id: id }));
     expect(failed.message).toMatch(/no such table: sandbox_signins/);
   });
 });

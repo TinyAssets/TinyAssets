@@ -58,12 +58,16 @@ describe("a session proof", () => {
       "mcp_api_key_" + "k".repeat(40),
       other.cookie,  // Bob's live session is in Bob's object, not Alice's
       hashed(r.cookie),  // the stored hash is never a proof
-      { session_hash: hashed(r.cookie) },
-      "f".repeat(64), "short", 7, null,
+      "f".repeat(64), "short",
     ]) {
       const refused = await failure(() => write(r, proof));
       expect([refused.code, refused.message])
         .toEqual(["refused", "interactive owner session required"]);
+    }
+    // A session that is no cookie's text is no session binding at all.
+    for (const proof of [{ session_hash: hashed(r.cookie) }, 7, null]) {
+      const refused = await failure(() => write(r, proof));
+      expect([refused.code, refused.message]).toEqual(["invalid", "invalid account binding"]);
     }
     expect((await write(r, r.cookie)).generation).toBe(2);
     expect((await write(other, other.cookie)).generation).toBe(2);
@@ -94,8 +98,7 @@ describe("a session's life", () => {
     }
     const bad = await failure(() => r.stub.sessionOpen(r.bind(null, {
       authenticated_at: 1.5 })));
-    expect([bad.code, bad.message])
-      .toEqual(["invalid", "authenticated_at is a time in whole seconds"]);
+    expect([bad.code, bad.message]).toEqual(["invalid", "invalid account binding"]);
     expect(await r.table("owner_sessions")).toHaveLength(1);
     const opened = await r.stub.sessionOpen(r.bind(null, {
       authenticated_at: signedIn() - SESSION_LIMITS.signInMaxAgeS + 2 }));
