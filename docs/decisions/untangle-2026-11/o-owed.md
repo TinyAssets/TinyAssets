@@ -1,6 +1,6 @@
 # O-owed as built (2026-11-17)
 
-Three lines of lane O's "Owed to lane O by merged PRs" (`tasks.md` §10): S8 (`s8.md` item 6), S9 (`s9.md` item 7) and C5b (`c5b.md` item 5). Together about 500 changed lines, one PR.
+Three lines of lane O's "Owed to lane O by merged PRs" (`tasks.md` §10): S8 (`s8.md` item 6), S9 (`s9.md` item 7) and C5b (`c5b.md` item 5). Together 500 changed lines, one PR.
 
 ## The plan (research, before building)
 
@@ -26,11 +26,17 @@ Three lines of lane O's "Owed to lane O by merged PRs" (`tasks.md` §10): S8 (`s
 4. **`CONFIG`** (`owner/guards/rules.ts`), declared `satisfies ConfigRules`, so its `classes` and `flags` are known to the environments' check. `ENV_KEYS` is a list. `ruleLists("CONFIG")` now finds the owner's too; it has no bucket, so the R2-type guard reads it as before.
 5. **`config.test.ts`** on `configTests`: the kit's five tests (holds, known keys, every other key refused with the named ones, the probes, the only config) replace the owner's own "is the only wrangler config", "declares OwnerDO a SQLite-backed class" and the top half of "allows only keys wrangler knows". The namespace, migration, store and `base` probes are the kit's probes over the owner's config, with a second producer, a consumer and a second secret added. The environment half now refuses every key wrangler offers an environment beyond `ENV_KEYS` and `services`, not a list of 19.
 
+6. **`signin.test.ts`'s refusal loop** held each refusal only to a truthy message, so S8's first mutation (`signinStart` testing that the record is served, not that it signs in) survived: the switch refused `pi` instead. It holds each refusal to `invalid` now, and adds `pi`'s sign-out, which sits behind no switch.
+7. **The bundles move, the image does not.** `served.ts` is in the runner and the probes: runner `2480cf2c…` to `b1e8c876…`, probes `519bce8c…` to `485813d0…`. The image spec and tag are main's (the recipe guard passes). Their pair check is the one already owed at the dark redeploy for S7 to S9, inside the approved spend.
+
 ## What a caller sees
 
-Nothing changes. The recorders (`npm run record`, base `6409bb7cb`): see the PR body. A sign-in row whose engine does not sign in throws an `Error` where it threw a `TypeError`; no door makes one.
+Nothing changes. The recorders, base `e5a2fda90` (main, merged in) and before it `6409bb7cb`, against the head: `wire`, `tools`, `rpc` and `rv` the same. A sign-in row whose engine does not sign in throws an `Error` where it threw a `TypeError`; no door makes one.
+
+Mutations, each killed: S8's `signinStart` and `signinRequest` testing only that the record is served (`signin.test.ts`, `runs.test.ts`); `servedRecord` handing a record with no CLI (`sandbox/guards/template.test.ts`); `Runs.holds` answering no (`signin.test.ts`, the lease a run joins); `CONFIG` without `kv` (`owner/guards/config.test.ts`).
 
 ## Left
 
 - `launch.ts` `runEnv(bundledSources(), …)` and `control-gate.ts` `signinsRead(bundledSources(), …)`: sources' functions over any catalog (above), each testing its records itself. Not the owner's reads.
-- The doors' CLI-record check (`doors/src/app.ts`, `s8.md` item 6) is lane D's.
+- `owner/test/network.test.ts` lists the engines that sign in from the raw records itself and pins the list: an oracle beside `signsIn`, not a copy.
+- The doors' read `s8.md` item 6 names (`doors/src/app.ts` `sourceList`) lists every record of the catalog the doors serve, with or without a CLI: no reader of the served view, so nothing is owed there.
