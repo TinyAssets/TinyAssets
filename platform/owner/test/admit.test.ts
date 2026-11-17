@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { OWNER_UNADMITTED, PLATFORM_ONLY, PLATFORM_TIER_ONLY } from "../src/admission";
 import { apiKeyOrigin, type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { doorTable } from "../../contract/src/doors";
+import { ownerRows } from "../src/door-steps";
 import { NO_ERASURE } from "../src/erasure";
 import { BREAKER_FAILURES, Inbound, INSTALL_PROOF } from "../src/inbound";
 import { profile, proves } from "../../contract/src/inbound-proof";
@@ -75,7 +75,7 @@ describe("the platform's doors", () => {
     await (stub as unknown as DurableObjectStub<import("../src/owner-do").OwnerDO>)
       .admissionSet(platform(owner), { admit: true });
     const o = stub as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
-    const rows = doorTable().filter((row) => row.caller === "reserved" || row.caller === "erasure");
+    const rows = ownerRows().filter((row) => row.caller === "reserved" || row.caller === "erasure");
     expect(rows.map((row) => row.caller)).toEqual(expect.arrayContaining(["reserved", "erasure"]));
     for (const row of rows) {
       const refused = await failure(() => o[row.door]!(own(owner), {}));
