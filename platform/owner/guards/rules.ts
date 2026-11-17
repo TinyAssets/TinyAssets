@@ -45,7 +45,7 @@
  */
 import { EVERY_WORKER } from "../../ci/kit/config";
 import type { Exemption } from "../../ci/kit/module-state";
-import { imports, type Owed } from "../../ci/kit/owed";
+import type { Owed } from "../../ci/kit/owed";
 
 /**
  * The module state the owner Worker keeps by design (`ci/kit/module-state.ts`): its isolate's
@@ -129,13 +129,7 @@ export const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
 });
 
 /**
- * What the owner's tests and memory legs still owe the platform's guards (`ci/kit/owed.ts`):
- * another workspace's internals, each until the fix named removes it.
+ * What the owner's tests and memory legs still owe the platform's guards (`ci/kit/owed.ts`).
+ * Nothing, now.
  */
-export const OWED: readonly Owed[] = Object.freeze([
-  // The egress memory leg, the doors' and the gateway's, in the owner's tree: B23.
-  ...imports("B23", "platform/owner/memory/egress-probe.ts", [
-    "platform/doors/src/egress.ts", "platform/gateway/src/catalog.ts",
-    "platform/gateway/src/held.ts", "platform/gateway/src/keyring.ts",
-    "platform/gateway/src/meter.ts", "platform/gateway/src/index.ts"]),
-]);
+export const OWED: readonly Owed[] = Object.freeze([]);

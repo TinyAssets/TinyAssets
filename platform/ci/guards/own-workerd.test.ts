@@ -1,20 +1,22 @@
 /**
- * The memory legs' own workerd (`memory/workerd.mjs`): a leg measures only its own child, and
+ * The memory legs' own workerd (`ci/own-workerd.mjs`): a leg measures only its own child, and
  * leaves none behind. Driven through real processes, with a stand-in child (`node -e`) in
  * workerd's place: a child that exits early fails the leg at once, before it reads another
  * figure; a leg ended by SIGTERM, SIGINT or its own exit leaves no child running.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../ci/paths";
+import { PLATFORM } from "../paths";
 
-const OWN = pathToFileURL(join(PLATFORM, "owner", "memory", "workerd.mjs")).href;
+const OWN = pathToFileURL(join(PLATFORM, "ci", "own-workerd.mjs")).href;
 const dirs: string[] = [];
 /** Every process a test starts, killed after it whatever the test's outcome. */
 const started: number[] = [];
@@ -155,25 +157,31 @@ try { own.check(); console.log("measured"); } catch (error) { console.log(error.
 
   it("has every request helper of each leg confirm its own workerd after it answers", () => {
     // A helper is a `const name = (async) (...) => {...}` whose body requests a leg port
-    // (`fetch(`); each must call `own.check()`. The inspector's polling loop is not one: it
-    // runs before the leg has a target, and the check follows it.
-    const legs = ["leg.mjs", "egress.mjs", "baselines.mjs"];
+    // (`fetch(`, or `requested(`: a request with its own host, the egress leg's); each must
+    // call `own.check()`. The inspector's polling loop is not one: it runs before the leg has
+    // a target, and the check follows it. Every workspace's `memory/*.mjs` is a leg.
+    const legs = readdirSync(PLATFORM).filter((ws) => existsSync(join(PLATFORM, ws, "memory")))
+      .flatMap((ws) => readdirSync(join(PLATFORM, ws, "memory"))
+        .filter((file) => file.endsWith(".mjs")).map((file) => join(ws, "memory", file)));
+    expect(legs).toContain(join("gateway", "memory", "egress.mjs"));
+    const REQUEST = /(?<![\w.]|function )(?:fetch|requested)\((?!\))/g;
     for (const name of legs) {
-      const text = readFileSync(join(PLATFORM, "owner", "memory", name), "utf8");
+      const text = readFileSync(join(PLATFORM, name), "utf8");
       const helpers = helpersOf(text);
-      const requesting = helpers.filter((helper) => helper.body.includes("fetch("));
+      const requesting = helpers.filter((helper) => helper.body.search(REQUEST) >= 0);
       expect([name, requesting.length]).not.toEqual([name, 0]);
       for (const helper of requesting) {
         // The check confirms what answered, so it follows the awaited request: after the
-        // helper's last `await fetch(`, never before it.
-        const asked = helper.body.lastIndexOf("await fetch(");
+        // helper's last awaited one, never before it.
+        const asked = Math.max(helper.body.lastIndexOf("await fetch("),
+                               helper.body.lastIndexOf("await requested("));
         const checked = helper.body.lastIndexOf("own.check()");
         expect([name, helper.name, asked >= 0 && checked > asked])
           .toEqual([name, helper.name, true]);
       }
       // Every other request is the inspector's poll, or inside a helper (`fetch()` with no
       // argument is a Worker's own handler, in the source a leg serves, not a request).
-      const outside = [...text.matchAll(/fetch\((?!\))/g)].map((hit) => hit.index!)
+      const outside = [...text.matchAll(REQUEST)].map((hit) => hit.index!)
         .filter((at) => !helpers.some((helper) => at > helper.start && at < helper.end))
         .map((at) => text.slice(at, text.indexOf("\n", at)));
       expect([name, outside.filter((line) => !line.includes("/json/list"))])
