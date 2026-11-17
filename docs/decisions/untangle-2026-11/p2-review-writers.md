@@ -73,3 +73,8 @@ A security fix inside P2 (`tasks.md` §10 "Process first"), found in the review 
    APPROVE; a failed read counted as push.
 9. **Left:** `live:` the first real PR review after this merges, read in the `review` run's
    title and the job summary: `APPROVE: ...` from a writer, not `no verdict counts: ...`.
+   It comes before the founder's ruleset `PUT`, while `review` is not yet required. If the
+   read is refused (`... permission: gh: Resource not accessible by integration (HTTP 403)`),
+   the decision step reads it with `APP_TOKEN` instead: the review App holds Metadata read
+   (host-actions "Make the App"). Were `review` already required, that fix would merge only
+   by the ruleset's admin bypass.
