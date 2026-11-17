@@ -1979,7 +1979,8 @@ describe("renewal", () => {
     expect(box.ran("claude-code").at(-1)!.argv.slice(-2)).toEqual(["--resume", "cs-r"]);
   });
 
-  it("waits for a quiet moment, and renews at its deadline regardless", async () => {
+  it("tells a run that is not quiet at once, and is back at its deadline when the run " +
+     "cannot answer", async () => {
     // A CLI that never goes quiet: it is held running until the renewal is over, by an event.
     const release = "/release-deadline";
     box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
@@ -1988,15 +1989,22 @@ describe("renewal", () => {
     box.start(start);
     box.runner("launch", start.run);
     await waitFor(() => box.runner("state").out.includes("\"quiet\":false"));
+    // Every post answered busy from now: the run cannot post its held frames, so it cannot
+    // answer.
+    doors.busy = Number.MAX_SAFE_INTEGER;
     const deadline = Date.now() + 1500;
     expect(await box.runnerAsync("renew-wait", String(deadline))).toBe(0);
-    // Renewed (its run told, and acted), and not before the deadline it was given: the run's
-    // renewing is stamped by the runner's own clock, which read the deadline come first.
-    expect(runState(start.run).renewing).toBe(true);
+    // Back at its deadline, the run not answered: its state says it has not acted yet.
+    expect(Date.now()).toBeGreaterThanOrEqual(deadline);
+    expect(runState(start.run).renewing).toBe(false);
+    // The doors taking posts again, the run acts. It was told at once, not at a quiet moment:
+    // its renewing is stamped by the runner's own clock before the deadline.
+    doors.busy = 0;
+    await waitFor(() => runState(start.run).renewing === true);
     const renewing = doors.events().flatMap((post) => post.body["frames"] as
       { at: number; event: { type: string } }[])
       .find((frame) => frame.event.type === "ta.renewing");
-    expect(renewing!.at).toBeGreaterThanOrEqual(deadline);
+    expect(renewing!.at).toBeLessThan(deadline);
     box.runner("renewed");
     box.write(release, "");
     await doors.ended_(25_000, start.run);

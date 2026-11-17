@@ -149,10 +149,15 @@ const alarmOf = (who: string) => runInDurableObject(stub(who), (_instance, state
 const RETRY_SCHEDULE_MS = [480, 960, 1_920, 3_840, 7_680, 15_360, 30_720, 60_000, 60_000] as const;
 
 /**
- * The renewal's edge as the design states it: the runner's `renewing` (252 ms) and then the
- * longest pause (705 ms), both measured (`sandbox-probe.md`, `e2b-resume-measurement.md`).
+ * The renewal's wait for its runs' answers as the design states it: two posts within the
+ * 252 ms `renewing` measured and the drain's 50 ms look, 80% of it (`sandbox-probe.md`).
  */
-const RENEW_EDGE_MS = 252 + 705;
+const RENEWING_MS = 700;
+/**
+ * The renewal's edge as the design states it: that wait, then the longest pause measured
+ * (705 ms, `e2b-resume-measurement.md`).
+ */
+const RENEW_EDGE_MS = RENEWING_MS + 705;
 
 /**
  * What `act` armed, against the delay the code means: an alarm `delay` on from the moment
@@ -621,6 +626,12 @@ describe("the look before the runtime ceiling", () => {
     expect(box.state).toBe("running");
     expect(box.id).toBe(id);
     expect(commands).toEqual(["quiet-wait", "state", "renew-wait", "prepare", "renewed"]);
+    // Its runs' answers waited for: the deadline is the wait's bound past the renewal's clock
+    // read, which lies between the two reads here.
+    const deadline = Number((await seen()).commands
+      .filter((command) => command.argv[1] === "renew-wait").at(-1)!.argv[2]);
+    expect(deadline).toBeGreaterThanOrEqual(began + RENEWING_MS);
+    expect(deadline).toBeLessThanOrEqual(Date.now() + RENEWING_MS);
     // The window moved to the resume: the next look is the idle one, a lease's TTL on.
     expect(box.timeout).toBe(CEILING);
     expect(await alarmOf(who)).toBeLessThanOrEqual(Date.now() + 60_000);
