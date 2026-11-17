@@ -553,7 +553,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     once-approvals (bounded, generation-bound, swept); the owner's approve and refuse doors;
     the decide step in the runner, from the rows' `act`; a rule's `agent`, with the agent id's
     rule moved to the contract (`untangle/r5-decide`; `r5-decide.md`).
-  - [ ] Owner migration 17's pin PR, after P-decide merges (`untangle/r5-decide-pin17`).
+  - [x] Owner migration 17's pin, after P-decide merges: rode `untangle/r5-resume-hooks`.
   - [ ] P-decide's receipts in the export: `action_receipts` joins it with the first migration
     that builds a forward form (`schema.ts` `FORWARD`; `r5-decide.md` item 5,
     `untangle/r5-receipts-export`).
