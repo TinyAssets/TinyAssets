@@ -5,10 +5,9 @@
  * `FILES_KEYRING` is a Worker secret on this Worker alone, and this module is the only code
  * that reads it (`guards/r2-keys.test.ts`). It is a ring in the sealed envelope's versioned
  * form (`contract/src/envelope.ts`), as the gateway's is,
- * `{"active":"k2","keys":{"k1":"<base64 of 32 bytes>",...}}`, but is a secret of its own,
- * so neither Worker's ring opens the other's blobs. A missing or malformed ring, or an
- * active kid it does not hold, fails every call loudly: there is no default key and no
- * keyless mode.
+ * `{"active":"k2","keys":{"k1":"<base64 of 32 bytes>",...}}`, but is a secret of its own, so
+ * neither Worker's ring opens the other's blobs. A missing or malformed ring, or an active kid
+ * it does not hold, fails every call loudly: there is no default key and no keyless mode.
  *
  * Envelope (NIST SP 800-57 §6.1.1's key-wrapping key and data key):
  * - the **data key** is 32 random bytes, made by `mint` for one namespace, and never
@@ -33,8 +32,9 @@
  * key under its kid and wraps the same data key under the active one (the data key never
  * changes, so no chunk or part is resealed). Each owner's sweep re-wraps its object's copy
  * and every manifest root's (`owner/src/files.ts` `rewrap`); a kid leaves the ring only
- * after a sweep of every owner left none (`left` 0, tasks.md). An owner a restore holds
- * counts the restore's roots left until it ends: its wiped object names neither.
+ * after a sweep of every owner left none (`left` 0, `deploy/deploy.ts` mode `retire`). An
+ * owner a restore holds counts the restore's roots left until it ends: its wiped object
+ * names neither.
  *
  * **Names.** A chunk's R2 name is HMAC-SHA256 of its hash under a key derived from the data
  * key (`chunkName`), so listing the bucket cannot confirm that an owner holds a known file;
@@ -120,7 +120,6 @@ export async function unwrap(secret: unknown, ns: string, wrapped: unknown):
 
 /** `wrapped` opened for `ns`: a data key's 32 bytes, or `data_key_refused`. */
 async function opened(keys: Ring, ns: string, wrapped: unknown): Promise<Opened> {
-  // A wrapped key's most characters: a blob over a data key's bytes.
   const open = await openBlob(keys, domain(ns), wrapped, blobMax(KEY_BYTES));
   if (open === null || open.plain.byteLength !== KEY_BYTES) {
     throw new Refusal("data_key_refused");

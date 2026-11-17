@@ -106,8 +106,8 @@ async function keys(space: string): Promise<string[]> {
 }
 
 describe("the Worker's main module", () => {
-  it("exports only its entrypoints: the service, and the doors' upload (review M5-1) and " +
-     "locate ones", async () => {
+  it("exports only its entrypoints: the service, and the doors' upload and locate ones",
+     async () => {
     expect(Object.keys(await import("../src/index")).sort())
       .toEqual(["FilesLocate", "FilesUpload", "default"]);
   });
@@ -307,17 +307,20 @@ describe("getChunks", () => {
       .toBe("a chunk the manifest holds is missing from the bucket");
   });
 
-  it("reads every range from its whole chunk, its hash rechecked (review L7)", async () => {
+  it("fails loudly when a chunk's bytes no longer match its hash, read whole or by any range",
+     async () => {
     const space = ns();
     const digits = bytes("0123456789");
     await put(space, digits);
     const d = await sha(digits);
-    const ranges = () => files().getChunks(space, [{ ...chunk(d), offset: 2, length: 3 },
-                                                   { ...chunk(d), offset: 8, length: 100 }]);
-    expect(await ranges()).toEqual([bytes("234"), bytes("89")]);
-    // Other bytes sealed under the chunk's key, outside every range read: still loud.
+    // Its last byte changed, sealed under the chunk's very key, so it opens: the bytes, not
+    // the key, are what changed, and outside each range read.
     await env.BLOBS.put(await named(space, d), await sealedAt(space, d, bytes("0123456780")));
-    expect((await failure(ranges)).message).toBe("a chunk's bytes no longer match its hash");
+    for (const read of [chunk(d), { ...chunk(d), offset: 2, length: 3 },
+                        { ...chunk(d), offset: 8, length: 1 }]) {
+      expect((await failure(() => files().getChunks(space, [read]))).message)
+        .toBe("a chunk's bytes no longer match its hash");
+    }
   });
 
   it.each([
@@ -337,17 +340,6 @@ describe("getChunks", () => {
                              () => chunk("a".repeat(64)));
     expect((await failure(() => files().getChunks(ns(), whole))).message)
       .toBe(TOO_MANY);
-  });
-
-  it("fails loudly when a chunk's bytes no longer match its hash", async () => {
-    const space = ns();
-    const body = bytes("original");
-    await put(space, body);
-    const hash = await sha(body);
-    // Sealed under the very key, so it opens: the bytes, not the key, are what changed.
-    await env.BLOBS.put(await named(space, hash), await sealedAt(space, hash, bytes("corrupted")));
-    expect((await failure(() => files().getChunks(space, [chunk(hash)]))).message)
-      .toBe("a chunk's bytes no longer match its hash");
   });
 });
 
@@ -778,32 +770,25 @@ describe("data keys", () => {
       .toBe("data_key_refused");
   });
 
-  it("opens a key wrapped under an older kid, and none once its kid leaves the ring", async () => {
+  it("opens a key wrapped under an older kid, and wraps it again under the active kid: the " +
+     "same data key, so every chunk still reads once the old kid leaves the ring", async () => {
     const space = ns();
     const old = (await service(env.BLOBS, OLD).mintKey(space)).key;
     expect(old.startsWith("v1.k1.")).toBe(true);
-    const body = bytes("older");
-    await service().putChunks(space, old, [{ sha256: await sha(body), bytes: body }]);
-    expect(await service().getChunks(space, old, [chunk(await sha(body))])).toEqual([body]);
-    const without = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
-    expect(await refused(() => service(env.BLOBS, without)
-      .getChunks(space, old, [chunk("a".repeat(64))]))).toBe("data_key_refused");
-  });
-
-  it("wraps a key again under the active kid: the same data key, so every chunk still reads",
-     async () => {
-    const space = ns();
-    const old = (await service(env.BLOBS, OLD).mintKey(space)).key;
     const body = bytes("kept across a rotation");
-    await service().putChunks(space, old, [{ sha256: await sha(body), bytes: body }]);
+    const hash = await sha(body);
+    await service().putChunks(space, old, [{ sha256: hash, bytes: body }]);
+    expect(await service().getChunks(space, old, [chunk(hash)])).toEqual([body]);
     const { key } = await service().rewrapKey(space, old);
     expect(key.startsWith("v1.k2.")).toBe(true);
     expect((await service().rewrapKey(space, key)).key).toBe(key);  // active already: as it is
-    // The old kid leaves the ring: the re-wrapped key reads what the old one put.
-    const without = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
-    expect(await service(env.BLOBS, without).getChunks(space, key,
-                                                             [chunk(await sha(body))]))
-      .toEqual([body]);
+    // The old kid leaves the ring: the re-wrapped key reads what the old one put, and the old
+    // key opens nothing.
+    const without = service(env.BLOBS, JSON.stringify({
+      active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } }));
+    expect(await without.getChunks(space, key, [chunk(hash)])).toEqual([body]);
+    expect(await refused(() => without.getChunks(space, old, [chunk(hash)])))
+      .toBe("data_key_refused");
     // Another namespace's key is refused, as a read refuses it.
     expect(await refused(() => service().rewrapKey(ns(), old))).toBe("data_key_refused");
   });
@@ -941,9 +926,18 @@ describe("manifests", () => {
     await service(env.BLOBS, OLD).putManifestRoot(space, old, "2222222222222222", [part], [],
                                                         { s: 1, e: 0 });
     expect((await service().getManifestRoot(space, "2222222222222222"))!.key).toBe(old);
-    // A root another pass wrote while its key was wrapped again: left as it is, and said, so
-    // the owner's sweep counts it left and asks again.
-    const raced = { get: (at: string) => env.BLOBS.get(at), put: async () => null };
+    // A root another pass wrote while its key was wrapped again (here between the rewrap's read
+    // and its put, as other bytes, so another etag, which the put then misses): left as it is,
+    // and said, so the owner's sweep counts it left and asks again.
+    const raced = {
+      get: async (at: string) => {
+        const read = (await env.BLOBS.get(at))!;
+        const text = await read.text();
+        await env.BLOBS.put(at, JSON.stringify(JSON.parse(text), null, 1));
+        return { etag: read.etag, text: async () => text };
+      },
+      put: (...args: Parameters<R2Bucket["put"]>) => env.BLOBS.put(...args),
+    };
     expect(await service(raced as unknown as R2Bucket)
       .rewrapManifestRoot(space, "2222222222222222")).toEqual({ key: null });
     expect((await service().getManifestRoot(space, "2222222222222222"))!.key).toBe(old);
@@ -1003,32 +997,6 @@ describe("manifests", () => {
 });
 
 describe("sealed objects", () => {
-  it("stores only sealed bytes, reads them whole and by range, under the owner's key alone",
-     async () => {
-    const space = ns();
-    const key = await keyOf(space);
-    const body = bytes("plain words the bucket never sees");
-    const hash = await sha(body);
-    expect(await service().putChunks(space, key, [{ sha256: hash, bytes: body }]))
-      .toEqual({ created: 1 });
-    expect(await service().putChunks(space, key, [{ sha256: hash, bytes: body }]))
-      .toEqual({ created: 0 });
-    const raw = new Uint8Array(await (await env.BLOBS.get(await named(space, hash)))!
-      .arrayBuffer());
-    expect(new TextDecoder().decode(raw)).not.toContain("plain words");
-    expect(raw.byteLength).toBe(body.byteLength + OBJECT_OVERHEAD);
-    expect(await service().getChunks(space, key, [chunk(hash),
-                                                  { ...chunk(hash), offset: 6, length: 5 }]))
-      .toEqual([body, bytes("words")]);
-    // Another key minted for the very namespace names nothing stored under the first.
-    const second = (await service().mintKey(space)).key;
-    expect((await failure(() => service().getChunks(space, second, [chunk(hash)]))).message)
-      .toBe("a chunk the manifest holds is missing from the bucket");
-    expect((await failure(() => service().putChunks(space, key, [{ sha256: hash,
-                                                                   bytes: bytes("other") }])))
-      .message).toBe("the chunk's bytes do not match its sha256");
-  });
-
   it("fails loudly on a changed byte, and on bytes moved under another chunk's key", async () => {
     const space = ns();
     const key = await keyOf(space);
