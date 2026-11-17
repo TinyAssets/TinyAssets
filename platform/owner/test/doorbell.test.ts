@@ -99,7 +99,22 @@ async function control(owners: readonly string[], outside: "on" | "off" = "on"):
  */
 const RINGS_BOUND_MS = 3_000;
 
-/** Run the object's alarm until `n` rings were asked and no wake is due. */
+/**
+ * Wait out a pass in flight until no wake is sending. The object's own alarm, set at a wake's
+ * due, runs the `wakes` lane as well as a test's: a test's alarm that overlaps its pass skips
+ * the running job and returns at once, so one test alarm alone settles nothing.
+ */
+async function unsent(r: Rung): Promise<void> {
+  const until = Date.now() + RINGS_BOUND_MS;
+  while ((await r.sql("SELECT 1 FROM ledger_wakes WHERE state = 'sending'")).length > 0) {
+    if (Date.now() >= until) {
+      throw new Error(`a wake was still sending after ${RINGS_BOUND_MS} ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/** Run the object's alarm until `n` rings were asked and no wake is due (`unsent`). */
 async function rings(r: Rung, n: number): Promise<Rang[]> {
   const until = Date.now() + RINGS_BOUND_MS;
   while (Date.now() < until) {
@@ -339,6 +354,7 @@ describe("the kill switch and admission", () => {
                               { reason: "billing", suspended: true });
     await r.gateway.release("ringDoorbell");
     await pass;
+    await unsent(r);
     const [sent] = (await r.rang()).map((ring) =>
       (JSON.parse(ring.request.body) as Delivered).data.agent_id);
     const other = sent === muse ? dot : muse;
@@ -757,6 +773,7 @@ describe("a send's answer", () => {
       await r.gateway.held("ringDoorbell");
       await r.gateway.lose("ringDoorbell");
       await pass;
+      await unsent(r);
       expect(await received(r)).toHaveLength(1);  // a byte left
       const [wake] = await r.sql("SELECT state, receipt_json FROM ledger_wakes");
       expect([wake!["state"], JSON.parse(wake!["receipt_json"] as string)])
@@ -782,7 +799,7 @@ describe("a send's answer", () => {
       // The gateway's own failure before the send (a keyring it lost), as a refusal crosses.
       await r.gateway.arm("ringDoorbell", { refuse: { code: "internal", message: "internal" } });
       await r.post(null, `dm:${muse}`);
-      await runDurableObjectAlarm(r.stub);
+      await rings(r, 1);
       expect(await received(r)).toEqual([]);  // nothing left
       const [wake] = await r.sql("SELECT state, receipt_json FROM ledger_wakes");
       expect([wake!["state"], JSON.parse(wake!["receipt_json"] as string)])
