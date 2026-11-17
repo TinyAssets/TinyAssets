@@ -90,7 +90,6 @@ export const LIMITS = Object.freeze({ subrequests: 10_000_000 });
  */
 export const CONFIG = Object.freeze({
   worker: "owner",
-  name: "tinyassets-owner",
   main: "src/index.ts",
   keys: Object.freeze([...ENV_KEYS, "$schema", "env", "services", "secrets", "kv_namespaces",
                        "queues"]),

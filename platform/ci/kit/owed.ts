@@ -27,7 +27,8 @@ export interface Found {
 }
 
 /** The guards a workspace may owe: each one's test holds `ratchet` over what it finds. */
-export const GUARDS: readonly string[] = Object.freeze(["kernels", "layers", "refusals"]);
+export const GUARDS: readonly string[] = Object.freeze(["kernels", "layers", "literals",
+                                                         "refusals"]);
 
 /** Each entry owed to a guard no test holds, which would never be found stale. */
 export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {
@@ -52,6 +53,23 @@ export function kernels(fix: string, kernel: string,
                         counts: Readonly<Record<string, number>>): Owed[] {
   return Object.entries(counts).map(([from, count]) =>
     Object.freeze({ guard: "kernels", what: kernelBreak(from, kernel, count), fix }));
+}
+
+/**
+ * The literal guard's finding (`deploy/guards/literals.test.ts`, untangle B10): the file
+ * `from`, by its path from the repository root, spells live names `count` times outside the
+ * configs and `deploy/platform.json`. It names none, so the entry that owes it spells none.
+ */
+export const literalBreak = (from: string, count: number): string =>
+  `${from}: live names ×${count}`;
+
+/**
+ * What each file owes the literal guard until `fix` removes them: the times it spells a live
+ * name, by its path from the repository root.
+ */
+export function literals(fix: string, counts: Readonly<Record<string, number>>): Owed[] {
+  return Object.entries(counts).map(([from, count]) =>
+    Object.freeze({ guard: "literals", what: literalBreak(from, count), fix }));
 }
 
 /** The file that holds a workspace's `OWED`. */

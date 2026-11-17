@@ -39,7 +39,7 @@
         { "edit": "platform/contract/src/owner.ts", "names": ["importRows", "importDiscard", "CheckPart"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import doors' types" },
         { "edit": "platform/contract/src/paths.ts", "names": ["IMPORTED"], "what": "the imported tree's path" },
         { "edit": "platform/contract/src/files.ts", "names": ["the importer's wipe"], "what": "the importer's wipe, in the object prefix's note" },
-        { "edit": "platform/contract/services.json", "names": ["tinyassets-import"], "what": "the import queue's message" },
+        { "edit": "platform/contract/services.json", "names": ["IMPORTS"], "what": "the import queue's message, by its producer's binding" },
         { "edit": "platform/contract/src/queue-names.ts", "names": ["IMPORTS"], "what": "the import queue's name, by npm run generate once doors/wrangler.jsonc loses it" },
 
         { "edit": "platform/owner/src/admission.ts", "names": ["IMPORT_PLATFORM_ONLY", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "DISCARDED", "\"import\""], "what": "the import doors' refusals and class" },
