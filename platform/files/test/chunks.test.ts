@@ -505,6 +505,25 @@ describe("deleteNamespace: the erasure's mark, then its prefix delete", () => {
     // A namespace never holds itself.
     expect(await refused(() => service().holdNamespace(other, other))).toBe("invalid");
   });
+
+  it("roots a namespace: every hold of it by one it reaches deleted, what it reaches kept, " +
+     "and no other namespace's holds touched", async () => {
+    const [root, held, deeper, other] = [ns(), ns(), ns(), ns()];
+    await service().holdNamespace(held, root);
+    await service().holdNamespace(root, held);
+    await service().holdNamespace(held, deeper);
+    await service().holdNamespace(deeper, root);
+    await service().holdNamespace(other, root);
+    const holds = async (space: string) => (await keys(space)).map((key) => key.split("/").at(-1));
+    await service().rootNamespace(root);
+    await service().rootNamespace(root);
+    expect(await Promise.all([root, held, deeper, other].map(holds)))
+      .toEqual([[held], [deeper], [], [root]]);
+    // So its mark still reaches every one it held.
+    await service().markNamespace(root);
+    expect(await Promise.all([held, deeper].map((space) => env.BLOBS.head(markKey(space)))))
+      .not.toContain(null);
+  });
 });
 
 describe("locate: a namespace's owner, from its newest generation's header", () => {
@@ -534,7 +553,14 @@ describe("locate: a namespace's owner, from its newest generation's header", () 
     await generation(space, newest, header("user_alice", newest), 2000);
     // A pass's part with no root yet names no generation.
     await service().putManifestPart(space, await keyOf(space), "f".repeat(16), 0, bytes("x"));
-    expect(await located(space)).toEqual({ owner: "user_alice", gen: newest });
+    expect(await located(space)).toEqual({ owner: "user_alice", gen: newest, at: 2000 });
+  });
+
+  it("answers erased for a namespace the bucket marks, reading nothing of it", async () => {
+    const space = ns();
+    await generation(space, "e".repeat(16), { t: "row", table: "x", row: {} }, 1);
+    await service().markNamespace(space);
+    expect(await located(space)).toBe("erased");
   });
 
   it("answers null for a namespace the bucket holds no root of", async () => {
@@ -552,9 +578,10 @@ describe("locate: a namespace's owner, from its newest generation's header", () 
       await generation(space, gen, header("user_bob", gen), at);
     }
     const paged = { get: (key: string) => env.BLOBS.get(key),
+                    head: (key: string) => env.BLOBS.head(key),
                     list: (options: R2ListOptions) => env.BLOBS.list({ ...options, limit: 1 }) };
     expect(await located(space, paged as unknown as R2Bucket))
-      .toEqual({ owner: "user_bob", gen: gens[2] });
+      .toEqual({ owner: "user_bob", gen: gens[2], at: 2 });
   });
 
   it.each([
@@ -578,6 +605,46 @@ describe("locate: a namespace's owner, from its newest generation's header", () 
     await env.BLOBS.put(manifestKey(moved, gen, 0), stored);
     expect((await failure(() => located(moved))).message)
       .toBe("a stored object does not open under its owner's key");
+  });
+});
+
+describe("FilesLocate's namespaces and erase: a lost object's find", () => {
+  const locating = (bucket: R2Bucket = env.BLOBS) =>
+    new FilesLocate(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: RING });
+
+  it("lists each namespace the bucket holds an object of, a page at a time, and no mark",
+     async () => {
+    const [chunked, held, erased] = [ns(), ns(), ns()];
+    await put(chunked, bytes("a chunk"));
+    await service().holdNamespace(held, ns());
+    await put(erased, bytes("gone"));
+    await service().deleteNamespace(erased);
+    const paged = { list: (options: R2ListOptions) => env.BLOBS.list({ ...options, limit: 1 }) };
+    const listed: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page = await locating(paged as unknown as R2Bucket).namespaces(cursor);
+      listed.push(...page.namespaces);
+      cursor = page.cursor;
+      pages++;
+    } while (cursor !== null);
+    expect(listed).toEqual(expect.arrayContaining([chunked, held]));
+    expect(listed).not.toContain(erased);
+    expect(new Set(listed).size).toBe(listed.length);
+    expect(pages).toBeGreaterThan(1);
+  });
+
+  it("erases a namespace whole, its mark first, and every one it holds", async () => {
+    const [space, held] = [ns(), ns()];
+    await put(space, bytes("of an erased owner"));
+    await put(held, bytes("held"));
+    await service().holdNamespace(space, held);
+    expect(await locating().erase(space)).toEqual({ deleted: 3 });
+    expect([await keys(space), await keys(held)]).toEqual([[], []]);
+    expect(await Promise.all([space, held].map((each) => env.BLOBS.head(markKey(each)))))
+      .not.toContain(null);
+    expect(await locating().locate(space)).toBe("erased");
   });
 });
 

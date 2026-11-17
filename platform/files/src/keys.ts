@@ -13,9 +13,11 @@
  * NFC-normalizes keys, and uploads are verbatim (Fact 9): two names a sandbox can create
  * would meet in one object. The r2-keys guard keeps every other source from building one.
  */
-import { HOLDS, MARKS, namespace, objectPrefix, segmentSpans } from "../../contract/src/files";
+import {
+  HOLDS, MARKS, namespace, OBJECTS, objectPrefix, segmentSpans,
+} from "../../contract/src/files";
 import { Refusal } from "../../contract/src/refusal";
-import { HEX16, HEX64 } from "../../contract/src/ids";
+import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
 import { MANIFEST_PARTS } from "../../contract/src/limits";
 
 const SHA256 = HEX64;
@@ -108,6 +110,20 @@ export function listedHold(ns: unknown, key: unknown): string {
     throw new Error("a listed key is not under its namespace's prefix");
   }
   return namespace(key.slice(prefix.length));
+}
+
+/** The prefix every namespace's prefix is under: the list of the namespaces (`FilesLocate`). */
+export function namespacesPrefix(): string {
+  return OBJECTS;
+}
+
+/** The namespace a prefix listed under `namespacesPrefix()` (`o/<ns>/`) is, or a loud failure. */
+export function listedNamespace(prefix: unknown): string {
+  const ns = typeof prefix === "string" ? prefix.slice(OBJECTS.length, -1) : "";
+  if (!HEX32.test(ns) || objectPrefix(ns) !== prefix) {
+    throw new Error("a listed prefix is no namespace's");
+  }
+  return ns;
 }
 
 /** The prefix every chunk key of one owner's namespace starts with: the erasure's list. */

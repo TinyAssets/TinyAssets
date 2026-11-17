@@ -139,8 +139,10 @@ import {
 } from "../contract/src/identity.ts";
 import { IMPORT_KEY } from "../contract/src/import-message.ts";
 import {
-  argsText, LOCATE_PAGE, locateArgs, type LocatedPage, OPERATOR_KEYRING, type OperatorArgs,
+  argsText, LOCATE_PAGE, locateArgs, type LocatedPage, namespacesArgs, OPERATOR_KEYRING,
+  type OperatorArgs,
 } from "../contract/src/operator-message.ts";
+import type { LocatedOwner, NamespacePage } from "../contract/src/files.ts";
 import { PLATFORM_CALLER } from "../contract/src/binding.ts";
 import {
   eraseWords, type RestoreAnswer, type RestoreHold, type RestoreNames, type RestoreSource,
@@ -1494,29 +1496,64 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
       throw new Error(`--confirm ${run.confirm} with no --generation is release-${owner}`);
     }
     const op = release ? "restore.release" : "restore.source";
-    say(`ask the doors ${op} for ${owner}, through the operator channel`);
-    if (run.apply) {
-      say(`the doors answered ${op} for ${owner}: ${JSON.stringify(await ask(op))}`);
+    say(`ask the doors ${op} for ${owner}, through the operator channel; for a lost object ` +
+        "(one that names no namespace), find the namespaces R2 holds that name it");
+    if (!run.apply) {
+      return;
+    }
+    const answer = await ask(op);
+    say(`the doors answered ${op} for ${owner}: ${JSON.stringify(answer)}`);
+    const source = answer as RestoreSource;
+    if (!release && source.namespace === null && source.restore === null && source.begins) {
+      const { own } = await namespacesOf(run, got, owner);
+      say(own.size === 0 ? `R2 holds no namespace naming ${owner}: none is restored from`
+        : `R2 holds ${own.size} namespaces naming ${owner}, newest first: ${[...own]
+          .sort(([, a], [, b]) => b.at - a.at).map(([namespace, { gen, at }]) =>
+            `${namespace}/${gen} (${new Date(at).toISOString()})`).join(", ")}: run again with ` +
+          "--generation <namespace>/<gen>, and every other is held by the one it restores");
     }
     return;
   }
   say(`restore ${owner} from generation ${from.gen} of namespace ${from.namespace}, into its ` +
       "own object only while it is pending and empty (a live owner held first, its present " +
       "state written as a fresh generation, and its object wiped once --confirm names that " +
-      "generation), then admit it, through the operator channel: " + RESTORE_LOSES);
+      "generation), then admit it, through the operator channel; for a restore no pin holds " +
+      "(a lost object's), every other namespace R2 holds naming the owner found " +
+      "(restore.namespaces, restore.locate) and held by the one it restores (restore.hold) " +
+      "before it is admitted: " + RESTORE_LOSES);
   if (!run.apply) {
     return;
   }
   const source = await ask("restore.source") as RestoreSource;
   const held = source.restore;
+  // A restore no pin held (a lost object's) has no hold in the bucket of the owner's other
+  // namespaces: R2's are found, and each held by the one restored before the owner is admitted.
+  const found = (source.begins || held?.step === "done") && (held?.fresh ?? null) === null
+    ? await namespacesOf(run, got, owner) : null;
+  const holdOthers = async () => {
+    const others = [...found?.own ?? []].filter(([namespace]) => namespace !== from.namespace);
+    for (const [namespace, { gen }] of others) {
+      await ask("restore.hold", { namespace, gen });
+    }
+    if (found !== null) {
+      say(`held each of the ${others.length} other namespaces R2 holds naming ${owner} by ` +
+          `${from.namespace}, so its erasure takes them`);
+    }
+  };
   if (held?.step === "done" && held.gen === from.gen) {
+    await holdOthers();
     say(`${owner} was restored from ${from.gen} already: the doors answered owner.admit: ${
       JSON.stringify(await ask("owner.admit"))}`);
     return;
   }
+  if (found?.erased.has(from.namespace)) {
+    throw new Error(`the namespace ${from.namespace} is erased (its mark, or its owner's ` +
+                    "erasure): nothing is restored from it");
+  }
   if (!source.begins) {
     const until = run.io.now().getTime() + RUN_MS;
-    let hold = await ask("restore.pin", { gen: from.gen }) as RestoreHold;
+    const pin = { namespace: from.namespace, gen: from.gen };
+    let hold = await ask("restore.pin", pin) as RestoreHold;
     while (!hold.written) {
       if (run.io.now().getTime() >= until) {
         throw new Error(`${owner}'s present state was not written within ${RUN_MS / 60_000} ` +
@@ -1524,11 +1561,11 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
                         `the pin up with --confirm release-${owner} and no --generation`);
       }
       say(`${owner} is held; its present state is being written as a fresh generation`);
-      hold = await ask("restore.pin", { gen: from.gen }) as RestoreHold;
+      hold = await ask("restore.pin", pin) as RestoreHold;
     }
     if (run.confirm === null) {
-      say(`${owner} is held, its present state written as generation ${hold.fresh} of ` +
-          `${hold.namespace}: to wipe its object and restore ${from.gen}, run again with ` +
+      say(`${owner} is held, its present state written as generation ${hold.fresh}, its ` +
+          `undo: to wipe its object and restore ${from.gen}, run again with ` +
           `--confirm ${hold.confirm}; to give the pin up, --confirm release-${owner} and no ` +
           "--generation");
       return;
@@ -1542,6 +1579,7 @@ const restoreAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
         "its undo");
   }
   await ask("restore.begin", { namespace: from.namespace, gen: from.gen });
+  await holdOthers();
   for (;;) {
     const at = await ask("restore.step") as RestoreAnswer;
     if (at.step === "failed") {
@@ -1690,6 +1728,38 @@ function recovering(run: Run, got: Pick<Values, "cloudflare" | "account">): Reco
     begin: (begins) => each("restore.begin", begins),
     hold: (holds) => each("restore.hold", holds),
   };
+}
+
+/**
+ * The namespaces the files bucket holds that name `owner`, each with its newest generation and
+ * when that was written, for a lost object, whose object names none (`own`), and those found
+ * erased (`erased`): every namespace R2 holds (`restore.namespaces`, a page at a time) located
+ * (`restore.locate`, `recovering`), the doors erasing on the way each naming an owner they
+ * record erased.
+ */
+async function namespacesOf(run: Run, got: Pick<Values, "cloudflare" | "account">,
+                            owner: string):
+    Promise<{ own: ReadonlyMap<string, LocatedOwner>; erased: ReadonlySet<string> }> {
+  const namespaces: string[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await asked(run, got, "restore.namespaces", PLATFORM_CALLER,
+                             namespacesArgs(cursor)) as NamespacePage;
+    namespaces.push(...page.namespaces);
+    cursor = page.cursor;
+  } while (cursor !== null);
+  const located = namespaces.length === 0 ? new Map()
+    : await recovering(run, got).locate(namespaces);
+  const own = new Map<string, LocatedOwner>();
+  const erased = new Set<string>();
+  for (const [namespace, found] of located) {
+    if (found === "erased") {
+      erased.add(namespace);
+    } else if (found?.owner === owner) {
+      own.set(namespace, found);
+    }
+  }
+  return { own, erased };
 }
 
 /** What `owner`'s object names in its namespace, page by page (`restore.names`). */

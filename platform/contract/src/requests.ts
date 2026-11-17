@@ -95,7 +95,7 @@ export interface DoorRequests {
   readonly signinReport: DoorFields<"signins">;
   readonly socketTicket: DoorFields<"conversation_id">;
   readonly restoreBegin: DoorFields<"namespace" | "gen">;
-  readonly restorePin: DoorFields<"gen">;
+  readonly restorePin: DoorFields<"namespace" | "gen">;
   readonly restoreWipe: DoorFields<"confirm">;
   readonly restoreNames: DoorFields<"from">;
   readonly restoreHold: DoorFields<"namespace" | "gen">;

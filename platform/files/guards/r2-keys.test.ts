@@ -19,9 +19,9 @@
  *   listed key
  *   through `manifestKey`; or a list of them mapped from a list), each the one imported
  *   from `./keys` and nothing shadowing it. No alias (`const b = this.env.BLOBS`,
- *   `const { BLOBS } = env`, `env["BLOBS"]`) passes, and the one list is of one namespace's
- *   prefix (`list({ prefix: chunkPrefix(ns) | manifestPrefix(ns) | holdPrefix(ns), ... })`,
- *   the erasure's).
+ *   `const { BLOBS } = env`, `env["BLOBS"]`) passes, and a list is of one namespace's prefix
+ *   (`list({ prefix: chunkPrefix(ns) | manifestPrefix(ns) | holdPrefix(ns), ... })`, the
+ *   erasure's), or of the namespaces themselves (`namespacesPrefix()`, a lost object's find).
  */
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -39,7 +39,8 @@ const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey", "segme
                                                 "manifestObjectKey", "markKey", "holdKey",
                                                 "listedManifest"]);
 /** The prefixes `keys.ts` exports, the only lists of the bucket. */
-const PREFIXES: ReadonlySet<string> = new Set(["chunkPrefix", "manifestPrefix", "holdPrefix"]);
+const PREFIXES: ReadonlySet<string> = new Set(["chunkPrefix", "manifestPrefix", "holdPrefix",
+                                                 "namespacesPrefix"]);
 /** The one other field of `this.env` the Worker reads, and the calls it may go to. */
 const RING = "FILES_KEYRING";
 const RING_READERS: ReadonlySet<string> = new Set(["mint", "unwrap", "rewrap"]);

@@ -46,9 +46,10 @@
  *   `HOLDS`: another of the same owner, which no object adopted) is marked after it and
  *   deleted before its own objects, and its holds go last, so an owner's erasure takes every
  *   namespace of it the bucket records (`r8-erased-orphans.md`).
- * - `holdNamespace` records one namespace as held by another, once: a restore's
- *   `restoreHold` alone, once the owner's object has held the namespace's generation to its
- *   own owner.
+ * - `holdNamespace` records one namespace as held by another, once, and `rootNamespace`
+ *   deletes every hold of a namespace by one it holds, so no cycle runs through it: a
+ *   restore's `restoreHold` alone, once the owner's object has held the namespace's generation
+ *   to its own owner.
  * - `sweepManifests` lists one page of one namespace's generations and deletes every object
  *   of a generation the owner's object no longer names, each root before its objects: the
  *   manifest lane's sweep alone.
@@ -59,12 +60,16 @@
  *   page of the namespace's chunk names after a name; `deleteListed` deletes up to 1,000 of
  *   them by name, under no key, as the erasure's prefix delete takes none.
  *
- * - `FilesLocate.locate`: a namespace's owner, read from its newest generation's part 0 header,
- *   for the operator channel's `restore.locate` alone (a restore after an account's loss, when no
- *   object names a namespace: `deploy/offsite.ts` `recover`).
+ * - `FilesLocate`, for the operator channel alone, when no object names a namespace (a restore
+ *   after an account's loss, `deploy/offsite.ts` `recover`, or of a lost object): `locate`, a
+ *   namespace's owner read from its newest generation's part 0 header; `namespaces`, the
+ *   namespaces the bucket holds, a page at a time; and `erase`, one deleted whole for an owner
+ *   the doors record erased (`r8-lost-object.md`).
  *
- * `deleteNamespace` and `markNamespace` (of a namespace's holds), `sweepManifests`, `listChunks`
- * and `locate` are the only lists of the bucket, each only ever of one namespace's prefix.
+ * `deleteNamespace`, `markNamespace` and `rootNamespace` (of a namespace's holds),
+ * `sweepManifests`, `listChunks` and `locate` are the only lists of the bucket but one, each
+ * only ever of one namespace's prefix; `namespaces` lists the namespaces themselves, no object
+ * of any.
  *
  * Every object of a namespace is sealed in this Worker under its owner's data key
  * (`datakey.ts`), by the envelope's per-object seal (`contract/src/envelope.ts` `sealObject`:
@@ -102,14 +107,14 @@ import { exportHeader } from "../../contract/src/export-header";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedGeneration, listedManifest,
-  holdKey, holdPrefix, listedHold, type ManifestAt, manifestKey, manifestObjectKey,
-  manifestPrefix, markKey, segmentKey,
+  holdKey, holdPrefix, listedHold, listedNamespace, type ManifestAt, manifestKey,
+  manifestObjectKey, manifestPrefix, markKey, namespacesPrefix, segmentKey,
 } from "./keys";
 import { Refusal } from "../../contract/src/refusal";
 import {
   type ChunkCheck, type ChunkGet, type ChunkLocate, type ChunkPut, type ChunkStore,
-  type ChunkUpload, GET_READS, type LocatedOwner, type ManifestLists, manifestLists, MARK_BODY,
-  type ManifestObject, type ManifestRoot, type ManifestSegment, namespace,
+  type ChunkUpload, GET_READS, type NamespaceFound, type ManifestLists, manifestLists, MARK_BODY,
+  type ManifestObject, type ManifestRoot, type ManifestSegment, namespace, type NamespacePage,
 } from "../../contract/src/files";
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
@@ -365,6 +370,26 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
   /** Record `held` as held by `ns`, once (`HOLDS`): the owner's object checked it is its own. */
   async holdNamespace(ns: string, held: string): Promise<void> {
     await this.env.BLOBS.put(holdKey(ns, held), "", { onlyIf: { etagDoesNotMatch: "*" } });
+  }
+
+  /**
+   * Every hold of `ns` by a namespace it holds, or one those hold, deleted, so `ns` holds all it
+   * did and no cycle of holds runs through it: the namespace an owner's object adopts holds the
+   * rest, and none holds it (`restoreHold`). Repeatable.
+   */
+  async rootNamespace(ns: string): Promise<void> {
+    const seen = new Set([ns]);
+    for (const queue = await this.#holds(ns); queue.length > 0;) {
+      const held = queue.pop()!;
+      if (!seen.has(held)) {
+        seen.add(held);
+        const holds = await this.#holds(held);
+        if (holds.includes(ns)) {
+          await this.env.BLOBS.delete(holdKey(held, ns));
+        }
+        queue.push(...holds);
+      }
+    }
   }
 
   /** Every namespace `ns` holds, listed under its holds' prefix page by page. */
@@ -633,22 +658,28 @@ export class FilesUpload extends WorkerEntrypoint<FilesEnv> implements ChunkUplo
 }
 
 /**
- * The operator channel's entrypoint (`restore.locate`, `doors/src/operator.ts`): the doors bind
- * it for the platform's own op alone, so they read a namespace's owner and nothing else of its
- * objects, and hold no key. It serves `locate` alone, through `FilesService`'s own manifest
- * reads, as `FilesUpload` serves its put.
+ * The operator channel's entrypoint (`restore.locate`, `restore.namespaces`,
+ * `doors/src/operator.ts`): the doors bind it for the platform's own ops alone, so they read a
+ * namespace's owner and nothing else of its objects, and hold no key. It serves `locate`,
+ * `namespaces` and `erase`, through `FilesService`'s own reads and delete, as `FilesUpload`
+ * serves its put.
  */
 export class FilesLocate extends WorkerEntrypoint<FilesEnv> implements ChunkLocate {
   /**
-   * The owner of `ns`, as its newest finished generation names it, and that generation; null
-   * when the bucket holds no root of it. Its roots are listed (the keys directly under its
-   * manifest prefix) and each opened under the wrapped key it carries; the newest's part 0 is
-   * read under that key and held to the root's hash, and its first line to the export
-   * header's shape, naming that generation. Nothing of the part but the header's owner is
-   * answered. A root or a part that does not open, or a part 0 with no header of its own
-   * generation, fails loudly: every generation names its owner.
+   * The owner of `ns`, as its newest finished generation names it, that generation and when its
+   * root was written; `erased` when the bucket marks it deleted on purpose (`markKey`), read
+   * first, so nothing of an erased owner is opened; null when the bucket holds no root of it.
+   * Its roots are listed (the keys directly under its manifest prefix) and each opened under
+   * the wrapped key it carries; the newest's part 0 is read under that key and held to the
+   * root's hash, and its first line to the export header's shape, naming that generation.
+   * Nothing of the part but the header's owner is answered. A root or a part that does not
+   * open, or a part 0 with no header of its own generation, fails loudly: every generation
+   * names its owner.
    */
-  async locate(ns: string): Promise<LocatedOwner | null> {
+  async locate(ns: string): Promise<NamespaceFound> {
+    if (await this.env.BLOBS.head(markKey(ns)) !== null) {
+      return "erased";
+    }
     const files = new FilesService(this.ctx, this.env);
     const roots: ManifestRoot[] = [];
     let cursor: string | undefined;
@@ -681,6 +712,27 @@ export class FilesLocate extends WorkerEntrypoint<FilesEnv> implements ChunkLoca
     if (header === null || header.gen !== newest.gen) {
       throw new Error(`generation ${newest.gen}'s first part holds no export header of it`);
     }
-    return { owner: header.owner, gen: newest.gen };
+    return { owner: header.owner, gen: newest.gen, at: newest.at };
+  }
+
+  /**
+   * One page of the namespaces the bucket holds any object of (the prefixes directly under
+   * `namespacesPrefix()`), from `cursor` (null: the first), and the next page's cursor: a lost
+   * object's restore finds its owner's among them (`deploy/deploy.ts` mode `restore`).
+   */
+  async namespaces(cursor: string | null): Promise<NamespacePage> {
+    const page = await this.env.BLOBS.list({ prefix: namespacesPrefix(), delimiter: "/",
+                                             ...(cursor === null ? {} : { cursor }) });
+    return { namespaces: page.delimitedPrefixes.map(listedNamespace),
+             cursor: page.truncated ? page.cursor : null };
+  }
+
+  /**
+   * `ns` deleted whole, its mark first (`FilesService.deleteNamespace`): a namespace the doors
+   * found naming an owner their directory records erased, which that owner's erasure did not
+   * reach (`restore.locate`). Repeatable.
+   */
+  async erase(ns: string): Promise<{ deleted: number }> {
+    return new FilesService(this.ctx, this.env).deleteNamespace(ns);
   }
 }

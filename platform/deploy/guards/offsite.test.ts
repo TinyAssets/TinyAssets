@@ -28,7 +28,7 @@ import { parse } from "yaml";
 
 import { REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
-import type { LocatedOwner } from "../../contract/src/files";
+import type { NamespaceFound } from "../../contract/src/files";
 import {
   backFrom, BACK_DAYS, type Begin, CAPABILITIES, copy, copyBack, drill, type Effects, NIGHTLY,
   recover, RESTORE_KEY, type RestoreControl, SETTINGS, settings,
@@ -549,8 +549,9 @@ describe("a recover after the account's loss", () => {
     return { held, puts };
   };
   /**
-   * The doors: each namespace located to `owners` (its own owner by default), each begin
-   * refused for an owner `refusing` names, and each hold for one `unheld` names.
+   * The doors: each namespace located to `owners` (its own owner by default; `erased`, one the
+   * doors erased), each begin refused for an owner `refusing` names, and each hold for one
+   * `unheld` names.
    */
   const doors = (owners: Readonly<Record<string, string | null>> = {},
                  refusing: Readonly<Record<string, string>> = {},
@@ -561,7 +562,8 @@ describe("a recover after the account's loss", () => {
         asked.locate.push([...namespaces]);
         return new Map(namespaces.map((ns) => {
           const owner = Object.hasOwn(owners, ns) ? owners[ns]! : `user_${ns.slice(0, 2)}`;
-          return [ns, owner === null ? null : { owner, gen: GEN }] as [string, LocatedOwner | null];
+          return [ns, owner === null || owner === "erased" ? owner
+            : { owner, gen: GEN, at: 0 }] as [string, NamespaceFound];
         }));
       },
       begin: async (begins: readonly Begin[]) => {
@@ -634,6 +636,17 @@ describe("a recover after the account's loss", () => {
                           "out 1 namespaces marked erased or held by one, and 1 with no root");
   });
 
+  it("begins none of a namespace the doors erased, its owner erased since a run cut short, " +
+     "and says so", async () => {
+    const fake = world(LOST);
+    const { asked, asking } = doors({ [BB]: "erased" });
+    const lines = await recover(BACK, SOURCE, AT, asking, control(fake).held, fake.io);
+    expect(asked.begin).toEqual([{ owner: "user_aa", namespace: AA, gen: GEN }]);
+    expect(lines).toContain("the doors erased 1 namespaces, each naming an owner this account " +
+                            "records erased, whose erasure no object of it reached: each " +
+                            "deleted whole, its mark first");
+  });
+
   it("begins none when two namespaces name one owner, naming both", async () => {
     const fake = world(LOST);
     const { asked, asking } = doors({ [BB]: "user_aa" });
@@ -658,7 +671,7 @@ describe("a recover after the account's loss", () => {
     await expect(recover(BACK, SOURCE, AT, asking, control(fake).held, fake.io)).rejects.toThrow(
       `1 of 2 restores were not begun, each written back: user_aa from ${AA}/${GEN}: refused ` +
       "(refused): the owner is admitted; held by the owner's own namespace, so its erasure " +
-      "takes it, and not restored.");
+      "takes it, and not restored; a run again erases each whose owner is erased by then.");
     expect(asked.begin.map((begin) => begin.owner)).toEqual(["user_aa", "user_bb"]);
     expect(asked.hold).toEqual([{ owner: "user_aa", namespace: AA, gen: GEN }]);
     // A hold refused too: named, as no object names the namespace.
@@ -688,17 +701,20 @@ describe("a recover after the account's loss", () => {
     expect(lines[2]).toMatch(/of 3 namespaces .* \(1 held by another\); left out 2 namespaces /);
   });
 
-  it("writes nothing when a namespace is held only in a cycle of holds, none of them begun",
+  it("locates and begins the least of a cycle of holds nothing outside it holds, a restore " +
+     "under way from one namespace of an owner to another, and holds the rest by it",
      async () => {
+    const [HELD] = ["f".repeat(32)];
     const fake = world({ ...LOST, back: { copy: [...LOST.back.copy, `o/${AA}/h/${BB}`,
-                                                 `o/${BB}/h/${AA}`], r2: LOST.back.r2 } });
-    const { held, puts } = control(fake);
-    const { asked, asking } = doors();
-    await expect(recover(BACK, SOURCE, AT, asking, held, fake.io)).rejects.toThrow(
-      `the namespaces ${AA}, ${BB} are each held by another and by none begun, so no restore ` +
-      "would ever name them: nothing is written");
-    expect([puts, fake.calls.filter((call) => call.args[0] !== "lsf"), asked.locate])
-      .toEqual([[], [], []]);
+                                                 `o/${BB}/h/${AA}`, `o/${BB}/h/${HELD}`,
+                                                 `o/${HELD}/m/${GEN}`], r2: LOST.back.r2 } });
+    const { asked, asking } = doors({ [BB]: "user_aa" });
+    const lines = await recover(BACK, SOURCE, AT, asking, control(fake).held, fake.io);
+    expect([asked.locate, asked.begin.map((begin) => begin.namespace)]).toEqual([[[AA]], [AA]]);
+    expect(fake.calls.find((call) => call.args[0] === "copy" && call.sample)!.sample)
+      .toEqual(expect.arrayContaining([`o/${AA}/h/${BB}`, `o/${BB}/h/${AA}`,
+                                       `o/${HELD}/m/${GEN}`]));
+    expect(lines[2]).toMatch(/of 3 namespaces .* \(2 held by another\)/);
   });
 
   it("refuses, writing, recording and asking nothing, when the marks can't be read, a name " +

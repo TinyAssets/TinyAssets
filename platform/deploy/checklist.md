@@ -704,8 +704,8 @@ missing.
   That restarts a `FILES_KEYRING` retirement's gate: dispatch `rotation` for a pass begun after
   it.
 - **Not here: a lost object, or any owner after an account loss.** Then no object names a
-  namespace, and the run refuses. After an account's loss, use mode `recover` (below). A lost
-  object with the account intact is not built yet (`untangle/r8-lost-object`, `tasks.md`).
+  namespace, and the run refuses. After an account's loss, use mode `recover` (below); a lost
+  object with the account intact is restored from R2 ("A lost object", below).
 
 The steps:
 
@@ -728,6 +728,24 @@ The steps:
 Never copy back by hand. A copy back that records nothing lets mode `retire` pass while R2 and
 the copy still hold roots under a retiring kid of `FILES_KEYRING`.
 
+## A lost object
+
+An owner the platform admitted whose object lost its state (pending, naming no namespace) is
+restored from R2 by mode `restore` (`docs/decisions/untangle-2026-11/r8-lost-object.md`):
+
+1. **Dispatch `restore` with `owner` and no `generation`.** It finds the owner's namespaces:
+   every namespace R2 holds (`restore.namespaces`) located from its newest generation
+   (`restore.locate`), and names each that names the owner with its newest generation and its
+   time, newest first. A namespace naming an owner the directory records erased the doors
+   delete whole on the way, its mark first: its owner's erasure never reached it.
+2. **Dispatch `restore` again with the generation you choose.** Before the owner is admitted,
+   every other namespace naming it is held by the one restored (`restore.hold`), so its erasure
+   takes them all. A run cut short goes on when dispatched again.
+
+A lost object whose namespace R2 lost too is restored by no mode yet: `copyback` needs an object
+that names the namespace, and `recover` would begin every owner (`untangle/r8-lost-copy`,
+`tasks.md`).
+
 ## A restore after the account's loss
 
 Mode `recover` of **Platform deploy** restores every owner into a new Cloudflare account from
@@ -745,17 +763,21 @@ object names a namespace there, and every erasure record but the marks went with
   or begun: the holder's owner holds it again once restored, so its erasure takes it.
 - **Its owner, from its own generation.** Each namespace's owner is read from its newest
   generation's header in the files Worker (`restore.locate`, addressed to the platform, a page
-  of namespaces a message). Two namespaces naming one owner stop the run before any restore
-  begins: find which is the owner's before you go on.
+  of namespaces a message). One naming an owner this account's directory records erased (one
+  erased between a run cut short and this one) the doors delete whole, its mark first, and the
+  run says how many. Two namespaces naming one owner stop the run before any restore begins:
+  find which is the owner's before you go on. A cycle of holds (a restore from one of an
+  owner's namespaces to another under way at the loss) begins its least, which holds the rest.
 - **Each owner's restore begun.** `restore.begin` from that generation, so every written
   namespace is named by an object, whose erasure deletes it. The run names each one begun, and
   the `restore` dispatch that carries it on. One the doors refuse or don't answer stops the run
   once the rest are begun, named. Its namespace is first held by the owner's own
   (`restore.hold`): an owner who signed up in the new account before the run is refused (it is
-  not empty), and would otherwise hold a second namespace its erasure never took. It is not
-  restored: no mode yet restores a live owner from a namespace it holds (`tasks.md`,
-  `untangle/r8-lost-object`). So keep the new account's maintenance gate closed (`ordinary`:
-  none) until `recover` begins every owner.
+  not empty), and would otherwise hold a second namespace its erasure never took. To restore
+  it from that one, dispatch `restore` with that namespace's generation: its pin holds it by
+  the owner's own, and its wipe the owner's own by it. Keep the new account's maintenance gate
+  closed (`ordinary`: none) until `recover` begins every owner: an owner erased before a run
+  again is erased by it, but only once that run comes.
 - **Before it, no night.** A night refuses to copy a bucket that lacks a mark the copy holds,
   copying nothing (`copy`): the sync would hide every mark. So the nights stay red in the new
   account until `recover` has run. Run it at once.

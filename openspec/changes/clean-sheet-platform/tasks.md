@@ -474,11 +474,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     namespace whose owner is live by that owner's own (`restore.hold`) and begins none another
     holds, and `owner.admit` refuses an owner the directory records whose object is pending
     (`untangle/r8-erased-orphans`, `r8-erased-orphans.md`).
-  - [ ] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
+  - [x] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
     located, the one naming `--owner` taken, then mode `restore` from it, every other one
     naming it held by the restored one; a live owner restored from a namespace it holds; and a
     located namespace whose owner is erased erased (`r8-account-loss.md` item 7, `r8-locate.md`
-    item 7, `r8-erased-orphans.md` item 8; `untangle/r8-lost-object`).
+    item 7, `r8-erased-orphans.md` item 8; `untangle/r8-lost-object`, `r8-lost-object.md`).
+  - [ ] An erasure of a lost object marks nothing (its object and no restore record name a
+    namespace), so its namespaces in R2 stay unmarked until a find or a `recover` locates them:
+    mode `erase` finds them first (`r8-lost-object.md` item 8; `untangle/r8-lost-erase`).
+  - [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
+    it, since `copyback` needs an object naming the namespace and `recover` begins every owner
+    (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
