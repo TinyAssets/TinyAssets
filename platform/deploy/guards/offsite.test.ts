@@ -65,15 +65,18 @@ interface Call { readonly args: string[]; readonly env: Record<string, string>;
 
 /**
  * A fake Backblaze and rclone: the keys hold `capabilities` (each its own by default) on
- * `buckets`, the bucket is `bucket`, R2 lists `names` and the copy `names` and `gone`, and
- * the rclone call whose arguments start with `failing` exits 7.
+ * `buckets`, the bucket is `bucket`, R2 lists `names` and the copy `names` and `gone`, a copy
+ * back's listings are `back` and its erasure marks' `marks` (by remote: the copy at the time
+ * asked, as it stands, R2), and the rclone call whose arguments start with `failing` exits 7.
  */
 function world(options: { readonly capabilities?: Partial<Record<"write" | "read", string[]>>;
                           readonly buckets?: (string | null)[]; readonly prefix?: string;
                           readonly bucket?: Json; readonly signIn?: number;
                           readonly gone?: string[]; readonly names?: string[];
                           readonly failing?: string;
-                          readonly back?: { readonly copy: string[]; readonly r2: string[] } }
+                          readonly back?: { readonly copy: string[]; readonly r2: string[] };
+                          readonly marks?: Partial<Record<"back" | "now" | "r2",
+                                                          readonly string[]>> }
                = {}) {
   const calls: Call[] = [];
   const asked: string[] = [];
@@ -119,6 +122,10 @@ function world(options: { readonly capabilities?: Partial<Record<"write" | "read
     if (args[0] === "size") {
       const count = args.at(-1)!.startsWith("copy:") ? 3000 : 5000;
       return { status: 0, stdout: JSON.stringify({ count, bytes: count * 10, sizeless: 0 }) };
+    }
+    if (args[0] === "lsf" && args.includes("--include")) {
+      const remote = args.at(-1)!.split(":")[0] as "back" | "now" | "r2";
+      return { status: 0, stdout: (options.marks?.[remote] ?? []).join("\n") };
     }
     if (args[0] === "lsf" && /^(back|r2):/.test(args.at(-1)!)) {
       return { status: 0, stdout: (args.at(-1)!.startsWith("back:") ? options.back?.copy
@@ -332,6 +339,12 @@ describe("a copy back from the copy (R8)", () => {
     return { held, puts };
   };
   const lacking = { copy: ["c/1", "c/2", "m/3"], r2: ["c/1"] };
+  /** The erasure marks' three listings: the copy as it stands, as it stood, and R2. */
+  const MARKS_LISTED = ["now", "back", "r2"].map((remote) =>
+    ["lsf", "--files-only", "-R", "--include", "/e/*",
+     `${remote}:${remote === "r2" ? SOURCE : BUCKET}`]);
+  const mark = (ns: string) => `e/${ns}`;
+  const OTHER = "b".repeat(32);
   /** What the owner's object names: the chunks and generations given, the same each ask. */
   const naming = (chunks: string[] = ["1", "2"], generations: string[] = ["3"]) =>
     async () => ({ chunks: new Set(chunks), generations: new Set(generations) });
@@ -343,8 +356,9 @@ describe("a copy back from the copy (R8)", () => {
     const lines = await copyBack(BACK, SOURCE, NS, AT, naming(), held, fake.io);
     expect(puts).toEqual([{ value: { kind: "tinyassets-offsite-restore",
                                      began: Math.floor(START.getTime() / 1000) },
-                            after: ["lsf", "lsf"] }]);
+                            after: ["lsf", "lsf", "lsf", "lsf", "lsf"] }]);
     expect(fake.calls.map((call) => [call.args, call.sample])).toEqual([
+      ...MARKS_LISTED.map((args) => [args, undefined]),
       [["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list",
         `r2:${SOURCE}/${PREFIX}`], undefined],
       [["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list",
@@ -355,7 +369,7 @@ describe("a copy back from the copy (R8)", () => {
       [["check", `back:${BUCKET}/${PREFIX}`, `r2:${SOURCE}/${PREFIX}`, "--one-way", "--download",
         "--files-from", expect.stringMatching(/names$/)], ["c/2", "m/3"]]]);
     // The copy as it stood at the time, with the read key; R2 with the write pair alone.
-    expect(fake.calls[2]!.env).toEqual({
+    expect(fake.calls.find((call) => call.args[0] === "copy")!.env).toEqual({
       RCLONE_CONFIG: "/dev/null",
       RCLONE_CONFIG_BACK_TYPE: "b2", RCLONE_CONFIG_BACK_ACCOUNT: "b2-read-id",
       RCLONE_CONFIG_BACK_KEY: "b2-read-secret-value",
@@ -390,7 +404,8 @@ describe("a copy back from the copy (R8)", () => {
     const { held, puts } = control(none);
     expect((await copyBack(BACK, SOURCE, NS, AT, naming(), held, none.io)).at(-1))
       .toMatch(/nothing is written, and no restore is recorded$/);
-    expect([puts, none.calls.map((call) => call.args[0])]).toEqual([[], ["lsf", "lsf"]]);
+    expect([puts, none.calls.map((call) => call.args[0])])
+      .toEqual([[], ["lsf", "lsf", "lsf", "lsf", "lsf"]]);
   });
 
   it("stops loudly when the object stops naming what was written, its row collected during " +
@@ -407,7 +422,11 @@ describe("a copy back from the copy (R8)", () => {
   it("reads the copy as it stands when no time is asked", async () => {
     const fake = world({ back: lacking });
     await copyBack(BACK, SOURCE, NS, null, naming(), control(fake).held, fake.io);
-    expect(Object.keys(fake.calls[2]!.env)).not.toContain("RCLONE_CONFIG_BACK_VERSION_AT");
+    expect(Object.keys(fake.calls.find((call) => call.args[0] === "copy")!.env))
+      .not.toContain("RCLONE_CONFIG_BACK_VERSION_AT");
+    // The marks read as the copy stands (the one view) and in R2.
+    expect(fake.calls.slice(0, 2).map((call) => call.args.at(-1)))
+      .toEqual([`back:${BUCKET}`, `r2:${SOURCE}`]);
   });
 
   it("writes nothing when Cloudflare refuses the restore record", async () => {
@@ -415,7 +434,50 @@ describe("a copy back from the copy (R8)", () => {
     await expect(copyBack(BACK, SOURCE, NS, AT, naming(), control(fake, 500).held, fake.io))
       .rejects.toThrow(`writing the restore record ${RESTORE_KEY} failed (500): nothing is ` +
                        "written into R2");
-    expect(fake.calls.map((call) => call.args[0])).toEqual(["lsf", "lsf"]);
+    expect(fake.calls.map((call) => call.args[0])).toEqual(["lsf", "lsf", "lsf", "lsf", "lsf"]);
+  });
+
+  it("writes nothing of a namespace the files bucket marks erased, in the copy or in R2 alone, " +
+     "and records no restore", async () => {
+    for (const marks of [{ now: [mark(OTHER), mark(NS)] }, { r2: [mark(NS)] },
+                         { now: [mark(NS)], back: [mark(NS)] }]) {
+      const fake = world({ back: lacking, marks });
+      const { held, puts } = control(fake);
+      let asked = 0;
+      await expect(copyBack(BACK, SOURCE, NS, AT, async () => (asked++, naming()()), held,
+                            fake.io))
+        .rejects.toThrow(`the files bucket marks the namespace under ${PREFIX} erased: nothing ` +
+                         "of it is written, and no restore is recorded");
+      expect([puts, asked, fake.calls.filter((call) => call.args[0] !== "lsf")])
+        .toEqual([[], 0, []]);
+    }
+    // Another namespace's mark leaves this one's copy back as it was.
+    const fake = world({ back: lacking, marks: { now: [mark(OTHER)], r2: [mark(OTHER)] } });
+    expect((await copyBack(BACK, SOURCE, NS, AT, naming(), control(fake).held, fake.io)).at(-1))
+      .toMatch(/^wrote 2 objects/);
+  });
+
+  it("refuses, writing and recording nothing, when the marks can't be read: a listing that " +
+     "fails, a name that is no mark, or a mark the copy held at the time and no longer holds",
+     async () => {
+    for (const [options, refused] of [
+      [{ failing: "lsf --files-only -R --include /e/* now:" },
+       /the copy's listing of the erasure marks in the copy failed \(rclone exit 7/],
+      [{ failing: "lsf --files-only -R --include /e/* r2:" },
+       /the copy's listing of the erasure marks in R2 failed/],
+      [{ marks: { r2: ["e/not-a-namespace"] } },
+       "the erasure marks in R2 can't be read: it holds a name under e/ that is no " +
+       "namespace's mark; nothing is written"],
+      [{ marks: { back: [mark(OTHER)] } },
+       "the copy as it stands lacks 1 erasure marks it held at the time asked: a night copied " +
+       "a files bucket that had lost them, so its marks are not whole; nothing is written"],
+    ] as const) {
+      const fake = world({ back: lacking, ...options });
+      const { held, puts } = control(fake);
+      await expect(copyBack(BACK, SOURCE, NS, AT, naming(), held, fake.io))
+        .rejects.toThrow(refused);
+      expect([puts, fake.calls.filter((call) => call.args[0] !== "lsf")]).toEqual([[], []]);
+    }
   });
 
   it("refuses a time outside the copy's window, and a missing key, before anything", async () => {
@@ -438,23 +500,44 @@ describe("a copy back from the copy (R8)", () => {
 describe("the monthly drill", () => {
   it("compares every object R2 held at the night's start byte for byte, then reads what a " +
      "copy back at the oldest time it takes would write, writing nothing", () => {
-    const fake = world({ back: { copy: ["o/aa/c/1", "o/aa/c/2", "o/bb/m/3"], r2: ["o/aa/c/1"] } });
+    const [aa, bb, erased] = ["a", "b", "e"].map((hex) => hex.repeat(32));
+    // The copy as it stood holds an erased namespace's objects, and a mark R2 lost.
+    const fake = world({ back: { copy: [`o/${aa}/c/1`, `o/${aa}/c/2`, `o/${bb}/m/3`,
+                                        `o/${erased}/c/4`, `o/${erased}/m/5`, `e/${bb}`],
+                                 r2: [`o/${aa}/c/1`] },
+                         marks: { now: [`e/${erased}`, `e/${bb}`], back: [`e/${bb}`],
+                                  r2: [`e/${erased}`] } });
     const night = { began: "2026-11-15T05:37:12Z", lines: [] };
     const lines = drill(SET, SOURCE, night, fake.io);
     expect(fake.calls.map((call) => call.args)).toEqual([
       ["check", `source:${SOURCE}`, `check:${BUCKET}`, "--one-way", "--download", "--min-age",
        night.began],
+      ["lsf", "--files-only", "-R", "--include", "/e/*", `now:${BUCKET}`],
+      ["lsf", "--files-only", "-R", "--include", "/e/*", `back:${BUCKET}`],
+      ["lsf", "--files-only", "-R", "--include", "/e/*", `r2:${SOURCE}`],
       ["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list", `r2:${SOURCE}/`],
       ["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list", `back:${BUCKET}/`],
       ["cat", "--discard", "--files-from", expect.stringMatching(/names$/), `back:${BUCKET}/`]]);
-    expect(fake.calls[3]!.sample!.sort()).toEqual(["o/aa/c/2", "o/bb/m/3"]);
+    // The marked namespace's objects left out; bb is marked too, and its mark written first.
+    expect(fake.calls[6]!.sample!.sort()).toEqual([`e/${bb}`, `o/${aa}/c/2`]);
     // The copy as it stood BACK_DAYS ago, and R2 with the nightly's read pair.
-    expect(fake.calls[2]!.env["RCLONE_CONFIG_BACK_VERSION_AT"]).toBe("2026-10-25T05:37:12Z");
-    expect(fake.calls[1]!.env["RCLONE_CONFIG_R2_ACCESS_KEY_ID"]).toBe("r2-id");
+    expect(fake.calls[5]!.env["RCLONE_CONFIG_BACK_VERSION_AT"]).toBe("2026-10-25T05:37:12Z");
+    expect(fake.calls[4]!.env["RCLONE_CONFIG_R2_ACCESS_KEY_ID"]).toBe("r2-id");
     expect(lines).toEqual([
       "every object R2 held at 2026-11-15T05:37:12Z is in the copy, compared byte for byte",
       "a copy back as the copy stood at 2026-10-25T05:37:12Z would write 2 objects R2 no " +
-      "longer holds; 2 of them read back whole"]);
+      "longer holds, and leave out 3 of namespaces marked erased (2 marks); 2 of them read " +
+      "back whole"]);
+  });
+
+  it("stops loudly on a name in the copy that is neither a namespace's object nor a mark, " +
+     "and when its marks can't be read", () => {
+    const night = { began: "2026-11-15T05:37:12Z", lines: [] };
+    expect(() => drill(SET, SOURCE, night, world({ back: { copy: ["x/1"], r2: [] } }).io))
+      .toThrow("the copy holds an object that is neither a namespace's nor a mark (under x/), " +
+               "which nothing in the files bucket writes");
+    expect(() => drill(SET, SOURCE, night, world({ marks: { now: ["e/1"] } }).io))
+      .toThrow("the erasure marks in the copy can't be read");
   });
 
   it("stops loudly when its byte check fails", () => {

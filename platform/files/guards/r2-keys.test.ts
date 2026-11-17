@@ -14,7 +14,7 @@
  *   anything else but the data keys' ring (`this.env.FILES_KEYRING`, handed straight to
  *   `datakey.ts`'s `mint`, `unwrap` and `rewrap`, the one module that reads it), and every
  *   key is a call of a key builder
- *   (`chunkKey`, `manifestKey`, `segmentKey`, `manifestObjectKey`, or `listedManifest`, which rebuilds a
+ *   (`chunkKey`, `manifestKey`, `segmentKey`, `manifestObjectKey`, `markKey`, or `listedManifest`, which rebuilds a
  *   listed key
  *   through `manifestKey`; or a list of them mapped from a list), each the one imported
  *   from `./keys` and nothing shadowing it. No alias (`const b = this.env.BLOBS`,
@@ -34,7 +34,7 @@ const CALLS: ReadonlySet<string> = new Set(["put", "get", "head", "delete"]);
 const KEY_TEXT = /^o\/|\/c\//;
 /** The key builders `keys.ts` exports, the only calls a bucket key may be. */
 const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey", "segmentKey",
-                                                "manifestObjectKey", "listedManifest"]);
+                                                "manifestObjectKey", "markKey", "listedManifest"]);
 /** The prefixes `keys.ts` exports, the only lists of the bucket. */
 const PREFIXES: ReadonlySet<string> = new Set(["chunkPrefix", "manifestPrefix"]);
 /** The one other field of `this.env` the Worker reads, and the calls it may go to. */
@@ -200,6 +200,7 @@ describe("r2-keys guard", () => {
     "class S { async f(ns, sha) { await this.env.BLOBS.head(chunkKey(ns, sha)); } }",
     "class S { async f(ns, xs) { await this.env.BLOBS.delete(xs.map((x) => chunkKey(ns, x))); } }",
     "class S { async f(ns, d) { await this.env.BLOBS.get(manifestKey(ns, d)); } }",
+    "class S { async f(ns) { await this.env.BLOBS.put(markKey(ns), b); } }",
     "class S { f(ns, k) { return unwrap(this.env.FILES_KEYRING, ns, k); } }",
     "interface FilesEnv { readonly BLOBS: R2Bucket; }",
     "class S { async f(ns) { await this.env.BLOBS.list({ prefix: chunkPrefix(ns) }); } }",

@@ -4,7 +4,8 @@
  *
  * 1. **Mark the owner erasing** (`owner_erasure`), in one unit. From then on every door
  *    refuses (`OwnerDO`'s binding check) and no lane runs (the object's alarm resumes the
- *    erasure instead of driving Lifecycle).
+ *    erasure instead of driving Lifecycle). Then its namespace's mark in R2 (`e/<ns>`,
+ *    `Files.markNamespace`), the erasure's record that a copy back reads past the account.
  * 2. **The outside record** (slice L): the owner Worker's erasure queue tells the doors,
  *    which write the directory's erased record of the owner, delete its keys' and inbound
  *    routes' entries, revoke its every OAuth grant and delete its identity at the issuer,
