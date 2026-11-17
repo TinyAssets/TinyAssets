@@ -762,7 +762,27 @@ export class Runs {
    */
   #wait(ask: Ask, conversation: string, now: number): Retried {
     const chosen = this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now);
-    if (!this.queueRoom(ask.mail === null ? utf8Bytes(ask.prompt) : 0)) {
+    // A mail's run keeps only its mail's reference (its `mail`): its input is read again
+    // from the mail, held until the run settles, as it starts (ADR-035).
+    const runId = this.#waiting({
+      agent: ask.agent, conversation, source: chosen.engine, credential: chosen.credential,
+      model: chosen.model, initiator: ask.initiator, client: ask.origin?.client ?? null,
+      stamp: ask.stamp === null ? null : JSON.stringify(ask.stamp), request: ask.request,
+      unattended: ask.unattended ? 1 : 0, mail: ask.mail?.message ?? null,
+    }, ask.mail === null ? ask.prompt : "",
+                                ask.origin === null ? null : JSON.stringify(ask.origin), now);
+    return { existing: true, run: runId, conversation };
+  }
+
+  /**
+   * In a unit: `run` written `waiting` in its conversation, behind any live or waiting one,
+   * its `input` and `origin` kept beside it (`run_inputs`, refused past `QUEUE_ROWS` or
+   * `QUEUE_BYTES`); the conversation touched, and the receipts pruned. Its id.
+   */
+  #waiting(run: Pick<RunRow, "agent" | "conversation" | "source" | "credential" | "model"
+    | "initiator" | "client" | "stamp" | "request" | "unattended" | "mail">, input: string,
+           origin: string | null, now: number): string {
+    if (!this.queueRoom(utf8Bytes(input))) {
       throw new Refusal("run_inputs_full", QUEUE_FULL);
     }
     const runId = id("run_");
@@ -770,19 +790,13 @@ export class Runs {
       "INSERT INTO runs (id, agent, conversation, source, credential, model, state, initiator, " +
         "client, stamp, request, unattended, mail, created_at) " +
         "VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?, ?)",
-      runId, ask.agent, conversation, chosen.engine, chosen.credential, chosen.model,
-      ask.initiator, ask.origin?.client ?? null,
-      ask.stamp === null ? null : JSON.stringify(ask.stamp), ask.request,
-      ask.unattended ? 1 : 0, ask.mail?.message ?? null, now);
-    // A mail's run keeps only its mail's reference (its `mail`): its input is read again
-    // from the mail, held until the run settles, as it starts (ADR-035).
-    const kept = ask.mail === null ? ask.prompt : "";
+      runId, run.agent, run.conversation, run.source, run.credential, run.model,
+      run.initiator, run.client, run.stamp, run.request, run.unattended, run.mail, now);
     this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin) VALUES (?, ?, ?, ?)",
-                   runId, kept, utf8Bytes(kept),
-                   ask.origin === null ? null : JSON.stringify(ask.origin));
-    this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now, conversation);
+                   runId, input, utf8Bytes(input), origin);
+    this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now, run.conversation);
     this.#prune();
-    return { existing: true, run: runId, conversation };
+    return runId;
   }
 
   /**
@@ -801,23 +815,9 @@ export class Runs {
                                              held.conversation).toArray().length === 0) {
       return null;
     }
-    if (!this.queueRoom(utf8Bytes(prompt))) {
-      throw new Refusal("run_inputs_full", QUEUE_FULL);
-    }
-    const runId = id("run_");
-    this.#sql.exec(
-      "INSERT INTO runs (id, agent, conversation, source, credential, model, state, initiator, " +
-        "client, stamp, request, unattended, mail, created_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, NULL, ?, NULL, ?)",
-      runId, held.agent, held.conversation, held.source, held.credential, held.model,
-      held.initiator, held.client, held.stamp, held.unattended, now);
     const origin = held.client === null || family === null ? null
       : JSON.stringify({ client: held.client, family });
-    this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin) VALUES (?, ?, ?, ?)",
-                   runId, prompt, utf8Bytes(prompt), origin);
-    this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now, held.conversation);
-    this.#prune();
-    return runId;
+    return this.#waiting({ ...held, request: null, mail: null }, prompt, origin, now);
   }
 
   /**
