@@ -759,8 +759,11 @@ The steps:
 1. **A dark deploy of the new account,** then the copy's settings and keys for it, as above,
    and the R2 write pair of step 1 of "A restore from the copy".
 2. **Dispatch `recover`,** with `at` before the loss (none reads the copy as it stands). It is
-   cut short past 20 minutes of asks, or by the job's 30: dispatch it again. What R2 holds is
-   not written again, and a begin asked again answers as it stands.
+   cut short past 20 minutes of asks, or by the job's 30, or stopped: dispatch it again with
+   the same `at` (with none, the time its restore record names). Once the marks are back a
+   night copies again and hides in the copy what R2 does not hold yet, so the copy as it
+   stands then lacks it. What R2 holds is not written again, and a begin asked again answers
+   as it stands.
 3. **Dispatch `restore`** for each owner the run names, with the generation it names.
 4. **Revoke the write key,** as step 4 above.
 

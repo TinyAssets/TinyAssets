@@ -12,7 +12,8 @@
  * template whose every part is literal, an array of literals `join`ed), and the constant's
  * identifier. The name is spelled once, in its definition in the contract; the constant is
  * named only there, in `owner-do.ts`, whose binding check and `admissionSet` read it, in the
- * binder, and in the operator channel's contract. A tripwire for our own code's mistakes, as the alarm guard is.
+ * binder, and in the operator channel's contract. A tripwire for our own code's mistakes, as
+ * the alarm guard is.
  *
  * And the doors the caller reaches, by class (`contract/doors.json`) and caller
  * (`owner/doors.json`): the platform's own (`admission`, the reserved and erasure callers'),

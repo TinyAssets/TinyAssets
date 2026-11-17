@@ -819,8 +819,10 @@ export interface Recovering {
  * 4. Each owner's restore begun from its namespace's newest generation (`restore.begin`), so
  *    every written namespace is named by an object, whose erasure deletes it; mode `restore`
  *    carries each on. A refusal or no answer is a loud stop naming each, the rest begun.
- * A run cut short is run again: nothing R2 holds is written again (`--ignore-existing`, and
- * the listing), and a begin asked again answers as it stands. What it did, as plan lines.
+ * A run cut short is run again with the same `at` (null: the time its restore record names,
+ * since a night after the marks are back hides what R2 lacks yet): nothing R2 holds is written
+ * again (`--ignore-existing`, and the listing), and a begin asked again answers as it stands.
+ * What it did, as plan lines.
  */
 export async function recover(b: Back, source: string, at: Date | null, asking: Recovering,
                               control: RestoreControl, io: Effects): Promise<string[]> {
