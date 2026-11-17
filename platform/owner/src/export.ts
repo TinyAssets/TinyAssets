@@ -69,6 +69,7 @@
  * exactly one of the two lists and every column of an exported table to its columns or its
  * omissions, so a table or column a later change adds is decided, never exported by default.
  */
+import { EXPORT_VERSION, type ExportHeader, headerLine } from "../../contract/src/export-header";
 import { HEX16 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { CURSOR_CHARS } from "../../contract/src/limits";
@@ -79,8 +80,6 @@ import type { Files } from "./files";
 import type { OpenExports } from "./open-exports";
 import { clock } from "./clock";
 
-const EXPORT_FORMAT = "tinyassets-export";
-const EXPORT_VERSION = 3;
 /**
  * The rows' bytes one page gathers before it ends, counted as a generation's part holds them
  * (each line's UTF-8 and its newline): well inside one RPC's 32 MiB. `export.test.ts` ("a
@@ -385,16 +384,6 @@ export interface Page {
   readonly next: Cursor | null;
 }
 
-/** What the header line says. */
-interface Header {
-  readonly schema: number;
-  readonly owner: string;
-  readonly at: number;
-  /** The generation, and its log's first seq. */
-  readonly gen: string;
-  readonly s: number;
-}
-
 /**
  * An export's life from its first page: a week to fetch every chunk, under `GC_GRACE_S`
  * (the export test holds it there), so every chunk its pages name is still in the bucket.
@@ -408,7 +397,7 @@ export const EXPORTS_OPEN = 16;
  * `pageBytes` (`EXPORT_PAGE_BYTES`) of rows' bytes past the first row, or chunks up to
  * `chunkBytes` in all (at least one), then the next cursor, or null once the base is read.
  */
-export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: Header,
+export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: ExportHeader,
                          chunkBytes: number, pageBytes: number = EXPORT_PAGE_BYTES): Page {
   const lines: string[] = [];
   const all = exported();
@@ -419,8 +408,7 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
   let after = cursor.after;
   let bytes = 0;
   if (section < 0) {
-    lines.push(JSON.stringify({ t: "header", format: EXPORT_FORMAT, version: EXPORT_VERSION,
-                                ...header }));
+    lines.push(JSON.stringify(headerLine(header)));
     section = 0;
     after = null;
   }

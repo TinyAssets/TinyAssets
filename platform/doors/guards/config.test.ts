@@ -7,10 +7,10 @@
  * - `OWNER` (`OBJECTS`): the owner Worker's `OwnerDO` namespace, by the owner Worker's name,
  *   which must be its own SQLite class; the owner Worker declares the same routing key
  *   (`SHARED_SECRETS`).
- * - `GATEWAY`, `EGRESS` and `FILES` (`SERVICES`): each one entrypoint of its Worker, whose
- *   class in that Worker's entry extends `WorkerEntrypoint` and serves exactly what the rules
- *   list. Only `src/connect.ts`, `src/egress.ts` and `src/file-bytes.ts` name them (the
- *   binder guard).
+ * - `GATEWAY`, `EGRESS`, `FILES` and `FILES_LOCATE` (`SERVICES`): each one entrypoint of its
+ *   Worker, whose class in that Worker's entry extends `WorkerEntrypoint` and serves exactly
+ *   what the rules list. Only `src/connect.ts`, `src/egress.ts`, `src/file-bytes.ts` and
+ *   `src/operator.ts` name them (the binder guard).
  * - Its queues: it consumes exactly the queues the platform's Workers produce onto, so the
  *   entry's dispatch by `QUEUES` (generated from those producers) takes every one; and no
  *   other Worker binds its buckets or produces onto its queues (the operator channel's,
@@ -162,7 +162,7 @@ const SOURCES: ReadonlyMap<string, string> = new Map(
 /** The doors' own bindings, as the config holds them, for the probes. */
 const SERVICE = Object.fromEntries((config["services"] as Config[]).map((each) =>
   [String(each["binding"]), each])) as Record<keyof typeof SERVICES, Config>;
-const { GATEWAY, EGRESS, FILES } = SERVICE;
+const { GATEWAY, EGRESS, FILES, FILES_LOCATE } = SERVICE;
 const QUEUES = config["queues"] as { producers: Config[]; consumers: Config[] };
 const IMPORTS = QUEUES.producers.find((each) => each["binding"] === IMPORT_WINDOW.producer)!;
 const OPERATOR = QUEUES.producers.find((each) => each["binding"] === OPERATOR_CHANNEL.producer)!;
@@ -186,6 +186,7 @@ const head = (source: string, entrypoint: string, env: string) => new RegExp(
 const GATEWAY_SOURCE = SOURCES.get("gateway")!;
 const FILES_SOURCE = SOURCES.get("files")!;
 const UPLOAD_HEAD = head(FILES_SOURCE, "FilesUpload", "FilesEnv");
+const LOCATE_HEAD = head(FILES_SOURCE, "FilesLocate", "FilesEnv");
 
 configTests(CONFIG, {
   refused: ["routes", "route", "env", "migrations", "ratelimits", "d1_databases",
@@ -199,28 +200,36 @@ configTests(CONFIG, {
     ["an environment", { env: { prod: { routes: ["example.test/*"] } } }],
     ["one service", { services: [{ binding: "FILES", service: FILES["service"] }] }],
     ["no service", { services: [] }],
-    ["no files service", { services: [GATEWAY, EGRESS] }],
-    ["no egress entrypoint", { services: [GATEWAY, FILES] }],
+    ["no files service", { services: [GATEWAY, EGRESS, FILES_LOCATE] }],
+    ["no locate service", { services: [GATEWAY, EGRESS, FILES] }],
+    ["no egress entrypoint", { services: [GATEWAY, FILES, FILES_LOCATE] }],
     ["the egress door on the gateway's default entrypoint", { services: [GATEWAY,
-      { binding: "EGRESS", service: EGRESS["service"] }, FILES] }],
+      { binding: "EGRESS", service: EGRESS["service"] }, FILES, FILES_LOCATE] }],
     ["the egress door on the connect entrypoint", { services: [GATEWAY,
-      { ...EGRESS, entrypoint: GATEWAY["entrypoint"] }, FILES] }],
+      { ...EGRESS, entrypoint: GATEWAY["entrypoint"] }, FILES, FILES_LOCATE] }],
     ["the egress door under another name", { services: [GATEWAY, { ...EGRESS, binding: "OUT" },
-                                                        FILES] }],
+                                                        FILES, FILES_LOCATE] }],
     ["the gateway's whole surface", { services: [{ binding: "GATEWAY",
                                                    service: GATEWAY["service"] }, EGRESS,
-                                                 FILES] }],
+                                                 FILES, FILES_LOCATE] }],
     ["the gateway's default entrypoint", { services: [{ ...GATEWAY, entrypoint: "Gateway" },
-                                                      EGRESS, FILES] }],
+                                                      EGRESS, FILES, FILES_LOCATE] }],
     ["the gateway under another name", { services: [{ ...GATEWAY, binding: "MODELS" }, EGRESS,
-                                                    FILES] }],
+                                                    FILES, FILES_LOCATE] }],
     ["FILES to another Worker", { services: [GATEWAY, EGRESS, { ...FILES,
-                                                                service: scriptOf("owner") }] }],
+                                                                service: scriptOf("owner") },
+                                             FILES_LOCATE] }],
     ["the files Worker's whole surface (review M5-1)", { services: [GATEWAY, EGRESS,
-      { binding: "FILES", service: FILES["service"] }] }],
+      { binding: "FILES", service: FILES["service"] }, FILES_LOCATE] }],
     ["the files Worker's default entrypoint", { services: [GATEWAY, EGRESS,
-      { ...FILES, entrypoint: "FilesService" }] }],
-    ["a fourth service", { services: [GATEWAY, EGRESS, FILES,
+      { ...FILES, entrypoint: "FilesService" }, FILES_LOCATE] }],
+    ["the locate binding on the files Worker's whole surface", { services: [GATEWAY, EGRESS,
+      FILES, { binding: "FILES_LOCATE", service: FILES["service"] }] }],
+    ["the locate binding on the upload entrypoint", { services: [GATEWAY, EGRESS, FILES,
+      { ...FILES_LOCATE, entrypoint: "FilesUpload" }] }],
+    ["the upload binding on the locate entrypoint", { services: [GATEWAY, EGRESS,
+      { ...FILES, entrypoint: "FilesLocate" }, FILES_LOCATE] }],
+    ["a fifth service", { services: [GATEWAY, EGRESS, FILES, FILES_LOCATE,
       { binding: "CODEMODE_VM", service: scriptOf("codemode") }] }],
     ["no app files", { assets: undefined }],
     ["app files served past the Worker", { assets: { ...ASSETS, run_worker_first: false } }],
@@ -337,6 +346,17 @@ describe("doors Worker config", () => {
     ["a key call", "rewrapKey = () => 1;"],
   ])("sees the upload entrypoint grow %s (review M5-1)", (_what, member) => {
     const grown = FILES_SOURCE.replace(UPLOAD_HEAD, `${UPLOAD_HEAD}\n  ${member}`);
+    expect(grown).not.toBe(FILES_SOURCE);
+    expect(doorsConfigProblems(config, platform, new Map(SOURCES).set("files", grown)))
+      .not.toEqual([]);
+  });
+
+  it.each([
+    ["a chunk read", "getChunks() { return 1; }"],
+    ["a generation's read", "async getManifestPart() { return 1; }"],
+    ["a key call", "rewrapKey = () => 1;"],
+  ])("sees the locate entrypoint grow %s", (_what, member) => {
+    const grown = FILES_SOURCE.replace(LOCATE_HEAD, `${LOCATE_HEAD}\n  ${member}`);
     expect(grown).not.toBe(FILES_SOURCE);
     expect(doorsConfigProblems(config, platform, new Map(SOURCES).set("files", grown)))
       .not.toEqual([]);

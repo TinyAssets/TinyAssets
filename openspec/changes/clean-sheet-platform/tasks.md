@@ -448,10 +448,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     marks from R2 and the copy first and refuses a marked namespace, loudly when they can't be
     read, and the monthly drill reads them whole (`untangle/r8-account-loss`,
     `r8-account-loss.md`).
-  - [ ] A lost object, or every owner after an account loss, restored from the copy: `locate`
-    (part 0's header owner, a files Worker read through the operator channel) and mode
-    `recover`, the marks written back first and each unmarked namespace's owner begun in the
-    same run (`r8-account-loss.md` item 7; `untangle/r8-locate`).
+  - [x] Every owner after an account loss, restored from the copy: `locate` (part 0's header
+    owner, read in the files Worker through its `FilesLocate` entrypoint, the operator op
+    `restore.locate` addressed to the platform) and mode `recover`, the marks written back
+    first and each unmarked namespace with a root written back, located and its owner's restore
+    begun in the same run; and a night refuses to copy a bucket lacking a mark the copy holds,
+    so no night before `recover` hides the marks (`r8-account-loss.md` item 7;
+    `untangle/r8-locate`, `r8-locate.md`).
+  - [ ] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
+    located, the one naming `--owner` taken, then mode `restore` from it
+    (`r8-account-loss.md` item 7, `r8-locate.md` item 7; `untangle/r8-lost-object`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner

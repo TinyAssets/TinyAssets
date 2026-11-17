@@ -53,8 +53,12 @@
  *   page of the namespace's chunk names after a name; `deleteListed` deletes up to 1,000 of
  *   them by name, under no key, as the erasure's prefix delete takes none.
  *
- * `deleteNamespace`, `sweepManifests` and `listChunks` are the only lists of the bucket, each
- * only ever of one namespace's prefix.
+ * - `FilesLocate.locate`: a namespace's owner, read from its newest generation's part 0 header,
+ *   for the operator channel's `restore.locate` alone (a restore after an account's loss, when no
+ *   object names a namespace: `deploy/offsite.ts` `recover`).
+ *
+ * `deleteNamespace`, `sweepManifests`, `listChunks` and `locate` are the only lists of the
+ * bucket, each only ever of one namespace's prefix.
  *
  * Every object of a namespace is sealed in this Worker under its owner's data key
  * (`datakey.ts`), by the envelope's per-object seal (`contract/src/envelope.ts` `sealObject`:
@@ -88,6 +92,7 @@ import { chunkName, mint, rewrap, unwrap } from "./datakey";
 import type { FilesEnv } from "./env";
 import { keyed } from "../../contract/src/checks";
 import { base64, fromBase64, hex, openObject, sealObject } from "../../contract/src/envelope";
+import { exportHeader } from "../../contract/src/export-header";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedGeneration, listedManifest,
@@ -95,9 +100,9 @@ import {
 } from "./keys";
 import { Refusal } from "../../contract/src/refusal";
 import {
-  type ChunkCheck, type ChunkGet, type ChunkPut, type ChunkStore, type ChunkUpload, GET_READS,
-  type ManifestLists, manifestLists, MARK_BODY, type ManifestObject, type ManifestRoot,
-  type ManifestSegment, namespace,
+  type ChunkCheck, type ChunkGet, type ChunkLocate, type ChunkPut, type ChunkStore,
+  type ChunkUpload, GET_READS, type LocatedOwner, type ManifestLists, manifestLists, MARK_BODY,
+  type ManifestObject, type ManifestRoot, type ManifestSegment, namespace,
 } from "../../contract/src/files";
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
@@ -570,5 +575,58 @@ export class FilesUpload extends WorkerEntrypoint<FilesEnv> implements ChunkUplo
   /** Store chunks under their hashes, each verified by R2 (`FilesService.putChunks`). */
   async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
     return new FilesService(this.ctx, this.env).putChunks(ns, key, chunks);
+  }
+}
+
+/**
+ * The operator channel's entrypoint (`restore.locate`, `doors/src/operator.ts`): the doors bind
+ * it for the platform's own op alone, so they read a namespace's owner and nothing else of its
+ * objects, and hold no key. It serves `locate` alone, through `FilesService`'s own manifest
+ * reads, as `FilesUpload` serves its put.
+ */
+export class FilesLocate extends WorkerEntrypoint<FilesEnv> implements ChunkLocate {
+  /**
+   * The owner of `ns`, as its newest finished generation names it, and that generation; null
+   * when the bucket holds no root of it. Its roots are listed (the keys directly under its
+   * manifest prefix) and each opened under the wrapped key it carries; the newest's part 0 is
+   * read under that key and held to the root's hash, and its first line to the export
+   * header's shape, naming that generation. Nothing of the part but the header's owner is
+   * answered. A root or a part that does not open, or a part 0 with no header of its own
+   * generation, fails loudly: every generation names its owner.
+   */
+  async locate(ns: string): Promise<LocatedOwner | null> {
+    const files = new FilesService(this.ctx, this.env);
+    const roots: ManifestRoot[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.env.BLOBS.list({ prefix: manifestPrefix(namespace(ns)),
+                                               delimiter: "/", ...(cursor === undefined ? {}
+                                                 : { cursor }) });
+      for (const root of await Promise.all(page.objects.map((object) =>
+        files.getManifestRoot(ns, listedGeneration(ns, object.key).gen)))) {
+        if (root !== null) {
+          roots.push(root);
+        }
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor !== undefined);
+    const newest = roots.sort((a, b) => b.at - a.at || (a.gen < b.gen ? 1 : -1))[0];
+    if (newest === undefined) {
+      return null;
+    }
+    const part = await files.getManifestPart(ns, newest.key, newest.gen, 0,
+                                             newest.parts[0]!.sha256);
+    const end = part.indexOf(0x0a);
+    let first: unknown;
+    try {
+      first = JSON.parse(new TextDecoder().decode(part.subarray(0, end < 0 ? part.length : end)));
+    } catch {
+      first = null;
+    }
+    const header = exportHeader(first);
+    if (header === null || header.gen !== newest.gen) {
+      throw new Error(`generation ${newest.gen}'s first part holds no export header of it`);
+    }
+    return { owner: header.owner, gen: newest.gen };
   }
 }

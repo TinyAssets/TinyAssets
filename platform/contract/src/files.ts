@@ -1,12 +1,14 @@
 /**
  * The files Worker's RPC contract (`tinyassets-files`, `docs/decisions/untangle-2026-11-wave-1.md`
- * A1): its two entrypoints, as their callers bind them, and the values that cross them. The files
+ * A1): its three entrypoints, as their callers bind them, and the values that cross them. The files
  * Worker implements each against it (`files/src/index.ts`), and the owner's object and the doors
  * bind it from here, so no caller copies a files type.
  *
  * - `ChunkStore`: the default entrypoint, as the owner's object binds it (`FILES`). `key` is
  *   always that owner's wrapped data key, which only the files Worker can open.
  * - `ChunkUpload`: `FilesUpload`, the upload door's, which puts chunks and reads nothing.
+ * - `ChunkLocate`: `FilesLocate`, the operator channel's, which answers a namespace's owner and
+ *   nothing else of its objects.
  *
  * Every chunk is at most `CHUNK_BYTES`, and one call moves at most `BATCH_BYTES` (`limits.ts`).
  *
@@ -228,4 +230,22 @@ export interface ChunkStore {
 /** `FilesUpload`, as the upload door binds it: chunks put, and nothing read. */
 export interface ChunkUpload {
   putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }>;
+}
+
+/**
+ * What `locate` answers of a namespace: the owner its newest finished generation names (part 0's
+ * export header, `export-header.ts`), and that generation. Every generation of a namespace names
+ * its one owner.
+ */
+export interface LocatedOwner {
+  readonly owner: string;
+  readonly gen: string;
+}
+
+/**
+ * `FilesLocate`, as the doors bind it for the operator channel (`restore.locate`): a namespace's
+ * owner, null when the bucket holds no root of it, and nothing else read.
+ */
+export interface ChunkLocate {
+  locate(ns: string): Promise<LocatedOwner | null>;
 }

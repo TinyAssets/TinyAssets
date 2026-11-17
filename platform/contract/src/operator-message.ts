@@ -9,7 +9,9 @@
  * - `v`, this format's version, 1;
  * - `op`, what the doors do (`OP`: dotted lowercase words); `OPERATOR_OPS` names each one
  *   they take and its args, and they answer any other refused;
- * - `owner`, the owner principal it is done to (`principal`);
+ * - `owner`, the owner principal it is done to (`principal`), or, for an op of the platform's
+ *   own (`PLATFORM_OPS`), the platform's reserved principal (`PLATFORM_CALLER`), which no owner
+ *   is named (`addressed`);
  * - `args`, the op's own fields: a flat object of strings, safe integers and booleans, each
  *   key `ARG`, so its canonical text (`argsText`, its keys sorted) needs no general
  *   canonical JSON;
@@ -29,11 +31,13 @@
  * shape checks (`checks.ts`), so the kit runs it under Node's type stripping as the doors
  * bundle it.
  */
+import { PLATFORM_CALLER } from "./binding.ts";
 import { keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
 import { base64url, fromBase64url, hex, KID, type Ring } from "./envelope.ts";
+import { type LocatedOwner, namespace } from "./files.ts";
 import { HEX32 } from "./ids.ts";
-import { REFUSALS, type RefusalCode } from "./refusal.ts";
+import { Refusal, REFUSALS, type RefusalCode } from "./refusal.ts";
 import { principal } from "./text.ts";
 
 /** The keyring the MAC is under, by name: a doors Worker secret and a `production` one. */
@@ -68,8 +72,52 @@ export const OPERATOR_OPS = Object.freeze({
   "restore.wipe": Object.freeze(["confirm"] as const),
   "restore.release": Object.freeze([] as const),
   "restore.names": Object.freeze(["from"] as const),
+  "restore.locate": Object.freeze(["namespaces"] as const),
 } satisfies Record<string, readonly string[]>);
 export type OperatorOp = keyof typeof OPERATOR_OPS;
+
+/**
+ * The ops addressed to the platform itself, not to an owner: a namespace's owner read from its
+ * generation (`restore.locate`, a restore after an account's loss, when no object names one).
+ */
+export const PLATFORM_OPS: readonly OperatorOp[] = Object.freeze(["restore.locate"]);
+
+/**
+ * Whether `owner` is whom `op` is addressed to: the platform's reserved principal for an op of
+ * `PLATFORM_OPS`, an owner for any other.
+ */
+export function addressed(op: OperatorOp, owner: string): boolean {
+  return PLATFORM_OPS.includes(op) === (owner === PLATFORM_CALLER);
+}
+
+/**
+ * The namespaces one `restore.locate` reads, at most: each opens a generation's part 0, of up
+ * to `CHUNK_BYTES`, in the files Worker, so a page is answered well inside the kit's `WAIT_MS`
+ * (`docs/decisions/untangle-2026-11/r8-locate.md`, measured).
+ */
+export const LOCATE_PAGE = 32;
+
+/** `restore.locate`'s args for `namespaces`: 1 to `LOCATE_PAGE` of them, comma-separated. */
+export function locateArgs(namespaces: readonly string[]): OperatorArgs {
+  return Object.freeze({ namespaces: namespaces.map(namespace).join(",") });
+}
+
+/**
+ * `restore.locate`'s result: each namespace its args name, its owner and newest generation, or
+ * null for one the files bucket holds no root of.
+ */
+export interface LocatedPage {
+  readonly located: Readonly<Record<string, LocatedOwner | null>>;
+}
+
+/** The namespaces `restore.locate`'s args name: 1 to `LOCATE_PAGE`, distinct, or refused. */
+export function locatedNamespaces(args: OperatorArgs): string[] {
+  const listed = typeof args["namespaces"] === "string" ? args["namespaces"].split(",") : [];
+  if (listed.length === 0 || listed.length > LOCATE_PAGE || new Set(listed).size !== listed.length) {
+    throw new Refusal("invalid", `restore.locate names 1 to ${LOCATE_PAGE} distinct namespaces`);
+  }
+  return listed.map(namespace);
+}
 
 /** An op: dotted lowercase words, at most 64 characters. */
 const OP = /^(?=.{1,64}$)[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*$/;

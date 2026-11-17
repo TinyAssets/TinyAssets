@@ -13,7 +13,8 @@
       "default": "FilesService",
       "classes": {
         "FilesService": { "source": "src/index.ts", "contract": "files#ChunkStore" },
-        "FilesUpload": { "source": "src/index.ts", "contract": "files#ChunkUpload" }
+        "FilesUpload": { "source": "src/index.ts", "contract": "files#ChunkUpload" },
+        "FilesLocate": { "source": "src/index.ts", "contract": "files#ChunkLocate" }
       }
     },
     "gateway": {

@@ -3,15 +3,16 @@
  * object takes `admissionSet` only from the caller named `PLATFORM_CALLER` (the contract's,
  * `contract/src/binding.ts`), and refuses that name at every other door and as an owner. So
  * no source may spell the name but where it is defined, and no source but the binder, which
- * sends it (the sign-up's explicit admit, slice L), and the owner's object, which reads it,
- * may name the constant.
+ * sends it (the sign-up's explicit admit, slice L), the owner's object, which reads it, and the
+ * operator channel's contract, which addresses the platform's own ops to it as the principal no
+ * owner is named (`addressed`, `contract/src/operator-message.ts`), may name the constant.
  *
  * In every Worker source, this guard finds the name spelled as a string (a literal, a
  * template with no substitution, or the obvious split spellings: literals joined by `+`, a
  * template whose every part is literal, an array of literals `join`ed), and the constant's
  * identifier. The name is spelled once, in its definition in the contract; the constant is
- * named only there, in `owner-do.ts`, whose binding check and `admissionSet` read it, and in
- * the binder. A tripwire for our own code's mistakes, as the alarm guard is.
+ * named only there, in `owner-do.ts`, whose binding check and `admissionSet` read it, in the
+ * binder, and in the operator channel's contract. A tripwire for our own code's mistakes, as the alarm guard is.
  *
  * And the doors the caller reaches, by class (`contract/doors.json`) and caller
  * (`owner/doors.json`): the platform's own (`admission`, the reserved and erasure callers'),
@@ -37,6 +38,8 @@ const DEFINED = "contract/src/binding.ts";
 const READER = "owner/src/owner-do.ts";
 /** The binder, which sends it. */
 const SENDER = "doors/src/binder.ts";
+/** The operator channel's contract, which addresses the platform's own ops to it. */
+const CHANNEL = "contract/src/operator-message.ts";
 
 /** A string expression's value when every part of it is literal, else undefined. */
 function literal(node: ts.Node): string | undefined {
@@ -103,8 +106,9 @@ export function callerReach(fileName: string, source: string): string[] {
       }
     }
     if (ts.isIdentifier(node) && node.text === CONSTANT && fileName !== DEFINED
-        && fileName !== READER && fileName !== SENDER) {
-      report(node, `names ${CONSTANT}, which only the object reads and the binder sends`);
+        && fileName !== READER && fileName !== SENDER && fileName !== CHANNEL) {
+      report(node, `names ${CONSTANT}, which only the object reads, the binder sends and the ` +
+                   "operator channel addresses");
     }
     ts.forEachChild(node, visit);
   };
@@ -121,9 +125,10 @@ describe("admission caller guard", () => {
     expect([...sources.keys()]).toContain(DEFINED);
     expect([...sources].flatMap(([path, source]) => callerReach(path, source))).toEqual([]);
     expect(sources.get(DEFINED)).toContain(`export const ${CONSTANT} = "${NAME}";`);
-    // The object reads the constant, and the binder sends it (the sign-up's admit).
+    // The object reads the constant, the binder sends it (the sign-up's admit), and the
+    // operator channel addresses the platform's own ops to it.
     expect([...sources].filter(([path, source]) => path !== DEFINED && names(path, source))
-      .map(([path]) => path).sort()).toEqual([SENDER, READER]);
+      .map(([path]) => path).sort()).toEqual([CHANNEL, SENDER, READER]);
   });
 
   it.each([

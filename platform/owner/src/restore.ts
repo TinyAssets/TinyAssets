@@ -99,6 +99,7 @@
  * **What the owner loses** (the kit's plan says so): its sessions, every agent's grant, its API
  * keys, its model connections' secrets, its inbound URLs, and anything written after E.
  */
+import { EXPORT_FORMAT, EXPORT_VERSION, exportHeader } from "../../contract/src/export-header";
 import { HEX16, HEX32, randomHex } from "../../contract/src/ids";
 import { DELETE_BATCH, LOG_BYTES } from "../../contract/src/limits";
 import type { ChunkStore, ManifestRoot } from "../../contract/src/files";
@@ -131,9 +132,6 @@ import { MIGRATIONS, unforwardable } from "./schema";
  */
 type Bucket = Pick<ChunkStore, "getManifestRoot" | "getManifestPart" | "getManifestSegment"
   | "listChunks">;
-
-const FORMAT = "tinyassets-export";
-const VERSION = 3;
 
 /**
  * One exported table as a restore loads it: its name, the columns a trigger keeps as a
@@ -982,20 +980,21 @@ export const restoreDoors = Object.freeze({
     const { ns, gen } = asked;
     const source: Bucket = o.env.FILES;
     const root = await rootOf(source, ns, gen);
-    let header: Line | undefined;
+    let first: Line | undefined;
     try {
-      header = lines(await objectAt(source, ns, root, 0))[0];
+      first = lines(await objectAt(source, ns, root, 0))[0];
     } catch {
       throw refused("the generation's first part does not open under the namespace's key");
     }
-    if (header?.t !== "header" || header["format"] !== FORMAT || header["version"] !== VERSION
-        || header["gen"] !== gen) {
-      throw refused(`the generation is not a ${FORMAT} version ${VERSION} generation ${gen}`);
+    const header = exportHeader(first);
+    if (header === null || header.gen !== gen) {
+      throw refused(`the generation is not a ${EXPORT_FORMAT} version ${EXPORT_VERSION} ` +
+                    `generation ${gen}`);
     }
-    if (header["owner"] !== o.owner()) {
+    if (header.owner !== o.owner()) {
       throw refused("the generation is another owner's");
     }
-    const schema = header["schema"];
+    const schema = header.schema;
     const unloadable = unforwardable(schema);
     if (unloadable !== null) {
       throw refused(unloadable);
@@ -1013,7 +1012,7 @@ export const restoreDoors = Object.freeze({
                            "source) VALUES (1, ?, ?, 'index', 0, ?, ?, ?) ON CONFLICT (only) DO " +
                            "UPDATE SET gen = excluded.gen, step = 'index', at = 0, staged = 0, " +
                            "peak = 0, schema = excluded.schema, source = excluded.source", ns,
-                         gen, clock(), MIGRATIONS.length, schema as number);
+                         gen, clock(), MIGRATIONS.length, schema);
       return answer(o, record(o.storage.sql)!);
     });
   },
