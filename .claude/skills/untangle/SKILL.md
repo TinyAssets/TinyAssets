@@ -25,8 +25,7 @@ Untangle the code a change touches, or a whole area, and finish the job.
   waits until after the cutover only when nothing builds on it, it works after
   the window closes, and its failure is rare, loud when it happens and
   recoverable with what exists: the one exception to `AGENTS.md` Fact 17,
-  listed with its branch in `tasks.md`'s "After the cutover" (founder,
-  2026-11-15).
+  listed with its branch in `tasks.md`'s "After the cutover".
 - **The PR body** is the one document. Its **Untangle check** says what was
   found, fixed and left (and why), and that the diff adds none of the four kinds.
   Anything found and left, by builder or reviewer, names the PR, branch or
@@ -50,12 +49,12 @@ Untangle the code a change touches, or a whole area, and finish the job.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run, and a coordinator's prompt asks for no check this
-  section doesn't: run only what the diff can break, once (the done-check:
+  section doesn't: run only what the diff can break, once a PR (the done-check:
   `docs/reference/executable-gates.md`), one mutation per declared change; the
   recorders (step 5) whenever it touches `platform/*/src`, meant to change an
-  answer or not; read only what applies. One review a PR, a second only after
-  a security block. One PR in flight per lane, never stacked. Merge
-  `origin/main` in; never rebase a pushed branch.
+  answer or not; read only what applies. A reviewer runs these for its own
+  fixes only. One review a PR, a second only after a security block. One PR
+  in flight per lane, never stacked. Merge `origin/main` in; never rebase.
 - On a shared host, heavy runs (`test:root`, `test:sizes`, `test:memory`, the
   deploy harness, the recorders) take the host's run lock; a timeout under load
   is rerun under it, never a finding. When done, delete what you wrote outside
