@@ -314,8 +314,8 @@ export const codemodeDoors = Object.freeze({
    * logged here in full.
    */
   async codeRun(o: CodemodeDoorNeeds, door: Door<CodeRequest>): Promise<CodeResult> {
-    const { owner, script, tools, gate } = await o.door(() => {
-      const { account, r } = door.check();
+    const { binding, owner, script, tools, gate } = await o.door(() => {
+      const { account, binding, r } = door.check();
       if (typeof r["script"] !== "string" || r["script"].trim() === "") {
         throw new Refusal("invalid", "a script is text");
       }
@@ -330,7 +330,7 @@ export const codemodeDoors = Object.freeze({
       // the owner's own MCP clients' too, so they take the outside gate; a run (the egress
       // door) and the owner's app (no origin) the maintenance gate.
       const gate: Gate = account.origin !== null && account.run === null ? "outside" : "owner";
-      return { owner: account.owner, script: r["script"],
+      return { binding, owner: account.owner, script: r["script"],
                tools: toolsNamed(names.filter((name) => name !== codeTool())), gate };
     });
     const control = o.control();
@@ -339,7 +339,7 @@ export const codemodeDoors = Object.freeze({
       throw new Refusal("refused", closed);
     }
     return runScript({ service: o.env.CODEMODE_VM, owner, script, tools,
-                       call: (tool, args) => scripted(o, door.binding, tool, args,
+                       call: (tool, args) => scripted(o, binding, tool, args,
                                                       () => control.refusal(gate, owner)) });
   },
   /**

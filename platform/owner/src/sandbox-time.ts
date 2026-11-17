@@ -376,7 +376,7 @@ export const sandboxTimeDoors = Object.freeze({
    * an execution, inside the window its event's time allows. An erased or erasing owner
    * counts nothing.
    */
-  async sandboxBilled(o: SandboxTimeDoorNeeds, door: Door<BilledEvent>):
+  async sandboxBilled(o: SandboxTimeDoorNeeds, door: Door<BilledEvent, "none">):
       Promise<{ counted: boolean }> {
     if (o.gone()) {
       return { counted: false };

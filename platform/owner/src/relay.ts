@@ -479,8 +479,7 @@ export const relayDoors = Object.freeze({
   async socketsEnd(o: RelayDoorNeeds, door: Door<undefined>):
       Promise<{ grant: string; ended: true }> {
     const grant = await o.door(() => {
-      door.check();
-      const held = door.binding.grant;
+      const held = door.check().binding.grant;
       if (typeof held !== "string" || held === "" || held.length > 128) {
         throw new Refusal("invalid", "a grant id");
       }

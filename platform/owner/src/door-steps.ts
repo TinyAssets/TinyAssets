@@ -21,13 +21,26 @@
  */
 import raw from "../doors.json" with { type: "json" };
 
+import type { BindingKind } from "../../contract/src/binding.ts";
 import { among, frozen, object } from "../../contract/src/checks.ts";
 import {
   type DoorRow, doorProblems, doorRow, doorTable, UNBOUND_DOORS,
 } from "../../contract/src/doors.ts";
 
+/** The owner's account: acting itself, in its session, through an outside client, or a run. */
+const ACCOUNT = Object.freeze(["account", "session", "run"] as const);
+/** A file reader: the owner's account, or the sync agent at its lease. */
+const READER = Object.freeze(["account", "session", "run", "sync"] as const);
+/** The owner's account but a run's, or the sync agent at its lease: the file changes, a lease. */
+const LEASER = Object.freeze(["account", "session", "sync"] as const);
+const RESERVED = Object.freeze(["reserved"] as const);
+const IMPORT = Object.freeze(["import"] as const);
+const EGRESS = Object.freeze(["egress"] as const);
+
 /**
- * Who a door takes, as its account step binds them:
+ * Who a door takes, as its account step binds them, each with the binding kinds it takes
+ * (`contract/src/binding.ts`): the bind step parses a call's binding with the parser of the
+ * kind it presents, and refuses a kind its caller does not take.
  * - `account`: the owner's own account, acting itself or through a verified outside client
  *   admitted against its grant, or a run on the egress host as its initiator;
  * - `visitors`: `account`, and another owner visiting (origin null): the collections;
@@ -50,13 +63,22 @@ import {
  * - `reader`, `changes`: a file reader's account, or the sync agent's;
  * - `lease`: the owner itself (`action`), or the sync agent at its lease;
  * - `inbound`: an inbound event's route, at its binding's revision;
- * - `none`: no binding at all (the sandbox line's ring, and billed events): the contract's
- *   doors that take none (`UNBOUND_DOORS`) alone, so every other door binds.
+ * - `none`: no binding at all, at the contract's doors that take none (`UNBOUND_DOORS`): their
+ *   steps name no caller, and every other door's names one of the others.
  */
-const CALLER_KINDS = Object.freeze(["account", "visitors", "owner", "session",
-  "reserved", "erasure", "import", "discard", "egress", "runner", "run", "sync", "reader",
-  "changes", "lease", "inbound", "none"] as const);
-export type CallerKind = (typeof CALLER_KINDS)[number];
+export const CALLER_BINDINGS = Object.freeze({
+  account: ACCOUNT, visitors: ACCOUNT, owner: ACCOUNT, session: ACCOUNT,
+  reserved: RESERVED, erasure: RESERVED, import: IMPORT, discard: IMPORT,
+  egress: EGRESS, runner: EGRESS, run: Object.freeze(["run"] as const),
+  sync: Object.freeze(["sync"] as const), reader: READER, changes: LEASER, lease: LEASER,
+  inbound: Object.freeze(["inbound"] as const), none: Object.freeze(["none"] as const),
+} satisfies Readonly<Record<string, readonly BindingKind[]>>);
+export type CallerKind = keyof typeof CALLER_BINDINGS;
+/** A caller that binds: every one but `none`, whose doors take no binding. */
+export type Binds = Exclude<CallerKind, "none">;
+/** The binding kinds a door of caller `K` takes. */
+export type TakenBy<K extends CallerKind> = (typeof CALLER_BINDINGS)[K][number];
+
 
 /**
  * A check of the caller after its account: a run reads no mailbox (`no_mailbox`); a visitor
@@ -73,7 +95,8 @@ type Gate = (typeof GATES)[number];
 /** A door's steps, by its name. */
 export interface DoorSteps {
   readonly door: string;
-  readonly caller: CallerKind;
+  /** Who the door takes; absent at a door that takes no binding (`UNBOUND_DOORS`). */
+  readonly caller?: Exclude<CallerKind, "none">;
   readonly action?: string | null;
   readonly rule?: string;
   readonly receipt?: unknown;
@@ -98,8 +121,11 @@ export interface DoorSteps {
   readonly seeded?: true;
 }
 
-/** A door as the runner takes it: what every caller sees of it, and its steps. */
-export type OwnerRow = DoorRow & DoorSteps;
+/**
+ * A door as the runner takes it: what every caller sees of it, and its steps, its caller
+ * `none` where its contract row takes no binding.
+ */
+export type OwnerRow = DoorRow & Omit<DoorSteps, "caller"> & { readonly caller: CallerKind };
 
 const STEP_KEYS = Object.freeze(["door", "caller", "action", "rule", "receipt", "registering",
   "closed", "live", "guard", "scope", "agent", "fieldsFirst", "handler", "gate", "seeded"]);
@@ -134,11 +160,14 @@ export function stepProblems(steps: unknown, rows: readonly DoorRow[]): string[]
       }
     }
     const caller = step["caller"];
-    if (!among(CALLER_KINDS, caller)) {
+    if (UNBOUND_DOORS.includes(step["door"] as string)) {
+      if ("caller" in step) {
+        say("a door that takes no binding names no caller");
+      }
+    } else if (typeof caller !== "string" || !Object.hasOwn(CALLER_BINDINGS, caller)
+               || caller === "none") {
+      // Every caller but `none`, which the contract's table implies.
       say("no caller kind");
-    }
-    if ((caller === "none") !== UNBOUND_DOORS.includes(step["door"] as string)) {
-      say("only the sandbox line's ring and billed events take no binding");
     }
     if (row !== undefined
         && (row.class === "admission") !== among(["reserved", "erasure"], caller)) {
@@ -189,9 +218,11 @@ function held(problems: readonly string[]): void {
   }
 }
 
-/** `row` with its steps, held whole. */
+/** `row` with its steps, held whole: caller `none` where it takes no binding. */
 function withSteps(row: DoorRow): OwnerRow {
-  return Object.freeze({ ...row, ...steps().find((each) => each.door === row.door)! });
+  const { caller, ...rest } = steps().find((each) => each.door === row.door)!;
+  return Object.freeze({ ...row, ...rest,
+                        caller: UNBOUND_DOORS.includes(row.door) ? "none" : caller! });
 }
 
 /**

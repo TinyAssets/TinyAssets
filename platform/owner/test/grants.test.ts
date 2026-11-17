@@ -479,7 +479,7 @@ describe("every door admits an outside client against its grant (review L1, L4)"
     for (const [binding, message] of [
       [{ ...r.bind(null), owner: "someone-else" }, "this object belongs to another owner"],
       [{ ...r.bind(null), caller: "bob" }, "the account answers its owner's own callers only"],
-      [{ owner: r.owner, caller: r.owner } as never, "invalid outside origin"],
+      [{ owner: r.owner, caller: r.owner } as never, "invalid account binding"],
     ] as const) {
       expect((await failure(() => r.stub.policyPropose(binding, { change: {} }))).message)
         .toBe(message);

@@ -40,6 +40,8 @@ describe("the door table's steps", () => {
     expect([fileStat.class, fileStat.capability, fileStat.caller, fileStat.handler, fileStat.gate])
       .toEqual(["read", "read_files", "account", "files", "door"]);
     expect([Object.isFrozen(ownerRows()), Object.isFrozen(fileStat)]).toEqual([true, true]);
+    // A door the contract's table says takes no binding is the runner's caller `none`.
+    expect(ownerRow("sandboxRung").caller).toBe("none");
     expect(() => ownerRow("fileProbe")).toThrow("no door named fileProbe");
   });
 
@@ -59,6 +61,7 @@ describe("the door table's steps", () => {
     ["a platform door that reads admission", changed("fileStat", { caller: "reserved" })],
     ["a door that binds nothing", changed("keyList", { caller: "none" })],
     ["an unbound door that binds", changed("sandboxRung", { caller: "account" })],
+    ["an unbound door that names its caller", changed("sandboxRung", { caller: "none" })],
     ["the import's caller at an account door", changed("fileStat", { caller: "import" })],
     ["an import door on the reserved line", changed("importRows", { caller: "reserved" })],
     ["an import door that binds nothing", changed("importFiles", { caller: "none" })],

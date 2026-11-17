@@ -29,8 +29,9 @@ import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS } from "../src/erasure";
 import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
 import { clock } from "../src/clock";
-import { OwnerDO } from "../src/owner-do";
+import { OwnerDO, SANDBOX_ONLY } from "../src/owner-do";
 import { doorTable, rpcReserved, UNBOUND_DOORS } from "../../contract/src/doors";
+import { CALLER_BINDINGS, ownerRow } from "../src/door-steps";
 import {
   eraseBegun, erasedWhole, erasuresSent, finished, outsideConfirmed, pastGrace, tables,
   wipedWhole,
@@ -72,6 +73,9 @@ const IMPORT_DOORS = doorTable().filter((row) => row.class === "import").map((ro
 /** The platform's admission-class doors (admission, tier, rewrap, reseal, erasure, restore). */
 const ADMISSION_DOORS = doorTable().filter((row) => row.class === "admission")
   .map((row) => row.door);
+/** Whether `door`'s caller takes the owner's session binding (`CALLER_BINDINGS`). */
+const takesSession = (door: string): boolean =>
+  (CALLER_BINDINGS[ownerRow(door).caller] as readonly string[]).includes("session");
 /** Every door of the object's, but the platform's. */
 const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
   .filter((door) => ![...rpcReserved(), ...UNBOUND_DOORS, ...ADMISSION_DOORS,
@@ -164,11 +168,14 @@ describe("the owner's admission", () => {
     await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
     await r.stub().admissionSet(r.platform, { reason: "abuse", suspended: true });
     const answers = new Map<string, string>();
-    for (const door of doors()) {
+    // Every door the owner's session reaches; a sandbox's or an inbound route's door refuses
+    // it before the owner's state, as a binding of a kind it does not take.
+    for (const door of doors().filter((name) => takesSession(name))) {
       answers.set(door, (await failure(() => call(r, door, r.session()))).message);
     }
     expect([...answers].filter(([, answer]) =>
       answer !== `${OWNER_SUSPENDED} (abuse, billing)`)).toEqual([]);
+    expect((await failure(() => call(r, "egressReserve", r.session()))).message).toBe(SANDBOX_ONLY);
     expect(await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false }))
       .toEqual({ state: "suspended", reasons: ["abuse"] });
     expect((await failure(() => r.stub().policyRead(r.bind(null)))).message)
@@ -187,10 +194,12 @@ describe("the owner's admission", () => {
       .toBe(PLATFORM_ONLY);
     expect((await failure(() => r.stub().admissionSet(r.session(), set))).message)
       .toBe(PLATFORM_ONLY);
+    // The platform's caller with a field its binding never carries: malformed.
     expect((await failure(() => r.stub().admissionSet(
-      { ...r.platform, origin: MUSE, source: MCP }, set))).message).toBe(PLATFORM_ONLY);
+      { ...r.platform, origin: MUSE, source: MCP }, set))).message)
+      .toBe("invalid reserved binding");
     expect((await failure(() => r.stub().admissionSet({ ...r.platform, session: "x" }, set)))
-      .message).toBe(PLATFORM_ONLY);
+      .message).toBe("invalid reserved binding");
     for (const door of ["policyRead", "collectionPull", "mailboxRead", "fileUsage"]) {
       expect((await failure(() => call(r, door, r.platform))).message).toBe(PLATFORM_RESERVED);
     }
