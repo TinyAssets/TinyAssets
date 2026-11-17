@@ -90,11 +90,13 @@ describe("an agent's call of an act", () => {
       .toEqual({ card_id: card, approved: true });
     expect((await failure(() => r.stub.actionRequest(o.owner, { card_id: card }))).message)
       .toBe("no pending action request for this card");
+    // The yes is that client's call alone: another client's same call is held for its own.
+    expect(await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/held"))).not.toBe(card);
     await mkdir(r.stub, r.bind(MUSE), "/workspace/held");
     // Once: the same call again is held anew.
     expect(await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/held")))
       .not.toBe(card);
-    expect(await outcomes(o)).toEqual(["held", "admitted", "approved", "held"]);
+    expect(await outcomes(o)).toEqual(["held", "admitted", "held", "approved", "held"]);
   });
 
   it("is answered only as the pending card shown, in the owner's session, under the policy " +
@@ -110,6 +112,8 @@ describe("an agent's call of an act", () => {
       [o.session, { card_id: "act_" + "0".repeat(32), digest },
         "action request is not the pending card shown"],
       [o.owner, { card_id: card, digest }, "interactive owner session required"],
+      [r.bind(MUSE), { card_id: card, digest },
+        "only the owner may answer its agents' held calls"],
     ] as const) {
       expect((await failure(() => r.stub.actionApprove(binding, answer))).message).toBe(reason);
     }

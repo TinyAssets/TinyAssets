@@ -182,6 +182,7 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
   EGRESS_PATH_MAX: TABLE("egress_reservations", (n) => `length(path) BETWEEN 1 AND ${n} AND`),
   KEY_NAME_MAX: TABLE("owner_keys", (n) => `length(name) BETWEEN 1 AND ${n})`),
   INBOUND_SECRET_MAX: TABLE("inbound_bindings", (n) => `length(secret) <= ${n})`),
+  INBOUND_AGENT_MAX: TABLE("inbound_bindings", (n) => `length(agent) BETWEEN 1 AND ${n})`),
   INBOUND_ROUTE_MAX: TABLE("inbound_bindings", (n) => `length(route) <= ${n})`),
   NOTICE_DETAIL: TABLE("owner_notices", (n) => `length(detail) <= ${n})`),
   MAX_PATH_BYTES: TABLE("starter_receipts", (n) => `length(CAST(path AS BLOB)) <= ${n})`),
@@ -212,7 +213,7 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  *   and 36 a subscription's (`sub_` and 32 hex): ids' lengths, which their grammars hold;
  *   36 also a collection deletion's four numbers in its charge (`collection_erasures`).
  */
-const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 285, 256: 8, 1024: 5,
+const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 284, 256: 8, 1024: 5,
                                        4096: 252 });
 
 /**
@@ -439,7 +440,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(592);
+    expect(places).toBe(593);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {
