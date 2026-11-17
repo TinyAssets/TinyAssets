@@ -33,28 +33,28 @@ Untangle the code a change touches, or a whole area, and finish the job.
   file of their own, `docs/decisions/<log>/<pr>.md`, headed
   `# <PR> as built (<date>)`; a shared log is edited only to correct an earlier
   line. The PR ticks its own `tasks.md` line.
-- **Every reviewer** runs step 5 on the PR and checks that section; a missing
-  one is a finding. A problem the PR adds or leaves in scope unexplained
+- **Every reviewer** runs step 5's search on the PR and checks that section; a
+  missing one is a finding. A problem the PR adds or leaves in scope unexplained
   blocks, and so does any of these: an import edge the layer table refuses or a
   new `owed` entry, a literal live name or founder number outside configs and
   data, a code read from message text, a product parameter or binding only a
   test uses, a copy of a contract value, a per-module allow-list. It asks only
-  for what makes the code more correct or simpler, reruns two or three of the
-  builder's mutations and one of each new guard's, and calls a departure from
+  for what makes the code more correct or simpler, and calls a departure from
   the decided design better (the log is updated) or a shortcut. It commits its
   own fixes of up to 50 lines and approves that head, posting its verdict as a
-  PR review on the commit it read (first line `APPROVE` or `BLOCK`) as well as
-  the receipt; a bigger fix is a `BLOCK` with its diff. A re-confirm after
-  main is merged in reads only its conflicts.
+  PR review on the commit it read as well as the receipt; a bigger fix is a
+  `BLOCK` with its diff. A re-confirm after main is merged in reads only its
+  conflicts.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run, and a coordinator's prompt asks for no check this
   section doesn't: run only what the diff can break, once a PR (the done-check:
   `docs/reference/executable-gates.md`), one mutation per declared change; the
   recorders (step 5) whenever it touches `platform/*/src`, meant to change an
-  answer or not; read only what applies. A reviewer runs these for its own
-  fixes only. One review a PR, a second only after a security block. One PR
-  in flight per lane, never stacked. Merge `origin/main` in; never rebase.
+  answer or not; read only what applies. A reviewer reruns two or three of the
+  builder's mutations and one of each new guard's, and runs the rest for its
+  own fixes only. One review a PR, a second only after a security block. One
+  PR in flight per lane, never stacked. Merge `origin/main` in; never rebase.
 - On a shared host, heavy runs (`test:root`, `test:sizes`, `test:memory`, the
   deploy harness, the recorders) take the host's run lock; a timeout under load
   is rerun under it, never a finding. When done, delete what you wrote outside
