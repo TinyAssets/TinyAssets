@@ -557,14 +557,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] P-decide's receipts in the export: `action_receipts` joins it with the first migration
     that builds a forward form (`schema.ts` `FORWARD`; `r5-decide.md` item 5,
     `untangle/r5-receipts-export`).
-  - [ ] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
-    stop matcher in its record's `events`; a run settles `waiting` on a card; a held call's
-    digest bound to its run's conversation (`r5-decide.md` item 8).
+  - [x] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
+    stop matcher in its record's `events`; a held call's digest bound to its run's
+    conversation; owner migration 18 (`untangle/r5-resume-hooks`; `r5-resume-hooks.md`).
+  - [ ] Owner migration 18's pin, after P-resume merges (`untangle/r5-resume-pin18`).
   - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
     `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
     when needed, and runs the start check; the honest note (d3 §N5): `policyRead` gives each
     rule where it holds and where it can't (`holds_at`, `not_enforced`), from `acts.json` and
-    the agent's engine record.
+    the agent's engine record; a held call the hook deferred resumes on no input, and its
+    conversation waits on its card (`r5-resume-hooks.md` items 6 and 7). After the sandbox
+    pass lands, since the runner writes the files (`untangle/r5-hooks`).
   - [ ] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
     the mapping, the old defaults written explicitly (d3 §N7), and the archive file; the
     notice. Until it lands, an old document is archived whole (`policy.refused.json`).

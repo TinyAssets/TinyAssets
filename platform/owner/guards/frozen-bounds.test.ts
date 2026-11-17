@@ -147,9 +147,12 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
     ...TABLE("egress_reservations", ID("run")), ...TABLE("runs", ID("id")),
     ...TABLE("run_inputs", ID("run")), ...TABLE("run_grants", ID("run")),
     ...TABLE("conversations", ID("last_run")), ...TABLE("run_schedules", ID("last_run")),
+    ["ALTER TABLE action_requests ADD COLUMN run", 1, ID("run")],
   ],
   CONVERSATION_ID_CHARS: [...TABLE("runs", ID("conversation")), ...TABLE("conversations", ID("id")),
-                          ...TABLE("socket_tickets", ID("conversation"))],
+                          ...TABLE("socket_tickets", ID("conversation")),
+                          ["ALTER TABLE action_requests ADD COLUMN conversation", 1,
+                           ID("conversation")]],
   SCHEDULE_ID_CHARS: TABLE("run_schedules", ID("id")),
   MESSAGE_ID_CHARS: TABLE("runs", ID("mail")),
   NATIVE_ID_CHARS: TABLE("native_agents", ID("agent_id")),
@@ -213,7 +216,7 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  *   and 36 a subscription's (`sub_` and 32 hex): ids' lengths, which their grammars hold;
  *   36 also a collection deletion's four numbers in its charge (`collection_erasures`).
  */
-const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 284, 256: 8, 1024: 5,
+const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 285, 256: 8, 1024: 5,
                                        4096: 252 });
 
 /**
@@ -440,7 +443,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(593);
+    expect(places).toBe(595);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

@@ -90,7 +90,7 @@
     { "door": "actionRequest", "caller": "owner", "action": "read its agents' held calls",
       "handler": "actions", "gate": "door" },
     { "door": "actionApprove", "caller": "session", "rule": "action_answer",
-      "action": "answer its agents' held calls", "handler": "actions", "gate": "door" },
+      "action": "answer its agents' held calls", "handler": "actions", "gate": "synced" },
     { "door": "actionRefuse", "caller": "session", "rule": "action_answer",
       "action": "answer its agents' held calls", "handler": "actions", "gate": "door" },
     { "door": "grantList", "caller": "owner", "action": "read its outside clients",

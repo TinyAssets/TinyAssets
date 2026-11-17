@@ -2408,6 +2408,22 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER action_receipts_removed AFTER DELETE ON action_receipts BEGIN " +
       "UPDATE policy_usage SET action_receipts = action_receipts - 1; END",
   ]),
+  // 18 (R5 P-resume, `actions.ts`; `untangle-2026-11/r5-resume-hooks.md`): a run's held call
+  // keeps its conversation, which its call's digest binds and a yes resumes, the run it was
+  // held in, whose receipt the resume runs under, and that run's origin's family, which the
+  // receipt does not keep. Set when the call is held and never changed, so the held call's
+  // trigger names them too. Not exported, so no generation's line changes.
+  Object.freeze([
+    "ALTER TABLE action_requests ADD COLUMN conversation TEXT CHECK (conversation IS NULL OR " +
+      "length(conversation) = 35)",
+    "ALTER TABLE action_requests ADD COLUMN run TEXT CHECK (run IS NULL OR length(run) = 36)",
+    "ALTER TABLE action_requests ADD COLUMN family TEXT CHECK (family IS NULL OR " +
+      "length(family) = 64)",
+    "DROP TRIGGER action_requests_kept",
+    "CREATE TRIGGER action_requests_kept BEFORE UPDATE OF card_id, digest, call_digest, card, " +
+      "client, generation, filed_at, conversation, run, family ON action_requests " +
+      "BEGIN SELECT RAISE(ABORT, 'a held call changes only by its answer'); END",
+  ]),
 ]);
 
 /**
@@ -2447,6 +2463,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 15
   null,  // 16
   null,  // 17
+  null,  // 18
 ]);
 
 /**

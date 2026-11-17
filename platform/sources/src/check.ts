@@ -913,11 +913,12 @@ function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   const model = fields["model_argv"] === undefined ? undefined
     : argv(fields["model_argv"], "cli.engine.model_argv", 8);
   const events = check.keys(fields["events"], "cli.engine.events", [
-    "format", "session_id", "final_text", "error", "usage", "tool_call"]);
+    "format", "session_id", "final_text", "error", "usage", "tool_call", "deferred"]);
   if (events["format"] !== "jsonl" && events["format"] !== "json") {
     check.fail("cli.engine.events.format is jsonl or json");
   }
-  for (const kind of ["session_id", "final_text", "error", "usage", "tool_call"] as const) {
+  for (const kind of ["session_id", "final_text", "error", "usage", "tool_call",
+                      "deferred"] as const) {
     events[kind] = matchers(check, events[kind], `cli.engine.events.${kind}`);
   }
   if ((events["final_text"] as unknown[]).length === 0) {
