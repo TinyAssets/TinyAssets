@@ -45,6 +45,11 @@
  *   wiped only with `--confirm` the words that names; then begun, stepped until done and the
  *   owner admitted. With no `--generation`, the owner's namespace and finished generations,
  *   as its object holds them, or with `--confirm release-<owner>` its pin given up.
+ * - `copyback` (R8, `offsite.ts` `copyBack`): the objects of `--owner`'s namespace that the
+ *   files bucket lacks, written back from the off-account copy as it stood at `--at`.
+ * - `recover` (`offsite.ts` `recover`): after an account's loss, every namespace of the copy as
+ *   it stood at `--at` that no erasure mark names written back, the marks first, and each
+ *   one's owner located from its generation and its restore begun.
  * - `erase` (the operator path): `--owner` erased through the operator channel as its own
  *   door erases it, for an owner who asked by other means; only with `--confirm` its words,
  *   `erase-<owner>`, which a run without them names.
@@ -134,8 +139,9 @@ import {
 } from "../contract/src/identity.ts";
 import { IMPORT_KEY } from "../contract/src/import-message.ts";
 import {
-  argsText, OPERATOR_KEYRING, type OperatorArgs,
+  argsText, LOCATE_PAGE, locateArgs, type LocatedPage, OPERATOR_KEYRING, type OperatorArgs,
 } from "../contract/src/operator-message.ts";
+import { PLATFORM_CALLER } from "../contract/src/binding.ts";
 import {
   eraseWords, type RestoreAnswer, type RestoreHold, type RestoreNames, type RestoreSource,
 } from "../contract/src/owner.ts";
@@ -159,13 +165,13 @@ import {
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
-  BACK_INPUTS, backFrom, copyBack, firstNightAfter, KEEP_DAYS, readableAt, type Referenced,
-  RESTORE_KEY, restoreBegan, type Watch, watch,
+  BACK_INPUTS, backFrom, copyBack, firstNightAfter, KEEP_DAYS, readableAt, recover,
+  type Recovering, type Referenced, RESTORE_KEY, restoreBegan, type Watch, watch,
 } from "./offsite.ts";
 import {
-  type Act, askOperator, controlEdits, differences, type Edit, edited, type Generation,
-  ERASE_LOSES, heldRotation, keyHashes, ownerAct, RESTORE_LOSES, restoreFrom, rotate,
-  type RotationRecord, rotationKey, rotationRecord, RUN_MS,
+  type Act, type Ask, askOperator, askOwners, controlEdits, differences, type Edit, edited,
+  type Generation, ERASE_LOSES, heldRotation, keyHashes, ownerAct, pages, RESTORE_LOSES,
+  restoreFrom, rotate, type RotationRecord, rotationKey, rotationRecord, RUN_MS, WAIT_MS,
 } from "./operator.ts";
 /**
  * The control record a first deploy writes when there is none: every outside door closed, and
@@ -218,7 +224,7 @@ export const IO: Io = Object.freeze({
 });
 
 export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback" | "control"
-  | "owner" | "restore" | "copyback" | "erase" | "rotation" | "retire";
+  | "owner" | "restore" | "copyback" | "recover" | "erase" | "rotation" | "retire";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -251,7 +257,10 @@ export interface Run {
   readonly confirm: string | null;
   /** `--keyring`: the keyring `rotation` sweeps, or `retire` retires the old kids of. */
   readonly keyring: string | null;
-  /** `--at`: the time `copyback` reads the off-account copy as it stood at; none, as it stands. */
+  /**
+   * `--at`: the time `copyback` and `recover` read the off-account copy as it stood at; none,
+   * as it stands.
+   */
   readonly at: Date | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -1580,8 +1589,9 @@ const copyBackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
   const { namespace } = await asked(run, got, "restore.source", owner, {}) as RestoreSource;
   if (namespace === null) {
     throw new Error(`${owner}'s object names no namespace, so nothing says which of the copy's ` +
-                    "is its own (a lost object, or any after an account loss: checklist.md, " +
-                    "\"A restore from the copy\"); nothing is read or written");
+                    "is its own (a lost object, or any after an account loss, which mode " +
+                    "recover restores: checklist.md, \"A restore from the copy\"); nothing is " +
+                    "read or written");
   }
   const control = (await got.cloudflare.namespaces(got.account)).get(NAMESPACES["CONTROL"]!);
   if (control === undefined) {
@@ -1596,6 +1606,84 @@ const copyBackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
                         { cloudflare: got.cloudflare, account: got.account, namespace: control },
                         run.io));
 });
+
+/**
+ * Mode `recover` (`offsite.ts` `recover`), after an account's loss, in the new account once a
+ * dark deploy made it, with the copy's read key and a day's R2 write pair, as `copyback`: every
+ * namespace of the off-account copy as it stood at `--at` (none: as it stands) that no erasure
+ * mark names and that holds a root written back, the restore record and the marks R2 lacks
+ * first; then each one's owner located from its newest generation (`restore.locate`, addressed
+ * to the platform) and its restore begun (`restore.begin`), through the operator channel. Mode
+ * `restore` carries each on. The plan job only plans it.
+ */
+const recoverAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  readableAt(run.at, run.io.now());
+  say(`write back into ${FILES_BUCKET}, as the off-account copy ${run.at === null ? "stands"
+    : `stood at ${run.at.toISOString()}`}, every object it lacks of each namespace that no ` +
+      "erasure mark names and that holds a root, never one it holds, after writing the restore " +
+      `record ${RESTORE_KEY} and then every mark R2 lacks (the marks read from R2 and the copy ` +
+      "first, a loud stop when they can't be), each read back byte for byte; then locate each " +
+      "namespace's owner from its newest generation (restore.locate, addressed to the " +
+      "platform) and begin that owner's restore from it (restore.begin), through the operator " +
+      "channel: two namespaces naming one owner stop the run before any restore begins");
+  if (run.reach === "public") {
+    return;
+  }
+  const control = (await got.cloudflare.namespaces(got.account)).get(NAMESPACES["CONTROL"]!);
+  if (control === undefined) {
+    throw new Error(`the account holds no ${NAMESPACES["CONTROL"]}: no dark deploy made it`);
+  }
+  if (!run.apply) {
+    return;
+  }
+  say(...await recover(backFrom(run.env, got.account), FILES_BUCKET, run.at,
+                       recovering(run, got),
+                       { cloudflare: got.cloudflare, account: got.account, namespace: control },
+                       run.io));
+});
+
+/**
+ * What mode `recover` asks the doors (`Recovering`), a batch push of `BATCH` messages at a
+ * time, stopping loudly past `RUN_MS` (a run again goes on): the namespaces' owners,
+ * `LOCATE_PAGE` a message addressed to the platform, and each owner's restore begun.
+ */
+function recovering(run: Run, got: Pick<Values, "cloudflare" | "account">): Recovering {
+  const ring = keyring(input(run, OPERATOR_KEYRING), OPERATOR_KEYRING);
+  const until = run.io.now().getTime() + RUN_MS;
+  const ask = async (op: string, asks: readonly Ask[]) => {
+    const answers = [];
+    for (const page of pages(asks, BATCH)) {
+      if (run.io.now().getTime() >= until) {
+        throw new Error(`stopped after ${RUN_MS / 60_000} minutes, before ${op} was asked of ` +
+                        "every one: run again to go on (what is written is not written again, " +
+                        "and a begin asked again answers as it stands)");
+      }
+      answers.push(...await askOwners(got.cloudflare, got.account, ring, op, page, run.io));
+    }
+    return answers;
+  };
+  return {
+    locate: async (namespaces) => {
+      const spans = pages(namespaces, LOCATE_PAGE);
+      const answers = await ask("restore.locate", spans.map((span) =>
+        ({ owner: PLATFORM_CALLER, args: locateArgs(span) })));
+      return new Map(spans.flatMap((span, at) => {
+        const answer = answers[at] ?? null;
+        if (answer === null || "refused" in answer) {
+          throw new Error(`the doors ${answer === null ? `did not answer in ${WAIT_MS / 1000} s`
+            : `refused (${answer.refused.code}: ${answer.refused.message})`} restore.locate of ` +
+            `the ${span.length} namespaces from ${span[0]}: nothing is begun`);
+        }
+        const { located } = answer.result as LocatedPage;
+        return span.map((namespace) => [namespace, located[namespace] ?? null] as const);
+      }));
+    },
+    begin: async (begins) => (await ask("restore.begin", begins.map(({ owner, namespace, gen }) =>
+      ({ owner, args: { namespace, gen } })))).map((answer) => answer === null
+      ? `not answered in ${WAIT_MS / 1000} s` : "refused" in answer
+      ? `refused (${answer.refused.code}): ${answer.refused.message}` : null),
+  };
+}
 
 /** What `owner`'s object names in its namespace, page by page (`restore.names`). */
 async function namedBy(run: Run, got: Pick<Values, "cloudflare" | "account">, owner: string):
@@ -2279,6 +2367,7 @@ const CONTROL = Steps.none.then(zone).then(controlEdit).list;
 const OWNER = Steps.none.then(zone).then(ownerAsk).list;
 const RESTORE = Steps.none.then(zone).then(restoreAsk).list;
 const COPYBACK = Steps.none.then(zone).then(copyBackAsk).list;
+const RECOVER = Steps.none.then(zone).then(recoverAsk).list;
 const ERASE = Steps.none.then(zone).then(eraseAsk).list;
 const ROTATION = Steps.none.then(zone).then(rotationSweep).list;
 const RETIRE = Steps.none.then(zone).then(retireAsk).list;
@@ -2356,6 +2445,13 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
               secret: [OPERATOR_KEYRING, ...BACK_INPUTS.secret], optional: [] },
     deploys: false, applies: true, own: ["--owner", "--at"],
     steps: { public: COPYBACK, secrets: COPYBACK }, report: { unchanged: NOTHING, after: [] },
+  },
+  // As copyback's, in the new account after an account's loss: every owner, none named.
+  recover: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN", ...BACK_INPUTS.public],
+              secret: [OPERATOR_KEYRING, ...BACK_INPUTS.secret], optional: [] },
+    deploys: false, applies: true, own: ["--at"],
+    steps: { public: RECOVER, secrets: RECOVER }, report: { unchanged: NOTHING, after: [] },
   },
   erase: {
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [OPERATOR_KEYRING], optional: [] },

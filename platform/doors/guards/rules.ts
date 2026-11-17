@@ -8,9 +8,10 @@
  * - `OWNER` (`OBJECTS`): the owner Worker's `OwnerDO` namespace, by the owner Worker's own
  *   name as `script_name`, which must be its own SQLite class. The binder is the trust root
  *   and reaches every owner's object by name; only `src/binder.ts` names it.
- * - `GATEWAY`, `EGRESS` and `FILES` (`SERVICES`): one entrypoint each of the gateway and
- *   files Workers, each serving exactly what is listed, so the doors make no model call, hold
- *   no keyring and read no chunk, generation or key (review M5-1).
+ * - `GATEWAY`, `EGRESS`, `FILES` and `FILES_LOCATE` (`SERVICES`): one entrypoint each of the
+ *   gateway and files Workers, each serving exactly what is listed, so the doors make no model
+ *   call, hold no keyring and read no chunk, generation or key (review M5-1): of a generation,
+ *   only the owner its header names (`locate`, the operator channel's `restore.locate`).
  * - `OAUTH_KV`, `DIRECTORY` and `CONTROL`: three KV namespaces, distinct, with placeholder ids
  *   (`not-provisioned-…`), so a deploy fails until cutover creates them.
  * - Four vars, each as checked in its inert value: `DCR_ENABLED` `"false"`; `OWNER_ISSUER`
@@ -86,6 +87,8 @@ export const SERVICES = Object.freeze({
                           serves: Object.freeze(["forward"]) }),
   FILES: Object.freeze({ worker: "files", entrypoint: "FilesUpload",
                          serves: Object.freeze(["putChunks"]) }),
+  FILES_LOCATE: Object.freeze({ worker: "files", entrypoint: "FilesLocate",
+                                serves: Object.freeze(["locate"]) }),
 });
 
 export const CONFIG: ConfigRules = Object.freeze({

@@ -40,8 +40,9 @@ import {
   APP_RESOURCE, ORIGIN, routeTakes, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
 } from "../../contract/src/identity";
 import {
-  answerKey, answerOf, macHolds, type OperatorMessage, operatorMessage,
+  answerKey, answerOf, LOCATE_PAGE, macHolds, type OperatorMessage, operatorMessage,
 } from "../../contract/src/operator-message";
+import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
 import {
   closedToAll, CONTROL_KEY, outsideOpen, ownerOpen, parseControl,
@@ -786,7 +787,7 @@ describe("the command line", () => {
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
     expect(Object.keys(MODES)).toEqual(["plan", "dark", "probe", "routes", "h2", "pair",
                                         "handback", "control", "owner", "restore", "copyback",
-                                        "erase",
+                                        "recover", "erase",
                                         "rotation", "retire"]);
     for (const mode of Object.keys(MODES) as Mode[]) {
       expect(parse(["--mode", mode, ...needed(mode)], ENV, w.io).mode).toBe(mode);
@@ -3265,6 +3266,82 @@ describe("mode copyback", () => {
   });
 });
 
+describe("mode recover", () => {
+  const [AA, BB] = ["a", "b"].map((hex) => hex.repeat(32));
+  const GEN = "1".repeat(16);
+  /** The copy as it stood: two namespaces, each with a root; the new account's R2 is empty. */
+  const copied = { copy: [`o/${AA}/c/1`, `o/${AA}/m/${GEN}`, `o/${BB}/m/${GEN}`], r2: [] };
+  /** The doors locating each namespace to its own owner, and beginning each restore. */
+  const doors = (message: OperatorMessage) => ({ result: message.op === "restore.locate"
+    ? { located: Object.fromEntries(String(message.args["namespaces"]).split(",")
+        .map((ns) => [ns, { owner: `user_${ns.slice(0, 2)}`, gen: GEN }])) }
+    : { step: "index", gen: GEN } });
+  const recorded = `ns-${NAMESPACES["CONTROL"]}/${RESTORE_KEY}`;
+  const AT = "2026-11-01T00:00:00Z";
+  const BUCKET = ENV["OFFSITE_BUCKET"]!;
+
+  it("plans the recover; with --yes, records, writes the copy back, then locates each " +
+     "namespace's owner, addressed to the platform, and begins each one's restore", async () => {
+    const planned = world({ held: true });
+    expect((await runMode(planned, "recover", ["--public"],
+                          { ...PUBLIC, OFFSITE_BUCKET: BUCKET })).plan).toEqual([
+      "write back into tinyassets-files, as the off-account copy stands, every object it lacks " +
+      "of each namespace that no erasure mark names and that holds a root, never one it holds, " +
+      `after writing the restore record ${RESTORE_KEY} and then every mark R2 lacks (the marks ` +
+      "read from R2 and the copy first, a loud stop when they can't be), each read back byte " +
+      "for byte; then locate each namespace's owner from its newest generation " +
+      "(restore.locate, addressed to the platform) and begin that owner's restore from it " +
+      "(restore.begin), through the operator channel: two namespaces naming one owner stop " +
+      "the run before any restore begins"]);
+    expect(planned.sent).toEqual([]);
+    const w = world({ held: true, doors, copied });
+    const work = await runMode(w, "recover", ["--yes", "--at", AT], ENV);
+    expect(w.sent.map(({ message }) => [message.op, message.owner, message.args])).toEqual([
+      ["restore.locate", PLATFORM_CALLER, { namespaces: `${AA},${BB}` }],
+      ["restore.begin", "user_aa", { namespace: AA, gen: GEN }],
+      ["restore.begin", "user_bb", { namespace: BB, gen: GEN }]]);
+    expect(JSON.parse(w.kv.get(recorded)!)).toMatchObject({ kind: "tinyassets-offsite-restore" });
+    // The record before the first byte, and every byte before the first ask.
+    order(w.events, ["rclone lsf", `${CONTROL_WRITE}namespaces/ns-${NAMESPACES["CONTROL"]}/` +
+                     `values/${encodeURIComponent(RESTORE_KEY)}`, `rclone copy back:${BUCKET}/`,
+                     `rclone check back:${BUCKET}/`, "cf POST /accounts/"]);
+    expect(work.plan).toContain(`began user_bb's restore from ${BB}/${GEN}: mode restore ` +
+                                `--owner user_bb --generation ${BB}/${GEN} carries it on`);
+  });
+
+  it("locates the namespaces a page of LOCATE_PAGE a message", async () => {
+    const many = Array.from({ length: LOCATE_PAGE + 1 },
+                            (_, at) => at.toString(16).padStart(2, "0").repeat(16));
+    const w = world({ held: true, doors, copied: { copy: many.map((ns) => `o/${ns}/m/${GEN}`),
+                                                  r2: [] } });
+    await runMode(w, "recover", ["--yes"], ENV);
+    expect(w.sent.filter(({ message }) => message.op === "restore.locate")
+      .map(({ message }) => String(message.args["namespaces"]).split(",").length))
+      .toEqual([LOCATE_PAGE, 1]);
+  });
+
+  it("stops loudly, beginning nothing, when the doors refuse a page of locates", async () => {
+    const w = world({ held: true, copied, doors: (message) => message.op === "restore.locate"
+      ? { refused: { code: "invalid" as const, message: "no" } } : doors(message) });
+    await expect(runMode(w, "recover", ["--yes"], ENV)).rejects.toThrow(
+      `the doors refused (invalid: no) restore.locate of the 2 namespaces from ${AA}: nothing ` +
+      "is begun");
+    expect(w.sent.map(({ message }) => message.op)).toEqual(["restore.locate"]);
+  });
+
+  it("takes no --owner, and refuses a run without the copy's keys before any step", async () => {
+    expect(() => parse(["--mode", "recover", "--owner", "user_alice"], ENV, world().io))
+      .toThrow("mode recover takes no --owner");
+    for (const name of [...BACK_INPUTS.secret, "OPERATOR_KEYRING"]) {
+      const { [name]: _, ...without } = ENV;
+      const w = world({ held: true, doors, copied });
+      await expect(runMode(w, "recover", ["--yes"], without)).rejects.toThrow(`${name} is not set`);
+      expect([w.sent, w.kv.has(recorded),
+              w.events.filter((event) => event.startsWith("rclone "))]).toEqual([[], false, []]);
+    }
+  });
+});
+
 describe("mode erase", () => {
   const WORDS = "erase-user_alice";
   const sent = (w: ReturnType<typeof world>) =>
@@ -3596,7 +3673,8 @@ describe("platform-deploy.yml", () => {
                      CONFIRM: `wipe-user_alice-${"c".repeat(16)}` },
                    { ...dispatchOf("erase"), CONFIRM: "erase-user_alice" },
                    { ...dispatchOf("retire"), CONFIRM: "retire-GATEWAY_KEYRING-k1" },
-                   { ...dispatchOf("copyback"), AT: "2026-11-01T00:00:00Z" }];
+                   { ...dispatchOf("copyback"), AT: "2026-11-01T00:00:00Z" },
+                   { ...dispatchOf("recover"), AT: "2026-11-01T00:00:00Z" }];
   /** What the kit reads of a run's own options. */
   const ownOf = (run: ReturnType<typeof parse>) =>
     [run.record, run.edits.length, run.replace, run.owner, run.act?.op ?? null,

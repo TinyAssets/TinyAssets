@@ -29,8 +29,8 @@ name: Platform deploy (manual, founder-approved)
 # makes the same in memory) and rotated with `keyring-add`, then stored here.
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
-# probe, routes, h2, handback, control, owner, restore, copyback, erase, rotation
-# and retire here; pair is its own job.
+# probe, routes, h2, handback, control, owner, restore, copyback, recover,
+# erase, rotation and retire here; pair is its own job.
 # `routes` keeps a record of what it changes (the zone's routes, the egress
 # custom domain, E2B's lifecycle webhook) before any change, and its job
 # summary names the record's id (the run's); `handback` takes that id as
@@ -45,7 +45,11 @@ name: Platform deploy (manual, founder-approved)
 # off-account copy, as it stood at `at` (none: as it stands), the objects of
 # `owner`'s namespace that R2 lacks, the namespace as the owner's object names
 # it and the copy's restore record written first (deploy/offsite.ts
-# `copyBack`; checklist.md, "A restore from the copy"); `erase` erases `owner`
+# `copyBack`; checklist.md, "A restore from the copy"); `recover`, after an
+# account's loss, writes back every namespace of the copy as it stood at `at`
+# that no erasure mark names, the marks first, and begins each one's owner's
+# restore (deploy/offsite.ts `recover`; checklist.md, "A restore after the
+# account's loss"); `erase` erases `owner`
 # as its own door does, for an owner who asked by other means, only once `confirm` is
 # erase-<owner> (a run without it names the words); `rotation` asks every
 # owner the directory lists to bring its blobs under `keyring`'s active kid,
@@ -57,11 +61,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | probe | routes | h2 | handback | control | owner | restore | copyback | erase | rotation | retire'
+        description: 'plan | dark | probe | routes | h2 | handback | control | owner | restore | copyback | recover | erase | rotation | retire'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, probe, routes, h2, handback, control, owner, restore, copyback, erase, rotation, retire]
+        options: [plan, dark, probe, routes, h2, handback, control, owner, restore, copyback, recover, erase, rotation, retire]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -113,7 +117,7 @@ on:
         default: ''
         type: string
       at:
-        description: 'copyback: the time the copy is read as it stood at (yyyy-mm-ddThh:mm:ssZ); none, as it stands'
+        description: 'copyback and recover: the time the copy is read as it stood at (yyyy-mm-ddThh:mm:ssZ); none, as it stands'
         required: false
         default: ''
         type: string
@@ -268,8 +272,8 @@ jobs:
         working-directory: platform
         run: npm ci
 
-      # The copy back's rclone (deploy/offsite.ts `copyBack`), for that mode alone.
-      - if: inputs.mode == 'copyback'
+      # The copy back's rclone (deploy/offsite.ts `copyBack`, `recover`), for those modes alone.
+      - if: inputs.mode == 'copyback' || inputs.mode == 'recover'
         uses: ./.github/actions/rclone
 
       # This run's plan alone: with no run-id, the download reads no other run's artifacts.

@@ -32,6 +32,11 @@
  *   no copy back writes. The restore record goes first (`recordRestore`). Once a month a night
  *   is a drill (`drill`): it reads back what R2 held, whole, and what a copy back of the whole
  *   bucket at the window's far edge writes, every marked namespace left out.
+ * - **After an account's loss (`recover`, `r8-locate.md`):** mode `recover` writes the marks
+ *   back first, then every unmarked namespace with a root, locates each one's owner from its
+ *   generation (`restore.locate`) and begins its restore, in one run. Until it has, a night
+ *   refuses to copy a bucket that lacks a mark the copy holds (`copy`): nothing deletes a mark,
+ *   so such a bucket lost them, and its sync would hide every one.
  *
  * `node --experimental-strip-types deploy/offsite.ts settings` writes `configured` for the
  * workflow; `… copy` runs the copy, and `… drill` the copy and then the drill. Node runs this
@@ -44,7 +49,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { keyed, whole } from "../contract/src/checks.ts";
-import { MARKS, markedNamespace, namespaceOf, objectPrefix } from "../contract/src/files.ts";
+import {
+  type LocatedOwner, MARKS, markedNamespace, namespaceOf, objectPrefix,
+} from "../contract/src/files.ts";
 import { HEX32 } from "../contract/src/ids.ts";
 import { RECOVERY_WINDOW_S } from "../contract/src/limits.ts";
 import { annotate, github, output, pages, type Reach, summarize } from "./actions.ts";
@@ -364,6 +371,15 @@ export async function copy(s: Settings, source: string, io: Effects): Promise<Co
   const began = iso(io.now());
   const before = listed("listing of the copy", "copy", to);
   const kept = new Set(listed("listing of R2", "source", from));
+  // Nothing deletes a mark, so one R2 lacks is one R2 lost: a new account's bucket before mode
+  // recover wrote them back. The sync would hide them, and every copy back after would find
+  // the marks not whole.
+  const lost = before.filter((name) => markedNamespace(name) !== null && !kept.has(name));
+  if (lost.length > 0) {
+    throw new Error(`R2 lacks ${lost.length} erasure marks the copy holds, and nothing deletes ` +
+                    "a mark: a files bucket that lost them (a new account's, before mode " +
+                    "recover wrote them back) is never copied over them; nothing is copied");
+  }
   const hidden = before.filter((name) => !kept.has(name)).length;
   const limit = Math.max(MAX_DELETE_FLOOR, Math.floor(before.length * MAX_DELETE_SHARE));
   rclone("sync", ["source", "copy"],
@@ -601,7 +617,8 @@ function erasures(run: Run<"back" | "now" | "r2">, bucket: string, source: strin
 /**
  * `prefix` of the copy as it stood at `at` (null: as it stands) and of `source` in R2, the
  * namespaces marked erased (`erasures`, read first), and what a copy back of it writes: every
- * name under it the copy then held that R2 now lacks, relative to it.
+ * name under it the copy then held (`held`) that R2 now holds (`there`) or lacks (`lacking`),
+ * relative to it.
  */
 function readBack(b: Back, source: string, prefix: string, at: Date | null, io: Effects) {
   const rclone = rcloneOf(io, { back: readRemote("back", b.read, at),
@@ -610,10 +627,10 @@ function readBack(b: Back, source: string, prefix: string, at: Date | null, io: 
   const erased = erasures(rclone.run, b.bucket, source, at !== null);
   const from = `back:${b.bucket}/${prefix}`;
   const to = `r2:${source}/${prefix}`;
-  const there = new Set(rclone.listed("listing of R2", "r2", to));
-  const lacking = rclone.listed("listing of the copy", "back", from)
-    .filter((name) => !there.has(name));
-  return { run: rclone.run, from, to, lacking, erased };
+  const there: ReadonlySet<string> = new Set(rclone.listed("listing of R2", "r2", to));
+  const held = rclone.listed("listing of the copy", "back", from);
+  const lacking = held.filter((name) => !there.has(name));
+  return { run: rclone.run, from, to, held, there, lacking, erased };
 }
 
 /**
@@ -696,32 +713,55 @@ export async function copyBack(b: Back, source: string, namespace: string, at: D
           `lacked and the owner's object names, and read each back byte for byte (${left})`];
 }
 
+/** Whether `name`, under a namespace's prefix, is a generation's root (`o/<ns>/m/<gen>`). */
+function rootName(name: string): boolean {
+  const [, , kind, gen, ...rest] = name.split("/");
+  return kind === "m" && gen !== undefined && rest.length === 0;
+}
+
 /**
- * Whether a copy back of the whole bucket (after an account's loss) writes `name`, which the
- * copy holds and R2 lacks: a mark, so R2 holds every erasure again first; an object of a
- * namespace no mark names; never one of a marked namespace. Any other name is a loud stop: the
- * files bucket holds nothing else (`files/src/keys.ts`).
+ * What a copy back of the whole bucket after an account's loss writes (`recover`, and the
+ * drill's count of it), of `back` (`readBack`): how many marks R2 lacks, so R2 holds every
+ * erasure again first; and the namespaces no mark names of which the copy held a root, sorted,
+ * with every object of them R2 lacks. It leaves out every marked namespace, and every one with
+ * no root: no wrapped key of it survives, so nothing opens its chunks. Any other name is a loud
+ * stop: the files bucket holds nothing else (`files/src/keys.ts`).
  */
-function restored(name: string, erased: ReadonlySet<string>): boolean {
-  if (markedNamespace(name) !== null) {
-    return true;
+function recovered({ held, there, lacking, erased }:
+                     Pick<ReturnType<typeof readBack>, "held" | "there" | "lacking" | "erased">) {
+  const kept = new Set([...there].map(markedNamespace));
+  const spaces = new Set<string>();
+  const roots = new Set<string>();
+  for (const name of held.filter((each) => markedNamespace(each) === null)) {
+    const ns = namespaceOf(name);
+    if (ns === null) {
+      throw new Error(`the copy holds an object that is neither a namespace's nor a mark ` +
+                      `(under ${name.split("/")[0]}/), which nothing in the files bucket writes`);
+    }
+    spaces.add(ns);
+    if (rootName(name)) {
+      roots.add(ns);
+    }
   }
-  const ns = namespaceOf(name);
-  if (ns === null) {
-    throw new Error(`the copy holds an object that is neither a namespace's nor a mark ` +
-                    `(under ${name.split("/")[0]}/), which nothing in the files bucket writes`);
-  }
-  return !erased.has(ns);
+  const namespaces = [...roots].filter((ns) => !erased.has(ns)).sort();
+  const taken = new Set(namespaces);
+  return {
+    marks: [...erased].filter((ns) => !kept.has(ns)).length,
+    namespaces,
+    writes: lacking.filter((name) => taken.has(namespaceOf(name) ?? "")),
+    erased: [...spaces].filter((ns) => erased.has(ns)).length,
+    rootless: [...spaces].filter((ns) => !erased.has(ns) && !roots.has(ns)).length,
+  };
 }
 
 /**
  * The monthly drill, on the whole bucket, after the night `night` (`copy`): every object R2
  * held when the night began downloaded from both sides and compared byte for byte, so a copy
  * back as the copy stands writes exactly R2's bytes; then a whole-bucket copy back's own reads
- * as the copy stood `BACK_DAYS` ago, the oldest it takes: the erasure marks read whole
- * (`erasures`), what it would write counted with every marked namespace's objects left out,
- * and `SAMPLE` of them read whole. It writes nothing: no standing key can write the files
- * bucket.
+ * (`recover`'s) as the copy stood `BACK_DAYS` ago, the oldest it takes: the erasure marks read
+ * whole (`erasures`), what it would write counted (`recovered`), every marked namespace's
+ * objects left out, and `SAMPLE` of them read whole. It writes nothing: no standing key can
+ * write the files bucket.
  */
 export function drill(s: Settings, source: string, night: Copied, io: Effects): string[] {
   const { run } = rcloneOf(io, { source: r2Remote("source", s.account, s.r2),
@@ -731,14 +771,127 @@ export function drill(s: Settings, source: string, night: Copied, io: Effects): 
        "--min-age", night.began]);
   const at = new Date(io.now().getTime() - BACK_DAYS * 86_400_000);
   const back = readBack(s, source, "", at, io);
-  const writes = back.lacking.filter((name) => restored(name, back.erased));
-  const sample = sampled(writes);
+  const would = recovered(back);
+  const sample = sampled(would.writes);
   withList(sample, (file) => back.run("read of a copy back's sample", ["back"],
                                       ["cat", "--discard", "--files-from", file, back.from]));
   return [`every object R2 held at ${night.began} is in the copy, compared byte for byte`,
-          `a copy back as the copy stood at ${iso(at)} would write ${writes.length} objects R2 ` +
-          `no longer holds, and leave out ${back.lacking.length - writes.length} of namespaces ` +
-          `marked erased (${back.erased.size} marks); ${sample.length} of them read back whole`];
+          `a copy back as the copy stood at ${iso(at)} would write ${would.marks} ` +
+          `erasure marks and ${would.writes.length} objects of ${would.namespaces.length} ` +
+          `namespaces R2 no longer holds, and leave out ${would.erased} namespaces marked ` +
+          `erased (${back.erased.size} marks) and ${would.rootless} with no root; ` +
+          `${sample.length} of them read back whole`];
+}
+
+/** One owner's restore to begin (`restore.begin`): the owner, and its namespace's generation. */
+export interface Begin {
+  readonly owner: string;
+  readonly namespace: string;
+  readonly gen: string;
+}
+
+/**
+ * What mode `recover` asks the doors through the operator channel (`deploy.ts`): each
+ * namespace's owner and newest generation (`restore.locate`), null for one R2 holds no root
+ * of; and each owner's restore begun (`restore.begin`), in order, null for one begun, else why
+ * not.
+ */
+export interface Recovering {
+  readonly locate: (namespaces: readonly string[]) =>
+    Promise<ReadonlyMap<string, LocatedOwner | null>>;
+  readonly begin: (begins: readonly Begin[]) => Promise<readonly (string | null)[]>;
+}
+
+/**
+ * After an account's loss (mode `recover`, in a new account after a dark deploy): every
+ * namespace of the copy as it stood at `at` (null: as it stands) written back into `source`,
+ * the new account's files bucket, and its owner's restore begun, in one run
+ * (`docs/decisions/untangle-2026-11/r8-locate.md`).
+ * 1. The erasure marks read first (`erasures`), loudly, as every copy back reads them; then,
+ *    with anything to write, the restore record before the first byte; then every mark the copy
+ *    holds that R2 lacks written back, so R2 holds every erasure again and the next night keeps
+ *    it in the copy (`copy` refuses a night over marks R2 lacks).
+ * 2. Each namespace no mark names of which the copy held a root (`recovered`): every object of
+ *    it R2 lacks written back whole, and read back byte for byte. No row can be asked here (no
+ *    object names a namespace yet): the restore's own sweeps delete what no restored row names.
+ * 3. Each one located (`restore.locate`): two naming one owner is a loud stop naming both,
+ *    before any restore begins.
+ * 4. Each owner's restore begun from its namespace's newest generation (`restore.begin`), so
+ *    every written namespace is named by an object, whose erasure deletes it; mode `restore`
+ *    carries each on. A refusal or no answer is a loud stop naming each, the rest begun.
+ * A run cut short is run again with the same `at` (null: the time its restore record names,
+ * since a night after the marks are back hides what R2 lacks yet): nothing R2 holds is written
+ * again (`--ignore-existing`, and the listing), and a begin asked again answers as it stands.
+ * What it did, as plan lines.
+ */
+export async function recover(b: Back, source: string, at: Date | null, asking: Recovering,
+                              control: RestoreControl, io: Effects): Promise<string[]> {
+  readableAt(at, io.now());
+  const back = readBack(b, source, "", at, io);
+  const { marks, namespaces, writes, erased, rootless } = recovered(back);
+  const as = at === null ? "as the copy stands" : `as the copy held them at ${iso(at)}`;
+  const lines: string[] = [];
+  if (marks > 0 || writes.length > 0) {
+    const began = await recordRestore(control, io.now());
+    lines.push(`recorded a restore from the copy begun at ${iso(new Date(began * 1000))} in ` +
+               `${RESTORE_KEY}, before its first byte`);
+  }
+  if (marks > 0) {
+    const all = [`now:${b.bucket}`, `r2:${source}`, "--include", `/${MARKS}*`];
+    back.run("copy back of the erasure marks", ["now", "r2"],
+             ["copy", ...all, "--ignore-existing", "--stats-one-line", "--stats", "1m",
+              "--stats-log-level", "NOTICE"]);
+    back.run("byte check of the erasure marks", ["now", "r2"],
+             ["check", ...all, "--one-way", "--download"]);
+    lines.push(`wrote back first the ${marks} erasure marks the copy holds and R2 lacked, ` +
+               "each read back byte for byte");
+  }
+  if (writes.length > 0) {
+    withList(writes, (file) => {
+      back.run("copy back", ["back", "r2"],
+               ["copy", back.from, back.to, "--files-from", file, "--ignore-existing",
+                "--stats-one-line", "--stats", "1m", "--stats-log-level", "NOTICE"]);
+      back.run("byte check of the copy back", ["back", "r2"],
+               ["check", back.from, back.to, "--one-way", "--download", "--files-from", file]);
+    });
+  }
+  lines.push(`wrote ${writes.length} objects of ${namespaces.length} namespaces into ${source}, ` +
+             `${as}, each one R2 lacked, read back byte for byte; left out ${erased} namespaces ` +
+             `marked erased and ${rootless} with no root`);
+  if (namespaces.length === 0) {
+    return lines;
+  }
+  const located = await asking.locate(namespaces);
+  const begins = namespaces.map((namespace) => {
+    const found = located.get(namespace) ?? null;
+    if (found === null) {
+      throw new Error(`R2 holds no root of the namespace ${namespace} after its copy back: ` +
+                      "nothing is begun");
+    }
+    return { owner: found.owner, namespace, gen: found.gen };
+  });
+  const by = new Map<string, string[]>();
+  for (const { owner, namespace } of begins) {
+    by.set(owner, [...by.get(owner) ?? [], namespace]);
+  }
+  const twice = [...by].filter(([, spaces]) => spaces.length > 1);
+  if (twice.length > 0) {
+    throw new Error(`${twice.map(([owner, spaces]) => `the namespaces ${spaces.join(" and ")} ` +
+      `each name ${owner}`).join("; ")}: an owner has one namespace, so nothing is begun ` +
+      "(checklist.md, \"A restore after the account's loss\")");
+  }
+  const answers = await asking.begin(begins);
+  const failed = begins.flatMap((begin, each) => answers[each] === null ? []
+    : [`${begin.owner} from ${begin.namespace}/${begin.gen}: ${answers[each]}`]);
+  lines.push(...begins.filter((_, each) => answers[each] === null)
+    .map(({ owner, namespace, gen }) => `began ${owner}'s restore from ${namespace}/${gen}: ` +
+         `mode restore --owner ${owner} --generation ${namespace}/${gen} carries it on`));
+  if (failed.length > 0) {
+    throw new Error(`${failed.length} of ${begins.length} restores were not begun, each ` +
+                    `written back and named by no object until it is: ${failed.join("; ")}. ` +
+                    `${lines.join("; ")}`);
+  }
+  return lines;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

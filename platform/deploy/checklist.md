@@ -702,10 +702,9 @@ missing.
 - **The restore record first.** Before the first byte the run writes `deploy:offsite:restore`.
   That restarts a `FILES_KEYRING` retirement's gate: dispatch `rotation` for a pass begun after
   it.
-- **Not yet: a lost object, or any owner after an account loss.** Then no object names a
-  namespace, and the run refuses (`docs/decisions/untangle-2026-11/r8-account-loss.md` item 7
-  designs it). An erasure begun in the day before an account's loss is not yet in the copy
-  (item 6 there).
+- **Not here: a lost object, or any owner after an account loss.** Then no object names a
+  namespace, and the run refuses. After an account's loss, use mode `recover` (below). A lost
+  object with the account intact is not built yet (`untangle/r8-lost-object`, `tasks.md`).
 
 The steps:
 
@@ -727,6 +726,46 @@ The steps:
 
 Never copy back by hand. A copy back that records nothing lets mode `retire` pass while R2 and
 the copy still hold roots under a retiring kid of `FILES_KEYRING`.
+
+## A restore after the account's loss
+
+Mode `recover` of **Platform deploy** restores every owner into a new Cloudflare account from
+the copy (`deploy/offsite.ts` `recover`; `docs/decisions/untangle-2026-11/r8-locate.md`). No
+object names a namespace there, and every erasure record but the marks went with the account.
+
+- **Erasures first.** The run reads the marks as a copy back does, and stops on the same
+  refusals. Then, after the restore record, it writes every mark R2 lacks back first, so the
+  new bucket holds every erasure again. A marked namespace is never written.
+- **Each namespace with a root.** Every other namespace the copy held at `at` and of which it
+  held a generation's root is written back whole and read back byte for byte. One with no root
+  is left out: nothing could open its chunks.
+- **Its owner, from its own generation.** Each namespace's owner is read from its newest
+  generation's header in the files Worker (`restore.locate`, addressed to the platform, a page
+  of namespaces a message). Two namespaces naming one owner stop the run before any restore
+  begins: find which is the owner's before you go on.
+- **Each owner's restore begun.** `restore.begin` from that generation, so every written
+  namespace is named by an object, whose erasure deletes it. The run names each one begun, and
+  the `restore` dispatch that carries it on. One the doors refuse or don't answer stops the run
+  once the rest are begun, named: an owner who signed up in the new account before the run is
+  refused (it is not empty), and `restore` with its generation takes it (its pin and wipe).
+- **Before it, no night.** A night refuses to copy a bucket that lacks a mark the copy holds,
+  copying nothing (`copy`): the sync would hide every mark. So the nights stay red in the new
+  account until `recover` has run. Run it at once.
+- An erasure begun in the day before the loss is not yet in the copy
+  (`r8-account-loss.md` item 6).
+
+The steps:
+
+1. **A dark deploy of the new account,** then the copy's settings and keys for it, as above,
+   and the R2 write pair of step 1 of "A restore from the copy".
+2. **Dispatch `recover`,** with `at` before the loss (none reads the copy as it stands). It is
+   cut short past 20 minutes of asks, or by the job's 30, or stopped: dispatch it again with
+   the same `at` (with none, the time its restore record names). Once the marks are back a
+   night copies again and hides in the copy what R2 does not hold yet, so the copy as it
+   stands then lacks it. What R2 holds is not written again, and a begin asked again answers
+   as it stands.
+3. **Dispatch `restore`** for each owner the run names, with the generation it names.
+4. **Revoke the write key,** as step 4 above.
 
 ## Registrations you make by hand at the providers
 

@@ -275,19 +275,24 @@ export async function askOperator(cloudflare: Cloudflare, account: string, ring:
  */
 export const PACE_MS = 400;
 
+/** One ask of `askOwners`: whom it is addressed to, and its args. */
+export interface Ask {
+  readonly owner: string;
+  readonly args: OperatorArgs;
+}
+
 /**
- * `op`, with no args, asked of the doors for each of `owners` at once (batch pushes of
- * `BATCH`), and each one's answer, in order: null for one not answered within `WAIT_MS`, which
- * the dead-letter queue may hold. Each answer is read at least once, each read after a
- * `PACE_MS` gap.
+ * `op` asked of the doors for each of `asks` at once (batch pushes of `BATCH`), and each one's
+ * answer, in order: null for one not answered within `WAIT_MS`, which the dead-letter queue
+ * may hold. Each answer is read at least once, each read after a `PACE_MS` gap.
  */
 export async function askOwners(cloudflare: Cloudflare, account: string, ring: Ring, op: string,
-                                owners: readonly string[], waiting: Waiting):
+                                asks: readonly Ask[], waiting: Waiting):
     Promise<(OperatorAnswer | null)[]> {
   const queue = await operatorQueue(cloudflare, account);
   const start = waiting.now().getTime();
-  const messages = await Promise.all(owners.map((owner) =>
-    signOperator(ring, op, owner, {}, Math.floor(start / 1000))));
+  const messages = await Promise.all(asks.map(({ owner, args }) =>
+    signOperator(ring, op, owner, args, Math.floor(start / 1000))));
   await cloudflare.sendBatch(account, queue, messages);
   const answers: (OperatorAnswer | null)[] = messages.map(() => null);
   do {
@@ -474,8 +479,8 @@ export async function rotate(sweep: Sweep): Promise<RotationRecord> {
     if (waiting.now().getTime() >= until) {
       return false;
     }
-    const answers = await askOwners(cloudflare, account, sweep.operator, sweep.op, owners,
-                                    waiting);
+    const answers = await askOwners(cloudflare, account, sweep.operator, sweep.op,
+                                    owners.map((owner) => ({ owner, args: {} })), waiting);
     const owed = owners.filter((owner, at) => {
       const reason = owes(owner, answers[at]!, stored.active);
       if (reason !== null) {
@@ -498,7 +503,7 @@ export async function rotate(sweep: Sweep): Promise<RotationRecord> {
     return true;
   };
   const owingAgain = async (): Promise<boolean> => {
-    for (const owners of pages(pass.owing)) {
+    for (const owners of pages(pass.owing, BATCH)) {
       if (!await page(owners, (owed) => ({ through: pass.through, owing: [
         ...pass.owing.filter((owner) => !owners.includes(owner)), ...owed] }))) {
         return false;
@@ -507,7 +512,7 @@ export async function rotate(sweep: Sweep): Promise<RotationRecord> {
     return true;
   };
   let finished = await owingAgain();
-  for (const owners of finished ? pages(after(pass.through)) : []) {
+  for (const owners of finished ? pages(after(pass.through), BATCH) : []) {
     if (!await page(owners, (owed) => ({ through: owners.at(-1)!,
                                          owing: [...pass.owing, ...owed] }))) {
       finished = false;
@@ -528,14 +533,14 @@ export async function rotate(sweep: Sweep): Promise<RotationRecord> {
     say("the directory lists no owner: nothing is swept");
     return written;
   }
-  for (const owners of pages(pass.owing)) {
+  for (const owners of pages(pass.owing, BATCH)) {
     if (waiting.now().getTime() >= until) {
       say(`${pass.owing.length} owners still owe, the rest unnamed past ${RUN_MS / 60_000} ` +
           "minutes: the record holds them, and the next run asks them first");
       break;
     }
-    const states = await askOwners(cloudflare, account, sweep.operator, "owner.state", owners,
-                                   waiting);
+    const states = await askOwners(cloudflare, account, sweep.operator, "owner.state",
+                                   owners.map((owner) => ({ owner, args: {} })), waiting);
     say(...owners.map((owner, at) => {
       const state = states[at] ?? null;
       return `${owner} still owes (${why.get(owner) ?? "carried"}): ${state === null
@@ -547,11 +552,11 @@ export async function rotate(sweep: Sweep): Promise<RotationRecord> {
   return written;
 }
 
-/** `owners` in pages of `BATCH`. */
-function pages(owners: readonly string[]): string[][] {
-  const out: string[][] = [];
-  for (let at = 0; at < owners.length; at += BATCH) {
-    out.push(owners.slice(at, at + BATCH));
+/** `items` in pages of `size`. */
+export function pages<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let at = 0; at < items.length; at += size) {
+    out.push(items.slice(at, at + size));
   }
   return out;
 }

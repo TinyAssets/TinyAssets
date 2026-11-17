@@ -11,12 +11,13 @@ import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { base64, hex, OBJECT_OVERHEAD, sealObject } from "../../contract/src/envelope";
 import { chunkName, unwrap } from "../src/datakey";
 import { refusalOf } from "../../contract/src/refusal";
-import FilesService from "../src/index";
+import FilesService, { FilesLocate } from "../src/index";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import { chunkKey, manifestKey, markKey } from "../src/keys";
 import {
   type ChunkGet, GET_READS, MARK_BODY, markedNamespace,
 } from "../../contract/src/files";
+import { headerLine } from "../../contract/src/export-header";
 
 import { ringKey } from "../../ci/fixtures";
 
@@ -105,9 +106,10 @@ async function keys(space: string): Promise<string[]> {
 }
 
 describe("the Worker's main module", () => {
-  it("exports only its entrypoints: the service, and the doors' upload one (review M5-1)",
-     async () => {
-    expect(Object.keys(await import("../src/index")).sort()).toEqual(["FilesUpload", "default"]);
+  it("exports only its entrypoints: the service, and the doors' upload (review M5-1) and " +
+     "locate ones", async () => {
+    expect(Object.keys(await import("../src/index")).sort())
+      .toEqual(["FilesLocate", "FilesUpload", "default"]);
   });
 });
 
@@ -467,6 +469,80 @@ describe("deleteNamespace: the erasure's mark, then its prefix delete", () => {
     expect(await markOf(space)).toEqual(mark);
     // Another namespace is neither marked nor touched.
     expect([await markOf(other), (await keys(other)).length]).toEqual([null, 1]);
+  });
+});
+
+describe("locate: a namespace's owner, from its newest generation's header", () => {
+  const located = (space: string, bucket: R2Bucket = env.BLOBS) =>
+    new FilesLocate(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: RING })
+      .locate(space);
+  /** Part 0 of `gen` of `space` holding `first` as its first line, then a row. */
+  async function generation(space: string, gen: string, first: unknown, at: number) {
+    const key = await keyOf(space);
+    const part = await service().putManifestPart(space, key, gen, 0, bytes(
+      `${JSON.stringify(first)}\n{"t":"row","table":"x","row":{}}\n`));
+    // The root as the Worker writes it, its lists' time `at`, so which is newest is the test's.
+    const lists = { parts: [part], segments: [], s: 1, e: 0, at };
+    const sealed = await sealObject(await unwrap(RING, space, key), manifestKey(space, gen),
+                                    bytes(JSON.stringify(lists)));
+    await env.BLOBS.put(manifestKey(space, gen), JSON.stringify({
+      format: "tinyassets-manifest", version: 2, gen, key, sealed: base64(sealed) }));
+  }
+  const header = (owner: string, gen: string) =>
+    headerLine({ schema: 12, owner, at: 1, gen, s: 1 });
+
+  it("answers the owner its newest generation names, and that generation, nothing else of it",
+     async () => {
+    const space = ns();
+    const [old, newest] = ["a".repeat(16), "1".repeat(16)];
+    await generation(space, old, header("user_alice", old), 1000);
+    await generation(space, newest, header("user_alice", newest), 2000);
+    // A pass's part with no root yet names no generation.
+    await service().putManifestPart(space, await keyOf(space), "f".repeat(16), 0, bytes("x"));
+    expect(await located(space)).toEqual({ owner: "user_alice", gen: newest });
+  });
+
+  it("answers null for a namespace the bucket holds no root of", async () => {
+    const space = ns();
+    expect(await located(space)).toBeNull();
+    await service().putManifestPart(space, await keyOf(space), "f".repeat(16), 0, bytes("x"));
+    expect(await located(space)).toBeNull();
+    expect(await refused(() => located("not a namespace"))).toBe("invalid");
+  });
+
+  it("lists the roots page by page, past the first", async () => {
+    const space = ns();
+    const gens = ["1", "2", "3"].map((digit) => digit.repeat(16));
+    for (const [at, gen] of gens.entries()) {
+      await generation(space, gen, header("user_bob", gen), at);
+    }
+    const paged = { get: (key: string) => env.BLOBS.get(key),
+                    list: (options: R2ListOptions) => env.BLOBS.list({ ...options, limit: 1 }) };
+    expect(await located(space, paged as unknown as R2Bucket))
+      .toEqual({ owner: "user_bob", gen: gens[2] });
+  });
+
+  it.each([
+    ["no header", { t: "row", table: "x", row: {} }],
+    ["another generation's header", header("user_alice", "b".repeat(16))],
+    ["another format's header", { ...header("user_alice", "c".repeat(16)), version: 2 }],
+  ])("fails loudly on a part 0 with %s", async (_what, first) => {
+    const space = ns();
+    await generation(space, "c".repeat(16), first, 1);
+    expect((await failure(() => located(space))).message)
+      .toBe(`generation ${"c".repeat(16)}'s first part holds no export header of it`);
+  });
+
+  it("fails loudly on a part that does not open under its root's key", async () => {
+    const space = ns();
+    const gen = "d".repeat(16);
+    await generation(space, gen, header("user_alice", gen), 1);
+    const stored = await (await env.BLOBS.get(manifestKey(space, gen, 0)))!.arrayBuffer();
+    const moved = ns();
+    await generation(moved, gen, header("user_alice", gen), 1);
+    await env.BLOBS.put(manifestKey(moved, gen, 0), stored);
+    expect((await failure(() => located(moved))).message)
+      .toBe("a stored object does not open under its owner's key");
   });
 });
 
