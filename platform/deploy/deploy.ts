@@ -1793,9 +1793,22 @@ const eraseAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   if (run.confirm !== words) {
     throw new Error(`--confirm ${run.confirm} is not the erasure's words for ${owner}: ${words}`);
   }
-  say(`erase ${owner} through the operator channel, as its own door erases it: ${ERASE_LOSES}`);
+  say(`erase ${owner} through the operator channel, as its own door erases it; a lost object ` +
+      `only once R2 holds no namespace naming it: ${ERASE_LOSES}`);
   if (!run.apply) {
     return;
+  }
+  // A lost object (pending, naming no namespace, no pin's record) marks none of the namespaces
+  // R2 holds of it: restored first, its own then holds every other, and its erasure takes all.
+  const source = await asked(run, got, "restore.source", owner, {}) as RestoreSource;
+  if (source.state === "pending" && source.namespace === null
+      && (source.restore?.fresh ?? null) === null) {
+    const { own } = await namespacesOf(run, got, owner);
+    if (own.size > 0) {
+      throw new Error(`${owner}'s object is lost and R2 holds ${own.size} namespaces naming it, ` +
+                      "which its erasure would not reach: restore it first (mode restore), " +
+                      "then erase it");
+    }
   }
   say(`the doors answered owner.erase for ${owner}: ${
     JSON.stringify(await asked(run, got, "owner.erase", owner, { confirm: words }))}`);

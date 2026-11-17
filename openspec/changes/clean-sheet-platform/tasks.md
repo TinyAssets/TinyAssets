@@ -479,9 +479,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     naming it held by the restored one; a live owner restored from a namespace it holds; and a
     located namespace whose owner is erased erased (`r8-account-loss.md` item 7, `r8-locate.md`
     item 7, `r8-erased-orphans.md` item 8; `untangle/r8-lost-object`, `r8-lost-object.md`).
-  - [ ] An erasure of a lost object marks nothing (its object and no restore record name a
-    namespace), so its namespaces in R2 stay unmarked until a find or a `recover` locates them:
-    mode `erase` finds them first (`r8-lost-object.md` item 8; `untangle/r8-lost-erase`).
+  - [x] An erasure of a lost object marks nothing (its object and no restore record name a
+    namespace): mode `erase` finds its namespaces first, and refuses while R2 holds one naming
+    it, until it is restored (`r8-lost-object.md` item 8; `untangle/r8-lost-erase`).
   - [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
     it, since `copyback` needs an object naming the namespace and `recover` begins every owner
     (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`).

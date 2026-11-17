@@ -742,6 +742,9 @@ restored from R2 by mode `restore` (`docs/decisions/untangle-2026-11/r8-lost-obj
    every other namespace naming it is held by the one restored (`restore.hold`), so its erasure
    takes them all. A run cut short goes on when dispatched again.
 
+Mode `erase` of a lost object finds its namespaces the same way first, and refuses while R2
+holds one naming it, since its erasure would mark none: restore it, then erase it.
+
 A lost object whose namespace R2 lost too is restored by no mode yet: `copyback` needs an object
 that names the namespace, and `recover` would begin every owner (`untangle/r8-lost-copy`,
 `tasks.md`).

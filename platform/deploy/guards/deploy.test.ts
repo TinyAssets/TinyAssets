@@ -3443,20 +3443,42 @@ describe("mode erase", () => {
     const flags = ["--owner", "user_alice", "--confirm", WORDS];
     const planned = world({ held: true });
     expect((await runMode(planned, "erase", ["--public", ...flags], PUBLIC)).plan).toEqual([
-      `erase user_alice through the operator channel, as its own door erases it: ${
-        ERASE_LOSES}`]);
+      "erase user_alice through the operator channel, as its own door erases it; a lost " +
+      `object only once R2 holds no namespace naming it: ${ERASE_LOSES}`]);
     expect(planned.sent).toEqual([]);
     const w = world({ held: true, doors: () => ({ result: { erasing: true } }) });
     const work = await runMode(w, "erase", ["--yes", ...flags]);
-    expect(sent(w)).toEqual([["owner.erase", "user_alice", { confirm: WORDS }]]);
-    expect(await macHolds(parseRing(RING)!, w.sent[0]!.message)).toBe(true);
+    expect(sent(w)).toEqual([["restore.source", "user_alice", {}],
+                             ["owner.erase", "user_alice", { confirm: WORDS }]]);
+    expect(await macHolds(parseRing(RING)!, w.sent[1]!.message)).toBe(true);
     expect(work.plan.at(-1)).toBe('the doors answered owner.erase for user_alice: ' +
                                   '{"erasing":true}');
-    const refusing = world({ held: true, doors: () => ({
-      refused: { code: "refused", message: "the platform holds no owner of that name" } }) });
+    const refusing = world({ held: true, doors: (message) => message.op === "owner.erase" ? {
+      refused: { code: "refused", message: "the platform holds no owner of that name" } }
+      : { result: {} } });
     await expect(runMode(refusing, "erase", ["--yes", ...flags])).rejects.toThrow(
       "the doors refused owner.erase for user_alice (refused): the platform holds no owner " +
       "of that name");
+  });
+
+  it("refuses a lost object while R2 holds a namespace naming it, which its erasure would " +
+     "not reach; erases one R2 holds none of", async () => {
+    const NS = "a".repeat(32);
+    const lost = (owner: string) => (message: OperatorMessage) => ({ result:
+      message.op === "restore.namespaces" ? { namespaces: [NS], cursor: null }
+      : message.op === "restore.locate" ? { located: { [NS]: { owner, gen: "b".repeat(16),
+                                                              at: 0 } } }
+      : { state: "pending", namespace: null, restore: null, erasing: true } });
+    const found = world({ held: true, doors: lost("user_alice") });
+    await expect(runMode(found, "erase", ["--yes", "--owner", "user_alice", "--confirm", WORDS]))
+      .rejects.toThrow("user_alice's object is lost and R2 holds 1 namespaces naming it, which " +
+                       "its erasure would not reach: restore it first (mode restore), then " +
+                       "erase it");
+    expect(sent(found).map(([op]) => op)).toEqual(["restore.source", "restore.namespaces",
+                                                   "restore.locate"]);
+    const none = world({ held: true, doors: lost("user_bob") });
+    await runMode(none, "erase", ["--yes", "--owner", "user_alice", "--confirm", WORDS]);
+    expect(sent(none).at(-1)).toEqual(["owner.erase", "user_alice", { confirm: WORDS }]);
   });
 
   it("is mode erase's alone: --act never asks owner.erase", () => {
