@@ -19,8 +19,9 @@
  * Then the message is answered (`answers/<ask>.json`, a put that only makes): refused
  * (`owner_erased`, as the object and the sign-in refuse it) when the directory's `o:` record
  * says the owner is erased; otherwise by its op in `OPS`, its result or its refusal, and
- * refused (`invalid`) when `OPS` takes no such op or its args are not exactly the op's
- * (`OPERATOR_OPS`).
+ * refused (`invalid`) when `OPS` takes no such op, its args are not exactly the op's
+ * (`OPERATOR_OPS`), or it is not addressed as its op is (`addressed`: an op of the platform's
+ * own to the platform's reserved principal, any other to an owner).
  * A refusal of the moment, or any failure, is retried by the queue, and then left in the
  * dead-letter queue the kit names when no answer comes. Every op is idempotent from the
  * owner's own state, since the queue delivers at least once: an erasure's redelivery is
@@ -28,12 +29,13 @@
  * outside step wrote the directory's record.
  */
 import {
-  acceptance, acceptanceKey, acceptanceOf, answerKey, answerOf, macHolds, type OperatorArgs,
-  type OperatorMessage, operatorMessage, type OperatorOp, OPERATOR_OPS, OPERATOR_WINDOW_S,
-  type Refused,
+  acceptance, acceptanceKey, acceptanceOf, addressed, answerKey, answerOf, locatedNamespaces,
+  type LocatedPage, macHolds, type OperatorArgs, type OperatorMessage, operatorMessage,
+  type OperatorOp, OPERATOR_OPS, OPERATOR_WINDOW_S, PLATFORM_OPS, type Refused,
 } from "../../contract/src/operator-message";
 import { keyed } from "../../contract/src/checks";
 import { parseRing } from "../../contract/src/envelope";
+import type { LocatedOwner } from "../../contract/src/files";
 import type {
   EraseRequest, RestoreBeginRequest, RestoreNamesRequest, RestorePinRequest,
   RestoreWipeRequest, TierRequest,
@@ -47,7 +49,10 @@ import type { DoorsEnv } from "./env";
 import { deleteKey, readOwner } from "./directory";
 import { revokeAll } from "./revoke";
 
-/** An op: what it does to the owner with its args, exactly `OPERATOR_OPS` names, and its result. */
+/**
+ * An op: what it does to the owner with its args, exactly `OPERATOR_OPS` names, and its result;
+ * an op of the platform's own (`PLATFORM_OPS`) is given the platform's reserved principal.
+ */
 type Op = (env: DoorsEnv, owner: string, args: OperatorArgs) => Promise<unknown>;
 
 /** The platform's change of `owner`'s admission: a suspension's reason, held or lifted. */
@@ -135,6 +140,17 @@ const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
     const { binding, stub } = bindPlatformFor(env, owner);
     return stub.restoreNames(binding, args as unknown as RestoreNamesRequest);
   },
+  // A restore after an account's loss, when no object names a namespace (`deploy/offsite.ts`
+  // `recover`): each namespace's owner, as its newest generation names it, read in the files
+  // Worker one namespace at a time (each opens a part of up to a chunk); null for one the
+  // bucket holds no root of.
+  "restore.locate": async (env, _platform, args): Promise<LocatedPage> => {
+    const located: Record<string, LocatedOwner | null> = {};
+    for (const ns of locatedNamespaces(args)) {
+      located[ns] = await env.FILES_LOCATE.locate(ns);
+    }
+    return { located };
+  },
 });
 
 /** A put that only makes: null when the key is already there. */
@@ -180,6 +196,11 @@ async function verdict(env: DoorsEnv, message: OperatorMessage):
   if (!keyed(message.args, OPERATOR_OPS[op])) {
     return refused("invalid", `${op} takes exactly ${
       OPERATOR_OPS[op].join(", ") || "no args"}`);
+  }
+  if (!addressed(op, message.owner)) {
+    return refused("invalid", PLATFORM_OPS.includes(op)
+      ? `${op} is the platform's own: it is addressed to the platform's reserved principal`
+      : `${op} is addressed to an owner, not the platform's reserved principal`);
   }
   try {
     return { result: await OPS[op](env, message.owner, message.args) };
