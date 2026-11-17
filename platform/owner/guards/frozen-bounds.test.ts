@@ -150,9 +150,7 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
     ["ALTER TABLE action_requests ADD COLUMN run", 1, ID("run")],
   ],
   CONVERSATION_ID_CHARS: [...TABLE("runs", ID("conversation")), ...TABLE("conversations", ID("id")),
-                          ...TABLE("socket_tickets", ID("conversation")),
-                          ["ALTER TABLE action_requests ADD COLUMN conversation", 1,
-                           ID("conversation")]],
+                          ...TABLE("socket_tickets", ID("conversation"))],
   SCHEDULE_ID_CHARS: TABLE("run_schedules", ID("id")),
   MESSAGE_ID_CHARS: TABLE("runs", ID("mail")),
   NATIVE_ID_CHARS: TABLE("native_agents", ID("agent_id")),
@@ -443,7 +441,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(595);
+    expect(places).toBe(594);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

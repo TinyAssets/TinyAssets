@@ -277,9 +277,9 @@ export class Actions {
         expires_at: now + ACTION_LIMITS.cardTtlS,
       };
       sql.exec("INSERT INTO action_requests (card_id, digest, call_digest, card, client, " +
-                 "generation, filed_at, conversation, run, family) VALUES (?, ?, ?, ?, ?, ?, " +
-                 "?, ?, ?, ?)", cardId, policyDigest(card), call, canonical(card), actor.client,
-               generation, now, conversation, actor.run?.id ?? null, actor.run?.family ?? null);
+                 "generation, filed_at, run, family) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", cardId,
+               policyDigest(card), call, canonical(card), actor.client, generation, now,
+               actor.run?.id ?? null, actor.run?.family ?? null);
       receipt("held", cardId);
       this.#notices.add("action_request", `${actor.agent ?? "an outside agent"} asks to ` +
                         `${act} at ${asked.door}: card ${cardId}`, now);

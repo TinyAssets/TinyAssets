@@ -529,10 +529,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // receipts, a bucket of the policy's kept apart (`actions.ts`).
     action_requests: { rows: A.held,
                        bytes: ROW + 36 + 2 * 71 + ACTION_CARD_BYTES + 64 + 3 * NUMBER
-                         + CONVERSATION_ID_CHARS + RUN_ID_CHARS + 64,
+                         + RUN_ID_CHARS + 64,
                        by: "held calls, each its card at the schema's byte ceiling, its two " +
-                         "digests, its client, its times, and a run's conversation, run " +
-                         "and origin's family (P-resume)",
+                         "digests, its client, its times, and a run's id and its origin's " +
+                         "family (P-resume)",
                        indexes: { sqlite_autoindex_action_requests_1: key(36),
                                   sqlite_autoindex_action_requests_2: key(71),
                                   action_requests_by_client: key(64) } },
