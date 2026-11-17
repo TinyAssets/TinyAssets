@@ -8,6 +8,7 @@ import { vi } from "vitest";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { base64url } from "../../contract/src/envelope";
 import { acceptanceKey, answerKey } from "../../contract/src/operator-message";
+import type { DoorAnswer } from "../../contract/src/owner";
 import { QUEUES } from "../../contract/src/queue-names";
 import type { Refusal } from "../../contract/src/refusal";
 import { upstreamConfig } from "../../contract/src/signin";
@@ -21,7 +22,7 @@ import {
 import { serve } from "../src/doors";
 import doors from "../src/index";
 import { authorizationServer } from "../src/oauth";
-import { callDoor } from "../src/tools";
+import { callDoor, type DoorName } from "../src/tools";
 import type { Sources } from "../../sources/src/schema";
 import { signInCode } from "./fake-providers";
 
@@ -420,42 +421,25 @@ export async function admissionOf(owner: string) {
   return { state, reasons, tier };
 }
 
-/** One outside client's grant, as the owner's `grantList` door answers it. */
-export interface GrantRow {
-  readonly client: string;
-  readonly source: string;
-  readonly mode: string;
-  readonly scopes: unknown;
-  readonly revision: number;
-  readonly revoked_at: number | null;
-  readonly vendor: string | null;
-  readonly vendor_verified: number;
-}
-
 /** The owner's own binding, as a door takes it from the owner's app. */
 export function ownBinding(owner: string): Binding {
   return { owner, caller: owner, origin: null, tiers: OPEN.tiers };
 }
 
 /**
- * `owner`'s door `door` called with `binding`, as the doors call a table door (`callDoor`):
- * its answer, as the door's row says it is, or its refusal. Awaited here, so a refusal is
- * this promise's alone: a test that asserted on the stub's own promise would leave a
- * rejected pipelined property of it unhandled.
+ * `owner`'s door `door` called with its own binding (`ownBinding`), as the doors call a table
+ * door (`callDoor`): its answer, as the contract types it (`DoorAnswer`), or its refusal.
+ * Awaited here, so a refusal is this promise's alone: a test that asserted on the stub's own
+ * promise would leave a rejected pipelined property of it unhandled.
  */
-async function doorAs<T>(owner: string, binding: Binding, door: string,
-                                request?: unknown): Promise<T> {
-  return await callDoor(doorsEnv.OWNER.getByName(owner), binding, door, request) as T;
-}
-
-/** `owner`'s door `door` called with its own binding (`ownBinding`, `doorAs`). */
-export function ownDoor<T>(owner: string, door: string, request?: unknown): Promise<T> {
-  return doorAs<T>(owner, ownBinding(owner), door, request);
+export async function ownDoor<D extends DoorName>(owner: string, door: D,
+                                                  request?: unknown): Promise<DoorAnswer<D>> {
+  return await callDoor(doorsEnv.OWNER.getByName(owner), ownBinding(owner), door, request);
 }
 
 /** `owner`'s grants, as its `grantList` door answers them to its own binding. */
-export async function grantsOf(owner: string): Promise<GrantRow[]> {
-  return (await ownDoor<{ clients: GrantRow[] }>(owner, "grantList")).clients;
+export async function grantsOf(owner: string) {
+  return (await ownDoor(owner, "grantList")).clients;
 }
 
 /**
@@ -464,7 +448,7 @@ export async function grantsOf(owner: string): Promise<GrantRow[]> {
  */
 export async function defineMain(owner: string, app: { access_token: string; session: string },
                                  file: Record<string, unknown>): Promise<void> {
-  await until(async () => (await ownDoor<{ version: number }>(owner, "starterReceipts"))
+  await until(async () => (await ownDoor(owner, "starterReceipts"))
     .version > 0, "the starter's seed");
   const path = "/workspace/agents/main/agent.json";
   const read = await appPost("files/read", app.access_token, app.session, { path });
@@ -505,7 +489,7 @@ export async function registerAgent(tokens: Tokens, owner: string, delivery_meth
                                                authenticated_at: now() - 5 });
   const registered = await callDoor(stub, { ...ownBinding(owner), session }, "registerAgent",
                                     { card_id: filed.card_id, digest: filed.digest });
-  return (registered as { agent_id: string }).agent_id;
+  return registered.agent_id;
 }
 
 /**

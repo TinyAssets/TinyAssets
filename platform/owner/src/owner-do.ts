@@ -636,6 +636,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         this.#relay.closeAll("erased");
         this.#launcher.stop(this.#runs.liveRuns().map(({ run }) => run));
       },
+      // The namespace's mark, at the erasure's start: the copy back's record of it (no put
+      // begins under the owner's mark, so the namespace it reads is the one the delete takes).
+      mark: async () => {
+        const ns = this.#files.storedNamespace();
+        if (ns !== null) {
+          await this.#files.markNamespace(ns);
+        }
+      },
       // Every sandbox of the owner killed, paused ones included, and the sandbox Worker's
       // state of them deleted (slice S review H-6).
       sandboxes: async () => {

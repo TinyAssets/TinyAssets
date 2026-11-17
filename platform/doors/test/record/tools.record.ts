@@ -70,8 +70,7 @@ describe("tools/list, byte for byte", () => {
     const [start] = (await env.SANDBOX_LOG.recorded(who)).starts as SandboxStart[];
     console.log(`TOOLS\trun\t${await runListed(start!)}`);
     // Code mode off: every custom tool but code.
-    const { generation, policy } = await ownDoor<
-      { generation: number; policy: Record<string, unknown> }>(who, "policyRead");
+    const { generation, policy } = await ownDoor(who, "policyRead");
     const { tools: _tools, ...rest } = policy;
     await stub.policyWrite(session, { expected_generation: generation,
                                       policy: { ...rest, codemode: { on: false } } });
