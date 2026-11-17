@@ -150,7 +150,6 @@ export function tryLock(path: string): boolean {
   }
 }
 
-/** The lock let go. */
 export function unlock(path: string): void {
   rmSync(path, { force: true });
 }

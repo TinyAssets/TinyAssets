@@ -16,7 +16,7 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
       "tries INTEGER NOT NULL DEFAULT 0, runner TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS launched (run TEXT PRIMARY KEY, " +
       "authority TEXT NOT NULL, lease_id TEXT NOT NULL)",
-    // The meter's log (slice P): each sandbox started, resumed, paused or killed, as this
+    // The meter's log: each sandbox started, resumed, paused or killed, as this
     // object did it or saw it, for the owner's object to read after its cursor (`meter`).
     "CREATE TABLE IF NOT EXISTS meter_log (seq INTEGER PRIMARY KEY " +
       "AUTOINCREMENT, authority TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN " +
@@ -29,14 +29,14 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE IF NOT EXISTS known_retention (only INTEGER PRIMARY KEY " +
       "CHECK (only = 1), days REAL)",
   ]),
-  // 2 (E2): each launched job's vendor hosts, so a network that replaces its sandbox's whole
+  // 2: each launched job's vendor hosts, so a network that replaces its sandbox's whole
   // (a start that opens a lease, a re-apply) keeps them; and a re-apply kept while its
   // sandbox is paused, applied as it resumes.
   Object.freeze([
     "ALTER TABLE launched ADD COLUMN hosts TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE sandboxes ADD COLUMN network_due TEXT",
   ]),
-  // 3 (S2): the slots this object owes the platform's line, each kept until the line takes
+  // 3: the slots this object owes the platform's line, each kept until the line takes
   // it back (a renewal's held slot, its sandbox running again or gone).
   Object.freeze([
     "CREATE TABLE IF NOT EXISTS owed (sandbox_id TEXT PRIMARY KEY)",

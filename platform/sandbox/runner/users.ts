@@ -1,5 +1,5 @@
 /**
- * The sandbox's users (slice S review H-4, M-1): every run runs as a user of its own, taken
+ * The sandbox's users: every run runs as a user of its own, taken
  * from the template's pool (`ta-run-<n>`, each with a group of its own, in group `ta` for
  * the shared workspace) and given back when the run is over, so no two live runs share a
  * uid: neither reads the other's environment or files (`/proc` is `hidepid=2`), and every

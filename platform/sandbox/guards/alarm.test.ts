@@ -1,5 +1,5 @@
 /**
- * The sandbox Worker's objects keep their own clocks (slice S): `SandboxControl`, whose alarm
+ * The sandbox Worker's objects keep their own clocks: `SandboxControl`, whose alarm
  * is its sandboxes' look before their runtime ceiling, and `SandboxSlots`, whose alarm rings
  * the platform's line again. Neither has a Lifecycle or an owner's data, so each sets and
  * clears its own alarm, and only the control object's erasure of an owner deletes its

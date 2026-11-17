@@ -1,5 +1,5 @@
 /**
- * E2B as the platform's tools reach it outside the sandbox Worker (untangle B11): the
+ * E2B as the platform's tools reach it outside the sandbox Worker: the
  * template's checks (`template/checks.ts`, run by `sandbox-template.yml` and the deploy kit's
  * pair check) and the deploy kit (`deploy/deploy.ts`), over the one transport
  * (`transport.ts`), so the Worker ships none of it:
@@ -64,7 +64,6 @@ export class E2bAdmin extends E2bTransport {
     await this.api("POST", "/templates/tags", { target, tags: [...tags] }, [200, 201, 204]);
   }
 
-  /** The team's event webhooks, as E2B lists them. */
   async webhooks(): Promise<unknown[]> {
     const { json } = await this.api("GET", "/events/webhooks");
     if (!Array.isArray(json)) {
@@ -73,12 +72,10 @@ export class E2bAdmin extends E2bTransport {
     return json;
   }
 
-  /** One more event webhook, as `hook` describes it. */
   async addWebhook(hook: Readonly<Record<string, unknown>>): Promise<void> {
     await this.api("POST", "/events/webhooks", hook, [200, 201]);
   }
 
-  /** The webhook `id`'s fields `change` names set. */
   async changeWebhook(id: string, change: Readonly<Record<string, unknown>>): Promise<void> {
     await this.api("PATCH", `/events/webhooks/${encodeURIComponent(id)}`, change);
   }

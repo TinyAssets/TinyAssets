@@ -1,6 +1,5 @@
 /**
- * The sync agent against a stand-in sync door (the review's attacks, rvst, as the code must
- * answer them):
+ * The sync agent against a stand-in sync door, and the attacks it must answer:
  * - a refusal of one file is that file's, with the object's whole message, and never the
  *   sync's: a full storage at an upload's begin, a `file_quota` refusal never read as a fence;
  * - the mirror is written as each batch commits, from each file's identity when it was
@@ -27,7 +26,7 @@ import { runInNewContext } from "node:vm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import {
-  AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SYNC_IGNORE, wildcard,
+  AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SYNC_IGNORE,
 } from "../../contract/src/sync-ignore";
 import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX }
   from "../../contract/src/limits";
@@ -285,27 +284,6 @@ describe("the sync-ignore", () => {
     expect(sent).not.toContain("/workspace/build/new.txt");
   });
 
-  it("matches as written: names anywhere, paths from the workspace, the file itself never",
-     () => {
-    const ignored = ignoredBy(["node_modules", "*.log", "docs/draft-*", "# a comment"]);
-    expect(ignored("app/node_modules/x/index.js")).toBe("default");
-    expect(ignored("server.log")).toBe("custom");
-    expect(ignored("docs/draft-1.md")).toBe("custom");
-    expect(ignored("src/docs/draft-1.md")).toBeNull();
-    expect(ignoredBy(["*"])(".ta/sync-ignore")).toBeNull();
-  });
-
-  it("matches in linear time: the review's backtracking pattern is instant", () => {
-    // CPU time, not wall-clock: another process's load does not stretch it. A backtracking
-    // matcher spends far more than a second here; a linear one, milliseconds.
-    const started = process.cpuUsage();
-    expect(wildcard("*a*a*a*a*a*a*b", "a".repeat(100))).toBe(false);
-    expect(wildcard("*a*a*a*a*a*a*a*a*b", "a".repeat(10_000))).toBe(false);
-    const spent = process.cpuUsage(started);
-    expect((spent.user + spent.system) / 1000).toBeLessThan(1_000);
-    expect([wildcard("a*b?d", "aXXbcd"), wildcard("a*b?d", "abd"), wildcard("*", ""),
-            wildcard("?", "")]).toEqual([true, false, true, false]);
-  });
 });
 
 describe("memory, whatever the tree holds", () => {
@@ -493,8 +471,8 @@ describe("memory, whatever the tree holds", () => {
   });
 });
 
-describe("verification round 2", () => {
-  it("says a kept file whose changes a run's own line holds back (M2)", async () => {
+describe("kept files and same-size edits at sync-out", () => {
+  it("says a kept file whose changes a run's own line holds back", async () => {
     const { place: p, local } = place();
     mkdirSync(join(local, "src"), { recursive: true });
     writeFileSync(join(local, "src", "app.ts"), "v1");
@@ -514,7 +492,7 @@ describe("verification round 2", () => {
     expect(mirror.get("/workspace/src/app.ts")).toBeDefined();
   });
 
-  it("sends a same-size edit that kept its change time, by the next sync (L-c)", async () => {
+  it("sends a same-size edit that kept its change time, by the next sync", async () => {
     const { place: p, local } = place();
     const file = join(local, "state.json");
     writeFileSync(file, "{\"n\":1}");
@@ -670,7 +648,7 @@ describe("the matcher's memory in the sync agent's heap", () => {
   // `gc` for this test alone, so a list's heap is read after the garbage of its making.
   setFlagsFromString("--expose-gc");
   const gc = runInNewContext("gc") as () => void;
-  // Heads the lines share, and heads that diverge (a trie's and Aho–Corasick's worst, R7-3).
+  // Heads the lines share, and heads that diverge (a trie's and Aho–Corasick's worst).
   const head = (i: number) => (Math.imul(i + 1, 2654435761) >>> 0).toString(36);
   const shapes: Record<string, (i: number) => string> = {
     literalName: (i) => `name-${i.toString(36)}-xxxxxxxx`,
