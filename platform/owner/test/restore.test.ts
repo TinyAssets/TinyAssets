@@ -17,7 +17,7 @@ import { randomHex } from "../../contract/src/ids";
 import { GET_READS, objectPrefix } from "../../contract/src/files";
 import { HELD_WAIT_MS } from "../../ci/fixtures";
 import { DELETE_BATCH, INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
-import type { RestoreAnswer, RestoreHold } from "../../contract/src/owner";
+import { eraseWords, type RestoreAnswer, type RestoreHold } from "../../contract/src/owner";
 import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
 import { exported, NOT_EXPORTED } from "../src/export";
 import type { Files } from "../src/files";
@@ -29,7 +29,7 @@ import { loadOrder, RESTORING, SEEDED } from "../src/restore";
 import { MIGRATIONS } from "../src/schema";
 
 const LOAD = loadOrder();
-import { erasedWhole } from "./erasure-support";
+import { erasedWhole, finished } from "./erasure-support";
 import {
   BURST, digest, type Generated, generate, type Line, objectsOf, type Owner, owner, PAGE, replay,
   standing, writtenAt,
@@ -266,9 +266,10 @@ describe("a restore", () => {
     // Every chunk a content names was checked as stored, and nothing was put to R2 or deleted
     // from it but by the lane's sweep once done, which keeps the generation restored: the
     // restore's own sweep named its rows' chunks and listed the namespace, and found none
-    // to delete.
+    // to delete; and the root of a namespace that holds none, which deletes nothing.
     const crossed = (await files.calls()).slice(earlier);
-    expect(crossed.filter((call) => !/^(?:get|check|chunkNames|listChunks)/.test(call.method)
+    expect(crossed.filter((call) => !/^(?:get|check|chunkNames|listChunks|rootNamespace)/
+      .test(call.method)
       && !(call.method === "sweepManifests"
            && (call.args as [string, string[]])[1].includes(gen.gen)))).toEqual([]);
     const named = await sqlIn(stub, "SELECT DISTINCT sha256 FROM file_content_chunks");
@@ -430,7 +431,7 @@ describe("a restore", () => {
     // At its end: offered no more and refused a pin, then pruned, and the owner told.
     vi.setSystemTime(ends * 1000);
     expect(await restorable()).toEqual([[first.gen, false], [second.gen, false]]);
-    expect((await failure(() => o.stub.restorePin(platform(o.name), { gen: first.gen })))
+    expect((await failure(() => pinOf(o.stub, o.name, first.gen)))
       .code).toBe("refused");
     await drainDue(o.stub);
     expect(await restorable()).toEqual([[second.gen, false]]);
@@ -469,7 +470,7 @@ describe("a restore", () => {
                               newest.gen);
     vi.setSystemTime(((row!["changed_at"] as number) + RESTORABLE_LIFE_S) * 1000);
     expect(await restorable()).toEqual([[newest.gen, false]]);
-    expect((await failure(() => o.stub.restorePin(platform(o.name), { gen: newest.gen })))
+    expect((await failure(() => pinOf(o.stub, o.name, newest.gen)))
       .code).toBe("refused");
     await drainDue(o.stub);
     expect(await sqlIn(o.stub, "SELECT gen FROM owner_backups WHERE gen = ?", newest.gen))
@@ -684,7 +685,7 @@ describe("a lost object's restore that fails at its log step", () => {
     expect((await stepped(lost, o.name)).at(-1)).toMatchObject({ step: "failed" });
     // The kit: pinned to the kept one (a failed restore no pin held answers as it stands),
     // wiped by its words, and begun from it.
-    const hold = await lost.restorePin(platform(o.name), { gen: first.gen });
+    const hold = await pinOf(lost, o.name, first.gen);
     expect(hold).toMatchObject({ step: "failed", fresh: null,
                                  confirm: `wipe-${o.name}-${second.gen}` });
     const stub = await wipedWith(lost, o.name, hold.confirm!);
@@ -778,7 +779,7 @@ describe("a generation of an older schema", () => {
     await sqlIn(o.stub, "UPDATE owner_backups SET schema = 8 WHERE gen = ?", gen);
     expect((await o.stub.restoreSource(platform(o.name))).generations)
       .toMatchObject([{ gen, restorable: false }]);
-    expect((await failure(() => o.stub.restorePin(platform(o.name), { gen }))).message)
+    expect((await failure(() => pinOf(o.stub, o.name, gen))).message)
       .toBe(`generation ${gen} is not one of the owner's finished generations a restore can ` +
             "load: restore.source names them");
   });
@@ -804,7 +805,7 @@ describe("a restore a migration lands under", () => {
         .toEqual([step, { step: "failed", done: false, failed: LANDED }]);
       expect(await counts()).toEqual(before);
       // The operator's wipe, by the failed restore's words: begun again from the same one.
-      const hold = await stub.restorePin(platform(o.name), { gen });
+      const hold = await pinOf(stub, o.name, gen);
       expect(hold).toMatchObject({ step: "failed", confirm: `wipe-${o.name}-${gen}` });
       stub = await wipedWith(stub, o.name, hold.confirm!);
     }
@@ -955,6 +956,81 @@ describe("a namespace of the owner its object does not adopt (restoreHold)", () 
       { namespace: ns, gen: gen.gen }));
     expect(another.message).toBe("the generation is another owner's");
     expect(await holdsOf(other.ns)).toEqual([]);
+    // Pending, holding rows, and no restore: an import's, whose discard would delete it.
+    await sqlIn(stub, "INSERT INTO owner_notices (at, type, detail) VALUES (1, 'x', 'y')");
+    const importing = await failure(() => stub.restoreHold(platform(o.name),
+                                                           { namespace: ns, gen: gen.gen }));
+    expect([importing.code, importing.message]).toEqual(["refused", "the owner is pending and " +
+      "no restore holds it: an import's discard would delete what it holds"]);
+    expect(await sqlIn(stub, "SELECT ns FROM file_space")).toEqual([{ ns: null }]);
+  });
+
+  it("holds, once a lost object's restore is begun from one of its namespaces, the other, " +
+     "which held that one, with no cycle", async () => {
+    const { o, gen, ns } = await source();
+    // The owner admitted afresh, as before #5671, writing a second namespace's generation.
+    let stub = await lose(o);
+    await stub.admissionSet(platform(o.name), { admit: true });
+    await stub.fileWrite(o.bind(), { path: `${W}/again.txt`, expected_etag: null,
+                                     content: `${PLAIN} again` });
+    const again = await generate(stub);
+    const [space] = await sqlIn(stub, "SELECT ns FROM file_space");
+    const newer = space!["ns"] as string;
+    // The older held the newer, as an object that adopted the older once would have.
+    await env.FILES.holdNamespace(ns, newer);
+    stub = await lose({ ...o, stub });
+    await stub.restoreBegin(platform(o.name), { namespace: newer, gen: again.gen });
+    expect(await stub.restoreHold(platform(o.name), { namespace: ns, gen: gen.gen }))
+      .toEqual({ namespace: newer, held: ns });
+    expect([await holdsOf(newer), await holdsOf(ns)])
+      .toEqual([[`${objectPrefix(newer)}h/${ns}`], []]);
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: again.gen });
+  });
+
+  it("restores a live owner from a namespace its own holds: its own held by that one from " +
+     "the wipe, and once done no cycle", async () => {
+    const { o, gen, ns, rows } = await source();
+    // Signed up again before a recover held the old namespace by its new one.
+    let stub = await lose(o);
+    await stub.admissionSet(platform(o.name), { admit: true });
+    await stub.fileWrite(o.bind(), { path: `${W}/new.txt`, expected_etag: null,
+                                     content: `${PLAIN} new` });
+    const { namespace: own } = await stub.restoreHold(platform(o.name),
+                                                      { namespace: ns, gen: gen.gen });
+    let hold = await stub.restorePin(platform(o.name), { namespace: ns, gen: gen.gen });
+    for (let n = 0; !hold.written && n < 50; n++) {
+      hold = await stub.restorePin(platform(o.name), { namespace: ns, gen: gen.gen });
+    }
+    expect(hold).toMatchObject({ namespace: ns, gen: gen.gen, written: true });
+    expect([await holdsOf(own), await holdsOf(ns)])
+      .toEqual([[`${objectPrefix(own)}h/${ns}`], []]);
+    stub = await wipedWith(stub, o.name, hold.confirm!);
+    expect(await holdsOf(ns)).toEqual([`${objectPrefix(ns)}h/${own}`]);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
+    expect(await rowsOf(stub, FENCED)).toBe(rows);
+    expect([await holdsOf(ns), await holdsOf(own)])
+      .toEqual([[`${objectPrefix(ns)}h/${own}`], []]);
+  });
+
+  it("begins a lost object's failed restore again from another of its namespaces, which " +
+     "holds the one it failed from", async () => {
+    const { o, gen, ns } = await source();
+    let stub = await lose(o);
+    await stub.admissionSet(platform(o.name), { admit: true });
+    await stub.fileWrite(o.bind(), { path: `${W}/again.txt`, expected_etag: null,
+                                     content: `${PLAIN} again` });
+    const again = await generate(stub);
+    const [space] = await sqlIn(stub, "SELECT ns FROM file_space");
+    const newer = space!["ns"] as string;
+    stub = await lose({ ...o, stub });
+    await stub.restoreBegin(platform(o.name), { namespace: newer, gen: again.gen });
+    await sqlIn(stub, "UPDATE owner_restore SET step = 'failed', failed = 'x'");
+    stub = await wipedWith(stub, o.name, (await pinOf(stub, o.name, again.gen)).confirm!);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
+    expect([await holdsOf(ns), await holdsOf(newer)])
+      .toEqual([[`${objectPrefix(ns)}h/${newer}`], []]);
   });
 });
 
@@ -1014,7 +1090,7 @@ describe("a restore cut short", () => {
       failed: "1 of the generation's chunks are not stored as their hash (missing)" });
     expect((await failure(() => stub.admissionSet(platform(o.name), { admit: true }))).code)
       .toBe("restoring");
-    expect(await stub.restorePin(platform(o.name), { gen: gen.gen })).toMatchObject({
+    expect(await pinOf(stub, o.name, gen.gen)).toMatchObject({
       step: "failed", confirm: `wipe-${o.name}-${gen.gen}` });
   });
 
@@ -1097,10 +1173,17 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** `gen` pinned on `stub`'s owner, as a generation of the namespace its object names. */
+async function pinOf(stub: Stub, name: string, gen: string): Promise<RestoreHold> {
+  const [space] = await sqlIn(stub, "SELECT ns FROM file_space");
+  return stub.restorePin(platform(name), { namespace: (space?.["ns"] as string | null)
+                                           ?? "0".repeat(32), gen });
+}
+
 /** The pin asked until the owner's present state is written; its last answer. */
 async function pinnedTo(stub: Stub, name: string, gen: string): Promise<RestoreHold> {
   for (let n = 0; n < 50; n++) {
-    const hold = await stub.restorePin(platform(name), { gen });
+    const hold = await pinOf(stub, name, gen);
     if (hold.written) {
       return hold;
     }
@@ -1127,7 +1210,7 @@ describe("a restore into a live owner", () => {
     await o.stub.fileWrite(o.bind(), { path: `${W}/after.txt`, expected_etag: null,
                                        content: `${PLAIN} after` });
     expect((await o.stub.restoreSource(platform(o.name))).begins).toBe(false);
-    const first = await o.stub.restorePin(platform(o.name), { gen: gen.gen });
+    const first = await pinOf(o.stub, o.name, gen.gen);
     expect(first).toMatchObject({ step: "pinned", namespace: ns, gen: gen.gen });
     // From the pin, the owner is held: its doors and its admission.
     const door = await failure(() => o.stub.fileRead(o.bind(), { path: `${W}/after.txt` }));
@@ -1173,6 +1256,17 @@ describe("a restore into a live owner", () => {
       .toEqual({ state: "admitted", reasons: [] });
   });
 
+  it("is erased whole while wiped: its record's namespace marked and deleted, though its " +
+     "object names none", async () => {
+    const { o, gen, ns } = await source();
+    const hold = await pinnedTo(o.stub, o.name, gen.gen);
+    const stub = await wipedWith(o.stub, o.name, hold.confirm!);
+    await stub.erasureBegin(platform(o.name), { confirm: eraseWords(o.name) });
+    await finished(stub, o.name);
+    expect([await env.BLOBS.head(`e/${ns}`) !== null,
+            (await env.BLOBS.list({ prefix: objectPrefix(ns) })).objects]).toEqual([true, []]);
+  });
+
   it("undoes to the generation its pin wrote, and wipes a failed restore again", async () => {
     const { o, gen, ns } = await source();
     await o.stub.fileWrite(o.bind(), { path: `${W}/after.txt`, expected_etag: null,
@@ -1183,7 +1277,7 @@ describe("a restore into a live owner", () => {
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
     // A failed check, as a rebuilt column gone wrong leaves it: the restore failed.
     await sqlIn(stub, "UPDATE owner_restore SET step = 'failed', failed = 'x'");
-    const failed = await stub.restorePin(platform(o.name), { gen: hold.fresh! });
+    const failed = await pinOf(stub, o.name, hold.fresh!);
     expect(failed).toMatchObject({ step: "failed", written: true, confirm: hold.confirm });
     stub = await wipedWith(stub, o.name, failed.confirm!);
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: hold.fresh! });
@@ -1196,7 +1290,7 @@ describe("a restore into a live owner", () => {
     const { o, gen, ns } = await source();
     const files = gateFor(env.FILES_GATE, ns);
     await files.arm("putManifestRoot", { hold: "before" });
-    const cut = o.stub.restorePin(platform(o.name), { gen: gen.gen }).catch(() => null);
+    const cut = pinOf(o.stub, o.name, gen.gen).catch(() => null);
     await files.held("putManifestRoot");
     const early = await failure(() => o.stub.restoreWipe(platform(o.name), { confirm: "x" }));
     expect(early.message).toBe("the owner's present state is not yet written: ask restore.pin " +
@@ -1211,7 +1305,7 @@ describe("a restore into a live owner", () => {
     expect((await failure(() => stub.admissionSet(platform(o.name), { admit: true }))).code)
       .toBe("restoring");
     await pinnedTo(stub, o.name, gen.gen);
-    expect((await failure(() => stub.restorePin(platform(o.name), { gen: "1".repeat(16) })))
+    expect((await failure(() => pinOf(stub, o.name, "1".repeat(16))))
       .code).toBe("refused");
     expect(await stub.restoreRelease(platform(o.name))).toEqual({ released: true });
     stub = env.OWNER.getByName(o.name);
@@ -1243,7 +1337,7 @@ describe("a restore into a live owner", () => {
     // The object's clock a minute before the pinned generation's start, the event the race
     // turned on: its fresh generation then begins at an earlier reading than the pinned one.
     vi.useFakeTimers({ toFake: ["Date"], now: (pinned!["started_at"] as number) * 1000 - 60_000 });
-    const hold = await o.stub.restorePin(platform(o.name), { gen: gen.gen });
+    const hold = await pinOf(o.stub, o.name, gen.gen);
     expect(hold).toMatchObject({ step: "pinned", written: true,
                                  confirm: `wipe-${o.name}-${hold.fresh}` });
     expect((await o.stub.restoreSource(platform(o.name))).generations.map((each) => each.gen))
@@ -1293,9 +1387,8 @@ describe("a restore into a live owner", () => {
 
   it("refuses a pin of a pending owner, of a generation it does not hold, and of an erased " +
      "owner, and a wipe with none pinned, writing nothing", async () => {
-    const { o, gen } = await source();
-    const missing = await failure(() => o.stub.restorePin(platform(o.name),
-                                                          { gen: "0".repeat(16) }));
+    const { o, gen, ns } = await source();
+    const missing = await failure(() => pinOf(o.stub, o.name, "0".repeat(16)));
     expect(missing.message).toBe(`generation ${"0".repeat(16)} is not one of the owner's ` +
                                  "finished generations a restore can load: restore.source " +
                                  "names them");
@@ -1304,11 +1397,12 @@ describe("a restore into a live owner", () => {
     expect(await sqlIn(o.stub, "SELECT count(*) AS n FROM owner_restore")).toEqual([{ n: 0 }]);
     const other = await owner();
     const lost = await lose(other);
-    expect((await failure(() => lost.restorePin(platform(other.name), { gen: gen.gen })))
+    expect((await failure(() => pinOf(lost, other.name, gen.gen)))
       .message).toBe("the owner is pending: a pin holds a live owner, and a pending one is " +
                      "restored into with none");
     await erasedWhole(o.stub, o.name, o.session());
-    expect((await failure(() => o.stub.restorePin(platform(o.name), { gen: gen.gen }))).code)
+    expect((await failure(() => o.stub.restorePin(platform(o.name),
+                                                  { namespace: ns, gen: gen.gen }))).code)
       .toBe("owner_erased");
   });
 

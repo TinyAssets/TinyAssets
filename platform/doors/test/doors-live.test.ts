@@ -857,6 +857,7 @@ describe("the file door's bytes", () => {
       FILES: Record<string, (...args: unknown[]) => Promise<unknown>> }).FILES;
     for (const method of ["getChunks", "getManifestRoot", "getManifestPart", "getManifestSegment",
                           "rewrapKey", "mintKey", "markNamespace", "deleteNamespace", "holdNamespace",
+                          "rootNamespace",
                           "checkChunks"]) {
       const refused = await Promise.resolve().then(() => files[method]!("0".repeat(32), "k"))
         .then(() => null, (error: unknown) => String(error));

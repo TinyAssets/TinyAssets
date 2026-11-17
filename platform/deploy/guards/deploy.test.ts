@@ -3009,10 +3009,13 @@ const FROM = `${"a".repeat(32)}/${"b".repeat(16)}`;
 describe("mode restore", () => {
   const FRESH = "c".repeat(16);
   const CONFIRMED = `wipe-user_alice-${FRESH}`;
+  const [OWN, OTHER, BOBS, GONE] = ["a", "1", "2", "3"].map((digit) => digit.repeat(32)) as
+    [string, string, string, string];
   /**
    * The doors as a restore's ops find them, for an owner whose object stands as `source`
    * says: pinned and its present state written on the second pin, wiped, begun, two steps,
-   * done, then admitted.
+   * done, then admitted; and the files bucket's namespaces in two pages: two of the owner's
+   * (`OWN`, which `FROM` names, and `OTHER`, older), another owner's, and one erased.
    */
   const restoring = (source: { state: string; begins: boolean; restore: unknown },
                      failed = false) => {
@@ -3040,8 +3043,20 @@ describe("mode restore", () => {
                 state: "admitted", reasons: [] } };
         case "owner.admit":
           return { result: { state: "admitted", reasons: [] } };
+        case "restore.namespaces":
+          return { result: message.args["cursor"] === ""
+            ? { namespaces: [OWN, OTHER], cursor: "page-2" }
+            : { namespaces: [BOBS, GONE], cursor: null } };
+        case "restore.locate":
+          return { result: { located: {
+            [OWN]: { owner: "user_alice", gen: "b".repeat(16), at: 2_000 },
+            [OTHER]: { owner: "user_alice", gen: "d".repeat(16), at: 1_000 },
+            [BOBS]: { owner: "user_bob", gen: "e".repeat(16), at: 3_000 }, [GONE]: "erased" } } };
+        case "restore.hold":
+          return { result: { namespace: OWN, held: OTHER } };
         default:
-          return { result: { namespace: "a".repeat(32), generations: [], ...source } };
+          return { result: { namespace: source.begins ? null : OWN, generations: [],
+                             ...source } };
       }
     };
   };
@@ -3050,6 +3065,10 @@ describe("mode restore", () => {
   const flags = ["--owner", "user_alice", "--generation", FROM];
   const ops = (w: ReturnType<typeof world>) =>
     w.sent.map(({ message }) => [message.op, message.args]);
+  const PIN = ["restore.pin", { namespace: OWN, gen: "b".repeat(16) }];
+  /** A lost object's find: the bucket's namespaces, page by page, then each located. */
+  const FOUND = [["restore.namespaces", { cursor: "" }], ["restore.namespaces",
+    { cursor: "page-2" }], ["restore.locate", { namespaces: [OWN, OTHER, BOBS, GONE].join(",") }]];
 
   it("plans the restore and what the owner loses; with --yes, into a lost owner's empty " +
      "object, begins it, steps it until done and admits the owner", async () => {
@@ -3058,31 +3077,55 @@ describe("mode restore", () => {
       `restore user_alice from generation ${"b".repeat(16)} of namespace ${"a".repeat(32)}, ` +
       "into its own object only while it is pending and empty (a live owner held first, its " +
       "present state written as a fresh generation, and its object wiped once --confirm " +
-      "names that generation), then admit it, through the operator channel: " +
-      RESTORE_LOSES]);
+      "names that generation), then admit it, through the operator channel; for a restore no " +
+      "pin holds (a lost object's), every other namespace R2 holds naming the owner found " +
+      "(restore.namespaces, restore.locate) and held by the one it restores (restore.hold) " +
+      `before it is admitted: ${RESTORE_LOSES}`]);
     expect(planned.sent).toEqual([]);
     const w = world({ held: true, doors: restoring(LOST) });
     const work = await runMode(w, "restore", ["--yes", ...flags]);
-    expect(ops(w)).toEqual([["restore.source", {}],
-      ["restore.begin", { namespace: "a".repeat(32), gen: "b".repeat(16) }],
+    expect(ops(w)).toEqual([["restore.source", {}], ...FOUND,
+      ["restore.begin", { namespace: OWN, gen: "b".repeat(16) }],
+      ["restore.hold", { namespace: OTHER, gen: "d".repeat(16) }],
       ["restore.step", {}], ["restore.step", {}], ["owner.admit", {}]]);
+    expect(w.sent.filter(({ message }) => message.op.startsWith("restore.n")
+      || message.op === "restore.locate").map(({ message }) => message.owner))
+      .toEqual([PLATFORM_CALLER, PLATFORM_CALLER, PLATFORM_CALLER]);
+    expect(work.plan).toContain(`held each of the 1 other namespaces R2 holds naming user_alice ` +
+                                `by ${OWN}, so its erasure takes them`);
     expect(work.plan).toContain(`restored user_alice from ${"b".repeat(16)}: 12 rows, 3 chunks ` +
                                 "read back, the owner admitted as at the generation");
+  });
+
+  it("finds a lost object's namespaces in R2 with no --generation, newest first, and restores " +
+     "from none the bucket marks erased", async () => {
+    const w = world({ held: true, doors: restoring(LOST) });
+    const work = await runMode(w, "restore", ["--yes", "--owner", "user_alice"]);
+    expect(ops(w)).toEqual([["restore.source", {}], ...FOUND]);
+    expect(work.plan.at(-1)).toBe(`R2 holds 2 namespaces naming user_alice, newest first: ` +
+      `${OWN}/${"b".repeat(16)} (1970-01-01T00:00:02.000Z), ${OTHER}/${"d".repeat(16)} ` +
+      "(1970-01-01T00:00:01.000Z): run again with --generation <namespace>/<gen>, and every " +
+      "other is held by the one it restores");
+    const erased = world({ held: true, doors: restoring(LOST) });
+    await expect(runMode(erased, "restore", ["--yes", "--owner", "user_alice", "--generation",
+                                             `${GONE}/${"b".repeat(16)}`])).rejects.toThrow(
+      `the namespace ${GONE} is erased (its mark, or its owner's erasure): nothing is restored ` +
+      "from it");
+    expect(ops(erased)).toEqual([["restore.source", {}], ...FOUND]);
   });
 
   it("into a live owner: pins until its present state is written, then stops and names " +
      "the words; with them, wipes, restores and admits, in order", async () => {
     const held = world({ held: true, doors: restoring(LIVE) });
     const stopped = await runMode(held, "restore", ["--yes", ...flags]);
-    expect(ops(held)).toEqual([["restore.source", {}], ["restore.pin", { gen: "b".repeat(16) }],
-                               ["restore.pin", { gen: "b".repeat(16) }]]);
+    expect(ops(held)).toEqual([["restore.source", {}], PIN, PIN]);
     expect(stopped.plan.join("\n")).toContain(`run again with --confirm ${CONFIRMED}; to give ` +
                                               "the pin up, --confirm release-user_alice and " +
                                               "no --generation");
     const w = world({ held: true, doors: restoring(LIVE) });
     await runMode(w, "restore", ["--yes", ...flags, "--confirm", CONFIRMED]);
-    expect(ops(w)).toEqual([["restore.source", {}], ["restore.pin", { gen: "b".repeat(16) }],
-      ["restore.pin", { gen: "b".repeat(16) }], ["restore.wipe", { confirm: CONFIRMED }],
+    expect(ops(w)).toEqual([["restore.source", {}], PIN, PIN,
+      ["restore.wipe", { confirm: CONFIRMED }],
       ["restore.begin", { namespace: "a".repeat(32), gen: "b".repeat(16) }],
       ["restore.step", {}], ["restore.step", {}], ["owner.admit", {}]]);
   });
@@ -3139,6 +3182,12 @@ describe("mode restore", () => {
       restore: { step: "done", gen: "b".repeat(16), fresh: FRESH } }) });
     await runMode(done, "restore", ["--yes", ...flags]);
     expect(ops(done)).toEqual([["restore.source", {}], ["owner.admit", {}]]);
+    // A lost object's restore done, run again: its other namespaces are held before the admit.
+    const lost = world({ held: true, doors: restoring({ state: "admitted", begins: false,
+      restore: { step: "done", gen: "b".repeat(16), fresh: null } }) });
+    await runMode(lost, "restore", ["--yes", ...flags]);
+    expect(ops(lost)).toEqual([["restore.source", {}], ...FOUND,
+      ["restore.hold", { namespace: OTHER, gen: "d".repeat(16) }], ["owner.admit", {}]]);
   });
 
   it("takes a generation only as <namespace>/<gen>, and only for mode restore", () => {
@@ -3403,20 +3452,42 @@ describe("mode erase", () => {
     const flags = ["--owner", "user_alice", "--confirm", WORDS];
     const planned = world({ held: true });
     expect((await runMode(planned, "erase", ["--public", ...flags], PUBLIC)).plan).toEqual([
-      `erase user_alice through the operator channel, as its own door erases it: ${
-        ERASE_LOSES}`]);
+      "erase user_alice through the operator channel, as its own door erases it; a lost " +
+      `object only once R2 holds no namespace naming it: ${ERASE_LOSES}`]);
     expect(planned.sent).toEqual([]);
     const w = world({ held: true, doors: () => ({ result: { erasing: true } }) });
     const work = await runMode(w, "erase", ["--yes", ...flags]);
-    expect(sent(w)).toEqual([["owner.erase", "user_alice", { confirm: WORDS }]]);
-    expect(await macHolds(parseRing(RING)!, w.sent[0]!.message)).toBe(true);
+    expect(sent(w)).toEqual([["restore.source", "user_alice", {}],
+                             ["owner.erase", "user_alice", { confirm: WORDS }]]);
+    expect(await macHolds(parseRing(RING)!, w.sent[1]!.message)).toBe(true);
     expect(work.plan.at(-1)).toBe('the doors answered owner.erase for user_alice: ' +
                                   '{"erasing":true}');
-    const refusing = world({ held: true, doors: () => ({
-      refused: { code: "refused", message: "the platform holds no owner of that name" } }) });
+    const refusing = world({ held: true, doors: (message) => message.op === "owner.erase" ? {
+      refused: { code: "refused", message: "the platform holds no owner of that name" } }
+      : { result: {} } });
     await expect(runMode(refusing, "erase", ["--yes", ...flags])).rejects.toThrow(
       "the doors refused owner.erase for user_alice (refused): the platform holds no owner " +
       "of that name");
+  });
+
+  it("refuses a lost object while R2 holds a namespace naming it, which its erasure would " +
+     "not reach; erases one R2 holds none of", async () => {
+    const NS = "a".repeat(32);
+    const lost = (owner: string) => (message: OperatorMessage) => ({ result:
+      message.op === "restore.namespaces" ? { namespaces: [NS], cursor: null }
+      : message.op === "restore.locate" ? { located: { [NS]: { owner, gen: "b".repeat(16),
+                                                              at: 0 } } }
+      : { state: "pending", namespace: null, restore: null, erasing: true } });
+    const found = world({ held: true, doors: lost("user_alice") });
+    await expect(runMode(found, "erase", ["--yes", "--owner", "user_alice", "--confirm", WORDS]))
+      .rejects.toThrow("user_alice's object is lost and R2 holds 1 namespaces naming it, which " +
+                       "its erasure would not reach: restore it first (mode restore), then " +
+                       "erase it");
+    expect(sent(found).map(([op]) => op)).toEqual(["restore.source", "restore.namespaces",
+                                                   "restore.locate"]);
+    const none = world({ held: true, doors: lost("user_bob") });
+    await runMode(none, "erase", ["--yes", "--owner", "user_alice", "--confirm", WORDS]);
+    expect(sent(none).at(-1)).toEqual(["owner.erase", "user_alice", { confirm: WORDS }]);
   });
 
   it("is mode erase's alone: --act never asks owner.erase", () => {

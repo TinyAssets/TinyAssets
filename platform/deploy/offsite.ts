@@ -52,7 +52,7 @@ import { fileURLToPath } from "node:url";
 
 import { keyed, whole } from "../contract/src/checks.ts";
 import {
-  heldNamespace, HOLDS, type LocatedOwner, MARKS, markedNamespace, namespaceOf, objectPrefix,
+  heldNamespace, HOLDS, type NamespaceFound, MARKS, markedNamespace, namespaceOf, objectPrefix,
 } from "../contract/src/files.ts";
 import { HEX32 } from "../contract/src/ids.ts";
 import { RECOVERY_WINDOW_S } from "../contract/src/limits.ts";
@@ -732,8 +732,11 @@ function rootName(name: string): boolean {
  *   with no root: no wrapped key of it survives, so nothing opens its chunks.
  * - **Written, not begun:** one another written namespace holds. Its owner is the holder's,
  *   whose object holds it again once restored, so its erasure takes it.
- * - **Held in a cycle** (`cycled`): written, held, and held by no namespace begun or held by
- *   one, so it would be begun by none; the caller stops before anything is written.
+ * - **Held in a cycle** no namespace outside it holds: its least is located and begun, and
+ *   holds the rest. Only a restore under way from one of an owner's namespaces to another
+ *   leaves one, from its wipe to its last step (`owner/src/restore.ts`, `r8-lost-object.md`):
+ *   every namespace of the cycle names that owner, and the restore begun deletes the hold of
+ *   the one it adopts once done.
  * Any other name is a loud stop: the files bucket holds nothing else (`files/src/keys.ts`).
  */
 function recovered({ held, there, lacking, erased }:
@@ -775,12 +778,20 @@ function recovered({ held, there, lacking, erased }:
   const taken = new Set(namespaces);
   const heldBy = new Set(holds.filter(({ holder }) => taken.has(holder)).map(({ held: ns }) => ns));
   const located = namespaces.filter((ns) => !heldBy.has(ns));
+  const from = (ns: string) => reach(new Set([ns]), (each) => taken.has(each));
   const begun = reach(new Set(located), (ns) => taken.has(ns));
+  const rest = namespaces.filter((ns) => !begun.has(ns));
+  for (const ns of rest) {
+    // Whatever holds `ns` it holds back: it is in a cycle nothing outside holds.
+    if (!begun.has(ns) && rest.every((other) => !from(other).has(ns) || from(ns).has(other))) {
+      located.push(ns);
+      from(ns).forEach((each) => begun.add(each));
+    }
+  }
   return {
     marks: [...erased].filter((ns) => !kept.has(ns)).length,
     namespaces,
     located,
-    cycled: namespaces.filter((ns) => !begun.has(ns)),
     writes: lacking.filter((name) => taken.has(namespaceOf(name) ?? "")),
     erased: [...spaces].filter((ns) => out.has(ns)).length,
     rootless: [...spaces].filter((ns) => !out.has(ns) && !roots.has(ns)).length,
@@ -826,13 +837,13 @@ export interface Begin {
 
 /**
  * What mode `recover` asks the doors through the operator channel (`deploy.ts`): each
- * namespace's owner and newest generation (`restore.locate`), null for one R2 holds no root
- * of; each owner's restore begun (`restore.begin`); and for one not begun, its namespace held
- * by the owner's own (`restore.hold`): each in order, null for one done, else why not.
+ * namespace as it is found (`restore.locate`): its owner and newest generation, `erased` (the
+ * doors erased it, its owner erased), or null for one R2 holds no root of; each owner's
+ * restore begun (`restore.begin`); and for one not begun, its namespace held by the owner's own
+ * (`restore.hold`): each in order, null for one done, else why not.
  */
 export interface Recovering {
-  readonly locate: (namespaces: readonly string[]) =>
-    Promise<ReadonlyMap<string, LocatedOwner | null>>;
+  readonly locate: (namespaces: readonly string[]) => Promise<ReadonlyMap<string, NamespaceFound>>;
   readonly begin: (begins: readonly Begin[]) => Promise<readonly (string | null)[]>;
   readonly hold: (holds: readonly Begin[]) => Promise<readonly (string | null)[]>;
 }
@@ -849,10 +860,13 @@ export interface Recovering {
  * 2. Each namespace no mark names, nor a marked one holds, of which the copy held a root
  *    (`recovered`): every object of it R2 lacks written back whole, its holds with it, and read
  *    back byte for byte. No row can be asked here (no object names a namespace yet): the
- *    restore's own sweeps delete what no restored row names. A namespace held only in a cycle
- *    of holds stops the run first, nothing written.
- * 3. Each one no other written namespace holds located (`restore.locate`): two naming one owner
- *    is a loud stop naming both, before any restore begins.
+ *    restore's own sweeps delete what no restored row names.
+ * 3. Each one no other written namespace holds, and the least of each cycle of holds nothing
+ *    outside holds, located (`restore.locate`): one naming an owner
+ *    the new account's directory records erased (an owner erased between a run cut short and
+ *    this one) the doors delete whole, its mark first, so it never comes back
+ *    (`r8-lost-object.md`); two naming one owner is a loud stop naming both, before any restore
+ *    begins.
  * 4. Each owner's restore begun from its namespace's newest generation (`restore.begin`), so
  *    every written namespace is named by an object, or held by one's, whose erasure deletes
  *    it; mode `restore` carries each on. One not begun (an owner live in the new account
@@ -868,12 +882,7 @@ export async function recover(b: Back, source: string, at: Date | null, asking: 
                               control: RestoreControl, io: Effects): Promise<string[]> {
   readableAt(at, io.now());
   const back = readBack(b, source, "", at, io);
-  const { marks, namespaces, located: unheld, cycled, writes, erased, rootless } =
-    recovered(back);
-  if (cycled.length > 0) {
-    throw new Error(`the namespaces ${cycled.join(", ")} are each held by another and by none ` +
-                    "begun, so no restore would ever name them: nothing is written");
-  }
+  const { marks, namespaces, located: unheld, writes, erased, rootless } = recovered(back);
   const as = at === null ? "as the copy stands" : `as the copy held them at ${iso(at)}`;
   const lines: string[] = [];
   if (marks > 0 || writes.length > 0) {
@@ -908,9 +917,15 @@ export async function recover(b: Back, source: string, at: Date | null, asking: 
     return lines;
   }
   const located = await asking.locate(unheld);
-  const begins = unheld.map((namespace) => {
+  const erasedNow = unheld.filter((namespace) => located.get(namespace) === "erased");
+  if (erasedNow.length > 0) {
+    lines.push(`the doors erased ${erasedNow.length} namespaces, each naming an owner this ` +
+               "account records erased, whose erasure no object of it reached: each deleted " +
+               "whole, its mark first");
+  }
+  const begins = unheld.filter((namespace) => !erasedNow.includes(namespace)).map((namespace) => {
     const found = located.get(namespace) ?? null;
-    if (found === null) {
+    if (found === null || found === "erased") {
       throw new Error(`R2 holds no root of the namespace ${namespace} after its copy back: ` +
                       "nothing is begun");
     }
@@ -925,6 +940,9 @@ export async function recover(b: Back, source: string, at: Date | null, asking: 
     throw new Error(`${twice.map(([owner, spaces]) => `the namespaces ${spaces.join(" and ")} ` +
       `each name ${owner}`).join("; ")}: an owner has one namespace, so nothing is begun ` +
       "(checklist.md, \"A restore after the account's loss\")");
+  }
+  if (begins.length === 0) {
+    return lines;
   }
   const answers = await asking.begin(begins);
   lines.push(...begins.filter((_, each) => answers[each] === null)
@@ -942,7 +960,8 @@ export async function recover(b: Back, source: string, at: Date | null, asking: 
     ? "held by the owner's own namespace, so its erasure takes it, and not restored"
     : `not held either (${held[each]}), so no object names it`}`);
   throw new Error(`${unbegun.length} of ${begins.length} restores were not begun, each written ` +
-                  `back: ${failed.join("; ")}. ${lines.join("; ")}`);
+                  `back: ${failed.join("; ")}; a run again erases each whose owner is erased ` +
+                  `by then. ${lines.join("; ")}`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
