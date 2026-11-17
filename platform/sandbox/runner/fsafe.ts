@@ -1,5 +1,5 @@
 /**
- * File operations that never follow a link (slice S review H-1, H-2): every tree the
+ * File operations that never follow a link: every tree the
  * runner or its sync agent writes into may hold an entry another user planted, so no
  * operation here resolves a symbolic link anywhere on its path. A path is walked from a
  * trusted base one segment at a time by `lstat`: a link, or anything but a directory where

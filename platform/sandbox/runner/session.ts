@@ -81,7 +81,7 @@ const LOCK_WAIT_MS = COMMAND_MS;
 /**
  * The engine's store held by this process alone while `act` runs (a home copied from it, a
  * run's secrets written back, a sign-in's or sign-out's generation), by its lock
- * (`pid-lock.ts`, review N3). The wait sleeps, so the runner's heartbeats go on, and it is
+ * (`pid-lock.ts`). The wait sleeps, so the runner's heartbeats go on, and it is
  * bounded (`LOCK_WAIT_MS`): past it the call fails loudly. Every hold is short and
  * synchronous, and none is nested.
  */
@@ -96,9 +96,9 @@ export async function withStore<T>(rec: Served, act: () => T): Promise<T> {
 
 /**
  * The engine's store generation: a sign-in that writes new secrets and a sign-out each move
- * it on (review N2: a sign-in that only began, failed or was stopped moves nothing), and a
- * run's home made under an older one never writes a secret back (review M3: a run live
- * across a sign-out never undoes it, nor clobbers a new sign-in).
+ * it on (a sign-in that only began, failed or was stopped moves nothing), and a run's home
+ * made under an older one never writes a secret back (a run live across a sign-out never
+ * undoes it, nor clobbers a new sign-in).
  */
 export function generation(rec: Served): number {
   const path = `${STATE}/generations/${rec.id}`;
@@ -134,7 +134,7 @@ export function systemOf(name: string): string {
   return `${SYSTEM}/${name}`;
 }
 
-/** A home gone, and the snapshot it was made under (review L2: none is left behind). */
+/** A home gone, and the snapshot it was made under: none is left behind. */
 export function dropHome(home: string): void {
   remove(home);
   remove(snapshotOf(home));
@@ -147,7 +147,7 @@ export function dropHome(home: string): void {
  * user can reach it while it is made. A home made for an API-key run (`signedIn` false)
  * carries the store's sessions and never its secrets: the vendor sign-in's files (Codex's
  * `auth.json`, Claude's `.credentials.json`) stay out of a key run's reach, so no key run's
- * CLI can send them anywhere (codexurl_research.md; the route probe proves it live).
+ * CLI can send them anywhere (the route probe proves it live).
  */
 async function makeHome(name: string, rec: Served, signedIn: boolean): Promise<string> {
   safeDirs("/", HOMES, 0o711);
@@ -198,12 +198,12 @@ export function giveTree(path: string, as: Identity): void {
 /**
  * The run's kept paths back into its engine's store, once no process of its user is left
  * (so nothing changes the home while it is read), no link followed, under the store's lock.
- * A run's secret is written back by compare-and-swap (review M3): only one this run changed,
+ * A run's secret is written back by compare-and-swap: only one this run changed,
  * only while the store still holds the copy the run started from, and only under the
  * generation its home was made in. So a stale copy never replaces a newer one (a vendor's
  * refresh token is single-use), and a run live across a sign-in or sign-out never undoes
  * it. A completed sign-in's (`signin`) new secrets are the owner's new login: written
- * whatever the store holds, and they move the generation on, then and only then (N2).
+ * whatever the store holds, and they move the generation on, then and only then.
  */
 export async function keepHome(home: string, rec: Served, signin = false): Promise<void> {
   const store = `${STORE}/${rec.id}`;

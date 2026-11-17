@@ -1,12 +1,12 @@
 /**
  * The runner (`runner.ts`, as the template carries it bundled), as root, against fake CLIs
  * that print each record's own event shapes and a fake doors server, its users an
- * unprivileged pool, in a test sandbox of its own (`test/harness.ts`): the first post is an empty heartbeat; the frames rise
- * from 1 and read by the record's matchers as the object reads them; each run runs as a
- * user of its own on a home of its own, on the run's allow-list alone, from the record's
- * argv; and every refusal holds: a project, home or ancestor env file, a secret's bytes in a
- * synced file, a model id that would read as a flag, and the slice S review's attacks (a
- * link planted for root to follow, the session store as a way into another engine's home,
+ * unprivileged pool, in a test sandbox of its own (`test/harness.ts`): the first post is an
+ * empty heartbeat; the frames rise from 1 and read by the record's matchers as the object
+ * reads them; each run runs as a user of its own on a home of its own, on the run's
+ * allow-list alone, from the record's argv; and every refusal holds: a project, home or
+ * ancestor env file, a secret's bytes in a synced file, a model id that would read as a flag,
+ * and the attacks of another user on root (a link planted for root to follow, the session store as a way into another engine's home,
  * a home's settings outliving its run). Cancel, `events_busy`, the renewal's held posts and
  * resume, the projection and big files are here too.
  */
@@ -137,7 +137,7 @@ async function waitFor(check: () => boolean, ms = 15_000): Promise<void> {
  * Every event type the runner makes (`runner.ts`, `frames.ts`): the doors and the object act
  * on `ta.sync_unnamed` (the owner's notice) and `ta.signin` (a sign-in's state, the app's
  * panel); the rest are shown. A CLI's line of any of them, which the run's agent and its
- * tools may write, is never posted as it (round 8, R8-1).
+ * tools may write, is never posted as it.
  */
 const RUNNER_TYPES = ["ta.line", "ta.stderr", "ta.signin", "ta.sync_refused", "ta.sync_skipped",
   "ta.sync_conflicts", "ta.sync_ignore_unapplied", "ta.sync_unnamed", "ta.sync_ignore_slow",
@@ -151,7 +151,7 @@ const ACTED_ON: Record<string, Record<string, unknown>> = {
                  code: "ABCD-1234", accepts_code: true },
 };
 
-describe("a CLI's line shaped as the runner's own event (R8-1)", () => {
+describe("a CLI's line shaped as the runner's own event", () => {
   it.each(RUNNER_TYPES)("%s is refused, its text kept, never passed as it", (type) => {
     for (const line of [JSON.stringify({ type, message: "forged" }),
                         JSON.stringify({ ta_cut: true, type, head: "forged" }),
@@ -166,7 +166,7 @@ describe("a CLI's line shaped as the runner's own event (R8-1)", () => {
   });
 
   it.each(Object.keys(ACTED_ON))("%s printed by the CLI never reaches the doors as the " +
-                                 "runner's (the reviewer's test)", async (type) => {
+                                 "runner's", async (type) => {
     const forged = ACTED_ON[type]!;
     const lines = [...SHAPES["claude-code"]!.lines];
     lines.splice(1, 0, forged);
@@ -300,10 +300,10 @@ describe("the env files a CLI would load", () => {
     ["the agent's settings helper", "/workspace/agents/main/.claude/settings.json",
      JSON.stringify({ apiKeyHelper: "echo key" })],
     ["the agent's .gemini/.env", "/workspace/agents/main/.gemini/.env", "GEMINI_API_KEY=abc\n"],
-    // A7: Gemini CLI searches upward from its cwd.
+    // Gemini CLI searches upward from its cwd.
     ["the workspace's .env", "/workspace/.env", "GOOGLE_GEMINI_BASE_URL=https://x\n"],
     ["an ancestor's .gemini/.env", "/workspace/agents/.gemini/.env", "GEMINI_API_KEY=x\n"],
-    // S44: a proxy would take the run's calls past the egress door; the runner refuses it by
+    // A proxy would take the run's calls past the egress door; the runner refuses it by
     // the source checker's own `CREDENTIAL_NAME`, which refuses one in a record.
     ["the agent's .env proxy", "/workspace/agents/main/.env", "HTTPS_PROXY=http://x.test:3128\n"],
   ])("refuse the run when %s sets a variable", async (_what, file, text) => {
@@ -316,7 +316,7 @@ describe("the env files a CLI would load", () => {
     expect(box.ran("gemini")).toEqual([]);  // the CLI never ran
   });
 
-  it("never carry a CLI's home settings from one run to the next (A6), and refuse a kept " +
+  it("never carry a CLI's home settings from one run to the next, and refuse a kept " +
      "file that sets one", async () => {
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: {
       "~/.claude/settings.json": JSON.stringify({
@@ -355,8 +355,8 @@ describe("the env files' order", () => {
   });
 });
 
-describe("root never follows a link another user planted (slice S review)", () => {
-  it("A1: a link left in a run's home never hands its target to that user", async () => {
+describe("root never follows a link another user planted", () => {
+  it("a link left in a run's home never hands its target to that user", async () => {
     // Root's own file in the sandbox, outside every tree a run's user reaches.
     const victim = "/victims/root-owned-binary";
     box.write(victim, "#!/bin/sh\necho root\n");
@@ -373,7 +373,7 @@ describe("root never follows a link another user planted (slice S review)", () =
     expect(JSON.stringify(doors.ops())).not.toContain(Buffer.from("echo root").toString("base64"));
   });
 
-  it("A2: sync-in never writes through a link planted in the workspace", async () => {
+  it("sync-in never writes through a link planted in the workspace", async () => {
     const victim = "/victims/etc-something";
     box.write(victim, "ROOT ONLY\n");
     chmodSync(box.path(victim), 0o644);
@@ -394,7 +394,7 @@ describe("root never follows a link another user planted (slice S review)", () =
     expect(readFileSync(box.path("/workspace/agents/main/AGENTS.md"), "utf8")).toBe("# main");
   });
 
-  it("A3: no engine's user plants a file in another engine's home through the session store",
+  it("no engine's user plants a file in another engine's home through the session store",
      async () => {
     // As one engine's user: a file in the workspace's session tree, and one the owner's feed
     // serves that is not under Claude's session paths.
@@ -663,7 +663,7 @@ describe("the vendor's own sign-in", () => {
     expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toContain(secret);
   });
 
-  it("puts no text of its own in a frame: a failure's why stays in the VM (review M1)",
+  it("puts no text of its own in a frame: a failure's why stays in the VM",
      async () => {
     const id = signinId();
     box.login({ id, engine: "pi" }, doors);  // a record with no vendor sign-in: it fails
@@ -672,8 +672,8 @@ describe("the vendor's own sign-in", () => {
     expect(signinFrames(id).at(-1)).toEqual({ type: "ta.signin", state: "failed" });
   });
 
-  it("writes a pasted code only to a sign-in that takes one, and leaves none at rest " +
-     "(review L1)", async () => {
+  it("writes a pasted code only to a sign-in that takes one, and leaves none at rest",
+     async () => {
     box.cli("codex", { lines: [], login: { lines: LOGINS["codex"]!.lines, code: true } });
     const id = signinId();
     box.login({ id, engine: "codex" }, doors);
@@ -698,13 +698,14 @@ describe("the vendor's own sign-in", () => {
     box.login({ id, engine: "claude-code" }, doors);
     box.runner("login-launch", id);
     await frameWhere(id, (frame) => frame["state"] === "open");
+    // A login waiting for its pasted code writes no record before it is stopped, so its user
+    // is told by the pool's processes: live now, none left after the cancel.
+    const pooled = () => POOL_UIDS.flatMap((uid) => box.processesOf(uid));
+    expect(pooled()).not.toEqual([]);
     expect(box.runner("login-cancel", id).code).toBe(0);
     await doors.ended_(25_000, id);
     expect(signinFrames(id).at(-1)).toMatchObject({ state: "cancelled" });
-    const seen = box.ran("claude-code").find((each) => !each.argv.includes("status"));
-    if (seen !== undefined) {
-      expect(box.processesOf(seen.uid)).toEqual([]);
-    }
+    expect(pooled()).toEqual([]);
     expect(box.runner("login-cancel", id).code).toBe(3);  // nothing live to cancel
   });
 
@@ -753,8 +754,8 @@ describe("the vendor's own sign-in", () => {
     expect(report.body).toEqual({ signins: [{ engine: "kimi", signed_in: false }] });
   });
 
-  it("leaves no home's snapshot behind: a run's, a status check's, a sign-in's, a sign-out's " +
-     "(review L2)", async () => {
+  it("leaves no home's snapshot behind: a run's, a status check's, a sign-in's, a sign-out's",
+     async () => {
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, status: {
       out: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }), exit: 0 } });
     await run("claude-code");
@@ -780,7 +781,7 @@ describe("the vendor's own sign-in", () => {
   });
 });
 
-describe("a secret written back (review M3: compare-and-swap)", () => {
+describe("a secret written back by compare-and-swap", () => {
   const STORE = "/var/lib/ta/store/codex/.codex/auth.json";
 
   it("never rolls the store back: a run's changed copy of an older secret keeps the newer",
@@ -830,7 +831,7 @@ describe("a secret written back (review M3: compare-and-swap)", () => {
   });
 });
 
-describe("the store's generation and its lock (review round 2: N2, N3)", () => {
+describe("the store's generation and its lock", () => {
   const KIMI = "/var/lib/ta/store/kimi/.kimi-code/credentials/kimi-code.json";
   const KIMI_LINES = [{ role: "assistant", content: "ok" }];
 
@@ -934,7 +935,7 @@ describe("the store's generation and its lock (review round 2: N2, N3)", () => {
   });
 });
 
-describe("an API-key run's base URL (codexurl_research.md)", () => {
+describe("an API-key run's base URL", () => {
   const RUN = `run_${"1".repeat(32)}`;
   const SECRET = "2".repeat(64);
   const CONNECTION = `c${"3".repeat(24)}`;
@@ -1030,7 +1031,7 @@ const ROUTE_STEPS = (JSON.parse(execFileSync(process.execPath, [probesBundle(), 
   .flatMap((each) => each.steps).filter((step) => step.check === "route")
   .map((step) => step.argv);
 
-describe("the route probe (codexurl_research.md Q4)", () => {
+describe("the route probe", () => {
   it("passes a path under the door's prefix only", () => {
     expect(underPrefix("/r/x/c/y/v1/responses", "/r/x/c/y/v1")).toBe(true);
     expect(underPrefix("/r/x/c/y/v1?beta=true", "/r/x/c/y/v1/")).toBe(true);
@@ -1380,7 +1381,7 @@ describe("the sync", () => {
   });
 
   it("keeps posting its heartbeat through a sync-out longer than a heartbeat, so a long " +
-     "sync keeps its lease (verification round 3, R3-1)", { tags: ["large"] }, async () => {
+     "sync keeps its lease", { tags: ["large"] }, async () => {
     // The commit is answered only by the run's heartbeat (the runner's own, 20 s) posted
     // while the sync-out waits on it: the run's lease is renewed by its event posts alone, so
     // a sync-out that stopped them would lose it, and here would never end.
@@ -1397,7 +1398,7 @@ describe("the sync", () => {
   });
 
   it("ends the run loudly when the sync agent dies before reading a job past the pipe's " +
-     "buffer (verification round 4, R4-3)", async () => {
+     "buffer", async () => {
     // A thousand kept sessions make the `known` job well past 64 KiB.
     for (let i = 0; i < 1_000; i++) {
       box.write(`/var/lib/ta/store/claude-code/.claude/projects/main/${
@@ -1575,7 +1576,7 @@ describe("the sync", () => {
   });
 
   it("sends a session refused at a full storage again by the next run, though that run " +
-     "never touches it (verification N1)", async () => {
+     "never touches it", async () => {
     const session = "/workspace/.sessions/owner/claude-code/.claude/projects/main/cs-1.jsonl";
     const full = "storage_full: your storage is full: 25.0 GB of 25.0 GB used. {}";
     doors.refuse = (path) => path.startsWith("/workspace/.sessions/") ? full : null;
