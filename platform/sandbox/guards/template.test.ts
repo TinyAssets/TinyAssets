@@ -12,7 +12,7 @@
  *   to it. That the pin is this tree's image is the deploy kit's check (`deploy.ts`'s
  *   `template` step), where it is decidable: a build is made from `main` alone, so the pin
  *   follows its build in a PR of its own;
- * - the bundles' file names are `pair.ts`'s alone (B18): beside it only the Worker's config,
+ * - the bundles' file names are `pair.ts`'s alone: beside it only the Worker's config,
  *   which is not a script, the runner's import as data and its declaration, and the config
  *   guard's letter of that config name them.
  */
@@ -28,13 +28,17 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { repoScripts } from "../../ci/kit/imports";
 import { PLATFORM } from "../../ci/paths";
-import { STEP_NS } from "../../contract/src/sync-ignore";
 import { NAME, spec, stage, tag } from "../template/image";
 import { BUILD, BUNDLES, bundles, pairTag, pinned, tsTool } from "../template/pair";
 
 const TEMPLATE = join(PLATFORM, "sandbox", "template");
 /**
- * The image's recipe as E2B's SDK serializes it (`Template.to_json`, e2b 2.62.0): 21 steps.
+ * The release of E2B's SDK that `SDK` is written to the letter of, and that `requirements.txt`
+ * pins: a new pin fails here until the copy is checked against the new release.
+ */
+const SDK_RELEASE = "2.62.0";
+/**
+ * The image's recipe as E2B's SDK serializes it (`Template.to_json`, `SDK_RELEASE`): 21 steps.
  * Its copies' hashes take each staged file's mode: git's, 0644 (`image.ts` stages so). A new
  * recipe is a new image: a paid build, then the pin PR.
  */
@@ -42,10 +46,10 @@ const RECIPE = "118169ff55d21b618352fd644c222039785aa93c5b5c3dc3e28c25c7ada0c46e
 
 /**
  * E2B's SDK as far as the image's steps reach it (`Template`, `Template.to_json`), written
- * out to the letter of e2b 2.62.0's (`template/main.py` `to_json` and `_serialize`,
+ * out to the letter of its `SDK_RELEASE` (`template/main.py` `to_json` and `_serialize`,
  * `template/utils.py` `calculate_files_hash` for one regular file), so the recipe is checked
- * here without the SDK: no network, no build. It gave the SDK's own bytes for main's
- * `build.py` and this `image.py`, at both modes (A6 part b's report).
+ * here without the SDK: no network, no build. Checked once against the SDK's own bytes for
+ * this `image.py`, at git's mode and at an umask-002 checkout's.
  */
 const SDK = `
 import hashlib, json, os, stat
@@ -226,25 +230,49 @@ async function bundler(): Promise<{
     build: (root?: string) => Promise<{ runner: Built; probes: Built }> };
 }
 
+/** A pair's record in `passed.json`, as far as the pin's guard reads it. */
 interface Passed {
   readonly tag: string;
   readonly runner?: string;
   readonly probes?: string;
-  readonly logins: readonly { engine: string; region: string | null; ok: boolean }[];
-  readonly routes: readonly { engine: string; provider: string; ok: boolean;
-                              turns: readonly { exit: number; answered: boolean;
-                                                resumed: boolean }[] | null;
-                              compacted: boolean | null }[];
-  readonly matcher?: { readonly step_ns: number; readonly ceiling_ns: number;
-                       readonly ok: boolean };
+  readonly logins: readonly { readonly ok: boolean }[];
+  readonly routes: readonly { readonly ok: boolean }[];
+  readonly matcher?: { readonly ok: boolean };
 }
 
+/**
+ * Whether a record says every check passed. Each check's `ok` is its probe's own verdict
+ * (`runner/probes.ts`: a route's two turns, its resume; the matcher's step within `STEP_NS`),
+ * and `checks.ts` records only a pair whose every step passed, so this reads the verdicts and
+ * judges none again.
+ */
 function passing(entry: Passed): boolean {
   return entry.logins.length > 0 && entry.logins.every((each) => each.ok)
-    && entry.routes.length > 0 && entry.routes.every((each) => each.ok
-      && each.turns?.length === 2 && each.turns.every((one) => one.exit === 0 && one.answered)
-      && each.turns[1]!.resumed)
-    && entry.matcher !== undefined && entry.matcher.ok && entry.matcher.step_ns <= STEP_NS;
+    && entry.routes.length > 0 && entry.routes.every((each) => each.ok)
+    && entry.matcher?.ok === true;
+}
+
+/**
+ * How the records (`passed`, newest last), the pin and this tree's image (`tree`, its tag)
+ * disagree: the pin with no passing record; this tree's image passed and not pinned, so its
+ * pin PR was forgotten; a pair recorded with its probes whose bundles are not each named by
+ * their SHA-256.
+ */
+function pinProblems(passed: readonly Passed[], pin: string, tree: string): string[] {
+  const problems: string[] = [];
+  const entry = passed.findLast((each) => `${NAME}:${each.tag}` === pin);
+  if (entry === undefined || !passing(entry)) {
+    problems.push(`the pin ${pin} has no passing record`);
+  }
+  if (passed.some((each) => each.tag === tree && passing(each)) && pin !== `${NAME}:${tree}`) {
+    problems.push(`this tree's image ${tree} passed, and is not the pin`);
+  }
+  for (const each of passed.filter((one) => one.probes !== undefined)) {
+    if (![each.runner, each.probes].every((one) => /^[0-9a-f]{64}$/.test(one ?? ""))) {
+      problems.push(`the pair of ${each.tag} names a bundle by no SHA-256`);
+    }
+  }
+  return problems;
 }
 
 describe("the image", () => {
@@ -254,6 +282,8 @@ describe("the image", () => {
     expect(steps.steps).toHaveLength(21);
     expect(steps.steps.filter((step) => step.type === "COPY")).toHaveLength(11);
     expect(sha(recipe())).toBe(RECIPE);
+    expect(readFileSync(join(TEMPLATE, "requirements.txt"), "utf8"))
+      .toContain(`\ne2b==${SDK_RELEASE} `);
   });
 
   it("is versioned by its build's inputs: image.py, its SDK's lock, the spec, the staged files",
@@ -266,8 +296,8 @@ describe("the image", () => {
     const moves: [string, (text: string) => string][] = [
       ["sandbox/template/image.py", (text) => `${text}# a comment is a new image\n`],
       // Another SDK pinned, or another build of a dependency of it, may build another image.
-      ["sandbox/template/requirements.txt", (text) => text.replace("\ne2b==2.62.0 ",
-                                                                  "\ne2b==2.62.1 ")],
+      ["sandbox/template/requirements.txt", (text) => text.replace(`\ne2b==${SDK_RELEASE} `,
+                                                                  "\ne2b==0.0.0 ")],
       ["sandbox/template/requirements.txt", (text) => text.replace("--hash=sha256:",
                                                                   "--hash=sha256:0")],
       ["sandbox/template/ta-runner", (text) => `${text}# a new loader\n`],
@@ -336,7 +366,9 @@ describe("the pair", () => {
     const text = built.runner.bytes.toString("utf8");
     for (const name of ["sandboxEnv", "egressBaseUrl", "runEnv", "stepNanos", "bundledRecords",
                         "routeVerdict"]) {
-      expect(text, name).not.toMatch(new RegExp(`function ${name}\\d*\\(`));
+      // The name as a declaration of any form (`function`, `const`, an arrow) would bind it,
+      // and esbuild renames a clash by a numeric suffix.
+      expect(text, name).not.toMatch(new RegExp(`\\b${name}\\d*\\b`));
     }
     // The probes carry the code they judge by, and never the runner's own entry.
     expect(built.probes.inputs).toEqual(expect.arrayContaining(["sandbox/runner/probes.ts",
@@ -345,7 +377,7 @@ describe("the pair", () => {
     expect(built.probes.bytes.toString("utf8")).toContain(JSON.stringify(runner.sha));
   });
 
-  it("starts each process and takes each run user in the run session alone (B16)", async () => {
+  it("starts each process and takes each run user in the run session alone", async () => {
     const built = await (await bundler()).build();
     const reached = [...new Set([...built.runner.inputs, ...built.probes.inputs])]
       .filter((path) => path.endsWith(".ts"));
@@ -396,19 +428,23 @@ describe("the pair", () => {
 
   it("is pinned only once it passed its standing checks, and a passed tree is pinned", () => {
     const passed = JSON.parse(readFileSync(join(TEMPLATE, "passed.json"), "utf8")) as Passed[];
-    const entry = passed.findLast((each) => `${NAME}:${each.tag}` === pinned());
-    expect(entry, "the pinned tag has no passing record in template/passed.json").toBeDefined();
-    expect(passing(entry!)).toBe(true);
-    // This tree's image, once a pair of it passed, is the pin: its pin PR is not forgotten.
-    const tree = tag();
-    if (passed.some((each) => each.tag === tree && passing(each))) {
-      expect(pinned()).toBe(`${NAME}:${tree}`);
-    }
-    // A pair recorded with its probes names each bundle by its SHA-256.
-    for (const each of passed.filter((one) => one.probes !== undefined)) {
-      expect([each.runner, each.probes].every((one) => /^[0-9a-f]{64}$/.test(one ?? "")))
-        .toBe(true);
-    }
+    expect(pinProblems(passed, pinned(), tag())).toEqual([]);
+    // What it finds, each on records planted beside the pin's.
+    const ok = { logins: [{ ok: true }], routes: [{ ok: true }], matcher: { ok: true } };
+    const pin = { ...ok, tag: "spinned" };
+    const sha64 = "a".repeat(64);
+    const found = (records: Passed[], tree = "stree") =>
+      pinProblems(records, `${NAME}:spinned`, tree).length;
+    expect(found([pin])).toBe(0);
+    expect(found([pin], "spinned")).toBe(0);
+    expect(found([])).toBe(1);
+    expect(found([pin, { ...pin, routes: [{ ok: false }] }])).toBe(1);
+    expect(found([{ ...pin, logins: [] }])).toBe(1);
+    expect(found([{ ...pin, matcher: { ok: false } }])).toBe(1);
+    expect(found([pin, { ...ok, tag: "stree" }])).toBe(1);
+    expect(found([pin, { ...ok, tag: "stree", logins: [{ ok: false }] }])).toBe(0);
+    expect(found([{ ...pin, runner: sha64, probes: sha64 }])).toBe(0);
+    expect(found([{ ...pin, runner: sha64, probes: "probes" }])).toBe(1);
   });
 });
 
@@ -426,7 +462,7 @@ function namingBundles(scripts: ReadonlyMap<string, string>): string[] {
 }
 
 describe("the bundles' names", () => {
-  it("are pair.ts's: beside it only the runner's import as data and its declaration (B18)",
+  it("are pair.ts's: beside it only the runner's import as data and its declaration",
      () => {
     expect(namingBundles(repoScripts())).toEqual([
       "platform/sandbox/src/modules.d.ts",

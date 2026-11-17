@@ -1,6 +1,5 @@
 /**
- * The skills projection (§2.1 step 4.3, Direction 3; slice S review, the shared
- * abilities): each skills path an engine's record names (`.claude/skills`, `.pi/skills`,
+ * The skills projection (§2.1 step 4.3, Direction 3): each skills path an engine's record names (`.claude/skills`, `.pi/skills`,
  * `.agents/skills`), in the agent's directory, holds a link per skill to the union of the
  * agent's own skills (`<agent>/.agents/skills`), the owner's shared abilities
  * (`/workspace/.agents/skills`) and the owner's skills (`/workspace/skills`), the agent's

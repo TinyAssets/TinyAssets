@@ -213,7 +213,7 @@ jobs:
               echo "the endpoint caps at ${API_FILE_CAP} and does not report truncation, so"
               echo "release-critical files could be present and invisible to this check."
               echo ""
-              echo "Split the PR, or rebase it if it is carrying an unmerged lineage."
+              echo "Split the PR, or rebuild it on main if it is carrying an unmerged lineage."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi

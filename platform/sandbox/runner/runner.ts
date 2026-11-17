@@ -5,11 +5,13 @@
  * bytes before every command (`/opt/ta/runner/<sha256>/runner.mjs`, `TA_RUNNER_DIGEST` set).
  * Its commands, exit codes, state paths and documents are the protocol's (`protocol.ts`),
  * and its on-disk format and the rule that keeps a rollback one deploy deep are
- * `state-format.ts`'s. A run and a sign-in are each a job (`Job`). Root never follows a path another user controls (slice S review
- * H-1 to H-3): every file it writes or reads in a tree another user can write goes through
- * `fsafe.ts` (no link followed, owner and mode set on the descriptor), the sync agent runs
- * as its own user (`ta-sync`), and each run as a user of its own from the template's pool
- * (`users.ts`), its own home and its own root-owned system directory made fresh for it.
+ * `state-format.ts`'s. A run and a sign-in are each a job (`Job`).
+ *
+ * Root never follows a path another user controls: every file it writes or reads in a tree
+ * another user can write goes through `fsafe.ts` (no link followed, owner and mode set on
+ * the descriptor), the sync agent runs as its own user (`ta-sync`), and each run as a user of
+ * its own from the template's pool (`users.ts`), its own home and its own root-owned system
+ * directory made fresh for it.
  *
  * - `prepare <dns...>`: the sandbox just started or resumed: `/etc/resolv.conf` pinned to
  *   the network's resolvers (E2B opens the firewall only), `/proc` remounted `hidepid=2`,
@@ -41,7 +43,7 @@
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
- * - `login-launch <id>`: the vendor's own sign-in (slice SIGNIN; `login.ts`), its document
+ * - `login-launch <id>`: the vendor's own sign-in (`login.ts`), its document
  *   the Worker put in the root-only inbox, started detached (`login-run <id>`): the record's
  *   login as a user of its own, its home made from the engine's store, the URL or code the
  *   record's patterns find and its pinned page admits relayed (`ta.signin` frames on the
@@ -169,12 +171,10 @@ function jobState<T extends JobState>(kind: JobKind, id: string): T | null {
   return existsSync(path) ? readJson<T>(path) : null;
 }
 
-/** Whether a job's runner still runs. */
 function living(state: JobState | null): state is JobState {
   return state !== null && !state.ended && alive(state.pid);
 }
 
-/** The jobs of a kind whose runners still run. */
 function liveJobs<T extends JobState>(kind: JobKind): { id: string; state: T }[] {
   const dir = JOBS[kind].dir;
   if (!existsSync(dir)) {
@@ -186,12 +186,10 @@ function liveJobs<T extends JobState>(kind: JobKind): { id: string; state: T }[]
   });
 }
 
-/** The runs whose runners still run. */
 function liveRuns(): { id: string; state: RunState }[] {
   return liveJobs<RunState>("run");
 }
 
-/** How many jobs of either kind live. */
 function livingJobs(): number {
   return liveRuns().length + liveJobs("signin").length;
 }
@@ -480,7 +478,7 @@ function prepare(servers: readonly string[]): number {
   checkFormat(STATE, CACHES);
   dropOtherRunners();
   keepReserve(RESERVE);
-  // A pasted code is never left at rest (review L1): one a pause or a failed hand-over left
+  // A pasted code is never left at rest: one a pause or a failed hand-over left
   // in the inbox goes at every boot and resume, before anything else reads it.
   const inbox = INBOX;
   for (const name of existsSync(inbox) ? readdirSync(inbox) : []) {
@@ -757,7 +755,6 @@ async function syncCommand(): Promise<number> {
                   () => new Error("the sync agent's lock is held"), () => syncLocked(job));
 }
 
-/** The sync agent's job, its lock held. */
 async function syncLocked(job: SyncJob): Promise<number> {
   try {
     const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
@@ -1284,7 +1281,7 @@ async function safeSignedIn(rec: Served): Promise<boolean> {
 }
 
 
-// -- the vendor's own sign-in (slice SIGNIN) ------------------------------------------
+// -- the vendor's own sign-in --------------------------------------------------------
 
 
 /**
@@ -1307,7 +1304,7 @@ async function loginInput(id: string): Promise<number> {
   return await send(channelOf("signin", id), VERB.code, code) === "sent" ? OK : NO;
 }
 
-/** A pasted code the Worker left that was never handed over, gone (review L1). */
+/** A pasted code the Worker left that was never handed over, gone. */
 function loginDrop(id: string): number {
   jobDir("signin", id);  // its id checked
   remove(inboxCode(id));
@@ -1445,7 +1442,7 @@ async function loginRun(id: string): Promise<number> {
         await killAll(as);
         // Only a sign-in that completed keeps what it wrote, as the owner's new login (which
         // moves the store's generation on); one refused, stopped, expired or failed keeps
-        // nothing, so it never discards a live run's refresh (review N2).
+        // nothing, so it never discards a live run's refresh.
         const stopped = reason !== null || (work.cancelled() && !complete)
           || (expired && !complete);
         if (!stopped && (exit === 0 || complete)) {

@@ -1,5 +1,5 @@
 /**
- * The sandbox Worker reaches nothing but E2B (slice S):
+ * The sandbox Worker reaches nothing but E2B:
  *
  * - its config holds to its allow-list (`rules.ts`), by the platform's config checker;
  * - in its source and the E2B client beside it (`e2b/`, whose transport the Worker ships),
