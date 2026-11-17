@@ -591,8 +591,8 @@ def _gh_check_runs(path: str) -> list[object]:
 def review_passed_at(repo: str, head: str, number: int, *, app_id: int | None = None) -> bool:
     """Does `head`'s latest `review` run, by the review App, for PR `number`, read success?
 
-    The reader for what acts on the PR's own check outside a merge group (enqueue,
-    the queue's freshness probe, the floor hotfix); a merge group decides afresh
+    The reader for what acts on the PR's own check outside a merge group (the
+    queue's freshness probe, the floor hotfix); a merge group decides afresh
     (`--review-check --group-sha`). It lists every run
     (`filter=all`, every page), because the API's default `filter=latest` keeps one
     run per name and suite by its own choice, not the highest id `review_run_passed`

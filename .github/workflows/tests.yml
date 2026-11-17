@@ -29,8 +29,8 @@ on:
     # not change the head SHA, so the check already reported for that SHA stays
     # in force. Starting a new run here cancelled the in-progress one
     # (cancel-in-progress is on for pull_request) and spent another ~15 minutes
-    # on the same code: 140 of 331 PR runs in the 2026-10-12 sample. Receipt
-    # and label gating is pr-scope-guard.yml, a separate small job.
+    # on the same code: 140 of 331 PR runs in the 2026-10-12 sample. The
+    # body's checks are pr-scope-guard.yml, a separate small job.
     #
     # Not `ready_for_review` either, for the same reason: marking a draft ready
     # leaves the SHA alone, and the new run cancelled the draft's run of that
@@ -224,7 +224,7 @@ jobs:
           npx --yes @fission-ai/openspec@1.15.0 validate clean-sheet-platform
 
   # The process's own tests: the gates' scripts that outlast the old stack (the review
-  # receipt, the Bash guard, the queue-attempt ledger, the rule files'
+  # check, the Bash guard, the queue-attempt ledger, the rule files'
   # byte pins, the session sync gate, the platform's setup, main-red's decision). Plain
   # pytest on the runner, on every event: no image, no old-stack package, and no conftest
   # (`tests/conftest.py` loads the old stack). Required through `required-tests`' needs.
