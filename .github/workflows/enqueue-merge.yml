@@ -21,13 +21,16 @@ name: Enqueue merge
 # step and exits 0. It never uses GITHUB_TOKEN.
 #
 # A receipt does not rerun Tests. pr-scope-guard re-reads it, on
-# pull_request_target. This job runs when that guard, Tests,
-# or invariants succeeds for a pull request. It does not listen to edited or
-# labeled itself: those events must not start another copy of the test jobs.
+# pull_request_target. This job runs when a workflow that reports a required
+# check succeeds for a pull request: that guard, Tests, invariants, or review.
+# A PR review's decision runs review on workflow_run, which the `if` below
+# skips; the body's edit at landing runs it on pull_request_target. It does not
+# listen to edited or labeled itself: those events must not start another copy
+# of the test jobs.
 
 on:
   workflow_run:
-    workflows: ["Tests", "invariants", "PR scope guard"]
+    workflows: ["Tests", "invariants", "PR scope guard", "review"]
     types: [completed]
 
 permissions:
