@@ -262,15 +262,16 @@ type Prepared = { readonly refused: GatewayCode }
 
 /** A metered call's body serialized once it is checked, reserved and clamped, or its code. */
 type Serialized = { readonly refused: GatewayCode }
-  | { text: string | null; readonly model: Model<Api>; readonly listed: boolean };
+  | { readonly text: string; readonly model: Model<Api>; readonly listed: boolean };
 
 /**
  * The metered call's body, read (at most `length` bytes) and weighed, serialized
  * (`serialized`) and encoded once, each step's input unreachable once the next holds its
- * output; then uploading, `ended` run when its last write is taken. The tree lives only in
- * `serialized`'s frame, gone before the encode: a running frame keeps what it passed to a
- * call after its own variable lets it go (measured in workerd: the egress memory leg,
- * `gateway/memory/egress.mjs`, read the tree beside the text and its bytes here).
+ * output (the text once this returns, as the upload starts); then uploading, `ended` run
+ * when its last write is taken. The tree lives only in `serialized`'s frame, gone before the
+ * encode: a running frame keeps what it passed to a call after its own variable lets it go
+ * (measured in workerd: the egress memory leg, `gateway/memory/egress.mjs`, read the tree
+ * beside the text and its bytes here).
  */
 async function prepared(request: Request, length: number, credential: Credential,
                         meters: Meters, any: Meter, path: string, catalog: Catalog,
@@ -284,8 +285,7 @@ async function prepared(request: Request, length: number, credential: Credential
   if ("refused" in call) {
     return call;
   }
-  const bytes = new TextEncoder().encode(call.text!);
-  call.text = null;
+  const bytes = new TextEncoder().encode(call.text);
   return { upload: uploaded(bytes, ended), model: call.model, listed: call.listed };
 }
 

@@ -19,9 +19,9 @@
 //   ASCII text, and those whose trees cost most a token: empty objects and arrays, unique
 //   keys, nesting a million deep), the gateway's live set paused right after the metered
 //   path's parse, its stringify and its encode (`forward.ts` `serialized` and `prepared`,
-//   each pause found by its statement's text in the bundle) is at most the weight
-//   (`held.ts`) its slots were taken for, read from the paused call; an under-count fails
-//   the leg;
+//   each pause found by its statement's text in the bundle), over a 16 KiB call's there, is
+//   at most the weight (`held.ts`) its slots were taken for over that call's, each read from
+//   the paused call; an under-count fails the leg;
 // - the pool: a call behind a whole-pool upload waits and then lands; one held past the
 //   pool's wait is refused `busy`.
 // Run: `npm run test:memory -w gateway`. Exits non-zero on any failed check, printing every
@@ -55,7 +55,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 const PAUSES = [["parse", "serialized", /(?<![.\w])read\d*\.text = null;/g],
                 ["stringify", "serialized", /(?<![.\w])return \{ text\b/g],
-                ["encode", "prepared", /(?<![.\w])call\d*\.text = null;/g]];
+                ["encode", "prepared", /(?<![.\w])return \{ upload: uploaded\d*\(/g]];
 /** The weighed body's holder in `prepared`, whose weight the parse cases are held to. */
 const READ = /(?<![.\w])const (read\d*) = await weighedBody\d*\(/g;
 
@@ -463,16 +463,14 @@ try {
   // A first call through every pause, unsampled: the debugger's own records of the script,
   // made at its first pause, are then in every floor.
   await (await through("warm", body(model, 64 * 1024), async () => undefined)).text();
-  for (const [name, text] of shapes(model, 2 * MIB)) {
+  /** A call's live set over its floor at each pause, and what its slots were taken for. */
+  const sampled = async (name, text) => {
     const floor = Math.min(await live("gateway"), await live("gateway"));
-    let most = 0;
+    const at = {};
     let weight = null;
     let bytes = null;
-    const phased = {};
-    const answered = through(name, text, async (phase, callFrames) => {
-      const now = await live("gateway") - floor;
-      phased[phase] = +(now / MIB).toFixed(2);
-      most = Math.max(most, now);
+    const answer = await through(name, text, async (phase, callFrames) => {
+      at[phase] = await live("gateway") - floor;
       if (phase === "encode") {
         // The weight the call's slots were taken for, from `prepared`'s own holder, read
         // after the last sample.
@@ -483,12 +481,25 @@ try {
         bytes = fields.get("bytes").value;
       }
     });
-    const answer = await answered;
-    const status = answer.status;
     await answer.text();
+    return { at, weight, bytes, status: answer.status };
+  };
+  // Each shape against a 16 KiB call at the same pause, held to the difference of their
+  // weights, as the leg's other rows are differences: what any call in flight holds whatever
+  // its body (measured: 0.24 to 0.36 MiB at these pauses, beside 0.06 MiB of body) is the
+  // isolate's in-flight set, not the body's, and the weight prices the body (`held.ts`).
+  const base = await sampled("base", body(model, 16 * 1024));
+  for (const [name, text] of shapes(model, 2 * MIB)) {
+    const call = await sampled(name, text);
+    const over = Object.entries(call.at).map(([phase, now]) => [phase, now - base.at[phase]]);
+    const most = Math.max(...over.map(([, each]) => each));
+    const weight = call.weight - base.weight;
+    const status = call.status;
     const row = { check: `gateway, ${name}: held after its parse, its stringify, its encode`,
                   mib: +(most / MIB).toFixed(2), weight_mib: +(weight / MIB).toFixed(2),
-                  times_body: +(most / bytes).toFixed(2), phases_mib: phased, status,
+                  times_body: +(most / (call.bytes - base.bytes)).toFixed(2),
+                  phases_mib: Object.fromEntries(over.map(([phase, each]) =>
+                    [phase, +(each / MIB).toFixed(2)])), status,
                   ok: most <= weight && status === 200 };
     rows.push(row);
     if (!row.ok) {
