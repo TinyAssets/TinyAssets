@@ -98,12 +98,6 @@ export function decidedActor(account: Account): Actor | null {
     : { agent: null, client: account.origin.client, run: null };
 }
 
-/**
- * A yes's resume of a run's held call (`Runs.resume`): the run it was held in, that run's
- * origin's family and the input the resumed run starts on, written; the resumed run, or null.
- */
-type Resume = (run: string, family: string | null, prompt: string) => string | null;
-
 /** The strictest of `document`'s rules on `act` that hold for `actor`, or null for none. */
 export function ruleOn(document: PolicyDocument, act: string, actor: Actor):
     ActionRule["do"] | null {
@@ -332,11 +326,13 @@ export class Actions {
   /**
    * The owner's yes, in its session, to the pending card with the digest it was shown: kept
    * as the call's once-approval, receipted, and, for a run's call, its conversation resumed
-   * (`resume`, in the same transaction: a resume refused writes no yes); the resumed run's
-   * id, or null for none.
+   * (`resume`, `Runs.resume`, given the run it was held in, that run's origin's family and
+   * the input to start on, in the same transaction: a resume refused writes no yes); the
+   * resumed run's id, or null for none.
    */
   approve(session: LiveSession, cardId: unknown, shown: unknown, now: number,
-          resume: Resume): { card_id: string; approved: true; run: string | null } {
+          resume: (run: string, family: string | null, prompt: string) => string | null):
+      { card_id: string; approved: true; run: string | null } {
     return this.#answer(session, cardId, shown, now, (row, card) => {
       this.#sql.exec("UPDATE action_requests SET approved_at = ? WHERE card_id = ?", now,
                      row.card_id);

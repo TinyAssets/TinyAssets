@@ -8,10 +8,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Binding } from "../../contract/src/binding";
+import { QUEUE_ROWS } from "../../contract/src/limits";
 import { DEFAULT_POLICY_JSON, POLICY_LIMITS } from "../../contract/src/policy-document";
 import { ACTION_LIMITS, type ActionCard } from "../src/actions";
 import { clock } from "../src/clock";
 import type { OwnerDO } from "../src/owner-do";
+import { QUEUE_FULL } from "../src/runs";
 import { gated } from "./gateway-support";
 import { DOT, MCP, MUSE, registerOn, rig, signedIn } from "./ledger-support";
 import { ALL_SCOPES, ownerRun, recorder, runBinding, runnerBinding, startOf, TIERS }
@@ -286,6 +288,18 @@ describe("a run's held call (R5 P-resume)", () => {
     expect(await heldCard(() => mkdir(r.stub, runBinding(r, resumed), "/workspace/held")))
       .not.toBe(card);
     expect(await outcomes(o)).toEqual(["held", "admitted", "held", "approved", "held"]);
+  });
+
+  it("writes no yes when its resume is refused for the inputs' queue", async () => {
+    const { r, o, card, digest } = await asking();
+    await r.sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
+                  `WHERE i < ${QUEUE_ROWS}) INSERT INTO run_inputs (run, prompt, bytes) ` +
+                  "SELECT 'run_' || printf('%032x', i), 'x', 1 FROM n");
+    expect((await failure(() => r.stub.actionApprove(o.session, { card_id: card, digest })))
+      .message).toBe(QUEUE_FULL);
+    // The card is still pending, and its call still held, not admitted.
+    expect((await r.stub.actionRequest(o.owner, { card_id: card })).digest).toBe(digest);
+    expect(await outcomes(o)).toEqual(["held"]);
   });
 
   it("resumes nothing on the owner's no", async () => {
