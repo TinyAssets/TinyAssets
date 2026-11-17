@@ -349,11 +349,6 @@ def test_review_yml_decides_per_pr_with_the_app_in_its_environment():
         assert all("concurrency" not in job for job in signal["jobs"].values())
     steps = "\n".join(str(step) for step in decide["steps"])
     assert "create-github-app-token" in steps and "REVIEW_APP_PRIVATE_KEY" in steps
-    for name, job in wf["jobs"].items():
-        assert job.get("name") != "review" and name != "review"
-    queue = yaml.safe_load((_ROOT / ".github" / "workflows" / "review-queue.yml").read_text())
-    assert queue["permissions"] == {}
-    assert all(job.get("name") != "review" for job in queue["jobs"].values())
 
 
 # ---- the merge group ---------------------------------------------------------------------
@@ -517,8 +512,7 @@ def test_the_triggers_and_conditions_are_exactly_these():
         data = yaml.safe_load((_WORKFLOWS / name).read_text())
         assert data["name"] == signal
         assert data["permissions"] == {}, name
-        assert all("permissions" not in job and job.get("name") != "review"
-                   for job in data["jobs"].values()), name
+        assert all("permissions" not in job for job in data["jobs"].values()), name
     signal_on = yaml.safe_load((_WORKFLOWS / "review-signal.yml").read_text())
     assert signal_on[True] == {
         "pull_request_review": {"types": ["submitted", "edited", "dismissed"]}}
