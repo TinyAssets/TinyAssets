@@ -23,7 +23,7 @@ import { Doorbell } from "../src/wakes";
 import { sha256Hex } from "../../contract/src/digest";
 import { MUSE, rig } from "./ledger-support";
 import {
-  alarmOf, clockAt, failure, laneJobs, ownerObject, unseededObject,
+  alarmOf, clockAt, drainDue, failure, laneJobs, ownerObject, unseededObject,
 } from "./support";
 import { clock, inTime } from "../src/clock";
 
@@ -523,7 +523,7 @@ describe("the object's schedule", () => {
     const ran = (await sqlIn(r.stub, "SELECT 1 FROM file_chunks WHERE sha256 = ?", sha256))
       .length === 0;
     expect(due || ran).toBe(true);
-    await runInDurableObject(r.stub, (instance: OwnerDO) => instance.alarm());
+    await drainDue(r.stub);  // a pass workerd's alarm started may still run; one more skips it
     expect(await sqlIn(r.stub, "SELECT sha256 FROM file_chunks WHERE sha256 = ?", sha256))
       .toEqual([]);
   });
