@@ -1,8 +1,9 @@
 /**
  * The platform's one home of shape checks, for the kits as for every Worker (the contract
  * runs under Node's type stripping, `guards/node.test.ts`, so nothing copies them):
- * - the tests (`object`, `keyed`, `whole`), for a reader to refuse in its own words, and the
- *   value at a path through JSON objects (`valueAtPath`);
+ * - the tests (`object`, `keyed`, `among`, `whole`), for a reader to refuse in its own words,
+ *   the value at a path through JSON objects (`valueAtPath`), and a data file frozen whole
+ *   (`frozen`);
  * - the checks a source's sealed values are held to (`egress-scope.ts`, `model-record.ts`, the
  *   gateway's `credential.ts`): each refuses anything else as `invalid_source`, the gateway's
  *   fixed code, so nothing about the value crosses the boundary.
@@ -30,6 +31,22 @@ export function keyed(value: unknown, required: readonly string[],
   const keys = Object.keys(value);
   return required.every((key) => keys.includes(key))
     && keys.every((key) => required.includes(key) || optional.includes(key));
+}
+
+/** `value` and everything in it frozen, so no module can change a data file's for the isolate. */
+export function frozen<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    for (const each of Object.values(value)) {
+      frozen(each);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/** Whether `value` is one of `list`. */
+export function among<T>(list: readonly T[], value: unknown): value is T {
+  return (list as readonly unknown[]).includes(value);
 }
 
 /** Whether `value` is a whole number from `min` to `max`. */

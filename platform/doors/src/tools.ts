@@ -8,6 +8,7 @@
  */
 import type { Binding } from "../../contract/src/binding";
 import { doorRow, takesRequest } from "../../contract/src/doors";
+import type { DoorAnswer } from "../../contract/src/owner";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
 
 /**
@@ -20,13 +21,14 @@ export type DoorName = keyof OwnerDoors & string;
 /**
  * Call the door named `door` on the bound object, its row read first (an unknown name is a
  * bug). The arguments go as the door's request, which the object checks field by field; a
- * door that takes none gets none.
+ * door that takes none gets none. Its answer is the contract's for that door (`DoorAnswer`):
+ * an object the doors pass on, for a name only the table knows.
  */
-export function callDoor(stub: DurableObjectStub<OwnerDoors>, binding: Binding, door: string,
-                         request: unknown): Promise<unknown> {
+export function callDoor<D extends string>(stub: DurableObjectStub<OwnerDoors>, binding: Binding,
+                                           door: D, request: unknown): Promise<DoorAnswer<D>> {
   // An RPC stub's method is called as itself: `call` and `apply` would be RPC names.
   const row = doorRow(door);
   const method = (stub as unknown as Record<string, unknown>)[row.door] as
-    (...args: unknown[]) => Promise<unknown>;
+    (...args: unknown[]) => Promise<DoorAnswer<D>>;
   return Reflect.apply(method, stub, takesRequest(row) ? [binding, request] : [binding]);
 }

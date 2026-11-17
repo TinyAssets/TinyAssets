@@ -186,28 +186,9 @@ async function forwarded(): Promise<{ headers: Record<string, string>; url: stri
   return log.filter((entry) => new URL(entry.url).pathname === COMPLETIONS);
 }
 
-/** One egress call's receipt, as the owner's `egressReceipts` door answers it. */
-interface Receipt {
-  readonly reservation: string;
-  readonly method: string;
-  readonly path: string;
-  readonly state: string;
-  readonly code: string | null;
-  readonly ended: string | null;
-  readonly outcome: string | null;
-  readonly status: number | null;
-  readonly bytes: number | null;
-  readonly charge: string | null;
-  readonly rule: string | null;
-  readonly est_cost: number | null;
-  readonly cost: number | null;
-  readonly tokens: number | null;
-  readonly served: string | null;
-}
-
 /** The owner's egress receipts, oldest first. */
-async function receipts(owner: string): Promise<Receipt[]> {
-  return (await ownDoor<{ receipts: Receipt[] }>(owner, "egressReceipts")).receipts.reverse();
+async function receipts(owner: string) {
+  return (await ownDoor(owner, "egressReceipts")).receipts.toReversed();
 }
 
 /** Each call's end, as its receipt holds it. */
@@ -225,7 +206,7 @@ async function spends(owner: string) {
 
 /** The owner's policy, as its `policyRead` door answers it. */
 function policyOf(owner: string) {
-  return ownDoor<{ generation: number; policy: Record<string, unknown> }>(owner, "policyRead");
+  return ownDoor(owner, "policyRead");
 }
 
 /** The answer's refusal code. */

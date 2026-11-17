@@ -51,8 +51,7 @@ async function signedIn() {
   return {
     who, app, stub, own,
     policy: async (codemode: boolean, custom?: string[]) => {
-      const { generation, policy } = await ownDoor<
-        { generation: number; policy: Record<string, unknown> }>(who, "policyRead");
+      const { generation, policy } = await ownDoor(who, "policyRead");
       const { tools: _tools, ...rest } = policy;
       await stub.policyWrite(session, { expected_generation: generation, policy: {
         ...rest, codemode: { on: codemode },

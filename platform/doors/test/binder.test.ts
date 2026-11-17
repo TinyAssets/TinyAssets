@@ -23,17 +23,10 @@ import {
 /** The owner issuer, as the suite's config names it. */
 const ISSUER = doorsEnv.OWNER_ISSUER;
 
-/** A filed registration card, as the owner's `registerProposal` door answers it. */
-interface Card {
-  readonly client: string;
-  readonly family: string;
-  readonly request: { readonly display_name: string };
-}
-
 /** The card an `agent_register` call filed for `who`, as its door answers it. */
-async function cardOf(who: string, filed: Response): Promise<Card> {
+async function cardOf(who: string, filed: Response) {
   const { card_id } = answerOf((await rpcBody(filed))["result"]) as { card_id: string };
-  return await ownDoor<Card>(who, "registerProposal", { card_id });
+  return await ownDoor(who, "registerProposal", { card_id });
 }
 
 function owner(): string {
@@ -331,7 +324,7 @@ describe("one owner's credential", () => {
     }
     // Each card is in its own owner's object alone.
     for (const [who, other] of [[alice, bob], [bob, alice]] as const) {
-      expect((await ownDoor<Card>(who, "registerProposal", { card_id: filed.get(who) }))
+      expect((await ownDoor(who, "registerProposal", { card_id: filed.get(who) }))
         .request.display_name).toBe(who);
       await expect(ownDoor(other, "registerProposal", { card_id: filed.get(who) }))
         .rejects.toMatchObject({ name: "Refusal", code: "refused" });

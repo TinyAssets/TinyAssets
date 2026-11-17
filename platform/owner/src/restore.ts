@@ -897,7 +897,7 @@ function finish(o: RestoreDoorNeeds, held: Held, root: ManifestRoot): void {
   sql.exec("UPDATE owner_restore SET step = 'done', after = NULL");
 }
 
-// -- THE DOORS: the `restore` rows' handlers (`contract/doors.json`) -------------------------------
+// -- THE DOORS: the `restore` rows' handlers (`owner/doors.json`) ----------------------------------
 //
 // Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
 // doors reach (`RestoreDoorNeeds`) once the row's steps held: the bind (the platform's

@@ -34,7 +34,7 @@ import { posix } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { doorTable } from "../../contract/src/doors";
+import { ownerRows } from "../src/door-steps";
 import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
@@ -201,7 +201,7 @@ describe("policy-boundary guard", () => {
     expect(guarded.filter((table) => literals.some((literal) => sqlNaming(table).test(literal))))
       .toEqual([]);
     expect(Object.keys(MODULES).filter((module) => importer(module).test(source))).toEqual([]);
-    expect(new Set(doorTable().filter((row) => row.handler === "restore")
+    expect(new Set(ownerRows().filter((row) => row.handler === "restore")
       .map((row) => row.caller))).toEqual(new Set(["reserved"]));
     expect(sqlNaming("owner_keys").test('"SELECT key_id FROM owner_keys"')).toBe(true);
   });
