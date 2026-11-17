@@ -110,7 +110,7 @@ export interface DoorRows {
   readonly actionRequest:
     { readonly module: "actions"; readonly caller: "owner"; readonly gate: "door" };
   readonly actionApprove:
-    { readonly module: "actions"; readonly caller: "session"; readonly gate: "door" };
+    { readonly module: "actions"; readonly caller: "session"; readonly gate: "synced" };
   readonly actionRefuse:
     { readonly module: "actions"; readonly caller: "session"; readonly gate: "door" };
   readonly grantList:

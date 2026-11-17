@@ -868,7 +868,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
     return { owner, caller, origin: grant.origin, grant: held,
              run: { id: grant.run, scopes: grant.scopes, agent: grant.agent,
-                    stamp: grant.stamp } };
+                    stamp: grant.stamp, conversation: grant.conversation } };
   }
 
   /** The owner itself, on its own account, never an outside client nor a run. */

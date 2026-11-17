@@ -190,6 +190,15 @@
             },
             "path": "message.content"
           }
+        ],
+        "deferred": [
+          {
+            "match": {
+              "type": "result",
+              "stop_reason": "tool_deferred"
+            },
+            "path": ""
+          }
         ]
       }
     },

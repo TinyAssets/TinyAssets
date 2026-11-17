@@ -10,11 +10,16 @@
  *   (`action_never`), `ask` holds the call for the owner (`held_for_owner`, the card's id in
  *   the refusal's facts) unless the owner said yes to this very call, and no rule lets it be.
  * - **A held call is one row of `action_requests`**: its card, what the owner is shown (the
- *   act, the door, the actor and the request as asked, cut to `shownChars`), the card's
- *   digest, which the owner's answer names, and the call's, which a yes admits once: the
- *   door, the request as asked (its bytes by their digest) and the actor. The same call held
- *   again answers the same card. A yes keeps the row as the call's once-approval for
- *   `approvalTtlS`, which its one use deletes; a no deletes it.
+ *   act, the door, the actor, its conversation and the request as asked, cut to
+ *   `shownChars`), the card's digest, which the owner's answer names, and the call's, which a
+ *   yes admits once: the door, the request as asked (its bytes by their digest), the actor
+ *   and, for a run's call, its conversation. The same call held again answers the same card.
+ *   A yes keeps the row as the call's once-approval for `approvalTtlS`, which its one use
+ *   deletes; a no deletes it.
+ * - **A yes to a run's call resumes its conversation** (R5 P-resume): the approval writes a
+ *   run waiting there (`Runs.resume`) under the held run's authority, on an input naming the
+ *   card, so the agent makes the call again and the approval admits it. A main agent's
+ *   call is retried when its user says so.
  * - **Generation-bound**: a row asked under another policy generation is neither shown,
  *   answered nor admitted, so a change of the owner's rules decides every held call afresh.
  * - **Bounded and swept**: `held` rows in all, `perClient` of them one outside client's; at
@@ -70,6 +75,13 @@ export interface Actor {
   readonly agent: string | null;
   /** The outside client the call is under: its own, or the one that started the run. */
   readonly client: string | null;
+  /**
+   * A run's call: the run, its conversation (which the call's approval is bound to and
+   * resumes) and its origin's family (what the resume runs under); null for an outside
+   * client's own call.
+   */
+  readonly run: { readonly id: string; readonly conversation: string;
+                  readonly family: string | null } | null;
 }
 
 /**
@@ -78,9 +90,12 @@ export interface Actor {
  */
 export function decidedActor(account: Account): Actor | null {
   if (account.run !== null) {
-    return { agent: account.run.agent, client: account.origin?.client ?? null };
+    return { agent: account.run.agent, client: account.origin?.client ?? null,
+             run: { id: account.run.id, conversation: account.run.conversation,
+                    family: account.origin?.family ?? null } };
   }
-  return account.origin === null ? null : { agent: null, client: account.origin.client };
+  return account.origin === null ? null
+    : { agent: null, client: account.origin.client, run: null };
 }
 
 /** The strictest of `document`'s rules on `act` that hold for `actor`, or null for none. */
@@ -107,6 +122,8 @@ export interface ActionCard {
   readonly door: string;
   readonly agent: string | null;
   readonly client: string | null;
+  /** The run's conversation the call was asked in, which a yes resumes; null for a client's. */
+  readonly conversation: string | null;
   /** The request as asked, canonical JSON, its bytes as their text; `cut` past `shownChars`. */
   readonly request: string;
   readonly cut: boolean;
@@ -152,7 +169,15 @@ function asJson(value: unknown, bytes: (value: Uint8Array) => string): unknown {
 type Row = {
   card_id: string; digest: string; call_digest: string; card: string; client: string | null;
   generation: number; filed_at: number; approved_at: number | null;
+  run: string | null; family: string | null;
 };
+
+/** The input a run resumed on a yes starts on: the card answered, and the call to make again. */
+function resumeInput(card: ActionCard): string {
+  return `Your owner said yes to card ${card.card_id} (${card.act} at ${card.door}). Make ` +
+    "that same call again now and it goes through, once. If you made it since, do not make " +
+    "it again.";
+}
 
 export class Actions {
   readonly #storage: OwnerStorage;
@@ -216,8 +241,9 @@ export class Actions {
       return;
     }
     const request = canonical(asJson(asked.request, (bytes) => new TextDecoder().decode(bytes)));
+    const conversation = actor.run?.conversation ?? null;
     const call = policyDigest({
-      door: asked.door, agent: actor.agent, client: actor.client,
+      door: asked.door, agent: actor.agent, client: actor.client, conversation,
       request: asJson(asked.request, (bytes) => `sha256:${sha256Hex(bytes)}`) });
     const receipt = (outcome: ActionReceipt["outcome"], cardId: string | null) => this.#receipt({
       at: now, act, decision: rule, outcome, call_digest: call, card_id: cardId,
@@ -245,13 +271,15 @@ export class Actions {
       const shown = [...request];
       const card: ActionCard = {
         card_id: cardId, act, says: actNamed(act)!.says, door: asked.door, agent: actor.agent,
-        client: actor.client, request: shown.slice(0, ACTION_LIMITS.shownChars).join(""),
+        client: actor.client, conversation,
+        request: shown.slice(0, ACTION_LIMITS.shownChars).join(""),
         cut: shown.length > ACTION_LIMITS.shownChars, generation, filed_at: now,
         expires_at: now + ACTION_LIMITS.cardTtlS,
       };
       sql.exec("INSERT INTO action_requests (card_id, digest, call_digest, card, client, " +
-                 "generation, filed_at) VALUES (?, ?, ?, ?, ?, ?, ?)", cardId,
-               policyDigest(card), call, canonical(card), actor.client, generation, now);
+                 "generation, filed_at, run, family) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", cardId,
+               policyDigest(card), call, canonical(card), actor.client, generation, now,
+               actor.run?.id ?? null, actor.run?.family ?? null);
       receipt("held", cardId);
       this.#notices.add("action_request", `${actor.agent ?? "an outside agent"} asks to ` +
                         `${act} at ${asked.door}: card ${cardId}`, now);
@@ -296,11 +324,39 @@ export class Actions {
   }
 
   /**
-   * The owner's answer, in its session: the pending card with the digest it was shown, yes
-   * (kept as the call's once-approval) or no (deleted), receipted.
+   * The owner's yes, in its session, to the pending card with the digest it was shown: kept
+   * as the call's once-approval, receipted, and, for a run's call, its conversation resumed
+   * (`resume`, `Runs.resume`, given the run it was held in, that run's origin's family and
+   * the input to start on, in the same transaction: a resume refused writes no yes); the
+   * resumed run's id, or null for none.
    */
-  answer(session: LiveSession, cardId: unknown, shown: unknown, yes: boolean, now: number):
-      { card_id: string; approved: boolean } {
+  approve(session: LiveSession, cardId: unknown, shown: unknown, now: number,
+          resume: (run: string, family: string | null, prompt: string) => string | null):
+      { card_id: string; approved: true; run: string | null } {
+    return this.#answer(session, cardId, shown, now, (row, card) => {
+      this.#sql.exec("UPDATE action_requests SET approved_at = ? WHERE card_id = ?", now,
+                     row.card_id);
+      return { card_id: row.card_id, approved: true, run: row.run === null ? null
+        : resume(row.run, row.family, resumeInput(card)) };
+    });
+  }
+
+  /** The owner's no, in its session, to the pending card shown: deleted, receipted. */
+  refuse(session: LiveSession, cardId: unknown, shown: unknown, now: number):
+      { card_id: string; approved: false } {
+    return this.#answer(session, cardId, shown, now, (row) => {
+      this.#sql.exec("DELETE FROM action_requests WHERE card_id = ?", row.card_id);
+      return { card_id: row.card_id, approved: false };
+    });
+  }
+
+  /**
+   * The owner's answer, in its session, in one transaction: the pending card with the digest
+   * it was shown, answered by `answered`, and receipted.
+   */
+  #answer<T extends { approved: boolean }>(session: LiveSession, cardId: unknown,
+                                           shown: unknown, now: number,
+                                           answered: (row: Row, card: ActionCard) => T): T {
     proven(session, "session");
     return this.#storage.transactionSync(() => {
       const { generation } = this.#policy();
@@ -309,18 +365,13 @@ export class Actions {
       if (row === null || typeof shown !== "string" || row.digest !== shown) {
         throw new Refusal("refused", "action request is not the pending card shown");
       }
-      if (yes) {
-        this.#sql.exec("UPDATE action_requests SET approved_at = ? WHERE card_id = ?", now,
-                       row.card_id);
-      } else {
-        this.#sql.exec("DELETE FROM action_requests WHERE card_id = ?", row.card_id);
-      }
       const card = JSON.parse(row.card) as ActionCard;
+      const answer = answered(row, card);
       this.#receipt({ at: now, act: card.act, decision: "ask",
-                      outcome: yes ? "approved" : "refused", call_digest: row.call_digest,
-                      card_id: row.card_id, agent: card.agent, client: card.client,
-                      generation });
-      return { card_id: row.card_id, approved: yes };
+                      outcome: answer.approved ? "approved" : "refused",
+                      call_digest: row.call_digest, card_id: row.card_id, agent: card.agent,
+                      client: card.client, generation });
+      return answer;
     });
   }
 }
@@ -339,9 +390,11 @@ export interface ActionAnswerRequest {
 // doors reach (`ActionsDoorNeeds`) once the row's steps held: the bind, the account, the
 // scope and the fields.
 
-/** What the `actions` doors reach: the held calls. */
+/** What the `actions` doors reach: the held calls, and the runs a yes resumes. */
 export interface ActionsDoorNeeds {
   readonly actions: Actions;
+  readonly runs: { resume(run: string, family: string | null, prompt: string, now: number):
+                     string | null };
 }
 
 /** The `actions` doors' handlers, by door. */
@@ -355,14 +408,19 @@ export const actionsDoors = Object.freeze({
     }
     return held;
   },
-  /** The owner's yes, in its session: the held call admitted once, within a day. */
+  /**
+   * The owner's yes, in its session: the held call admitted once, within a day, and a run's
+   * call's conversation resumed (the run that resumes it, or null), its lane synced.
+   */
   actionApprove(o: ActionsDoorNeeds, { session, r }: Call<ActionAnswerRequest, "session">):
-      { card_id: string; approved: boolean } {
-    return o.actions.answer(session, r["card_id"], r["digest"], true, clock());
+      { card_id: string; approved: true; run: string | null } {
+    const now = clock();
+    return o.actions.approve(session, r["card_id"], r["digest"], now,
+                             (run, family, prompt) => o.runs.resume(run, family, prompt, now));
   },
   /** The owner's no, in its session: the held call's card gone. */
   actionRefuse(o: ActionsDoorNeeds, { session, r }: Call<ActionAnswerRequest, "session">):
-      { card_id: string; approved: boolean } {
-    return o.actions.answer(session, r["card_id"], r["digest"], false, clock());
+      { card_id: string; approved: false } {
+    return o.actions.refuse(session, r["card_id"], r["digest"], clock());
   },
 });

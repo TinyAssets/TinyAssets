@@ -334,6 +334,8 @@ interface RunGrant {
   readonly run: string;
   /** Its agent: who the run acts as in the ledger. */
   readonly agent: string;
+  /** Its conversation: where a held call of the run's resumes (`actions.ts`). */
+  readonly conversation: string;
   /** The lease its run runs under (the run's row's). */
   readonly lease_id: string;
   readonly epoch: number;
@@ -388,7 +390,8 @@ type RunRow = {
 };
 
 type GrantRow = {
-  run: string; agent: string; lease_id: string; epoch: number; stamp: string | null;
+  run: string; agent: string; conversation: string; lease_id: string; epoch: number;
+  stamp: string | null;
   origin: string | null; scopes: string; connection: string | null; secret: string;
 };
 
@@ -399,8 +402,8 @@ type ScheduleRow = {
 };
 
 const LIVE = "state IN ('queued', 'running')";
-/** A live run's grant row, with its agent and the lease its run runs under. */
-const GRANTS = "SELECT g.*, r.agent, r.lease_id, r.epoch FROM run_grants g " +
+/** A live run's grant row, with its agent, its conversation and the lease it runs under. */
+const GRANTS = "SELECT g.*, r.agent, r.conversation, r.lease_id, r.epoch FROM run_grants g " +
   "JOIN runs r ON r.id = g.run";
 /** A run not settled: live, or waiting for its conversation. */
 const UNSETTLED = "settled_at IS NULL";
@@ -442,6 +445,12 @@ const SESSION_ID = /^[!-~]{1,256}$/;
 /** The run's error when its engine named a session id outside that shape: a fixed code. */
 export const SESSION_REFUSED = "session_id_refused: the engine named a session id outside " +
   "its shape, so this conversation does not resume";
+/**
+ * The code a run settles with when its engine stopped at a tool call it deferred (its
+ * record's `deferred` matcher, R5 P-resume): it ended, and its call waits on the owner's
+ * card, so its result is no reply. Kept on the row from the batch that brought the stop.
+ */
+export const TOOL_DEFERRED = "tool_deferred";
 
 /**
  * A runner's batch read against its run's record: the frames past the last one kept (a
@@ -451,13 +460,14 @@ export const SESSION_REFUSED = "session_id_refused: the engine named a session i
  */
 function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]): {
   last: number; result: string | null; resultCut: boolean; error: string | null;
-  session: string | null; relayed: Frame[];
+  session: string | null; deferred: boolean; relayed: Frame[];
 } {
   let last = row.last_seq;
   let result = row.result;
   let resultCut = row.result_cut === 1;
   let error = row.error;
   let session: string | null = null;
+  let deferred = row.code === TOOL_DEFERRED;
   const relayed: Frame[] = [];
   for (const frame of frames) {
     if (frame.seq <= last) {
@@ -480,10 +490,11 @@ function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]
     if (read.error !== null && error === null) {
       error = cut(read.error, ERROR_BYTES).text;
     }
+    deferred ||= read.deferred;
     relayed.push(Object.freeze({ v: FRAME_VERSION, run: row.id, seq: frame.seq, at: frame.at,
                                  kind: read.kind, event: frame.event }));
   }
-  return { last, result, resultCut, error, session, relayed };
+  return { last, result, resultCut, error, session, deferred, relayed };
 }
 
 /** A path as the sync agent escapes one it cannot name: `/workspace/`, then printable ASCII. */
@@ -565,7 +576,8 @@ function receipt(row: RunRow): RunReceipt {
 
 function grantOf(row: GrantRow): RunGrant {
   return {
-    run: row.run, agent: row.agent, lease_id: row.lease_id, epoch: row.epoch,
+    run: row.run, agent: row.agent, conversation: row.conversation, lease_id: row.lease_id,
+    epoch: row.epoch,
     stamp: row.stamp === null ? null : JSON.parse(row.stamp) as Stamped,
     origin: row.origin === null ? null : JSON.parse(row.origin) as RunGrant["origin"],
     scopes: JSON.parse(row.scopes) as RunCapability[], connection: row.connection,
@@ -750,10 +762,27 @@ export class Runs {
    */
   #wait(ask: Ask, conversation: string, now: number): Retried {
     const chosen = this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now);
-    const queued = this.#sql.exec<{ n: number; bytes: number }>(
-      "SELECT COUNT(*) AS n, coalesce(SUM(bytes), 0) AS bytes FROM run_inputs").one();
-    if (queued.n >= QUEUE_ROWS
-        || queued.bytes + (ask.mail === null ? utf8Bytes(ask.prompt) : 0) > QUEUE_BYTES) {
+    // A mail's run keeps only its mail's reference (its `mail`): its input is read again
+    // from the mail, held until the run settles, as it starts (ADR-035).
+    const runId = this.#waiting({
+      agent: ask.agent, conversation, source: chosen.engine, credential: chosen.credential,
+      model: chosen.model, initiator: ask.initiator, client: ask.origin?.client ?? null,
+      stamp: ask.stamp === null ? null : JSON.stringify(ask.stamp), request: ask.request,
+      unattended: ask.unattended ? 1 : 0, mail: ask.mail?.message ?? null,
+    }, ask.mail === null ? ask.prompt : "",
+                                ask.origin === null ? null : JSON.stringify(ask.origin), now);
+    return { existing: true, run: runId, conversation };
+  }
+
+  /**
+   * In a unit: `run` written `waiting` in its conversation, behind any live or waiting one,
+   * its `input` and `origin` kept beside it (`run_inputs`, refused past `QUEUE_ROWS` or
+   * `QUEUE_BYTES`); the conversation touched, and the receipts pruned. Its id.
+   */
+  #waiting(run: Pick<RunRow, "agent" | "conversation" | "source" | "credential" | "model"
+    | "initiator" | "client" | "stamp" | "request" | "unattended" | "mail">, input: string,
+           origin: string | null, now: number): string {
+    if (!this.queueRoom(utf8Bytes(input))) {
       throw new Refusal("run_inputs_full", QUEUE_FULL);
     }
     const runId = id("run_");
@@ -761,19 +790,34 @@ export class Runs {
       "INSERT INTO runs (id, agent, conversation, source, credential, model, state, initiator, " +
         "client, stamp, request, unattended, mail, created_at) " +
         "VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?, ?)",
-      runId, ask.agent, conversation, chosen.engine, chosen.credential, chosen.model,
-      ask.initiator, ask.origin?.client ?? null,
-      ask.stamp === null ? null : JSON.stringify(ask.stamp), ask.request,
-      ask.unattended ? 1 : 0, ask.mail?.message ?? null, now);
-    // A mail's run keeps only its mail's reference (its `mail`): its input is read again
-    // from the mail, held until the run settles, as it starts (ADR-035).
-    const kept = ask.mail === null ? ask.prompt : "";
+      runId, run.agent, run.conversation, run.source, run.credential, run.model,
+      run.initiator, run.client, run.stamp, run.request, run.unattended, run.mail, now);
     this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin) VALUES (?, ?, ?, ?)",
-                   runId, kept, utf8Bytes(kept),
-                   ask.origin === null ? null : JSON.stringify(ask.origin));
-    this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now, conversation);
+                   runId, input, utf8Bytes(input), origin);
+    this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now, run.conversation);
     this.#prune();
-    return { existing: true, run: runId, conversation };
+    return runId;
+  }
+
+  /**
+   * In a unit: the conversation of `heldRun`, a run whose held call the owner said yes to
+   * (`actions.ts`), resumed: a run written `waiting` there, behind any live or waiting one, on
+   * the input the yes names, under the held run's authority as its receipt keeps it (its
+   * agent, initiator, client, stamp and unattended, and its origin's `family`, which the held
+   * call kept), its source as the held run's until its turn chooses again. It answers no mail: a
+   * mail's held run answered its own. Null when the held run's receipt or its conversation
+   * is gone (past `RUNS_KEPT`, `CONVERSATIONS_KEPT`): the yes still admits the call once,
+   * made again. Refused past the inputs' queue, so the yes is not written either.
+   */
+  resume(heldRun: string, family: string | null, prompt: string, now: number): string | null {
+    const held = this.#run(heldRun);
+    if (held === undefined || this.#sql.exec("SELECT 1 FROM conversations WHERE id = ?",
+                                             held.conversation).toArray().length === 0) {
+      return null;
+    }
+    const origin = held.client === null || family === null ? null
+      : JSON.stringify({ client: held.client, family });
+    return this.#waiting({ ...held, request: null, mail: null }, prompt, origin, now);
   }
 
   /**
@@ -1249,18 +1293,19 @@ export class Runs {
     if (row === undefined || end === null || events === undefined) {
       return null;
     }
-    const { result, error } = batch(row, events, frames);
+    const { result, error, deferred } = batch(row, events, frames);
     return this.#answerOf(row, end.exit_code !== 0 || error !== null
-      || row.cancel_requested === 1, result);
+      || row.cancel_requested === 1 || deferred, result);
   }
 
   /**
    * The post a settled run's result makes: its reply to the mail it answers, or a scheduled
-   * run's to its owner's room with its agent; null for none (a failed run, an empty result).
+   * run's to its owner's room with its agent; null for none (a failed run, one stopped at a
+   * deferred call, an empty result).
    */
-  #answerOf(row: RunRow, failed: boolean, result: string | null): MailAnswer | null {
+  #answerOf(row: RunRow, unanswered: boolean, result: string | null): MailAnswer | null {
     const grant = this.#sql.exec<GrantRow>(`${GRANTS} WHERE g.run = ?`, row.id).toArray()[0];
-    if (failed || result === null || result === "" || grant === undefined
+    if (unanswered || result === null || result === "" || grant === undefined
         || (row.mail === null && row.initiator !== "schedule")) {
       return null;
     }
@@ -1287,7 +1332,8 @@ export class Runs {
     if (events === undefined) {
       throw new Error(`run ${runId}'s engine ${row.source} has no record`);
     }
-    const { last, result, resultCut, error, session, relayed } = batch(row, events, frames);
+    const { last, result, resultCut, error, session, deferred, relayed } =
+      batch(row, events, frames);
     for (const frame of frames) {
       const notice = frame.seq > row.last_seq ? unnamedNotice(frame.event) : null;
       if (notice !== null) {
@@ -1296,9 +1342,11 @@ export class Runs {
     }
     // The batch is this run's own heartbeat, as it renews the lease.
     this.#sql.exec("UPDATE runs SET last_seq = ?, result = ?, result_cut = ?, error = ?, " +
+                     "code = ?, " +
                      "state = CASE WHEN state = 'queued' THEN 'running' ELSE state END, " +
                      "started_at = coalesce(started_at, ?), beat_at = ? WHERE id = ?",
-                   last, result, resultCut ? 1 : 0, error, now, now, runId);
+                   last, result, resultCut ? 1 : 0, error, deferred ? TOOL_DEFERRED : row.code,
+                   now, now, runId);
     if (session !== null) {
       this.#sql.exec("UPDATE conversations SET session_id = ? WHERE id = ?", session,
                      row.conversation);
@@ -1307,13 +1355,13 @@ export class Runs {
     if (end !== null) {
       const failed = end.exit_code !== 0 || error !== null || row.cancel_requested === 1;
       settled = failed ? "failed" : "succeeded";
-      const answer = this.#answerOf(row, failed, result);
+      const answer = this.#answerOf(row, failed || deferred, result);
       if (answer !== null) {
         this.#host.answer(answer);
       }
       this.settle(runId, settled, row.cancel_requested === 1 ? "cancelled"
-        : end.exit_code !== 0 ? "exit" : error !== null ? "engine_error" : null,
-                  end.exit_code, now);
+        : end.exit_code !== 0 ? "exit" : error !== null ? "engine_error"
+          : deferred ? TOOL_DEFERRED : null, end.exit_code, now);
     }
     return { conversation: row.conversation, frames: relayed, settled };
   }

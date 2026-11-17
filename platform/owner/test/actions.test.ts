@@ -8,14 +8,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Binding } from "../../contract/src/binding";
+import { QUEUE_ROWS } from "../../contract/src/limits";
 import { DEFAULT_POLICY_JSON, POLICY_LIMITS } from "../../contract/src/policy-document";
 import { ACTION_LIMITS, type ActionCard } from "../src/actions";
 import { clock } from "../src/clock";
 import type { OwnerDO } from "../src/owner-do";
+import { QUEUE_FULL } from "../src/runs";
 import { gated } from "./gateway-support";
 import { DOT, MCP, MUSE, registerOn, rig, signedIn } from "./ledger-support";
-import { ALL_SCOPES, ownerRun, runBinding } from "./runs-support";
-import { atClock, failure, inStores } from "./support";
+import { ALL_SCOPES, ownerRun, recorder, runBinding, runnerBinding, startOf, TIERS }
+  from "./runs-support";
+import { atClock, drainDue, failure, inStores } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -86,8 +89,9 @@ describe("an agent's call of an act", () => {
       door: "fileMkdir", agent: null, client: MUSE.client,
       request: '{"expected_etag":null,"path":"/workspace/held"}', cut: false,
     } satisfies Partial<ActionCard>);
+    // A client's own call resumes no run of the owner's: its client retries it.
     expect(await r.stub.actionApprove(o.session, { card_id: card, digest: shown.digest }))
-      .toEqual({ card_id: card, approved: true });
+      .toEqual({ card_id: card, approved: true, run: null });
     expect((await failure(() => r.stub.actionRequest(o.owner, { card_id: card }))).message)
       .toBe("no pending action request for this card");
     // The yes is that client's call alone: another client's same call is held for its own.
@@ -164,7 +168,7 @@ describe("the held calls", () => {
     expect(await inStores(r.stub, ({ actions }) => {
       const asked = (n: number) => {
         try {
-          actions.decide("workspace.files", { agent: "main", client: null },
+          actions.decide("workspace.files", { agent: "main", client: null, run: null },
                          { door: "fileMkdir", request: { n } }, clock());
           return "allowed";
         } catch (error) {
@@ -200,7 +204,7 @@ describe("the held calls", () => {
     await inStores(r.stub, ({ actions }) => {
       for (let n = 0; n <= POLICY_LIMITS.receiptsPerBucket; n++) {
         try {
-          actions.decide("workspace.files", { agent: null, client: MUSE.client },
+          actions.decide("workspace.files", { agent: null, client: MUSE.client, run: null },
                          { door: "fileMkdir", request: { n } }, clock());
         } catch {
           // each call refused `action_never`, receipted
@@ -244,5 +248,103 @@ describe("a run's call", () => {
     const card = await heldCard(() => post(`dm:${[main, muse].sort().join("+")}`, "to-muse"));
     expect((await r.stub.actionRequest(o.owner, { card_id: card })).card)
       .toMatchObject({ act: "people.message", door: "roomPost", agent: "main", client: null });
+  });
+});
+
+describe("a run's held call (R5 P-resume)", () => {
+  /** The owner's run of `main` on Claude Code, its file changes asked first, held and ended. */
+  async function asking() {
+    const r = await gated();
+    const o = { stub: r.stub, owner: r.bind(), session: r.session() };
+    const { run, start } = await ownerRun(r.stub, r.bind(), {
+      engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: ALL_SCOPES });
+    await ruled(o, [{ act: "workspace.files", do: "ask", agent: "main" }]);
+    const card = await heldCard(() => mkdir(r.stub, runBinding(r, start), "/workspace/held"));
+    // The run goes on and ends; its engine's session is the conversation's.
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [{ seq: 1, at: 1, event: {
+      type: "system", subtype: "init", session_id: "sess-held" } }], end: { exit_code: 0 } });
+    const { digest } = await r.stub.actionRequest(o.owner, { card_id: card });
+    return { r, o, run, card, digest };
+  }
+
+  it("is bound to its conversation, which the owner's yes resumes, the call then admitted once",
+     async () => {
+    const { r, o, run, card, digest } = await asking();
+    expect((await r.stub.actionRequest(o.owner, { card_id: card })).card.conversation)
+      .toBe(run.conversation_id);
+    const approved = await r.stub.actionApprove(o.session, { card_id: card, digest });
+    expect(approved).toEqual({ card_id: card, approved: true, run: expect.any(String) });
+    // The same call from another of the agent's conversations is not the one approved.
+    const other = await ownerRun(r.stub, r.bind());
+    expect(await heldCard(() => mkdir(r.stub, runBinding(r, other.start), "/workspace/held")))
+      .not.toBe(card);
+    await drainDue(r.stub);
+    const resumed = await startOf(r.stub, approved.run!);
+    expect([resumed.conversation, resumed.session_id, resumed.agent, resumed.prompt]).toEqual([
+      run.conversation_id, "sess-held", "main",
+      `Your owner said yes to card ${card} (workspace.files at fileMkdir). Make that same ` +
+        "call again now and it goes through, once. If you made it since, do not make it again."]);
+    await mkdir(r.stub, runBinding(r, resumed), "/workspace/held");
+    expect(await heldCard(() => mkdir(r.stub, runBinding(r, resumed), "/workspace/held")))
+      .not.toBe(card);
+    expect(await outcomes(o)).toEqual(["held", "admitted", "held", "approved", "held"]);
+  });
+
+  it("writes no yes when its resume is refused for the inputs' queue", async () => {
+    const { r, o, card, digest } = await asking();
+    await r.sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
+                  `WHERE i < ${QUEUE_ROWS}) INSERT INTO run_inputs (run, prompt, bytes) ` +
+                  "SELECT 'run_' || printf('%032x', i), 'x', 1 FROM n");
+    expect((await failure(() => r.stub.actionApprove(o.session, { card_id: card, digest })))
+      .message).toBe(QUEUE_FULL);
+    // The card is still pending, and its call still held, not admitted.
+    expect((await r.stub.actionRequest(o.owner, { card_id: card })).digest).toBe(digest);
+    expect(await outcomes(o)).toEqual(["held"]);
+  });
+
+  it("resumes nothing on the owner's no", async () => {
+    const { r, o, card, digest } = await asking();
+    const starts = (await recorder(r.stub)).starts.length;
+    expect(await r.stub.actionRefuse(o.session, { card_id: card, digest }))
+      .toEqual({ card_id: card, approved: false });
+    await drainDue(r.stub);
+    expect((await recorder(r.stub)).starts).toHaveLength(starts);
+    expect((await r.stub.runList(o.owner, {})).runs.map((listed) => listed.state))
+      .toEqual(["succeeded"]);
+  });
+
+  it("is resumed under the run's own authority: an outside client's run as that client's",
+     async () => {
+    const r = await gated();
+    const o = { stub: r.stub, owner: r.bind(), session: r.session() };
+    await ownerRun(r.stub, r.bind(), {
+      engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: ALL_SCOPES });
+    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
+    await r.stub.outsideAgents(client);
+    const { revision } = (await r.stub.grantList(r.bind())).clients
+      .find((entry) => entry.client === MUSE.client)!;
+    await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "scoped",
+      scopes: ["converse", "write_files"].map((capability) => ({
+        universe: "alpha", agent: "main", capability })),
+      expected_revision: revision, name: "Muse" });
+    const { card_id: registration, digest: shown } = await r.stub.registerPropose(client, {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+      recipe_id: null });
+    await r.stub.registerAgent(r.session(), { card_id: registration, digest: shown });
+    const asked = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+                                           { message: "hi", client_send_id: "c-1" });
+    const start = await startOf(r.stub, asked.run_id);
+    await ruled(o, [{ act: "workspace.files", do: "ask" }]);
+    const card = await heldCard(() => mkdir(r.stub, runBinding(r, start), "/workspace/c"));
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+    const { digest } = await r.stub.actionRequest(o.owner, { card_id: card });
+    const { run } = await r.stub.actionApprove(o.session, { card_id: card, digest });
+    await drainDue(r.stub);
+    const resumed = await startOf(r.stub, run!);
+    expect([resumed.authority, resumed.conversation, resumed.unattended])
+      .toEqual([MUSE.client, start.conversation, start.unattended]);
+    expect(await r.stub.agentStatus(client, { run_id: run! }))
+      .toMatchObject({ conversation_id: start.conversation, initiator: "client" });
+    await mkdir(r.stub, runBinding(r, resumed), "/workspace/c");
   });
 });
