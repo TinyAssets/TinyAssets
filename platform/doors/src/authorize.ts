@@ -206,10 +206,19 @@ export async function authorize(request: Request, env: DoorsEnv): Promise<Respon
  * the owner's object first (a fresh one is pending), then the directory's record, so a
  * failure between them admits it again at the next sign-in (the admit is idempotent) and a
  * record never names an owner its object did not admit; the object's admission. An owner
- * marked erasing, or erased, is refused by its object, and never admitted again.
+ * marked erasing, or erased, is refused by its object, and never admitted again. An owner the
+ * directory records whose object is pending lost its object's state (or is wiped for a
+ * restore): it is refused, since admitted afresh it would take a new namespace while its old
+ * one, never adopted, outlived its erasure (`r8-erased-orphans.md`); a restore admits it.
  */
 export async function admit(env: DoorsEnv, owner: string): Promise<{ readonly state: string }> {
   const platform = bindPlatformFor(env, owner);
+  if (await readOwner(env, owner) !== null
+      && (await platform.stub.ownerState(platform.binding)).state === "pending") {
+    throw new Refusal("refused", "the platform admitted this owner before and its object is " +
+                                 "pending: its state was lost, so it is restored (mode " +
+                                 "restore), never admitted afresh");
+  }
   const admission = await platform.stub.admissionSet(platform.binding, { admit: true });
   if (admission.state === "pending") {
     throw new Error("the platform's admit left the owner pending");

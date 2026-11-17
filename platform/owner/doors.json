@@ -207,6 +207,8 @@
       "gate": "units" },
     { "door": "restoreNames", "caller": "reserved", "action": "admission", "handler": "restore",
       "gate": "units" },
+    { "door": "restoreHold", "caller": "reserved", "action": "admission", "handler": "restore",
+      "gate": "units" },
     { "door": "egressOpen", "caller": "egress", "handler": "egress", "gate": "units" },
     { "door": "egressReserve", "caller": "egress", "handler": "egress", "gate": "door" },
     { "door": "egressBeat", "caller": "egress", "handler": "egress", "gate": "door" },
