@@ -41,7 +41,8 @@
  *   call, it makes the namespace's mark (`e/<ns>`, `contract/src/files.ts` `MARKS`), once and
  *   never deleted: the record of the erasure that the nightly copy carries off the account,
  *   so no copy back ever writes the namespace again (`deploy/offsite.ts`). A failure after
- *   the mark leaves it standing, and the delete is repeated.
+ *   the mark leaves it standing, and the delete is repeated. An erasure marks it at its start
+ *   too (`markNamespace`), a day before its delete.
  * - `sweepManifests` lists one page of one namespace's generations and deletes every object
  *   of a generation the owner's object no longer names, each root before its objects: the
  *   manifest lane's sweep alone.
@@ -330,14 +331,17 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       : { check: "broken", why: "a chunk's bytes no longer match its hash" };
   }
 
+  /** Mark `ns` deleted on purpose, once: a mark again finds it and leaves its one version. */
+  async markNamespace(ns: string): Promise<void> {
+    await this.env.BLOBS.put(markKey(ns), MARK_BODY, { onlyIf: { etagDoesNotMatch: "*" } });
+  }
+
   /**
-   * Mark `ns` deleted on purpose, once, then delete every chunk and then every manifest object
-   * under its prefixes, listed 1,000 at a time; repeatable.
+   * Mark `ns` deleted on purpose, then delete every chunk and then every manifest object under
+   * its prefixes, listed 1,000 at a time; repeatable.
    */
   async deleteNamespace(ns: string): Promise<{ deleted: number }> {
-    namespace(ns);
-    // Made once: a delete again finds it there and leaves it as it is, its one version.
-    await this.env.BLOBS.put(markKey(ns), MARK_BODY, { onlyIf: { etagDoesNotMatch: "*" } });
+    await this.markNamespace(ns);
     let deleted = 0;
     for (;;) {
       const listed = await this.env.BLOBS.list({ prefix: chunkPrefix(ns), limit: DELETE_BATCH });

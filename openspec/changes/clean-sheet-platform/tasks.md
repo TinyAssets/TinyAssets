@@ -441,7 +441,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     drill, read-only, on the whole bucket (`r8-copy-restore.md`).
   - [x] An erasure record that survives the account, option A (`r8-copy-restore.md` item 5):
     the files Worker marks each namespace it deletes on purpose (`e/<ns>`, no personal
-    identifier) before its first delete, and nothing deletes a mark; every copy back reads the
+    identifier) at the erasure's start and before its first delete, and nothing deletes a mark; every copy back reads the
     marks from R2 and the copy first and refuses a marked namespace, loudly when they can't be
     read, and the monthly drill reads them whole (`untangle/r8-account-loss`,
     `r8-account-loss.md`).

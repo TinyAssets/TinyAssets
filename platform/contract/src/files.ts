@@ -40,8 +40,8 @@ export function namespaceOf(key: string): string | null {
 /**
  * Where the bucket marks a namespace deleted on purpose (an erasure's, or the cutover's
  * discard's): `e/<ns>`, outside every namespace's prefix, so no prefix delete, sweep or
- * listing of a namespace reaches it. The files Worker makes the mark before its prefix delete
- * and nothing deletes it, so the nightly copy carries it off the account, where a copy back
+ * listing of a namespace reaches it. The files Worker makes the mark at an erasure's start and
+ * before its prefix delete, and nothing deletes it, so the nightly copy carries it off the account, where a copy back
  * reads it after the account is gone (`docs/decisions/untangle-2026-11/r8-account-loss.md`).
  * A namespace is random, so a mark holds no person's identifier.
  */
@@ -186,8 +186,13 @@ export interface ChunkStore {
    */
   rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string | null } | null>;
   /**
-   * Every object under the namespace's prefix deleted, its mark (`MARKS`) made first and kept:
-   * the erasure's and the discard's alone.
+   * The namespace's mark (`MARKS`) made, once, and kept: the erasure's, at its start, so the
+   * nightly copy carries it off the account before the delete is due.
+   */
+  markNamespace(ns: string): Promise<void>;
+  /**
+   * Every object under the namespace's prefix deleted, its mark (`markNamespace`) made first
+   * and kept: the erasure's and the discard's alone.
    */
   deleteNamespace(ns: string): Promise<{ deleted: number }>;
   putManifestPart(ns: string, key: string, gen: string, part: number, bytes: Uint8Array):

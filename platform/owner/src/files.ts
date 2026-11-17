@@ -2745,6 +2745,11 @@ export class Files {
     }
   }
 
+  /** The erasure's first R2 step (`erase.ts`): the namespace's mark made. Repeatable. */
+  async markNamespace(ns: string): Promise<void> {
+    await this.#store.markNamespace(ns);
+  }
+
   /**
    * The erasure's R2 step (`erase.ts`): every object under the owner's namespace deleted,
    * by its prefix, not by its rows, so a chunk whose row was lost or whose put landed late

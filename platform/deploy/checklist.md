@@ -704,8 +704,8 @@ missing.
   it.
 - **Not yet: a lost object, or any owner after an account loss.** Then no object names a
   namespace, and the run refuses (`docs/decisions/untangle-2026-11/r8-account-loss.md` item 7
-  designs it). An erasure marked in the day or two before an account's loss is not yet in the
-  copy (item 6 there).
+  designs it). An erasure begun in the day before an account's loss is not yet in the copy
+  (item 6 there).
 
 The steps:
 

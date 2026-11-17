@@ -122,6 +122,7 @@ export function through(overrides: Partial<ChunkStore>): ChunkStore {
     deleteChunks: (ns, key, sha256s) => files.deleteChunks(ns, key, sha256s),
     rewrapKey: (ns, key) => files.rewrapKey(ns, key),
     rewrapManifestRoot: (ns, day) => files.rewrapManifestRoot(ns, day),
+    markNamespace: (ns) => files.markNamespace(ns),
     deleteNamespace: (ns) => files.deleteNamespace(ns),
     putManifestPart: (ns, key, day, part, bytes) =>
       files.putManifestPart(ns, key, day, part, bytes),
