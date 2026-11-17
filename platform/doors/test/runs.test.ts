@@ -345,8 +345,8 @@ describe("a run's own doors on the egress host", () => {
     expect((await signin({})).status).toBe(401);
     expect((await signin({ ...sandbox, Origin: url("") })).status).toBe(404);
     expect((await signin(sandbox, "GET")).status).toBe(405);
-    expect((await ownDoor<{ engines: { engine: string; signed_in: boolean }[] }>(
-      who, "signinList")).engines).toMatchObject([{ engine: "claude-code", signed_in: true }]);
+    expect((await ownDoor(who, "signinList")).engines)
+      .toMatchObject([{ engine: "claude-code", signed_in: true }]);
   });
 });
 

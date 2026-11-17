@@ -55,18 +55,16 @@ describe("a new owner's starter seed, through the owner Worker's own bindings", 
     const who = owner();
     await signInApp({ owner: who });
     // The seed is the owner's own lane's work once the sign-in admits it, on its own alarm.
-    await until(async () => (await ownDoor<{ version: number }>(who, "starterReceipts"))
+    await until(async () => (await ownDoor(who, "starterReceipts"))
       .version > 0, "the starter's seed");
-    const { notices } = await ownDoor<{ notices: { type: string; detail: unknown }[] }>(
-      who, "noticeList");
+    const { notices } = await ownDoor(who, "noticeList");
     expect(notices.filter((notice) => notice.type === "starter_failed")
       .map((notice) => notice.detail)).toEqual([]);
-    const { owner_agents: agents } = await ownDoor<{ owner_agents: { agent: string }[] }>(
-      who, "outsideAgents", {});
+    const { owner_agents: agents } = await ownDoor(who, "outsideAgents", {});
     expect(agents.map((agent) => agent.agent)).toContain("main");
     for (const path of ["/workspace/USER.md", "/workspace/index.md",
                         "/workspace/agents/main/agent.json"]) {
-      expect((await ownDoor<{ entry: unknown }>(who, "fileStat", { path })).entry, path)
+      expect((await ownDoor(who, "fileStat", { path })).entry, path)
         .not.toBeNull();
     }
   });

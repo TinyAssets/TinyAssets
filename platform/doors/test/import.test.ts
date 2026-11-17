@@ -138,14 +138,11 @@ async function held(message: ImportMessage): Promise<{
 
 /** Every imported entry, row, the policy and the notice read back through the object's doors. */
 async function readBack(owner: string, files = bundleFiles()): Promise<void> {
-  type Read = { entry: { size: number; mode: number; writer: string; mtime_ms: number };
-                inline?: Uint8Array; chunks?: { sha256: string }[] };
   for (const entry of paged<Entry>(files, "manifest", "entries")) {
-    const stat = (await ownDoor<{ entry: { kind: string } | null }>(
-      owner, "fileStat", { path: entry.path })).entry;
+    const stat = (await ownDoor(owner, "fileStat", { path: entry.path })).entry;
     expect([entry.path, stat?.kind]).toEqual([entry.path, entry.kind]);
     if (entry.kind === "file") {
-      const read = await ownDoor<Read>(owner, "fileRead", { path: entry.path });
+      const read = await ownDoor(owner, "fileRead", { path: entry.path });
       expect([entry.path, read.entry.size, read.entry.mode, read.entry.writer,
               read.entry.mtime_ms])
         .toEqual([entry.path, entry.size, entry.mode, "owner", entry.mtime_ms]);
@@ -158,18 +155,16 @@ async function readBack(owner: string, files = bundleFiles()): Promise<void> {
   }
   for (const row of paged<Record<string, unknown>>(files, "rows", "rows")) {
     if (row["kind"] === "policy") {
-      const policy = await ownDoor<{ policy: unknown }>(owner, "policyRead");
+      const policy = await ownDoor(owner, "policyRead");
       expect(canonical(policy.policy)).toBe(canonical(row["document"]));
     } else {
-      const got = await ownDoor<{ row: { body: string; private: boolean; writer: string } | null }>(
-        owner, "collectionGet", { collection: row["collection"] as string,
-                                  row_id: row["row_id"] as string });
+      const got = await ownDoor(owner, "collectionGet", {
+        collection: row["collection"] as string, row_id: row["row_id"] as string });
       expect([got.row?.body, got.row?.private, got.row?.writer])
         .toEqual([row["body"], row["private"] === 1, owner]);
     }
   }
-  const { notices } = await ownDoor<{ notices: { type: string; detail: unknown }[] }>(
-    owner, "noticeList");
+  const { notices } = await ownDoor(owner, "noticeList");
   expect(notices.filter((notice) => notice.type === "imported").map((notice) => notice.detail))
     .toEqual([json(files.get("owner.json")!)["notice"]]);
 }
@@ -368,7 +363,7 @@ describe("the import consumer's gates, each before anything is written", () => {
     expect(entries.length).toBeGreaterThan(0);
     await admitOwner(other);
     for (const entry of entries) {
-      expect((await ownDoor<{ entry: unknown }>(other, "fileStat", { path: entry.path })).entry)
+      expect((await ownDoor(other, "fileStat", { path: entry.path })).entry)
         .toBeNull();
     }
   });
@@ -391,10 +386,10 @@ describe("the import consumer's gates, each before anything is written", () => {
     await importQueue(delivered.batch, w.env);
     expect([delivered.acked, delivered.retried]).toEqual([[0], []]);
     expect(w.puts).toEqual([]);
-    const { notices } = await ownDoor<{ notices: { type: string }[] }>(owner, "noticeList");
+    const { notices } = await ownDoor(owner, "noticeList");
     expect(notices.filter((n) => n.type === "imported")).toEqual([]);
-    expect((await ownDoor<{ entry: unknown }>(owner, "fileStat", { path: "/workspace/imported" }))
-      .entry).toBeNull();
+    expect((await ownDoor(owner, "fileStat", { path: "/workspace/imported" })).entry)
+      .toBeNull();
   });
 });
 
@@ -561,8 +556,8 @@ describe("the import's discard, through the consumer", () => {
     await drain(world(), recorded);
     expect((await staging(answerName(recorded.prefix, recorded.ask!)))?.["refused"])
       .toMatch(/holds a record of this owner/);
-    expect((await ownDoor<{ entry: unknown }>(real, "fileStat", { path: "/workspace/imported" }))
-      .entry).not.toBeNull();
+    expect((await ownDoor(real, "fileStat", { path: "/workspace/imported" })).entry)
+      .not.toBeNull();
   });
 });
 
