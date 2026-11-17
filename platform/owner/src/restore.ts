@@ -392,6 +392,24 @@ function pinnable(o: RestoreDoorNeeds, ns: string, gen: string): boolean {
 }
 
 /**
+ * The restore that holds the owner, for a pin of generation `gen` of `ns`: null when none holds
+ * it; refused unless it is that pin's, its undo's, or a failed one no pin held (a lost object's,
+ * wiped for any generation). In a unit.
+ */
+function pinHeld(o: RestoreDoorNeeds, ns: string, gen: string): Held | null {
+  const now = record(o.storage.sql);
+  if (now === null || now.step === "done") {
+    return null;
+  }
+  if (!(ns === now.ns && gen === now.gen) && gen !== now.fresh
+      && (now.step !== "failed" || now.fresh !== null)) {
+    throw refused(`a restore of this owner from generation ${now.gen} holds it: release it, ` +
+                  "or restore that one");
+  }
+  return now;
+}
+
+/**
  * The hold a restore's record makes, as it stands (`RestoreHold`): whether the wipe may go on
  * (no fresh generation is due, or it is finished), and the words that confirm it while one
  * is due: at `pinned` once the fresh generation is written, or at `failed`, naming the
@@ -1180,17 +1198,8 @@ export const restoreDoors = Object.freeze({
   async restorePin(o: RestoreDoorNeeds, door: Door<RestorePinRequest>): Promise<RestoreHold> {
     const asked = await o.door(() => {
       const { ns, gen } = generationAsked(door);
-      const now = record(o.storage.sql);
-      if (now !== null && now.step !== "done") {
-        // A failed restore no pin held (a lost object's) is wiped for any generation.
-        if (!(ns === now.ns && gen === now.gen) && gen !== now.fresh
-            && (now.step !== "failed" || now.fresh !== null)) {
-          throw refused(`a restore of this owner from generation ${now.gen} holds it: release ` +
-                        "it, or restore that one");
-        }
-        return { ns, gen, own: true, held: now };
-      }
-      return { ns, gen, own: pinnable(o, ns, gen), held: null };
+      const held = pinHeld(o, ns, gen);
+      return { ns, gen, own: held !== null || pinnable(o, ns, gen), held };
     });
     if (asked.held === null && !asked.own) {
       const unloadable = unforwardable((await ownGeneration(o, asked.ns, asked.gen)).schema);
@@ -1202,9 +1211,9 @@ export const restoreDoors = Object.freeze({
     const { held, began } = asked.held !== null ? { held: asked.held, began: false }
       : await o.door(() => {
         door.check();
-        const now = record(o.storage.sql);
-        if (now !== null && now.step !== "done") {
-          return { held: now, began: false };  // another call pinned it meanwhile
+        const now = pinHeld(o, asked.ns, asked.gen);  // another call pinned it meanwhile
+        if (now !== null) {
+          return { held: now, began: false };
         }
         pinnable(o, asked.ns, asked.gen);
         // The hold, in the unit that pins: no door but the restore's from here on, and every
