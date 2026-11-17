@@ -676,7 +676,8 @@ many objects were compared byte for byte.
 drills a restore from the copy (`deploy/offsite.ts` `drill`): every object R2 held when that
 night began is downloaded from both sides and compared byte for byte, and the copy is read as a
 copy back reads it at the oldest time it takes (21 days back), naming how many objects it would
-write. It writes nothing. A failed drill fails that night's copy job, as a red night does. Dispatch **Off-account copy (nightly)** with `drill` ticked for one by hand.
+write, every namespace marked erased left out and the marks read whole. It writes nothing. A
+failed drill fails that night's copy job, as a red night does. Dispatch **Off-account copy (nightly)** with `drill` ticked for one by hand.
 
 ## A restore from the copy
 
@@ -688,7 +689,11 @@ missing.
 
 - **Erasures first.** The namespace is the one the owner's own object names (`restore.source`
   through the operator channel). The doors refuse that for an erased owner, or one being
-  erased, so nothing of it is read or written.
+  erased, so nothing of it is read or written. Then the run reads the erasure marks
+  (`e/<ns>`, one per namespace the files Worker deleted on purpose, made before its delete and
+  never deleted) from R2 and from the copy, and refuses a marked namespace. It stops, writing
+  nothing, when they can't be read, or when the copy at `at` held a mark it no longer holds (a
+  night copied a bucket that lost them).
 - **Only what the owner's object names.** A chunk or generation no row of it names (one its
   own collection deleted, a redaction's bytes, a pruned generation) is never written back:
   nothing would delete it again. Should a row be collected during the run, the run stops
@@ -698,7 +703,9 @@ missing.
   That restarts a `FILES_KEYRING` retirement's gate: dispatch `rotation` for a pass begun after
   it.
 - **Not yet: a lost object, or any owner after an account loss.** Then no object names a
-  namespace, and the run refuses (`docs/decisions/untangle-2026-11/r8-copy-restore.md`).
+  namespace, and the run refuses (`docs/decisions/untangle-2026-11/r8-account-loss.md` item 7
+  designs it). An erasure begun in the day before an account's loss is not yet in the copy
+  (item 6 there).
 
 The steps:
 
