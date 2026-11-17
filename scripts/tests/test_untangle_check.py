@@ -1,8 +1,7 @@
-"""The required receipt check also asks a change to more than prose for an Untangle check,
+"""The required scope guard asks a change to more than prose for an Untangle check,
 whose left, owed or later items name their fix."""
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -92,22 +91,14 @@ def _commit(root: Path, files: dict[str, str]) -> str:
 
 def _decide(repo: Path, base: str, head: str, check: str) -> subprocess.CompletedProcess:
     root = repo.parent
-    url = "https://github.com/o/r/pull/7#issuecomment-1"
-    receipt = f"Drain-Review-Verdict: APPROVE\nDrain-Review-Head: {head}\n"
-    (root / "body.md").write_text(f"{receipt}Drain-Review-Artifact: {url}\n\n{check}",
-                                  encoding="utf-8")
-    (root / "comments.ndjson").write_text(
-        json.dumps({"url": url, "association": "OWNER", "body": receipt}) + "\n",
-        encoding="utf-8")
+    (root / "body.md").write_text(check, encoding="utf-8")
     return subprocess.run(
-        [sys.executable, str(_SCRIPTS / "drain_review_gate.py"), "--blocking-review",
-         "--head", head, "--base", base, "--body-file", str(root / "body.md"),
-         "--review-repo", "o/r", "--review-pr", "7",
-         "--review-comments-file", str(root / "comments.ndjson")],
+        [sys.executable, str(_SCRIPTS / "drain_review_gate.py"), "--untangle-check",
+         "--head", head, "--base", base, "--body-file", str(root / "body.md")],
         cwd=repo, capture_output=True, text=True)
 
 
-def test_the_required_decision_reads_the_check_beside_the_receipt(tmp_path: Path) -> None:
+def test_the_required_decision_reads_the_body_s_check(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")

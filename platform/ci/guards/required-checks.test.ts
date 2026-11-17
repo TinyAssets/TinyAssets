@@ -8,13 +8,14 @@
  *   - Another App posts under a name its own code picks, on the commit its code names
  *     (`review`: review.yml, as the review App; `untangle-2026-11/p2-review-required.md`). So
  *     the check is the workflow named for it, reported from its own triggers and those of the
- *     workflows it runs after. No job may carry the name: Actions would post a lookalike,
- *     which `enqueue_merge.py`, reading checks by name, could take for it.
+ *     workflows it runs after. No job may carry the name: Actions would post a lookalike
+ *     beside the App's run, which anything reading checks by name (`gh pr checks`, a person)
+ *     could take for it.
  * The reporting workflow is started by a pull request (a pull request waits on the check) and
  * by the merge group (the queue waits on it there, then fails the group at its timeout), with
- * no path filter on either, which would leave the check unreported. `enqueue-merge.yml` runs
- * when one of those workflows completes, so it listens to exactly them.
- * `scripts/enqueue_merge.py` reads the same file, and fails while the live ruleset differs.
+ * no path filter on either, which would leave the check unreported.
+ * `scripts/ruleset_drift.py` reads the same file, and auto-enroll arms nothing while the live
+ * ruleset differs.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -25,7 +26,6 @@ import { REPO } from "../paths";
 import { type Data, workflow, workflowNames } from "../workflows";
 
 const RULESET = join(REPO, "docs", "ops", "merge-queue-ruleset.json");
-const ENQUEUE = "enqueue-merge.yml";
 const PULL_REQUEST = ["pull_request", "pull_request_target"];
 const REPORTING = ["merge_group", ...PULL_REQUEST];
 /** GitHub Actions' App id: the `integration_id` of a job's check run. */
@@ -86,7 +86,6 @@ function reporter(check: Check, workflows: Record<string, Data>):
 /** Every way the workflows (by file) fail the required checks. */
 function requiredCheckProblems(required: Check[], workflows: Record<string, Data>): string[] {
   const problems: string[] = [];
-  const owners = new Set<string>();
   for (const check of required) {
     const found = reporter(check, workflows);
     if (typeof found === "string") {
@@ -94,7 +93,6 @@ function requiredCheckProblems(required: Check[], workflows: Record<string, Data
       continue;
     }
     const { file, starts } = found;
-    owners.add(String(workflows[file].name));
     const reporting = starts.filter(({ event }) => REPORTING.includes(event));
     const events = reporting.map(({ event }) => event);
     if (!events.includes("merge_group") || !events.some((event) => PULL_REQUEST.includes(event))) {
@@ -109,12 +107,6 @@ function requiredCheckProblems(required: Check[], workflows: Record<string, Data
       }
     }
   }
-  const listened = [...(triggers(workflows[ENQUEUE]).workflow_run?.workflows ?? [])].sort();
-  const expected = [...owners].sort();
-  if (JSON.stringify(listened) !== JSON.stringify(expected)) {
-    problems.push(`${ENQUEUE} runs after ${JSON.stringify(listened)}, ` +
-                  `not the workflows of the required checks, ${JSON.stringify(expected)}`);
-  }
   return problems;
 }
 
@@ -122,14 +114,14 @@ describe("the merge queue's required checks", () => {
   const required = requiredChecks(JSON.parse(readFileSync(RULESET, "utf8")));
   const workflows = Object.fromEntries(workflowNames().map((file) => [file, workflow(file)]));
 
-  it("are each reported by one workflow, started by the pull request and the merge group, " +
-     "and enqueue-merge runs after exactly those workflows", () => {
+  it("are each reported by one workflow, started by the pull request and the merge group",
+     () => {
     expect(required).not.toEqual([]);
     expect(requiredCheckProblems(required, workflows)).toEqual([]);
   });
 
   it("fail a renamed reporter, a doubled or lookalike job, a lost or filtered start, an " +
-     "Actions job started only after another workflow, and a stray listener", () => {
+     "Actions job started only after another workflow", () => {
     for (const check of required) {
       const found = reporter(check, workflows);
       if (typeof found === "string") throw new Error(found);
@@ -160,8 +152,5 @@ describe("the merge queue's required checks", () => {
         expect(requiredCheckProblems(required, after)).not.toEqual([]);
       }
     }
-    const stray = structuredClone(workflows);
-    triggers(stray[ENQUEUE]).workflow_run.workflows.push("heavy-tests");
-    expect(requiredCheckProblems(required, stray)).not.toEqual([]);
   });
 });

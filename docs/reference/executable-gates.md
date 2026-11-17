@@ -8,18 +8,17 @@ and `test_hygiene_gate.py` on the body (each cut test: `Test-Removal:`).
 Each passes by exit code (pipefail). After a red CI job, rerun only
 its failing tests.
 
-A receipt binds to its head (or tree-diff); a later commit gets a review of its delta.
-Over 8 release-critical files: look for a carried lineage.
 To land, post the verdict as a `COMMENT` review on the commit read, first
-line `APPROVE` or `BLOCK` (`review.yml`), comment the receipt, and open the body:
-`Drain-Review-Verdict: APPROVE`, `Drain-Review-Head: <sha>`, `Drain-Review-Artifact: <URL>`;
-auto-enroll arms the merge. Two counted queue failures on one head disarm
-auto-merge (`queue-handoff`): fix the head, or drop the label.
+line `APPROVE` or `BLOCK` (`review.yml`); auto-merge, armed at open, queues
+it. A verdict carries only across the same change or a prose delta; any other
+delta gets a review of that delta. Over 8 release-critical files: look for a
+carried lineage. Two counted queue failures on one head disarm auto-merge
+(`queue-handoff`): fix the head, or drop the label.
 
 | Gate | Entry point |
 |---|---|
 | Affected / queue tests | `scripts/ci_required_tests.py` |
 | Rulebook, drift, skills | `scripts/invariants_run.py --pre-commit` |
-| Scope + review | `.github/workflows/pr-scope-guard.yml` |
+| Scope, review | `.github/workflows/pr-scope-guard.yml`, `review.yml` |
 | Public MCP handles | `scripts/mcp_public_canary.py --assert-handles` |
 | Deployment | `scripts/deployed_sha.py --assert-contains <sha>`; 2 = unknown |

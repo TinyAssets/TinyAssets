@@ -2,10 +2,10 @@
 
 ## Status
 
-Proposed (draft, 2026-11-16, `untangle/p2-review-gate`). It is accepted in the PR that
-deletes the receipt, P2's third step, once the ruleset requires `review`
-(`docs/decisions/untangle-2026-11/p2-review-gate.md`). On acceptance it supersedes
-ADR-015's review line, and ADR-015's Status line says so.
+Accepted (2026-11-17, `untangle/p2-receipt-delete`, after the ruleset required
+`review`; `docs/decisions/untangle-2026-11/p2-receipt-delete.md`). Drafted in
+`untangle/p2-review-gate`. Supersedes ADR-015's review line, and ADR-015's Status line
+says so.
 
 ## Date
 
@@ -45,15 +45,20 @@ Two gates for one verdict are two copies of it, and only the check can say BLOCK
 5. **Each decision is one new check run**, never an edit of one. Readers take the
    App's newest run for their own PR.
 6. **The receipt goes:** the body's `Drain-Review-*` lines, the receipt comment, and
-   the scope guard's receipt block. `Diff scope declared` judges scope only.
+   the scope guard's receipt block. `Diff scope declared` keeps what reads the PR's
+   own diff and body: the release-critical count, test hygiene and the Untangle check.
 7. **No builder approves its own work.** The verdict is an independent reviewer's.
 
 ## Consequences
 
 - ADR-015's line "Adversarial review ... covers floor-class changes and gate files
   only" is superseded: every PR is reviewed.
-- Auto-enroll, enqueue, queue freshness and the floor hotfix read the App's `review`
-  check for the PR (`drain_review_gate.py` `review_passed_at`).
+- Auto-enroll arms every ready PR at open, and GitHub queues it once the required
+  checks pass, `review` among them. It arms nothing while the rules GitHub applies to
+  `main` differ from the ruleset file (`scripts/ruleset_drift.py`). `enqueue-merge`
+  goes: auto-merge armed by a person queues the PR by itself.
+- Queue freshness and the floor hotfix read the App's `review` check for the PR
+  (`drain_review_gate.py` `review_passed_at`).
 - `docs/reference/executable-gates.md` and the untangle skill name one way to land: the
   verdict posted as a PR review.
 - The delivery contract is `openspec/specs/development-coordination-runtime/`

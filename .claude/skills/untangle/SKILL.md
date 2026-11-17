@@ -44,8 +44,8 @@ Untangle the code a change touches, or a whole area, and finish the job.
   builder's mutations and one of each new guard's, and calls a departure from
   the decided design better (the log is updated) or a shortcut. It commits its
   own fixes of up to 50 lines and approves that head, posting its verdict as a
-  PR review on the commit it read (first line `APPROVE` or `BLOCK`) as well as
-  the receipt; a bigger fix is a `BLOCK` with its diff. A re-confirm after
+  PR review on the commit it read (first line `APPROVE` or `BLOCK`); a bigger
+  fix is a `BLOCK` with its diff. A re-confirm after
   main is merged in reads only its conflicts.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
