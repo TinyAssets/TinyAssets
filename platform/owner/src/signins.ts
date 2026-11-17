@@ -30,7 +30,7 @@
  */
 import { AUTHORITY, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 
-import { bundledSources } from "../../sources/src/catalog";
+import { servedRecord, signsIn } from "../../sources/src/served";
 import {
   SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape,
 } from "../../sources/src/signin";
@@ -122,7 +122,7 @@ const ENDS: readonly string[] = Object.freeze(["signed_in", "signed_out", "faile
  * its runner's last frame to land. A sign-out has the same bound.
  */
 export function deadline(row: { engine: string; started_at: number }): number {
-  const login = bundledSources().get(row.engine)?.cli?.login;
+  const login = servedRecord(row.engine)?.cli.login;
   return row.started_at + (login?.expires.s ?? 0) + LEASE_TTL_S;
 }
 
@@ -242,7 +242,10 @@ export class Signins {
     let accepts = row.accepts_code;
     let stopped = false;
     const relayed: unknown[] = [];
-    const rec = bundledSources().get(row.engine)!;
+    const rec = servedRecord(row.engine);
+    if (!signsIn(rec)) {
+      throw new Error(`sign-in ${row.id}'s engine ${row.engine} does not sign in`);
+    }
     const refuse = (reason: SigninRefusal) => {
       stopped = true;
       state = "refused";
@@ -271,7 +274,7 @@ export class Signins {
         url = nextUrl;
         code = nextCode;
         // Whether it takes a pasted code is the record's, never the frame's.
-        accepts = rec.cli!.login!.accepts_code === true ? 1 : 0;
+        accepts = rec.cli.login.accepts_code === true ? 1 : 0;
         relayed.push({ type: "ta.signin", state: "open", url, code,
                        accepts_code: accepts === 1 });
         state = "open";
@@ -338,10 +341,8 @@ export function switchedOn(storage: OwnerStorage, handed: unknown, now: number):
   if (handed === undefined) {
     return new Set(kept === undefined || kept.engines === "" ? [] : kept.engines.split(","));
   }
-  const sources = bundledSources();
   if (!Array.isArray(handed) || handed.length > ENGINE_SIGNINS
-      || !handed.every((id) => typeof id === "string"
-        && sources.get(id)?.cli?.login !== undefined)) {
+      || !handed.every((id) => typeof id === "string" && signsIn(servedRecord(id)))) {
     throw new Refusal("invalid", "the switched-on sign-ins are served records that sign in");
   }
   const engines = [...new Set(handed as string[])].sort().join(",");
@@ -432,10 +433,8 @@ export const signinsDoors = Object.freeze({
       Promise<SigninView | { started: false; code: string }> {
     const begun = await o.door(() => {
       const { binding, r } = door.check();
-      const rec = typeof r["engine"] === "string" ? bundledSources().get(r["engine"]) : undefined;
-      const cli = rec?.cli;
-      if (rec === undefined || cli === undefined || cli.login === undefined
-          || !cli.credential.includes("vendor_login_in_sandbox")) {
+      const rec = typeof r["engine"] === "string" ? servedRecord(r["engine"]) : undefined;
+      if (!signsIn(rec)) {
         throw new Refusal("invalid",
                           "a sign-in names an engine that signs in with the vendor's own login");
       }
@@ -448,7 +447,7 @@ export const signinsDoors = Object.freeze({
       if (mode === "in" && !switchedOn(o.storage, binding.signins, clock()).has(rec.id)) {
         throw new Refusal("signin_off", SIGNIN_OFF);
       }
-      const regions = cli.regions === undefined ? [] : Object.keys(cli.regions);
+      const regions = rec.cli.regions === undefined ? [] : Object.keys(rec.cli.regions);
       const region = r["region"] ?? null;
       if (mode === "in" ? (regions.length === 0 ? region !== null
                                                 : !regions.includes(region as string))
