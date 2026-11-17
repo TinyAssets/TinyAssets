@@ -395,7 +395,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - `untangle/b24-manifest`: `scripts/platform_setup.py` is on the cutover list
       (`o-keyrings.md`). Its inventory of `scripts/` takes what still names it: `platform.json`
       `made`'s `why`, `deploy.ts`'s kit note, `checklist.md`'s setup line,
-      `platform-deploy.yml`'s header, `docs/host-actions.md` and `.github/test-durations.json`.
+      `platform-deploy.yml`'s header, `docs/host-actions.md`, `.github/test-durations.json`,
+      `deploy/review-app.html` (it runs the setup's `review-app` step, and only the setup's tests
+      read it) and `tests/test_workflow_production_environment.py`'s note. It also decides where
+      the setup's `workos` and `review-app` steps go, since the deletion takes them too.
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
