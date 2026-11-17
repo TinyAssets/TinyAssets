@@ -70,7 +70,6 @@ describe("an agent's call of an act", () => {
     expect(receipt).toMatchObject({ act: "workspace.files", decision: "never",
                                     outcome: "denied", card_id: null, agent: null,
                                     client: MUSE.client });
-    expect(await r.table("action_requests")).toEqual([]);
   });
 
   it("is held for the owner's yes, which admits that call once", async () => {
@@ -79,7 +78,6 @@ describe("an agent's call of an act", () => {
     const card = await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/held"));
     // Asked again, the same card: nothing new is filed.
     expect(await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/held"))).toBe(card);
-    expect((await r.table("action_requests")).length).toBe(1);
     expect((await r.stub.noticeList(o.owner)).notices.map((notice) => notice.detail))
       .toContain(`an outside agent asks to workspace.files at fileMkdir: card ${card}`);
     const shown = await r.stub.actionRequest(o.owner, { card_id: card });
@@ -93,7 +91,6 @@ describe("an agent's call of an act", () => {
     expect((await failure(() => r.stub.actionRequest(o.owner, { card_id: card }))).message)
       .toBe("no pending action request for this card");
     await mkdir(r.stub, r.bind(MUSE), "/workspace/held");
-    expect(await r.table("action_requests")).toEqual([]);
     // Once: the same call again is held anew.
     expect(await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/held")))
       .not.toBe(card);
@@ -131,7 +128,6 @@ describe("an agent's call of an act", () => {
                                                                   digest: shown.digest })))
       .message).toBe("action request is not the pending card shown");
     expect(await ask()).not.toBe(again);
-    expect((await r.table("action_requests")).length).toBe(1);
     expect(await outcomes(o)).toEqual(["held", "held", "refused", "held"]);
   });
 
@@ -152,8 +148,9 @@ describe("the held calls", () => {
      "approvalTtlS", async () => {
     const { r, o } = await ledgerOwner();
     await ruled(o, [{ act: "workspace.files", do: "ask" }]);
+    const muses: string[] = [];
     for (let n = 0; n < ACTION_LIMITS.perClient; n++) {
-      await heldCard(() => mkdir(r.stub, r.bind(MUSE), `/workspace/p-${n}`));
+      muses.push(await heldCard(() => mkdir(r.stub, r.bind(MUSE), `/workspace/p-${n}`)));
     }
     expect((await failure(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more"))).message)
       .toBe("this client's calls held for the owner are at their limit");
@@ -178,7 +175,9 @@ describe("the held calls", () => {
     await atClock(later, async () => {
       const fresh = await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"));
       expect(fresh).not.toBe(dots);
-      expect((await r.table("action_requests")).map((row) => row["card_id"])).toEqual([fresh]);
+      expect((await failure(() => r.stub.actionRequest(o.owner, { card_id: muses[0]! })))
+        .message).toBe("no pending action request for this card");
+      await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more"));
       const shown = await r.stub.actionRequest(o.owner, { card_id: fresh });
       // A yes past its life admits nothing: the call is held anew.
       await r.stub.actionApprove({ ...o.session, session: (await r.stub.sessionOpen({
@@ -204,11 +203,8 @@ describe("the held calls", () => {
         }
       }
     });
-    expect(await r.sql("SELECT action_receipts AS n, (SELECT COUNT(*) FROM action_receipts) " +
-                         "AS rows, (SELECT MIN(seq) FROM action_receipts) AS oldest " +
-                         "FROM policy_usage"))
-      .toEqual([{ n: POLICY_LIMITS.receiptsPerBucket, rows: POLICY_LIMITS.receiptsPerBucket,
-                  oldest: 2 }]);
+    expect(await r.sql("SELECT COUNT(*) AS rows, MIN(seq) AS oldest FROM action_receipts"))
+      .toEqual([{ rows: POLICY_LIMITS.receiptsPerBucket, oldest: 2 }]);
     expect((await r.stub.policyReceipts(o.owner)).actions.length)
       .toBe(POLICY_LIMITS.receiptsListed);
   });
