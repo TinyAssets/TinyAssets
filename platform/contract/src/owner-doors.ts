@@ -240,6 +240,12 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
     Promise<DoorAnswer<"policyProposal">>;
   policyWakeLimits(binding: Binding, request: DoorRequest<"policyWakeLimits">):
     Promise<DoorAnswer<"policyWakeLimits">>;
+  actionRequest(binding: Binding, request: DoorRequest<"actionRequest">):
+    Promise<DoorAnswer<"actionRequest">>;
+  actionApprove(binding: Binding, request: DoorRequest<"actionApprove">):
+    Promise<DoorAnswer<"actionApprove">>;
+  actionRefuse(binding: Binding, request: DoorRequest<"actionRefuse">):
+    Promise<DoorAnswer<"actionRefuse">>;
   grantList(binding: Binding): Promise<DoorAnswer<"grantList">>;
   grantSet(binding: Binding, request: DoorRequest<"grantSet">): Promise<DoorAnswer<"grantSet">>;
   grantRevoke(binding: Binding, request: DoorRequest<"grantRevoke">):

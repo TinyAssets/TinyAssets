@@ -129,8 +129,8 @@ A profile SHALL be data (`contract/profiles.json`) listing table tools in the ta
 A door that does one of the acts an owner's action rule names (`contract/acts.json`) SHALL say so in its own row: `act`, and `when`, the condition under which a call is the act. So a rule on that act holds at that door. A row naming an act or a condition the acts file does not hold SHALL fail the door table's check.
 
 #### Scenario: The doors that send and share
-- **WHEN** an agent calls `room_post` to a room with an outside member, or `collection_write` of a public row
-- **THEN** the call is the act `people.message`, or `share`, as each row names it
+- **WHEN** an agent calls `room_post` to an outside agent, or `collection_write` of a public row
+- **THEN** the call is the act `people.message`, or `share`, as each row names it, and a post to the owner or one of its own agents is not
 
 #### Scenario: A row naming an act nothing defines
 - **WHEN** a door row names the act `commons.publish`

@@ -5,7 +5,7 @@
     "file_write": "a file the CLI writes or edits with its own file tool"
   },
   "conditions": {
-    "outside_member": "the room has a member outside the owner's own agents",
+    "outside_member": "the post goes to an outside agent, neither the owner nor one of its own agents",
     "public_row": "the row is written with private false, so visitors read it"
   },
   "unseen": {

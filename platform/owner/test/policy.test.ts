@@ -3,7 +3,8 @@
  *
  * Ported from `tests/test_owner_policy.py` and `tests/test_policy_writers.py`
  * (origin/main 1fd430857), where they are not about the decision (`decide`, spend
- * reservations, once-approvals, standing grants), which R5's later slices build (d3 §N).
+ * reservations, once-approvals, standing grants): the action rules' decision and its held
+ * calls are `actions.test.ts`'s (d3 §N).
  * The Python's legacy-rules and bootstrap tests have no counterpart: a new object starts
  * from the default document, and each owner is its own object; nor do its rule tables and
  * spend caps, which the `actions` table replaced.
@@ -204,13 +205,15 @@ describe("an owner write", () => {
     ...[{}, "people.message", null].map((actions) => [{ ...defaults(), actions }, "invalid",
                                                      "invalid actions policy"] as const),
     ...[{}, "share", { act: "share" }, { do: "ask" }, { act: "share", do: "ask_first" },
-        { act: "share", do: "hand_off" }, { act: "share", do: "ask", agent: "main" },
+        { act: "share", do: "hand_off" },
+        ...["", ".hidden", "a/b", "x".repeat(129), 7, null].map((agent) =>
+          ({ act: "share", do: "ask", agent })),
         { act: "share", do: "ask", tools: [] }, { act: "share", do: "ask", tools: "mcp:a:b" },
         ...[["mcp:gmail:send", "mcp:gmail:send"], ["gmail:send"], ["mcp:gmail"],
             ["mcp:gm ail:send"], ["mcp:gmail:send:x"], ["shell:rm"], [7]]
           .map((tools) => ({ act: "share", do: "ask", tools }))]
       .map((each) => [{ ...defaults(), actions: [each] }, "invalid",
-                      "invalid action rule: an act, ask or never, and any tools"] as const),
+                      "invalid action rule: an act, ask or never, any agent and any tools"] as const),
     // No act the old stack had and nothing can see: `commons.publish`, `app.read`, ...
     ...["commons.publish", "app.read", "app.write", "telepathy", "toString", 7]
       .map((act) => [{ ...defaults(), actions: [{ act, do: "ask" }] }, "invalid",
@@ -244,6 +247,9 @@ describe("an owner write", () => {
         rule("spend", true, ["mcp:stripe:create_payment_link"]),
         rule("money.move", true, ["mcp:bank-1:transfer.send", "mcp:*:*"]),
         rule("people.message", true, ["mcp:gmail:send_*"]),
+        // One agent's runs alone: an agent's id, its directory's name.
+        { act: "workspace.files", do: "never", agent: "main" },
+        { act: "share", do: "ask", agent: "Re.search-2_b", tools: ["mcp:slack:post"] },
       ] };
     expect((await write(r, document)).policy).toEqual(document);
   });

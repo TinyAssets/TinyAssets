@@ -1,0 +1,248 @@
+/**
+ * The owner's action rules decided (R5 P-decide; d3 §N2, §N4): at a door that does an act, an
+ * agent's call (a run's, or an outside client's) is held to the owner's rules on that act:
+ * `never` refuses it, `ask` holds it for the owner, whose yes admits that one call once, and
+ * no rule lets it be. The owner's own calls are never decided. Every decision a rule made is
+ * receipted; the held calls are bounded, bound to the policy's generation, and swept.
+ */
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { Binding } from "../../contract/src/binding";
+import { DEFAULT_POLICY_JSON, POLICY_LIMITS } from "../../contract/src/policy-document";
+import { ACTION_LIMITS, type ActionCard } from "../src/actions";
+import { clock } from "../src/clock";
+import type { OwnerDO } from "../src/owner-do";
+import { gated } from "./gateway-support";
+import { DOT, MCP, MUSE, registerOn, rig, signedIn } from "./ledger-support";
+import { ALL_SCOPES, ownerRun, runBinding } from "./runs-support";
+import { atClock, failure, inStores } from "./support";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+type Stub = DurableObjectStub<OwnerDO>;
+/** What sets an owner's rules: its object, its own binding and its session's. */
+type Owner = { readonly stub: Stub; readonly owner: Binding; readonly session: Binding };
+
+/** The owner's action rules set to `actions`, in its session. */
+async function ruled(o: Owner, actions: readonly object[]): Promise<void> {
+  const { generation } = await o.stub.policyRead(o.owner);
+  await o.stub.policyWrite(o.session, { expected_generation: generation,
+                                        policy: { ...JSON.parse(DEFAULT_POLICY_JSON), actions } });
+}
+
+/** A directory made by `binding`'s caller: an act of `workspace.files`. */
+function mkdir(stub: Stub, binding: Binding, path: string) {
+  return stub.fileMkdir(binding, { path, expected_etag: null });
+}
+
+/** The card `call` was held under, from its refusal's facts. */
+async function heldCard(call: () => Promise<unknown>): Promise<string> {
+  const held = await failure(call) as Error & { code?: string; facts?: { card_id?: string } };
+  expect([held.code, held.message]).toEqual(["held_for_owner",
+    `held for your owner's answer: card ${held.facts?.card_id}. The owner answers it in the ` +
+      "TinyAssets app; once they say yes, make this same call again"]);
+  return held.facts!.card_id!;
+}
+
+async function ledgerOwner() {
+  const r = await rig();
+  return { r, o: { stub: r.stub, owner: r.bind(null), session: r.session(null) } };
+}
+
+/** The outcomes of the owner's action receipts, newest first. */
+async function outcomes(o: Owner): Promise<string[]> {
+  return (await o.stub.policyReceipts(o.owner)).actions.map((receipt) => receipt.outcome);
+}
+
+describe("an agent's call of an act", () => {
+  it("is let be while no rule names its act, and the owner's own call is never decided",
+     async () => {
+    const { r, o } = await ledgerOwner();
+    await mkdir(r.stub, r.bind(MUSE), "/workspace/free");
+    await ruled(o, [{ act: "workspace.files", do: "never" }]);
+    await mkdir(r.stub, o.owner, "/workspace/owners");
+    const never = await failure(() => mkdir(r.stub, r.bind(MUSE), "/workspace/never"));
+    expect([never.code, never.message]).toEqual(["action_never",
+      "the owner's rule never lets an agent do this (workspace.files)"]);
+    const [receipt] = (await r.stub.policyReceipts(o.owner)).actions;
+    expect(receipt).toMatchObject({ act: "workspace.files", decision: "never",
+                                    outcome: "denied", card_id: null, agent: null,
+                                    client: MUSE.client });
+    expect(await r.table("action_requests")).toEqual([]);
+  });
+
+  it("is held for the owner's yes, which admits that call once", async () => {
+    const { r, o } = await ledgerOwner();
+    await ruled(o, [{ act: "workspace.files", do: "ask" }]);
+    const card = await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/held"));
+    // Asked again, the same card: nothing new is filed.
+    expect(await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/held"))).toBe(card);
+    expect((await r.table("action_requests")).length).toBe(1);
+    expect((await r.stub.noticeList(o.owner)).notices.map((notice) => notice.detail))
+      .toContain(`an outside agent asks to workspace.files at fileMkdir: card ${card}`);
+    const shown = await r.stub.actionRequest(o.owner, { card_id: card });
+    expect(shown.card).toMatchObject({
+      card_id: card, act: "workspace.files", says: "Changing the owner's files.",
+      door: "fileMkdir", agent: null, client: MUSE.client,
+      request: '{"expected_etag":null,"path":"/workspace/held"}', cut: false,
+    } satisfies Partial<ActionCard>);
+    expect(await r.stub.actionApprove(o.session, { card_id: card, digest: shown.digest }))
+      .toEqual({ card_id: card, approved: true });
+    expect((await failure(() => r.stub.actionRequest(o.owner, { card_id: card }))).message)
+      .toBe("no pending action request for this card");
+    await mkdir(r.stub, r.bind(MUSE), "/workspace/held");
+    expect(await r.table("action_requests")).toEqual([]);
+    // Once: the same call again is held anew.
+    expect(await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/held")))
+      .not.toBe(card);
+    expect(await outcomes(o)).toEqual(["held", "admitted", "approved", "held"]);
+  });
+
+  it("is answered only as the pending card shown, in the owner's session, under the policy " +
+     "it was asked under", async () => {
+    const { r, o } = await ledgerOwner();
+    await ruled(o, [{ act: "workspace.files", do: "ask" }]);
+    const ask = () => heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/asked"));
+    const card = await ask();
+    const { digest } = await r.stub.actionRequest(o.owner, { card_id: card });
+    for (const [binding, answer, reason] of [
+      [o.session, { card_id: card, digest: "sha256:" + "0".repeat(64) },
+        "action request is not the pending card shown"],
+      [o.session, { card_id: "act_" + "0".repeat(32), digest },
+        "action request is not the pending card shown"],
+      [o.owner, { card_id: card, digest }, "interactive owner session required"],
+    ] as const) {
+      expect((await failure(() => r.stub.actionApprove(binding, answer))).message).toBe(reason);
+    }
+    // The owner's no: the card goes, and the call asked again is held anew.
+    expect(await r.stub.actionRefuse(o.session, { card_id: card, digest }))
+      .toEqual({ card_id: card, approved: false });
+    const again = await ask();
+    expect(again).not.toBe(card);
+    // The rules written again: the card asked under the old ones is neither shown nor
+    // answered, and the call is decided afresh.
+    const shown = await r.stub.actionRequest(o.owner, { card_id: again });
+    await ruled(o, [{ act: "workspace.files", do: "ask" }]);
+    expect((await failure(() => r.stub.actionRequest(o.owner, { card_id: again }))).message)
+      .toBe("no pending action request for this card");
+    expect((await failure(() => r.stub.actionApprove(o.session, { card_id: again,
+                                                                  digest: shown.digest })))
+      .message).toBe("action request is not the pending card shown");
+    expect(await ask()).not.toBe(again);
+    expect((await r.table("action_requests")).length).toBe(1);
+    expect(await outcomes(o)).toEqual(["held", "held", "refused", "held"]);
+  });
+
+  it("is a share only as a public row, and held so", async () => {
+    const { r, o } = await ledgerOwner();
+    await ruled(o, [{ act: "share", do: "ask" }]);
+    const row = (row_id: string, isPrivate: boolean) => r.stub.collectionWrite(r.bind(MUSE), {
+      collection: "board", row_id, body: "{}", expected_etag: "", private: isPrivate });
+    await row("mine", true);
+    const card = await heldCard(() => row("public", false));
+    expect((await r.stub.actionRequest(o.owner, { card_id: card })).card)
+      .toMatchObject({ act: "share", door: "collectionWrite" });
+  });
+});
+
+describe("the held calls", () => {
+  it("are at most perClient a client's and held in all, each living cardTtlS, a yes " +
+     "approvalTtlS", async () => {
+    const { r, o } = await ledgerOwner();
+    await ruled(o, [{ act: "workspace.files", do: "ask" }]);
+    for (let n = 0; n < ACTION_LIMITS.perClient; n++) {
+      await heldCard(() => mkdir(r.stub, r.bind(MUSE), `/workspace/p-${n}`));
+    }
+    expect((await failure(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more"))).message)
+      .toBe("this client's calls held for the owner are at their limit");
+    const dots = await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"));
+    // The rest of the set, by the owner's agents' runs, to its bound.
+    const runs = ACTION_LIMITS.held - ACTION_LIMITS.perClient - 1;
+    expect(await inStores(r.stub, ({ actions }) => {
+      const asked = (n: number) => {
+        try {
+          actions.decide("workspace.files", { agent: "main", client: null },
+                         { door: "fileMkdir", request: { n } }, clock());
+          return "allowed";
+        } catch (error) {
+          return (error as Error).message.split(":")[0];
+        }
+      };
+      return [...Array.from({ length: runs }, (_, n) => asked(n)), asked(runs)];
+    })).toEqual([...Array(runs).fill("held for your owner's answer"),
+                 "too many calls held for the owner"]);
+    // Past a card's life, every pending card is swept at the next decision.
+    const later = clock() + ACTION_LIMITS.cardTtlS + 1;
+    await atClock(later, async () => {
+      const fresh = await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"));
+      expect(fresh).not.toBe(dots);
+      expect((await r.table("action_requests")).map((row) => row["card_id"])).toEqual([fresh]);
+      const shown = await r.stub.actionRequest(o.owner, { card_id: fresh });
+      // A yes past its life admits nothing: the call is held anew.
+      await r.stub.actionApprove({ ...o.session, session: (await r.stub.sessionOpen({
+        ...o.owner, authenticated_at: Math.floor(later) })).session },
+                                 { card_id: fresh, digest: shown.digest });
+    });
+    await atClock(later + ACTION_LIMITS.approvalTtlS + 1, async () => {
+      await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"));
+    });
+  });
+
+  it("keep their receipts to the newest receiptsPerBucket, and list the last receiptsListed",
+     async () => {
+    const { r, o } = await ledgerOwner();
+    await ruled(o, [{ act: "workspace.files", do: "never" }]);
+    await inStores(r.stub, ({ actions }) => {
+      for (let n = 0; n <= POLICY_LIMITS.receiptsPerBucket; n++) {
+        try {
+          actions.decide("workspace.files", { agent: null, client: MUSE.client },
+                         { door: "fileMkdir", request: { n } }, clock());
+        } catch {
+          // each call refused `action_never`, receipted
+        }
+      }
+    });
+    expect(await r.sql("SELECT action_receipts AS n, (SELECT COUNT(*) FROM action_receipts) " +
+                         "AS rows, (SELECT MIN(seq) FROM action_receipts) AS oldest " +
+                         "FROM policy_usage"))
+      .toEqual([{ n: POLICY_LIMITS.receiptsPerBucket, rows: POLICY_LIMITS.receiptsPerBucket,
+                  oldest: 2 }]);
+    expect((await r.stub.policyReceipts(o.owner)).actions.length)
+      .toBe(POLICY_LIMITS.receiptsListed);
+  });
+});
+
+describe("a run's call", () => {
+  it("is held to a rule naming its agent, and a post is a message only to an outside agent",
+     async () => {
+    const r = await gated();
+    const o = { stub: r.stub, owner: r.bind(), session: r.session() };
+    const { start } = await ownerRun(r.stub, r.bind(), {
+      engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: ALL_SCOPES });
+    const run = runBinding(r, start);
+    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
+    // A rule on another agent holds neither this run nor an outside client.
+    await ruled(o, [{ act: "workspace.files", do: "never", agent: "other" }]);
+    await mkdir(r.stub, run, "/workspace/by-main");
+    await mkdir(r.stub, client, "/workspace/by-muse");
+    await ruled(o, [{ act: "workspace.files", do: "never", agent: "main" }]);
+    expect((await failure(() => mkdir(r.stub, run, "/workspace/main-again"))).code)
+      .toBe("action_never");
+    await mkdir(r.stub, client, "/workspace/muse-again");
+    // A message to another party: the run's post to an outside agent, never to the owner.
+    const muse = await inStores(r.stub, (stores) => registerOn(stores, MUSE, {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+      recipe_id: null }).agent_id);
+    const main = (await r.stub.outsideAgents(r.bind())).owner_agents
+      .find((agent) => agent.agent === "main")!.agent_id;
+    await ruled(o, [{ act: "people.message", do: "ask", agent: "main" }]);
+    const post = (room: string, cmid: string) => r.stub.roomPost(run, {
+      room_id: room, client_message_id: cmid, body: "hello", parent_id: null });
+    await post(`dm:${main}`, "to-owner");
+    const card = await heldCard(() => post(`dm:${[main, muse].sort().join("+")}`, "to-muse"));
+    expect((await r.stub.actionRequest(o.owner, { card_id: card })).card)
+      .toMatchObject({ act: "people.message", door: "roomPost", agent: "main", client: null });
+  });
+});

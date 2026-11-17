@@ -185,6 +185,12 @@ export const MAX_PATH_BYTES = 4096;
 export const SCOPES_JSON_MAX = 64 * 1024;
 /** A held registration's request, in characters (`CARD_LIMITS`). */
 export const CARD_REQUEST_MAX = 4096;
+/**
+ * A held call's card, in UTF-8 bytes (`owner/src/actions.ts`): its request's shown text, at
+ * most `ACTION_LIMITS.shownChars` (8,000) code points of canonical JSON, each at most 4 bytes,
+ * and its other fields, well inside.
+ */
+export const ACTION_CARD_BYTES = 64 * 1024;
 
 /**
  * The placement rule's threshold (ADR-035): a collection row's, a history entry's or a
