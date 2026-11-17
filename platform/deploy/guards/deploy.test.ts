@@ -2425,17 +2425,27 @@ describe("the parts of a run", () => {
     const blob = await sealBlob(ring, domain, new TextEncoder().encode("plain"));
     expect(new TextDecoder().decode((await openBlob(ring, domain, blob, 1024))!.plain))
       .toBe("plain");
-    // The kit's own maker writes the same shape, run as the release runs it (Node's type
-    // stripping, so the envelope and the E2B client it imports run there too).
+    const out = mkdtempSync(join(tmpdir(), "keyring-"));
+    try {
+      keyringNew(join(out, "ring.json"), NONE);
+      const theirs = keyring(readFileSync(join(out, "ring.json"), "utf8"), "the keyring");
+      expect([theirs.active, [...theirs.keys.keys()]])
+        .toEqual([ring.active, [...ring.keys.keys()]]);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("makes a first keyring with keyring-new, run as the release runs it", () => {
+    // Node's type stripping, so the envelope and the E2B client it imports run there too.
     const out = mkdtempSync(join(tmpdir(), "keyring-"));
     try {
       execFileSync(process.execPath, ["--experimental-strip-types",
                                       join(PLATFORM, "deploy", "deploy.ts"), "keyring-new",
                                       join(out, "ring.json")], { stdio: "pipe" });
-      const theirs = keyring(readFileSync(join(out, "ring.json"), "utf8"), "the keyring");
-      expect([theirs.active, [...theirs.keys.keys()]])
-        .toEqual([ring.active, [...ring.keys.keys()]]);
-      expect(theirs.keys.get("k1")!.byteLength).toBe(32);
+      const ring = keyring(readFileSync(join(out, "ring.json"), "utf8"), "the keyring");
+      expect([ring.active, [...ring.keys.keys()]]).toEqual(["k1", ["k1"]]);
+      expect(ring.keys.get("k1")!.byteLength).toBe(32);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

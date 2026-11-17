@@ -28,12 +28,13 @@ const { k1, k2 } = VECTORS.keys;
 const OLD = { GATEWAY_KEYRING: JSON.stringify({ active: "k1", keys: { k1 } }) };
 const ROTATED = { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k1, k2 } }) };
 const RETIRED = { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k2 } }) };
-const BOUND = VECTORS.gateway.binding;
+// Each golden bound as the gateway binds a stored record: by its names, through today's grammar.
+const BOUND = keyring.binding(VECTORS.gateway.binding.owner, VECTORS.gateway.binding.connection,
+                              VECTORS.gateway.binding.version);
 const CREDENTIAL = VECTORS.gateway.credential as unknown as Parameters<Keyring["seal"]>[2];
 const SECRET = { secret: VECTORS.gateway.credential.secret };
 const BELL = VECTORS.gateway.doorbell;
-const BELL_BOUND = { owner: BELL.owner, connection: `wake.${BELL.subscription}`,
-                     version: BELL.version };
+const BELL_BOUND = keyring.wakeBinding(BELL.owner, BELL.subscription, BELL.version);
 const BELL_SECRET = "sk-ant-oat01-" + "v".repeat(40);
 const BELL_INPUT = { record: BELL.value.record, url: BELL.value.url, secret: BELL_SECRET };
 const bell = (kid: "k1" | "k2") =>
@@ -234,7 +235,7 @@ describe("the gateway's domain", () => {
     const ns = VECTORS.files.namespace;
     for (const wrapped of [VECTORS.files.k1.wrapped, VECTORS.files.k2.wrapped,
                            VECTORS.files.rewrapped]) {
-      for (const bound of [keyring.binding(ns, "c1", 1), BOUND, BELL_BOUND]) {
+      for (const bound of [keyring.binding(ns, BOUND.connection, 1), BOUND, BELL_BOUND]) {
         expect(await outcome(() => keyring.openValue(ROTATED, bound, wrapped, same)))
           .toBe("credential_refused");
         expect(await outcome(() => keyring.open(ROTATED, bound, wrapped)))
