@@ -4,30 +4,64 @@ Lane O's owed line X1, B10's literal guard over every folder (`o4b.md` item 6), 
 
 ## The plan (research, before building)
 
-**What the guard finds.** B10's rule is "no `tinyassets-*` storage, queue or Worker literal in any file outside the configs and `deploy/platform.json`". A pattern over `tinyassets-*` alone finds names that are none of the three: the export format, HKDF labels (`tinyassets-api-key-client`, `tinyassets-mcp-family`), the kit's record kinds (`tinyassets-routes`, `tinyassets-rotation`), the old proxy's Worker, temp folders. Each would need an exception of its own.
-- **Chosen:** the guard's names are the facts' own: `deploy/facts.ts` `NAMES` (each Worker's script), `RETIRED`, `BUCKETS`, `QUEUES` (dead-letter queues included) and the KV `NAMESPACES`' titles, which it reads from the six configs and `platform.json`. Nothing restates them. A name counts where no letter, digit, `-` or `_` touches it, so `tinyassets-files-prod` is not `tinyassets-files`, and the E2B template `tinyassets-sandbox:s…` is `tinyassets-sandbox`.
-- **Where:** every text file git holds under `platform/` and `.github/`, comments and prose included: a comment or a checklist line that spells a live name is left behind by a rename just as code is, and it can point at the config instead. The records and specs (`docs/`, `openspec/`) are not read: a decision log is edited only to correct a line, and B26's check holds the specs' names to the tree. The tree-wide reader is `cutover.test.ts`'s `scopeFiles` today; it moves to the kit (`ci/kit/sources.ts` `treeFiles`, with its scope `TREE`), and both guards read it.
-- **Its home:** `deploy/guards/literals.test.ts`, A3's facts guard extended as B10 says. The ci kit may not import the deploy kit (the layer table), and a workspace's guards may.
+**What the guard finds.** B10's rule is "no `tinyassets-*` storage, queue or Worker literal in any file outside the configs and `deploy/platform.json`". A pattern over `tinyassets-*` alone also finds names that are none of the three: the export format, HKDF labels (`tinyassets-api-key-client`, `tinyassets-mcp-family`), the kit's record kinds (`tinyassets-routes`, `tinyassets-rotation`), the old proxy's Worker and temp folders. Each of those would need an exception of its own.
+- **Chosen:** the guard takes its names from the facts: `deploy/facts.ts` `NAMES` (each Worker's script), `RETIRED`, `BUCKETS`, `QUEUES` (dead-letter queues included) and the KV `NAMESPACES`' titles, which `facts.ts` reads from the six configs and `platform.json`. Nothing restates them.
+- **What counts as a match:** a name counts where no letter, digit, `-` or `_` touches it. So `tinyassets-files-prod` does not count as `tinyassets-files`, and the E2B template `tinyassets-sandbox:s…` does count as `tinyassets-sandbox`.
+- **Where:** every text file git holds under `platform/` and `.github/`, comments and prose included. A rename leaves a stale name behind in a comment or a checklist line just as it does in code, and either can point at the config instead.
+  - The records and specs (`docs/`, `openspec/`) are not read. A decision log is edited only to correct a line, and B26's check holds the specs' names to the tree.
+  - The tree-wide reader was `cutover.test.ts`'s `scopeFiles`. It moves to the kit as `ci/kit/sources.ts` `treeFiles`, with its scope as `TREE`, and both guards read it.
+- **Its home:** `deploy/guards/literals.test.ts`, which extends A3's facts guard as B10 says. The layer table does not let the ci kit import the deploy kit, but a workspace's guards may.
+- **The finding names no name.** It is `<path>: live names ×<count>` (`ci/kit/owed.ts` `literalBreak`). An entry that named the names would itself spell them, in a `rules.ts` or in the guard, and so be a finding.
 
-**How it states a permanent exception.** The options:
-- *A fix value other than `B<n>` in `OWED`.* `ratchet` refuses it, and rightly: `OWED` is a debt that only shrinks, which a permanent entry is not.
-- *Each workspace's own list in its `rules.ts`, as `MODULE_STATE` is.* Ten files each stating reasons of its own: the scattered allow-list the review rule refuses, and the same reason (a fixture, a generated file) said several times.
-- *One list in the guard itself, each entry a finding and its reason.* **Chosen:** `KEPT` in `literals.test.ts`. Each entry is the finding as the guard names it (`<path>: <name> ×<count>`, the kernel guard's form), built by `kept(reason, path, counts)`, so a reason is written once for all of a file's names. It is held as exactly as `OWED`: a finding neither kept nor owed fails, a kept entry that no longer holds fails, and so does an entry both kept and owed. A change to a kept file's names is a change to the guard, read in its review.
+**How it states a permanent exception.** Three options:
+- *A fix value other than `B<n>` in `OWED`.* `ratchet` refuses this, and rightly: `OWED` is a debt that only shrinks, and a permanent entry never does.
+- *Each workspace's own list in its `rules.ts`, as `MODULE_STATE` is.* That is ten files, each stating its own reasons: the scattered allow-list the review rule refuses. The same reason (a fixture, a generated file) would be written several times.
+- *One list in the guard itself, each entry a finding and its reason.*
 
-What `OWED` holds stays a workspace's own (`ci/kit/owed.ts` `literals(fix, path, counts)`, beside `kernels`), under the fix that removes it.
+**Chosen:** the third, as `KEPT` in `literals.test.ts`.
+- Each entry is a file, its count and its reason.
+- It is held as exactly as `OWED`. A finding that is neither kept nor owed fails, and so does a kept entry that no longer holds or is kept twice. An entry that is both kept and owed leaves the owed one stale.
+- Adding a name to a kept file is a change to the guard, and its review reads it.
+- What `OWED` holds stays each workspace's own, under the fix that removes it (`literals(fix, counts)`, beside `kernels`).
 
-**Each finding on this base, and what it gets:**
-- *Kept* (four): `contract/src/queue-names.ts`, written by `npm run generate` from the configs and held equal by the generated guard; `cutover.json`, the manifest, which must name each live object it removes after the config that names it today has lost it, and whose every name `cutover.test.ts` holds to that file; `sandbox/template/image.ts` `NAME`, E2B's template name, an image input pinned by the template digest (`s6.md` item 2), in E2B's namespace and not the Worker's; `owner/guards/rules.ts` `RING_QUEUES`, the owner's own statement of the one queue a bound Worker may produce onto, which by design does not follow the producers' configs (the generated `QUEUES.RING` would follow a producer moved onto the erasure queue).
-- *Fixed here:*
-  - **The config rules' `name`** (six `rules.ts`): `configProblems` held each config's name to a copy of it. The generator already refuses a service binding that names no platform Worker (`ci/kit/types.ts` `target`), and `facts.ts` does the same for the deploy order, so the copy only made a rename two edits. `ConfigRules.name` goes, with the two probes of it (`codemode`, `gateway` "another name").
-  - **`contract/services.json` keyed the queues' messages by queue name,** a copy of each producer's `queue`. It keys them by the producer's binding, as `QUEUES` does (`types.ts` reads `table.queues[binding]`). The manifest's edit entry names `IMPORTS`.
-  - **The owner's and files' config probes** read the Workers' names from the configs (`platformConfigs`); a probe whose name the check ignores names none.
-  - **`doors/test/app.e2e.mjs`** reads the doors' name from its config, as it reads the gateway's.
-  - **Six comments** (`codemode/src/index.ts`, `contract/src/{codemode,gateway,sandbox}.ts`, `owner/src/sandbox.ts`, `sandbox/src/index.ts`, `codemode/test/codemode.test.ts`) point at the Worker's folder.
-- *Owed (`B10`), in lane R8's files, which this PR stays out of:* `deploy/guards/deploy.test.ts` (108), `deploy/guards/offsite.test.ts` (3), `deploy/checklist.md` (18), and the comments in `contract/src/files.ts` and `files/src/index.ts`. The deploy workspace gets its `rules.ts` for them. Their branch is `untangle/x1b`, after R8 merges: the deploy kit's tests read `facts.ts`, and the checklist and the two comments point at the configs.
+## As built
 
-**B22's sweep doorbell half.** `d2` B22 has the owner's reseal sweep take the ledger's subscriptions and answer `left` the same way. d3 §I adds the gateway's deadline before a provider's headers, untested once its test-only parameter went, and `egress.ts:71`'s "5-minute" comment.
-- R7 built the sweep (`r7-rotation.md` item 4): `gatewayReseal` folds `Connections.reseal` and `Doorbell.reseal`, which calls `GATEWAY.resealDoorbell`; `doorbell.test.ts` "a gateway key rotation's sweep of the doorbell" holds `left` 0, 1 and 2 for subscriptions.
-- #5509 replaced the comment with `EGRESS_DEADLINE_S`.
-- `gateway/test/forward.test.ts` "ends a call its provider never answers at the forward deadline, and not before" drives the deadline before any header on fake time.
-- **Chosen:** prove the owner's half by a mutation (the sweep without the doorbell's half), and tick the line.
+1. **`deploy/guards/literals.test.ts`:** the guard over `treeFiles()`, its `KEPT`, and probes of the whole-name match (a longer name, a prefix and the template's `:` suffix; the homes; a workflow file counted as the ci kit's) and of `KEPT`'s own checks.
+2. **Kept (four):**
+   - `contract/src/queue-names.ts`, 4: written by `npm run generate` from the configs and held to them by the generated guard.
+   - `cutover.json`, 5: the manifest must name each live object it removes even after the config that names it today has lost it. `cutover.test.ts` holds every one of those names to that config.
+   - `sandbox/template/image.ts` `NAME`, 1: E2B's template name, an image input pinned by the template digest (`s6.md` item 2). It is E2B's name, not the Worker's.
+   - `owner/guards/rules.ts` `RING_QUEUES`, 1: the owner's own statement of the one queue a bound Worker may produce onto. By design it follows no producer's config: the generated `QUEUES.RING` would follow a producer moved onto the erasure queue.
+3. **The config rules' `name` is gone** (`ConfigRules`, six `rules.ts`). `configProblems` held each config's name to a copy of it. The generator already refuses a service binding that names no platform Worker (`ci/kit/types.ts` `target`), and `facts.ts` does the same for the deploy order. The copy only turned a rename into two edits. The two probes of it go (`codemode` and `gateway`, "another name").
+4. **`contract/services.json` keys each queue's message by its producers' binding,** the key `QUEUES` uses, and no longer by the queue's name, which was a copy of the producer's `queue`. `types.ts` reads `table.queues[binding]`, and the unsent check compares bindings. The generated files are byte-identical. The manifest's edit entry names `IMPORTS`.
+5. **The tests read the names:**
+   - the owner's and the files Worker's config probes, from `platformConfigs`;
+   - `doors/test/app.e2e.mjs`, from the doors' config, as it already reads the gateway's;
+   - `deploy/guards/offsite.test.ts`, `FILES_BUCKET` from `facts.ts`.
+6. **Nine comments** point at the Worker's folder in place of its name: `codemode/src/index.ts`, `contract/src/{codemode,files,gateway,sandbox}.ts`, `files/src/index.ts`, `owner/src/sandbox.ts`, `sandbox/src/index.ts` and `codemode/test/codemode.test.ts`.
+
+## B22's sweep doorbell half
+
+`d2` B22 has the owner's reseal sweep take the ledger's subscriptions and answer `left` the same way. d3 §I adds two items: the gateway's deadline before a provider's headers, untested once its test-only parameter went, and `egress.ts:71`'s "5-minute" comment. All three were already built:
+- **The sweep:** R7 built it (`r7-rotation.md` item 4). `gatewayReseal` combines `Connections.reseal` and `Doorbell.reseal`, which calls `GATEWAY.resealDoorbell`. `doorbell.test.ts` "a gateway key rotation's sweep of the doorbell" holds `left` at 0, 1 and 2 for subscriptions.
+- **The comment:** #5509 replaced it with `EGRESS_DEADLINE_S`.
+- **The deadline:** `gateway/test/forward.test.ts` "ends a call its provider never answers at the forward deadline, and not before" drives it on fake time, before any header.
+
+The proof is a mutation: `gatewayReseal` without `o.doorbell.reseal()` fails all three of the sweep's tests. The line is ticked.
+
+## What a caller sees
+
+Nothing changes. Every `src` change is a comment, and the generated files are unchanged.
+
+## Mutations, each killed
+
+- The whole-name match without its lookarounds: the probe and the tree test fail.
+- `platform.json` dropped from the homes: both fail.
+- A kept count off by one: the tree test fails.
+- An owed count off by one: the tree test fails.
+- `types.ts` back on queue-name keys: `npm run generate` throws.
+- B22's mutation, above.
+
+## Left
+
+- **`untangle/x1b` (lane X, `tasks.md`):** `deploy/guards/deploy.test.ts` (73) and `deploy/checklist.md` (17), owed under `B10` in `deploy/guards/rules.ts`, which is new. The kit test pins the facts against literal lists (`BUCKETS`, `QUEUES`, the plan's lines). Reading them from `facts.ts` is a rewrite of that test's oracles, its own PR.
