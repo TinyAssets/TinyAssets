@@ -19,7 +19,6 @@ import type { ImportRules } from "../../ci/kit/imports";
  */
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "codemode",
-  name: "tinyassets-codemode",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",
                        "workers_dev", "preview_urls", "limits", "durable_objects", "migrations"]),

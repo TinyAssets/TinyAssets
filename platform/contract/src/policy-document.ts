@@ -21,7 +21,7 @@ import { actDoors, toolNames } from "./doors.ts";
 import { type FileDefaults, KEEP_CEILING } from "./file-defaults.ts";
 import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "./limits.ts";
 import { Refusal } from "./refusal.ts";
-import { codePoints, SOURCE_ID } from "./text.ts";
+import { AGENT_ID, codePoints, SOURCE_ID } from "./text.ts";
 
 /**
  * The refusal of an IP-literal egress destination. Workers `fetch` shows no resolved
@@ -113,13 +113,16 @@ export const POLICY_LIMITS: PolicyLimits = Object.freeze({
 
 /**
  * One rule of the `actions` table: its act (`acts.json`), whether the act waits for the
- * owner's yes (`ask`) or never happens (`never`), and the tools that do it, which the CLIs'
- * hooks see by name (`mcp:<server>:<tool>`, each part a name or `*` patterns). An act with no
- * rule is allowed: the table is empty until the owner writes one (Fact 15).
+ * owner's yes (`ask`) or never happens (`never`), the one agent it holds for, by its id
+ * (`AGENT_ID`: that agent's runs alone; every agent's and outside client's when absent), and
+ * the tools that do it, which the CLIs' hooks see by name (`mcp:<server>:<tool>`, each part a
+ * name or `*` patterns). An act with no rule is allowed: the table is empty until the owner
+ * writes one (Fact 15).
  */
 export interface ActionRule {
   readonly act: string;
   readonly do: "ask" | "never";
+  readonly agent?: string;
   readonly tools?: readonly string[];
 }
 
@@ -127,9 +130,10 @@ export interface ActionRule {
 const TOOL_MATCHER = /^mcp:[A-Za-z0-9_*-]{1,64}:[A-Za-z0-9_.*-]{1,128}$/;
 
 /**
- * The `actions` table: rules of an act the file holds, `ask` or `never`, and tools, when
- * named, distinct matchers, at least one. A rule on an act no door does and no hook kind is,
- * naming no tools, is refused: nothing could see it, so nothing could decide it.
+ * The `actions` table: rules of an act the file holds, `ask` or `never`, an agent's id when
+ * one is named, and tools, when named, distinct matchers, at least one. A rule on an act no
+ * door does and no hook kind is, naming no tools, is refused: nothing could see it, so nothing
+ * could decide it.
  */
 function checkActions(actions: unknown): void {
   if (!Array.isArray(actions)) {
@@ -137,12 +141,16 @@ function checkActions(actions: unknown): void {
   }
   for (const rule of actions) {
     const tools = object(rule) ? rule["tools"] : undefined;
-    if (!keyed(rule, ["act", "do", ...(tools === undefined ? [] : ["tools"])])
+    const agent = object(rule) ? rule["agent"] : undefined;
+    if (!keyed(rule, ["act", "do", ...(agent === undefined ? [] : ["agent"]),
+                      ...(tools === undefined ? [] : ["tools"])])
         || (rule["do"] !== "ask" && rule["do"] !== "never")
+        || (agent !== undefined && (typeof agent !== "string" || !AGENT_ID.test(agent)))
         || (tools !== undefined && (!Array.isArray(tools) || tools.length === 0
             || new Set(tools).size !== tools.length
             || !tools.every((tool) => typeof tool === "string" && TOOL_MATCHER.test(tool))))) {
-      throw new Refusal("invalid", "invalid action rule: an act, ask or never, and any tools");
+      throw new Refusal("invalid",
+                        "invalid action rule: an act, ask or never, any agent and any tools");
     }
     const act = actNamed(rule["act"]);
     if (act === undefined) {

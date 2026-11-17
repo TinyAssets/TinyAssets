@@ -1,5 +1,5 @@
 /**
- * The sandbox Worker's RPC contract (`tinyassets-sandbox`,
+ * The sandbox Worker's RPC contract (`platform/sandbox`,
  * `docs/decisions/untangle-2026-11-wave-1.md` A1): the `SANDBOX` interface the owner's object
  * binds (ADR-034 decision 4.2; `engines-replan.md` §2.1 step 3), and the values that cross it.
  * The sandbox Worker implements it (`sandbox/src/index.ts`) and the owner's object calls it

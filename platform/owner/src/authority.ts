@@ -66,18 +66,6 @@ export function authorityOf(stamp: Stamped | null): AuthorityState {
   return stamp === null ? { by: "owner" } : { by: "client", stamp: { ...stamp } };
 }
 
-/** An agent's id: its directory's name under `/workspace/agents/`. */
-export const AGENT_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
-/** An agent's id: its directory's name (`AGENT_DIR`). */
-export function agentId(value: unknown): string {
-  if (typeof value !== "string" || !AGENT_DIR.test(value)) {
-    throw new Refusal("invalid", "an agent id is 1 to 128 letters, digits, dots, dashes and " +
-                      "underscores");
-  }
-  return value;
-}
-
 /** A capability where work acts: a scoped grant's triple. */
 export interface Scope {
   readonly universe: string;

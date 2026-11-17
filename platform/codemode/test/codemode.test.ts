@@ -1,5 +1,5 @@
 /**
- * The codemode Worker's own door (`tinyassets-codemode`), as the owner calls it through
+ * The codemode Worker's own door (`platform/codemode`), as the owner calls it through
  * pi-codemode's `RemoteCodemodeSandbox`: a script that computes past the interrupt budget
  * its request carries is stopped there, as a timeout naming that budget. The Worker's own
  * budget, `CODEMODE_INTERRUPT_BUDGET` (1,000,000 polls), is the most any request gets; a

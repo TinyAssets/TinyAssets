@@ -371,7 +371,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`). Built in
       `untangle/o-owed`: the owner's top level is a kit `CONFIG`, `CONTROL` held by binding
       name (`o-owed.md`).
-    - X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6).
+    - [x] X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6). Built:
+      `deploy/guards/literals.test.ts` reads the live names from `facts.ts`; its permanent
+      exceptions are its own `KEPT`, each with its reason (`untangle-2026-11/o4c.md`).
+    - [ ] X1b: the deploy kit's test reads the live names from `facts.ts`, and the founder's
+      checklist points at the configs and `platform.json`: the 73 and 17 that
+      `deploy/guards/rules.ts` owes the literal guard, `untangle/x1b` (`o4c.md`).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
   - V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`).
@@ -381,7 +386,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     cutover does not wait on it (the keyrings are stored, and the kit only reads them), but the
     deletion PR must not delete `platform_setup.py` while `deploy.test.ts` "takes the keyring
     the founder's setup makes" runs it: either this is built, or both go on the manifest.
-  - B22's sweep doorbell half (O5; d3 §I).
+  - [x] B22's sweep doorbell half (O5; d3 §I). Built by R7 (`r7-rotation.md` item 4), the
+    comment by #5509 and the deadline test in `gateway/test/forward.test.ts`; proved in
+    `untangle/o4c` by a mutation (`o4c.md`).
   - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10). Its
     platform Workers are entries in the deploy kit's `retired` list (`deploy/platform.json`),
     the one remover of a platform Worker (d3 §O2).
@@ -549,12 +556,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     their act, a rule nothing could see refused at write; the old rule tables, `spend` and
     egress `ask` deleted; the default document and its digest anew, with owner migration 6
     (#5531; its pin, #5537).
-  - [ ] P-decide: the decide function and its receipts bucket; `action_request` cards and the
+  - [x] P-decide: the decide function and its receipts bucket; `action_request` cards and the
     once-approvals (bounded, generation-bound, swept); the owner's approve and refuse doors;
     the decide step in the runner, from the rows' `act`; a rule's `agent`, with the agent id's
-    rule moved to the contract.
+    rule moved to the contract (`untangle/r5-decide`; `r5-decide.md`).
+  - [ ] Owner migration 17's pin PR, after P-decide merges (`untangle/r5-decide-pin17`).
+  - [ ] P-decide's receipts in the export: `action_receipts` joins it with the first migration
+    that builds a forward form (`schema.ts` `FORWARD`; `r5-decide.md` item 5,
+    `untangle/r5-receipts-export`).
   - [ ] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
-    stop matcher in its record's `events`; a run settles `waiting` on a card.
+    stop matcher in its record's `events`; a run settles `waiting` on a card; a held call's
+    digest bound to its run's conversation (`r5-decide.md` item 8).
   - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
     `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
     when needed, and runs the start check; the honest note (d3 §N5): `policyRead` gives each
