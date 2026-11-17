@@ -582,8 +582,8 @@ describe("the ledger's binding", () => {
                        "ORDER BY seq").toArray(),
         replies: sql.exec("SELECT reply_s FROM ledger_messages ORDER BY seq").toArray()
           .map((m) => m["reply_s"]),
-        receipts: sql.exec("SELECT name FROM sqlite_master WHERE name GLOB '*receipts*' AND " +
-                           "name NOT GLOB '*policy*' AND name NOT GLOB '*starter*'").toArray(),
+        receipts: sql.exec("SELECT name FROM sqlite_master WHERE tbl_name = 'ledger_receipts' " +
+                           "OR name GLOB 'ledger_receipts*'").toArray(),
       };
     });
     expect(moved.rows).toEqual([
