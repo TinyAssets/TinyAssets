@@ -241,6 +241,8 @@ const OWNER_CONTROL = controlUses(SOURCES);
 
 /** The platform's configs, by Worker folder, the Workers the owner binds among them. */
 const CONFIGS = platformConfigs();
+/** A Worker's name, by its folder, as its config says it. */
+const named = (worker: string): string => String(CONFIGS.get(worker)!["name"]);
 
 const config = configTests(CONFIG, {
   refused: ["durable_objects", "r2_buckets", "d1_databases", "vars", "ai", "workflows",
@@ -276,16 +278,16 @@ const config = configTests(CONFIG, {
       { binding: "ERASURES", queue: "e" }, { binding: "RING", queue: "r" }] } }],
     ["a queue consumer", { queues: { producers: [], consumers: [{ queue: "q" }] } }],
     ["a second secret", { secrets: { required: ["ROUTING_MAC_KEY", "OTHER"] } }],
-    ["a services binding", { services: [{ binding: "SELF", service: "tinyassets-owner" }] }],
+    ["a services binding", { services: [{ binding: "SELF", service: named("owner") }] }],
     ["a services binding inside an environment", { env: { prod: {
       services: [{ binding: "EDGE", service: "tinyassets-edge" }] } } }],
     ["FILES bound to another Worker", { services: [
-      { binding: "FILES", service: "tinyassets-owner" }] }],
+      { binding: "FILES", service: named("owner") }] }],
     ["the files Worker under another name", { services: [
-      { binding: "BYTES", service: "tinyassets-files" }] }],
+      { binding: "BYTES", service: named("files") }] }],
     ["FILES with an entrypoint", { services: [
-      { binding: "FILES", service: "tinyassets-files", entrypoint: "Other" }] }],
-    ["services that are not a list", { services: { FILES: "tinyassets-files" } }],
+      { binding: "FILES", service: named("files"), entrypoint: "Other" }] }],
+    ["services that are not a list", { services: { FILES: named("files") } }],
     ["a key wrangler adds later", { agent_memory: [] }],
     ["no ctx.exports flag", { compatibility_flags: ["nodejs_compat"] }],
     ["no flags at all", { compatibility_flags: undefined }],

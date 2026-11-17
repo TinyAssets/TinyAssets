@@ -1,5 +1,5 @@
 /**
- * The files Worker's RPC contract (`tinyassets-files`, `docs/decisions/untangle-2026-11-wave-1.md`
+ * The files Worker's RPC contract (`platform/files`, `docs/decisions/untangle-2026-11-wave-1.md`
  * A1): its three entrypoints, as their callers bind them, and the values that cross them. The files
  * Worker implements each against it (`files/src/index.ts`), and the owner's object and the doors
  * bind it from here, so no caller copies a files type.

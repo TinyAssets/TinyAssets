@@ -127,7 +127,7 @@ async function doors() {
     ],
   })));
   await mf.ready;
-  const control = await mf.getKVNamespace("CONTROL", "tinyassets-doors");
+  const control = await mf.getKVNamespace("CONTROL", workerConfig(DOORS).name);
   await writeControl(control, JSON.stringify(OPEN));
 }
 
@@ -435,7 +435,7 @@ test("the agent form offers a subscription signed in inside the sandbox, beside 
   await page.getByRole("heading", { name: "New agent" }).waitFor();
   assert.match(await page.locator("section", { hasText: "New agent" }).innerText(),
                /switched off for [^.]*Kimi/);
-  const control = await mf.getKVNamespace("CONTROL", "tinyassets-doors");
+  const control = await mf.getKVNamespace("CONTROL", workerConfig(DOORS).name);
   await writeControl(control, JSON.stringify({ ...OPEN, signins: { kimi: true } }));
   try {
     await page.goto(`${ORIGIN}/app#home`);

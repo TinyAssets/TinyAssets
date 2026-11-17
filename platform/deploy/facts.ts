@@ -36,9 +36,20 @@ function configOf(worker: string): Config {
   return config;
 }
 
-/** Each Worker's script name, its config's `name`, by folder. */
-export const NAMES: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(
-  [...CONFIGS].map(([worker, config]) => [worker, String(config["name"])])));
+/** Each Worker's script name, its config's `name`, by folder: each set, and none shared. */
+export function workerNames(configs: ReadonlyMap<string, Config>):
+    Readonly<Record<string, string>> {
+  const names = [...configs].map(([worker, config]) => [worker, config["name"]] as const);
+  const wrong = names.filter(([, name], i) => typeof name !== "string"
+    || names.findIndex(([, other]) => other === name) !== i);
+  if (wrong.length > 0) {
+    throw new Error(`platform/${wrong[0]![0]}'s config names no Worker of its own`);
+  }
+  return Object.freeze(Object.fromEntries(names)) as Readonly<Record<string, string>>;
+}
+
+/** Each Worker's script name, by folder. */
+export const NAMES = workerNames(CONFIGS);
 
 /** The Worker whose script is `name`, by folder. */
 function workerNamed(name: string, by: string): string {
