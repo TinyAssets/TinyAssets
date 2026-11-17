@@ -348,6 +348,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - S8: the owner adopts `served()` (`s8.md`).
     - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
     - C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
+    - O2c: `caller` `none` (`owner/doors.json`) beside `UNBOUND_DOORS`, held equal by
+      `stepProblems`, goes with B5's `none` binding kind, `untangle/o3` (`o2c.md` item 7).
     - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
     - X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the

@@ -86,6 +86,11 @@ describe("the door table's steps", () => {
       .toEqual(["tierSet: only the platform's doors read no admission"]);
     expect(stepProblems(raw.steps, classed("fileStat", "import")))
       .toEqual(["fileStat: only the import's doors take the import class, and they take no other"]);
+    // The import's and the discard's doors of another class.
+    for (const door of ["importRows", "importDiscard"]) {
+      expect(stepProblems(raw.steps, classed(door, "work"))).toEqual([
+        `${door}: only the import's doors take the import class, and they take no other`]);
+    }
   });
 });
 
