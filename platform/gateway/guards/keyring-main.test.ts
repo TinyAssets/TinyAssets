@@ -206,7 +206,7 @@ describe("every refusal is main's", () => {
     const value = VECTORS.gateway.value;
     const over = sized.map(({ over: each }) => each);
     for (const raw of RINGS) {
-      const ring = { GATEWAY_KEYRING: raw };
+      const ring = { GATEWAY_KEYRING: raw } as keyring.KeyringEnv;
       const what = (blob: unknown) => `${String(raw).slice(0, 40)} ${String(blob).slice(0, 12)}`;
       for (const blob of [...tampered(VECTORS.gateway.k1), ...tampered(VECTORS.gateway.k2),
                           ...over]) {

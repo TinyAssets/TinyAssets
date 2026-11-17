@@ -7,7 +7,8 @@
  * but not yet answered going on, past the window too; and a delivery racing another held to
  * the acceptance record and the answer the other made first. Then each op on a real owner
  * object: `owner.state` read and changing nothing, the `owner.*` acts, a key rotation's
- * `owner.rewrap` and `owner.reseal`, and the restore's.
+ * `owner.rewrap` and `owner.reseal`, and the restore's; and the platform's own
+ * `restore.locate`, through the real files Worker.
  */
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
@@ -15,17 +16,20 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HELD_WAIT_MS, keyring } from "../../ci/fixtures";
+import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { parseRing, type Ring } from "../../contract/src/envelope";
 import {
-  acceptanceKey, acceptanceOf, answerKey, argsText, type OperatorAnswer, operatorAnswer,
-  type OperatorArgs, type OperatorMessage, OPERATOR_WINDOW_S, type Refused, signOperator,
+  acceptanceKey, acceptanceOf, answerKey, argsText, LOCATE_PAGE, locateArgs,
+  type OperatorAnswer, operatorAnswer, type OperatorArgs, type OperatorMessage, OPERATOR_WINDOW_S,
+  type Refused, signOperator,
 } from "../../contract/src/operator-message";
 import { Refusal } from "../../contract/src/refusal";
 import { now } from "../src/config";
 import { putKey, putOwner, readKey, readOwner } from "../src/directory";
 import type { DoorsEnv } from "../src/env";
 import {
-  admissionOf, appCallback, deliver, doorsEnv, held, refuseOnce, serveFirstPartyDocument,
+  admissionOf, appCallback, appPost, deliver, doorsEnv, held, OPEN, refuseOnce,
+  serveFirstPartyDocument, setControl, signInApp,
 } from "./support";
 
 const RING = parseRing(doorsEnv.OPERATOR_KEYRING)!;
@@ -536,5 +540,56 @@ describe("an owner a restore holds, on a real owner object", () => {
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     expect(operatorAnswer((await held(message.ask)).answer, message)).toMatchObject({
       result: { step: "wiped", namespace: GEN.namespace, gen: GEN.gen, fresh: FRESH } });
+  });
+});
+
+describe("the platform's restore.locate, through the files Worker", () => {
+  const space = () => crypto.randomUUID().replaceAll("-", "");
+
+  it("answers each namespace's owner and newest generation as the bucket holds it, and null " +
+     "for one it holds no root of", async () => {
+    // An owner's export writes its generation, as its nightly does.
+    const restore = serveFirstPartyDocument();
+    await setControl(OPEN);
+    const owner = fresh();
+    const app = await signInApp({ owner });
+    let ask: Record<string, unknown> = {};
+    for (let tries = 0; tries < 400; tries++) {
+      const last = (await (await appPost("export", app.access_token, app.session, ask)).text())
+        .trimEnd().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>).at(-1)!;
+      if (last["t"] !== "cursor") {
+        break;
+      }
+      ask = { cursor: last["cursor"], export_id: last["export_id"] };
+      await new Promise((done) => setTimeout(done, 25));
+    }
+    restore();
+    const source = (await asked(owner, "restore.source") as { result: {
+      namespace: string; generations: { gen: string }[] } }).result;
+    const none = space();
+    expect(await asked(PLATFORM_CALLER, "restore.locate",
+                       locateArgs([source.namespace, none]))).toMatchObject({
+      result: { located: { [source.namespace]: { owner, gen: source.generations.at(-1)!.gen },
+                           [none]: null } } });
+  });
+
+  it("is the platform's alone, and an owner's op is no platform's", async () => {
+    expect(refusedOf(await asked(fresh(), "restore.locate", locateArgs([space()])))).toEqual({
+      code: "invalid", message: "restore.locate is the platform's own: it is addressed to the " +
+                                "platform's reserved principal" });
+    expect(refusedOf(await asked(PLATFORM_CALLER, "owner.state"))).toEqual({
+      code: "invalid", message: "owner.state is addressed to an owner, not the platform's " +
+                                "reserved principal" });
+  });
+
+  it.each([
+    ["no namespace", ""],
+    ["a namespace out of shape", "not-a-namespace"],
+    ["one twice", ["a".repeat(32), "a".repeat(32)].join(",")],
+    ["more than a page", Array.from({ length: LOCATE_PAGE + 1 },
+                                    (_, at) => at.toString(16).padStart(32, "0")).join(",")],
+  ])("refuses %s", async (_what, namespaces) => {
+    expect(refusedOf(await asked(PLATFORM_CALLER, "restore.locate", { namespaces })).code)
+      .toBe("invalid");
   });
 });

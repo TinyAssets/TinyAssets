@@ -14,8 +14,9 @@
  *   has one path, to the gateway's connect entrypoint; only `egress.ts` reaches its egress
  *   entrypoint (`EGRESS`), so a blob the owner's object handed out is forwarded on one path;
  *   only `file-bytes.ts` reaches the files Worker (`FILES`), the file door's bytes (an
- *   upload's, and the cutover import's); and only `import/` reaches the import window's
- *   bucket and queue (`IMPORT_STAGING`, `IMPORTS`).
+ *   upload's, and the cutover import's); only `operator.ts` reaches its locate
+ *   (`FILES_LOCATE`), the operator channel's `restore.locate`; and only `import/` reaches the
+ *   import window's bucket and queue (`IMPORT_STAGING`, `IMPORTS`).
  * - Consent is never remembered: no source names `remember` or `isConsentRemembered`.
  *
  * A tripwire for our own code, read from the syntax tree, not proof against deliberate
@@ -49,6 +50,7 @@ const DIRECTORY = "doors/src/directory.ts";
 const CONNECT = "doors/src/connect.ts";
 const EGRESS = "doors/src/egress.ts";
 const FILE_BYTES = "doors/src/file-bytes.ts";
+const OPERATOR = "doors/src/operator.ts";
 const IMPORT = "doors/src/import/";
 const IMPORT_WINDOW: ReadonlySet<string> = new Set(Object.values(WINDOW));
 /**
@@ -130,6 +132,10 @@ export function binderProblems(fileName: string, source: string): string[] {
         && fileName !== ENV) {
       report(node, "reaches the files Worker outside file-bytes.ts");
     }
+    if (doors && ts.isIdentifier(node) && node.text === "FILES_LOCATE" && fileName !== OPERATOR
+        && fileName !== ENV) {
+      report(node, "reaches the files Worker's locate outside operator.ts");
+    }
     if (doors && ts.isIdentifier(node) && IMPORT_WINDOW.has(node.text)
         && !fileName.startsWith(IMPORT) && fileName !== ENV
         && !(queueNames && ts.isPropertyAccessExpression(node.parent)
@@ -197,6 +203,8 @@ describe("binder guard", () => {
     ["doors/src/index.ts", "export const f = (env: any) => { const QUEUES = env; return QUEUES.IMPORTS; };"],
     ["doors/src/index.ts", `${QUEUES_IMPORT}export const f = (QUEUES: any) => QUEUES.IMPORTS;`],
     ["doors/src/import/index.ts", "export const f = (env: any) => env.FILES.putChunks('n', 'k', []);"],
+    ["doors/src/file-bytes.ts", "export const f = (env: any) => env.FILES_LOCATE.locate('n');"],
+    [OPERATOR, "export const f = (env: any) => env.FILES.putChunks('n', 'k', []);"],
     [CODEMODE_ENTRY, "export const f = (env: any) => env.OWNER.getByName('bob');"],
     [CODEMODE_ENTRY, "export const f = (env: any) => env.RUNNER.getByName('bob');"],
     [CODEMODE_ENTRY, "class H { env: any; f(n: string) { return this.env.RUNNER.getByName(n); } }"],
@@ -219,6 +227,7 @@ describe("binder guard", () => {
     ["doors/src/directory.ts", "export const f = (env: any) => env.DIRECTORY.get('c:control');"],
     ["doors/src/connect.ts", "export const f = (env: any) => env.GATEWAY.verify('a', 'c', 1, 'b');"],
     ["doors/src/egress.ts", "export const f = (env: any) => env.EGRESS.forward('a', 'c', 1, 'b', r);"],
+    [OPERATOR, "export const f = (env: any) => env.FILES_LOCATE.locate('n');"],
     ["doors/src/import/index.ts", "export const f = (env: any) => env.IMPORT_STAGING.get('k');"],
     ["doors/src/index.ts", `${QUEUES_IMPORT}export const f = (b: any) => b.queue === QUEUES.IMPORTS;`],
   ])("allows, in %s, %s", (fileName, source) => {

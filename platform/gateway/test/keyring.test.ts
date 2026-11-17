@@ -8,7 +8,7 @@ import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { credential } from "../src/credential";
 import { Refusal } from "../../contract/src/refusal";
 import { doorbellSecret } from "../src/doorbell";
-import { binding, open, openValue, reseal, seal } from "../src/keyring";
+import { binding, type KeyringEnv, open, openValue, reseal, seal } from "../src/keyring";
 import { ALICE, ANTHROPIC, apiKey, ring, rotate, sealed } from "./support";
 
 async function refused(run: () => Promise<unknown>, code = "credential_refused") {
@@ -210,7 +210,9 @@ describe("the keyring", () => {
     ["over its size bound", JSON.stringify({ active: "k1", keys: { k1: key } }, null, 2)
       .replace("{", `{${" ".repeat(5 * 1024)}`)],
   ])("fails loudly when it is %s", async (_what, value) => {
-    const env = { GATEWAY_KEYRING: value };
+    // The type is the config's required secret; what the runtime hands over is read all the
+    // same, and anything short of a ring is refused.
+    const env = { GATEWAY_KEYRING: value } as KeyringEnv;
     await refused(() => seal(env, ALICE, apiKey("sk", ANTHROPIC)), "keyring_unavailable");
     await refused(() => open(env, ALICE, "v1.k1.AAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAA"),
                   "keyring_unavailable");

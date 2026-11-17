@@ -12,7 +12,8 @@
  *   the bucket is private, locked in compliance mode and keeps prior versions one rule's
  *   `KEEP_DAYS`, inside the erasure's window. Anything else stops the night, copying nothing.
  * - **rclone:** the sync hides every deletion, and a night that hid more than a tenth of the
- *   copy (at least 100) fails once they are made; every object R2 held when the run began is
+ *   copy (at least 100) fails once they are made; a night over a bucket that lacks an erasure
+ *   mark the copy holds copies nothing; every object R2 held when the run began is
  *   checked at its size, and a
  *   sample byte for byte with the read key; each credential is in its one call's environment,
  *   never an argument; any failure stops loudly.
@@ -27,9 +28,10 @@ import { parse } from "yaml";
 
 import { REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
+import type { LocatedOwner } from "../../contract/src/files";
 import {
-  backFrom, BACK_DAYS, CAPABILITIES, copy, copyBack, drill, type Effects, NIGHTLY, RESTORE_KEY,
-  type RestoreControl, SETTINGS, settings,
+  backFrom, BACK_DAYS, type Begin, CAPABILITIES, copy, copyBack, drill, type Effects, NIGHTLY,
+  recover, RESTORE_KEY, type RestoreControl, SETTINGS, settings,
 } from "../offsite";
 
 const BUCKET = "tinyassets-offsite-abcd1234";
@@ -307,6 +309,20 @@ describe("the nightly copy", () => {
     expect(empty.calls.find((call) => call.sample !== undefined)!.sample).toEqual([]);
   });
 
+  it("copies nothing over a copy holding an erasure mark R2 lacks: a new account's bucket " +
+     "before mode recover wrote them back", async () => {
+    const mark = `e/${"a".repeat(32)}`;
+    const fake = world({ names: ["o/aa/c/1"], gone: [mark, "o/bb/c/2"] });
+    await expect(run(fake)).rejects.toThrow(
+      "R2 lacks 1 erasure marks the copy holds, and nothing deletes a mark: a files bucket " +
+      "that lost them (a new account's, before mode recover wrote them back) is never copied " +
+      "over them; nothing is copied");
+    expect(fake.calls.map((call) => call.args[0])).toEqual(["lsf", "lsf"]);
+    // A mark R2 holds too is copied as any object.
+    await expect(run(world({ names: ["o/aa/c/1", mark], gone: ["o/bb/c/2"] }))).resolves
+      .toBeDefined();
+  });
+
   for (const [step, failing, refused] of [
     ["the sync", "sync", /the copy's sync failed \(rclone exit 7/],
     ["the check", "check source:tinyassets-files copy:", /the copy's check of every object failed/],
@@ -497,14 +513,180 @@ describe("a copy back from the copy (R8)", () => {
   });
 });
 
+describe("a recover after the account's loss", () => {
+  const [AA, BB, DD, ERASED] = ["a".repeat(32), "b".repeat(32), "d".repeat(32), "e".repeat(32)];
+  const WRITE = { OFFSITE_R2_WRITE_ACCESS_KEY_ID: "r2-write-id",
+                  OFFSITE_R2_WRITE_SECRET_ACCESS_KEY: "r2-write-secret-value" };
+  const BACK = backFrom({ ...STORED, ...WRITE }, ACCOUNT);
+  const AT = new Date("2026-11-01T00:00:00Z");
+  const GEN = "1".repeat(16);
+  /**
+   * The copy as it stood: two namespaces with roots (aa, bb), one with none (dd), and an
+   * erased one, marked in the copy as it stands; the new account's R2 holds one of aa's.
+   */
+  const LOST = {
+    back: { copy: [`o/${AA}/c/1`, `o/${AA}/m/${GEN}`, `o/${AA}/m/${GEN}/0`, `o/${BB}/m/${GEN}`,
+                   `o/${DD}/c/2`, `o/${ERASED}/c/3`, `o/${ERASED}/m/${GEN}`, `e/${ERASED}`],
+            r2: [`o/${AA}/c/1`] },
+    marks: { now: [`e/${ERASED}`], back: [`e/${ERASED}`] },
+  };
+  /** The control namespace, recording where each put of the record falls among rclone's calls. */
+  const control = (fake: ReturnType<typeof world>, status = 200) => {
+    const puts: string[][] = [];
+    const held: RestoreControl = { account: ACCOUNT, namespace: "control-ns", cloudflare: {
+      put: async () => {
+        puts.push(fake.calls.map((call) => call.args[0]!));
+        return status;
+      } } };
+    return { held, puts };
+  };
+  /** The doors: each namespace located to `owners` (its own owner by default), each begin. */
+  const doors = (owners: Readonly<Record<string, string | null>> = {},
+                 refusing: Readonly<Record<string, string>> = {}) => {
+    const asked = { locate: [] as string[][], begin: [] as Begin[] };
+    return { asked, asking: {
+      locate: async (namespaces: readonly string[]) => {
+        asked.locate.push([...namespaces]);
+        return new Map(namespaces.map((ns) => {
+          const owner = Object.hasOwn(owners, ns) ? owners[ns]! : `user_${ns.slice(0, 2)}`;
+          return [ns, owner === null ? null : { owner, gen: GEN }] as [string, LocatedOwner | null];
+        }));
+      },
+      begin: async (begins: readonly Begin[]) => {
+        asked.begin.push(...begins);
+        return begins.map((begin) => refusing[begin.owner] ?? null);
+      },
+    } };
+  };
+
+  it("writes the marks back first, after the record, then every unmarked namespace with a " +
+     "root, then locates each one's owner and begins its restore", async () => {
+    const fake = world({ ...LOST, marks: { ...LOST.marks, now: [`e/${ERASED}`, `e/${DD}`] } });
+    const { held, puts } = control(fake);
+    const { asked, asking } = doors();
+    const lines = await recover(BACK, SOURCE, AT, asking, held, fake.io);
+    const times = ["--use-server-modtime", "--fast-list"];
+    const marks = [`now:${BUCKET}`, `r2:${SOURCE}`, "--include", "/e/*"];
+    expect(fake.calls.map((call) => [call.args, call.sample])).toEqual([
+      ...["now", "back", "r2"].map((remote) => [["lsf", "--files-only", "-R", "--include",
+        "/e/*", `${remote}:${remote === "r2" ? SOURCE : BUCKET}`], undefined]),
+      [["lsf", "--files-only", "-R", ...times, `r2:${SOURCE}/`], undefined],
+      [["lsf", "--files-only", "-R", ...times, `back:${BUCKET}/`], undefined],
+      [["copy", ...marks, "--ignore-existing", "--stats-one-line", "--stats", "1m",
+        "--stats-log-level", "NOTICE"], undefined],
+      [["check", ...marks, "--one-way", "--download"], undefined],
+      [["copy", `back:${BUCKET}/`, `r2:${SOURCE}/`, "--files-from",
+        expect.stringMatching(/names$/), "--ignore-existing", "--stats-one-line", "--stats", "1m",
+        "--stats-log-level", "NOTICE"], [`o/${AA}/m/${GEN}`, `o/${AA}/m/${GEN}/0`,
+                                         `o/${BB}/m/${GEN}`]],
+      [["check", `back:${BUCKET}/`, `r2:${SOURCE}/`, "--one-way", "--download", "--files-from",
+        expect.stringMatching(/names$/)], [`o/${AA}/m/${GEN}`, `o/${AA}/m/${GEN}/0`,
+                                           `o/${BB}/m/${GEN}`]]]);
+    // The record once, after the listings and before the first byte.
+    expect(puts).toEqual([["lsf", "lsf", "lsf", "lsf", "lsf"]]);
+    // The marks from the copy as it stands; the objects as it stood at the time.
+    expect(fake.calls[5]!.env["RCLONE_CONFIG_NOW_VERSION_AT"]).toBeUndefined();
+    expect(fake.calls[7]!.env["RCLONE_CONFIG_BACK_VERSION_AT"]).toBe("2026-11-01T00:00:00Z");
+    // The erased and the rootless namespaces are neither written, located nor begun.
+    expect(asked).toEqual({ locate: [[AA, BB]], begin: [
+      { owner: "user_aa", namespace: AA, gen: GEN }, { owner: "user_bb", namespace: BB, gen: GEN }] });
+    expect(lines).toEqual([
+      `recorded a restore from the copy begun at ${START.toISOString().replace(/\.\d+Z$/, "Z")} ` +
+      `in ${RESTORE_KEY}, before its first byte`,
+      "wrote back first the 2 erasure marks the copy holds and R2 lacked, each read back byte " +
+      "for byte",
+      `wrote 3 objects of 2 namespaces into ${SOURCE}, as the copy held them at ` +
+      "2026-11-01T00:00:00Z, each one R2 lacked, read back byte for byte; left out 2 namespaces " +
+      "marked erased and 0 with no root",
+      ...[AA, BB].map((ns) => `began user_${ns.slice(0, 2)}'s restore from ${ns}/${GEN}: mode ` +
+                              `restore --owner user_${ns.slice(0, 2)} --generation ${ns}/${GEN} ` +
+                              "carries it on")]);
+  });
+
+  it("run again, writes nothing and records nothing, and begins each again", async () => {
+    const fake = world({ back: { copy: LOST.back.copy, r2: [...LOST.back.copy] },
+                         marks: { ...LOST.marks, r2: [`e/${ERASED}`] } });
+    const { held, puts } = control(fake);
+    const { asked, asking } = doors();
+    const lines = await recover(BACK, SOURCE, null, asking, held, fake.io);
+    expect([puts, fake.calls.map((call) => call.args[0])])
+      .toEqual([[], ["lsf", "lsf", "lsf", "lsf"]]);
+    expect([asked.locate, asked.begin.length]).toEqual([[[AA, BB]], 2]);
+    expect(lines[0]).toBe(`wrote 0 objects of 2 namespaces into ${SOURCE}, as the copy stands, ` +
+                          "each one R2 lacked, read back byte for byte; left out 1 namespaces " +
+                          "marked erased and 1 with no root");
+  });
+
+  it("begins none when two namespaces name one owner, naming both", async () => {
+    const fake = world(LOST);
+    const { asked, asking } = doors({ [BB]: "user_aa" });
+    await expect(recover(BACK, SOURCE, AT, asking, control(fake).held, fake.io)).rejects.toThrow(
+      `the namespaces ${AA} and ${BB} each name user_aa: an owner has one namespace, so nothing ` +
+      "is begun");
+    expect(asked.begin).toEqual([]);
+  });
+
+  it("begins none when a namespace written back holds no root R2 can open", async () => {
+    const fake = world(LOST);
+    const { asked, asking } = doors({ [BB]: null });
+    await expect(recover(BACK, SOURCE, AT, asking, control(fake).held, fake.io)).rejects.toThrow(
+      `R2 holds no root of the namespace ${BB} after its copy back: nothing is begun`);
+    expect(asked.begin).toEqual([]);
+  });
+
+  it("begins the rest, then stops loudly naming each restore not begun", async () => {
+    const fake = world(LOST);
+    const { asked, asking } = doors({}, { user_aa: "refused (refused): the owner is admitted" });
+    await expect(recover(BACK, SOURCE, AT, asking, control(fake).held, fake.io)).rejects.toThrow(
+      `1 of 2 restores were not begun, each written back and named by no object until it is: ` +
+      `user_aa from ${AA}/${GEN}: refused (refused): the owner is admitted.`);
+    expect(asked.begin.map((begin) => begin.owner)).toEqual(["user_aa", "user_bb"]);
+  });
+
+  it("refuses, writing, recording and asking nothing, when the marks can't be read, a name " +
+     "is neither a namespace's object nor a mark, or the time is outside the window",
+     async () => {
+    const cases: [Parameters<typeof world>[0], Date, string | RegExp][] = [
+      [{ ...LOST, failing: "lsf --files-only -R --include /e/* r2:" }, AT,
+       /the copy's listing of the erasure marks in R2 failed/],
+      [{ ...LOST, marks: { now: [], back: [`e/${ERASED}`] } }, AT,
+       "the copy as it stands lacks 1 erasure marks it held at the time asked"],
+      [{ back: { copy: ["x/1"], r2: [] } }, AT,
+       "the copy holds an object that is neither a namespace's nor a mark (under x/)"],
+      [LOST, new Date(START.getTime() - BACK_DAYS * 86_400_000 - 1000),
+       /a version older than 22 days since it was hidden is gone/],
+    ];
+    for (const [options, at, refused] of cases) {
+      const fake = world(options);
+      const { held, puts } = control(fake);
+      const { asked, asking } = doors();
+      await expect(recover(BACK, SOURCE, at, asking, held, fake.io)).rejects.toThrow(refused);
+      expect([puts, fake.calls.filter((call) => call.args[0] !== "lsf"), asked])
+        .toEqual([[], [], { locate: [], begin: [] }]);
+    }
+  });
+
+  it("writes nothing when Cloudflare refuses the restore record", async () => {
+    const fake = world(LOST);
+    const { asked, asking } = doors();
+    await expect(recover(BACK, SOURCE, AT, asking, control(fake, 500).held, fake.io))
+      .rejects.toThrow(`writing the restore record ${RESTORE_KEY} failed (500): nothing is ` +
+                       "written into R2");
+    expect([fake.calls.filter((call) => call.args[0] !== "lsf"), asked])
+      .toEqual([[], { locate: [], begin: [] }]);
+  });
+});
+
 describe("the monthly drill", () => {
   it("compares every object R2 held at the night's start byte for byte, then reads what a " +
      "copy back at the oldest time it takes would write, writing nothing", () => {
-    const [aa, bb, erased] = ["a", "b", "e"].map((hex) => hex.repeat(32));
-    // The copy as it stood holds an erased namespace's objects, and a mark R2 lost.
-    const fake = world({ back: { copy: [`o/${aa}/c/1`, `o/${aa}/c/2`, `o/${bb}/m/3`,
-                                        `o/${erased}/c/4`, `o/${erased}/m/5`, `e/${bb}`],
-                                 r2: [`o/${aa}/c/1`] },
+    const [aa, bb, dd, erased] = ["a", "b", "d", "e"].map((hex) => hex.repeat(32));
+    // The copy as it stood holds an erased namespace's objects, a mark R2 lost, and a
+    // namespace with no root.
+    const fake = world({ back: { copy: [`o/${aa}/c/1`, `o/${aa}/c/2`, `o/${aa}/m/7`,
+                                        `o/${bb}/m/3`, `o/${dd}/c/6`, `o/${erased}/c/4`,
+                                        `o/${erased}/m/5`, `e/${bb}`],
+                                 r2: [`o/${aa}/c/1`, `e/${erased}`] },
                          marks: { now: [`e/${erased}`, `e/${bb}`], back: [`e/${bb}`],
                                   r2: [`e/${erased}`] } });
     const night = { began: "2026-11-15T05:37:12Z", lines: [] };
@@ -518,16 +700,16 @@ describe("the monthly drill", () => {
       ["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list", `r2:${SOURCE}/`],
       ["lsf", "--files-only", "-R", "--use-server-modtime", "--fast-list", `back:${BUCKET}/`],
       ["cat", "--discard", "--files-from", expect.stringMatching(/names$/), `back:${BUCKET}/`]]);
-    // The marked namespace's objects left out; bb is marked too, and its mark written first.
-    expect(fake.calls[6]!.sample!.sort()).toEqual([`e/${bb}`, `o/${aa}/c/2`]);
+    // The marked namespaces' objects left out, and the rootless one's.
+    expect(fake.calls[6]!.sample!.sort()).toEqual([`o/${aa}/c/2`, `o/${aa}/m/7`]);
     // The copy as it stood BACK_DAYS ago, and R2 with the nightly's read pair.
     expect(fake.calls[5]!.env["RCLONE_CONFIG_BACK_VERSION_AT"]).toBe("2026-10-25T05:37:12Z");
     expect(fake.calls[4]!.env["RCLONE_CONFIG_R2_ACCESS_KEY_ID"]).toBe("r2-id");
     expect(lines).toEqual([
       "every object R2 held at 2026-11-15T05:37:12Z is in the copy, compared byte for byte",
-      "a copy back as the copy stood at 2026-10-25T05:37:12Z would write 2 objects R2 no " +
-      "longer holds, and leave out 3 of namespaces marked erased (2 marks); 2 of them read " +
-      "back whole"]);
+      "a copy back as the copy stood at 2026-10-25T05:37:12Z would write 1 erasure marks and " +
+      "2 objects of 1 namespaces R2 no longer holds, and leave out 2 namespaces marked erased " +
+      "(2 marks) and 1 with no root; 2 of them read back whole"]);
   });
 
   it("stops loudly on a name in the copy that is neither a namespace's object nor a mark, " +
@@ -605,7 +787,8 @@ describe("offsite-copy.yml", () => {
       job.steps.findIndex((each: { run?: string }) => each.run?.includes(text));
     expect([uses(copyJob) >= 0, uses(copyJob) < at(copyJob, "offsite.ts")]).toEqual([true, true]);
     const { apply } = workflow("platform-deploy.yml").jobs;
-    expect(apply.steps[uses(apply)].if).toBe("inputs.mode == 'copyback'");
+    expect(apply.steps[uses(apply)].if)
+      .toBe("inputs.mode == 'copyback' || inputs.mode == 'recover'");
     expect(uses(apply)).toBeLessThan(at(apply, "deploy.ts"));
   });
 

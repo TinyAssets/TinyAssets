@@ -2,7 +2,7 @@ name: rclone
 description: >-
   rclone, pinned by its release zip's SHA-256, checked before it is unzipped, and put on the
   job's PATH: for the off-account copy's nights and drills (offsite-copy.yml) and its copy back
-  (platform-deploy.yml, mode copyback). The one pin of it (platform/deploy/offsite.ts).
+  (platform-deploy.yml, modes copyback and recover). The one pin of it (platform/deploy/offsite.ts).
 runs:
   using: composite
   steps:

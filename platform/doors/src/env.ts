@@ -3,7 +3,7 @@
  * from its `wrangler.jsonc`, each binding to another Worker or to a queue typed by its
  * contract (`contract/services.json`). Edit the config, never this file.
  */
-import type { ChunkUpload } from "../../contract/src/files";
+import type { ChunkLocate, ChunkUpload } from "../../contract/src/files";
 import type { ConnectService, EgressService } from "../../contract/src/gateway";
 import type { ImportMessage } from "../../contract/src/import-message";
 import type { OperatorMessage } from "../../contract/src/operator-message";
@@ -30,4 +30,5 @@ export interface DoorsEnv {
   readonly GATEWAY: ConnectService;
   readonly EGRESS: EgressService;
   readonly FILES: ChunkUpload;
+  readonly FILES_LOCATE: ChunkLocate;
 }

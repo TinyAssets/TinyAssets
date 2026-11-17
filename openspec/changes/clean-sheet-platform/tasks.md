@@ -244,6 +244,10 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     listening to it (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
   - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until then
     `enqueue-merge` refuses on the drift);
+  - [x] a verdict counts only from an account that can push (GitHub's permission read, from
+    every grant), and a permission it cannot read is no verdict, never a pass; lands before
+    the receipt goes, which would let a read-only member's `APPROVE` pass alone
+    (`untangle/p2-review-writers`; `untangle-2026-11/p2-review-writers.md`);
   - [ ] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
     ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`). With no
     body edit at landing, `enqueue-merge` no longer reruns after the PR review's decision
@@ -387,7 +391,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     depth (Fact 15; the coordinator, 2026-11-12, below).
   - [x] Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`,
     with G-H11 and G-SP5 (d3 §O5): one per-API table (`g1.md`).
-- [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
+- [x] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
   (d3 §K1, §K2).
   - [x] T1, the owner's tests at production's numbers through the object's one wiring, twelve
     PRs, T1a to T1e (#5515 to #5588; `t1c.md`).
@@ -410,8 +414,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       `ownDoor<D>` answer `DoorAnswer<D>`, the 13 answers the doors' tests read are `DoorTypes`
       entries that `OwnerDO implements OwnerDoors` holds to the owner's, and the two #5657 left
       (`sandboxRung`, `restoreRelease`), which nothing reads, are gone.
-  - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
-    (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
+  - [x] T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
+    (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i). The leg runs the real doors
+    and gateway bundles (`gateway/memory/`, `npm run test:memory -w gateway`), and the
+    metered path's tree is gone before its encode, which the leg found held (`t3.md`).
   - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
     budgets' factor of 4 and the watchdogs' 3, and `search-cpu`'s host CPU bound with them: the
     runner-variance rule (`untangle/budgets-variance`, #5640's review; `budgets-variance.md`).
@@ -456,10 +462,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     marks from R2 and the copy first and refuses a marked namespace, loudly when they can't be
     read, and the monthly drill reads them whole (`untangle/r8-account-loss`,
     `r8-account-loss.md`).
-  - [ ] A lost object, or every owner after an account loss, restored from the copy: `locate`
-    (part 0's header owner, a files Worker read through the operator channel) and mode
-    `recover`, the marks written back first and each unmarked namespace's owner begun in the
-    same run (`r8-account-loss.md` item 7; `untangle/r8-locate`).
+  - [x] Every owner after an account loss, restored from the copy: `locate` (part 0's header
+    owner, read in the files Worker through its `FilesLocate` entrypoint, the operator op
+    `restore.locate` addressed to the platform) and mode `recover`, the marks written back
+    first and each unmarked namespace with a root written back, located and its owner's restore
+    begun in the same run; and a night refuses to copy a bucket lacking a mark the copy holds,
+    so no night before `recover` hides the marks (`r8-account-loss.md` item 7;
+    `untangle/r8-locate`, `r8-locate.md`).
+  - [ ] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
+    located, the one naming `--owner` taken, then mode `restore` from it
+    (`r8-account-loss.md` item 7, `r8-locate.md` item 7; `untangle/r8-lost-object`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner

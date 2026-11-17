@@ -1,6 +1,6 @@
 name: review
 
-# The `review` check: the latest trusted PR review's verdict, on the PR's head.
+# The `review` check: the latest verdict of a PR review by a writer, on the PR's head.
 #
 # The reviewer posts a PR review on the commit it read (`commit_id`, event COMMENT),
 # its body's first non-blank line exactly `APPROVE` or `BLOCK`, the evidence below.
@@ -14,6 +14,10 @@ name: review
 #
 # `carries` is the same change, or a delta of Markdown prose only. Only reviews
 # submitted after the PR's last base change count: a retarget changes what was read.
+# Only a review by an account that can push counts (write, maintain or admin, from
+# any grant), read with this run's own token from GitHub's permission endpoint. It
+# needs only Metadata read, for which `permissions:` has no key. A read that fails is
+# no verdict, its reason in the run's title, never a pass (`push_reader`).
 #
 # WHO MAY POST IT. Any workflow job's own check run reports as the GitHub Actions
 # app, so a PR adding a job named `review` would satisfy a context pinned to it. The
@@ -228,7 +232,7 @@ jobs:
 
           python scripts/drain_review_gate.py --review-check \
             --reviews-file "$RUNNER_TEMP/reviews.json" \
-            --timeline-file "$RUNNER_TEMP/timeline.json" --pr "$PR" \
+            --timeline-file "$RUNNER_TEMP/timeline.json" --pr "$PR" --repo "$REPO" \
             --base "$BASE" --head "$HEAD" "${GROUP[@]}" > "$RUNNER_TEMP/run.json"
           if ! post_run "$RUNNER_TEMP/run.json"; then
             echo "::error::could not post the verdict on ${SHA}"

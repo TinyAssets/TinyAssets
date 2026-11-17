@@ -3,7 +3,8 @@
  * `tests/test_tests_workflow.py`, audit D4).
  *
  * `platform-tests` runs every workspace's Vitest tests as parallel legs, `platform-checks`
- * the legs that are not Vitest runs (the typecheck, the owner's memory leg), and
+ * the legs that are not Vitest runs (the typecheck, the owner's and the gateway's memory
+ * legs), and
  * `platform-sizes` the large tests, sharded (`ci/classes.ts`). A matrix job's result is every
  * leg's, and `required-tests` (the protected context) fails unless all three, the owner
  * app's browser job and the `process` leg succeeded. Those five are the gate's lasting
@@ -286,15 +287,20 @@ describe("platform-tests, platform-checks and platform-sizes", () => {
     expect(tagFilterProblems()).toEqual([]);
   });
 
-  it("run the owner's workerd memory leg, with its control", () => {
-    // ADR-037: the differential workerd check that each chunk-wise path is O(1) in its
-    // data's size, with a control that must read as growing.
+  it("run the owner's and the gateway's workerd memory legs, each with its control", () => {
+    // ADR-037: the differential workerd checks that each chunk-wise path is O(1) in its
+    // data's size, and the egress door's and the gateway's, each with a control that must
+    // read as growing.
     const legs = tests().jobs["platform-checks"].strategy.matrix.include;
-    expect(legs).toContainEqual({ leg: "memory", command: "npm run test:memory -w owner" });
-    expect(json("owner/package.json").scripts["test:memory"]).toBe("node memory/leg.mjs");
-    const leg = readFileSync(join(PLATFORM, "owner", "memory", "leg.mjs"), "utf8");
-    expect(leg).toContain("the control kept");
-    expect(leg).toContain("--expose-gc");
+    for (const [ws, script, control] of [["owner", "leg.mjs", "the control kept"],
+                                         ["gateway", "egress.mjs", "control held"]]) {
+      expect(legs).toContainEqual({ leg: `${ws} memory`,
+                                    command: `npm run test:memory -w ${ws}` });
+      expect(json(`${ws}/package.json`).scripts["test:memory"]).toBe(`node memory/${script}`);
+      const leg = readFileSync(join(PLATFORM, ws!, "memory", script!), "utf8");
+      expect(leg).toContain(control);
+      expect(leg).toContain("--expose-gc");
+    }
   });
 
   type Mutation = (job: Data) => void;
@@ -344,7 +350,9 @@ describe("platform-tests, platform-checks and platform-sizes", () => {
     "drop runner leg": (jobs) => drop("runner")(jobs["platform-tests"]),
     "drop ci leg": (jobs) => drop("ci")(jobs["platform-tests"]),
     "drop typecheck leg": (jobs) => drop("typecheck")(jobs["platform-checks"]),
-    "drop memory leg": (jobs) => drop("memory")(jobs["platform-checks"]),
+    "drop the owner's memory leg": (jobs) => drop("owner memory")(jobs["platform-checks"]),
+    "drop the gateway's memory leg": (jobs) =>
+      drop("gateway memory")(jobs["platform-checks"]),
     "runner leg runs workerd twice": (jobs) =>
       command("runner", "npm run test:workerd -w sandbox --silent")(jobs["platform-tests"]),
     "a leg's command swallowed": (jobs) =>
@@ -353,7 +361,7 @@ describe("platform-tests, platform-checks and platform-sizes", () => {
     "a leg that names no shard": (jobs) =>
       command("doors", "npm run test -w doors")(jobs["platform-tests"]),
     "the typecheck given the reporters": move("typecheck", "platform-tests"),
-    "the memory leg given the reporters": move("memory", "platform-tests"),
+    "the memory leg given the reporters": move("gateway memory", "platform-tests"),
     "a Vitest leg that uploads no report": move("doors", "platform-checks"),
   };
   const problems = (jobs: Data): string[] => [
