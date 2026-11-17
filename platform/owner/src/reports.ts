@@ -7,7 +7,7 @@ import { ENGINE_SIGNINS, SIGNIN_MODELS_CHARS } from "../../contract/src/limits";
 import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX } from "../../contract/src/run-events";
 import type { PostedFrame } from "./runs";
 import { Refusal } from "../../contract/src/refusal";
-import { bundledSources } from "../../sources/src/catalog";
+import { servedRecord, signsIn } from "../../sources/src/served";
 import { fields } from "../../contract/src/doors";
 
 /** The runner's report, exactly: frames numbered from 1 and rising, and an optional end. */
@@ -49,14 +49,11 @@ export function signinRequest(r: Record<string, unknown>):
   if (!Array.isArray(signins) || signins.length === 0 || signins.length > ENGINE_SIGNINS) {
     throw new Refusal("invalid", `a sign-in report names 1 to ${ENGINE_SIGNINS} engines`);
   }
-  const sources = bundledSources();
   const seen = new Set<string>();
   return signins.map((entry) => {
     const f = fields(entry, ["engine", "signed_in"], ["models"], "invalid sign-in report");
     const engine = f["engine"];
-    const cli = typeof engine === "string" ? sources.get(engine)?.cli : undefined;
-    if (typeof engine !== "string" || cli === undefined || seen.has(engine)
-        || !cli.credential.includes("vendor_login_in_sandbox")) {
+    if (typeof engine !== "string" || !signsIn(servedRecord(engine)) || seen.has(engine)) {
       throw new Refusal("invalid", "a sign-in report names engines that sign in, each once");
     }
     seen.add(engine);
