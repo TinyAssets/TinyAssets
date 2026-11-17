@@ -145,7 +145,6 @@ const RETRY_BASE_MS = 480;
  */
 const RETRY_MAX_MS = LEASE_TTL_S * 1000;
 
-/** The wait before the `tries`-th retry: doubling from the measured request time. */
 function backoff(tries: number): number {
   return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, tries - 1), RETRY_MAX_MS);
 }
@@ -192,7 +191,6 @@ interface Row {
   network_due: string | null;
 }
 
-/** A running sandbox's handle, and the runner's digest its commands name. */
 interface Box extends Handle {
   readonly runner: string;
 }
@@ -261,8 +259,6 @@ function reapplyNetwork(plan: NetworkDocument): NetworkDocument {
 function hostList(hosts: unknown): boolean {
   return Array.isArray(hosts) && hosts.every((host) => typeof host === "string");
 }
-
-/** A sign-in's id: `si_` and 32 hex. */
 
 /**
  * The run's doors, each `https` on the egress host: E2B's transform sets the egress token
@@ -378,7 +374,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /** The one chain every E2B change of this owner's sandboxes runs on, in order. */
   #chain: Promise<unknown> = Promise.resolve();
   readonly #e2b: () => E2b;
-  /** The digest of the runner this Worker ships, computed once an instance. */
   readonly #digest: string;
 
   constructor(ctx: DurableObjectState, env: SandboxEnv) {
@@ -522,7 +517,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       .length > 0;
   }
 
-  /** One more entry of the meter's log, now. */
   #log(authority: string, kind: "start" | "resume" | "pause" | "kill"): void {
     this.#sql.exec("INSERT INTO meter_log (authority, kind, at) VALUES (?, ?, ?)", authority,
                    kind, Date.now());
@@ -574,13 +568,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     return done;
   }
 
-  /** A runner command (`#exec`) answered 0 or 3; any other exit is thrown. */
   async #run(box: Box, argv: readonly [WorkerCommand, ...string[]], timeoutMs = COMMAND_MS):
       Promise<{ code: number; out: string }> {
     return answered(argv[0], await this.#exec(box, argv, timeoutMs));
   }
 
-  /** This Worker's runner uploaded into the sandbox and installed by the loader. */
   async #install(handle: Handle): Promise<void> {
     await install(this.#e2b(), handle, runnerBytes(), this.#digest, COMMAND_MS);
   }
@@ -647,7 +639,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     // Its own runner: the one that wrote its disk and launched its runs.
     let handle: Box = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken,
                         runner: row.runner };
-    // A start's own network, else a re-apply kept while it was paused (`network`).
     const applied = network ?? this.#due(row.authority, found);
     if (applied !== null) {
       await e2b.network(resumed.sandboxID, applied);
@@ -670,7 +661,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("UPDATE sandboxes SET renewing = 0, paused = 0, retry_at = NULL, tries = 0, " +
                      "end_at = ? WHERE authority = ?",
                    after === null ? Date.now() : Date.parse(after.endAt), row.authority);
-    // A renewal's slot, held across its pause, given back to the line.
     this.#owe(resumed.sandboxID);
     await this.#giveBack();
     return handle;
@@ -799,7 +789,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * The vendor's own sign-in started in the authority's sandbox (slice SIGNIN), or its
+   * The vendor's own sign-in started in the authority's sandbox, or its
    * sign-out: the sandbox found, resumed or made as a run's start finds it (its turn in the
    * line, `sandbox_waiting` past the ceiling), its network let out to the vendor hosts it
    * hands (the engine's and the chosen region's), and the runner's `login-launch` started
@@ -1085,7 +1075,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("DELETE FROM launched WHERE authority = ?", authority);
   }
 
-  /** The runner's state (`stateOf`). */
   async #runnerState(handle: Box): Promise<StateAnswer> {
     return stateOf(handle, (await this.#run(handle, [COMMAND.state])).out);
   }
@@ -1120,9 +1109,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         // Asked at once the first time, then at its back-off: never at alarm speed.
         soonest = Math.min(soonest, row.retry_at ?? Date.now());
       } else if (row.paused === 1) {
-        continue;  // paused and idle: nothing to do
+        continue;
       } else if (ceilings !== null) {
-        // The renewal window, and the idle look a lease's TTL on.
         soonest = Math.min(soonest, row.end_at - ceilings.renewal_window_s * 1000,
                            (row.idle_since ?? Date.now()) + LEASE_TTL_S * 1000);
       }
@@ -1165,8 +1153,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   async #look(began: number): Promise<number> {
-    // Sandboxes already running are renewed on the last numbers read even when the founder
-    // took them out of the record: only new starts stop.
     const ceilings = (await this.#control()).ceilings ?? this.#known();
     if (ceilings === null) {
       throw new Error("no sandbox numbers were ever read, yet a sandbox is kept");
@@ -1174,7 +1160,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const windowMs = ceilings.renewal_window_s * 1000;
     const rows = this.#rows();
     const e2b = this.#e2b();
-    // The quiet look, outside the chain: starts and cancels go on meanwhile.
     const lookEnd = began + ALARM_WALL_MS - rows.length * RENEWAL_MS;
     const quiet = new Map<string, boolean>();
     await Promise.all(rows.map(async (row) => {
@@ -1222,7 +1207,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (handle === null) {
       if (row.renewing === 0 && !this.#leased(row.authority)) {
         this.#sql.exec("UPDATE sandboxes SET releasing = 0 WHERE authority = ?", row.authority);
-        return Number.POSITIVE_INFINITY;  // paused and idle: nothing to do
+        return Number.POSITIVE_INFINITY;
       }
       // Paused while a lease runs in it (a renewal cut short, or E2B's own timeout): resumed,
       // its slot its own, held in the line until it runs. E2B refusing is retried, backing
@@ -1343,7 +1328,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * The meter's log after `after` (slice P; the owner's object reads it): at most
+   * The meter's log after `after` (the owner's object reads it): at most
    * `METER_BATCH` entries and the cursor past them. What the cursor passed is dropped: the
    * owner's object read it.
    */

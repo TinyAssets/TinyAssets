@@ -60,7 +60,6 @@ const STATE = STATE_DIR;
 const OK = EXIT.ok;
 const NO = EXIT.no;
 
-/** The probes' own commands. */
 const PROBE = Object.freeze({
   plan: "plan",
   login: "login-probe",
@@ -112,7 +111,7 @@ const STRACE = "(command -v strace || (apt-get -qq update && apt-get -qq install
 /**
  * The checks: each record's sign-in (every region of a record with regions) under the
  * production egress allowlist widened by that engine's own hosts, as the sandbox Worker
- * widens a sign-in's network (review L3); every keyed engine on every provider it keys, on a
+ * widens a sign-in's network; every keyed engine on every provider it keys, on a
  * sandbox whose network denies everything once prepared; and the matcher's step.
  */
 export function plan(runner: string): Plan {
@@ -199,7 +198,7 @@ async function loginProbe(engine: string, region: string | null): Promise<number
   return why === null ? OK : NO;
 }
 
-// -- the route probe (codexurl_research.md Q4) ------------------------------------------
+// -- the route probe --------------------------------------------------------------------
 
 /** How long one probe turn may take: a command's bound. */
 const ROUTE_PROBE_MS = COMMAND_MS;
