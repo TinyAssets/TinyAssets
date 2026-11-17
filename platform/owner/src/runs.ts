@@ -818,9 +818,7 @@ export class Runs {
     this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin) VALUES (?, ?, ?, ?)",
                    runId, prompt, utf8Bytes(prompt), origin);
     this.#sql.exec("DELETE FROM run_grants WHERE run = ?", runId);
-    if (row.lease_id !== null && this.#sql.exec(
-      `SELECT 1 FROM runs WHERE ${LIVE} AND lease_id = ? AND epoch = ?`, row.lease_id,
-      row.epoch).toArray().length === 0) {
+    if (row.lease_id !== null && !this.holds(row.lease_id)) {
       this.#host.releaseLease(row.lease_id, row.epoch!);
     }
     return true;
@@ -1225,9 +1223,7 @@ export class Runs {
     this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now,
                    lease.conversation);
     this.#host.ended(runId);
-    if (lease.lease_id !== null && this.#sql.exec(
-      `SELECT 1 FROM runs WHERE ${LIVE} AND lease_id = ? AND epoch = ?`, lease.lease_id,
-      lease.epoch).toArray().length === 0) {
+    if (lease.lease_id !== null && !this.holds(lease.lease_id)) {
       this.#host.releaseLease(lease.lease_id, lease.epoch!);
     }
     this.#prune();
@@ -1370,7 +1366,10 @@ export class Runs {
       .toArray().map(({ id }) => id);
   }
 
-  /** Whether a live run holds `leaseId`: the lease stays while one does. A read. */
+  /**
+   * Whether a live run holds `leaseId`: the lease stays while one does. A lease's id is
+   * minted with its one epoch (`files.ts` `sandboxLease`), so the id alone names it. A read.
+   */
   holds(leaseId: string): boolean {
     return this.#sql.exec(`SELECT 1 FROM runs WHERE lease_id = ? AND ${LIVE}`, leaseId)
       .toArray().length > 0;
