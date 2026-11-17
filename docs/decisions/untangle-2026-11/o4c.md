@@ -51,7 +51,7 @@ The proof is a mutation: `gatewayReseal` without `o.doorbell.reseal()` fails all
 
 ## What a caller sees
 
-Nothing changes. Every `src` change is a comment, and the generated files are unchanged.
+Nothing changes. Every `src` change is a comment, and the generated files are unchanged. The recorders, base `5ec1105a7` (main, merged in) against the head: `wire`, `tools`, `rpc` and `rv` the same.
 
 ## Mutations, each killed
 
