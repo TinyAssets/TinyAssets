@@ -102,27 +102,26 @@ describe("the import doors' caller and state", () => {
 
   it("refuses every other caller, binding and state with a typed terminal refusal", async () => {
     const { stub, owner } = pending();
-    const refused = async (call: () => Promise<unknown>, message: string) => {
+    const refused = async (call: () => Promise<unknown>, message: string,
+                           code = "refused") => {
       const error = await failure(call);
-      expect([error.code, error.message]).toEqual(["refused", message]);
+      expect([error.code, error.message]).toEqual([code, message]);
     };
     const request = { detail: "x" };
-    // The owner itself, an outside client, the platform with no import binding, a binding
-    // with a session or another field, and one naming no bundle.
-    await refused(() => stub.importNotice({ owner, caller: owner, origin: null,
-                                            import: { bundle: BUNDLE }, tiers: TIERS }, request),
-                  IMPORT_PLATFORM_ONLY);
+    // The owner itself, an outside client, the platform with no import binding.
     await refused(() => stub.importNotice({ owner, caller: owner, origin: null }, request),
                   IMPORT_PLATFORM_ONLY);
     await refused(() => stub.importNotice({ owner, caller: PLATFORM_CALLER, origin: null },
                                           request), IMPORT_PLATFORM_ONLY);
-    await refused(() => stub.importNotice({ ...importing(owner), session: "s" }, request),
-                  IMPORT_PLATFORM_ONLY);
-    await refused(() => stub.importNotice({ ...importing(owner),
-                                            origin: { client: "c", family: "f" } }, request),
-                  IMPORT_PLATFORM_ONLY);
-    await refused(() => stub.importNotice({ ...importing(owner), import: { bundle: "x" } },
-                                          request), IMPORT_PLATFORM_ONLY);
+    // An import binding of the owner's own caller, with a session or another field, or naming
+    // no bundle: no import binding the binder makes (`importBinding`'s `invalid`).
+    for (const malformed of [{ ...importing(owner), caller: owner },
+                             { ...importing(owner), session: "s" },
+                             { ...importing(owner), origin: { client: "c", family: "f" } },
+                             { ...importing(owner), import: { bundle: "x" } }]) {
+      await refused(() => stub.importNotice(malformed, request), "invalid import binding",
+                    "invalid");
+    }
     // The import binding at any other door, the platform's own included.
     await refused(() => stub.fileStat(importing(owner), { path: I }), IMPORT_DOORS_ONLY);
     await refused(() => stub.admissionSet(importing(owner), { admit: true }), IMPORT_DOORS_ONLY);
@@ -540,10 +539,10 @@ describe("the import's discard", () => {
 
   it("is the platform's import binding's alone", async () => {
     const { stub, owner, ns } = await imported(rehearsalName("r2", "user_x"));
-    for (const binding of [{ owner, caller: owner, origin: null },
-                           { owner, caller: PLATFORM_CALLER, origin: null },
-                           { ...importing(owner), session: "s" }]) {
-      expect((await failure(() => stub.importDiscard(binding as Binding))).code).toBe("refused");
+    for (const [binding, code] of [[{ owner, caller: owner, origin: null }, "refused"],
+                                   [{ owner, caller: PLATFORM_CALLER, origin: null }, "refused"],
+                                   [{ ...importing(owner), session: "s" }, "invalid"]] as const) {
+      expect((await failure(() => stub.importDiscard(binding as Binding))).code).toBe(code);
     }
     expect((await left(stub, ns)).objects).toBeGreaterThan(0);
   });

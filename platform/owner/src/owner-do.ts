@@ -11,7 +11,10 @@
  *
  * What the binder verified, the object takes as typed binding fields: the outside
  * client a call comes through (`origin`, `source`, `authenticated_at`) and the owner's
- * session cookie (`session`). What it decides from them, it decides itself, from its
+ * session cookie (`session`). Each binding is one of the contract's kinds
+ * (`contract/src/binding.ts`), of a kind its door's caller takes (`door-steps.ts`
+ * `CALLER_BINDINGS`), parsed by that kind's parser before anything reads it, and a handler
+ * reads it as parsed (`Call.binding`). What it decides from them, it decides itself, from its
  * own rows: every outside call, at every door, is admitted against that client's grant
  * and held to its scopes (`grants.ts`: `read_graph`, `write_graph`, `propose_policy`,
  * `read_files`, `write_files`), and every widening checks the owner's live session row
@@ -101,17 +104,16 @@
  * restore doors, and, with an import binding while the owner is `pending`, the cutover's
  * import doors (`import.ts`).
  */
-import { keyed } from "../../contract/src/checks";
-import { HEX64 } from "../../contract/src/ids";
 import { rehearsalRun } from "../../contract/src/import-message";
-import { principal } from "../../contract/src/text";
 
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import { fields, takesRequest } from "../../contract/src/doors";
 import type { DoorMethods } from "./door-map";
-import { type OwnerRow, ownerRow, ownerRows } from "./door-steps";
+import {
+  type Binds, CALLER_BINDINGS, type CallerKind, type OwnerRow, ownerRow, ownerRows, type TakenBy,
+} from "./door-steps";
 import type {
   Account, Bound, Call, Door, DoorsOf, DoorUnits, ImportLine, LiveSession, Module, ObjectReads,
   OwnerSelf, PlatformLine, Readable, Units,
@@ -147,11 +149,14 @@ import { type OwnerStorage, WriteGate } from "./gate";
 import { Grants, grantsDoors } from "./grants";
 import { codemodeDoors } from "./codemode";
 import {
-  Ledger, ledgerDoors, outsideOrigin, registrant, RUN_NO_MAILBOX,
+  Ledger, ledgerDoors, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock } from "./clock";
 import type { OwnerEnv } from "./env";
-import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import {
+  type Binding, BINDING_PARSERS, type BindingKind, bindingKind, type BindingOf, type EgressBinding,
+  PLATFORM_CALLER, type RunBinding, type SyncBinding,
+} from "../../contract/src/binding";
 import { Notices, noticesDoors } from "./notices";
 import { importDoors } from "./import";
 import { Erasure } from "./erase";
@@ -163,7 +168,7 @@ import { Registrations, registrationsDoors } from "./registrations";
 import { Schedule } from "./schedule";
 import { ABILITY_TREES, AGENTS_DIR, within } from "../../contract/src/paths";
 import { Launcher } from "./launch";
-import { Egress, egressDoors, sandboxBinding } from "./egress";
+import { Egress, egressDoors } from "./egress";
 import { exportDoors } from "./export";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
@@ -199,17 +204,62 @@ interface Serves {
   readonly registering?: boolean;
 }
 
+/** A bound binding the bind step held: its kind, and the binding as that kind's parser read it. */
+type Held = { [K in TakenBy<Binds>]: { readonly kind: K; readonly binding: BindingOf<K> } }[
+  TakenBy<Binds>];
+/** A binding a door of caller `K` holds: of a kind `K` takes. */
+type HeldBy<K extends Binds> = Extract<Held, { kind: TakenBy<K> }>;
+/** What the bind step reads of a door's row: its class, and its act at a reserved door. */
+type Taking = Pick<OwnerRow, "class" | "action">;
+/** A socket's attach and check, as a `read` door of the owner's account (`#socketAdmit`). */
+const SOCKET: Taking = Object.freeze({ class: "read", action: null });
+
+/** The kinds whose binding is a sandbox's token: a lease's, and so only an opened one's. */
+const TOKENS: readonly BindingKind[] = Object.freeze(["egress", "sync", "run"]);
+
 /**
- * The import's binding exactly as the binder makes it (`bindImport`): the platform's reserved
- * caller, no outside client, the bundle's digest and the control record's tiers; else refused.
+ * The refusal of a binding of kind `presented` at a door of a caller that takes `takes`, but
+ * not it: an import's, the platform's and an inbound route's binding each reach their own
+ * doors alone, and those doors take no other; a sandbox door (one that takes the egress or
+ * the sync token, or a run alone) takes no other; then the platform's doors take only the
+ * platform, and the owner's account no sandbox token.
  */
-function importBinding(binding: Binding): void {
-  if (!keyed(binding, ["owner", "caller", "origin", "import", "tiers"])
-      || binding.caller !== PLATFORM_CALLER || binding.origin !== null
-      || !keyed(binding.import, ["bundle"])
-      || typeof binding.import.bundle !== "string" || !HEX64.test(binding.import.bundle)) {
-    throw new Refusal("refused", IMPORT_PLATFORM_ONLY);
+function notTaken(presented: BindingKind, takes: readonly BindingKind[], tier: boolean): Refusal {
+  if (presented === "none") {
+    return new Refusal("invalid", "invalid owner principal");
   }
+  if (presented === "import" || takes.includes("import")) {
+    return new Refusal("refused",
+                       presented === "import" ? IMPORT_DOORS_ONLY : IMPORT_PLATFORM_ONLY);
+  }
+  if (presented === "reserved") {
+    return new Refusal("refused", PLATFORM_RESERVED);
+  }
+  if (presented === "inbound" || takes.includes("inbound")) {
+    return new Refusal("refused", presented === "inbound" ? INBOUND_ONLY : INBOUND_DOOR);
+  }
+  if (takes.some((kind) => kind === "egress" || kind === "sync"
+                 || (kind === "run" && !takes.includes("account")))) {
+    return new Refusal("refused", SANDBOX_ONLY);
+  }
+  if (takes.includes("reserved") && !TOKENS.includes(presented)) {
+    return new Refusal("refused", tier ? PLATFORM_TIER_ONLY : PLATFORM_ONLY);
+  }
+  return new Refusal("refused", SANDBOX_DOORS);
+}
+
+/**
+ * `binding` held as a door of `caller` takes it: of a kind the caller takes
+ * (`CALLER_BINDINGS`), else refused (`notTaken`), and parsed by that kind's parser.
+ */
+function taken<K extends Binds>(binding: unknown, caller: K, row: Taking): HeldBy<K> {
+  const kind = bindingKind(binding);
+  const takes: readonly BindingKind[] = CALLER_BINDINGS[caller];
+  if (!takes.includes(kind)) {
+    throw notTaken(kind, takes, row.action === "tier");
+  }
+  return { kind, binding: (BINDING_PARSERS[kind] as (value: unknown) => unknown)(binding) } as
+    HeldBy<K>;
 }
 
 /**
@@ -228,10 +278,14 @@ function provedBy(caller: string, lease: Lease): object {
   }
 }
 
-/** A bound call with no account of its own (a sandbox's, the platform's, or none). */
-function bound(owner: string, caller: string): Bound {
-  return { account: { owner, caller, origin: null, grant: null, run: null }, readable: null,
-           lease: null, route: null, erased: false };
+/** A call bound by `binding` to `account`, with nothing else its steps found. */
+function bound(binding: Binding | undefined, account: Account): Bound {
+  return { binding, account, readable: null, lease: null, route: null, erased: false };
+}
+
+/** The account of a call with none of its own (a sandbox's, the platform's, or none). */
+function unaccounted(owner: string, caller: string): Account {
+  return { owner, caller, origin: null, grant: null, run: null };
 }
 
 /** What a run door needs where its agent acts: to start work, or (null) to read or cancel it. */
@@ -477,7 +531,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     const owner = () => {
       const named = ctx.id.name;
       if (named === undefined) {
-        throw new Error("this object is not named by an owner");
+        throw new Refusal("refused", "this object is not named by an owner");
       }
       return named;
     };
@@ -730,26 +784,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * verified outside client, which is admitted here against its grant (P0-3) before any
    * door acts. A refusal here leaves no receipt: the call never reached the account.
    */
-  #account(binding: Binding, door: DoorClass, serves: Serves = {}): Account {
-    if (typeof binding === "object" && binding !== null && "run" in binding) {
-      return this.#runAccount(binding, door);
+  #account(held: HeldBy<"account">, serves: Serves = {}): Account {
+    if (held.kind === "run") {
+      return this.#runAccount(held.binding);
     }
-    const { owner, caller } = this.#bind(binding, door);
+    const binding = held.binding;
+    const { owner, caller, origin } = binding;
     // The switched-on sign-ins, as the binder read them from the control record: kept for
     // the lane's runs (written only when they changed).
     switchedOn(this.#storage, binding.signins, clock());
-    if (!("origin" in binding)) {
-      throw new Refusal("invalid", "invalid outside origin");
-    }
-    const origin = outsideOrigin(binding.origin);
     if (caller !== owner && !(serves.visitors === true && origin === null)) {
       throw new Refusal("refused", "the account answers its owner's own callers only");
     }
     const signedIn = binding.authenticated_at ?? null;
-    if (signedIn !== null && (typeof signedIn !== "number" || !Number.isSafeInteger(signedIn)
-                              || signedIn < 0)) {
-      throw new Refusal("invalid", "authenticated_at is a time in whole seconds");
-    }
     if (origin === null) {
       return { owner, caller, origin, grant: null, run: null };
     }
@@ -765,8 +812,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       throw new Refusal("refused", MCP_REGISTERS_BY_CARD);
     }
     const vendor = binding.vendor ?? null;
-    if (vendor !== null && (source.kind !== "mcp" || typeof vendor !== "object"
-        || typeof vendor.id !== "string" || typeof vendor.verified !== "boolean")) {
+    if (vendor !== null && source.kind !== "mcp") {
       throw new Refusal("invalid", "invalid outside client vendor");
     }
     const grant = this.#grants.admit(origin.client, source.kind, signedIn, clock(), vendor);
@@ -784,14 +830,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * client's as that client, whose stamp is rechecked here at every call; a stamp that no
    * longer stands ends the client's runs, in this unit, and refuses.
    */
-  #runAccount(binding: Binding, door: DoorClass): Account {
-    const { owner, caller } = this.#bind(binding, door, "run");
-    const now = clock();
-    const sandbox = sandboxBinding(binding.sandbox);
-    const lease = this.#egress.lease(sandbox, now);
+  #runAccount(binding: RunBinding): Account {
+    const { owner, caller, sandbox } = binding;
+    const lease = this.#egress.lease(sandbox, clock());
     // The run's own secret, as its path carried it: a run id alone authorizes nothing.
-    const grant = lease === null || sandbox.kind !== "egress" ? null
-      : this.#runs.grantFor(binding.run, sandbox.secret, lease);
+    const grant = lease === null ? null : this.#runs.grantFor(binding.run, sandbox.secret, lease);
     if (grant === null) {
       throw new Refusal("run_ended", RUN_ENDED);
     }
@@ -814,8 +857,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /** The owner itself, on its own account, never an outside client nor a run. */
-  #ownerOf(binding: Binding, door: DoorClass, action: string): Account {
-    const account = this.#account(binding, door);
+  #ownerOf(held: HeldBy<"owner">, action: string): Account {
+    const account = this.#account(held);
     if (account.origin !== null || account.run !== null) {
       throw new Refusal("refused", `only the owner may ${action}`);
     }
@@ -854,9 +897,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       Object.defineProperty(this.prototype, row.door, {
         value: row.caller === "none"
           ? function (this: OwnerDO, request: unknown) {
-            return this.#leased(row, undefined as unknown as Binding, request, handler);
+            return this.#leased(row, undefined, request, handler);
           }
-          : function (this: OwnerDO, binding: Binding, request: unknown) {
+          : function (this: OwnerDO, binding: unknown, request: unknown) {
             return this.#leased(row, binding, request, handler);
           },
       });
@@ -868,7 +911,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * checked in one unit of that gate, or the door, which its handler checks in each unit it
    * makes. A row that takes no request is handed none, whatever came.
    */
-  #leased(row: OwnerRow, binding: Binding, request: unknown, handler: Handled): Promise<unknown> {
+  #leased(row: OwnerRow, binding: unknown, request: unknown, handler: Handled): Promise<unknown> {
     // Each proof the call's steps mint is live while the call runs, and none once it settled.
     const lease: Lease = { live: true };
     const end = () => {
@@ -883,20 +926,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /** The door's call itself, its proofs live for `lease` (`#leased`). */
-  #call(row: OwnerRow, binding: Binding, request: unknown, handler: Handled,
+  #call(row: OwnerRow, binding: unknown, request: unknown, handler: Handled,
         lease: Lease): Promise<unknown> {
     // The request's type is its handler's, held to the row's fields by the runner's fields
     // step at run time, as `tsc` holds the handler to its row at `HANDLERS`.
     const asked = (takesRequest(row) ? request : undefined) as never;
     if (row.gate === "units") {
       const door: Door<never> = {
-        binding, request: asked,
+        request: asked,
         check: () => this.#within(row, binding, asked, lease, (call) => call),
         within: (inner) => this.#within(row, binding, asked, lease, inner),
         bound: () => this.#bound(row, binding, asked).account,
         authorized: () => {
-          const { account } = this.#bound(row, binding, asked);
-          this.#guard(row, binding, account);
+          const { binding: given, account } = this.#bound(row, binding, asked);
+          this.#guard(row, given, account);
           this.#scoped(row, account, null);
         },
       };
@@ -932,24 +975,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * refusal after its account is bound leaves a refusal receipt of what was asked (the
    * row's stand-in for it, where it names one), written once the refused change rolled back.
    */
-  #within<R, T>(row: OwnerRow, binding: Binding, request: R, lease: Lease,
-                act: (call: Call<R>) => T): T {
+  #within<R, T>(row: OwnerRow, binding: unknown, request: R, lease: Lease,
+                act: (call: Call<R, CallerKind>) => T): T {
     if (row.caller !== "session") {
-      return act(this.#checked(row, binding, request, this.#bound(row, binding, request),
+      return act(this.#checked(row, request, this.#bound(row, binding, request),
                                provedBy(row.caller, lease)));
     }
-    const account = this.#account(binding, row.class as DoorClass,
-                                  { registering: row.registering === true });
+    const held = this.#bind(binding, row.caller, row);
+    const account = this.#account(held, { registering: row.registering === true });
     try {
       // An outside client holds no owner session, so what only the owner may do is
       // refused as that before the session is looked for.
       if (typeof row.action === "string" && account.origin !== null) {
         throw new Refusal("refused", `only the owner may ${row.action}`);
       }
-      const hash = this.#sessions.live(binding.session, clock());
+      const given: Binding = held.binding;
+      const hash = this.#sessions.live(given.session, clock());
       const session = mintProof({ proved: "session", hash }, lease) as LiveSession;
-      return act(this.#checked(row, binding, request, { ...bound("", ""), account },
-                               { session }));
+      return act(this.#checked(row, request, bound(held.binding, account), { session }));
     } catch (error) {
       if (error instanceof Refusal) {
         try {
@@ -964,113 +1007,100 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /** The bind and account steps of the row's caller kind (`door-steps.ts`). */
-  #bound(row: OwnerRow, binding: Binding, request: unknown): Bound {
+  #bound(row: OwnerRow, binding: unknown, request: unknown): Bound {
     const door = row.class as DoorClass;
     const capability = row.capability!;
     switch (row.caller) {
       case "account":
-      case "session":
-        return { ...bound("", ""), account: this.#account(binding, door) };
-      case "visitors":
-        return { ...bound("", ""), account: this.#account(binding, door, { visitors: true }) };
-      case "owner": {
-        const account = this.#ownerOf(binding, door, row.action!);
-        if (row.live === true) {
-          this.#sessions.live(binding.session, clock());
-        }
-        return { ...bound("", ""), account };
+      case "session": {
+        const held = this.#bind(binding, row.caller, row);
+        return bound(held.binding, this.#account(held));
       }
-      case "lease":
-        return binding.sandbox === undefined
-          ? { ...bound("", ""), account: this.#ownerOf(binding, door, row.action!) }
-          : this.#syncer(binding, door, capability, request as SyncCommitRequest);
+      case "visitors": {
+        const held = this.#bind(binding, row.caller, row);
+        return bound(held.binding, this.#account(held, { visitors: true }));
+      }
+      case "owner": {
+        const held = this.#bind(binding, row.caller, row);
+        const account = this.#ownerOf(held, row.action!);
+        if (row.live === true) {
+          const given: Binding = held.binding;
+          this.#sessions.live(given.session, clock());
+        }
+        return bound(held.binding, account);
+      }
+      case "lease": {
+        const held = this.#bind(binding, row.caller, row);
+        return held.kind === "sync"
+          ? this.#syncer(held.binding, door, capability, request as SyncCommitRequest)
+          : bound(held.binding, this.#ownerOf(held, row.action!));
+      }
       case "sync":
-        return this.#syncer(binding, door, capability,
+        return this.#syncer(this.#bind(binding, row.caller, row).binding, door, capability,
                             request as { lease_id?: unknown; epoch?: unknown });
       case "reader":
       case "changes": {
         // A run's own call carries its egress token as its sandbox: a reader's caller too.
-        const filer = binding.sandbox === undefined
-          || (row.caller === "reader" && binding.run !== undefined);
-        if (!filer) {
-          return this.#syncer(binding, door, capability, null);
+        const held = this.#bind(binding, row.caller, row);
+        if (held.kind === "sync") {
+          return this.#syncer(held.binding, door, capability, null);
         }
-        const account = this.#account(binding, door);
+        const account = this.#account(held);
         this.#scope(account, capability);
-        return { ...bound("", ""), account };
+        return bound(held.binding, account);
       }
       case "egress": {
-        const { owner, caller } = this.#bind(binding, door, "egress");
-        return bound(owner, caller);
+        const { binding: given } = this.#bind(binding, row.caller, row);
+        return bound(given, unaccounted(given.owner, given.caller));
       }
       case "runner":
       case "run": {
-        const { owner, caller } = this.#bind(binding, door,
-                                             row.caller === "run" ? "run" : "egress");
-        const lease = this.#runner(binding);
+        const { binding: given } = this.#bind(binding, row.caller, row);
+        const lease = this.#runner(given);
         if (lease === null) {
           throw row.closed === "egress_lease_closed"
             ? new Refusal("refused", "egress_lease_closed") : new Refusal("run_ended", RUN_ENDED);
         }
-        return { ...bound(owner, caller), lease };
+        return { ...bound(given, unaccounted(given.owner, given.caller)), lease };
       }
       case "inbound": {
-        const { owner } = this.#bind(binding, door, "inbound");
-        if (binding.origin !== null || binding.caller !== owner || binding.session !== undefined
-            || binding.source !== undefined) {
-          throw new Refusal("invalid", "invalid inbound binding");
-        }
-        const route = binding.inbound!;
-        return { ...bound(owner, owner),
+        const { binding: given } = this.#bind(binding, row.caller, row);
+        const route = given.inbound;
+        return { ...bound(given, unaccounted(given.owner, given.owner)),
                  route: this.#inbound.current(bindingId(route.binding), route.revision) };
       }
-      case "reserved": {
-        const { owner, caller } = this.#bind(binding, "admission");
-        if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
-            || binding.session !== undefined || binding.source !== undefined) {
-          throw new Refusal("refused", row.action === "tier" ? PLATFORM_TIER_ONLY : PLATFORM_ONLY);
-        }
-        return bound(owner, caller);
+      case "reserved":
+      case "import": {
+        const { binding: given } = this.#bind(binding, row.caller, row);
+        return bound(given, unaccounted(given.owner, given.caller));
       }
       case "erasure": {
         // An owner wiped once its outside record was confirmed: its platform doors answer so.
-        if ((this.#tombstone || this.#erasure.erased) && binding?.caller === PLATFORM_CALLER) {
-          return { ...bound("", PLATFORM_CALLER), erased: true };
+        if ((this.#tombstone || this.#erasure.erased) && bindingKind(binding) === "reserved") {
+          const { binding: given } = taken(binding, row.caller, row);
+          return { ...bound(given, unaccounted("", PLATFORM_CALLER)), erased: true };
         }
-        const { owner, caller } = this.#bind(binding, "admission", "erasure");
-        if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
-            || binding.session !== undefined || binding.source !== undefined) {
-          throw new Refusal("refused", PLATFORM_ONLY);
-        }
+        const { binding: given } = this.#bind(binding, row.caller, row);
         if (!erasing(this.#storage)) {
           throw new Refusal("refused", NO_ERASURE);
         }
-        return bound(owner, caller);
-      }
-      case "import": {
-        // The platform's import, while the owner is pending (`import.ts`).
-        const { owner, caller } = this.#bind(binding, "import");
-        return bound(owner, caller);
+        return bound(given, unaccounted(given.owner, given.caller));
       }
       case "discard": {
         // The import's discard: a pending owner, or a rehearsal's in any state; an instance
         // that discarded already answers it again (its database is gone, and so its state).
-        if (this.#discarded !== null) {
-          importBinding(binding);
-          return bound(principal(binding.owner), PLATFORM_CALLER);
-        }
-        const { owner, caller } = this.#bind(binding, "import", "discard");
-        return bound(owner, caller);
+        const { binding: given } = this.#discarded !== null ? taken(binding, row.caller, row)
+          : this.#bind(binding, row.caller, row);
+        return bound(given, unaccounted(given.owner, given.caller));
       }
       case "none":
-        return bound("", "");
+        return bound(BINDING_PARSERS.none(binding), unaccounted("", ""));
     }
   }
 
   /** The guard, scope and fields steps of a bound call, in the row's order; its proof kept. */
-  #checked<R>(row: OwnerRow, binding: Binding, request: R, held: Bound, proof: object):
-      Call<R> {
-    const { account } = held;
+  #checked<R>(row: OwnerRow, request: R, held: Bound, proof: object): Call<R, CallerKind> {
+    const { binding, account } = held;
     let r: Record<string, unknown>;
     let place: { universe: string | null; agent: string };
     // A row that checks its fields first checks them before its guard too (a run's malformed
@@ -1084,14 +1114,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       place = this.#scoped(row, account, null);
       r = this.#fields(row, request, account);
     }
-    return { ...held, ...proof, binding, request, r, universe: place.universe, agent: place.agent,
+    return { ...held, ...proof, request, r, universe: place.universe, agent: place.agent,
              held: (where) => this.#scope(account, row.capability!, where),
              scope: (capability, center, agent) => this.#scope(account, capability, center, agent),
              universeOf: () => this.#universe(account) };
   }
 
   /** A row's guard: a check of its caller after the account (`door-steps.ts`). */
-  #guard(row: OwnerRow, binding: Binding, account: Account): void {
+  #guard(row: OwnerRow, binding: Binding | undefined, account: Account): void {
     switch (row.guard) {
       case undefined:
         return;
@@ -1111,7 +1141,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         if (account.origin === null || account.grant === null) {
           throw new Refusal("refused", "only an outside client files its own agent's registration");
         }
-        if (registrant(binding.source, account.origin).kind !== "mcp") {
+        if (registrant(binding?.source, account.origin).kind !== "mcp") {
           throw new Refusal("refused",
                             "an API key's agent registers from the owner's browser with the key");
         }
@@ -1219,62 +1249,40 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /**
-   * The owner this object serves: the name it was reached by, and every other one
-   * refused. The stored owner, fixed at first use, is a second check of the same. An
-   * erased owner's tombstone refuses every call (`OWNER_ERASED`), an erasure under way too
-   * (`ERASING`), and so does an owner not admitted (`require_work`), unless `admission` is
-   * false: the platform's own door, which sets it. The platform's reserved caller reaches
-   * no other door, and no owner is named so.
+   * The bind step of a call at a door of `caller` (`row`): its binding held as a kind its
+   * caller takes (`taken`), and the owner it names the one this object serves: the name it was
+   * reached by, and every other one refused. The stored owner, fixed at first use, is a second
+   * check of the same. An erased owner's tombstone refuses every call (`OWNER_ERASED`), an
+   * erasure under way too (`ERASING`) but at its own doors, and so does an owner not admitted
+   * (`require_work`), but at the platform's own doors (class `admission`), which set it. The
+   * platform's reserved caller reaches no other door, and no owner is named so.
    */
-  #bind(binding: Binding, door: DoorClass | "admission" | "import",
-        sandbox: "none" | "egress" | "sync" | "run" | "inbound" | "erasure" | "discard" =
-          "none"): { owner: string; caller: string } {
+  #bind<K extends Binds>(binding: unknown, caller: K, row: Taking): HeldBy<K> {
     if (this.#tombstone || this.#erasure.erased) {
       throw new Refusal("owner_erased", OWNER_ERASED);
     }
     if (this.#discarded !== null) {
       throw new Refusal("busy", DISCARDED);
     }
-    const discarding = sandbox === "discard";
-    const inbound = typeof binding === "object" && binding !== null && "inbound" in binding;
-    // The cutover's import binding reaches the import doors alone, and they take no other.
-    const importing = typeof binding === "object" && binding !== null && "import" in binding;
-    const inboundDoor = sandbox === "inbound";
     // The erasure's own platform doors are the one way in while the owner is marked, and
     // only for the platform's reserved caller.
-    const erasureDoor = sandbox === "erasure" && door === "admission"
-      && typeof binding === "object" && binding !== null && binding.caller === PLATFORM_CALLER;
-    if (inboundDoor || sandbox === "erasure" || discarding) {
-      sandbox = "none";
-    }
-    if (erasing(this.#storage) && !erasureDoor) {
+    if (erasing(this.#storage) && !(caller === "erasure" && bindingKind(binding) === "reserved")) {
       this.#erasure.resume(true);
       throw new Refusal("erasing", ERASING);
     }
-    if (typeof binding !== "object" || binding === null) {
-      throw new Refusal("invalid", "invalid owner principal");
-    }
-    if (importing !== (door === "import")) {
-      throw new Refusal("refused", importing ? IMPORT_DOORS_ONLY : IMPORT_PLATFORM_ONLY);
-    }
-    const owner = principal(binding.owner);
-    const caller = principal(binding.caller);
-    if (door === "import") {
-      importBinding(binding);
-    }
-    if (owner === PLATFORM_CALLER
-        || (door !== "admission" && door !== "import" && caller === PLATFORM_CALLER)) {
+    const held = taken(binding, caller, row);
+    const read: Held = held;
+    const given: Binding = read.binding;
+    const owner = given.owner;
+    if (owner === PLATFORM_CALLER) {
       throw new Refusal("refused", PLATFORM_RESERVED);
     }
     // The object's own name first: an object for another owner, or for none, says so
     // whatever its admission.
-    const named = this.ctx.id.name;
-    if (named === undefined) {
-      throw new Refusal("refused", "this object is not named by an owner");
-    }
-    if (named !== owner) {
+    if (this.#ownerName() !== owner) {
       throw new Refusal("refused", "this object belongs to another owner");
     }
+    const door = row.class;
     if (door !== "admission") {
       // From a restore's pin to its end, only the restore's doors (the platform's) take the
       // owner: not its own, not a run's, not the import's (whose discard would delete the
@@ -1285,43 +1293,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       // Only an owner the platform has not admitted yet is imported into: never a live one.
       // The discard takes a rehearsal's name in any state too: no issuer's subject is one.
       if (this.#admission.row().state !== "pending"
-          && !(discarding && rehearsalRun(owner) !== null)) {
+          && !(caller === "discard" && rehearsalRun(owner) !== null)) {
         throw new Refusal("refused", IMPORT_PENDING_ONLY);
       }
     } else if (door !== "admission") {
-      const refusal = doorRefusal(this.#admission.row(), door);
+      const refusal = doorRefusal(this.#admission.row(), door as DoorClass);
       if (refusal !== null) {
         throw refusal;
       }
     }
-    // An inbound event's binding reaches `inboundAccept` alone, and that door nothing else.
-    if (inbound !== inboundDoor) {
-      throw new Refusal("refused", inbound ? INBOUND_ONLY : INBOUND_DOOR);
-    }
-    // A sandbox token reaches its own doors and nothing else: the egress token the egress
-    // doors, the sync token the sync doors; they take nothing else.
-    // A run's call is the egress token's, with its run: the run doors (`#runAccount`) alone.
-    const presented = binding.sandbox === undefined ? "none"
-      : (binding.sandbox as { kind?: unknown }).kind;
-    const expected = sandbox === "run" ? "egress" : sandbox;
-    if (expected !== presented || (sandbox === "run") !== ("run" in binding)) {
-      throw new Refusal("refused", sandbox === "none" ? SANDBOX_DOORS : SANDBOX_ONLY);
-    }
-    if (sandbox !== "none") {
-      // The binder's sandbox binding in its exact shape (`bindSandbox`, `bindRun`), checked
-      // before anything is written: a stranger's request writes nothing.
-      const keys = ["owner", "caller", "origin", "sandbox", ...(sandbox === "run" ? ["run"] : [])];
-      if (!keyed(binding, keys) || binding.origin !== null || caller !== owner) {
-        throw new Refusal("invalid", "invalid sandbox binding");
-      }
-      sandboxBinding(binding.sandbox);
-      if (sandbox === "run" && sandboxBinding(binding.sandbox).kind !== "egress") {
-        throw new Refusal("invalid", "invalid sandbox binding");
-      }
-    }
     const sql = this.#storage.sql;
     const stored = sql.exec<{ owner: string }>("SELECT owner FROM object_owner").toArray()[0];
-    if (stored === undefined && sandbox !== "none") {
+    if (stored === undefined && TOKENS.includes(read.kind)) {
       // Only an object that minted a lease's tokens has a sandbox: a never-seen owner gets
       // no rows from one.
       throw new Refusal("refused", NO_SANDBOX);
@@ -1336,12 +1319,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     // an inbound event's and the import's bindings carry them): kept for the files byte
     // quota and every run, written only when they changed.
     const unread = this.#admission.tiers() === null;
-    this.#admission.keep(binding.tiers, clock());
+    this.#admission.keep(given.tiers, clock());
     if (unread && this.#admission.tiers() !== null && this.#starter.version() === 0) {
       // The first numbers a new owner's door hands: its seed, which waited for them, is due.
       queueMicrotask(() => void this.#schedule.sync());
     }
-    return { owner, caller };
+    return held;
   }
 
   /**
@@ -1349,17 +1332,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * lease, that lease at its epoch; else refused, as a lost lease's sync is fenced. What it
    * reads and writes is held to `capability` as the lease's authority holds it.
    */
-  #syncer(binding: Binding, door: DoorClass, capability: RunCapability,
+  #syncer(binding: SyncBinding, door: DoorClass, capability: RunCapability,
           request: { lease_id?: unknown; epoch?: unknown } | null): Bound {
-    const { owner, caller } = this.#bind(binding, door, "sync");
-    const readable = (held: Readable): Bound => ({ ...bound(owner, caller), readable: held });
-    const sandbox = sandboxBinding(binding.sandbox);
-    const lease = sandbox.kind === "sync"
-      ? this.#files.leaseByToken("sync", sandbox.token, clock()) : null;
+    const readable = (held: Readable): Bound =>
+      ({ ...bound(binding, unaccounted(binding.owner, binding.caller)), readable: held });
+    const { sandbox } = binding;
+    const lease = this.#files.leaseByToken("sync", sandbox.token, clock());
     // The call came from inside the lease's own sandbox: E2B's transform set that lease's
     // egress token beside the sync token (review M-5).
-    const inside = sandbox.kind === "sync"
-      ? this.#files.leaseByToken("egress", sandbox.egress, clock()) : null;
+    const inside = this.#files.leaseByToken("egress", sandbox.egress, clock());
     if (lease === null || inside?.lease_id !== lease.lease_id
         || (request !== null && (request.lease_id !== lease.lease_id
                                  || request.epoch !== lease.epoch))) {
@@ -1416,10 +1397,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * secret (`x-ta-runner`), which only the runner holds: its events and its sign-in reports.
    * Null otherwise.
    */
-  #runner(binding: Binding): SandboxLease | null {
-    const sandbox = sandboxBinding(binding.sandbox);
+  #runner(binding: EgressBinding | RunBinding): SandboxLease | null {
+    const { sandbox } = binding;
     const lease = this.#egress.lease(sandbox, clock());
-    return lease !== null && sandbox.kind === "egress" && sandbox.runner !== undefined
+    return lease !== null && sandbox.runner !== undefined
       && sandbox.runner === lease.runner_token ? lease : null;
   }
 
@@ -1461,11 +1442,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * this conversation of the owner's; refused alike otherwise (`TICKET_REFUSED`).
    */
   #socketAdmit(binding: unknown, conversation: string, hash: string): SocketState {
-    const account = this.#account(binding as Binding, "read");
+    const held = this.#bind(binding, "account", SOCKET);
+    const account = this.#account(held);
     if (account.origin !== null || account.run !== null) {
       throw new Refusal("refused", OWNERS_SOCKET);
     }
-    if ((binding as Binding).session !== undefined) {
+    const given: Binding = held.binding;
+    if (given.session !== undefined) {
       throw new Refusal("invalid", "an app socket carries no session");
     }
     const ticket = this.#tickets.consume(hash, conversation, clock());
@@ -1480,7 +1463,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /** In a unit: whether a socket's attachment still holds, as at its attach; its close. */
   #socketCheck(state: SocketState): CloseKind | null {
     try {
-      this.#account(state.binding as unknown as Binding, "read");
+      this.#account(this.#bind(state.binding, "account", SOCKET));
       return state.expires_at <= clock() ? "expired" : null;
     } catch (error) {
       if (!(error instanceof Refusal)) {

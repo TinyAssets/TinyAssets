@@ -75,8 +75,8 @@
  * the owner's in-flight turns.
  */
 import type { SandboxToken } from "../../contract/src/binding";
-import { keyed, object } from "../../contract/src/checks";
-import { CONNECTION_ID, HEX32, HEX64, randomHex, RUN_ID } from "../../contract/src/ids";
+import { keyed } from "../../contract/src/checks";
+import { CONNECTION_ID, HEX32, randomHex, RUN_ID } from "../../contract/src/ids";
 
 import { apiRules, freeCall, tierMultiplier } from "../../contract/src/api-rules";
 import {
@@ -317,37 +317,6 @@ function reserveRequest(value: unknown): ReserveRequest {
     throw new Refusal("invalid", "invalid egress reserve");
   }
   return { reservation, model, tier: tier as string | null };
-}
-
-/** The binding's sandbox fields, exactly, or `invalid`. */
-export function sandboxBinding(value: unknown): SandboxToken {
-  // At most one of a run's own secret and the runner's, each a SHA-256 hex.
-  const egress = keyed(value, ["generation", "kind", "token"]) ? "none"
-    : keyed(value, ["generation", "kind", "secret", "token"]) ? "secret"
-      : keyed(value, ["generation", "kind", "runner", "token"]) ? "runner" : null;
-  if (egress !== null && object(value)
-      && value["kind"] === "egress"
-      && typeof value["token"] === "string" && HEX64.test(value["token"])
-      && typeof value["generation"] === "number" && Number.isSafeInteger(value["generation"])
-      && value["generation"] >= 1) {
-    const secret = value["secret"];
-    const runner = value["runner"];
-    if (egress === "secret" && typeof secret === "string" && HEX64.test(secret)) {
-      return { kind: "egress", token: value["token"], generation: value["generation"], secret };
-    }
-    if (egress === "runner" && typeof runner === "string" && HEX64.test(runner)) {
-      return { kind: "egress", token: value["token"], generation: value["generation"], runner };
-    }
-    if (egress === "none") {
-      return { kind: "egress", token: value["token"], generation: value["generation"] };
-    }
-  }
-  if (keyed(value, ["egress", "kind", "token"]) && value["kind"] === "sync"
-      && typeof value["token"] === "string" && HEX64.test(value["token"])
-      && typeof value["egress"] === "string" && HEX64.test(value["egress"])) {
-    return { kind: "sync", token: value["token"], egress: value["egress"] };
-  }
-  throw new Refusal("invalid", "invalid sandbox binding");
 }
 
 function spendOutcome(value: unknown): MeterOutcome {
@@ -784,14 +753,14 @@ export const egressDoors = Object.freeze({
    * reservation and end signal, or its refusal's fixed code and receipt. An OAuth
    * credential about to expire is refreshed first, as a model call's is.
    */
-  async egressOpen(o: EgressDoorNeeds, door: Door<unknown>): Promise<EgressOpened | EgressRefusal> {
+  async egressOpen(o: EgressDoorNeeds, door: Door<unknown, "egress">):
+      Promise<EgressOpened | EgressRefusal> {
     const { r, live } = await o.door(() => {
-      door.check();
+      const { sandbox } = door.check().binding;
       const checked = egressRequest(door.request);
-      const lease = o.egress.lease(sandboxBinding(door.binding.sandbox), clock());
+      const lease = o.egress.lease(sandbox, clock());
       // Only the live lease's own run connection is ever refreshed for it.
-      const sandbox = sandboxBinding(door.binding.sandbox);
-      return { r: checked, live: lease !== null && sandbox.kind === "egress"
+      return { r: checked, live: lease !== null
         && o.runs.grantFor(checked.run, sandbox.secret, lease)?.connection
           === checked.connection };
     });
@@ -808,40 +777,34 @@ export const egressDoors = Object.freeze({
         }
       }
     }
-    return o.door(() => {
-      door.check();
-      return o.egress.open(sandboxBinding(door.binding.sandbox), r, clock());
-    });
+    return o.door(() => o.egress.open(door.check().binding.sandbox, r, clock()));
   },
   /**
    * An admitted model call's reserve (`Egress.reserve`), which the gateway asks for through
    * the egress door once its one parse of the body read the model and tier: its metering, or
    * its refusal's fixed code and receipt. Held to the egress binding that opened the call.
    */
-  egressReserve(o: EgressDoorNeeds, { binding, request }: Call<unknown>):
+  egressReserve(o: EgressDoorNeeds, { binding, request }: Call<unknown, "egress">):
       EgressReserved | EgressRefusal {
-    return o.egress.reserve(sandboxBinding(binding.sandbox), reserveRequest(request),
-                              clock());
+    return o.egress.reserve(binding.sandbox, reserveRequest(request), clock());
   },
   /**
    * A streaming call's beat from its door (`EGRESS_BEAT_S`): the open reservation its egress
    * token opened is still its door's, so it is not settled lost.
    */
-  egressBeat(o: EgressDoorNeeds, { binding, request }: Call<{ reservation: string }>):
+  egressBeat(o: EgressDoorNeeds, { binding, request }: Call<{ reservation: string }, "egress">):
       { beat: boolean } {
-    return { beat: o.egress.beat(sandboxBinding(binding.sandbox), request?.reservation,
-                                   clock()) };
+    return { beat: o.egress.beat(binding.sandbox, request?.reservation, clock()) };
   },
   /**
    * One reservation's end, as the egress door saw it: its outcome, the provider's status
    * and the bytes it streamed; a blob the gateway resealed meanwhile is kept by the
    * connection's compare-and-swap.
    */
-  egressSettle(o: EgressDoorNeeds, { binding, request }: Call<Record<string, unknown>>):
+  egressSettle(o: EgressDoorNeeds, { binding, request }: Call<Record<string, unknown>, "egress">):
       { settled: boolean } {
     const { resealed, ...rest } = request ?? {};
-    const settled = o.egress.settle(sandboxBinding(binding.sandbox),
-                                        settleRequest(rest), clock());
+    const settled = o.egress.settle(binding.sandbox, settleRequest(rest), clock());
     if (settled.settled && resealed !== undefined) {
       try {
         o.connections.resealed(settled.connection, settled.version, resealed, clockMs());
